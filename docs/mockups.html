@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>er — AI View Modes Mockup</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            'mono': ['"JetBrains Mono"', 'monospace'],
+            'body': ['"Outfit"', 'system-ui', 'sans-serif'],
+          },
+          colors: {
+            'bg': '#0b0b0f',
+            'surface': '#13131a',
+            'surface-2': '#1a1a24',
+            'surface-3': '#22222e',
+            'border': '#2a2a3a',
+            'border-bright': '#3a3a50',
+            'text': '#e4e4ef',
+            'text-dim': '#8888a0',
+            'text-muted': '#55556a',
+            'green': '#4ade80',
+            'red': '#f87171',
+            'yellow': '#facc15',
+            'orange': '#fb923c',
+            'blue': '#60a5fa',
+            'cyan': '#22d3ee',
+            'accent': '#a78bfa',
+          },
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Outfit', system-ui, sans-serif; background: #0b0b0f; color: #e4e4ef; }
+    .diff-add { background: rgba(74, 222, 128, 0.08); }
+    .diff-del { background: rgba(248, 113, 113, 0.08); }
+    .keycap {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 1.5rem; height: 1.5rem; padding: 0 0.35rem;
+      background: #1a1a24; border: 1px solid #2a2a3a; border-bottom: 2px solid #2a2a3a;
+      border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #e4e4ef;
+    }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .fade-in { animation: fadeIn 0.25s ease-out; }
+    .mode-btn { transition: all 0.15s; cursor: pointer; }
+    .mode-btn:hover:not(.mode-active):not(.mode-locked) { background: #1a1a2480; border-color: #3a3a50; color: #8888a0; }
+    .mode-active { background: #a78bfa20; color: #a78bfa; border-color: #a78bfa40; }
+    .mode-locked { opacity: 0.35; cursor: not-allowed; }
+  </style>
+</head>
+<body class="min-h-screen p-6 lg:p-10">
+
+  <!-- Header -->
+  <div class="max-w-7xl mx-auto mb-6">
+    <h1 class="text-3xl font-body font-600 mb-2">
+      <span class="text-accent font-mono">er</span> — View Mode System
+    </h1>
+    <p class="text-text-dim text-lg mb-4">Four view modes, toggled with <span class="keycap">v</span>. Modes unlock as <span class="font-mono text-accent">.er-*</span> files become available.</p>
+  </div>
+
+  <!-- Scenario selector: which .er files exist -->
+  <div class="max-w-7xl mx-auto mb-6">
+    <div class="bg-surface border border-border rounded-xl p-5">
+      <div class="flex items-center gap-3 mb-3">
+        <span class="font-mono text-accent text-sm font-bold">Scenario</span>
+        <span class="text-text-muted text-xs">— toggle which .er files exist to see how the UI adapts</span>
+      </div>
+      <div class="flex flex-wrap gap-3" id="file-toggles">
+        <button onclick="toggleFile('review')" id="tog-review" class="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm font-mono text-text-muted cursor-pointer hover:border-border-bright transition">
+          <span class="w-2 h-2 rounded-full bg-text-muted" id="dot-review"></span>
+          .er-review.json
+        </button>
+        <button onclick="toggleFile('order')" id="tog-order" class="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm font-mono text-text-muted cursor-pointer hover:border-border-bright transition">
+          <span class="w-2 h-2 rounded-full bg-text-muted" id="dot-order"></span>
+          .er-order.json
+        </button>
+        <button onclick="toggleFile('summary')" id="tog-summary" class="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm font-mono text-text-muted cursor-pointer hover:border-border-bright transition">
+          <span class="w-2 h-2 rounded-full bg-text-muted" id="dot-summary"></span>
+          .er-summary.md
+        </button>
+        <button onclick="toggleFile('checklist')" id="tog-checklist" class="flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm font-mono text-text-muted cursor-pointer hover:border-border-bright transition">
+          <span class="w-2 h-2 rounded-full bg-text-muted" id="dot-checklist"></span>
+          .er-checklist.json
+        </button>
+        <button onclick="enableAll()" class="px-3 py-2 rounded-lg border border-accent/30 text-sm font-mono text-accent cursor-pointer hover:bg-accent/10 transition">
+          Enable all
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- THE TERMINAL MOCKUP -->
+  <div class="max-w-7xl mx-auto">
+    <div class="bg-surface border border-border rounded-xl overflow-hidden" style="box-shadow: 0 0 60px -15px rgba(167,139,250,0.1);">
+      <!-- Window chrome -->
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-border bg-surface-2">
+        <div class="w-2.5 h-2.5 rounded-full bg-red/60"></div>
+        <div class="w-2.5 h-2.5 rounded-full bg-yellow/60"></div>
+        <div class="w-2.5 h-2.5 rounded-full bg-green/60"></div>
+        <span class="ml-3 text-xs text-text-muted font-mono">er — easy-review</span>
+        <span class="ml-auto text-xs text-text-muted font-mono" id="file-status-badge"></span>
+      </div>
+
+      <!-- Top bar — branch + view mode toggle -->
+      <div class="px-4 py-2 border-b border-border bg-surface-2/50 font-mono text-xs">
+        <!-- Row 1: branch info -->
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-3">
+            <span class="text-accent font-bold">easy-review</span>
+            <span class="text-text-muted">·</span>
+            <span class="text-cyan">feature/auth</span>
+            <span class="text-text-muted">vs</span>
+            <span class="text-text-dim">main</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 rounded bg-accent/15 text-accent border border-accent/20">Branch</span>
+            <span class="px-2 py-0.5 rounded bg-surface text-text-dim border border-border">Unstaged</span>
+            <span class="px-2 py-0.5 rounded bg-surface text-text-dim border border-border">Staged</span>
+          </div>
+        </div>
+        <!-- Row 2: view mode switcher -->
+        <div class="flex items-center gap-2">
+          <span class="text-text-muted text-xs mr-1"><span class="keycap" style="min-width:1.2rem;height:1.2rem;font-size:0.6rem">v</span> View:</span>
+          <button onclick="setMode('default')" id="mode-default" class="mode-btn mode-active px-2.5 py-0.5 rounded border text-xs">
+            Default
+          </button>
+          <button onclick="setMode('overlay')" id="mode-overlay" class="mode-btn mode-locked px-2.5 py-0.5 rounded border border-border text-text-muted text-xs">
+            Overlay
+          </button>
+          <button onclick="setMode('sidepanel')" id="mode-sidepanel" class="mode-btn mode-locked px-2.5 py-0.5 rounded border border-border text-text-muted text-xs">
+            Side Panel
+          </button>
+          <button onclick="setMode('aireview')" id="mode-aireview" class="mode-btn mode-locked px-2.5 py-0.5 rounded border border-border text-text-muted text-xs">
+            AI Review
+          </button>
+          <!-- Summary overlay button -->
+          <button onclick="toggleSummary()" id="btn-summary-overlay" class="mode-btn mode-locked ml-auto px-2.5 py-0.5 rounded border border-border text-text-muted text-xs">
+            ? Summary
+          </button>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: DEFAULT ===== -->
+      <div id="view-default" class="font-mono text-xs" style="min-height: 440px;">
+        <div class="flex h-full" style="min-height: 440px;">
+          <!-- File tree — default (alphabetical, no risk) -->
+          <div class="w-60 border-r border-border p-3 flex-shrink-0">
+            <div class="text-text-muted text-xs uppercase tracking-wider mb-3">Files <span class="text-text-dim">· 7 changed</span></div>
+            <div class="space-y-0.5">
+              <div class="flex items-center gap-2 px-2 py-1 rounded bg-accent/10 text-accent">
+                <span class="text-yellow">M</span>
+                <span class="truncate">Cargo.toml</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="text-red">D</span>
+                <span class="truncate">src/auth/legacy.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="text-yellow">M</span>
+                <span class="truncate">src/auth/login.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="text-green">A</span>
+                <span class="truncate">src/auth/oauth.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="text-yellow">M</span>
+                <span class="truncate">src/auth/session.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="text-green">A</span>
+                <span class="truncate">src/auth/token.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="text-yellow">M</span>
+                <span class="truncate">src/middleware.rs</span>
+              </div>
+            </div>
+          </div>
+          <!-- Diff view — clean, no annotations -->
+          <div class="flex-1 overflow-hidden relative">
+            <div class="px-4 py-2 border-b border-border text-text-muted text-xs flex justify-between">
+              <span>Cargo.toml</span>
+              <span class="text-yellow">+3 −1</span>
+            </div>
+            <div class="text-xs" id="default-diff">
+              <div class="flex px-4 py-0.5 text-text-muted"><span class="w-7 text-right mr-3 text-text-muted/50">8</span><span class="w-7 text-right mr-3 text-text-muted/50">8</span><span>[dependencies]</span></div>
+              <div class="flex px-4 py-0.5 text-text-muted"><span class="w-7 text-right mr-3 text-text-muted/50">9</span><span class="w-7 text-right mr-3 text-text-muted/50">9</span><span>ratatui = <span class="text-green">"0.29"</span></span></div>
+              <div class="flex px-4 py-0.5 bg-blue/5 text-blue font-bold"><span class="w-7 text-right mr-3">@@</span><span class="w-7 text-right mr-3"></span><span>@@ -12,6 +12,8 @@</span></div>
+              <div class="flex px-4 py-0.5 text-text-muted"><span class="w-7 text-right mr-3 text-text-muted/50">12</span><span class="w-7 text-right mr-3 text-text-muted/50">12</span><span>anyhow = <span class="text-green">"1"</span></span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">13</span><span class="text-green">+ jsonwebtoken = <span class="text-green">"9"</span></span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">14</span><span class="text-green">+ oauth2 = <span class="text-green">"4"</span></span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">15</span><span class="text-green">+ cookie = <span class="text-green">"0.18"</span></span></div>
+              <div class="flex px-4 py-0.5 text-text-muted"><span class="w-7 text-right mr-3 text-text-muted/50">13</span><span class="w-7 text-right mr-3 text-text-muted/50">16</span><span></span></div>
+              <div class="flex px-4 py-0.5 text-text-muted"><span class="w-7 text-right mr-3 text-text-muted/50">14</span><span class="w-7 text-right mr-3 text-text-muted/50">17</span><span>[profile.release]</span></div>
+            </div>
+            <div class="absolute bottom-0 left-0 right-0 px-4 py-2 border-t border-border bg-surface-2/90 flex items-center gap-4 text-xs text-text-muted font-mono">
+              <span><span class="text-text">j</span>/<span class="text-text">k</span> files</span>
+              <span><span class="text-text">n</span>/<span class="text-text">N</span> hunks</span>
+              <span><span class="text-text">s</span> stage</span>
+              <span><span class="text-text">Space</span> reviewed</span>
+              <span><span class="text-text">v</span> view mode</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: OVERLAY ===== -->
+      <div id="view-overlay" class="font-mono text-xs hidden" style="min-height: 440px;">
+        <div class="flex h-full" style="min-height: 440px;">
+          <!-- File tree with risk markers + ordering -->
+          <div class="w-60 border-r border-border p-3 flex-shrink-0">
+            <div class="text-text-muted text-xs uppercase tracking-wider mb-3">Files <span class="text-text-dim" id="overlay-sort-label">· risk-sorted</span></div>
+            <div class="space-y-0.5">
+              <div class="flex items-center gap-2 px-2 py-1 rounded bg-accent/10 text-accent" style="border-left: 3px solid #f87171;">
+                <span class="w-1.5 h-1.5 rounded-full bg-red flex-shrink-0"></span>
+                <span class="text-yellow">M</span>
+                <span class="truncate">src/auth/login.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim" style="border-left: 3px solid #f87171;">
+                <span class="w-1.5 h-1.5 rounded-full bg-red flex-shrink-0"></span>
+                <span class="text-yellow">M</span>
+                <span class="truncate">src/auth/session.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim" style="border-left: 3px solid #fb923c;">
+                <span class="w-1.5 h-1.5 rounded-full bg-orange flex-shrink-0"></span>
+                <span class="text-green">A</span>
+                <span class="truncate">src/auth/oauth.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim" style="border-left: 3px solid #fb923c;">
+                <span class="w-1.5 h-1.5 rounded-full bg-orange flex-shrink-0"></span>
+                <span class="text-yellow">M</span>
+                <span class="truncate">src/middleware.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim" style="border-left: 3px solid #4ade80;">
+                <span class="w-1.5 h-1.5 rounded-full bg-green flex-shrink-0"></span>
+                <span class="text-green">A</span>
+                <span class="truncate">src/auth/token.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim" style="border-left: 3px solid #4ade80;">
+                <span class="w-1.5 h-1.5 rounded-full bg-green flex-shrink-0"></span>
+                <span class="text-yellow">M</span>
+                <span class="truncate">Cargo.toml</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim" style="border-left: 3px solid #4ade80;">
+                <span class="w-1.5 h-1.5 rounded-full bg-green flex-shrink-0"></span>
+                <span class="text-red">D</span>
+                <span class="truncate">src/auth/legacy.rs</span>
+              </div>
+            </div>
+            <div class="mt-4 pt-3 border-t border-border flex items-center gap-2 text-xs">
+              <span class="w-1.5 h-1.5 rounded-full bg-red"></span><span class="text-red">2</span>
+              <span class="w-1.5 h-1.5 rounded-full bg-orange"></span><span class="text-orange">2</span>
+              <span class="w-1.5 h-1.5 rounded-full bg-green"></span><span class="text-green">3</span>
+            </div>
+          </div>
+          <!-- Diff with inline annotations -->
+          <div class="flex-1 overflow-hidden relative">
+            <div class="px-4 py-2 border-b border-border text-text-muted text-xs flex justify-between">
+              <span>src/auth/login.rs</span>
+              <div class="flex items-center gap-3">
+                <span class="text-yellow">+42 −8</span>
+                <span class="text-red">● HIGH</span>
+              </div>
+            </div>
+            <div class="text-xs">
+              <div class="flex px-4 py-0.5 text-text-muted"><span class="w-7 text-right mr-3 text-text-muted/50">18</span><span class="w-7 text-right mr-3 text-text-muted/50">18</span><span><span class="text-blue">use</span> crate::config::AuthConfig;</span></div>
+              <div class="flex px-4 py-0.5 bg-blue/5 text-blue font-bold"><span class="w-7 text-right mr-3">@@</span><span class="w-7 text-right mr-3"></span><span>@@ -20,6 +20,18 @@ impl AuthService {</span></div>
+              <!-- Inline annotation -->
+              <div class="mx-3 my-1 px-3 py-2 rounded bg-yellow/5 border border-yellow/20 flex items-start gap-2 fade-in">
+                <span class="text-yellow mt-0.5 flex-shrink-0">⚠</span>
+                <div><span class="text-yellow text-xs font-bold">Auth signature change</span><span class="text-text-dim text-xs ml-1">— login() now returns Result&lt;Session&gt; instead of bool. All callers need updating.</span></div>
+              </div>
+              <div class="flex px-4 py-0.5 diff-del"><span class="w-7 text-right mr-3 text-red/50">20</span><span class="w-7 text-right mr-3"></span><span class="text-red">−   pub fn login(&self, user: &str) -> bool {</span></div>
+              <div class="flex px-4 py-0.5 diff-del"><span class="w-7 text-right mr-3 text-red/50">21</span><span class="w-7 text-right mr-3"></span><span class="text-red">−       self.check_password(user)</span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">20</span><span class="text-green">+   pub async fn login(&self, creds: Credentials) -> Result&lt;Session&gt; {</span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">21</span><span class="text-green">+       let user = self.validate(&creds).await?;</span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">22</span><span class="text-green">+       let token = self.issue_token(&user)?;</span></div>
+              <!-- Another annotation -->
+              <div class="mx-3 my-1 px-3 py-2 rounded bg-red/5 border border-red/20 flex items-start gap-2 fade-in">
+                <span class="text-red mt-0.5 flex-shrink-0">●</span>
+                <div><span class="text-red text-xs font-bold">Missing error context</span><span class="text-text-dim text-xs ml-1">— issue_token uses bare ? without .context(). Hard to debug on failure.</span></div>
+              </div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">23</span><span class="text-green">+       let session = Session::new(user, token);</span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">24</span><span class="text-green">+       self.store.save(&session).await?;</span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">25</span><span class="text-green">+       Ok(session)</span></div>
+              <div class="flex px-4 py-0.5 text-text-muted"><span class="w-7 text-right mr-3 text-text-muted/50">22</span><span class="w-7 text-right mr-3 text-text-muted/50">26</span><span>    }</span></div>
+            </div>
+            <div class="absolute bottom-0 left-0 right-0 px-4 py-2 border-t border-border bg-surface-2/90 flex items-center gap-4 text-xs text-text-muted font-mono">
+              <span><span class="text-text">n</span>/<span class="text-text">N</span> next finding</span>
+              <span><span class="text-text">Space</span> reviewed</span>
+              <span><span class="text-text">v</span> view mode</span>
+              <span class="ml-auto text-yellow">⚠ 5 findings · 2 high</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: SIDE PANEL ===== -->
+      <div id="view-sidepanel" class="font-mono text-xs hidden" style="min-height: 440px;">
+        <div class="flex h-full" style="min-height: 440px;">
+          <!-- File tree compact -->
+          <div class="w-48 border-r border-border p-3 flex-shrink-0">
+            <div class="text-text-muted text-xs uppercase tracking-wider mb-3">Files</div>
+            <div class="space-y-0.5">
+              <div class="flex items-center gap-2 px-2 py-1 rounded bg-accent/10 text-accent">
+                <span class="w-1.5 h-1.5 rounded-full bg-red"></span><span class="text-yellow">M</span><span class="truncate">login.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="w-1.5 h-1.5 rounded-full bg-red"></span><span class="text-yellow">M</span><span class="truncate">session.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="w-1.5 h-1.5 rounded-full bg-orange"></span><span class="text-green">A</span><span class="truncate">oauth.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="w-1.5 h-1.5 rounded-full bg-orange"></span><span class="text-yellow">M</span><span class="truncate">middleware.rs</span>
+              </div>
+              <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
+                <span class="w-1.5 h-1.5 rounded-full bg-green"></span><span class="text-green">A</span><span class="truncate">token.rs</span>
+              </div>
+            </div>
+          </div>
+          <!-- Diff view -->
+          <div class="flex-1 overflow-hidden border-r border-border">
+            <div class="px-3 py-2 border-b border-border text-text-muted text-xs flex justify-between">
+              <span>src/auth/login.rs</span><span class="text-yellow">+42 −8</span>
+            </div>
+            <div class="text-xs">
+              <div class="flex px-3 py-0.5 text-text-muted"><span class="w-6 text-right mr-2 text-text-muted/50">18</span><span class="w-6 text-right mr-2 text-text-muted/50">18</span><span><span class="text-blue">use</span> crate::config::AuthConfig;</span></div>
+              <div class="flex px-3 py-0.5 bg-blue/5 text-blue font-bold"><span class="w-6 text-right mr-2">@@</span><span class="w-6 text-right mr-2"></span><span>@@ -20,6 +20,18 @@</span></div>
+              <div class="flex px-3 py-0.5 diff-del"><span class="w-6 text-right mr-2 text-red/50">20</span><span class="w-6 text-right mr-2"></span><span class="text-red">−   pub fn login(&self, user: &str) -> bool {</span></div>
+              <div class="flex px-3 py-0.5 diff-del"><span class="w-6 text-right mr-2 text-red/50">21</span><span class="w-6 text-right mr-2"></span><span class="text-red">−       self.check_password(user)</span></div>
+              <div class="flex px-3 py-0.5 diff-add bg-accent/5 border-r-2 border-accent"><span class="w-6 text-right mr-2"></span><span class="w-6 text-right mr-2 text-green/50">20</span><span class="text-green">+   pub async fn login(</span></div>
+              <div class="flex px-3 py-0.5 diff-add bg-accent/5 border-r-2 border-accent"><span class="w-6 text-right mr-2"></span><span class="w-6 text-right mr-2 text-green/50">21</span><span class="text-green">+       &self, creds: Credentials</span></div>
+              <div class="flex px-3 py-0.5 diff-add bg-accent/5 border-r-2 border-accent"><span class="w-6 text-right mr-2"></span><span class="w-6 text-right mr-2 text-green/50">22</span><span class="text-green">+   ) -> Result&lt;Session&gt; {</span></div>
+              <div class="flex px-3 py-0.5 diff-add"><span class="w-6 text-right mr-2"></span><span class="w-6 text-right mr-2 text-green/50">23</span><span class="text-green">+       let user = self.validate(&creds).await?;</span></div>
+              <div class="flex px-3 py-0.5 diff-add"><span class="w-6 text-right mr-2"></span><span class="w-6 text-right mr-2 text-green/50">24</span><span class="text-green">+       let token = self.issue_token(&user)?;</span></div>
+              <div class="flex px-3 py-0.5 diff-add"><span class="w-6 text-right mr-2"></span><span class="w-6 text-right mr-2 text-green/50">25</span><span class="text-green">+       let session = Session::new(user, token);</span></div>
+              <div class="flex px-3 py-0.5 diff-add"><span class="w-6 text-right mr-2"></span><span class="w-6 text-right mr-2 text-green/50">26</span><span class="text-green">+       self.store.save(&session).await?;</span></div>
+              <div class="flex px-3 py-0.5 text-text-muted"><span class="w-6 text-right mr-2 text-text-muted/50">22</span><span class="w-6 text-right mr-2 text-text-muted/50">29</span><span>    }</span></div>
+            </div>
+          </div>
+          <!-- AI Panel -->
+          <div class="w-72 flex-shrink-0 p-3 overflow-y-auto bg-surface-2/30 fade-in">
+            <div class="text-text-muted text-xs uppercase tracking-wider mb-3 flex items-center gap-2"><span class="text-accent">◆</span> AI Review</div>
+            <div class="mb-4 p-3 rounded-lg bg-surface border border-border">
+              <div class="text-xs text-text-dim mb-2 font-bold">Summary</div>
+              <p class="text-xs text-text-dim leading-relaxed">Rewrites login from sync bool to async Result&lt;Session&gt;. Adds credential validation, token issuance, and session persistence.</p>
+            </div>
+            <div class="text-xs text-text-dim font-bold mb-2">Findings (2)</div>
+            <div class="space-y-2 mb-4">
+              <div class="p-2.5 rounded-lg bg-red/5 border border-red/20">
+                <div class="flex items-center gap-1.5 mb-1"><span class="w-1.5 h-1.5 rounded-full bg-red"></span><span class="text-red font-bold text-xs">Breaking change</span><span class="text-text-muted ml-auto">L20</span></div>
+                <p class="text-text-dim text-xs leading-relaxed">Return type changed. All callers must be updated.</p>
+              </div>
+              <div class="p-2.5 rounded-lg bg-orange/5 border border-orange/20">
+                <div class="flex items-center gap-1.5 mb-1"><span class="w-1.5 h-1.5 rounded-full bg-orange"></span><span class="text-orange font-bold text-xs">Error context</span><span class="text-text-muted ml-auto">L24</span></div>
+                <p class="text-text-dim text-xs leading-relaxed">issue_token uses bare ?. Add .context() for debugging.</p>
+              </div>
+            </div>
+            <div class="text-xs text-text-dim font-bold mb-2" id="sp-checklist-section">Checklist</div>
+            <div class="space-y-1.5" id="sp-checklist-items">
+              <label class="flex items-start gap-2 text-xs text-text-dim cursor-pointer"><input type="checkbox" class="mt-0.5 accent-accent"> <span>All callers updated?</span></label>
+              <label class="flex items-start gap-2 text-xs text-text-dim cursor-pointer"><input type="checkbox" class="mt-0.5 accent-accent"> <span>Error paths tested?</span></label>
+              <label class="flex items-start gap-2 text-xs text-text-dim cursor-pointer"><input type="checkbox" class="mt-0.5 accent-accent"> <span>Session cleanup on failure?</span></label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: AI REVIEW ===== -->
+      <div id="view-aireview" class="font-mono text-xs hidden" style="min-height: 440px;">
+        <div class="flex h-full" style="min-height: 440px;">
+          <!-- Findings list -->
+          <div class="w-64 border-r border-border p-3 flex-shrink-0">
+            <div class="text-text-muted text-xs uppercase tracking-wider mb-3">Findings <span class="text-text-dim">· 5 total</span></div>
+            <div class="space-y-1">
+              <div class="flex items-start gap-2 px-2 py-2 rounded bg-accent/10 border-l-2 border-accent">
+                <span class="w-1.5 h-1.5 rounded-full bg-red mt-1 flex-shrink-0"></span>
+                <div><div class="text-text text-xs font-bold">Breaking API change</div><div class="text-text-muted text-xs">login.rs:20</div></div>
+              </div>
+              <div class="flex items-start gap-2 px-2 py-2 rounded hover:bg-surface-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-red mt-1 flex-shrink-0"></span>
+                <div><div class="text-text-dim text-xs">No auth on /refresh</div><div class="text-text-muted text-xs">session.rs:45</div></div>
+              </div>
+              <div class="flex items-start gap-2 px-2 py-2 rounded hover:bg-surface-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-orange mt-1 flex-shrink-0"></span>
+                <div><div class="text-text-dim text-xs">Missing error context</div><div class="text-text-muted text-xs">login.rs:25</div></div>
+              </div>
+              <div class="flex items-start gap-2 px-2 py-2 rounded hover:bg-surface-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-orange mt-1 flex-shrink-0"></span>
+                <div><div class="text-text-dim text-xs">Token expiry not set</div><div class="text-text-muted text-xs">token.rs:12</div></div>
+              </div>
+              <div class="flex items-start gap-2 px-2 py-2 rounded hover:bg-surface-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-green mt-1 flex-shrink-0"></span>
+                <div><div class="text-text-dim text-xs line-through">Add rate limiting</div><div class="text-text-muted text-xs">oauth.rs:8 · resolved</div></div>
+              </div>
+            </div>
+            <div class="mt-4 pt-3 border-t border-border">
+              <div class="text-text-muted text-xs">Progress: <span class="text-green">1</span>/5 resolved</div>
+              <div class="mt-2 h-1.5 bg-surface-3 rounded-full overflow-hidden"><div class="h-full bg-green rounded-full" style="width: 20%"></div></div>
+            </div>
+          </div>
+          <!-- Finding detail -->
+          <div class="flex-1 overflow-hidden relative">
+            <div class="px-4 py-3 border-b border-border bg-red/5">
+              <div class="flex items-center gap-2 mb-1"><span class="w-2 h-2 rounded-full bg-red"></span><span class="text-red font-bold">Breaking API change</span><span class="text-text-muted ml-2">1 of 5</span></div>
+              <p class="text-text-dim text-xs leading-relaxed mt-1">login() signature changed from <span class="text-red">fn(&str) -> bool</span> to <span class="text-green">async fn(Credentials) -> Result&lt;Session&gt;</span>. Public API — all callers must migrate.</p>
+            </div>
+            <div class="px-3 py-1.5 border-b border-border text-text-muted text-xs bg-surface-2/30">src/auth/login.rs:20</div>
+            <div class="text-xs">
+              <div class="flex px-4 py-0.5 diff-del"><span class="w-7 text-right mr-3 text-red/50">20</span><span class="w-7 text-right mr-3"></span><span class="text-red">−   pub fn login(&self, user: &str) -> bool {</span></div>
+              <div class="flex px-4 py-0.5 diff-del"><span class="w-7 text-right mr-3 text-red/50">21</span><span class="w-7 text-right mr-3"></span><span class="text-red">−       self.check_password(user)</span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">20</span><span class="text-green">+   pub async fn login(&self, creds: Credentials) -> Result&lt;Session&gt; {</span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">21</span><span class="text-green">+       let user = self.validate(&creds).await?;</span></div>
+              <div class="flex px-4 py-0.5 diff-add"><span class="w-7 text-right mr-3"></span><span class="w-7 text-right mr-3 text-green/50">22</span><span class="text-green">+       let token = self.issue_token(&user)?;</span></div>
+            </div>
+            <div class="mx-4 mt-3 p-3 rounded-lg bg-surface-2 border border-border">
+              <div class="text-text-muted text-xs font-bold mb-2">Affected callers</div>
+              <div class="space-y-1">
+                <div class="flex items-center gap-2 text-xs text-text-dim hover:text-accent cursor-pointer"><span class="text-yellow">→</span> src/handlers/auth_handler.rs:34</div>
+                <div class="flex items-center gap-2 text-xs text-text-dim hover:text-accent cursor-pointer"><span class="text-yellow">→</span> src/middleware.rs:22</div>
+                <div class="flex items-center gap-2 text-xs text-text-dim hover:text-accent cursor-pointer"><span class="text-yellow">→</span> tests/auth_test.rs:15</div>
+              </div>
+            </div>
+            <div class="absolute bottom-0 left-0 right-0 px-4 py-2 border-t border-border bg-surface-2/90 flex items-center gap-4 text-xs text-text-muted font-mono">
+              <span><span class="text-text">j</span>/<span class="text-text">k</span> findings</span>
+              <span><span class="text-text">Enter</span> jump to file</span>
+              <span><span class="text-text">x</span> resolve</span>
+              <span><span class="text-text">v</span> view mode</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== SUMMARY OVERLAY (popup) ===== -->
+      <div id="summary-overlay" class="hidden absolute inset-0 z-50 flex items-center justify-center" style="background: rgba(11,11,15,0.85);">
+        <div class="bg-surface border border-border rounded-xl w-full max-w-lg mx-4 overflow-hidden fade-in" style="box-shadow: 0 0 40px rgba(167,139,250,0.1);">
+          <div class="px-4 py-3 border-b border-border flex items-center justify-between bg-surface-2">
+            <span class="font-mono text-accent text-sm font-bold">Branch Summary</span>
+            <span class="text-text-muted text-xs font-mono">? to close</span>
+          </div>
+          <div class="p-5 text-sm leading-relaxed">
+            <p class="text-text mb-4">Replaces legacy password auth with OAuth2 + session-based authentication.</p>
+            <div class="mb-3">
+              <div class="text-accent font-mono text-xs font-bold mb-1.5">What changed</div>
+              <div class="text-text-dim text-xs space-y-1 ml-2">
+                <div>• login() is now async, returns Session</div>
+                <div>• New OAuth flow in oauth.rs</div>
+                <div>• Session persistence via store.save()</div>
+                <div>• Legacy auth module deleted</div>
+              </div>
+            </div>
+            <div>
+              <div class="text-red font-mono text-xs font-bold mb-1.5">Watch out for</div>
+              <div class="text-text-dim text-xs space-y-1 ml-2">
+                <div>• All login() callers need migration</div>
+                <div>• Token expiry not yet configured</div>
+                <div>• No rate limiting on /refresh endpoint</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===== FILE SCHEMA REFERENCE ===== -->
+  <div class="max-w-7xl mx-auto mt-8 mb-6">
+    <div class="bg-surface border border-border rounded-xl p-6">
+      <h3 class="font-mono text-accent text-sm mb-4">Which .er files unlock which modes</h3>
+      <div class="font-mono text-xs space-y-2.5">
+        <div class="flex items-start gap-3">
+          <span class="text-text w-28 flex-shrink-0 font-bold">Default</span>
+          <span class="text-text-muted">→</span>
+          <span class="text-text-dim">Always available. No .er files needed. Standard er experience.</span>
+        </div>
+        <div class="flex items-start gap-3">
+          <span class="text-text w-28 flex-shrink-0 font-bold">Overlay</span>
+          <span class="text-text-muted">→</span>
+          <span class="text-text-dim">Requires <span class="text-accent">.er-review.json</span>. Also uses .er-order.json for file sorting if present.</span>
+        </div>
+        <div class="flex items-start gap-3">
+          <span class="text-text w-28 flex-shrink-0 font-bold">Side Panel</span>
+          <span class="text-text-muted">→</span>
+          <span class="text-text-dim">Requires <span class="text-accent">.er-review.json</span>. Also shows .er-checklist.json items if present.</span>
+        </div>
+        <div class="flex items-start gap-3">
+          <span class="text-text w-28 flex-shrink-0 font-bold">AI Review</span>
+          <span class="text-text-muted">→</span>
+          <span class="text-text-dim">Requires <span class="text-accent">.er-review.json</span>. Guided walkthrough of all findings.</span>
+        </div>
+        <div class="flex items-start gap-3">
+          <span class="text-text w-28 flex-shrink-0 font-bold">? Summary</span>
+          <span class="text-text-muted">→</span>
+          <span class="text-text-dim">Requires <span class="text-accent">.er-summary.md</span>. Popup overlay, works in any mode.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== KEY BINDINGS REFERENCE ===== -->
+  <div class="max-w-7xl mx-auto mb-20">
+    <div class="bg-surface-2 border border-border rounded-xl p-6">
+      <h3 class="font-body font-600 text-lg mb-4">Proposed keybinds</h3>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 font-mono text-xs">
+        <div class="flex items-center gap-3"><span class="keycap">v</span><span class="text-text-dim">Cycle through available view modes</span></div>
+        <div class="flex items-center gap-3"><span class="keycap">?</span><span class="text-text-dim">Toggle summary overlay (if .er-summary.md exists)</span></div>
+        <div class="flex items-center gap-3"><span class="keycap">n</span> / <span class="keycap">N</span><span class="text-text-dim">Next / prev finding (in Overlay + AI Review)</span></div>
+        <div class="flex items-center gap-3"><span class="keycap">x</span><span class="text-text-dim">Mark finding as resolved (in AI Review)</span></div>
+        <div class="flex items-center gap-3"><span class="keycap">Enter</span><span class="text-text-dim">Jump to file from finding (in AI Review)</span></div>
+        <div class="flex items-center gap-3"><span class="keycap">c</span><span class="text-text-dim">Toggle checklist overlay (if .er-checklist.json exists)</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    const files = { review: false, order: false, summary: false, checklist: false };
+    let currentMode = 'default';
+    let summaryOpen = false;
+
+    function toggleFile(name) {
+      files[name] = !files[name];
+      updateUI();
+    }
+
+    function enableAll() {
+      Object.keys(files).forEach(k => files[k] = true);
+      updateUI();
+    }
+
+    function setMode(mode) {
+      // Check if mode is available
+      if (mode !== 'default' && !isModeAvailable(mode)) return;
+      currentMode = mode;
+      updateUI();
+    }
+
+    function toggleSummary() {
+      if (!files.summary) return;
+      summaryOpen = !summaryOpen;
+      document.getElementById('summary-overlay').classList.toggle('hidden', !summaryOpen);
+    }
+
+    function isModeAvailable(mode) {
+      if (mode === 'default') return true;
+      if (mode === 'overlay') return files.review;
+      if (mode === 'sidepanel') return files.review;
+      if (mode === 'aireview') return files.review;
+      return false;
+    }
+
+    function updateUI() {
+      // Update file toggle buttons
+      Object.keys(files).forEach(name => {
+        const tog = document.getElementById('tog-' + name);
+        const dot = document.getElementById('dot-' + name);
+        if (files[name]) {
+          tog.classList.remove('text-text-muted', 'border-border');
+          tog.classList.add('text-accent', 'border-accent/40');
+          tog.style.background = '#a78bfa15';
+          dot.classList.remove('bg-text-muted');
+          dot.classList.add('bg-green');
+        } else {
+          tog.classList.add('text-text-muted', 'border-border');
+          tog.classList.remove('text-accent', 'border-accent/40');
+          tog.style.background = '';
+          dot.classList.add('bg-text-muted');
+          dot.classList.remove('bg-green');
+        }
+      });
+
+      // Update mode buttons
+      ['default', 'overlay', 'sidepanel', 'aireview'].forEach(mode => {
+        const btn = document.getElementById('mode-' + mode);
+        btn.classList.remove('mode-active', 'mode-locked');
+        if (mode === currentMode) {
+          btn.classList.add('mode-active');
+        } else if (!isModeAvailable(mode)) {
+          btn.classList.add('mode-locked');
+        }
+      });
+
+      // Summary button
+      const summBtn = document.getElementById('btn-summary-overlay');
+      summBtn.classList.remove('mode-locked', 'mode-active');
+      if (!files.summary) {
+        summBtn.classList.add('mode-locked');
+        summaryOpen = false;
+        document.getElementById('summary-overlay').classList.add('hidden');
+      }
+
+      // If current mode became unavailable, fall back to default
+      if (!isModeAvailable(currentMode)) {
+        currentMode = 'default';
+        document.getElementById('mode-default').classList.add('mode-active');
+      }
+
+      // Show/hide views
+      ['default', 'overlay', 'sidepanel', 'aireview'].forEach(mode => {
+        document.getElementById('view-' + mode).classList.toggle('hidden', mode !== currentMode);
+      });
+
+      // File status badge
+      const active = Object.entries(files).filter(([,v]) => v).map(([k]) => '.er-' + k);
+      const badge = document.getElementById('file-status-badge');
+      if (active.length === 0) {
+        badge.textContent = 'no .er files';
+        badge.className = 'ml-auto text-xs text-text-muted font-mono';
+      } else {
+        badge.textContent = active.length + ' .er file' + (active.length > 1 ? 's' : '') + ' detected';
+        badge.className = 'ml-auto text-xs text-green font-mono';
+      }
+    }
+
+    // Close summary on click outside
+    document.getElementById('summary-overlay').addEventListener('click', function(e) {
+      if (e.target === this) toggleSummary();
+    });
+
+    // Init
+    updateUI();
+  </script>
+</body>
+</html>
