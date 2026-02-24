@@ -1,0 +1,39 @@
+[package]
+name = "easy-review"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal-based git review tool for AI-assisted development"
+
+[[bin]]
+name = "er"
+path = "src/main.rs"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# File watching
+notify = "7"
+notify-debouncer-mini = "0.5"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Syntax highlighting
+syntect = "5"
+
+# Error handling
+anyhow = "1"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

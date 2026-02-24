@@ -1,0 +1,216 @@
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Rect},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    Frame,
+};
+
+use crate::app::{DirEntry, OverlayData, Worktree};
+use super::styles;
+
+/// Render the active overlay on top of the main UI
+pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
+    match overlay {
+        OverlayData::WorktreePicker { worktrees, selected } => {
+            render_worktree_picker(f, area, worktrees, *selected);
+        }
+        OverlayData::DirectoryBrowser { current_path, entries, selected } => {
+            render_directory_browser(f, area, current_path, entries, *selected);
+        }
+    }
+}
+
+fn render_worktree_picker(
+    f: &mut Frame,
+    area: Rect,
+    worktrees: &[Worktree],
+    selected: usize,
+) {
+    let popup_height = (worktrees.len() as u16 + 2).min(area.height.saturating_sub(6));
+    let popup_width = 70u16.min(area.width.saturating_sub(6));
+    let popup = centered_rect(popup_width, popup_height, area);
+
+    // Clear backdrop
+    f.render_widget(Clear, popup);
+
+    let items: Vec<ListItem> = worktrees
+        .iter()
+        .enumerate()
+        .map(|(idx, wt)| {
+            let is_sel = idx == selected;
+            let marker = if is_sel { "▶ " } else { "  " };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    marker,
+                    ratatui::style::Style::default().fg(styles::CYAN),
+                ),
+                Span::styled(
+                    format!("{:<20}", wt.branch),
+                    if is_sel {
+                        ratatui::style::Style::default().fg(styles::BRIGHT)
+                    } else {
+                        ratatui::style::Style::default().fg(styles::TEXT)
+                    },
+                ),
+                Span::styled(
+                    &wt.path,
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ),
+            ]);
+
+            let style = if is_sel {
+                styles::selected_style()
+            } else {
+                ratatui::style::Style::default().bg(styles::PANEL)
+            };
+
+            ListItem::new(line).style(style)
+        })
+        .collect();
+
+    let block = Block::default()
+        .title(Span::styled(
+            " WORKTREES (Enter=select, Esc=close) ",
+            ratatui::style::Style::default().fg(styles::CYAN),
+        ))
+        .borders(Borders::ALL)
+        .border_style(ratatui::style::Style::default().fg(styles::CYAN))
+        .style(ratatui::style::Style::default().bg(styles::PANEL));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, popup);
+}
+
+fn render_directory_browser(
+    f: &mut Frame,
+    area: Rect,
+    current_path: &str,
+    entries: &[DirEntry],
+    selected: usize,
+) {
+    let popup_height = (entries.len() as u16 + 2).min(area.height.saturating_sub(6)).max(5);
+    let popup_width = 70u16.min(area.width.saturating_sub(6));
+    let popup = centered_rect(popup_width, popup_height, area);
+
+    f.render_widget(Clear, popup);
+
+    if entries.is_empty() {
+        let block = Block::default()
+            .title(Span::styled(
+                format!(" {} ", current_path),
+                ratatui::style::Style::default().fg(styles::CYAN),
+            ))
+            .borders(Borders::ALL)
+            .border_style(ratatui::style::Style::default().fg(styles::CYAN))
+            .style(ratatui::style::Style::default().bg(styles::PANEL));
+
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  (empty directory)",
+            ratatui::style::Style::default().fg(styles::MUTED),
+        )))
+        .block(block);
+
+        f.render_widget(empty, popup);
+        return;
+    }
+
+    let items: Vec<ListItem> = entries
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            let is_sel = idx == selected;
+            let marker = if is_sel { "▶ " } else { "  " };
+
+            let icon = if entry.is_git_repo {
+                " "
+            } else if entry.is_dir {
+                " "
+            } else {
+                "  "
+            };
+
+            let name_style = if entry.is_git_repo {
+                ratatui::style::Style::default().fg(styles::GREEN)
+            } else if entry.is_dir {
+                ratatui::style::Style::default().fg(styles::BLUE)
+            } else {
+                ratatui::style::Style::default().fg(styles::TEXT)
+            };
+
+            let mut spans = vec![
+                Span::styled(
+                    marker,
+                    ratatui::style::Style::default().fg(styles::CYAN),
+                ),
+                Span::styled(icon, name_style),
+                Span::styled(&entry.name, if is_sel {
+                    ratatui::style::Style::default().fg(styles::BRIGHT)
+                } else {
+                    name_style
+                }),
+            ];
+
+            if entry.is_git_repo {
+                spans.push(Span::styled(
+                    "  [git]",
+                    ratatui::style::Style::default().fg(styles::GREEN),
+                ));
+            } else if entry.is_dir {
+                spans.push(Span::styled(
+                    "/",
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ));
+            }
+
+            let style = if is_sel {
+                styles::selected_style()
+            } else {
+                ratatui::style::Style::default().bg(styles::PANEL)
+            };
+
+            ListItem::new(Line::from(spans)).style(style)
+        })
+        .collect();
+
+    // Shorten path for title if too long
+    let max_title_width = popup_width.saturating_sub(20) as usize;
+    let title_path = if current_path.len() > max_title_width {
+        format!("…{}", &current_path[current_path.len() - max_title_width..])
+    } else {
+        current_path.to_string()
+    };
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" {} (Enter=open, Bksp=up, Esc=close) ", title_path),
+            ratatui::style::Style::default().fg(styles::CYAN),
+        ))
+        .borders(Borders::ALL)
+        .border_style(ratatui::style::Style::default().fg(styles::CYAN))
+        .style(ratatui::style::Style::default().bg(styles::PANEL));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, popup);
+}
+
+/// Calculate a centered rectangle within an area
+fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(r.height.saturating_sub(height) / 2),
+            Constraint::Length(height),
+            Constraint::Min(0),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(r.width.saturating_sub(width) / 2),
+            Constraint::Length(width),
+            Constraint::Min(0),
+        ])
+        .split(vertical[1])[1]
+}
