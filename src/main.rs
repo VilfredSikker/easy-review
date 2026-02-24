@@ -1,12 +1,14 @@
 mod ai;
 mod app;
 mod git;
+mod github;
 mod ui;
 mod watch;
 
 use anyhow::Result;
 use app::{App, DiffMode, InputMode};
 use crate::ai::ViewMode;
+use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -19,9 +21,38 @@ use std::sync::mpsc;
 use std::time::Duration;
 use watch::{FileWatcher, WatchEvent};
 
+/// Terminal UI for reviewing git diffs
+#[derive(Parser)]
+#[command(name = "er", version, about)]
+struct Cli {
+    /// Repository paths to open (defaults to current directory)
+    paths: Vec<String>,
+
+    /// Open a specific PR by number (from the current repo)
+    #[arg(long)]
+    pr: Option<u64>,
+}
+
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Reject conflicting --pr and PR URL arguments
+    if cli.pr.is_some() && cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
+        anyhow::bail!("Cannot use --pr together with a PR URL argument");
+    }
+
     // Init app state (detects repo, branch, base branch, runs initial diff)
-    let mut app = App::new()?;
+    let mut app = App::new_with_args(&cli.paths)?;
+
+    // Handle --pr flag: override the first tab's base branch
+    if let Some(pr_number) = cli.pr {
+        github::ensure_gh_installed()?;
+        let repo_root = app.tab().repo_root.clone();
+        let base = github::gh_pr_base_branch(pr_number, &repo_root)?;
+        let tab = app.tab_mut();
+        tab.base_branch = base;
+        tab.refresh_diff()?;
+    }
 
     // Load syntax highlighting (once, reused for all files)
     let highlighter = ui::highlight::Highlighter::new();
@@ -43,6 +74,12 @@ fn main() -> Result<()> {
 
     if let Err(err) = result {
         eprintln!("Error: {:?}", err);
+    }
+
+    // Print resume hint if multiple tabs were open
+    if app.tabs.len() > 1 {
+        let paths: Vec<&str> = app.tabs.iter().map(|t| t.repo_root.as_str()).collect();
+        eprintln!("\x1b[2mer {}\x1b[0m", paths.join(" "));
     }
 
     Ok(())
@@ -82,17 +119,26 @@ fn run_app<B: Backend>(
         // Check for file watch events (non-blocking)
         if let Ok(WatchEvent::FilesChanged(paths)) = watch_rx.try_recv() {
             let count = paths.len();
-            let _ = app.tab_mut().refresh_diff();
+            let _ = app.tab_mut().refresh_diff_quick();
+            let ai_status = if app.tab().ai.has_data() {
+                if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
+            } else {
+                ""
+            };
             app.notify(&format!(
-                "{} file{} changed",
+                "{} file{} changed{}",
                 count,
-                if count == 1 { "" } else { "s" }
+                if count == 1 { "" } else { "s" },
+                ai_status
             ));
         }
 
-        // Check for .er-* file changes (every tick)
-        if app.tab_mut().check_ai_files_changed() {
-            app.notify("✓ AI data refreshed");
+        // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
+        app.ai_poll_counter = app.ai_poll_counter.wrapping_add(1);
+        if app.ai_poll_counter % 10 == 0 {
+            if app.tab_mut().check_ai_files_changed() {
+                app.notify("✓ AI data refreshed");
+            }
         }
 
         // Tick — used for auto-clearing notifications
@@ -148,7 +194,12 @@ fn handle_normal_input(
         // Refresh
         KeyCode::Char('r') => {
             app.tab_mut().refresh_diff()?;
-            app.notify("Refreshed");
+            let ai_status = if app.tab().ai.has_data() {
+                if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
+            } else {
+                ""
+            };
+            app.notify(&format!("Refreshed{}", ai_status));
             return Ok(());
         }
 
@@ -284,11 +335,15 @@ fn handle_normal_input(
         // Toggle AI view mode (v forward, V backward)
         KeyCode::Char('v') => {
             app.tab_mut().ai.cycle_view_mode();
+            app.tab_mut().diff_scroll = 0;
+            app.tab_mut().ai_panel_scroll = 0;
             let mode = app.tab().ai.view_mode.label();
             app.notify(&format!("View: {}", mode));
         }
         KeyCode::Char('V') => {
             app.tab_mut().ai.cycle_view_mode_prev();
+            app.tab_mut().diff_scroll = 0;
+            app.tab_mut().ai_panel_scroll = 0;
             let mode = app.tab().ai.view_mode.label();
             app.notify(&format!("View: {}", mode));
         }
@@ -307,11 +362,6 @@ fn handle_normal_input(
 
 fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
-        // Quit
-        KeyCode::Char('q') => {
-            app.should_quit = true;
-        }
-
         // Navigation within focused column
         KeyCode::Char('j') | KeyCode::Down => {
             app.tab_mut().ai.review_next();
@@ -322,9 +372,11 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
 
         // Switch focus between left/right columns
         KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
+            ai_review_reset_outgoing_scroll(app);
             app.tab_mut().ai.review_toggle_focus();
         }
         KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+            ai_review_reset_outgoing_scroll(app);
             app.tab_mut().ai.review_toggle_focus();
         }
 
@@ -338,24 +390,28 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
             app.review_jump_to_file();
         }
 
-        // Scroll (for long content)
+        // Scroll — routes to focused column's scroll offset
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.tab_mut().scroll_down(10);
+            ai_review_scroll(app, 10, true);
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.tab_mut().scroll_up(10);
+            ai_review_scroll(app, 10, false);
         }
-        KeyCode::PageDown => app.tab_mut().scroll_down(20),
-        KeyCode::PageUp => app.tab_mut().scroll_up(20),
+        KeyCode::PageDown => ai_review_scroll(app, 20, true),
+        KeyCode::PageUp => ai_review_scroll(app, 20, false),
 
         // Cycle view mode (v forward, V backward)
         KeyCode::Char('v') => {
             app.tab_mut().ai.cycle_view_mode();
+            app.tab_mut().diff_scroll = 0;
+            app.tab_mut().ai_panel_scroll = 0;
             let mode = app.tab().ai.view_mode.label();
             app.notify(&format!("View: {}", mode));
         }
         KeyCode::Char('V') => {
             app.tab_mut().ai.cycle_view_mode_prev();
+            app.tab_mut().diff_scroll = 0;
+            app.tab_mut().ai_panel_scroll = 0;
             let mode = app.tab().ai.view_mode.label();
             app.notify(&format!("View: {}", mode));
         }
@@ -363,12 +419,38 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
         // Esc goes back to default view
         KeyCode::Esc => {
             app.tab_mut().ai.view_mode = ViewMode::Default;
+            app.tab_mut().diff_scroll = 0;
             app.notify("View: DEFAULT");
         }
 
         _ => {}
     }
     Ok(())
+}
+
+/// Reset the outgoing column's scroll when switching focus in AiReview
+fn ai_review_reset_outgoing_scroll(app: &mut App) {
+    use crate::ai::ReviewFocus;
+    let tab = app.tab_mut();
+    match tab.ai.review_focus {
+        ReviewFocus::Files => tab.diff_scroll = 0,
+        ReviewFocus::Checklist => tab.ai_panel_scroll = 0,
+    }
+}
+
+/// Scroll the focused column in AiReview mode
+fn ai_review_scroll(app: &mut App, amount: u16, down: bool) {
+    use crate::ai::ReviewFocus;
+    let tab = app.tab_mut();
+    let scroll = match tab.ai.review_focus {
+        ReviewFocus::Files => &mut tab.diff_scroll,
+        ReviewFocus::Checklist => &mut tab.ai_panel_scroll,
+    };
+    if down {
+        *scroll = scroll.saturating_add(amount);
+    } else {
+        *scroll = scroll.saturating_sub(amount);
+    }
 }
 
 fn handle_search_input(app: &mut App, key: KeyEvent) {

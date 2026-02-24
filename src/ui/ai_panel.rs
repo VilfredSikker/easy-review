@@ -8,6 +8,7 @@ use ratatui::{
 use crate::ai::RiskLevel;
 use crate::app::App;
 use super::styles;
+use super::utils::word_wrap;
 
 /// Render the AI side panel (right side, in SidePanel view mode)
 /// Shows findings, risk, and summary for the currently selected file
@@ -246,40 +247,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((tab.diff_scroll, 0));
+        .scroll((tab.ai_panel_scroll, 0));
 
     f.render_widget(paragraph, area);
 }
 
-/// Simple word-wrap helper
-fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-    let mut result = Vec::new();
-    for line in text.lines() {
-        if line.len() <= max_width {
-            result.push(line.to_string());
-        } else {
-            let mut current = String::new();
-            for word in line.split_whitespace() {
-                if current.is_empty() {
-                    current = word.to_string();
-                } else if current.len() + 1 + word.len() <= max_width {
-                    current.push(' ');
-                    current.push_str(word);
-                } else {
-                    result.push(current);
-                    current = word.to_string();
-                }
-            }
-            if !current.is_empty() {
-                result.push(current);
-            }
-        }
-    }
-    if result.is_empty() {
-        result.push(String::new());
-    }
-    result
-}

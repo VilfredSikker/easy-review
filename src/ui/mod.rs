@@ -6,6 +6,7 @@ pub mod highlight;
 mod overlay;
 mod status_bar;
 mod styles;
+mod utils;
 
 use crate::ai::ViewMode;
 use crate::app::App;
@@ -38,13 +39,13 @@ pub fn draw(f: &mut Frame, app: &App, hl: &Highlighter) {
             ai_review_view::render(f, outer[1], app);
         }
         ViewMode::SidePanel => {
-            // Three columns: file tree + diff + AI panel
+            // Three columns: file tree + diff (2/3) + AI panel (1/3)
             let main_area = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
                     Constraint::Length(32),  // file tree
-                    Constraint::Min(40),     // diff view
-                    Constraint::Min(30),     // AI panel
+                    Constraint::Fill(2),     // diff view (2/3 of remaining)
+                    Constraint::Fill(1),     // AI panel (1/3 of remaining)
                 ])
                 .split(outer[1]);
 

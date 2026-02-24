@@ -2,10 +2,13 @@ mod diff;
 mod status;
 
 pub use diff::{DiffFile, LineType, parse_diff};
+#[cfg(test)]
+pub(crate) use diff::{DiffHunk, DiffLine};
 pub use status::{
     FileStatus, Worktree,
     detect_base_branch_in,
     get_repo_root,
+    get_repo_root_in,
     get_current_branch_in,
     git_diff_raw,
     list_worktrees,

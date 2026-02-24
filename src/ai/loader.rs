@@ -84,6 +84,42 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     state
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_diff_hash_empty_string_returns_known_sha256() {
+        let hash = compute_diff_hash("");
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn compute_diff_hash_is_deterministic() {
+        let input = "diff --git a/foo.rs b/foo.rs\n+let x = 1;";
+        let first = compute_diff_hash(input);
+        let second = compute_diff_hash(input);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn compute_diff_hash_different_inputs_produce_different_hashes() {
+        let hash_a = compute_diff_hash("input a");
+        let hash_b = compute_diff_hash("input b");
+        assert_ne!(hash_a, hash_b);
+    }
+
+    #[test]
+    fn compute_diff_hash_non_empty_produces_64_char_hex() {
+        let hash = compute_diff_hash("some diff content");
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+}
+
 /// Get the mtime of the most recently modified .er-* file
 pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
     let root = Path::new(repo_root);

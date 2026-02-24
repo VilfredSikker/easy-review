@@ -98,7 +98,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 symbol_style
             };
 
-            let path_width = (area.width as usize).saturating_sub(14 + extra_width);
+            let path_width = (area.width as usize).saturating_sub(14 + extra_width).max(1);
 
             let mut spans = vec![
                 Span::styled(format!(" {} ", symbol), effective_symbol_style),
@@ -119,10 +119,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::TEXT)
                 },
             ));
-            spans.push(Span::styled(
-                format!("{:>8} ", stats),
-                ratatui::style::Style::default().fg(styles::DIM),
-            ));
+            if area.width > 24 {
+                spans.push(Span::styled(
+                    format!("{:>8} ", stats),
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ));
+            }
 
             ListItem::new(Line::from(spans)).style(line_style)
         })
@@ -174,4 +176,66 @@ fn shorten_path(path: &str, max_width: usize) -> String {
 
     let truncated: String = path.chars().take(max_width.saturating_sub(1)).collect();
     format!("{}…", truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shorten_path;
+
+    #[test]
+    fn path_shorter_than_max_width_returned_as_is() {
+        assert_eq!(shorten_path("src/main.rs", 30), "src/main.rs");
+    }
+
+    #[test]
+    fn path_equal_to_max_width_returned_as_is() {
+        assert_eq!(shorten_path("src/main.rs", 11), "src/main.rs");
+    }
+
+    #[test]
+    fn long_path_filename_fits_directory_truncated() {
+        // len("src/very/long/nested/path/main.rs") = 34 > 20
+        // filename = "main.rs" (7), remaining = 20 - (7+4) = 9
+        // dir_part = first 9 chars of "src/very/long/nested/path" = "src/very/"
+        assert_eq!(
+            shorten_path("src/very/long/nested/path/main.rs", 20),
+            "src/very/…/main.rs"
+        );
+    }
+
+    #[test]
+    fn path_with_no_directory_returned_as_is() {
+        assert_eq!(shorten_path("README.md", 30), "README.md");
+    }
+
+    #[test]
+    fn filename_longer_than_max_width_truncated_with_ellipsis() {
+        // len("very_long_filename_here.rs") = 26 > 10
+        // name = "very_long_filename_here.rs" (no '/'), name.len() 26 > 10
+        // truncated = first 9 chars = "very_long", result = "very_long…"
+        assert_eq!(shorten_path("very_long_filename_here.rs", 10), "very_long…");
+    }
+
+    #[test]
+    fn max_width_zero_does_not_panic() {
+        // len("src/main.rs") = 11 > 0
+        // name = "main.rs" (7), 7 > 0, so truncate: take(0) = "", result = "…"
+        assert_eq!(shorten_path("src/main.rs", 0), "…");
+    }
+
+    #[test]
+    fn single_component_deep_path_fits_max_width() {
+        // len("a/b/c/d/e/f.rs") = 14 > 10
+        // filename = "f.rs" (4), remaining = 10 - (4+4) = 2
+        // dir_part = first 2 chars of "a/b/c/d/e" = "a/"
+        assert_eq!(shorten_path("a/b/c/d/e/f.rs", 10), "a/…/f.rs");
+    }
+
+    #[test]
+    fn exact_boundary_remaining_zero_returns_filename_only() {
+        // len("some/dir/main.rs") = 16 > 11
+        // filename = "main.rs" (7), remaining = 11 - (7+4) = 0
+        // remaining is not > 0, so returns filename only
+        assert_eq!(shorten_path("some/dir/main.rs", 11), "main.rs");
+    }
 }

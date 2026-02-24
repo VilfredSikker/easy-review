@@ -13,6 +13,23 @@ Run as `/er-summary`.
 3. Reads `.er-feedback.json` if it exists (for human commentary)
 4. Writes `.er-summary.md` — a concise, human-readable markdown summary
 
+## Speed budget
+
+**Target: ≤5 tool calls, ≤30 seconds.**
+
+- TOOL CALLS 1-2: Read .er-review.json and .er-feedback.json (parallel — skip if missing)
+- TOOL CALL 3: Bash — `scripts/er-freshness-check.sh <base>` (captures diff + hash)
+- TOOL CALL 4: Read .er-diff-tmp (full diff into context)
+- IN-CONTEXT: Generate summary — zero tool calls
+- TOOL CALL 5: Write .er-summary.md
+
+Base branch comes from .er-review.json. If missing, detect: main then master.
+
+### Permission & hook constraints
+
+All Bash commands MUST start with an allowed command: `git`, `shasum`, `cp`, `mkdir`, `scripts/er-*`.
+Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
+
 ## Summary structure
 
 ```markdown

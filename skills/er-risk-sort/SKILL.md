@@ -14,6 +14,15 @@ Run as `/er-risk-sort`.
 4. Groups related files together (e.g., a module and its tests)
 5. Writes updated `.er-order.json`
 
+## Speed budget
+
+**Target: ≤4 tool calls, ≤30 seconds.**
+
+- TOOL CALL 1: Read .er-review.json
+- TOOL CALL 2: Read .er-order.json (if exists, to preserve structure)
+- IN-CONTEXT: Sort and group using review data — zero tool calls
+- TOOL CALL 3: Write .er-order.json
+
 ## Sorting strategy
 
 1. **Risk-first**: high → medium → low → info
@@ -32,6 +41,6 @@ Updated `.er-order.json` with:
 
 ## Guidelines
 
-- Read the actual code to understand relationships between files, don't just sort by filename
+- Use the review data (summaries, findings, related_files) to understand relationships — do NOT read source files
 - Keep the group count reasonable (3-6 groups for most PRs)
 - The `reason` field should tell the reviewer *why* this file matters in context

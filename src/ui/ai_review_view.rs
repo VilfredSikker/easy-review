@@ -8,6 +8,7 @@ use ratatui::{
 use crate::ai::{RiskLevel, ReviewFocus};
 use crate::app::App;
 use super::styles;
+use super::utils::word_wrap;
 
 /// Render the full-screen AI review (replaces file tree + diff view)
 /// Shows: summary (left), checklist + review order (right)
@@ -110,6 +111,7 @@ fn render_summary_col(f: &mut Frame, area: Rect, app: &App) {
                 RiskLevel::Info => 3,
             };
             risk_ord(&a.1.risk).cmp(&risk_ord(&b.1.risk))
+                .then_with(|| a.0.cmp(b.0))
         });
 
         for (idx, (path, fr)) in file_entries.iter().enumerate() {
@@ -178,6 +180,7 @@ fn render_summary_col(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Right column: checklist + review order
+/// Uses ai_panel_scroll for independent scrolling from the left column
 fn render_checklist_col(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.tab();
     let is_focused = tab.ai.review_focus == ReviewFocus::Checklist;
@@ -338,38 +341,8 @@ fn render_checklist_col(f: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((tab.diff_scroll, 0));
+        .scroll((tab.ai_panel_scroll, 0));
 
     f.render_widget(paragraph, area);
 }
 
-/// Simple word-wrap helper
-fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-    let mut result = Vec::new();
-    if text.len() <= max_width {
-        result.push(text.to_string());
-    } else {
-        let mut current = String::new();
-        for word in text.split_whitespace() {
-            if current.is_empty() {
-                current = word.to_string();
-            } else if current.len() + 1 + word.len() <= max_width {
-                current.push(' ');
-                current.push_str(word);
-            } else {
-                result.push(current);
-                current = word.to_string();
-            }
-        }
-        if !current.is_empty() {
-            result.push(current);
-        }
-    }
-    if result.is_empty() {
-        result.push(String::new());
-    }
-    result
-}

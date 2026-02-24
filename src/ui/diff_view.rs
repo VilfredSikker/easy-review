@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::ai::{RiskLevel, ViewMode};
-use crate::app::App;
+use crate::app::{App, DiffMode};
 use crate::git::LineType;
 use super::highlight::Highlighter;
 use super::styles;
@@ -178,8 +178,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
         }
 
         // ── AI finding banners after each hunk (overlay mode) ──
+        // These banners are not counted by scroll_to_current_hunk — scroll is approximate in Overlay mode
         if in_overlay {
-            let findings = tab.ai.findings_for_hunk(&file.path, hunk_idx);
+            let findings = match tab.mode {
+                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx),
+                DiffMode::Unstaged | DiffMode::Staged => {
+                    tab.ai.findings_for_hunk_by_line_range(
+                        &file.path,
+                        hunk.new_start,
+                        hunk.new_count,
+                    )
+                }
+            };
             for finding in &findings {
                 let severity_style = if ai_stale {
                     styles::stale_style()
@@ -214,7 +224,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                 if !finding.description.is_empty() {
                     let desc = finding.description.lines().next().unwrap_or("");
                     let max_len = area.width.saturating_sub(6) as usize;
-                    let truncated = if desc.len() > max_len {
+                    let truncated = if desc.chars().count() > max_len {
                         format!("{}…", desc.chars().take(max_len.saturating_sub(1)).collect::<String>())
                     } else {
                         desc.to_string()
@@ -231,7 +241,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                 if !finding.suggestion.is_empty() {
                     let sug = finding.suggestion.lines().next().unwrap_or("");
                     let max_len = area.width.saturating_sub(8) as usize;
-                    let truncated = if sug.len() > max_len {
+                    let truncated = if sug.chars().count() > max_len {
                         format!("{}…", sug.chars().take(max_len.saturating_sub(1)).collect::<String>())
                     } else {
                         sug.to_string()
@@ -282,7 +292,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                 // Comment text
                 let max_len = area.width.saturating_sub(6) as usize;
                 let text = &comment.comment;
-                let truncated = if text.len() > max_len {
+                let truncated = if text.chars().count() > max_len {
                     format!("{}…", text.chars().take(max_len.saturating_sub(1)).collect::<String>())
                 } else {
                     text.to_string()

@@ -245,6 +245,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("u", " unreviewed "),
         Hint::new("y", " yank "),
         Hint::new("/", " search "),
+        Hint::new("r", " reload "),
         Hint::new("w", " watch "),
         Hint::new("e", " edit "),
         Hint::new("t", " tree "),

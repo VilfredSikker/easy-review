@@ -246,6 +246,9 @@ fn parse_range(s: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::status::FileStatus;
+
+    // === Existing tests ===
 
     #[test]
     fn test_parse_simple_diff() {
@@ -294,5 +297,420 @@ index 0000000..abc1234
         assert_eq!(h.old_count, 4);
         assert_eq!(h.new_start, 10);
         assert_eq!(h.new_count, 15);
+    }
+
+    // === New tests ===
+
+    // --- parse_diff ---
+
+    #[test]
+    fn test_parse_diff_empty_input() {
+        let files = parse_diff("");
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_diff_deleted_file() {
+        let raw = r#"diff --git a/old.rs b/old.rs
+deleted file mode 100644
+index abc1234..0000000
+--- a/old.rs
++++ /dev/null
+@@ -1,3 +0,0 @@
+-fn gone() {
+-    // this file is gone
+-}
+"#;
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "old.rs");
+        assert_eq!(files[0].status, FileStatus::Deleted);
+        assert_eq!(files[0].dels, 3);
+        assert_eq!(files[0].adds, 0);
+    }
+
+    #[test]
+    fn test_parse_diff_renamed_file() {
+        let raw = r#"diff --git a/src/old_name.rs b/src/new_name.rs
+similarity index 95%
+rename from src/old_name.rs
+rename to src/new_name.rs
+index abc1234..def5678 100644
+--- a/src/old_name.rs
++++ b/src/new_name.rs
+@@ -1,3 +1,3 @@
+ fn unchanged() {}
+-fn old_fn() {}
++fn new_fn() {}
+ fn also_unchanged() {}
+"#;
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/new_name.rs");
+        assert_eq!(files[0].status, FileStatus::Renamed("src/old_name.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_diff_multiple_files() {
+        let raw = r#"diff --git a/foo.rs b/foo.rs
+index aaa..bbb 100644
+--- a/foo.rs
++++ b/foo.rs
+@@ -1,2 +1,3 @@
+ fn foo() {}
++fn bar() {}
+ fn baz() {}
+diff --git a/qux.rs b/qux.rs
+index ccc..ddd 100644
+--- a/qux.rs
++++ b/qux.rs
+@@ -1,2 +1,1 @@
+ fn qux() {}
+-fn old() {}
+"#;
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "foo.rs");
+        assert_eq!(files[0].adds, 1);
+        assert_eq!(files[0].dels, 0);
+        assert_eq!(files[1].path, "qux.rs");
+        assert_eq!(files[1].adds, 0);
+        assert_eq!(files[1].dels, 1);
+    }
+
+    #[test]
+    fn test_parse_diff_multiple_hunks_per_file() {
+        let raw = r#"diff --git a/src/lib.rs b/src/lib.rs
+index aaa..bbb 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,5 @@
+ fn alpha() {}
++fn alpha_new() {}
+ fn beta() {}
+ fn gamma() {}
+ fn delta() {}
+@@ -20,4 +21,3 @@
+ fn omega() {}
+-fn removed() {}
+ fn psi() {}
+ fn chi() {}
+"#;
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].hunks.len(), 2);
+        assert_eq!(files[0].hunks[0].lines.len(), 5);
+        assert_eq!(files[0].hunks[1].lines.len(), 4);
+    }
+
+    #[test]
+    fn test_parse_diff_context_lines_have_both_line_numbers() {
+        let raw = r#"diff --git a/src/lib.rs b/src/lib.rs
+index aaa..bbb 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -5,4 +5,4 @@
+ context_before
+-deleted_line
++added_line
+ context_after
+"#;
+        let files = parse_diff(raw);
+        let hunk = &files[0].hunks[0];
+
+        let context_before = &hunk.lines[0];
+        assert_eq!(context_before.line_type, LineType::Context);
+        assert_eq!(context_before.old_num, Some(5));
+        assert_eq!(context_before.new_num, Some(5));
+
+        let context_after = &hunk.lines[3];
+        assert_eq!(context_after.line_type, LineType::Context);
+        // old_num advanced past the deleted line, new_num past the added line
+        assert_eq!(context_after.old_num, Some(7));
+        assert_eq!(context_after.new_num, Some(7));
+    }
+
+    #[test]
+    fn test_parse_diff_line_number_tracking() {
+        let raw = r#"diff --git a/src/lib.rs b/src/lib.rs
+index aaa..bbb 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -10,5 +10,5 @@
+ context_line
+-deleted_a
+-deleted_b
++added_x
++added_y
+ context_end
+"#;
+        let files = parse_diff(raw);
+        let hunk = &files[0].hunks[0];
+
+        // context_line at old=10, new=10
+        assert_eq!(hunk.lines[0].old_num, Some(10));
+        assert_eq!(hunk.lines[0].new_num, Some(10));
+
+        // deleted_a at old=11, no new_num
+        assert_eq!(hunk.lines[1].line_type, LineType::Delete);
+        assert_eq!(hunk.lines[1].old_num, Some(11));
+        assert_eq!(hunk.lines[1].new_num, None);
+
+        // deleted_b at old=12, no new_num
+        assert_eq!(hunk.lines[2].line_type, LineType::Delete);
+        assert_eq!(hunk.lines[2].old_num, Some(12));
+        assert_eq!(hunk.lines[2].new_num, None);
+
+        // added_x: no old_num, new=11
+        assert_eq!(hunk.lines[3].line_type, LineType::Add);
+        assert_eq!(hunk.lines[3].old_num, None);
+        assert_eq!(hunk.lines[3].new_num, Some(11));
+
+        // added_y: no old_num, new=12
+        assert_eq!(hunk.lines[4].line_type, LineType::Add);
+        assert_eq!(hunk.lines[4].old_num, None);
+        assert_eq!(hunk.lines[4].new_num, Some(12));
+
+        // context_end at old=13, new=13
+        assert_eq!(hunk.lines[5].old_num, Some(13));
+        assert_eq!(hunk.lines[5].new_num, Some(13));
+    }
+
+    #[test]
+    fn test_parse_diff_no_newline_at_eof_is_skipped() {
+        let raw = r#"diff --git a/src/lib.rs b/src/lib.rs
+index aaa..bbb 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,3 @@
+ fn foo() {}
++fn bar() {}
+ fn baz() {}
+\ No newline at end of file
+"#;
+        let files = parse_diff(raw);
+        let hunk = &files[0].hunks[0];
+        // The "\ No newline" line must not appear as a diff line
+        assert_eq!(hunk.lines.len(), 3);
+        for line in &hunk.lines {
+            assert!(!line.content.contains("No newline"));
+        }
+    }
+
+    #[test]
+    fn test_parse_diff_mode_only_change_no_hunk() {
+        let raw = r#"diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+"#;
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "script.sh");
+        assert_eq!(files[0].hunks.len(), 0);
+        assert_eq!(files[0].adds, 0);
+        assert_eq!(files[0].dels, 0);
+    }
+
+    #[test]
+    fn test_parse_diff_only_additions() {
+        let raw = r#"diff --git a/src/new.rs b/src/new.rs
+new file mode 100644
+index 0000000..abc1234
+--- /dev/null
++++ b/src/new.rs
+@@ -0,0 +1,4 @@
++fn one() {}
++fn two() {}
++fn three() {}
++fn four() {}
+"#;
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].adds, 4);
+        assert_eq!(files[0].dels, 0);
+    }
+
+    #[test]
+    fn test_parse_diff_only_deletions() {
+        let raw = r#"diff --git a/src/gone.rs b/src/gone.rs
+deleted file mode 100644
+index abc1234..0000000
+--- a/src/gone.rs
++++ /dev/null
+@@ -1,3 +0,0 @@
+-fn one() {}
+-fn two() {}
+-fn three() {}
+"#;
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].adds, 0);
+        assert_eq!(files[0].dels, 3);
+    }
+
+    #[test]
+    fn test_parse_diff_adds_and_dels_accumulate_across_hunks() {
+        let raw = r#"diff --git a/src/lib.rs b/src/lib.rs
+index aaa..bbb 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,5 @@
++fn extra_top() {}
+ fn alpha() {}
+-fn beta_old() {}
++fn beta_new() {}
+ fn gamma() {}
+@@ -50,3 +51,4 @@
+ fn omega() {}
++fn omega_extra() {}
+-fn omega_removed() {}
++fn omega_replaced() {}
+"#;
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1);
+        // hunk 1: +extra_top, -beta_old, +beta_new  => 2 adds, 1 del
+        // hunk 2: +omega_extra, -omega_removed, +omega_replaced => 2 adds, 1 del
+        assert_eq!(files[0].adds, 4);
+        assert_eq!(files[0].dels, 2);
+    }
+
+    // --- parse_hunk_header ---
+
+    #[test]
+    fn test_parse_hunk_header_without_context() {
+        let h = parse_hunk_header("@@ -1,3 +1,4 @@").unwrap();
+        assert_eq!(h.old_start, 1);
+        assert_eq!(h.old_count, 3);
+        assert_eq!(h.new_start, 1);
+        assert_eq!(h.new_count, 4);
+        // Header reconstructed without trailing context
+        assert_eq!(h.header, "@@ -1,3 +1,4 @@");
+    }
+
+    #[test]
+    fn test_parse_hunk_header_start_only_no_count() {
+        // "@@ -1 +1 @@" — count defaults to 1 for both sides
+        let h = parse_hunk_header("@@ -1 +1 @@").unwrap();
+        assert_eq!(h.old_start, 1);
+        assert_eq!(h.old_count, 1);
+        assert_eq!(h.new_start, 1);
+        assert_eq!(h.new_count, 1);
+    }
+
+    #[test]
+    fn test_parse_hunk_header_malformed_missing_closing_markers() {
+        // Missing second "@@" — should return None
+        let result = parse_hunk_header("@@ -1,3 +1,4");
+        assert_eq!(result.is_none(), true);
+    }
+
+    #[test]
+    fn test_parse_hunk_header_zero_ranges_new_file() {
+        // New file hunk: old side is 0,0
+        let h = parse_hunk_header("@@ -0,0 +1,2 @@").unwrap();
+        assert_eq!(h.old_start, 0);
+        assert_eq!(h.old_count, 0);
+        assert_eq!(h.new_start, 1);
+        assert_eq!(h.new_count, 2);
+    }
+
+    // --- DiffHunk::to_text ---
+
+    #[test]
+    fn test_to_text_mixed_lines() {
+        let hunk = DiffHunk {
+            header: "@@ -1,3 +1,3 @@".to_string(),
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 3,
+            lines: vec![
+                DiffLine {
+                    line_type: LineType::Context,
+                    content: "unchanged".to_string(),
+                    old_num: Some(1),
+                    new_num: Some(1),
+                },
+                DiffLine {
+                    line_type: LineType::Delete,
+                    content: "old line".to_string(),
+                    old_num: Some(2),
+                    new_num: None,
+                },
+                DiffLine {
+                    line_type: LineType::Add,
+                    content: "new line".to_string(),
+                    old_num: None,
+                    new_num: Some(2),
+                },
+            ],
+        };
+
+        let text = hunk.to_text();
+        let expected = "@@ -1,3 +1,3 @@\n unchanged\n-old line\n+new line\n";
+        assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn test_to_text_only_additions() {
+        let hunk = DiffHunk {
+            header: "@@ -0,0 +1,2 @@".to_string(),
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: 2,
+            lines: vec![
+                DiffLine {
+                    line_type: LineType::Add,
+                    content: "fn first() {}".to_string(),
+                    old_num: None,
+                    new_num: Some(1),
+                },
+                DiffLine {
+                    line_type: LineType::Add,
+                    content: "fn second() {}".to_string(),
+                    old_num: None,
+                    new_num: Some(2),
+                },
+            ],
+        };
+
+        let text = hunk.to_text();
+        assert_eq!(text, "@@ -0,0 +1,2 @@\n+fn first() {}\n+fn second() {}\n");
+    }
+
+    #[test]
+    fn test_to_text_empty_content_context_line() {
+        let hunk = DiffHunk {
+            header: "@@ -5,3 +5,3 @@".to_string(),
+            old_start: 5,
+            old_count: 3,
+            new_start: 5,
+            new_count: 3,
+            lines: vec![
+                DiffLine {
+                    line_type: LineType::Context,
+                    content: String::new(),
+                    old_num: Some(5),
+                    new_num: Some(5),
+                },
+                DiffLine {
+                    line_type: LineType::Add,
+                    content: "fn foo() {}".to_string(),
+                    old_num: None,
+                    new_num: Some(6),
+                },
+                DiffLine {
+                    line_type: LineType::Delete,
+                    content: "fn bar() {}".to_string(),
+                    old_num: Some(6),
+                    new_num: None,
+                },
+            ],
+        };
+
+        let text = hunk.to_text();
+        // Empty context line renders as " \n" (space prefix, empty content, newline)
+        assert_eq!(text, "@@ -5,3 +5,3 @@\n \n+fn foo() {}\n-fn bar() {}\n");
     }
 }

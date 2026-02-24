@@ -49,6 +49,21 @@ pub fn get_repo_root() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Get the repository root directory for a specific path
+pub fn get_repo_root_in(dir: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
+        .output()
+        .context(format!("Failed to run git in '{}'", dir))?;
+
+    if !output.status.success() {
+        anyhow::bail!("Not a git repository: {}", dir);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Get the current branch name
 #[allow(dead_code)]
 pub fn get_current_branch() -> Result<String> {
@@ -340,4 +355,172 @@ fn reconstruct_hunk_patch(file_path: &str, hunk: &DiffHunk) -> String {
     }
 
     patch
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::diff::{DiffHunk, DiffLine, LineType};
+
+    // ── FileStatus::symbol ──
+
+    #[test]
+    fn file_status_symbol_added() {
+        assert_eq!(FileStatus::Added.symbol(), "+");
+    }
+
+    #[test]
+    fn file_status_symbol_modified() {
+        assert_eq!(FileStatus::Modified.symbol(), "~");
+    }
+
+    #[test]
+    fn file_status_symbol_deleted() {
+        assert_eq!(FileStatus::Deleted.symbol(), "-");
+    }
+
+    #[test]
+    fn file_status_symbol_renamed() {
+        assert_eq!(FileStatus::Renamed("old.rs".to_string()).symbol(), "R");
+    }
+
+    #[test]
+    fn file_status_symbol_copied() {
+        assert_eq!(FileStatus::Copied("old.rs".to_string()).symbol(), "C");
+    }
+
+    // ── reconstruct_hunk_patch ──
+
+    fn make_hunk(header: &str, lines: Vec<DiffLine>) -> DiffHunk {
+        DiffHunk {
+            header: header.to_string(),
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 4,
+            lines,
+        }
+    }
+
+    #[test]
+    fn reconstruct_hunk_patch_simple_add() {
+        let hunk = make_hunk(
+            "@@ -1,1 +1,2 @@ fn main()",
+            vec![
+                DiffLine {
+                    line_type: LineType::Context,
+                    content: "fn main() {".to_string(),
+                    old_num: Some(1),
+                    new_num: Some(1),
+                },
+                DiffLine {
+                    line_type: LineType::Add,
+                    content: "    println!(\"hello\");".to_string(),
+                    old_num: None,
+                    new_num: Some(2),
+                },
+            ],
+        );
+
+        let patch = reconstruct_hunk_patch("main.rs", &hunk);
+
+        assert_eq!(
+            patch,
+            "diff --git a/main.rs b/main.rs\n\
+             --- a/main.rs\n\
+             +++ b/main.rs\n\
+             @@ -1,1 +1,2 @@ fn main()\n\
+             \x20fn main() {\n\
+             +    println!(\"hello\");\n"
+        );
+    }
+
+    #[test]
+    fn reconstruct_hunk_patch_mixed_add_delete_context() {
+        let hunk = make_hunk(
+            "@@ -1,3 +1,3 @@",
+            vec![
+                DiffLine {
+                    line_type: LineType::Context,
+                    content: "let x = 1;".to_string(),
+                    old_num: Some(1),
+                    new_num: Some(1),
+                },
+                DiffLine {
+                    line_type: LineType::Delete,
+                    content: "let y = 2;".to_string(),
+                    old_num: Some(2),
+                    new_num: None,
+                },
+                DiffLine {
+                    line_type: LineType::Add,
+                    content: "let y = 42;".to_string(),
+                    old_num: None,
+                    new_num: Some(2),
+                },
+                DiffLine {
+                    line_type: LineType::Context,
+                    content: "let z = 3;".to_string(),
+                    old_num: Some(3),
+                    new_num: Some(3),
+                },
+            ],
+        );
+
+        let patch = reconstruct_hunk_patch("lib.rs", &hunk);
+
+        let lines: Vec<&str> = patch.lines().collect();
+        assert_eq!(lines[4], " let x = 1;");
+        assert_eq!(lines[5], "-let y = 2;");
+        assert_eq!(lines[6], "+let y = 42;");
+        assert_eq!(lines[7], " let z = 3;");
+    }
+
+    #[test]
+    fn reconstruct_hunk_patch_only_deletions() {
+        let hunk = make_hunk(
+            "@@ -1,2 +1,0 @@",
+            vec![
+                DiffLine {
+                    line_type: LineType::Delete,
+                    content: "fn old() {}".to_string(),
+                    old_num: Some(1),
+                    new_num: None,
+                },
+                DiffLine {
+                    line_type: LineType::Delete,
+                    content: "fn also_old() {}".to_string(),
+                    old_num: Some(2),
+                    new_num: None,
+                },
+            ],
+        );
+
+        let patch = reconstruct_hunk_patch("old.rs", &hunk);
+
+        let lines: Vec<&str> = patch.lines().collect();
+        assert_eq!(lines[4], "-fn old() {}");
+        assert_eq!(lines[5], "-fn also_old() {}");
+        // Only content lines (after the 4-line header) should be checked — none should be additions
+        assert!(lines[4..].iter().all(|l| !l.starts_with('+')));
+    }
+
+    #[test]
+    fn reconstruct_hunk_patch_file_path_with_directory() {
+        let hunk = make_hunk(
+            "@@ -1,1 +1,1 @@",
+            vec![DiffLine {
+                line_type: LineType::Add,
+                content: "pub fn foo() {}".to_string(),
+                old_num: None,
+                new_num: Some(1),
+            }],
+        );
+
+        let patch = reconstruct_hunk_patch("src/lib/foo.rs", &hunk);
+
+        assert!(patch.contains("diff --git a/src/lib/foo.rs b/src/lib/foo.rs\n"));
+        assert!(patch.contains("--- a/src/lib/foo.rs\n"));
+        assert!(patch.contains("+++ b/src/lib/foo.rs\n"));
+    }
 }
