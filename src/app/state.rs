@@ -1,3 +1,4 @@
+use crate::ai::{self, AiState, ReviewFocus, ViewMode};
 use crate::git::{self, DiffFile, Worktree};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -32,11 +33,12 @@ impl DiffMode {
     }
 }
 
-/// Whether we're navigating or typing in the search filter
+/// Whether we're navigating or typing in the search filter / comment
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputMode {
     Normal,
     Search,
+    Comment,
 }
 
 // ── Overlay types ──
@@ -81,6 +83,9 @@ pub struct TabState {
     /// Index of current hunk within the selected file
     pub current_hunk: usize,
 
+    /// Index of the currently highlighted line within the current hunk (None = hunk-level)
+    pub current_line: Option<usize>,
+
     /// Vertical scroll offset within the diff view
     pub diff_scroll: u16,
 
@@ -95,6 +100,32 @@ pub struct TabState {
 
     /// Only show unreviewed files in the file tree
     pub show_unreviewed_only: bool,
+
+    /// AI review state (loaded from .er-* files)
+    pub ai: AiState,
+
+    /// SHA-256 of the current raw diff (for staleness checks)
+    pub diff_hash: String,
+
+    /// Timestamp of last .er-* file check (to avoid re-reading every tick)
+    pub last_ai_check: Option<std::time::SystemTime>,
+
+    // ── Comment input state ──
+
+    /// Text buffer for the comment being typed
+    pub comment_input: String,
+
+    /// File path the comment targets
+    pub comment_file: String,
+
+    /// Hunk index the comment targets
+    pub comment_hunk: usize,
+
+    /// Optional finding ID this comment replies to
+    pub comment_reply_to: Option<String>,
+
+    /// Optional specific line number the comment targets (new-side)
+    pub comment_line_num: Option<usize>,
 }
 
 impl TabState {
@@ -112,11 +143,20 @@ impl TabState {
             files: Vec::new(),
             selected_file: 0,
             current_hunk: 0,
+            current_line: None,
             diff_scroll: 0,
             h_scroll: 0,
             search_query: String::new(),
             reviewed,
             show_unreviewed_only: false,
+            ai: AiState::default(),
+            diff_hash: String::new(),
+            last_ai_check: None,
+            comment_input: String::new(),
+            comment_file: String::new(),
+            comment_hunk: 0,
+            comment_reply_to: None,
+            comment_line_num: None,
         };
 
         tab.refresh_diff()?;
@@ -138,6 +178,12 @@ impl TabState {
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
         self.files = git::parse_diff(&raw);
 
+        // Compute diff hash for staleness detection
+        self.diff_hash = ai::compute_diff_hash(&raw);
+
+        // Load AI state from .er-* files
+        self.reload_ai_state();
+
         // Clamp selection
         if self.selected_file >= self.files.len() && !self.files.is_empty() {
             self.selected_file = self.files.len() - 1;
@@ -149,6 +195,47 @@ impl TabState {
         self.diff_scroll = 0;
 
         Ok(())
+    }
+
+    /// Reload AI state from .er-* files (preserving current view/nav state)
+    pub fn reload_ai_state(&mut self) {
+        let current_mode = self.ai.view_mode;
+        let current_focus = self.ai.review_focus;
+        let current_cursor = self.ai.review_cursor;
+        self.ai = ai::load_ai_state(&self.repo_root, &self.diff_hash);
+        self.ai.view_mode = current_mode;
+        self.ai.review_focus = current_focus;
+        self.ai.review_cursor = current_cursor;
+        // Clamp cursor to valid range after reload (item count may have decreased)
+        let item_count = match current_focus {
+            ReviewFocus::Files => self.ai.review_file_count(),
+            ReviewFocus::Checklist => self.ai.review_checklist_count(),
+        };
+        let max_cursor = item_count.saturating_sub(1);
+        if self.ai.review_cursor > max_cursor {
+            self.ai.review_cursor = max_cursor;
+        }
+        // If the current mode requires AI data that's not available, fall back
+        if self.ai.view_mode != ViewMode::Default && !self.ai.overlay_available() {
+            self.ai.view_mode = ViewMode::Default;
+        }
+        self.last_ai_check = Some(std::time::SystemTime::now());
+    }
+
+    /// Check if .er-* files have been updated since last load (called on tick)
+    pub fn check_ai_files_changed(&mut self) -> bool {
+        let latest_mtime = match ai::latest_er_mtime(&self.repo_root) {
+            Some(t) => t,
+            None => return false,
+        };
+
+        if let Some(last_check) = self.last_ai_check {
+            if latest_mtime > last_check {
+                self.reload_ai_state();
+                return true;
+            }
+        }
+        false
     }
 
     /// Get the list of files, filtered by search query and reviewed status
@@ -194,6 +281,7 @@ impl TabState {
         if !visible.iter().any(|(i, _)| *i == self.selected_file) {
             self.selected_file = visible[0].0;
             self.current_hunk = 0;
+            self.current_line = None;
             self.diff_scroll = 0;
             self.h_scroll = 0;
         }
@@ -208,6 +296,7 @@ impl TabState {
             if pos + 1 < visible.len() {
                 self.selected_file = visible[pos + 1].0;
                 self.current_hunk = 0;
+                self.current_line = None;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
             }
@@ -229,6 +318,7 @@ impl TabState {
             if pos > 0 {
                 self.selected_file = visible[pos - 1].0;
                 self.current_hunk = 0;
+                self.current_line = None;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
             }
@@ -245,6 +335,7 @@ impl TabState {
         let total = self.total_hunks();
         if total > 0 && self.current_hunk < total - 1 {
             self.current_hunk += 1;
+            self.current_line = None;
             self.scroll_to_current_hunk();
         }
     }
@@ -252,19 +343,86 @@ impl TabState {
     pub fn prev_hunk(&mut self) {
         if self.current_hunk > 0 {
             self.current_hunk -= 1;
+            self.current_line = None;
             self.scroll_to_current_hunk();
         }
     }
 
+    /// Move to the next line within the current hunk (arrow down)
+    pub fn next_line(&mut self) {
+        let total_lines = self.current_hunk_line_count();
+        if total_lines == 0 {
+            return;
+        }
+        match self.current_line {
+            None => {
+                // Enter line mode at first line
+                self.current_line = Some(0);
+            }
+            Some(line) => {
+                if line + 1 < total_lines {
+                    self.current_line = Some(line + 1);
+                } else {
+                    // At last line of this hunk — move to next hunk's first line
+                    let total_hunks = self.total_hunks();
+                    if self.current_hunk + 1 < total_hunks {
+                        self.current_hunk += 1;
+                        self.current_line = Some(0);
+                        self.scroll_to_current_hunk();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Move to the previous line within the current hunk (arrow up)
+    pub fn prev_line(&mut self) {
+        match self.current_line {
+            None => {}
+            Some(0) => {
+                // At first line — move to prev hunk's last line
+                if self.current_hunk > 0 {
+                    self.current_hunk -= 1;
+                    let count = self.current_hunk_line_count();
+                    self.current_line = if count > 0 { Some(count - 1) } else { None };
+                    self.scroll_to_current_hunk();
+                } else {
+                    // Already at top — exit line mode
+                    self.current_line = None;
+                }
+            }
+            Some(line) => {
+                self.current_line = Some(line - 1);
+            }
+        }
+    }
+
+    /// Get the number of lines in the current hunk
+    fn current_hunk_line_count(&self) -> usize {
+        self.selected_diff_file()
+            .and_then(|f| f.hunks.get(self.current_hunk))
+            .map(|h| h.lines.len())
+            .unwrap_or(0)
+    }
+
+    /// Get the new-side line number for the currently selected line
+    pub fn current_line_number(&self) -> Option<usize> {
+        let file = self.selected_diff_file()?;
+        let hunk = file.hunks.get(self.current_hunk)?;
+        let line_idx = self.current_line?;
+        let diff_line = hunk.lines.get(line_idx)?;
+        diff_line.new_num
+    }
+
     fn scroll_to_current_hunk(&mut self) {
         if let Some(file) = self.selected_diff_file() {
-            let mut line_offset: u16 = 2;
+            let mut line_offset: usize = 2;
             for (i, hunk) in file.hunks.iter().enumerate() {
                 if i == self.current_hunk {
-                    self.diff_scroll = line_offset.saturating_sub(1);
+                    self.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
                     return;
                 }
-                line_offset += 1 + hunk.lines.len() as u16 + 1;
+                line_offset += 1 + hunk.lines.len() + 1;
             }
         }
     }
@@ -324,6 +482,7 @@ impl TabState {
             self.mode = mode;
             self.selected_file = 0;
             self.current_hunk = 0;
+            self.current_line = None;
             self.diff_scroll = 0;
             let _ = self.refresh_diff();
         }
@@ -333,6 +492,7 @@ impl TabState {
         let total = self.total_hunks();
         if total == 0 {
             self.current_hunk = 0;
+            self.current_line = None;
         } else if self.current_hunk >= total {
             self.current_hunk = total - 1;
         }
@@ -741,6 +901,196 @@ impl App {
         }
     }
 
+    // ── Comment System ──
+
+    /// Enter comment mode for the current file + hunk (and optionally line)
+    pub fn start_comment(&mut self) {
+        let tab = self.tab_mut();
+        let file_path = match tab.selected_diff_file() {
+            Some(f) => f.path.clone(),
+            None => return,
+        };
+        tab.comment_input.clear();
+        tab.comment_file = file_path;
+        tab.comment_hunk = tab.current_hunk;
+        tab.comment_line_num = tab.current_line_number();
+        tab.comment_reply_to = None;
+        self.input_mode = InputMode::Comment;
+    }
+
+    /// Submit the current comment: append to .er-feedback.json
+    pub fn submit_comment(&mut self) -> Result<()> {
+        let tab = self.tab();
+        let text = tab.comment_input.trim().to_string();
+        if text.is_empty() {
+            self.input_mode = InputMode::Normal;
+            return Ok(());
+        }
+
+        let repo_root = tab.repo_root.clone();
+        let diff_hash = tab.diff_hash.clone();
+        let file_path = tab.comment_file.clone();
+        let hunk_index = tab.comment_hunk;
+        let reply_to = tab.comment_reply_to.clone();
+
+        // Get line context — use specific line if available, else hunk start
+        let comment_line_num = tab.comment_line_num;
+        let (line_start, line_content) = {
+            let tab = self.tab();
+            if let Some(df) = tab.selected_diff_file() {
+                if let Some(hunk) = df.hunks.get(hunk_index) {
+                    if let Some(ln) = comment_line_num {
+                        // Line-level comment: find the content at that line
+                        let content = hunk.lines.iter()
+                            .find(|l| l.new_num == Some(ln))
+                            .map(|l| l.content.clone())
+                            .unwrap_or_default();
+                        (Some(ln), content)
+                    } else {
+                        // Hunk-level comment
+                        (Some(hunk.new_start as usize), hunk.header.clone())
+                    }
+                } else {
+                    (None, String::new())
+                }
+            } else {
+                (None, String::new())
+            }
+        };
+
+        // Load existing feedback or create new
+        let feedback_path = format!("{}/.er-feedback.json", repo_root);
+        let mut feedback: ai::ErFeedback = match std::fs::read_to_string(&feedback_path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(fb) => fb,
+                Err(_) => {
+                    self.notify("Warning: .er-feedback.json is invalid JSON — starting fresh");
+                    ai::ErFeedback {
+                        version: 1,
+                        diff_hash: diff_hash.clone(),
+                        comments: Vec::new(),
+                    }
+                }
+            },
+            Err(_) => ai::ErFeedback {
+                version: 1,
+                diff_hash: diff_hash.clone(),
+                comments: Vec::new(),
+            },
+        };
+
+        // If diff hash changed, start fresh
+        if feedback.diff_hash != diff_hash {
+            feedback.diff_hash = diff_hash;
+            feedback.comments.clear();
+        }
+
+        // Generate comment ID using epoch millis to avoid collisions after clear()
+        let comment_id = format!(
+            "fb-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
+
+        // Create the comment
+        let comment = ai::FeedbackComment {
+            id: comment_id,
+            timestamp: chrono_now(),
+            file: file_path,
+            hunk_index: Some(hunk_index),
+            line_start,
+            line_end: None,
+            line_content,
+            comment: text.clone(),
+            in_reply_to: reply_to,
+            resolved: false,
+        };
+
+        feedback.comments.push(comment);
+
+        // Write the file
+        let json = serde_json::to_string_pretty(&feedback)?;
+        std::fs::write(&feedback_path, json)?;
+
+        // Clear state and return to normal
+        self.tab_mut().comment_input.clear();
+        self.input_mode = InputMode::Normal;
+
+        // Reload AI state to pick up the new feedback
+        self.tab_mut().reload_ai_state();
+
+        self.notify(&format!("Comment added: {}", truncate(&text, 40)));
+        Ok(())
+    }
+
+    /// Cancel comment input
+    pub fn cancel_comment(&mut self) {
+        self.tab_mut().comment_input.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    // ── AiReview Navigation ──
+
+    /// Jump from AiReview to the selected file in SidePanel mode
+    pub fn review_jump_to_file(&mut self) {
+        let file_path = {
+            let ai = &self.tab().ai;
+            match ai.review_focus {
+                ReviewFocus::Files => ai.review_file_at(ai.review_cursor),
+                ReviewFocus::Checklist => ai.checklist_file_at(ai.review_cursor),
+            }
+        };
+
+        if let Some(path) = file_path {
+            // Find the file index in the file list
+            let file_idx = self.tab().files.iter().position(|f| f.path == path);
+            if let Some(idx) = file_idx {
+                let tab = self.tab_mut();
+                tab.selected_file = idx;
+                tab.current_hunk = 0;
+                tab.current_line = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.ai.view_mode = ViewMode::SidePanel;
+                self.notify(&format!("Jumped to: {}", path));
+            } else {
+                self.notify(&format!("File not in diff: {}", path));
+            }
+        }
+    }
+
+    /// Toggle the checklist item at cursor and persist to .er-checklist.json
+    pub fn review_toggle_checklist(&mut self) -> Result<()> {
+        let tab = self.tab_mut();
+        if tab.ai.review_focus != ReviewFocus::Checklist {
+            return Ok(());
+        }
+
+        let cursor = tab.ai.review_cursor;
+        tab.ai.toggle_checklist_item(cursor);
+
+        // Persist to disk
+        if let Some(ref checklist) = tab.ai.checklist {
+            let checklist_path = format!("{}/.er-checklist.json", tab.repo_root);
+            let json = serde_json::to_string_pretty(checklist)?;
+            std::fs::write(&checklist_path, json)?;
+        }
+
+        let checked = tab.ai.checklist.as_ref()
+            .and_then(|c| c.items.get(cursor))
+            .map(|i| i.checked)
+            .unwrap_or(false);
+
+        if checked {
+            self.notify("✓ Item checked");
+        } else {
+            self.notify("○ Item unchecked");
+        }
+        Ok(())
+    }
+
     // ── Clipboard ──
 
     /// Copy the current hunk to the system clipboard
@@ -813,4 +1163,60 @@ impl App {
             }
         }
     }
+}
+
+// ── Helpers ──
+
+/// Simple ISO 8601 UTC timestamp (no external crate needed).
+/// Kept in ISO format so .er-feedback.json timestamps are human-readable.
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+
+    let days = secs / 86400;
+    let remaining = secs % 86400;
+    let hours = remaining / 3600;
+    let minutes = (remaining % 3600) / 60;
+    let seconds = remaining % 60;
+
+    // Walk years from epoch, subtracting days per year (handles leap years via Gregorian rule)
+    let mut y = 1970i64;
+    let mut d = days as i64;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if d < days_in_year {
+            break;
+        }
+        d -= days_in_year;
+        y += 1;
+    }
+
+    // Walk months within the year (m is 0-indexed, d ends as 0-indexed day-of-month)
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days: [i64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 0usize;
+    for md in &month_days {
+        if d < *md {
+            break;
+        }
+        d -= *md;
+        m += 1;
+    }
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y, m + 1, d + 1, hours, minutes, seconds
+    )
+}
+
+/// Truncate a string to max_len chars, adding … if truncated
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    let truncated: String = s.chars().take(max_len.saturating_sub(1)).collect();
+    format!("{}…", truncated)
 }

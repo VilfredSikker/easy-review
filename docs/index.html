@@ -147,7 +147,7 @@
       </h1>
 
       <p class="fade-up fade-up-3 text-lg sm:text-xl text-text-dim max-w-2xl mx-auto mb-10 font-light leading-relaxed">
-        A keyboard-driven terminal UI for reviewing git diffs. Built for developers who use AI coding assistants and need to review faster than they can code.
+        A keyboard-driven terminal UI for reviewing git diffs with AI-powered analysis. Built for developers who use AI coding assistants and need to review faster than they can code.
       </p>
 
       <!-- Install command -->
@@ -327,7 +327,7 @@
   <section class="py-16 px-6 border-y border-border/50">
     <div class="max-w-3xl mx-auto text-center reveal">
       <p class="text-2xl sm:text-3xl font-light leading-relaxed text-text-dim">
-        AI writes code in seconds. You shouldn't spend minutes figuring out what changed. <span class="text-text font-normal">Open <span class="font-mono text-accent">er</span>, review the branch, mark files done.</span>
+        AI writes code in seconds. You shouldn't spend minutes figuring out what changed. <span class="text-text font-normal">Open <span class="font-mono text-accent">er</span>, get AI risk analysis, leave comments, and close the loop.</span>
       </p>
     </div>
   </section>
@@ -341,46 +341,69 @@
       </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-        <!-- Feature 1 -->
+        <!-- Feature 1: AI Review -->
+        <div class="reveal bg-surface border border-accent/30 rounded-lg p-6 hover:border-accent/50 transition group relative overflow-hidden">
+          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(167,139,250,0.06)_0%,transparent_70%)] pointer-events-none"></div>
+          <div class="w-9 h-9 rounded-md bg-accent/15 border border-accent/25 flex items-center justify-center mb-4 font-mono text-accent text-sm">⬡</div>
+          <h3 class="font-body font-500 text-base mb-2">AI-powered review</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-xs">/er-review</span> from Claude Code to get per-file risk ratings, hunk-level findings, and a suggested review order — all rendered inline in the diff.</p>
+        </div>
+
+        <!-- Feature 2: Feedback Loop -->
+        <div class="reveal bg-surface border border-cyan/30 rounded-lg p-6 hover:border-cyan/50 transition group relative overflow-hidden">
+          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.06)_0%,transparent_70%)] pointer-events-none"></div>
+          <div class="w-9 h-9 rounded-md bg-cyan/15 border border-cyan/25 flex items-center justify-center mb-4 font-mono text-cyan text-sm">💬</div>
+          <h3 class="font-body font-500 text-base mb-2">Comment & feedback loop</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">c</span> to leave comments on hunks or specific lines. Re-run AI review and it reads your feedback, updating findings accordingly.</p>
+        </div>
+
+        <!-- Feature 3 -->
         <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
           <div class="w-9 h-9 rounded-md bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 font-mono text-accent text-sm">1</div>
           <h3 class="font-body font-500 text-base mb-2">Three diff modes</h3>
           <p class="text-sm text-text-dim leading-relaxed">Branch diff, unstaged, and staged. Switch with <span class="keycap">1</span> <span class="keycap">2</span> <span class="keycap">3</span> — see exactly what matters.</p>
         </div>
 
-        <!-- Feature 2 -->
+        <!-- Feature 4 -->
         <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
           <div class="w-9 h-9 rounded-md bg-green/10 border border-green/20 flex items-center justify-center mb-4 font-mono text-green text-sm">w</div>
           <h3 class="font-body font-500 text-base mb-2">Live watch mode</h3>
           <p class="text-sm text-text-dim leading-relaxed">Diffs refresh automatically as files change. Perfect next to Claude Code — see changes as they're written.</p>
         </div>
 
-        <!-- Feature 3 -->
+        <!-- Feature 5 -->
         <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
           <div class="w-9 h-9 rounded-md bg-cyan/10 border border-cyan/20 flex items-center justify-center mb-4 font-mono text-cyan text-sm">⇥</div>
           <h3 class="font-body font-500 text-base mb-2">Multi-repo tabs</h3>
           <p class="text-sm text-text-dim leading-relaxed">Open multiple repos or worktrees side-by-side. Navigate between them with <span class="keycap">[</span> <span class="keycap">]</span>.</p>
         </div>
 
-        <!-- Feature 4 -->
+        <!-- Feature 6 -->
         <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
           <div class="w-9 h-9 rounded-md bg-yellow/10 border border-yellow/20 flex items-center justify-center mb-4 font-mono text-yellow text-sm">s</div>
           <h3 class="font-body font-500 text-base mb-2">Hunk staging</h3>
           <p class="text-sm text-text-dim leading-relaxed">Stage entire files or individual hunks without leaving the TUI. <span class="keycap">s</span> for files, <span class="keycap">S</span> for hunks.</p>
         </div>
 
-        <!-- Feature 5 -->
+        <!-- Feature 7 -->
         <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
           <div class="w-9 h-9 rounded-md bg-blue/10 border border-blue/20 flex items-center justify-center mb-4 font-mono text-blue text-sm">✓</div>
           <h3 class="font-body font-500 text-base mb-2">Review tracking</h3>
           <p class="text-sm text-text-dim leading-relaxed">Mark files as reviewed with <span class="keycap">Space</span>, filter to unreviewed with <span class="keycap">u</span>. Never lose your place.</p>
         </div>
 
-        <!-- Feature 6 -->
+        <!-- Feature 8 -->
         <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
           <div class="w-9 h-9 rounded-md bg-red/10 border border-red/20 flex items-center justify-center mb-4 font-mono text-red text-sm">◇</div>
           <h3 class="font-body font-500 text-base mb-2">Syntax highlighting</h3>
           <p class="text-sm text-text-dim leading-relaxed">Language-aware coloring via syntect. Diffs look like they do in your editor, not a wall of green and red.</p>
+        </div>
+
+        <!-- Feature 9: Line navigation -->
+        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
+          <div class="w-9 h-9 rounded-md bg-green/10 border border-green/20 flex items-center justify-center mb-4 font-mono text-green text-sm">↕</div>
+          <h3 class="font-body font-500 text-base mb-2">Line-level navigation</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Arrow keys navigate individual lines within hunks. Comment on exact lines, not just hunks. <span class="keycap">n</span><span class="keycap">N</span> jumps between hunks.</p>
         </div>
       </div>
     </div>
@@ -412,10 +435,26 @@
         </div>
 
         <div class="reveal flex gap-6 items-start">
-          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center font-mono text-accent text-sm">3</div>
+          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-accent/20 border border-accent/30 flex items-center justify-center font-mono text-accent text-sm">3</div>
+          <div>
+            <h3 class="font-body font-500 text-lg mb-1">Get AI review</h3>
+            <p class="text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code. Risk ratings, findings, and a review checklist appear inline in your diff view. Press <span class="keycap">v</span> to toggle the AI overlay.</p>
+          </div>
+        </div>
+
+        <div class="reveal flex gap-6 items-start">
+          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center font-mono text-accent text-sm">4</div>
+          <div>
+            <h3 class="font-body font-500 text-lg mb-1">Comment and iterate</h3>
+            <p class="text-text-dim leading-relaxed">Press <span class="keycap">c</span> to leave comments on hunks or lines. Re-run <span class="font-mono text-accent text-sm">/er-review</span> — the AI reads your feedback and updates its analysis. A true human-AI review loop.</p>
+          </div>
+        </div>
+
+        <div class="reveal flex gap-6 items-start">
+          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center font-mono text-accent text-sm">5</div>
           <div>
             <h3 class="font-body font-500 text-lg mb-1">Review, stage, commit</h3>
-            <p class="text-text-dim leading-relaxed">Navigate files with <span class="keycap">j</span><span class="keycap">k</span>, jump between hunks with <span class="keycap">n</span><span class="keycap">N</span>, stage what looks good with <span class="keycap">s</span>, mark reviewed with <span class="keycap">Space</span>.</p>
+            <p class="text-text-dim leading-relaxed">Navigate files with <span class="keycap">j</span><span class="keycap">k</span>, lines with <span class="keycap">↑</span><span class="keycap">↓</span>, hunks with <span class="keycap">n</span><span class="keycap">N</span>. Stage what looks good with <span class="keycap">s</span>, mark reviewed with <span class="keycap">Space</span>.</p>
           </div>
         </div>
       </div>

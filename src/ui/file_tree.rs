@@ -5,6 +5,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::ai::{RiskLevel, ViewMode};
 use crate::app::App;
 use crate::git::FileStatus;
 use super::styles;
@@ -14,8 +15,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.tab();
     let visible = tab.visible_files();
     let total = tab.files.len();
+    let in_overlay = matches!(tab.ai.view_mode, ViewMode::Overlay | ViewMode::SidePanel);
+    let ai_stale = tab.ai.is_stale;
 
-    let title = format!(" FILES ({}) ", total);
+    let title = if in_overlay && tab.ai.has_data() {
+        let findings = tab.ai.total_findings();
+        if ai_stale {
+            format!(" FILES ({}) ⚠ {} findings [stale] ", total, findings)
+        } else {
+            format!(" FILES ({}) · {} findings ", total, findings)
+        }
+    } else {
+        format!(" FILES ({}) ", total)
+    };
 
     let items: Vec<ListItem> = visible
         .iter()
@@ -31,8 +43,40 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 FileStatus::Copied(_) => ("C", styles::status_modified()),
             };
 
-            // File path — show just the filename, or shortened path
-            let path = shorten_path(&file.path, (area.width as usize).saturating_sub(16));
+            // Risk dot (only in overlay mode with AI data)
+            let risk_dot = if in_overlay {
+                if let Some(fr) = tab.ai.file_review(&file.path) {
+                    let dot_style = if ai_stale {
+                        styles::stale_style()
+                    } else {
+                        match fr.risk {
+                            RiskLevel::High => styles::risk_high(),
+                            RiskLevel::Medium => styles::risk_medium(),
+                            RiskLevel::Low => styles::risk_low(),
+                            RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
+                        }
+                    };
+                    Some(Span::styled(
+                        format!("{} ", fr.risk.symbol()),
+                        dot_style,
+                    ))
+                } else {
+                    // No AI data for this file — show empty dot
+                    Some(Span::styled(
+                        "  ",
+                        ratatui::style::Style::default(),
+                    ))
+                }
+            } else {
+                None
+            };
+
+            // Adjust path width to account for risk dot
+            let extra_width = if risk_dot.is_some() { 2 } else { 0 };
+            let path = shorten_path(
+                &file.path,
+                (area.width as usize).saturating_sub(16 + extra_width),
+            );
 
             // Stats: +adds -dels
             let stats = format!("+{} -{}", file.adds, file.dels);
@@ -54,30 +98,46 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 symbol_style
             };
 
-            let line = Line::from(vec![
-                Span::styled(format!(" {} ", symbol), effective_symbol_style),
-                Span::styled(
-                    format!("{:<width$}", path, width = (area.width as usize).saturating_sub(14)),
-                    if is_selected {
-                        styles::selected_style()
-                    } else if is_reviewed {
-                        ratatui::style::Style::default().fg(styles::DIM)
-                    } else {
-                        ratatui::style::Style::default().fg(styles::TEXT)
-                    },
-                ),
-                Span::styled(
-                    format!("{:>8} ", stats),
-                    ratatui::style::Style::default().fg(styles::DIM),
-                ),
-            ]);
+            let path_width = (area.width as usize).saturating_sub(14 + extra_width);
 
-            ListItem::new(line).style(line_style)
+            let mut spans = vec![
+                Span::styled(format!(" {} ", symbol), effective_symbol_style),
+            ];
+
+            // Insert risk dot after status symbol
+            if let Some(dot) = risk_dot {
+                spans.push(dot);
+            }
+
+            spans.push(Span::styled(
+                format!("{:<width$}", path, width = path_width),
+                if is_selected {
+                    styles::selected_style()
+                } else if is_reviewed {
+                    ratatui::style::Style::default().fg(styles::DIM)
+                } else {
+                    ratatui::style::Style::default().fg(styles::TEXT)
+                },
+            ));
+            spans.push(Span::styled(
+                format!("{:>8} ", stats),
+                ratatui::style::Style::default().fg(styles::DIM),
+            ));
+
+            ListItem::new(Line::from(spans)).style(line_style)
         })
         .collect();
 
+    let title_style = if in_overlay && tab.ai.has_data() && !ai_stale {
+        ratatui::style::Style::default().fg(styles::PURPLE)
+    } else if ai_stale {
+        styles::stale_style()
+    } else {
+        ratatui::style::Style::default().fg(styles::MUTED)
+    };
+
     let block = Block::default()
-        .title(Span::styled(title, ratatui::style::Style::default().fg(styles::MUTED)))
+        .title(Span::styled(title, title_style))
         .borders(Borders::RIGHT)
         .border_style(ratatui::style::Style::default().fg(styles::BORDER))
         .style(ratatui::style::Style::default().bg(styles::SURFACE))

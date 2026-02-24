@@ -6,11 +6,12 @@ use ratatui::{
 };
 
 use crate::app::{App, DiffMode, InputMode};
+use crate::ai::ViewMode;
 use super::styles;
 
 /// Compute the display width of a list of spans
 fn spans_width(spans: &[Span]) -> usize {
-    spans.iter().map(|s| s.content.len()).sum()
+    spans.iter().map(|s| s.content.chars().count()).sum()
 }
 
 /// Calculate how many rows the top bar needs
@@ -132,6 +133,27 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     ];
 
     let mut right: Vec<Span> = Vec::new();
+
+    // AI view mode + staleness indicator
+    if tab.ai.has_data() {
+        if tab.ai.is_stale {
+            right.push(Span::styled(
+                "⚠ AI stale",
+                styles::stale_style(),
+            ));
+            right.push(Span::raw("  "));
+        }
+        if tab.ai.view_mode != ViewMode::Default {
+            right.push(Span::styled(
+                format!("⬡ {}", tab.ai.view_mode.label()),
+                ratatui::style::Style::default()
+                    .fg(styles::PURPLE)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            right.push(Span::raw("  "));
+        }
+    }
+
     let (reviewed, total) = tab.reviewed_count();
     if total > 0 {
         right.push(Span::styled(
@@ -179,9 +201,41 @@ impl Hint {
     }
 }
 
+/// Build the hint list for AiReview mode
+fn build_ai_review_hints(app: &App) -> Vec<Hint> {
+    let tab = app.tab();
+    let mut hints = vec![
+        Hint::new("j/k", " nav "),
+        Hint::new("Tab", " switch column "),
+        Hint::new("␣", " toggle check "),
+        Hint::new("Enter", " jump to file "),
+        Hint::new("v/V", " view "),
+        Hint::new("Esc", " default view "),
+        Hint::new("q", " quit "),
+    ];
+
+    // Show which column is focused
+    let focus_label = match tab.ai.review_focus {
+        crate::ai::ReviewFocus::Files => " [Files] ",
+        crate::ai::ReviewFocus::Checklist => " [Checklist] ",
+    };
+    hints.push(Hint {
+        key: String::new(),
+        label: focus_label.to_string(),
+    });
+
+    hints
+}
+
 /// Build the normal-mode hint list
 fn build_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
+
+    // Delegate to AiReview-specific hints when in that mode
+    if tab.ai.view_mode == ViewMode::AiReview {
+        return build_ai_review_hints(app);
+    }
+
     let mut hints = vec![
         Hint::new("j/k", " nav "),
         Hint::new("n/N", " hunks "),
@@ -197,6 +251,12 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("o", " open "),
         Hint::new("q", " quit "),
     ];
+
+    hints.push(Hint::new("c", " comment "));
+
+    if tab.ai.has_data() {
+        hints.push(Hint::new("v/V", " AI view "));
+    }
 
     if app.tabs.len() > 1 {
         hints.push(Hint::new("[/]", " tabs "));
@@ -270,7 +330,7 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
 /// Calculate how many rows the bottom bar needs
 pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
     match app.input_mode {
-        InputMode::Search => 1,
+        InputMode::Search | InputMode::Comment => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -285,6 +345,40 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
     let panel_bg = ratatui::style::Style::default().bg(styles::PANEL);
 
     match app.input_mode {
+        InputMode::Comment => {
+            // Show: 💬 file:hunk > comment_input█  Enter send  Esc cancel
+            let file_short = tab.comment_file.rsplit('/').next().unwrap_or(&tab.comment_file);
+            let target_label = if let Some(ln) = tab.comment_line_num {
+                format!("{}:L{}", file_short, ln)
+            } else {
+                format!("{}:h{}", file_short, tab.comment_hunk + 1)
+            };
+            let spans = vec![
+                Span::styled(" comment ", ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::CYAN)
+                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    format!(" {} ", target_label),
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ),
+                Span::styled(
+                    format!("{}", tab.comment_input),
+                    ratatui::style::Style::default().fg(styles::TEXT),
+                ),
+                Span::styled(
+                    "█",
+                    ratatui::style::Style::default().fg(styles::CYAN),
+                ),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled("Enter", styles::key_hint_style()),
+                Span::styled(" send  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled("Esc", styles::key_hint_style()),
+                Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
         InputMode::Search => {
             let spans = vec![
                 Span::styled(" /", styles::key_hint_style()),
