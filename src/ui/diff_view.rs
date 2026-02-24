@@ -58,13 +58,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
             Span::styled(
                 format!(" {} ", marker),
                 if is_current {
-                    ratatui::style::Style::default().fg(styles::CYAN)
+                    ratatui::style::Style::default().fg(styles::CYAN).bg(styles::HUNK_BG)
                 } else {
-                    ratatui::style::Style::default().fg(styles::DIM)
+                    ratatui::style::Style::default().fg(styles::DIM).bg(styles::HUNK_BG)
                 },
             ),
             Span::styled(&hunk.header, styles::hunk_header_style()),
-        ]));
+        ]).style(styles::hunk_header_style()));
 
         // Hunk lines
         for diff_line in &hunk.lines {
@@ -83,7 +83,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                 LineType::Context => (" ", styles::default_style()),
             };
 
-            let gutter_style = ratatui::style::Style::default().fg(styles::DIM);
+            let gutter_style = match diff_line.line_type {
+                LineType::Add => ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG),
+                LineType::Delete => ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG),
+                LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+            };
 
             // Build the line: gutter + prefix + syntax-highlighted content
             let mut spans = vec![
@@ -99,7 +103,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                 spans.extend(highlighted);
             }
 
-            lines.push(Line::from(spans));
+            lines.push(Line::from(spans).style(base_style));
         }
 
         // Blank line between hunks

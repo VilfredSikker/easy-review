@@ -21,11 +21,11 @@ pub const RED: Color = Color::Rgb(248, 113, 113);
 pub const PURPLE: Color = Color::Rgb(167, 139, 250);
 
 // ── Diff colors ──
-pub const ADD_BG: Color = Color::Rgb(24, 54, 38);
+pub const ADD_BG: Color = Color::Rgb(16, 62, 40);
 pub const ADD_TEXT: Color = Color::Rgb(120, 240, 160);
-pub const DEL_BG: Color = Color::Rgb(56, 22, 28);
+pub const DEL_BG: Color = Color::Rgb(68, 16, 24);
 pub const DEL_TEXT: Color = Color::Rgb(255, 140, 140);
-pub const HUNK_BG: Color = Color::Rgb(30, 30, 54);
+pub const HUNK_BG: Color = Color::Rgb(28, 28, 60);
 
 // ── Composed styles ──
 
