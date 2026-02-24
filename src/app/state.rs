@@ -218,6 +218,31 @@ impl TabState {
         // Load AI state from .er-* files
         self.reload_ai_state();
 
+        // Compute per-file staleness when the review is stale and has file_hashes.
+        // Use the branch diff for comparison (AI reviews are generated against branch diff).
+        if self.ai.is_stale {
+            let branch_raw = if self.mode == DiffMode::Branch {
+                Some(raw.as_str())
+            } else if recompute_branch_hash {
+                // branch_raw was already fetched above for hash computation — re-fetch for per-file
+                // (stored in branch_diff_hash; re-running git diff here is acceptable since
+                // recompute_branch_hash is only true on explicit actions, not watch events)
+                None
+            } else {
+                None
+            };
+            if let Some(branch_diff) = branch_raw {
+                self.compute_stale_files(branch_diff);
+            } else if recompute_branch_hash {
+                // Non-branch mode with explicit refresh: fetch branch diff for per-file staleness
+                if let Ok(branch_raw) =
+                    git::git_diff_raw("branch", &self.base_branch, &self.repo_root)
+                {
+                    self.compute_stale_files(&branch_raw);
+                }
+            }
+        }
+
         // Clamp selection
         if self.selected_file >= self.files.len() && !self.files.is_empty() {
             self.selected_file = self.files.len() - 1;
@@ -236,24 +261,49 @@ impl TabState {
         let current_mode = self.ai.view_mode;
         let current_focus = self.ai.review_focus;
         let current_cursor = self.ai.review_cursor;
+        let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         self.ai = ai::load_ai_state(&self.repo_root, &self.branch_diff_hash);
         self.ai.view_mode = current_mode;
         self.ai.review_focus = current_focus;
         self.ai.review_cursor = current_cursor;
+        // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
+        if self.ai.is_stale {
+            self.ai.stale_files = prev_stale_files;
+        }
         // Clamp cursor to valid range after reload (item count may have decreased)
         let item_count = match current_focus {
             ReviewFocus::Files => self.ai.review_file_count(),
             ReviewFocus::Checklist => self.ai.review_checklist_count(),
         };
-        let max_cursor = item_count.saturating_sub(1);
-        if self.ai.review_cursor > max_cursor {
-            self.ai.review_cursor = max_cursor;
-        }
+        // cursor 0 on empty is safe — all access methods are bounds-checked
+        let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
+        self.ai.review_cursor = self.ai.review_cursor.min(max_cursor);
         // If the current mode requires AI data that's not available, fall back
         if self.ai.view_mode != ViewMode::Default && !self.ai.overlay_available() {
             self.ai.view_mode = ViewMode::Default;
         }
         self.last_ai_check = ai::latest_er_mtime(&self.repo_root);
+    }
+
+    /// Compute which files have changed since the review, populating stale_files
+    fn compute_stale_files(&mut self, branch_raw_diff: &str) {
+        if let Some(ref review) = self.ai.review {
+            if review.file_hashes.is_empty() {
+                return;
+            }
+            let current_hashes = ai::compute_per_file_hashes(branch_raw_diff);
+            let mut stale = std::collections::HashSet::new();
+            for (file, review_hash) in &review.file_hashes {
+                match current_hashes.get(file) {
+                    Some(current_hash) if current_hash == review_hash => {}
+                    _ => {
+                        stale.insert(file.clone());
+                    }
+                }
+            }
+            // Files in current diff but not in review are new (not stale)
+            self.ai.stale_files = stale;
+        }
     }
 
     /// Check if .er-* files have been updated since last load (called on tick)
@@ -262,12 +312,13 @@ impl TabState {
             Some(t) => t,
             None => return false,
         };
-
-        if let Some(last_check) = self.last_ai_check {
-            if latest_mtime >= last_check {
-                self.reload_ai_state();
-                return true;
-            }
+        let should_reload = match self.last_ai_check {
+            Some(last_check) => latest_mtime > last_check,
+            None => true,
+        };
+        if should_reload {
+            self.reload_ai_state();
+            return true;
         }
         false
     }
@@ -1042,8 +1093,8 @@ impl App {
                             .unwrap_or_default();
                         (Some(ln), content)
                     } else {
-                        // Hunk-level comment
-                        (Some(hunk.new_start as usize), hunk.header.clone())
+                        // Hunk-level comment: hunk_index identifies the hunk; line_start is not meaningful here
+                        (None, hunk.header.clone())
                     }
                 } else {
                     (None, String::new())

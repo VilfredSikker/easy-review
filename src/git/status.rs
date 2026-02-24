@@ -334,12 +334,24 @@ pub fn git_stage_hunk(repo_root: &str, file_path: &str, hunk: &DiffHunk) -> Resu
     Ok(())
 }
 
+/// Quote a git path for use in patch headers.
+/// Paths containing whitespace or double-quotes must be wrapped in double-quotes
+/// so that `git apply` parses them correctly.
+fn quote_git_path(path: &str) -> String {
+    if path.contains(|c: char| c.is_whitespace() || c == '"') {
+        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        path.to_string()
+    }
+}
+
 /// Reconstruct a minimal unified diff patch from a single DiffHunk
 fn reconstruct_hunk_patch(file_path: &str, hunk: &DiffHunk) -> String {
+    let quoted = quote_git_path(file_path);
     let mut patch = String::new();
-    patch.push_str(&format!("diff --git a/{} b/{}\n", file_path, file_path));
-    patch.push_str(&format!("--- a/{}\n", file_path));
-    patch.push_str(&format!("+++ b/{}\n", file_path));
+    patch.push_str(&format!("diff --git a/{} b/{}\n", quoted, quoted));
+    patch.push_str(&format!("--- a/{}\n", quoted));
+    patch.push_str(&format!("+++ b/{}\n", quoted));
     patch.push_str(&hunk.header);
     patch.push('\n');
 
@@ -522,5 +534,42 @@ mod tests {
         assert!(patch.contains("diff --git a/src/lib/foo.rs b/src/lib/foo.rs\n"));
         assert!(patch.contains("--- a/src/lib/foo.rs\n"));
         assert!(patch.contains("+++ b/src/lib/foo.rs\n"));
+    }
+
+    #[test]
+    fn reconstruct_hunk_patch_path_with_spaces() {
+        let hunk = make_hunk(
+            "@@ -1,1 +1,1 @@",
+            vec![DiffLine {
+                line_type: LineType::Add,
+                content: "fn hello() {}".to_string(),
+                old_num: None,
+                new_num: Some(1),
+            }],
+        );
+
+        let patch = reconstruct_hunk_patch("src/my file.rs", &hunk);
+
+        // Paths with spaces must be quoted so git apply parses them correctly.
+        assert!(patch.contains("diff --git a/\"src/my file.rs\" b/\"src/my file.rs\"\n"));
+        assert!(patch.contains("--- a/\"src/my file.rs\"\n"));
+        assert!(patch.contains("+++ b/\"src/my file.rs\"\n"));
+    }
+
+    // ── quote_git_path ──
+
+    #[test]
+    fn quote_git_path_plain_path_unchanged() {
+        assert_eq!(quote_git_path("src/lib.rs"), "src/lib.rs");
+    }
+
+    #[test]
+    fn quote_git_path_space_gets_quoted() {
+        assert_eq!(quote_git_path("my file.rs"), "\"my file.rs\"");
+    }
+
+    #[test]
+    fn quote_git_path_double_quote_in_name() {
+        assert_eq!(quote_git_path("say \"hi\".rs"), "\"say \\\"hi\\\".rs\"");
     }
 }

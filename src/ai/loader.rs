@@ -1,5 +1,6 @@
 use super::review::*;
 use sha2::{Sha256, Digest};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Compute SHA-256 hash of raw diff output (for staleness detection)
@@ -7,6 +8,45 @@ pub fn compute_diff_hash(raw_diff: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(raw_diff.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+/// Split a combined diff into per-file sections and hash each one.
+/// Returns a map of file path → SHA-256 hash of that file's diff section.
+pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
+    let mut hashes = HashMap::new();
+    let mut current_file: Option<String> = None;
+    let mut current_section = String::new();
+
+    for line in raw_diff.lines() {
+        if line.starts_with("diff --git a/") {
+            // Flush previous section
+            if let Some(ref file) = current_file {
+                let hash = compute_diff_hash(&current_section);
+                hashes.insert(file.clone(), hash);
+            }
+            // Parse file path from "diff --git a/path b/path"
+            let path = line
+                .strip_prefix("diff --git a/")
+                .and_then(|rest| rest.split(" b/").next())
+                .unwrap_or("")
+                .to_string();
+            current_file = Some(path);
+            current_section.clear();
+            current_section.push_str(line);
+            current_section.push('\n');
+        } else if current_file.is_some() {
+            current_section.push_str(line);
+            current_section.push('\n');
+        }
+    }
+
+    // Flush last section
+    if let Some(file) = current_file {
+        let hash = compute_diff_hash(&current_section);
+        hashes.insert(file, hash);
+    }
+
+    hashes
 }
 
 /// Load all .er-* files from a repo root and check staleness against current diff hash
@@ -117,6 +157,50 @@ mod tests {
         let hash = compute_diff_hash("some diff content");
         assert_eq!(hash.len(), 64);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // ── compute_per_file_hashes ──
+
+    #[test]
+    fn per_file_hashes_empty_diff_returns_empty() {
+        let hashes = compute_per_file_hashes("");
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn per_file_hashes_single_file() {
+        let diff = "diff --git a/src/main.rs b/src/main.rs\nindex abc..def 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,4 @@\n+use std::io;\n fn main() {\n }\n";
+        let hashes = compute_per_file_hashes(diff);
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains_key("src/main.rs"));
+        assert_eq!(hashes["src/main.rs"].len(), 64);
+    }
+
+    #[test]
+    fn per_file_hashes_multiple_files() {
+        let diff = "diff --git a/foo.rs b/foo.rs\n+line1\ndiff --git a/bar.rs b/bar.rs\n+line2\n";
+        let hashes = compute_per_file_hashes(diff);
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains_key("foo.rs"));
+        assert!(hashes.contains_key("bar.rs"));
+        assert_ne!(hashes["foo.rs"], hashes["bar.rs"]);
+    }
+
+    #[test]
+    fn per_file_hashes_deterministic() {
+        let diff = "diff --git a/x.rs b/x.rs\n+hello\n";
+        let first = compute_per_file_hashes(diff);
+        let second = compute_per_file_hashes(diff);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn per_file_hashes_changed_content_changes_hash() {
+        let diff_v1 = "diff --git a/x.rs b/x.rs\n+version1\n";
+        let diff_v2 = "diff --git a/x.rs b/x.rs\n+version2\n";
+        let h1 = compute_per_file_hashes(diff_v1);
+        let h2 = compute_per_file_hashes(diff_v2);
+        assert_ne!(h1["x.rs"], h2["x.rs"]);
     }
 }
 

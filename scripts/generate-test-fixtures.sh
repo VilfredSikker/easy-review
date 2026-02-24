@@ -17,7 +17,7 @@ set -euo pipefail
 
 # Determine which diff to hash (branch mode = current branch vs main/master)
 BASE=$(git rev-parse --verify main 2>/dev/null || git rev-parse --verify master 2>/dev/null || echo "HEAD~1")
-RAW_DIFF=$(git diff --no-ext-diff --no-color "$BASE"...HEAD 2>/dev/null || git diff --no-ext-diff --no-color HEAD 2>/dev/null || echo "")
+RAW_DIFF=$(git diff --no-ext-diff --no-color "$BASE" 2>/dev/null || git diff --no-ext-diff --no-color HEAD 2>/dev/null || echo "")
 
 if [ -z "$RAW_DIFF" ]; then
     echo "No diff found. Trying unstaged changes..."
@@ -46,7 +46,7 @@ FIRST=true
 HUNK_IDX=0
 FINDING_ID=1
 RISKS=("high" "medium" "low" "info")
-CATEGORIES=("security" "logic" "performance" "style" "correctness" "error-handling")
+CATEGORIES=("security" "logic" "performance" "correctness" "error-handling" "style" "testing")
 while IFS= read -r filepath; do
     [ -z "$filepath" ] && continue
 
@@ -65,7 +65,7 @@ while IFS= read -r filepath; do
     SUMMARY="Modifies $(basename "$filepath") — review for side effects"
 
     # Generate 1-2 findings per file
-    CAT_IDX=$((HASH_VAL % 6))
+    CAT_IDX=$((HASH_VAL % 7))
     CAT="${CATEGORIES[$CAT_IDX]}"
 
     FINDING_SEV="${RISKS[$((HASH_VAL % 3))]}"
@@ -76,7 +76,7 @@ while IFS= read -r filepath; do
 
     # Second finding for high-risk files
     if [ "$RISK" = "high" ] || [ "$RISK" = "medium" ]; then
-        CAT2_IDX=$(((HASH_VAL + 1) % 6))
+        CAT2_IDX=$(((HASH_VAL + 1) % 7))
         CAT2="${CATEGORIES[$CAT2_IDX]}"
         REVIEW+=',{"id":"f-'"$FINDING_ID"'","severity":"low","category":"'"$CAT2"'","title":"Consider adding a test for this path","description":"This change introduces a new branch that is not covered by existing tests.","hunk_index":0,"line_start":null,"line_end":null,"suggestion":"Add a unit test covering the new conditional.","related_files":[],"responses":[]}'
         FINDING_ID=$((FINDING_ID + 1))

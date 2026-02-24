@@ -137,10 +137,13 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     // AI view mode + staleness indicator
     if tab.ai.has_data() {
         if tab.ai.is_stale {
-            right.push(Span::styled(
-                "⚠ AI stale",
-                styles::stale_style(),
-            ));
+            let stale_count = tab.ai.stale_files.len();
+            let stale_label = if stale_count > 0 {
+                format!("⚠ {} file{} changed", stale_count, if stale_count == 1 { "" } else { "s" })
+            } else {
+                "⚠ AI stale".to_string()
+            };
+            right.push(Span::styled(stale_label, styles::stale_style()));
             right.push(Span::raw("  "));
         }
         if tab.ai.view_mode != ViewMode::Default {

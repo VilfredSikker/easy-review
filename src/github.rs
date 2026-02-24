@@ -127,7 +127,7 @@ pub fn verify_remote_matches(repo_root: &str, pr_ref: &PrRef) -> Result<()> {
 
     let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let expected = format!("{}/{}", pr_ref.owner, pr_ref.repo);
-    if !remote.contains(&expected) {
+    if !remote_matches_repo(&remote, &pr_ref.owner, &pr_ref.repo) {
         anyhow::bail!(
             "PR is for {} but current repo remote is '{}'. Navigate to the correct repo first.",
             expected,
@@ -141,6 +141,13 @@ pub fn verify_remote_matches(repo_root: &str, pr_ref: &PrRef) -> Result<()> {
 /// Check if a string looks like a GitHub PR URL
 pub fn is_github_pr_url(s: &str) -> bool {
     parse_github_pr_url(s).is_some()
+}
+
+/// Test whether a remote URL belongs to the given owner/repo.
+/// HTTPS URLs contain "/owner/repo" and SSH URLs contain ":owner/repo".
+fn remote_matches_repo(remote: &str, owner: &str, repo: &str) -> bool {
+    let expected = format!("{}/{}", owner, repo);
+    remote.contains(&format!("/{}", expected)) || remote.contains(&format!(":{}", expected))
 }
 
 #[cfg(test)]
@@ -225,5 +232,53 @@ mod tests {
     fn is_github_pr_url_false() {
         assert!(!is_github_pr_url("/some/local/path"));
         assert!(!is_github_pr_url("not-a-url"));
+    }
+
+    // ── remote_matches_repo ──
+
+    #[test]
+    fn remote_matches_https_url() {
+        assert!(remote_matches_repo(
+            "https://github.com/owner/repo.git",
+            "owner",
+            "repo"
+        ));
+    }
+
+    #[test]
+    fn remote_matches_ssh_url() {
+        assert!(remote_matches_repo(
+            "git@github.com:owner/repo.git",
+            "owner",
+            "repo"
+        ));
+    }
+
+    #[test]
+    fn remote_no_false_positive_substring_owner() {
+        // "other-owner/repo" must not match "owner/repo"
+        assert!(!remote_matches_repo(
+            "https://github.com/other-owner/repo.git",
+            "owner",
+            "repo"
+        ));
+    }
+
+    #[test]
+    fn remote_no_false_positive_substring_ssh() {
+        assert!(!remote_matches_repo(
+            "git@github.com:other-owner/repo.git",
+            "owner",
+            "repo"
+        ));
+    }
+
+    #[test]
+    fn remote_matches_https_without_git_suffix() {
+        assert!(remote_matches_repo(
+            "https://github.com/owner/repo",
+            "owner",
+            "repo"
+        ));
     }
 }

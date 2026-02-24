@@ -80,12 +80,27 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
                 files.push(file);
             }
 
-            // Extract path from "diff --git a/path b/path"
-            let path = line
-                .split(" b/")
-                .last()
-                .unwrap_or("")
-                .to_string();
+            // Extract path from "diff --git a/PATH b/PATH"
+            // For non-rename diffs both paths are identical, so the format is:
+            //   "diff --git a/PATH b/PATH"
+            // After stripping "diff --git a/" we have: "PATH b/PATH"
+            // Total = 2*PATH_len + 3, so PATH_len = (total - 3) / 2
+            // We validate both halves match to distinguish non-renames from renames.
+            // For renames (different paths), fall back to split(" b/").last().
+            let path = if let Some(after_a) = line.strip_prefix("diff --git a/") {
+                let path_len = (after_a.len().saturating_sub(3)) / 2;
+                if path_len > 0
+                    && after_a.len() >= path_len + 3
+                    && after_a.get(..path_len) == after_a.get(path_len + 3..)
+                {
+                    after_a[..path_len].to_string()
+                } else {
+                    // Rename or edge case: paths differ, use the new path after " b/"
+                    after_a.split(" b/").last().unwrap_or("").to_string()
+                }
+            } else {
+                line.split(" b/").last().unwrap_or("").to_string()
+            };
 
             current_file = Some(DiffFile {
                 path,
@@ -495,6 +510,15 @@ index aaa..bbb 100644
         for line in &hunk.lines {
             assert!(!line.content.contains("No newline"));
         }
+    }
+
+    #[test]
+    fn test_parse_diff_path_with_space_containing_b() {
+        // Path "foo b/bar.rs" contains " b/" which would break naive split(" b/").last()
+        let raw = "diff --git a/foo b/bar.rs b/foo b/bar.rs\nindex aaa..bbb 100644\n--- a/foo b/bar.rs\n+++ b/foo b/bar.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "foo b/bar.rs");
     }
 
     #[test]

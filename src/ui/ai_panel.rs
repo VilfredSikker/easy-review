@@ -21,12 +21,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // Get current file's AI data
     let file = tab.selected_diff_file();
     let file_path = file.map(|f| f.path.as_str());
+    let file_stale = file_path.map_or(ai_stale, |p| tab.ai.is_file_stale(p));
 
     let fr = file_path.and_then(|p| tab.ai.file_review(p));
 
     // ── File risk header ──
     if let (Some(path), Some(fr)) = (file_path, fr) {
-        let risk_style = if ai_stale {
+        let risk_style = if file_stale {
             styles::stale_style()
         } else {
             match fr.risk {
@@ -102,7 +103,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(""));
 
             for finding in &fr.findings {
-                let sev_style = if ai_stale {
+                let sev_style = if file_stale {
                     styles::stale_style()
                 } else {
                     match finding.severity {
@@ -232,14 +233,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         ]));
     }
 
-    let stale_tag = if ai_stale { " [stale]" } else { "" };
+    let stale_tag = if file_stale {
+        " [stale]"
+    } else if ai_stale {
+        " [stale]"
+    } else {
+        ""
+    };
     let title = format!(" AI Panel{} ", stale_tag);
+    let title_style = if stale_tag.is_empty() {
+        ratatui::style::Style::default().fg(styles::PURPLE)
+    } else {
+        styles::stale_style()
+    };
 
     let block = Block::default()
-        .title(Span::styled(
-            title,
-            ratatui::style::Style::default().fg(styles::PURPLE),
-        ))
+        .title(Span::styled(title, title_style))
         .borders(Borders::LEFT)
         .border_style(ratatui::style::Style::default().fg(styles::BORDER))
         .style(ratatui::style::Style::default().bg(styles::SURFACE))

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ── View Modes ──
 
@@ -61,6 +61,9 @@ pub struct ErReview {
     pub head_branch: String,
     #[serde(default)]
     pub files: HashMap<String, ErFileReview>,
+    /// Per-file diff hashes for incremental staleness detection
+    #[serde(default)]
+    pub file_hashes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +235,8 @@ pub struct AiState {
     pub feedback: Option<ErFeedback>,
     /// Whether the loaded data matches the current diff
     pub is_stale: bool,
+    /// Files whose diff has changed since the review (per-file staleness)
+    pub stale_files: HashSet<String>,
     /// Current view mode
     pub view_mode: ViewMode,
     /// Which column has focus in AiReview mode
@@ -249,6 +254,7 @@ impl Default for AiState {
             checklist: None,
             feedback: None,
             is_stale: false,
+            stale_files: HashSet::new(),
             view_mode: ViewMode::Default,
             review_focus: ReviewFocus::Files,
             review_cursor: 0,
@@ -257,7 +263,12 @@ impl Default for AiState {
 }
 
 impl AiState {
-    /// Whether any AI data is loaded
+    /// Whether a specific file's findings are stale (its diff changed since the review)
+    pub fn is_file_stale(&self, path: &str) -> bool {
+        self.stale_files.contains(path)
+    }
+
+    /// Whether any AI-generated data is loaded (excludes user feedback).
     pub fn has_data(&self) -> bool {
         self.review.is_some()
             || self.order.is_some()
@@ -460,6 +471,7 @@ mod tests {
             base_branch: String::new(),
             head_branch: String::new(),
             files: file_map,
+            file_hashes: HashMap::new(),
         }
     }
 

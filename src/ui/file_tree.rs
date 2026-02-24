@@ -18,9 +18,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let in_overlay = matches!(tab.ai.view_mode, ViewMode::Overlay | ViewMode::SidePanel);
     let ai_stale = tab.ai.is_stale;
 
+    let stale_count = tab.ai.stale_files.len();
     let title = if in_overlay && tab.ai.has_data() {
         let findings = tab.ai.total_findings();
-        if ai_stale {
+        if ai_stale && stale_count > 0 {
+            format!(" FILES ({}) ⚠ {} findings · {} stale ", total, findings, stale_count)
+        } else if ai_stale {
             format!(" FILES ({}) ⚠ {} findings [stale] ", total, findings)
         } else {
             format!(" FILES ({}) · {} findings ", total, findings)
@@ -46,7 +49,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             // Risk dot (only in overlay mode with AI data)
             let risk_dot = if in_overlay {
                 if let Some(fr) = tab.ai.file_review(&file.path) {
-                    let dot_style = if ai_stale {
+                    let file_stale = tab.ai.is_file_stale(&file.path);
+                    let dot_style = if file_stale {
                         styles::stale_style()
                     } else {
                         match fr.risk {

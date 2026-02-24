@@ -302,14 +302,9 @@ For diffs >100KB or >20 files, apply these shortcuts to stay under 90 seconds:
 
 ## .gitignore
 
-These files should be gitignored:
-```
-.er-review.json
-.er-order.json
-.er-summary.md
-.er-checklist.json
-.er-feedback.json
-.er-feedback.prev.json
-.er-diff-tmp
-.er-reviews/
-```
+Add `.er-*` to the project's `.gitignore`. This single pattern covers all sidecar files:
+- `.er-review.json`, `.er-order.json`, `.er-summary.md`, `.er-checklist.json`
+- `.er-feedback.json`, `.er-feedback.prev.json`
+- `.er-reviewed`
+- `.er-reviews/` (persistence cache)
+- `.er-diff-tmp` (temporary)

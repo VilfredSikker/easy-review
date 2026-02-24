@@ -23,7 +23,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
     };
 
     let in_overlay = tab.ai.view_mode == ViewMode::Overlay;
-    let ai_stale = tab.ai.is_stale;
+    let file_stale = tab.ai.is_file_stale(&file.path);
 
     let title = format!(" {} ", file.path);
     let total_hunks = file.hunks.len();
@@ -55,7 +55,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
     let show_ai_header = matches!(tab.ai.view_mode, ViewMode::Overlay | ViewMode::SidePanel);
     if show_ai_header {
         if let Some(fr) = tab.ai.file_review(&file.path) {
-            let risk_style = if ai_stale {
+            let risk_style = if file_stale {
                 styles::stale_style()
             } else {
                 match fr.risk {
@@ -191,7 +191,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                 }
             };
             for finding in &findings {
-                let severity_style = if ai_stale {
+                let severity_style = if file_stale {
                     styles::stale_style()
                 } else {
                     match finding.severity {
@@ -202,7 +202,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                     }
                 };
 
-                let stale_tag = if ai_stale { " [stale]" } else { "" };
+                let stale_tag = if file_stale { " [stale]" } else { "" };
 
                 // Finding header line
                 lines.push(Line::from(vec![

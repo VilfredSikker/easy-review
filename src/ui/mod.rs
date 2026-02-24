@@ -39,19 +39,33 @@ pub fn draw(f: &mut Frame, app: &App, hl: &Highlighter) {
             ai_review_view::render(f, outer[1], app);
         }
         ViewMode::SidePanel => {
-            // Three columns: file tree + diff (2/3) + AI panel (1/3)
-            let main_area = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(32),  // file tree
-                    Constraint::Fill(2),     // diff view (2/3 of remaining)
-                    Constraint::Fill(1),     // AI panel (1/3 of remaining)
-                ])
-                .split(outer[1]);
+            if outer[1].width < 80 {
+                // Narrow terminal: fall back to 2-column layout (file tree + diff)
+                let main_area = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Length(32),
+                        Constraint::Min(1),
+                    ])
+                    .split(outer[1]);
 
-            file_tree::render(f, main_area[0], app);
-            diff_view::render(f, main_area[1], app, hl);
-            ai_panel::render(f, main_area[2], app);
+                file_tree::render(f, main_area[0], app);
+                diff_view::render(f, main_area[1], app, hl);
+            } else {
+                // Three columns: file tree + diff (2/3) + AI panel (1/3)
+                let main_area = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Length(32),  // file tree
+                        Constraint::Fill(2),     // diff view (2/3 of remaining)
+                        Constraint::Fill(1),     // AI panel (1/3 of remaining)
+                    ])
+                    .split(outer[1]);
+
+                file_tree::render(f, main_area[0], app);
+                diff_view::render(f, main_area[1], app, hl);
+                ai_panel::render(f, main_area[2], app);
+            }
         }
         _ => {
             // Default & Overlay: file tree + diff view

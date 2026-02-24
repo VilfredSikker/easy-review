@@ -116,8 +116,9 @@ fn render_summary_col(f: &mut Frame, area: Rect, app: &App) {
 
         for (idx, (path, fr)) in file_entries.iter().enumerate() {
             let is_selected = is_focused && idx == cursor;
+            let per_file_stale = tab.ai.is_file_stale(path);
 
-            let risk_style = if ai_stale {
+            let risk_style = if per_file_stale {
                 styles::stale_style()
             } else {
                 match fr.risk {
@@ -174,7 +175,7 @@ fn render_summary_col(f: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((tab.diff_scroll, 0));
+        .scroll((tab.ai_panel_scroll, 0));
 
     f.render_widget(paragraph, area);
 }
