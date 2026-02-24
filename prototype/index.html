@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>easy-review — TUI Prototype</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { 'mono': ['"JetBrains Mono"', 'monospace'] },
+          colors: {
+            'term': {
+              'bg': '#0c0c0c', 'surface': '#141414', 'panel': '#1a1a1a',
+              'border': '#2a2a2a', 'border-hi': '#3a3a3a',
+              'text': '#c8c8c8', 'dim': '#666666', 'muted': '#888888',
+              'bright': '#e8e8e8', 'white': '#f0f0f0',
+            },
+            'diff': {
+              'add-bg': '#12261e', 'add-text': '#4ade80', 'add-gutter': '#1a3a28',
+              'del-bg': '#261216', 'del-text': '#f87171', 'del-gutter': '#3a1a1e',
+            },
+            'accent': {
+              'blue': '#60a5fa', 'cyan': '#22d3ee', 'green': '#4ade80',
+              'yellow': '#facc15', 'red': '#f87171', 'purple': '#a78bfa', 'orange': '#fb923c',
+            },
+            'syntax': {
+              'keyword': '#c084fc', 'string': '#86efac', 'function': '#60a5fa',
+              'type': '#22d3ee', 'comment': '#525252', 'number': '#fb923c', 'operator': '#f0f0f0',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style type="text/tailwindcss">
+    * { box-sizing: border-box; }
+    body { font-family: 'JetBrains Mono', monospace; background: #0c0c0c; color: #c8c8c8; margin: 0; overflow: hidden; height: 100vh; }
+
+    .file-item { cursor: pointer; transition: background 0.08s; }
+    .file-item:hover { background: #1e1e1e; }
+    .file-item.active { background: #1a2a3a; border-left: 2px solid #60a5fa; }
+    .file-item.active .file-name { color: #60a5fa; }
+
+    .mode-tab { cursor: pointer; padding: 2px 10px; border-radius: 3px; transition: all 0.1s; }
+    .mode-tab:hover { background: #2a2a2a; }
+    .mode-tab.active { background: #1a2a3a; color: #60a5fa; }
+
+    .hunk-header { background: #1a1a2e; border-left: 3px solid #6366f1; }
+
+    /* ── Worktree tabs ── */
+    .wt-tab {
+      cursor: pointer; padding: 4px 12px; border-bottom: 2px solid transparent;
+      transition: all 0.12s; position: relative;
+    }
+    .wt-tab:hover { background: #1a1a1a; }
+    .wt-tab.active { border-bottom-color: #60a5fa; background: #141418; }
+    .wt-tab.active .wt-branch { color: #60a5fa; }
+    .wt-tab .wt-activity {
+      position: absolute; top: 3px; right: 4px;
+      width: 6px; height: 6px; border-radius: 50%;
+      opacity: 0; transition: opacity 0.3s;
+    }
+    .wt-tab.has-activity .wt-activity { opacity: 1; }
+
+    .watch-dot { animation: pulse-glow 2s ease-in-out infinite; }
+    @keyframes pulse-glow { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+    .watch-active .watch-dot { animation: pulse-fast 0.8s ease-in-out infinite; }
+    @keyframes pulse-fast {
+      0%, 100% { opacity: 0.3; box-shadow: 0 0 4px #4ade80; }
+      50% { opacity: 1; box-shadow: 0 0 12px #4ade80; }
+    }
+
+    @keyframes flash-new { 0% { background: #2a3a1a; } 100% { background: transparent; } }
+    @keyframes wt-ping {
+      0% { box-shadow: 0 0 0 0 rgba(74,222,128,0.6); }
+      70% { box-shadow: 0 0 0 6px rgba(74,222,128,0); }
+      100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
+    }
+    .wt-ping { animation: wt-ping 1s ease-out; }
+
+    .key-hint {
+      display: inline-block; background: #2a2a2a; border: 1px solid #3a3a3a;
+      border-radius: 3px; padding: 0 5px; font-size: 11px; line-height: 18px;
+      color: #aaa; min-width: 18px; text-align: center;
+    }
+
+    .scroll-track { width: 6px; background: #1a1a1a; border-radius: 3px; position: relative; }
+    .scroll-thumb { width: 6px; background: #3a3a3a; border-radius: 3px; position: absolute; min-height: 20px; transition: top 0.15s; }
+    .scroll-thumb:hover { background: #555; }
+
+    .search-bar { background: #1a1a1a; border: 1px solid #3a3a3a; transition: border-color 0.15s; }
+    .search-bar:focus-within { border-color: #60a5fa; }
+
+    .help-overlay { background: rgba(0,0,0,0.85); backdrop-filter: blur(4px); }
+    .line-num { min-width: 3ch; text-align: right; user-select: none; }
+  </style>
+</head>
+<body class="font-mono text-sm">
+  <div id="app" class="flex flex-col h-screen">
+
+    <!-- ─── WORKTREE TAB BAR ─── -->
+    <div class="flex items-center bg-term-bg border-b border-term-border text-xs" id="worktree-bar">
+      <span class="text-accent-cyan font-semibold tracking-wide px-3 py-1.5 shrink-0">er</span>
+      <div class="flex items-center gap-0 flex-1 overflow-x-auto" id="wt-tabs">
+        <!-- Worktree tabs injected by JS -->
+      </div>
+      <div class="flex items-center gap-2 px-3 shrink-0">
+        <button id="watch-btn" class="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-term-border-hi transition-colors" onclick="toggleWatch()">
+          <span class="watch-dot inline-block w-2 h-2 rounded-full bg-term-dim" id="watch-indicator"></span>
+          <span class="text-term-dim" id="watch-label">WATCH ALL</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ─── TOP BAR: MODE + FILE INFO ─── -->
+    <header class="flex items-center justify-between px-3 py-1 bg-term-surface border-b border-term-border text-xs">
+      <div class="flex items-center gap-3">
+        <span class="text-accent-blue" id="branch-name">feature/auth-flow</span>
+        <span class="text-term-dim">→</span>
+        <span class="text-term-muted">main</span>
+        <span class="text-term-dim mx-1">|</span>
+        <span class="text-term-dim" id="wt-path">~/code/myapp</span>
+      </div>
+      <div class="flex items-center gap-0.5" id="mode-tabs">
+        <span class="mode-tab active" data-mode="branch" onclick="switchMode('branch')">
+          <span class="key-hint mr-1">1</span>BRANCH
+        </span>
+        <span class="mode-tab" data-mode="unstaged" onclick="switchMode('unstaged')">
+          <span class="key-hint mr-1">2</span>UNSTAGED
+        </span>
+        <span class="mode-tab" data-mode="staged" onclick="switchMode('staged')">
+          <span class="key-hint mr-1">3</span>STAGED
+        </span>
+      </div>
+    </header>
+
+    <!-- ─── MAIN CONTENT ─── -->
+    <div class="flex flex-1 overflow-hidden">
+
+      <!-- ═══ LEFT PANEL: FILE TREE ═══ -->
+      <div class="flex flex-col border-r border-term-border" style="width: 280px; min-width: 280px;">
+        <div class="flex items-center justify-between px-3 py-1.5 border-b border-term-border bg-term-surface">
+          <span class="text-term-muted text-xs uppercase tracking-wider">Changed Files</span>
+          <span class="text-term-dim text-xs" id="file-count">7 files</span>
+        </div>
+        <div class="px-2 py-1.5 border-b border-term-border">
+          <div class="search-bar flex items-center gap-2 px-2 py-1 rounded text-xs">
+            <span class="text-term-dim">/</span>
+            <input type="text" placeholder="filter files..." class="bg-transparent outline-none flex-1 text-term-text placeholder-term-dim text-xs" id="file-search" oninput="filterFiles(this.value)">
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto py-1" id="file-list"></div>
+        <div id="file-stats" class="px-3 py-1.5 border-t border-term-border bg-term-surface text-xs text-term-dim"></div>
+      </div>
+
+      <!-- ═══ RIGHT PANEL: DIFF VIEW ═══ -->
+      <div class="flex flex-1 flex-col overflow-hidden">
+        <div class="flex items-center justify-between px-3 py-1.5 border-b border-term-border bg-term-surface">
+          <div class="flex items-center gap-2">
+            <span class="text-term-bright text-xs" id="current-file-path">src/auth/login.rs</span>
+            <span class="text-term-dim text-xs">|</span>
+            <span class="text-diff-add-text text-xs" id="current-file-adds">+45</span>
+            <span class="text-diff-del-text text-xs" id="current-file-dels">-12</span>
+          </div>
+          <div class="flex items-center gap-1 text-xs" id="hunk-nav">
+            <button class="px-1 rounded hover:bg-term-border-hi text-term-muted" onclick="prevHunk()">&#9650;</button>
+            <span class="text-term-muted">Hunk <span id="hunk-current">1</span>/<span id="hunk-total">4</span></span>
+            <button class="px-1 rounded hover:bg-term-border-hi text-term-muted" onclick="nextHunk()">&#9660;</button>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto" id="diff-scroll">
+          <div id="diff-content" class="text-xs leading-5"></div>
+        </div>
+      </div>
+
+      <div class="scroll-track">
+        <div class="scroll-thumb" id="scroll-thumb" style="top: 0; height: 60px;"></div>
+      </div>
+    </div>
+
+    <!-- ─── STATUS BAR ─── -->
+    <footer class="flex items-center justify-between px-3 py-1 bg-term-surface border-t border-term-border text-xs">
+      <div class="flex items-center gap-4">
+        <span><span class="key-hint">Tab</span> <span class="text-term-dim ml-1">worktree</span></span>
+        <span><span class="key-hint">j</span><span class="key-hint ml-0.5">k</span> <span class="text-term-dim ml-1">files</span></span>
+        <span><span class="key-hint">n</span><span class="key-hint ml-0.5">N</span> <span class="text-term-dim ml-1">hunks</span></span>
+        <span><span class="key-hint">↑</span><span class="key-hint ml-0.5">↓</span> <span class="text-term-dim ml-1">scroll</span></span>
+        <span><span class="key-hint">w</span> <span class="text-term-dim ml-1">watch</span></span>
+      </div>
+      <div class="flex items-center gap-4">
+        <span class="text-term-dim" id="status-msg">BRANCH DIFF</span>
+        <span><span class="key-hint">?</span> <span class="text-term-dim ml-1">help</span></span>
+        <span><span class="key-hint">q</span> <span class="text-term-dim ml-1">quit</span></span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ═══ HELP OVERLAY ═══ -->
+  <div id="help-overlay" class="help-overlay fixed inset-0 flex items-center justify-center z-50 hidden">
+    <div class="bg-term-panel border border-term-border-hi rounded-lg p-6 max-w-lg w-full mx-4 shadow-2xl">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-accent-cyan text-sm font-semibold">easy-review keybindings</h2>
+        <button onclick="toggleHelp()" class="text-term-dim hover:text-term-text text-xs">ESC to close</button>
+      </div>
+      <div class="grid grid-cols-2 gap-x-8 gap-y-1 text-xs">
+        <div class="col-span-2 text-accent-blue mt-1 mb-0.5 font-semibold">Worktrees</div>
+        <div><span class="key-hint">Tab</span> &nbsp; Next worktree</div>
+        <div><span class="key-hint">Shift+Tab</span> &nbsp; Prev worktree</div>
+        <div><span class="key-hint">Ctrl+a</span> &nbsp; Add worktree path</div>
+        <div><span class="key-hint">Ctrl+x</span> &nbsp; Remove worktree</div>
+
+        <div class="col-span-2 text-accent-blue mt-2 mb-0.5 font-semibold">Navigation</div>
+        <div><span class="key-hint">j</span> / <span class="key-hint">k</span> &nbsp; Next / prev file</div>
+        <div><span class="key-hint">n</span> / <span class="key-hint">N</span> &nbsp; Next / prev hunk</div>
+        <div><span class="key-hint">Ctrl-d</span> &nbsp; Scroll down half page</div>
+        <div><span class="key-hint">Ctrl-u</span> &nbsp; Scroll up half page</div>
+        <div><span class="key-hint">gg</span> &nbsp; Go to top</div>
+        <div><span class="key-hint">G</span> &nbsp; Go to bottom</div>
+
+        <div class="col-span-2 text-accent-blue mt-2 mb-0.5 font-semibold">Modes</div>
+        <div><span class="key-hint">1</span> &nbsp; Branch diff</div>
+        <div><span class="key-hint">2</span> &nbsp; Unstaged changes</div>
+        <div><span class="key-hint">3</span> &nbsp; Staged changes</div>
+        <div><span class="key-hint">f</span> &nbsp; Full file view</div>
+
+        <div class="col-span-2 text-accent-blue mt-2 mb-0.5 font-semibold">Actions</div>
+        <div><span class="key-hint">w</span> &nbsp; Toggle watch (all worktrees)</div>
+        <div><span class="key-hint">/</span> &nbsp; Search / filter files</div>
+        <div><span class="key-hint">?</span> &nbsp; This help</div>
+        <div><span class="key-hint">q</span> &nbsp; Quit</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ WATCH NOTIFICATION ═══ -->
+  <div id="watch-notification" class="fixed top-16 right-4 bg-term-panel border border-accent-green/30 rounded px-3 py-1.5 text-xs shadow-lg hidden z-40">
+    <span class="inline-block w-1.5 h-1.5 rounded-full bg-accent-green mr-2 animate-pulse"></span>
+    <span id="watch-notif-text" class="text-accent-green">File changed: src/auth/login.rs</span>
+  </div>
+
+<script>
+// ══════════════════════════════════════════════════
+// WORKTREE DATA — each worktree is a self-contained world
+// ══════════════════════════════════════════════════
+
+const worktrees = [
+  {
+    id: 'auth',
+    branch: 'feature/auth-flow',
+    path: '~/code/myapp',
+    base: 'main',
+    files: {
+      branch: [
+        { path: 'src/auth/login.rs', status: 'modified', adds: 45, dels: 12 },
+        { path: 'src/auth/session.rs', status: 'modified', adds: 23, dels: 8 },
+        { path: 'src/auth/mod.rs', status: 'modified', adds: 5, dels: 2 },
+        { path: 'src/middleware/cors.rs', status: 'modified', adds: 18, dels: 30 },
+        { path: 'src/models/user.rs', status: 'added', adds: 87, dels: 0 },
+        { path: 'tests/auth_test.rs', status: 'added', adds: 134, dels: 0 },
+        { path: 'src/routes/legacy.rs', status: 'deleted', adds: 0, dels: 37 },
+      ],
+      unstaged: [
+        { path: 'src/auth/login.rs', status: 'modified', adds: 12, dels: 3 },
+        { path: 'src/auth/session.rs', status: 'modified', adds: 4, dels: 1 },
+      ],
+      staged: [
+        { path: 'src/auth/login.rs', status: 'modified', adds: 33, dels: 9 },
+        { path: 'src/auth/mod.rs', status: 'modified', adds: 5, dels: 2 },
+        { path: 'src/models/user.rs', status: 'added', adds: 87, dels: 0 },
+      ]
+    },
+    diffs: {
+      'src/auth/login.rs': { hunks: [
+        { header: '@@ -1,8 +1,10 @@ use crate::auth::*;', lines: [
+          { type: 'context', num_old: 1, num_new: 1, content: '<span class="text-syntax-keyword">use</span> crate::auth::session::{<span class="text-syntax-type">Session</span>, <span class="text-syntax-type">SessionStore</span>};' },
+          { type: 'context', num_old: 2, num_new: 2, content: '<span class="text-syntax-keyword">use</span> crate::models::<span class="text-syntax-type">User</span>;' },
+          { type: 'add', num_new: 3, content: '<span class="text-syntax-keyword">use</span> crate::auth::token::{<span class="text-syntax-type">TokenManager</span>, <span class="text-syntax-type">RefreshToken</span>};' },
+          { type: 'add', num_new: 4, content: '<span class="text-syntax-keyword">use</span> chrono::{<span class="text-syntax-type">Utc</span>, <span class="text-syntax-type">Duration</span>};' },
+          { type: 'context', num_old: 3, num_new: 5, content: '' },
+          { type: 'del', num_old: 4, content: '<span class="text-syntax-keyword">pub</span> <span class="text-syntax-keyword">async</span> <span class="text-syntax-keyword">fn</span> <span class="text-syntax-function">login</span>(creds: &<span class="text-syntax-type">Credentials</span>) -> <span class="text-syntax-type">Result</span><<span class="text-syntax-type">Session</span>> {' },
+          { type: 'add', num_new: 6, content: '<span class="text-syntax-keyword">pub</span> <span class="text-syntax-keyword">async</span> <span class="text-syntax-keyword">fn</span> <span class="text-syntax-function">login</span>(creds: &<span class="text-syntax-type">Credentials</span>, store: &<span class="text-syntax-type">SessionStore</span>) -> <span class="text-syntax-type">Result</span><<span class="text-syntax-type">AuthResponse</span>> {' },
+          { type: 'context', num_old: 5, num_new: 7, content: '    <span class="text-syntax-keyword">let</span> user = <span class="text-syntax-type">User</span>::<span class="text-syntax-function">find_by_email</span>(&creds.email)' },
+          { type: 'context', num_old: 6, num_new: 8, content: '        .<span class="text-syntax-keyword">await</span>' },
+          { type: 'context', num_old: 7, num_new: 9, content: '        .<span class="text-syntax-function">map_err</span>(|_| <span class="text-syntax-type">AuthError</span>::<span class="text-syntax-function">InvalidCredentials</span>)?;' },
+        ]},
+        { header: '@@ -15,6 +17,18 @@ pub async fn login(...)', lines: [
+          { type: 'context', num_old: 15, num_new: 17, content: '    <span class="text-syntax-keyword">if</span> !user.<span class="text-syntax-function">verify_password</span>(&creds.password) {' },
+          { type: 'context', num_old: 16, num_new: 18, content: '        <span class="text-syntax-keyword">return</span> <span class="text-syntax-type">Err</span>(<span class="text-syntax-type">AuthError</span>::<span class="text-syntax-function">InvalidCredentials</span>);' },
+          { type: 'context', num_old: 17, num_new: 19, content: '    }' },
+          { type: 'del', num_old: 19, content: '    <span class="text-syntax-keyword">let</span> session = <span class="text-syntax-type">Session</span>::<span class="text-syntax-function">create</span>(&user).<span class="text-syntax-keyword">await</span>?;' },
+          { type: 'del', num_old: 20, content: '    <span class="text-syntax-type">Ok</span>(session)' },
+          { type: 'add', num_new: 21, content: '    <span class="text-syntax-comment">// Create session with refresh token support</span>' },
+          { type: 'add', num_new: 22, content: '    <span class="text-syntax-keyword">let</span> session = store.<span class="text-syntax-function">create_session</span>(&user).<span class="text-syntax-keyword">await</span>?;' },
+          { type: 'add', num_new: 23, content: '    <span class="text-syntax-keyword">let</span> access_token = <span class="text-syntax-type">TokenManager</span>::<span class="text-syntax-function">generate_access</span>(&user, <span class="text-syntax-type">Duration</span>::<span class="text-syntax-function">hours</span>(<span class="text-syntax-number">1</span>));' },
+          { type: 'add', num_new: 24, content: '    <span class="text-syntax-keyword">let</span> refresh = <span class="text-syntax-type">RefreshToken</span>::<span class="text-syntax-function">new</span>(&session, <span class="text-syntax-type">Duration</span>::<span class="text-syntax-function">days</span>(<span class="text-syntax-number">30</span>));' },
+          { type: 'add', num_new: 25, content: '    store.<span class="text-syntax-function">save_refresh_token</span>(&refresh).<span class="text-syntax-keyword">await</span>?;' },
+          { type: 'add', num_new: 26, content: '' },
+          { type: 'add', num_new: 27, content: '    <span class="text-syntax-type">Ok</span>(<span class="text-syntax-type">AuthResponse</span> { session, access_token, refresh })' },
+        ]},
+        { header: '@@ -30,4 +44,15 @@ pub async fn login(...)', lines: [
+          { type: 'context', num_old: 30, num_new: 44, content: '}' },
+          { type: 'add', num_new: 46, content: '<span class="text-syntax-keyword">pub</span> <span class="text-syntax-keyword">async</span> <span class="text-syntax-keyword">fn</span> <span class="text-syntax-function">refresh</span>(token: &<span class="text-syntax-keyword">str</span>, store: &<span class="text-syntax-type">SessionStore</span>) -> <span class="text-syntax-type">Result</span><<span class="text-syntax-type">AuthResponse</span>> {' },
+          { type: 'add', num_new: 47, content: '    <span class="text-syntax-keyword">let</span> r = store.<span class="text-syntax-function">validate_refresh_token</span>(token).<span class="text-syntax-keyword">await</span>?;' },
+          { type: 'add', num_new: 48, content: '    <span class="text-syntax-keyword">let</span> user = <span class="text-syntax-type">User</span>::<span class="text-syntax-function">find_by_id</span>(&r.user_id).<span class="text-syntax-keyword">await</span>?;' },
+          { type: 'add', num_new: 49, content: '    <span class="text-syntax-type">Ok</span>(<span class="text-syntax-type">AuthResponse</span>::<span class="text-syntax-function">refreshed</span>(<span class="text-syntax-type">TokenManager</span>::<span class="text-syntax-function">generate_access</span>(&user, <span class="text-syntax-type">Duration</span>::<span class="text-syntax-function">hours</span>(<span class="text-syntax-number">1</span>)), r))' },
+          { type: 'add', num_new: 50, content: '}' },
+        ]},
+        { header: '@@ -35,2 +59,8 @@ pub async fn refresh(...)', lines: [
+          { type: 'context', num_old: 35, num_new: 59, content: '' },
+          { type: 'add', num_new: 60, content: '<span class="text-syntax-keyword">pub</span> <span class="text-syntax-keyword">async</span> <span class="text-syntax-keyword">fn</span> <span class="text-syntax-function">logout</span>(sid: &<span class="text-syntax-keyword">str</span>, store: &<span class="text-syntax-type">SessionStore</span>) -> <span class="text-syntax-type">Result</span><()> {' },
+          { type: 'add', num_new: 61, content: '    store.<span class="text-syntax-function">invalidate_session</span>(sid).<span class="text-syntax-keyword">await</span>?;' },
+          { type: 'add', num_new: 62, content: '    store.<span class="text-syntax-function">revoke_refresh_tokens</span>(sid).<span class="text-syntax-keyword">await</span>?;' },
+          { type: 'add', num_new: 63, content: '    <span class="text-syntax-type">Ok</span>(())' },
+          { type: 'add', num_new: 64, content: '}' },
+        ]}
+      ]},
+      'src/auth/session.rs': { hunks: [
+        { header: '@@ -10,4 +10,15 @@ impl SessionStore', lines: [
+          { type: 'context', num_old: 10, num_new: 10, content: '<span class="text-syntax-keyword">impl</span> <span class="text-syntax-type">SessionStore</span> {' },
+          { type: 'context', num_old: 11, num_new: 11, content: '    <span class="text-syntax-keyword">pub</span> <span class="text-syntax-keyword">fn</span> <span class="text-syntax-function">new</span>(pool: <span class="text-syntax-type">PgPool</span>) -> <span class="text-syntax-type">Self</span> { <span class="text-syntax-type">Self</span> { pool } }' },
+          { type: 'add', num_new: 13, content: '' },
+          { type: 'add', num_new: 14, content: '    <span class="text-syntax-keyword">pub</span> <span class="text-syntax-keyword">async</span> <span class="text-syntax-keyword">fn</span> <span class="text-syntax-function">create_session</span>(&<span class="text-syntax-keyword">self</span>, user: &<span class="text-syntax-type">User</span>) -> <span class="text-syntax-type">Result</span><<span class="text-syntax-type">Session</span>> {' },
+          { type: 'add', num_new: 15, content: '        <span class="text-syntax-keyword">let</span> s = <span class="text-syntax-type">Session</span> { id: <span class="text-syntax-type">Uuid</span>::<span class="text-syntax-function">new_v4</span>().<span class="text-syntax-function">to_string</span>(), user_id: user.id.<span class="text-syntax-function">clone</span>() };' },
+          { type: 'add', num_new: 16, content: '        <span class="text-syntax-keyword">self</span>.<span class="text-syntax-function">save</span>(&s).<span class="text-syntax-keyword">await</span>?;' },
+          { type: 'add', num_new: 17, content: '        <span class="text-syntax-type">Ok</span>(s)' },
+          { type: 'add', num_new: 18, content: '    }' },
+        ]}
+      ]},
+    }
+  },
+  {
+    id: 'api',
+    branch: 'fix/api-rate-limits',
+    path: '~/code/myapp-api-fix',
+    base: 'main',
+    files: {
+      branch: [
+        { path: 'src/middleware/rate_limit.rs', status: 'modified', adds: 62, dels: 15 },
+        { path: 'src/middleware/mod.rs', status: 'modified', adds: 3, dels: 1 },
+        { path: 'src/config.rs', status: 'modified', adds: 8, dels: 2 },
+        { path: 'tests/rate_limit_test.rs', status: 'added', adds: 95, dels: 0 },
+      ],
+      unstaged: [
+        { path: 'src/middleware/rate_limit.rs', status: 'modified', adds: 18, dels: 5 },
+      ],
+      staged: [
+        { path: 'src/middleware/rate_limit.rs', status: 'modified', adds: 44, dels: 10 },
+        { path: 'src/config.rs', status: 'modified', adds: 8, dels: 2 },
+      ]
+    },
+    diffs: {
+      'src/middleware/rate_limit.rs': { hunks: [
+        { header: '@@ -1,6 +1,10 @@ use std::collections::HashMap;', lines: [
+          { type: 'context', num_old: 1, num_new: 1, content: '<span class="text-syntax-keyword">use</span> std::collections::<span class="text-syntax-type">HashMap</span>;' },
+          { type: 'context', num_old: 2, num_new: 2, content: '<span class="text-syntax-keyword">use</span> std::time::{<span class="text-syntax-type">Duration</span>, <span class="text-syntax-type">Instant</span>};' },
+          { type: 'add', num_new: 3, content: '<span class="text-syntax-keyword">use</span> std::sync::<span class="text-syntax-type">Arc</span>;' },
+          { type: 'add', num_new: 4, content: '<span class="text-syntax-keyword">use</span> tokio::sync::<span class="text-syntax-type">RwLock</span>;' },
+          { type: 'context', num_old: 3, num_new: 5, content: '' },
+          { type: 'del', num_old: 4, content: '<span class="text-syntax-keyword">pub</span> <span class="text-syntax-keyword">struct</span> <span class="text-syntax-type">RateLimiter</span> {' },
+          { type: 'del', num_old: 5, content: '    limits: <span class="text-syntax-type">HashMap</span><<span class="text-syntax-type">String</span>, <span class="text-syntax-type">u32</span>>,' },
+          { type: 'del', num_old: 6, content: '}' },
+          { type: 'add', num_new: 6, content: '<span class="text-syntax-comment">/// Thread-safe sliding window rate limiter</span>' },
+          { type: 'add', num_new: 7, content: '<span class="text-syntax-keyword">pub</span> <span class="text-syntax-keyword">struct</span> <span class="text-syntax-type">RateLimiter</span> {' },
+          { type: 'add', num_new: 8, content: '    windows: <span class="text-syntax-type">Arc</span><<span class="text-syntax-type">RwLock</span><<span class="text-syntax-type">HashMap</span><<span class="text-syntax-type">String</span>, <span class="text-syntax-type">SlidingWindow</span>>>>,' },
+          { type: 'add', num_new: 9, content: '    max_requests: <span class="text-syntax-type">u32</span>,' },
+          { type: 'add', num_new: 10, content: '    window_secs: <span class="text-syntax-type">u64</span>,' },
+          { type: 'add', num_new: 11, content: '}' },
+        ]},
+        { header: '@@ -20,8 +28,22 @@ impl RateLimiter', lines: [
+          { type: 'context', num_old: 20, num_new: 28, content: '    <span class="text-syntax-keyword">pub</span> <span class="text-syntax-keyword">async</span> <span class="text-syntax-keyword">fn</span> <span class="text-syntax-function">check</span>(&<span class="text-syntax-keyword">self</span>, key: &<span class="text-syntax-keyword">str</span>) -> <span class="text-syntax-type">bool</span> {' },
+          { type: 'del', num_old: 21, content: '        <span class="text-syntax-keyword">self</span>.limits.<span class="text-syntax-function">get</span>(key).<span class="text-syntax-function">map_or</span>(<span class="text-syntax-keyword">true</span>, |c| *c < <span class="text-syntax-number">100</span>)' },
+          { type: 'add', num_new: 29, content: '        <span class="text-syntax-keyword">let</span> windows = <span class="text-syntax-keyword">self</span>.windows.<span class="text-syntax-function">read</span>().<span class="text-syntax-keyword">await</span>;' },
+          { type: 'add', num_new: 30, content: '        <span class="text-syntax-keyword">match</span> windows.<span class="text-syntax-function">get</span>(key) {' },
+          { type: 'add', num_new: 31, content: '            <span class="text-syntax-type">Some</span>(w) => w.<span class="text-syntax-function">count</span>() < <span class="text-syntax-keyword">self</span>.max_requests,' },
+          { type: 'add', num_new: 32, content: '            <span class="text-syntax-type">None</span> => <span class="text-syntax-keyword">true</span>,' },
+          { type: 'add', num_new: 33, content: '        }' },
+          { type: 'context', num_old: 22, num_new: 34, content: '    }' },
+        ]}
+      ]},
+      'src/config.rs': { hunks: [
+        { header: '@@ -45,2 +45,10 @@ pub struct AppConfig', lines: [
+          { type: 'context', num_old: 45, num_new: 45, content: '    <span class="text-syntax-keyword">pub</span> db_url: <span class="text-syntax-type">String</span>,' },
+          { type: 'add', num_new: 46, content: '    <span class="text-syntax-keyword">pub</span> rate_limit_max: <span class="text-syntax-type">u32</span>,' },
+          { type: 'add', num_new: 47, content: '    <span class="text-syntax-keyword">pub</span> rate_limit_window_secs: <span class="text-syntax-type">u64</span>,' },
+        ]}
+      ]},
+    }
+  },
+  {
+    id: 'ui',
+    branch: 'refactor/dashboard-components',
+    path: '~/code/myapp-dashboard',
+    base: 'main',
+    files: {
+      branch: [
+        { path: 'src/components/Dashboard.tsx', status: 'modified', adds: 34, dels: 56 },
+        { path: 'src/components/MetricCard.tsx', status: 'added', adds: 42, dels: 0 },
+        { path: 'src/components/ChartPanel.tsx', status: 'added', adds: 78, dels: 0 },
+        { path: 'src/hooks/useMetrics.ts', status: 'added', adds: 31, dels: 0 },
+        { path: 'src/types/metrics.ts', status: 'added', adds: 18, dels: 0 },
+        { path: 'src/components/OldDashboard.tsx', status: 'deleted', adds: 0, dels: 142 },
+      ],
+      unstaged: [
+        { path: 'src/components/ChartPanel.tsx', status: 'modified', adds: 8, dels: 2 },
+      ],
+      staged: [
+        { path: 'src/components/Dashboard.tsx', status: 'modified', adds: 34, dels: 56 },
+        { path: 'src/components/MetricCard.tsx', status: 'added', adds: 42, dels: 0 },
+      ]
+    },
+    diffs: {
+      'src/components/Dashboard.tsx': { hunks: [
+        { header: '@@ -1,15 +1,12 @@ import React from "react";', lines: [
+          { type: 'context', num_old: 1, num_new: 1, content: '<span class="text-syntax-keyword">import</span> <span class="text-syntax-type">React</span> <span class="text-syntax-keyword">from</span> <span class="text-syntax-string">"react"</span>;' },
+          { type: 'del', num_old: 2, content: '<span class="text-syntax-keyword">import</span> { fetchMetrics, formatChart } <span class="text-syntax-keyword">from</span> <span class="text-syntax-string">"../utils"</span>;' },
+          { type: 'del', num_old: 3, content: '<span class="text-syntax-keyword">import</span> { <span class="text-syntax-type">Chart</span> } <span class="text-syntax-keyword">from</span> <span class="text-syntax-string">"chart.js"</span>;' },
+          { type: 'add', num_new: 2, content: '<span class="text-syntax-keyword">import</span> { <span class="text-syntax-type">MetricCard</span> } <span class="text-syntax-keyword">from</span> <span class="text-syntax-string">"./MetricCard"</span>;' },
+          { type: 'add', num_new: 3, content: '<span class="text-syntax-keyword">import</span> { <span class="text-syntax-type">ChartPanel</span> } <span class="text-syntax-keyword">from</span> <span class="text-syntax-string">"./ChartPanel"</span>;' },
+          { type: 'add', num_new: 4, content: '<span class="text-syntax-keyword">import</span> { <span class="text-syntax-function">useMetrics</span> } <span class="text-syntax-keyword">from</span> <span class="text-syntax-string">"../hooks/useMetrics"</span>;' },
+          { type: 'context', num_old: 5, num_new: 6, content: '' },
+          { type: 'del', num_old: 6, content: '<span class="text-syntax-keyword">export</span> <span class="text-syntax-keyword">function</span> <span class="text-syntax-function">Dashboard</span>() {' },
+          { type: 'del', num_old: 7, content: '  <span class="text-syntax-keyword">const</span> [data, setData] = <span class="text-syntax-function">useState</span>(<span class="text-syntax-keyword">null</span>);' },
+          { type: 'del', num_old: 8, content: '  <span class="text-syntax-keyword">const</span> [loading, setLoading] = <span class="text-syntax-function">useState</span>(<span class="text-syntax-keyword">true</span>);' },
+          { type: 'add', num_new: 7, content: '<span class="text-syntax-keyword">export</span> <span class="text-syntax-keyword">function</span> <span class="text-syntax-function">Dashboard</span>() {' },
+          { type: 'add', num_new: 8, content: '  <span class="text-syntax-keyword">const</span> { metrics, loading, error } = <span class="text-syntax-function">useMetrics</span>();' },
+        ]}
+      ]},
+    }
+  }
+];
+
+// ══════════════════════════════════════════
+// STATE — per-worktree + global
+// ══════════════════════════════════════════
+
+let state = {
+  activeWorktree: 0,
+  watchActive: false,
+  helpVisible: false,
+  // Per-worktree state
+  wt: worktrees.map(() => ({
+    mode: 'branch',
+    selectedFile: 0,
+    currentHunk: 0,
+  }))
+};
+
+function cur() { return state.wt[state.activeWorktree]; }
+function curWt() { return worktrees[state.activeWorktree]; }
+
+// ══════════════════════════════════════════
+// WORKTREE TABS
+// ══════════════════════════════════════════
+
+function renderWorktreeTabs() {
+  const container = document.getElementById('wt-tabs');
+  container.innerHTML = worktrees.map((wt, i) => {
+    const isActive = i === state.activeWorktree;
+    const totalFiles = wt.files.branch.length;
+    const totalAdds = wt.files.branch.reduce((s, f) => s + f.adds, 0);
+    const totalDels = wt.files.branch.reduce((s, f) => s + f.dels, 0);
+    return `
+      <div class="wt-tab flex items-center gap-2 ${isActive ? 'active' : ''}"
+           onclick="switchWorktree(${i})" data-wt="${i}">
+        <span class="wt-branch text-xs ${isActive ? '' : 'text-term-muted'}">${wt.branch}</span>
+        <span class="text-[10px] text-term-dim">${totalFiles}f</span>
+        <span class="text-[10px] text-diff-add-text">+${totalAdds}</span>
+        <span class="text-[10px] text-diff-del-text">-${totalDels}</span>
+        <span class="wt-activity bg-accent-green"></span>
+      </div>
+    `;
+  }).join('');
+}
+
+function switchWorktree(index) {
+  if (index < 0) index = worktrees.length - 1;
+  if (index >= worktrees.length) index = 0;
+  state.activeWorktree = index;
+
+  // Update header info
+  const wt = curWt();
+  document.getElementById('branch-name').textContent = wt.branch;
+  document.getElementById('wt-path').textContent = wt.path;
+
+  // Clear activity indicator for this worktree
+  const tabs = document.querySelectorAll('.wt-tab');
+  tabs.forEach((tab, i) => {
+    if (i === index) tab.classList.remove('has-activity');
+  });
+
+  renderWorktreeTabs();
+  renderFileList();
+  renderDiff();
+  updateModeUI();
+}
+
+function nextWorktree() { switchWorktree(state.activeWorktree + 1); }
+function prevWorktree() { switchWorktree(state.activeWorktree - 1); }
+
+// ══════════════════════════════════════════
+// RENDERING
+// ══════════════════════════════════════════
+
+function getStatusIcon(status) {
+  switch(status) {
+    case 'modified': return { char: '~', color: 'text-accent-yellow' };
+    case 'added': return { char: '+', color: 'text-accent-green' };
+    case 'deleted': return { char: '-', color: 'text-accent-red' };
+    default: return { char: '?', color: 'text-term-dim' };
+  }
+}
+
+function renderFileList() {
+  const wt = curWt();
+  const s = cur();
+  const list = document.getElementById('file-list');
+  const currentFiles = wt.files[s.mode] || [];
+
+  document.getElementById('file-count').textContent = `${currentFiles.length} file${currentFiles.length !== 1 ? 's' : ''}`;
+
+  let totalAdds = 0, totalDels = 0;
+  currentFiles.forEach(f => { totalAdds += f.adds; totalDels += f.dels; });
+
+  list.innerHTML = currentFiles.map((file, i) => {
+    const icon = getStatusIcon(file.status);
+    const isActive = i === s.selectedFile;
+    const shortPath = file.path.split('/').pop();
+    const dirPath = file.path.split('/').slice(0, -1).join('/');
+    return `
+      <div class="file-item flex items-center gap-2 px-3 py-1 ${isActive ? 'active' : ''}"
+           onclick="selectFile(${i})" data-index="${i}">
+        <span class="${icon.color} w-3 text-center font-bold">${icon.char}</span>
+        <div class="flex-1 min-w-0">
+          <span class="file-name text-xs ${isActive ? '' : 'text-term-text'} truncate block">${shortPath}</span>
+          ${dirPath ? `<span class="text-term-dim text-[10px] truncate block">${dirPath}/</span>` : ''}
+        </div>
+        <div class="flex items-center gap-1 text-[10px] shrink-0">
+          ${file.adds > 0 ? `<span class="text-diff-add-text">+${file.adds}</span>` : ''}
+          ${file.dels > 0 ? `<span class="text-diff-del-text">-${file.dels}</span>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  document.getElementById('file-stats').innerHTML = `
+    <span class="text-diff-add-text">+${totalAdds}</span>
+    <span class="mx-1">/</span>
+    <span class="text-diff-del-text">-${totalDels}</span>
+    <span class="ml-2">lines</span>`;
+}
+
+function renderDiff() {
+  const wt = curWt();
+  const s = cur();
+  const currentFiles = wt.files[s.mode] || [];
+
+  if (currentFiles.length === 0) {
+    document.getElementById('diff-content').innerHTML = `
+      <div class="flex items-center justify-center h-full text-term-dim text-sm">
+        No changes in ${s.mode} mode
+      </div>`;
+    document.getElementById('current-file-path').textContent = '—';
+    document.getElementById('current-file-adds').textContent = '';
+    document.getElementById('current-file-dels').textContent = '';
+    document.getElementById('hunk-current').textContent = '0';
+    document.getElementById('hunk-total').textContent = '0';
+    return;
+  }
+
+  const file = currentFiles[s.selectedFile];
+  if (!file) return;
+
+  document.getElementById('current-file-path').textContent = file.path;
+  document.getElementById('current-file-adds').textContent = `+${file.adds}`;
+  document.getElementById('current-file-dels').textContent = `-${file.dels}`;
+
+  const fileDiff = wt.diffs[file.path];
+  if (!fileDiff) {
+    document.getElementById('diff-content').innerHTML = `
+      <div class="flex items-center justify-center h-64 text-term-dim text-xs">
+        <div class="text-center">
+          <div class="mb-2">[ diff preview not available for this file ]</div>
+          <div class="text-[10px]">In the real tool, all diffs render live</div>
+        </div>
+      </div>`;
+    document.getElementById('hunk-current').textContent = '0';
+    document.getElementById('hunk-total').textContent = '0';
+    return;
+  }
+
+  const totalHunks = fileDiff.hunks.length;
+  if (s.currentHunk >= totalHunks) s.currentHunk = 0;
+  document.getElementById('hunk-current').textContent = s.currentHunk + 1;
+  document.getElementById('hunk-total').textContent = totalHunks;
+
+  let html = '';
+  fileDiff.hunks.forEach((hunk, hunkIdx) => {
+    const isCurrent = hunkIdx === s.currentHunk;
+    html += `<div class="hunk-header px-3 py-1 text-[10px] text-accent-purple/80 font-medium ${isCurrent ? 'border-l-accent-blue' : ''}"
+         id="hunk-${hunkIdx}">${hunk.header}</div>`;
+
+    hunk.lines.forEach(line => {
+      let bgClass = '', gutterBg = '', prefix = ' ';
+      let numOld = line.num_old || '', numNew = line.num_new || '';
+      if (line.type === 'add') { bgClass = 'bg-diff-add-bg'; gutterBg = 'bg-diff-add-gutter'; prefix = '+'; numOld = ''; }
+      else if (line.type === 'del') { bgClass = 'bg-diff-del-bg'; gutterBg = 'bg-diff-del-gutter'; prefix = '-'; numNew = ''; }
+
+      html += `
+        <div class="flex ${bgClass} hover:brightness-110 transition-all duration-75">
+          <span class="line-num px-1 text-[10px] text-term-dim ${gutterBg} select-none" style="min-width:3ch">${numOld}</span>
+          <span class="line-num px-1 text-[10px] text-term-dim ${gutterBg} select-none border-r border-term-border" style="min-width:3ch">${numNew}</span>
+          <span class="px-1 text-[10px] ${line.type === 'add' ? 'text-diff-add-text' : line.type === 'del' ? 'text-diff-del-text' : 'text-term-dim'} select-none" style="min-width:1.5ch">${prefix}</span>
+          <span class="flex-1 px-1">${line.content}</span>
+        </div>`;
+    });
+
+    if (hunkIdx < fileDiff.hunks.length - 1) {
+      html += `<div class="h-2 bg-term-bg border-y border-term-border/30 flex items-center justify-center">
+        <span class="text-[9px] text-term-dim">···</span></div>`;
+    }
+  });
+
+  document.getElementById('diff-content').innerHTML = html;
+  const hunkEl = document.getElementById(`hunk-${s.currentHunk}`);
+  if (hunkEl) hunkEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ══════════════════════════════════════════
+// INTERACTIONS
+// ══════════════════════════════════════════
+
+function selectFile(index) {
+  const s = cur();
+  const currentFiles = curWt().files[s.mode] || [];
+  if (index < 0 || index >= currentFiles.length) return;
+  s.selectedFile = index;
+  s.currentHunk = 0;
+  renderFileList();
+  renderDiff();
+}
+
+function nextHunk() {
+  const s = cur();
+  const file = curWt().files[s.mode]?.[s.selectedFile];
+  if (!file) return;
+  const fileDiff = curWt().diffs[file.path];
+  if (!fileDiff) return;
+  if (s.currentHunk < fileDiff.hunks.length - 1) { s.currentHunk++; renderDiff(); }
+}
+
+function prevHunk() {
+  const s = cur();
+  if (s.currentHunk > 0) { s.currentHunk--; renderDiff(); }
+}
+
+function switchMode(mode) {
+  const s = cur();
+  s.mode = mode;
+  s.selectedFile = 0;
+  s.currentHunk = 0;
+  updateModeUI();
+  renderFileList();
+  renderDiff();
+}
+
+function updateModeUI() {
+  const s = cur();
+  document.querySelectorAll('.mode-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.mode === s.mode);
+  });
+  const labels = { branch: 'BRANCH DIFF', unstaged: 'UNSTAGED', staged: 'STAGED' };
+  document.getElementById('status-msg').textContent = labels[s.mode] || s.mode.toUpperCase();
+}
+
+function toggleWatch() {
+  state.watchActive = !state.watchActive;
+  const btn = document.getElementById('watch-btn');
+  const indicator = document.getElementById('watch-indicator');
+  const label = document.getElementById('watch-label');
+
+  if (state.watchActive) {
+    btn.classList.add('watch-active');
+    indicator.className = 'watch-dot inline-block w-2 h-2 rounded-full bg-accent-green';
+    label.className = 'text-accent-green';
+    label.textContent = 'WATCHING ALL';
+    simulateWatchChanges();
+  } else {
+    btn.classList.remove('watch-active');
+    indicator.className = 'watch-dot inline-block w-2 h-2 rounded-full bg-term-dim';
+    label.className = 'text-term-dim';
+    label.textContent = 'WATCH ALL';
+  }
+}
+
+function simulateWatchChanges() {
+  if (!state.watchActive) return;
+  const notif = document.getElementById('watch-notification');
+  const notifText = document.getElementById('watch-notif-text');
+
+  // Simulate changes across ALL worktrees
+  const allChanges = worktrees.flatMap((wt, wtIdx) =>
+    wt.files.branch.slice(0, 2).map(f => ({ file: f.path, branch: wt.branch, wtIdx }))
+  );
+  let changeIdx = 0;
+
+  function showChange() {
+    if (!state.watchActive) { notif.classList.add('hidden'); return; }
+    const change = allChanges[changeIdx % allChanges.length];
+
+    // Show notification
+    notifText.innerHTML = `<span class="text-accent-blue">[${change.branch}]</span> ${change.file}`;
+    notif.classList.remove('hidden');
+
+    // Light up the worktree tab if it's not the active one
+    if (change.wtIdx !== state.activeWorktree) {
+      const tab = document.querySelector(`.wt-tab[data-wt="${change.wtIdx}"]`);
+      if (tab) {
+        tab.classList.add('has-activity');
+        // Ping animation on the dot
+        const dot = tab.querySelector('.wt-activity');
+        if (dot) { dot.classList.remove('wt-ping'); void dot.offsetWidth; dot.classList.add('wt-ping'); }
+      }
+    }
+
+    changeIdx++;
+    setTimeout(() => {
+      notif.classList.add('hidden');
+      setTimeout(showChange, 1500 + Math.random() * 2500);
+    }, 1800);
+  }
+
+  setTimeout(showChange, 800);
+}
+
+function toggleHelp() {
+  state.helpVisible = !state.helpVisible;
+  document.getElementById('help-overlay').classList.toggle('hidden', !state.helpVisible);
+}
+
+function filterFiles(query) {
+  const items = document.querySelectorAll('.file-item');
+  const q = query.toLowerCase();
+  items.forEach(item => {
+    const name = item.querySelector('.file-name').textContent.toLowerCase();
+    item.style.display = name.includes(q) || !q ? '' : 'none';
+  });
+}
+
+// ══════════════════════════════════════════
+// KEYBOARD
+// ══════════════════════════════════════════
+
+document.addEventListener('keydown', (e) => {
+  if (document.activeElement.tagName === 'INPUT') {
+    if (e.key === 'Escape') { document.activeElement.blur(); document.activeElement.value = ''; filterFiles(''); }
+    return;
+  }
+
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    if (e.shiftKey) prevWorktree(); else nextWorktree();
+    return;
+  }
+
+  switch(e.key) {
+    case 'j': selectFile(cur().selectedFile + 1); break;
+    case 'k': selectFile(cur().selectedFile - 1); break;
+    case 'n': nextHunk(); break;
+    case 'N': prevHunk(); break;
+    case '1': switchMode('branch'); break;
+    case '2': switchMode('unstaged'); break;
+    case '3': switchMode('staged'); break;
+    case 'w': toggleWatch(); break;
+    case '?': toggleHelp(); break;
+    case '/': e.preventDefault(); document.getElementById('file-search').focus(); break;
+    case 'Escape': if (state.helpVisible) toggleHelp(); break;
+  }
+});
+
+// ══════════════════════════════════════════
+// SCROLL
+// ══════════════════════════════════════════
+
+const diffScroll = document.getElementById('diff-scroll');
+const scrollThumb = document.getElementById('scroll-thumb');
+diffScroll.addEventListener('scroll', () => {
+  const pct = diffScroll.scrollTop / (diffScroll.scrollHeight - diffScroll.clientHeight || 1);
+  scrollThumb.style.top = `${pct * (diffScroll.clientHeight - 60)}px`;
+});
+
+// ══════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════
+
+renderWorktreeTabs();
+renderFileList();
+renderDiff();
+</script>
+</body>
+</html>
