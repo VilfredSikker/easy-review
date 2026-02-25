@@ -44,7 +44,8 @@ er ~/projects/api ~/projects/frontend
 
 - **AI-powered review** — Run `/er-review` in Claude Code, get per-file risk levels, inline findings, and a review checklist
 - **Four view modes** — Default (clean diff), Overlay (inline AI banners), Side Panel (3-column with AI panel), AI Review (full-screen dashboard)
-- **Comment & feedback loop** — Press `c` to comment on findings, re-run `/er-review` for AI responses
+- **Comment & feedback loop** — Press `c` to comment on lines/hunks, reply to threads with `r`, delete with `d`. Comments render inline after their target line or after the hunk
+- **GitHub PR comment sync** — Pull existing PR review comments into `er` with `G`, push your comments back with `P`. Two-way sync via `gh` CLI
 - **GitHub PR integration** — Open PRs directly: `er --pr 42` or `er <github-url>`
 - **Three diff modes** — Branch diff, unstaged changes, staged changes
 - **Line-level navigation** — Arrow keys move through individual diff lines within hunks
@@ -87,12 +88,30 @@ s                 Stage / unstage file
 S                 Stage current hunk
 Space             Toggle file as reviewed
 u                 Filter to unreviewed files only
-c                 Comment on current hunk/line
+c                 Comment on current line
+C                 Comment on current hunk
 y                 Yank (copy) current hunk
 e                 Open file in $EDITOR
-r                 Refresh diff
+r                 Refresh diff (or reply when comment focused)
 w                 Toggle live watch mode
 /                 Search / filter files
+```
+
+### Comments
+
+```
+Tab               Toggle comment focus mode
+↓ / ↑             Navigate between comments (when focused)
+r                 Reply to focused comment
+d                 Delete focused comment
+R                 Toggle resolved on focused comment
+```
+
+### GitHub Sync (requires `gh` CLI)
+
+```
+G                 Pull PR review comments from GitHub
+P                 Push local comments to GitHub PR
 ```
 
 ### AI Views
@@ -172,7 +191,7 @@ src/
 | `.er-order.json` | Suggested review order with groupings |
 | `.er-summary.md` | Markdown summary of overall changes |
 | `.er-checklist.json` | Review checklist items |
-| `.er-feedback.json` | Your comments (the only file `er` writes) |
+| `.er-feedback.json` | Your comments and GitHub-synced comments (the only file `er` writes) |
 
 Claude Code skills: `/er-review` (full analysis), `/er-questions` (respond to comments), `/er-risk-sort`, `/er-summary`, `/er-checklist`. See `skills/README.md` for setup.
 
