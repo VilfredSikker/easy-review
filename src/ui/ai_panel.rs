@@ -176,7 +176,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         // Human comments for this file
         if let Some(fb) = &tab.ai.feedback {
             let file_comments: Vec<_> = fb.comments.iter()
-                .filter(|c| c.file == path)
+                .filter(|c| c.file == path && c.in_reply_to.is_none())
                 .collect();
             if !file_comments.is_empty() {
                 lines.push(Line::from(vec![
@@ -189,7 +189,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 ]));
                 lines.push(Line::from(""));
 
-                for comment in file_comments {
+                for comment in &file_comments {
                     let target = comment.hunk_index
                         .map(|hi| {
                             comment.line_start
@@ -198,16 +198,33 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                         })
                         .unwrap_or_else(|| "file".to_string());
 
-                    lines.push(Line::from(vec![
+                    let author = if comment.author.is_empty() { "You" } else { &comment.author };
+
+                    let mut header_spans = vec![
                         Span::styled(
                             " 💬 ",
                             styles::comment_style(),
                         ),
                         Span::styled(
-                            target,
+                            author.to_string(),
+                            ratatui::style::Style::default()
+                                .fg(styles::CYAN)
+                                .add_modifier(ratatui::style::Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("  {}", target),
                             ratatui::style::Style::default().fg(styles::DIM),
                         ),
-                    ]));
+                    ];
+
+                    if comment.synced {
+                        header_spans.push(Span::styled(
+                            "  ↑ synced",
+                            ratatui::style::Style::default().fg(styles::GREEN),
+                        ));
+                    }
+
+                    lines.push(Line::from(header_spans));
 
                     let max_w = area.width.saturating_sub(5) as usize;
                     for wrapped in word_wrap(&comment.comment, max_w) {
@@ -218,6 +235,33 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                             ),
                         ]));
                     }
+
+                    // Render replies
+                    let replies = tab.ai.replies_to(&comment.id);
+                    for reply in &replies {
+                        let reply_author = if reply.author.is_empty() { "You" } else { &reply.author };
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "   ↳ 💬 ",
+                                ratatui::style::Style::default().fg(styles::DIM),
+                            ),
+                            Span::styled(
+                                reply_author.to_string(),
+                                ratatui::style::Style::default()
+                                    .fg(styles::CYAN)
+                                    .add_modifier(ratatui::style::Modifier::BOLD),
+                            ),
+                        ]));
+                        for wrapped in word_wrap(&reply.comment, max_w.saturating_sub(4)) {
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!("       {}", wrapped),
+                                    ratatui::style::Style::default().fg(styles::TEXT),
+                                ),
+                            ]));
+                        }
+                    }
+
                     lines.push(Line::from(""));
                 }
             }

@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DiffMode, InputMode};
+use crate::app::{App, DiffMode, InputMode, ConfirmAction};
 use crate::ai::ViewMode;
 use super::styles;
 
@@ -257,6 +257,16 @@ fn build_hints(app: &App) -> Vec<Hint> {
     ];
 
     hints.push(Hint::new("c", " comment "));
+    hints.push(Hint::new("C", " hunk comment "));
+
+    if tab.comment_focus.is_some() {
+        hints.push(Hint::new("r", " reply "));
+        hints.push(Hint::new("d", " delete "));
+        hints.push(Hint::new("R", " resolve "));
+    }
+
+    hints.push(Hint::new("G", " gh sync "));
+    hints.push(Hint::new("P", " push "));
 
     if tab.ai.has_data() {
         hints.push(Hint::new("v/V", " AI view "));
@@ -333,8 +343,8 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
 
 /// Calculate how many rows the bottom bar needs
 pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
-    match app.input_mode {
-        InputMode::Search | InputMode::Comment => 1,
+    match &app.input_mode {
+        InputMode::Search | InputMode::Comment | InputMode::Confirm(_) => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -348,7 +358,24 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.tab();
     let panel_bg = ratatui::style::Style::default().bg(styles::PANEL);
 
-    match app.input_mode {
+    match &app.input_mode {
+        InputMode::Confirm(action) => {
+            let prompt = match action {
+                ConfirmAction::DeleteComment { .. } => "Delete comment? (y/n)",
+            };
+            let spans = vec![
+                Span::styled(" ⚠ ", ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::YELLOW)
+                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    format!(" {} ", prompt),
+                    ratatui::style::Style::default().fg(styles::YELLOW),
+                ),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
         InputMode::Comment => {
             // Show: 💬 file:hunk > comment_input█  Enter send  Esc cancel
             let file_short = tab.comment_file.rsplit('/').next().unwrap_or(&tab.comment_file);

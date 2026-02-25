@@ -37,11 +37,26 @@ impl DiffMode {
 }
 
 /// Whether we're navigating or typing in the search filter / comment
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
     Normal,
     Search,
     Comment,
+    Confirm(ConfirmAction),
+}
+
+/// Actions that require user confirmation (y/n)
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfirmAction {
+    DeleteComment { comment_id: String },
+}
+
+/// Tracks which comment is focused for reply/delete operations
+#[derive(Debug, Clone)]
+pub struct CommentFocus {
+    pub file: String,
+    pub hunk_index: Option<usize>,
+    pub comment_id: String,
 }
 
 // ── Overlay types ──
@@ -137,6 +152,9 @@ pub struct TabState {
 
     /// Optional specific line number the comment targets (new-side)
     pub comment_line_num: Option<usize>,
+
+    /// Currently focused comment (for reply/delete operations)
+    pub comment_focus: Option<CommentFocus>,
 }
 
 impl TabState {
@@ -170,6 +188,7 @@ impl TabState {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            comment_focus: None,
         };
 
         tab.refresh_diff()?;
@@ -1114,6 +1133,7 @@ impl App {
                     ai::ErFeedback {
                         version: 1,
                         diff_hash: diff_hash.clone(),
+                        github: None,
                         comments: Vec::new(),
                     }
                 }
@@ -1121,6 +1141,7 @@ impl App {
             Err(_) => ai::ErFeedback {
                 version: 1,
                 diff_hash: diff_hash.clone(),
+                github: None,
                 comments: Vec::new(),
             },
         };
@@ -1154,6 +1175,10 @@ impl App {
             comment: text.clone(),
             in_reply_to: reply_to,
             resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced: false,
         };
 
         feedback.comments.push(comment);
@@ -1179,6 +1204,231 @@ impl App {
     pub fn cancel_comment(&mut self) {
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
+    }
+
+    // ── Comment Focus & Navigation ──
+
+    /// Toggle comment focus mode. When in a hunk with comments, Tab enters
+    /// comment focus; pressing Tab again exits it.
+    pub fn toggle_comment_focus(&mut self) {
+        let tab = self.tab_mut();
+        if tab.comment_focus.is_some() {
+            // Exit comment focus
+            tab.comment_focus = None;
+            return;
+        }
+
+        // Enter comment focus: find first comment in the current hunk
+        let file_path = match tab.selected_diff_file() {
+            Some(f) => f.path.clone(),
+            None => return,
+        };
+        let hunk_idx = tab.current_hunk;
+
+        // Collect all top-level comments for this hunk (line + hunk-level)
+        let comments = tab.ai.comments_for_hunk(&file_path, hunk_idx);
+        let top_level: Vec<_> = comments.iter()
+            .filter(|c| c.in_reply_to.is_none())
+            .collect();
+
+        if let Some(first) = top_level.first() {
+            tab.comment_focus = Some(CommentFocus {
+                file: file_path,
+                hunk_index: Some(hunk_idx),
+                comment_id: first.id.clone(),
+            });
+        }
+    }
+
+    /// Navigate to next comment in the current hunk
+    pub fn next_comment(&mut self) {
+        let tab = self.tab_mut();
+        let focus = match &tab.comment_focus {
+            Some(f) => f.clone(),
+            None => return,
+        };
+
+        // All comments in this hunk (including replies)
+        let hunk_idx = focus.hunk_index.unwrap_or(0);
+        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
+        let ids: Vec<&str> = all_comments.iter().map(|c| c.id.as_str()).collect();
+
+        if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
+            if pos + 1 < ids.len() {
+                tab.comment_focus = Some(CommentFocus {
+                    file: focus.file,
+                    hunk_index: focus.hunk_index,
+                    comment_id: ids[pos + 1].to_string(),
+                });
+            }
+        }
+    }
+
+    /// Navigate to previous comment in the current hunk
+    pub fn prev_comment(&mut self) {
+        let tab = self.tab_mut();
+        let focus = match &tab.comment_focus {
+            Some(f) => f.clone(),
+            None => return,
+        };
+
+        let hunk_idx = focus.hunk_index.unwrap_or(0);
+        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
+        let ids: Vec<&str> = all_comments.iter().map(|c| c.id.as_str()).collect();
+
+        if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
+            if pos > 0 {
+                tab.comment_focus = Some(CommentFocus {
+                    file: focus.file,
+                    hunk_index: focus.hunk_index,
+                    comment_id: ids[pos - 1].to_string(),
+                });
+            }
+        }
+    }
+
+    // ── Reply System ──
+
+    /// Start replying to the focused comment
+    pub fn start_reply(&mut self) {
+        let tab = self.tab();
+        let focus = match &tab.comment_focus {
+            Some(f) => f.clone(),
+            None => return,
+        };
+
+        // Check if the focused comment is itself a reply (block nested replies)
+        if let Some(ref fb) = tab.ai.feedback {
+            if let Some(comment) = fb.comments.iter().find(|c| c.id == focus.comment_id) {
+                if comment.in_reply_to.is_some() {
+                    self.notify("Cannot reply to a reply");
+                    return;
+                }
+            }
+        }
+
+        let tab = self.tab_mut();
+        tab.comment_input.clear();
+        tab.comment_file = focus.file;
+        tab.comment_hunk = focus.hunk_index.unwrap_or(0);
+        tab.comment_line_num = None; // Reply inherits parent's position
+        tab.comment_reply_to = Some(focus.comment_id);
+        self.input_mode = InputMode::Comment;
+    }
+
+    // ── Comment Deletion ──
+
+    /// Initiate comment deletion (enters confirm mode)
+    pub fn start_delete_comment(&mut self) {
+        let tab = self.tab();
+        let focus = match &tab.comment_focus {
+            Some(f) => f.clone(),
+            None => return,
+        };
+
+        // Check if the comment exists and is deletable
+        if let Some(ref fb) = tab.ai.feedback {
+            if let Some(comment) = fb.comments.iter().find(|c| c.id == focus.comment_id) {
+                // Can't delete others' GitHub comments
+                if comment.source == "github" && comment.author != "You" {
+                    self.notify("Cannot delete others' comments");
+                    return;
+                }
+            } else {
+                return;
+            }
+        } else {
+            return;
+        }
+
+        self.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
+            comment_id: focus.comment_id,
+        });
+    }
+
+    /// Execute comment deletion after confirmation
+    pub fn confirm_delete_comment(&mut self, comment_id: &str) -> Result<()> {
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let feedback_path = format!("{}/.er-feedback.json", repo_root);
+
+        let mut feedback: ai::ErFeedback = match std::fs::read_to_string(&feedback_path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(fb) => fb,
+                Err(_) => {
+                    self.input_mode = InputMode::Normal;
+                    return Ok(());
+                }
+            },
+            Err(_) => {
+                self.input_mode = InputMode::Normal;
+                return Ok(());
+            }
+        };
+
+        // Check if the comment has a github_id for API deletion
+        let github_id = feedback.comments.iter()
+            .find(|c| c.id == comment_id)
+            .and_then(|c| c.github_id);
+
+        // Also collect github_ids of replies that need to be deleted from GitHub
+        let reply_github_ids: Vec<u64> = feedback.comments.iter()
+            .filter(|c| c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some())
+            .filter_map(|c| c.github_id)
+            .collect();
+
+        // Delete from GitHub if applicable
+        if let Some(gh_id) = github_id {
+            if let Some(ref gh) = feedback.github {
+                let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, gh_id);
+                for reply_id in &reply_github_ids {
+                    let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, *reply_id);
+                }
+            }
+        }
+
+        // Remove the comment and all its replies (cascade)
+        feedback.comments.retain(|c| {
+            c.id != comment_id && c.in_reply_to.as_deref() != Some(comment_id)
+        });
+
+        // Write atomically
+        let json = serde_json::to_string_pretty(&feedback)?;
+        let tmp_path = format!("{}.tmp", feedback_path);
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, &feedback_path)?;
+
+        // Clear focus and return to normal
+        self.tab_mut().comment_focus = None;
+        self.input_mode = InputMode::Normal;
+
+        // Reload AI state
+        self.tab_mut().reload_ai_state();
+
+        self.notify("Comment deleted");
+        Ok(())
+    }
+
+    /// Cancel the confirm dialog
+    pub fn cancel_confirm(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    // ── Hunk Comment (Shift-C) ──
+
+    /// Enter comment mode for a hunk-level comment (no line_start)
+    pub fn start_hunk_comment(&mut self) {
+        let tab = self.tab_mut();
+        let file_path = match tab.selected_diff_file() {
+            Some(f) => f.path.clone(),
+            None => return,
+        };
+        tab.comment_input.clear();
+        tab.comment_file = file_path;
+        tab.comment_hunk = tab.current_hunk;
+        tab.comment_line_num = None; // Force hunk-level
+        tab.comment_reply_to = None;
+        self.input_mode = InputMode::Comment;
     }
 
     // ── AiReview Navigation ──
@@ -1321,7 +1571,7 @@ impl App {
 
 /// Simple ISO 8601 UTC timestamp (no external crate needed).
 /// Kept in ISO format so .er-feedback.json timestamps are human-readable.
-fn chrono_now() -> String {
+pub(crate) fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1410,6 +1660,7 @@ mod tests {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            comment_focus: None,
         }
     }
 

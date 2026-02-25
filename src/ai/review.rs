@@ -186,10 +186,24 @@ pub struct ChecklistItem {
 
 // ── .er-feedback.json ──
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitHubSyncState {
+    #[serde(default)]
+    pub pr_number: Option<u64>,
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub last_synced: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErFeedback {
     pub version: u32,
     pub diff_hash: String,
+    #[serde(default)]
+    pub github: Option<GitHubSyncState>,
     #[serde(default)]
     pub comments: Vec<FeedbackComment>,
 }
@@ -210,6 +224,27 @@ pub struct FeedbackComment {
     pub in_reply_to: Option<String>,
     #[serde(default)]
     pub resolved: bool,
+    /// "local" | "github"
+    #[serde(default = "default_source")]
+    pub source: String,
+    /// GitHub comment ID (for sync/dedup)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub github_id: Option<u64>,
+    /// Author display name ("You" for local, GitHub login for remote)
+    #[serde(default = "default_author")]
+    pub author: String,
+    /// Whether this comment was pushed to GitHub
+    #[serde(default)]
+    pub synced: bool,
+}
+
+fn default_source() -> String {
+    "local".to_string()
+}
+
+fn default_author() -> String {
+    "You".to_string()
 }
 
 // ── AiReview navigation ──
@@ -322,13 +357,59 @@ impl AiState {
         }
     }
 
-    /// Get feedback comments for a specific file and hunk
+    /// Get all feedback comments for a specific file and hunk (including replies)
     pub fn comments_for_hunk(&self, path: &str, hunk_index: usize) -> Vec<&FeedbackComment> {
         match &self.feedback {
             Some(fb) => fb
                 .comments
                 .iter()
                 .filter(|c| c.file == path && c.hunk_index == Some(hunk_index))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Comments targeting a specific line within a hunk (top-level only, no replies)
+    pub fn comments_for_line(&self, path: &str, hunk_idx: usize, line_num: usize) -> Vec<&FeedbackComment> {
+        match &self.feedback {
+            Some(fb) => fb
+                .comments
+                .iter()
+                .filter(|c| {
+                    c.file == path
+                        && c.hunk_index == Some(hunk_idx)
+                        && c.line_start == Some(line_num)
+                        && c.in_reply_to.is_none()
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Comments targeting the hunk as a whole (no specific line, top-level only)
+    pub fn comments_for_hunk_only(&self, path: &str, hunk_idx: usize) -> Vec<&FeedbackComment> {
+        match &self.feedback {
+            Some(fb) => fb
+                .comments
+                .iter()
+                .filter(|c| {
+                    c.file == path
+                        && c.hunk_index == Some(hunk_idx)
+                        && c.line_start.is_none()
+                        && c.in_reply_to.is_none()
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Replies to a specific comment
+    pub fn replies_to(&self, comment_id: &str) -> Vec<&FeedbackComment> {
+        match &self.feedback {
+            Some(fb) => fb
+                .comments
+                .iter()
+                .filter(|c| c.in_reply_to.as_deref() == Some(comment_id))
                 .collect(),
             None => Vec::new(),
         }
@@ -525,6 +606,48 @@ mod tests {
             comment: "test comment".to_string(),
             in_reply_to: None,
             resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced: false,
+        }
+    }
+
+    fn make_feedback_comment_with_line(file: &str, hunk_index: Option<usize>, line_start: Option<usize>) -> FeedbackComment {
+        FeedbackComment {
+            id: format!("{}-{:?}-{:?}", file, hunk_index, line_start),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index,
+            line_start,
+            line_end: None,
+            line_content: String::new(),
+            comment: "test comment".to_string(),
+            in_reply_to: None,
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced: false,
+        }
+    }
+
+    fn make_feedback_reply(file: &str, hunk_index: Option<usize>, in_reply_to: &str) -> FeedbackComment {
+        FeedbackComment {
+            id: format!("reply-{}-{:?}", file, hunk_index),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index,
+            line_start: None,
+            line_end: None,
+            line_content: String::new(),
+            comment: "reply comment".to_string(),
+            in_reply_to: Some(in_reply_to.to_string()),
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced: false,
         }
     }
 
@@ -805,6 +928,7 @@ mod tests {
         state.feedback = Some(ErFeedback {
             version: 1,
             diff_hash: "test".to_string(),
+            github: None,
             comments: vec![
                 make_feedback_comment("a.rs", Some(0)),
                 make_feedback_comment("a.rs", Some(1)),
@@ -823,9 +947,111 @@ mod tests {
         state.feedback = Some(ErFeedback {
             version: 1,
             diff_hash: "test".to_string(),
+            github: None,
             comments: vec![make_feedback_comment("a.rs", Some(0))],
         });
         let results = state.comments_for_hunk("b.rs", 0);
+        assert!(results.is_empty());
+    }
+
+    // ── AiState::comments_for_line ──
+
+    #[test]
+    fn comments_for_line_returns_matching_line_comments() {
+        let mut state = AiState::default();
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                make_feedback_comment_with_line("a.rs", Some(0), Some(10)),
+                make_feedback_comment_with_line("a.rs", Some(0), Some(20)),
+                make_feedback_comment("a.rs", Some(0)), // hunk-level, no line
+            ],
+        });
+        let results = state.comments_for_line("a.rs", 0, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].line_start, Some(10));
+    }
+
+    #[test]
+    fn comments_for_line_excludes_replies() {
+        let mut state = AiState::default();
+        let parent = make_feedback_comment_with_line("a.rs", Some(0), Some(10));
+        let reply = make_feedback_reply("a.rs", Some(0), &parent.id);
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![parent, reply],
+        });
+        let results = state.comments_for_line("a.rs", 0, 10);
+        assert_eq!(results.len(), 1);
+    }
+
+    // ── AiState::comments_for_hunk_only ──
+
+    #[test]
+    fn comments_for_hunk_only_returns_hunk_level_comments() {
+        let mut state = AiState::default();
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                make_feedback_comment("a.rs", Some(0)),         // hunk-level
+                make_feedback_comment_with_line("a.rs", Some(0), Some(10)), // line-level
+            ],
+        });
+        let results = state.comments_for_hunk_only("a.rs", 0);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].line_start.is_none());
+    }
+
+    #[test]
+    fn comments_for_hunk_only_excludes_replies() {
+        let mut state = AiState::default();
+        let parent = make_feedback_comment("a.rs", Some(0));
+        let reply = make_feedback_reply("a.rs", Some(0), &parent.id);
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![parent, reply],
+        });
+        let results = state.comments_for_hunk_only("a.rs", 0);
+        assert_eq!(results.len(), 1);
+    }
+
+    // ── AiState::replies_to ──
+
+    #[test]
+    fn replies_to_returns_replies() {
+        let mut state = AiState::default();
+        let parent = make_feedback_comment("a.rs", Some(0));
+        let parent_id = parent.id.clone();
+        let reply = make_feedback_reply("a.rs", Some(0), &parent_id);
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![parent, reply],
+        });
+        let results = state.replies_to(&parent_id);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].in_reply_to.as_deref(), Some(parent_id.as_str()));
+    }
+
+    #[test]
+    fn replies_to_no_replies_returns_empty() {
+        let mut state = AiState::default();
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_feedback_comment("a.rs", Some(0))],
+        });
+        let results = state.replies_to("nonexistent");
         assert!(results.is_empty());
     }
 
