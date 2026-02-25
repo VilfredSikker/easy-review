@@ -8,7 +8,7 @@ use ratatui::{
 use std::time::SystemTime;
 
 use crate::ai::{RiskLevel, ViewMode};
-use crate::app::{App, DiffMode};
+use crate::app::App;
 use crate::git::FileStatus;
 use super::styles;
 
@@ -96,9 +96,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 None
             };
 
-            // Relative time for Recent mode
-            let is_recent = tab.mode == DiffMode::Recent;
-            let time_str = if is_recent {
+            // Relative time when sorting by mtime
+            let time_str = if tab.sort_by_mtime {
                 let mtime = std::fs::metadata(format!("{}/{}", tab.repo_root, file.path))
                     .and_then(|m| m.modified())
                     .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -157,7 +156,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::TEXT)
                 },
             ));
-            // Show relative time in Recent mode
+            // Show relative time when sorting by mtime
             if let Some(ref ts) = time_str {
                 spans.push(Span::styled(
                     format!("{:>7} ", ts),

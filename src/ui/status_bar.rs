@@ -109,7 +109,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::GREEN),
         ),
     ];
-    if tab.mode == DiffMode::Branch || tab.mode == DiffMode::Recent {
+    if tab.mode == DiffMode::Branch {
         info_spans.push(Span::styled(
             format!(" (vs {})", tab.base_branch),
             ratatui::style::Style::default().fg(styles::DIM),
@@ -130,10 +130,17 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::raw(" "),
         Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)),
         Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)),
-        Span::raw(" "),
-        Span::styled(" 4 ", mode_style(DiffMode::Recent, tab.mode)),
-        Span::styled(" RECENT ", mode_style(DiffMode::Recent, tab.mode)),
     ];
+    if tab.sort_by_mtime {
+        modes.push(Span::raw(" "));
+        modes.push(Span::styled(
+            " R RECENT ",
+            ratatui::style::Style::default()
+                .fg(styles::BG)
+                .bg(styles::YELLOW)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
 
     let mut right: Vec<Span> = Vec::new();
 
@@ -265,6 +272,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("f", " filter "),
         Hint::new("F", " history "),
         Hint::new("r", " reload "),
+        Hint::new("R", " recent "),
         Hint::new("w", " watch "),
         Hint::new("e", " edit "),
         Hint::new("t", " tree "),
