@@ -1,4 +1,5 @@
 use crate::ai::{self, AiState, ReviewFocus, ViewMode};
+use crate::config::{self, ErConfig, WatchedConfig};
 use crate::git::{self, DiffFile, WatchedFile, Worktree};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -6,39 +7,6 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
-
-// ── Config ──
-
-/// Configuration from .er-config.toml
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct ErConfig {
-    #[serde(default)]
-    pub watched: WatchedConfig,
-}
-
-/// [watched] section configuration
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct WatchedConfig {
-    /// Glob patterns for git-ignored paths to include in the UI
-    #[serde(default)]
-    pub paths: Vec<String>,
-    /// How to diff watched files: "content" or "snapshot"
-    #[serde(default = "default_diff_mode")]
-    pub diff_mode: String,
-}
-
-fn default_diff_mode() -> String {
-    "content".to_string()
-}
-
-/// Load config from .er-config.toml
-fn load_er_config(repo_root: &str) -> ErConfig {
-    let config_path = format!("{}/.er-config.toml", repo_root);
-    match std::fs::read_to_string(&config_path) {
-        Ok(content) => toml::from_str(&content).unwrap_or_default(),
-        Err(_) => ErConfig::default(),
-    }
-}
 
 // ── Enums ──
 
@@ -100,6 +68,11 @@ pub enum OverlayData {
         current_path: String,
         entries: Vec<DirEntry>,
         selected: usize,
+    },
+    Settings {
+        selected: usize,
+        /// Snapshot of config at overlay open time, for Cancel revert
+        saved_config: ErConfig,
     },
     FilterHistory {
         history: Vec<String>,
@@ -235,8 +208,8 @@ impl TabState {
 
     fn new_inner(repo_root: String, current_branch: String, base_branch: String) -> Result<Self> {
         let reviewed = Self::load_reviewed_files(&repo_root);
-        let config = load_er_config(&repo_root);
-        let watched_config = config.watched;
+        let er_config = config::load_config(&repo_root);
+        let watched_config = er_config.watched.clone();
         let has_watched = !watched_config.paths.is_empty();
 
         let mut tab = TabState {
@@ -936,8 +909,8 @@ impl TabState {
     /// Reload config from .er-config.toml
     #[allow(dead_code)]
     pub fn reload_config(&mut self) {
-        let config = load_er_config(&self.repo_root);
-        self.watched_config = config.watched;
+        let er_config = config::load_config(&self.repo_root);
+        self.watched_config = er_config.watched;
         let has_paths = !self.watched_config.paths.is_empty();
         if !has_paths {
             self.show_watched = false;
@@ -1095,6 +1068,9 @@ pub struct App {
 
     /// Counter for throttling AI file polling (check every 10 ticks ≈ 1s)
     pub ai_poll_counter: u8,
+
+    /// Application configuration (loaded from .er-config.toml)
+    pub config: ErConfig,
 }
 
 impl App {
@@ -1139,6 +1115,10 @@ impl App {
             tabs
         };
 
+        // Load config from the first tab's repo root
+        let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
+        let er_config = config::load_config(repo_root);
+
         Ok(App {
             tabs,
             active_tab: 0,
@@ -1149,6 +1129,7 @@ impl App {
             watch_message: None,
             watch_message_ticks: 0,
             ai_poll_counter: 0,
+            config: er_config,
         })
     }
 
@@ -1260,6 +1241,51 @@ impl App {
         });
     }
 
+    // ── Overlay: Settings ──
+
+    /// Open the settings overlay
+    pub fn open_settings(&mut self) {
+        let items = config::settings_items();
+        // Find the first selectable (non-header) item
+        let first_selectable = items.iter().position(|item| {
+            !matches!(item, config::SettingsItem::SectionHeader(_))
+        }).unwrap_or(0);
+
+        self.overlay = Some(OverlayData::Settings {
+            selected: first_selectable,
+            saved_config: self.config.clone(),
+        });
+    }
+
+    /// Toggle the currently selected boolean setting
+    pub fn settings_toggle(&mut self) {
+        let items = config::settings_items();
+        if let Some(OverlayData::Settings { selected, .. }) = &self.overlay {
+            let idx = *selected;
+            if let Some(config::SettingsItem::BoolToggle { get, set, .. }) = items.get(idx) {
+                let current = get(&self.config);
+                set(&mut self.config, !current);
+            }
+        }
+    }
+
+    /// Save settings to disk and close the overlay
+    pub fn settings_save(&mut self) {
+        if let Err(e) = config::save_config(&self.config) {
+            self.notify(&format!("Failed to save: {}", e));
+        } else {
+            self.notify("Settings saved");
+        }
+        self.overlay = None;
+    }
+
+    /// Revert settings to the saved snapshot and close the overlay
+    pub fn settings_cancel(&mut self) {
+        if let Some(OverlayData::Settings { saved_config, .. }) = self.overlay.take() {
+            self.config = saved_config;
+        }
+    }
+
     // ── Overlay: Navigation ──
 
     pub fn overlay_next(&mut self) {
@@ -1272,6 +1298,20 @@ impl App {
             Some(OverlayData::DirectoryBrowser { entries, selected, .. }) => {
                 if *selected + 1 < entries.len() {
                     *selected += 1;
+                }
+            }
+            Some(OverlayData::Settings { selected, .. }) => {
+                let items = config::settings_items();
+                // Skip section headers when navigating down
+                let mut next = *selected + 1;
+                while next < items.len() {
+                    if !matches!(items[next], config::SettingsItem::SectionHeader(_)) {
+                        break;
+                    }
+                    next += 1;
+                }
+                if next < items.len() {
+                    *selected = next;
                 }
             }
             // `selected` indexes presets (0..preset_count) then history (preset_count..);
@@ -1294,12 +1334,44 @@ impl App {
                     *selected -= 1;
                 }
             }
+            Some(OverlayData::Settings { selected, .. }) => {
+                let items = config::settings_items();
+                // Skip section headers when navigating up
+                if *selected > 0 {
+                    let mut prev = *selected - 1;
+                    while prev > 0 && matches!(items[prev], config::SettingsItem::SectionHeader(_)) {
+                        prev -= 1;
+                    }
+                    if !matches!(items[prev], config::SettingsItem::SectionHeader(_)) {
+                        *selected = prev;
+                    }
+                }
+            }
             None => {}
         }
     }
 
-    /// Handle Enter in an overlay — opens selection in a new tab
+    /// Handle Enter in an overlay — opens selection in a new tab or saves settings
     pub fn overlay_select(&mut self) -> Result<()> {
+        // Settings overlay: Enter on a toggle item toggles it; otherwise treat as Save
+        if let Some(OverlayData::Settings { selected, .. }) = &self.overlay {
+            let items = config::settings_items();
+            if let Some(item) = items.get(*selected) {
+                match item {
+                    config::SettingsItem::BoolToggle { .. } => {
+                        self.settings_toggle();
+                        return Ok(());
+                    }
+                    _ => {
+                        // Non-toggleable item — treat Enter as Save
+                        self.settings_save();
+                        return Ok(());
+                    }
+                }
+            }
+            return Ok(());
+        }
+
         let overlay = match self.overlay.take() {
             Some(o) => o,
             None => return Ok(()),
@@ -1351,6 +1423,9 @@ impl App {
                     });
                 }
             }
+            OverlayData::Settings { .. } => {
+                // Already handled above
+            }
         }
         Ok(())
     }
@@ -1369,9 +1444,13 @@ impl App {
         }
     }
 
-    /// Close the overlay
+    /// Close the overlay (reverts settings changes if in Settings overlay)
     pub fn overlay_close(&mut self) {
-        self.overlay = None;
+        if matches!(self.overlay, Some(OverlayData::Settings { .. })) {
+            self.settings_cancel();
+        } else {
+            self.overlay = None;
+        }
     }
 
     /// Read directory entries, sorted: directories first (with git repo marker), then files

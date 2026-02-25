@@ -1,5 +1,6 @@
 mod ai;
 mod app;
+mod config;
 mod git;
 mod github;
 mod ui;
@@ -208,6 +209,25 @@ fn run_app<B: Backend>(
 }
 
 fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    // Settings overlay has additional keybindings
+    if matches!(app.overlay, Some(app::OverlayData::Settings { .. })) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                // Space and Enter both toggle the current item
+                app.settings_toggle();
+            }
+            KeyCode::Char('s') => {
+                // Save settings to disk
+                app.settings_save();
+            }
+            KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
         KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
@@ -234,16 +254,16 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Mode switching
-        KeyCode::Char('1') => {
+        // Mode switching (gated by feature flags)
+        KeyCode::Char('1') if app.config.features.view_branch => {
             app.tab_mut().set_mode(DiffMode::Branch);
             return Ok(());
         }
-        KeyCode::Char('2') => {
+        KeyCode::Char('2') if app.config.features.view_unstaged => {
             app.tab_mut().set_mode(DiffMode::Unstaged);
             return Ok(());
         }
-        KeyCode::Char('3') => {
+        KeyCode::Char('3') if app.config.features.view_staged => {
             app.tab_mut().set_mode(DiffMode::Staged);
             return Ok(());
         }
@@ -387,6 +407,11 @@ fn handle_normal_input(
             app.tab_mut().search_query.clear();
         }
 
+        // Stage current hunk (Ctrl+s)
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.stage_current_hunk()?;
+        }
+
         // Filter
         KeyCode::Char('f') => {
             app.input_mode = InputMode::Filter;
@@ -416,9 +441,9 @@ fn handle_normal_input(
             }
         }
 
-        // Stage current hunk
+        // Open settings overlay
         KeyCode::Char('S') => {
-            app.stage_current_hunk()?;
+            app.open_settings();
         }
 
         // Toggle reviewed
@@ -445,15 +470,15 @@ fn handle_normal_input(
             }
         }
 
-        // Toggle AI view mode (v forward, V backward)
-        KeyCode::Char('v') => {
+        // Toggle AI view mode (v forward, V backward) — gated by ai_overlays flag
+        KeyCode::Char('v') if app.config.features.ai_overlays => {
             app.tab_mut().ai.cycle_view_mode();
             app.tab_mut().diff_scroll = 0;
             app.tab_mut().ai_panel_scroll = 0;
             let mode = app.tab().ai.view_mode.label();
             app.notify(&format!("View: {}", mode));
         }
-        KeyCode::Char('V') => {
+        KeyCode::Char('V') if app.config.features.ai_overlays => {
             app.tab_mut().ai.cycle_view_mode_prev();
             app.tab_mut().diff_scroll = 0;
             app.tab_mut().ai_panel_scroll = 0;

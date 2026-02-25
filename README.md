@@ -64,6 +64,7 @@ er --filter '*.rs'
 - **Worktree picker** — Switch between worktrees via `t`
 - **Yank to clipboard** — Copy the current hunk with `y`
 - **Editor integration** — Jump to the current file in `$EDITOR` with `e`
+- **Configurable settings** — Per-repo or global `.er-config.toml`; in-app settings overlay (`S`) with live preview
 - **Responsive layout** — Top and bottom bars adapt to terminal width
 
 ## Keybindings
@@ -91,7 +92,8 @@ R (Shift+R)       Toggle sort by recency (works in any mode)
 
 ```
 s                 Stage / unstage file (or snapshot watched file)
-S                 Stage current hunk
+Ctrl-s            Stage current hunk
+S                 Open settings
 Space             Toggle file as reviewed
 u                 Filter to unreviewed files only
 c                 Comment on current hunk/line
@@ -160,6 +162,7 @@ Press `W` to toggle the watched section. Navigate into watched files with `j`/`k
 ```
 src/
 ├── main.rs           Entry point, CLI parsing (clap), event loop, input routing
+├── config.rs         Configuration system (ErConfig, load/save, settings items)
 ├── app/
 │   ├── mod.rs        Module exports
 │   └── state.rs      App state, navigation, comments, AI state, watched files config
@@ -181,13 +184,47 @@ src/
 │   ├── ai_panel.rs   Side panel — per-file AI findings column
 │   ├── ai_review_view.rs  Full-screen AI review dashboard
 │   ├── overlay.rs    Modal overlays (directory browser, worktree picker)
+│   ├── settings.rs   Settings overlay (feature toggles, display options)
 │   ├── status_bar.rs Top bar (tabs, AI badges), bottom bar (hints, comment input)
 │   └── utils.rs      Shared utilities (word wrapping)
 └── watch/
     └── mod.rs        Debounced file watcher (notify crate, 500ms)
 ```
 
-**Stack:** Rust, Ratatui, Crossterm, syntect, notify, serde/serde_json, sha2, clap, toml, glob. Shells out to `git` for diffs and `gh` for GitHub PRs. Single binary, no runtime dependencies beyond git (gh optional for PR features).
+**Stack:** Rust, Ratatui, Crossterm, syntect, notify, serde/serde_json, sha2, toml, dirs, glob, clap. Shells out to `git` for diffs and `gh` for GitHub PRs. Single binary, no runtime dependencies beyond git (gh optional for PR features).
+
+## Configuration
+
+`er` loads settings from TOML config files. Per-repo config takes priority over global:
+
+1. `{repo_root}/.er-config.toml` (per-repo)
+2. `~/.config/er/config.toml` (global)
+3. Built-in defaults
+
+Press `S` in the TUI to open the settings overlay. Changes apply immediately (live preview). Press `s` to save to disk, or `Esc` to revert.
+
+```toml
+# ~/.config/er/config.toml
+
+[features]
+split_diff = true         # side-by-side diff view
+exit_heatmap = true       # review coverage summary on quit
+blame_annotations = false # git blame on findings (slower startup)
+bookmarks = true          # hunk bookmarks with m/' keys
+view_branch = true        # enable branch diff mode (1 key)
+view_unstaged = true      # enable unstaged changes mode (2 key)
+view_staged = true        # enable staged changes mode (3 key)
+ai_overlays = true        # enable AI view cycling (v/V keys)
+
+[agent]
+command = "claude"
+args = ["--print", "-p", "{prompt}"]
+
+[display]
+tab_width = 4
+line_numbers = true       # show line numbers in diff
+wrap_lines = false        # soft-wrap long lines
+```
 
 ## AI Integration
 
