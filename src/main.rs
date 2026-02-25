@@ -190,6 +190,10 @@ fn handle_normal_input(
             app.tab_mut().set_mode(DiffMode::Staged);
             return Ok(());
         }
+        KeyCode::Char('4') => {
+            app.tab_mut().set_mode(DiffMode::History);
+            return Ok(());
+        }
 
         // Refresh
         KeyCode::Char('r') => {
@@ -262,6 +266,11 @@ fn handle_normal_input(
     // ── AiReview mode: route remaining keys to dedicated handler ──
     if app.tab().ai.view_mode == ViewMode::AiReview {
         return handle_ai_review_input(app, key);
+    }
+
+    // ── History mode: route to dedicated handler ──
+    if app.tab().mode == DiffMode::History {
+        return handle_history_input(app, key);
     }
 
     // ── Normal mode keys ──
@@ -421,6 +430,68 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
             app.tab_mut().ai.view_mode = ViewMode::Default;
             app.tab_mut().diff_scroll = 0;
             app.notify("View: DEFAULT");
+        }
+
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        // Commit navigation (left panel)
+        KeyCode::Char('j') => {
+            // Check if at the end and need to load more
+            let at_end = app.tab().history.as_ref()
+                .map(|h| h.selected_commit + 1 >= h.commits.len())
+                .unwrap_or(false);
+            if at_end {
+                app.tab_mut().history_load_more();
+            }
+            app.tab_mut().history_next_commit();
+        }
+        KeyCode::Char('k') => {
+            app.tab_mut().history_prev_commit();
+        }
+
+        // File navigation within commit diff (n/N)
+        KeyCode::Char('n') => app.tab_mut().history_next_file(),
+        KeyCode::Char('N') => app.tab_mut().history_prev_file(),
+
+        // Line navigation (arrows)
+        KeyCode::Down => app.tab_mut().history_next_line(),
+        KeyCode::Up => app.tab_mut().history_prev_line(),
+
+        // Horizontal scroll
+        KeyCode::Char('l') | KeyCode::Right => app.tab_mut().history_scroll_right(8),
+        KeyCode::Char('h') | KeyCode::Left => app.tab_mut().history_scroll_left(8),
+        KeyCode::Home => {
+            if let Some(ref mut h) = app.tab_mut().history {
+                h.h_scroll = 0;
+            }
+        }
+
+        // Scroll
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().history_scroll_down(10);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().history_scroll_up(10);
+        }
+        KeyCode::PageDown => app.tab_mut().history_scroll_down(20),
+        KeyCode::PageUp => app.tab_mut().history_scroll_up(20),
+
+        // Search (filter commits)
+        KeyCode::Char('/') => {
+            app.input_mode = InputMode::Search;
+            app.tab_mut().search_query.clear();
+        }
+
+        // Clear search filter
+        KeyCode::Esc => {
+            if !app.tab().search_query.is_empty() {
+                app.tab_mut().search_query.clear();
+            }
         }
 
         _ => {}

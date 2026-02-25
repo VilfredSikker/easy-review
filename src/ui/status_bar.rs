@@ -109,11 +109,22 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::GREEN),
         ),
     ];
-    if tab.mode == DiffMode::Branch {
+    if tab.mode == DiffMode::Branch || tab.mode == DiffMode::History {
         info_spans.push(Span::styled(
             format!(" (vs {})", tab.base_branch),
             ratatui::style::Style::default().fg(styles::DIM),
         ));
+    }
+    // In History mode, show selected commit info
+    if tab.mode == DiffMode::History {
+        if let Some(ref history) = tab.history {
+            if let Some(commit) = history.commits.get(history.selected_commit) {
+                info_spans.push(Span::styled(
+                    format!(" · {} · {}", commit.short_hash, commit.relative_date),
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ));
+            }
+        }
     }
     let info_bar = Paragraph::new(Line::from(info_spans)).style(panel_bg);
     f.render_widget(info_bar, rows[row_idx]);
@@ -130,6 +141,9 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::raw(" "),
         Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)),
         Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)),
+        Span::raw(" "),
+        Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)),
+        Span::styled(" HISTORY ", mode_style(DiffMode::History, tab.mode)),
     ];
 
     let mut right: Vec<Span> = Vec::new();
@@ -230,6 +244,48 @@ fn build_ai_review_hints(app: &App) -> Vec<Hint> {
     hints
 }
 
+/// Build hints for History mode
+fn build_history_hints(app: &App) -> Vec<Hint> {
+    let tab = app.tab();
+    let mut hints = vec![
+        Hint::new("j/k", " commits "),
+        Hint::new("n/N", " files "),
+        Hint::new("↑↓", " lines "),
+        Hint::new("h/l", " scroll "),
+        Hint::new("/", " search "),
+        Hint::new("q", " quit "),
+    ];
+
+    if app.tabs.len() > 1 {
+        hints.push(Hint::new("[/]", " tabs "));
+        hints.push(Hint::new("x", " close "));
+    }
+
+    // Show current file in commit if navigating
+    if let Some(ref history) = tab.history {
+        if !history.commit_files.is_empty() {
+            let file_name = history.commit_files.get(history.selected_file)
+                .map(|f| f.path.rsplit('/').next().unwrap_or(&f.path))
+                .unwrap_or("");
+            if !file_name.is_empty() {
+                hints.push(Hint {
+                    key: String::new(),
+                    label: format!(" {} ", file_name),
+                });
+            }
+        }
+    }
+
+    if !tab.search_query.is_empty() {
+        hints.push(Hint {
+            key: String::new(),
+            label: format!(" filter: \"{}\" ", tab.search_query),
+        });
+    }
+
+    hints
+}
+
 /// Build the normal-mode hint list
 fn build_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
@@ -237,6 +293,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
     // Delegate to AiReview-specific hints when in that mode
     if tab.ai.view_mode == ViewMode::AiReview {
         return build_ai_review_hints(app);
+    }
+
+    // History mode has different hints
+    if tab.mode == DiffMode::History {
+        return build_history_hints(app);
     }
 
     let mut hints = vec![
