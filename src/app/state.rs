@@ -7,6 +7,9 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
 // ── Enums ──
 
@@ -44,6 +47,7 @@ pub enum InputMode {
     Search,
     Comment,
     AgentPrompt,
+    Filter,
 }
 
 // ── Overlay types ──
@@ -67,6 +71,11 @@ pub enum OverlayData {
         current_path: String,
         entries: Vec<DirEntry>,
         selected: usize,
+    },
+    FilterHistory {
+        history: Vec<String>,
+        selected: usize,
+        preset_count: usize,
     },
 }
 
@@ -97,6 +106,9 @@ pub struct TabState {
     /// Horizontal scroll offset within the diff view (for long lines)
     pub h_scroll: u16,
 
+    /// Vertical scroll offset for the AI side panel (independent of diff_scroll)
+    pub ai_panel_scroll: u16,
+
     /// Search/filter input
     pub search_query: String,
 
@@ -112,8 +124,27 @@ pub struct TabState {
     /// SHA-256 of the current raw diff (for staleness checks)
     pub diff_hash: String,
 
+    /// SHA-256 of the branch diff (always computed, used for AI staleness)
+    /// AI reviews are generated against the branch diff, so staleness must
+    /// compare against this hash regardless of which diff mode is active.
+    pub branch_diff_hash: String,
+
     /// Timestamp of last .er-* file check (to avoid re-reading every tick)
     pub last_ai_check: Option<std::time::SystemTime>,
+
+    // ── Filter state ──
+
+    /// Active filter expression (user-visible string)
+    pub filter_expr: String,
+
+    /// Parsed filter rules from filter_expr
+    pub filter_rules: Vec<super::filter::FilterRule>,
+
+    /// Text buffer for filter input while typing
+    pub filter_input: String,
+
+    /// History of applied filter expressions (most recent first, in-memory only)
+    pub filter_history: Vec<String>,
 
     // ── Comment input state ──
 
@@ -138,6 +169,17 @@ impl TabState {
     pub fn new(repo_root: String) -> Result<Self> {
         let current_branch = git::get_current_branch_in(&repo_root)?;
         let base_branch = git::detect_base_branch_in(&repo_root)?;
+        Self::new_inner(repo_root, current_branch, base_branch)
+    }
+
+    /// Create a TabState with a known base branch (skips auto-detection).
+    /// Used for PR flows where the base is known from the GitHub API.
+    pub fn new_with_base(repo_root: String, base_branch: String) -> Result<Self> {
+        let current_branch = git::get_current_branch_in(&repo_root)?;
+        Self::new_inner(repo_root, current_branch, base_branch)
+    }
+
+    fn new_inner(repo_root: String, current_branch: String, base_branch: String) -> Result<Self> {
         let reviewed = Self::load_reviewed_files(&repo_root);
 
         let mut tab = TabState {
@@ -151,11 +193,17 @@ impl TabState {
             current_line: None,
             diff_scroll: 0,
             h_scroll: 0,
+            ai_panel_scroll: 0,
             search_query: String::new(),
+            filter_expr: String::new(),
+            filter_rules: Vec::new(),
+            filter_input: String::new(),
+            filter_history: Vec::new(),
             reviewed,
             show_unreviewed_only: false,
             ai: AiState::default(),
             diff_hash: String::new(),
+            branch_diff_hash: String::new(),
             last_ai_check: None,
             comment_input: String::new(),
             comment_file: String::new(),
@@ -180,14 +228,60 @@ impl TabState {
 
     /// Re-run git diff and update the file list
     pub fn refresh_diff(&mut self) -> Result<()> {
+        self.refresh_diff_impl(true)
+    }
+
+    /// Lightweight refresh: skips branch hash recomputation in non-Branch modes.
+    /// Use for watch events where the extra git diff call adds unwanted latency.
+    pub fn refresh_diff_quick(&mut self) -> Result<()> {
+        self.refresh_diff_impl(false)
+    }
+
+    fn refresh_diff_impl(&mut self, recompute_branch_hash: bool) -> Result<()> {
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
         self.files = git::parse_diff(&raw);
 
-        // Compute diff hash for staleness detection
+        // Compute diff hash for the current mode
         self.diff_hash = ai::compute_diff_hash(&raw);
+
+        // Branch diff hash for AI staleness detection.
+        // In Branch mode it's always the same as diff_hash (free).
+        // In other modes, only recompute on explicit actions — watch events
+        // skip this to avoid running two git diffs per file save.
+        if self.mode == DiffMode::Branch {
+            self.branch_diff_hash = self.diff_hash.clone();
+        } else if recompute_branch_hash {
+            let branch_raw = git::git_diff_raw("branch", &self.base_branch, &self.repo_root)?;
+            self.branch_diff_hash = ai::compute_diff_hash(&branch_raw);
+        }
 
         // Load AI state from .er-* files
         self.reload_ai_state();
+
+        // Compute per-file staleness when the review is stale and has file_hashes.
+        // Use the branch diff for comparison (AI reviews are generated against branch diff).
+        if self.ai.is_stale {
+            let branch_raw = if self.mode == DiffMode::Branch {
+                Some(raw.as_str())
+            } else if recompute_branch_hash {
+                // branch_raw was already fetched above for hash computation — re-fetch for per-file
+                // (stored in branch_diff_hash; re-running git diff here is acceptable since
+                // recompute_branch_hash is only true on explicit actions, not watch events)
+                None
+            } else {
+                None
+            };
+            if let Some(branch_diff) = branch_raw {
+                self.compute_stale_files(branch_diff);
+            } else if recompute_branch_hash {
+                // Non-branch mode with explicit refresh: fetch branch diff for per-file staleness
+                if let Ok(branch_raw) =
+                    git::git_diff_raw("branch", &self.base_branch, &self.repo_root)
+                {
+                    self.compute_stale_files(&branch_raw);
+                }
+            }
+        }
 
         // Clamp selection
         if self.selected_file >= self.files.len() && !self.files.is_empty() {
@@ -210,26 +304,51 @@ impl TabState {
         let current_panel_tab = self.ai.panel_tab;
         // Take ownership of agent state to preserve across reload
         let current_agent = std::mem::replace(&mut self.ai.agent, agent::AgentState::new());
-        self.ai = ai::load_ai_state(&self.repo_root, &self.diff_hash);
+        let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
+        self.ai = ai::load_ai_state(&self.repo_root, &self.branch_diff_hash);
         self.ai.view_mode = current_mode;
         self.ai.review_focus = current_focus;
         self.ai.review_cursor = current_cursor;
         self.ai.panel_tab = current_panel_tab;
         self.ai.agent = current_agent;
+        // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
+        if self.ai.is_stale {
+            self.ai.stale_files = prev_stale_files;
+        }
         // Clamp cursor to valid range after reload (item count may have decreased)
         let item_count = match current_focus {
             ReviewFocus::Files => self.ai.review_file_count(),
             ReviewFocus::Checklist => self.ai.review_checklist_count(),
         };
-        let max_cursor = item_count.saturating_sub(1);
-        if self.ai.review_cursor > max_cursor {
-            self.ai.review_cursor = max_cursor;
-        }
+        // cursor 0 on empty is safe — all access methods are bounds-checked
+        let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
+        self.ai.review_cursor = self.ai.review_cursor.min(max_cursor);
         // If the current mode requires AI data that's not available, fall back
         if self.ai.view_mode != ViewMode::Default && !self.ai.overlay_available() {
             self.ai.view_mode = ViewMode::Default;
         }
-        self.last_ai_check = Some(std::time::SystemTime::now());
+        self.last_ai_check = ai::latest_er_mtime(&self.repo_root);
+    }
+
+    /// Compute which files have changed since the review, populating stale_files
+    fn compute_stale_files(&mut self, branch_raw_diff: &str) {
+        if let Some(ref review) = self.ai.review {
+            if review.file_hashes.is_empty() {
+                return;
+            }
+            let current_hashes = ai::compute_per_file_hashes(branch_raw_diff);
+            let mut stale = std::collections::HashSet::new();
+            for (file, review_hash) in &review.file_hashes {
+                match current_hashes.get(file) {
+                    Some(current_hash) if current_hash == review_hash => {}
+                    _ => {
+                        stale.insert(file.clone());
+                    }
+                }
+            }
+            // Files in current diff but not in review are new (not stale)
+            self.ai.stale_files = stale;
+        }
     }
 
     /// Check if .er-* files have been updated since last load (called on tick)
@@ -238,29 +357,34 @@ impl TabState {
             Some(t) => t,
             None => return false,
         };
-
-        if let Some(last_check) = self.last_ai_check {
-            if latest_mtime > last_check {
-                self.reload_ai_state();
-                return true;
-            }
+        let should_reload = match self.last_ai_check {
+            Some(last_check) => latest_mtime > last_check,
+            None => true,
+        };
+        if should_reload {
+            self.reload_ai_state();
+            return true;
         }
         false
     }
 
-    /// Get the list of files, filtered by search query and reviewed status
+    /// Get the list of files, filtered by filter rules, search query, and reviewed status.
+    /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
-        let mut visible: Vec<(usize, &DiffFile)> = if self.search_query.is_empty() {
-            self.files.iter().enumerate().collect()
-        } else {
-            let q = self.search_query.to_lowercase();
-            self.files
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| f.path.to_lowercase().contains(&q))
-                .collect()
-        };
+        let mut visible: Vec<(usize, &DiffFile)> = self.files.iter().enumerate().collect();
 
+        // Phase 1: Apply filter rules
+        if !self.filter_rules.is_empty() {
+            visible.retain(|(_, f)| super::filter::apply_filter(&self.filter_rules, f));
+        }
+
+        // Phase 2: Apply search query
+        if !self.search_query.is_empty() {
+            let q = self.search_query.to_lowercase();
+            visible.retain(|(_, f)| f.path.to_lowercase().contains(&q));
+        }
+
+        // Phase 3: Apply unreviewed-only toggle
         if self.show_unreviewed_only {
             visible.retain(|(_, f)| !self.reviewed.contains(&f.path));
         }
@@ -309,12 +433,14 @@ impl TabState {
                 self.current_line = None;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
+                self.ai_panel_scroll = 0;
             }
         } else {
             self.selected_file = visible[0].0;
             self.current_hunk = 0;
             self.diff_scroll = 0;
             self.h_scroll = 0;
+            self.ai_panel_scroll = 0;
         }
         self.update_agent_context();
     }
@@ -331,12 +457,14 @@ impl TabState {
                 self.current_line = None;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
+                self.ai_panel_scroll = 0;
             }
         } else {
             self.selected_file = visible[0].0;
             self.current_hunk = 0;
             self.diff_scroll = 0;
             self.h_scroll = 0;
+            self.ai_panel_scroll = 0;
         }
         self.update_agent_context();
     }
@@ -369,10 +497,12 @@ impl TabState {
         match self.current_line {
             None => {
                 self.current_line = Some(0);
+                self.scroll_to_current_hunk();
             }
             Some(line) => {
                 if line + 1 < total_lines {
                     self.current_line = Some(line + 1);
+                    self.scroll_to_current_hunk();
                 } else {
                     let total_hunks = self.total_hunks();
                     if self.current_hunk + 1 < total_hunks {
@@ -389,7 +519,14 @@ impl TabState {
     /// Move to the previous line within the current hunk (arrow up)
     pub fn prev_line(&mut self) {
         match self.current_line {
-            None => {}
+            None => {
+                // Enter line mode at the last line of the current hunk
+                let count = self.current_hunk_line_count();
+                if count > 0 {
+                    self.current_line = Some(count - 1);
+                    self.scroll_to_current_hunk();
+                }
+            }
             Some(0) => {
                 if self.current_hunk > 0 {
                     self.current_hunk -= 1;
@@ -402,6 +539,7 @@ impl TabState {
             }
             Some(line) => {
                 self.current_line = Some(line - 1);
+                self.scroll_to_current_hunk();
             }
         }
         self.update_agent_context();
@@ -425,10 +563,15 @@ impl TabState {
     }
 
     fn scroll_to_current_hunk(&mut self) {
+        // Note: In Overlay mode, scroll position is approximate — banner lines
+        // (AI findings, comments) inserted by the renderer inflate the actual
+        // offset but aren't counted here. Acceptable for v1.
         if let Some(file) = self.selected_diff_file() {
             let mut line_offset: usize = 2;
             for (i, hunk) in file.hunks.iter().enumerate() {
                 if i == self.current_hunk {
+                    // Account for current line position within the hunk
+                    line_offset += self.current_line.unwrap_or(0);
                     self.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
                     return;
                 }
@@ -439,10 +582,60 @@ impl TabState {
 
     pub fn scroll_down(&mut self, amount: u16) {
         self.diff_scroll = self.diff_scroll.saturating_add(amount);
+        self.sync_cursor_to_scroll();
     }
 
     pub fn scroll_up(&mut self, amount: u16) {
         self.diff_scroll = self.diff_scroll.saturating_sub(amount);
+        self.sync_cursor_to_scroll();
+    }
+
+    /// Move the cursor (current_hunk + current_line) to match the current
+    /// diff_scroll position.  Uses the same layout model as the renderer:
+    /// 2 header lines, then per hunk: 1 header + N content lines + 1 blank.
+    fn sync_cursor_to_scroll(&mut self) {
+        // Compute target (hunk, line) from the scroll offset without
+        // holding a borrow across the mutation.
+        let result = {
+            let file = match self.selected_diff_file() {
+                Some(f) => f,
+                None => return,
+            };
+            if file.hunks.is_empty() {
+                return;
+            }
+
+            let target = self.diff_scroll as usize;
+            let mut offset: usize = 2; // file header + blank
+
+            let mut found: Option<(usize, usize)> = None;
+            for (i, hunk) in file.hunks.iter().enumerate() {
+                offset += 1; // hunk header line
+                let content_start = offset;
+                let content_end = offset + hunk.lines.len();
+
+                if target < content_end {
+                    let line_idx = if target >= content_start {
+                        target - content_start
+                    } else {
+                        0 // target is on/before hunk header — snap to first line
+                    };
+                    found = Some((i, line_idx));
+                    break;
+                }
+
+                offset = content_end + 1; // blank line after hunk
+            }
+
+            found.unwrap_or_else(|| {
+                // Past the end — clamp to last line of last hunk
+                let last = file.hunks.len() - 1;
+                (last, file.hunks[last].lines.len().saturating_sub(1))
+            })
+        };
+
+        self.current_hunk = result.0;
+        self.current_line = Some(result.1);
     }
 
     pub fn scroll_right(&mut self, amount: u16) {
@@ -495,6 +688,7 @@ impl TabState {
             self.current_line = None;
             self.diff_scroll = 0;
             let _ = self.refresh_diff();
+            self.snap_to_visible();
         }
     }
 
@@ -508,13 +702,60 @@ impl TabState {
         }
     }
 
+    // ── Filter ──
+
+    /// Parse and apply a filter expression, updating history
+    pub fn apply_filter_expr(&mut self, expr: &str) {
+        let expr = expr.trim().to_string();
+        if expr.is_empty() {
+            self.clear_filter();
+            return;
+        }
+        self.filter_expr = expr.clone();
+        self.filter_rules = super::filter::parse_filter_expr(&self.filter_expr);
+
+        // Add to history (remove duplicate if exists, push to front)
+        self.filter_history.retain(|h| h != &expr);
+        self.filter_history.insert(0, expr);
+
+        // Cap history at 20 entries
+        self.filter_history.truncate(20);
+
+        self.snap_to_visible();
+    }
+
+    /// Clear the active filter
+    pub fn clear_filter(&mut self) {
+        self.filter_expr.clear();
+        self.filter_rules.clear();
+        self.snap_to_visible();
+    }
+
     // ── Reviewed-File Tracking ──
 
-    /// Count of reviewed files vs total
+    /// Count of reviewed files vs total (all files, ignoring filters)
     pub fn reviewed_count(&self) -> (usize, usize) {
         let total = self.files.len();
         let reviewed = self.files.iter().filter(|f| self.reviewed.contains(&f.path)).count();
         (reviewed, total)
+    }
+
+    /// Count of reviewed files vs total among filtered files only.
+    /// Returns None if no filter is active.
+    pub fn filtered_reviewed_count(&self) -> Option<(usize, usize)> {
+        if self.filter_rules.is_empty() {
+            return None;
+        }
+        let (mut total, mut reviewed) = (0, 0);
+        for f in &self.files {
+            if super::filter::apply_filter(&self.filter_rules, f) {
+                total += 1;
+                if self.reviewed.contains(&f.path) {
+                    reviewed += 1;
+                }
+            }
+        }
+        Some((reviewed, total))
     }
 
     fn load_reviewed_files(repo_root: &str) -> HashSet<String> {
@@ -708,15 +949,55 @@ pub struct App {
 
     /// Ticks since last watch notification (for auto-clearing)
     pub watch_message_ticks: u8,
+
+    /// Counter for throttling AI file polling (check every 10 ticks ≈ 1s)
+    pub ai_poll_counter: u8,
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
-        let repo_root = git::get_repo_root()?;
-        let tab = TabState::new(repo_root)?;
+    /// Create the app from CLI path arguments.
+    /// If no paths provided, uses current directory.
+    pub fn new_with_args(paths: &[String]) -> Result<Self> {
+        let tabs = if paths.is_empty() {
+            let repo_root = git::get_repo_root()?;
+            vec![TabState::new(repo_root)?]
+        } else {
+            let mut tabs = Vec::new();
+            for path in paths {
+                if crate::github::is_github_pr_url(path) {
+                    // GitHub PR URL — checkout and open
+                    let pr_ref = crate::github::parse_github_pr_url(path)
+                        .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", path))?;
+                    crate::github::ensure_gh_installed()?;
+
+                    // We need to be in the repo to checkout. Use cwd.
+                    let repo_root = git::get_repo_root()
+                        .context("Cannot open PR URL: not in a git repository. Clone the repo first.")?;
+
+                    // Verify the local repo matches the PR's repo
+                    crate::github::verify_remote_matches(&repo_root, &pr_ref)?;
+
+                    crate::github::gh_pr_checkout(pr_ref.number, &repo_root)?;
+                    let base = crate::github::gh_pr_base_branch(pr_ref.number, &repo_root)?;
+                    let base = crate::github::ensure_base_ref_available(&repo_root, &base)?;
+
+                    let tab = TabState::new_with_base(repo_root, base)?;
+                    tabs.push(tab);
+                } else {
+                    // Local path
+                    let canonical = std::fs::canonicalize(path)
+                        .with_context(|| format!("Path not found: {}", path))?;
+                    let dir = canonical.to_string_lossy().to_string();
+                    let repo_root = git::get_repo_root_in(&dir)
+                        .with_context(|| format!("Not a git repository: {}", path))?;
+                    tabs.push(TabState::new(repo_root)?);
+                }
+            }
+            tabs
+        };
 
         Ok(App {
-            tabs: vec![tab],
+            tabs,
             active_tab: 0,
             input_mode: InputMode::Normal,
             should_quit: false,
@@ -724,6 +1005,7 @@ impl App {
             watching: false,
             watch_message: None,
             watch_message_ticks: 0,
+            ai_poll_counter: 0,
         })
     }
 
@@ -808,6 +1090,17 @@ impl App {
         Ok(())
     }
 
+    /// Open the filter history overlay
+    pub fn open_filter_history(&mut self) {
+        use crate::app::filter::FILTER_PRESETS;
+        let history = self.tab().filter_history.clone();
+        self.overlay = Some(OverlayData::FilterHistory {
+            history,
+            selected: 0,
+            preset_count: FILTER_PRESETS.len(),
+        });
+    }
+
     /// Open the directory browser overlay (starts from parent of repo root)
     pub fn open_directory_browser(&mut self) {
         let repo_root = self.tab().repo_root.clone();
@@ -838,6 +1131,13 @@ impl App {
                     *selected += 1;
                 }
             }
+            // `selected` indexes presets (0..preset_count) then history (preset_count..);
+            // the visual separator in the overlay is render-only and not selectable
+            Some(OverlayData::FilterHistory { history, selected, preset_count }) => {
+                if *selected + 1 < *preset_count + history.len() {
+                    *selected += 1;
+                }
+            }
             None => {}
         }
     }
@@ -845,7 +1145,8 @@ impl App {
     pub fn overlay_prev(&mut self) {
         match &mut self.overlay {
             Some(OverlayData::WorktreePicker { selected, .. })
-            | Some(OverlayData::DirectoryBrowser { selected, .. }) => {
+            | Some(OverlayData::DirectoryBrowser { selected, .. })
+            | Some(OverlayData::FilterHistory { selected, .. }) => {
                 if *selected > 0 {
                     *selected -= 1;
                 }
@@ -866,6 +1167,18 @@ impl App {
                 if let Some(wt) = worktrees.get(selected) {
                     let path = wt.path.clone();
                     self.open_in_new_tab(path)?;
+                }
+            }
+            OverlayData::FilterHistory { history, selected, preset_count } => {
+                use crate::app::filter::FILTER_PRESETS;
+                let expr = if selected < preset_count {
+                    FILTER_PRESETS.get(selected).map(|p| p.expr.to_string())
+                } else {
+                    history.get(selected - preset_count).cloned()
+                };
+                if let Some(expr) = expr {
+                    self.tab_mut().apply_filter_expr(&expr);
+                    self.notify(&format!("Filter: {}", expr));
                 }
             }
             OverlayData::DirectoryBrowser { current_path, entries, selected } => {
@@ -1076,7 +1389,7 @@ impl App {
         }
 
         let repo_root = tab.repo_root.clone();
-        let diff_hash = tab.diff_hash.clone();
+        let diff_hash = tab.branch_diff_hash.clone();
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
         let reply_to = tab.comment_reply_to.clone();
@@ -1095,8 +1408,8 @@ impl App {
                             .unwrap_or_default();
                         (Some(ln), content)
                     } else {
-                        // Hunk-level comment
-                        (Some(hunk.new_start as usize), hunk.header.clone())
+                        // Hunk-level comment: hunk_index identifies the hunk; line_start is not meaningful here
+                        (None, hunk.header.clone())
                     }
                 } else {
                     (None, String::new())
@@ -1133,13 +1446,15 @@ impl App {
             feedback.comments.clear();
         }
 
-        // Generate comment ID using epoch millis to avoid collisions after clear()
+        // Generate comment ID using epoch millis + sequence counter to avoid collisions
+        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
         let comment_id = format!(
-            "fb-{}",
+            "fb-{}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            seq
         );
 
         // Create the comment
@@ -1158,9 +1473,11 @@ impl App {
 
         feedback.comments.push(comment);
 
-        // Write the file
+        // Write atomically via temp file + rename
         let json = serde_json::to_string_pretty(&feedback)?;
-        std::fs::write(&feedback_path, json)?;
+        let tmp_path = format!("{}.tmp", feedback_path);
+        std::fs::write(&tmp_path, json)?;
+        std::fs::rename(&tmp_path, &feedback_path)?;
 
         // Clear state and return to normal
         self.tab_mut().comment_input.clear();
@@ -1219,11 +1536,13 @@ impl App {
         let cursor = tab.ai.review_cursor;
         tab.ai.toggle_checklist_item(cursor);
 
-        // Persist to disk
+        // Persist atomically via temp file + rename
         if let Some(ref checklist) = tab.ai.checklist {
             let checklist_path = format!("{}/.er-checklist.json", tab.repo_root);
+            let tmp_path = format!("{}.tmp", checklist_path);
             let json = serde_json::to_string_pretty(checklist)?;
-            std::fs::write(&checklist_path, json)?;
+            std::fs::write(&tmp_path, json)?;
+            std::fs::rename(&tmp_path, &checklist_path)?;
         }
 
         let checked = tab.ai.checklist.as_ref()
@@ -1332,7 +1651,7 @@ fn chrono_now() -> String {
 
     // Walk years from epoch, subtracting days per year (handles leap years via Gregorian rule)
     let mut y = 1970i64;
-    let mut d = days as i64;
+    let mut d = i64::try_from(days).unwrap_or(i64::MAX);
     loop {
         let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
         if d < days_in_year {
@@ -1353,6 +1672,11 @@ fn chrono_now() -> String {
         d -= *md;
         m += 1;
     }
+    // Guard against overflow past December (shouldn't happen, but be safe)
+    if m >= 12 {
+        m = 11;
+        d = 0;
+    }
 
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
@@ -1362,9 +1686,718 @@ fn chrono_now() -> String {
 
 /// Truncate a string to max_len chars, adding … if truncated
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         return s.to_string();
     }
     let truncated: String = s.chars().take(max_len.saturating_sub(1)).collect();
     format!("{}…", truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::AiState;
+    use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
+    use std::collections::HashSet;
+
+    fn make_test_tab(files: Vec<DiffFile>) -> TabState {
+        TabState {
+            mode: DiffMode::Branch,
+            base_branch: "main".to_string(),
+            current_branch: "feature".to_string(),
+            repo_root: "/tmp/test".to_string(),
+            files,
+            selected_file: 0,
+            current_hunk: 0,
+            current_line: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+            ai_panel_scroll: 0,
+            search_query: String::new(),
+            filter_expr: String::new(),
+            filter_rules: Vec::new(),
+            filter_input: String::new(),
+            filter_history: Vec::new(),
+            reviewed: HashSet::new(),
+            show_unreviewed_only: false,
+            ai: AiState::default(),
+            diff_hash: String::new(),
+            branch_diff_hash: String::new(),
+            last_ai_check: None,
+            comment_input: String::new(),
+            comment_file: String::new(),
+            comment_hunk: 0,
+            comment_reply_to: None,
+            comment_line_num: None,
+        }
+    }
+
+    fn make_file(path: &str, hunks: Vec<DiffHunk>, adds: usize, dels: usize) -> DiffFile {
+        DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks,
+            adds,
+            dels,
+        }
+    }
+
+    fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {
+        DiffHunk {
+            header: "@@ -1,3 +1,4 @@".to_string(),
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 4,
+            lines,
+        }
+    }
+
+    fn make_line(line_type: LineType, content: &str, new_num: Option<usize>) -> DiffLine {
+        DiffLine {
+            line_type,
+            content: content.to_string(),
+            old_num: None,
+            new_num,
+        }
+    }
+
+    // ── truncate ──
+
+    #[test]
+    fn truncate_shorter_than_limit_returned_as_is() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_equal_to_limit_returned_as_is() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_longer_than_limit_truncated_with_ellipsis() {
+        let result = truncate("hello world", 8);
+        assert_eq!(result, "hello w…");
+    }
+
+    #[test]
+    fn truncate_very_short_limit_returns_just_ellipsis() {
+        let result = truncate("hello", 1);
+        assert_eq!(result, "…");
+    }
+
+    #[test]
+    fn truncate_empty_string_returned_as_is() {
+        assert_eq!(truncate("", 5), "");
+    }
+
+    // ── visible_files ──
+
+    #[test]
+    fn visible_files_no_search_no_filter_returns_all() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 2, 0),
+        ];
+        let tab = make_test_tab(files);
+        let visible = tab.visible_files();
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0].0, 0);
+        assert_eq!(visible[1].0, 1);
+    }
+
+    #[test]
+    fn visible_files_search_query_filters_matches() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("tests/foo.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.search_query = "src".to_string();
+        let visible = tab.visible_files();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].1.path, "src/main.rs");
+    }
+
+    #[test]
+    fn visible_files_search_query_no_match_returns_empty() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.search_query = "zzz".to_string();
+        let visible = tab.visible_files();
+        assert_eq!(visible.len(), 0);
+    }
+
+    #[test]
+    fn visible_files_search_is_case_insensitive() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("tests/foo.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.search_query = "SRC".to_string();
+        let visible = tab.visible_files();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].1.path, "src/main.rs");
+    }
+
+    #[test]
+    fn visible_files_show_unreviewed_only_all_reviewed_returns_empty() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.show_unreviewed_only = true;
+        tab.reviewed.insert("src/main.rs".to_string());
+        tab.reviewed.insert("src/lib.rs".to_string());
+        let visible = tab.visible_files();
+        assert_eq!(visible.len(), 0);
+    }
+
+    #[test]
+    fn visible_files_show_unreviewed_only_some_reviewed_returns_unreviewed() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 1, 0),
+            make_file("src/util.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.show_unreviewed_only = true;
+        tab.reviewed.insert("src/main.rs".to_string());
+        let visible = tab.visible_files();
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0].1.path, "src/lib.rs");
+        assert_eq!(visible[1].1.path, "src/util.rs");
+    }
+
+    #[test]
+    fn visible_files_combined_search_and_unreviewed_filter() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 1, 0),
+            make_file("tests/foo.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.search_query = "src".to_string();
+        tab.show_unreviewed_only = true;
+        tab.reviewed.insert("src/main.rs".to_string());
+        let visible = tab.visible_files();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].1.path, "src/lib.rs");
+    }
+
+    // ── reviewed_count ──
+
+    #[test]
+    fn reviewed_count_no_files_returns_zero_zero() {
+        let tab = make_test_tab(vec![]);
+        assert_eq!(tab.reviewed_count(), (0, 0));
+    }
+
+    #[test]
+    fn reviewed_count_some_reviewed_returns_correct_counts() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 1, 0),
+            make_file("src/util.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.reviewed.insert("src/main.rs".to_string());
+        assert_eq!(tab.reviewed_count(), (1, 3));
+    }
+
+    #[test]
+    fn reviewed_count_all_reviewed_returns_n_n() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.reviewed.insert("src/main.rs".to_string());
+        tab.reviewed.insert("src/lib.rs".to_string());
+        assert_eq!(tab.reviewed_count(), (2, 2));
+    }
+
+    // ── next_file / prev_file ──
+
+    #[test]
+    fn next_file_at_last_file_stays_at_last() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.selected_file = 1;
+        tab.next_file();
+        assert_eq!(tab.selected_file, 1);
+    }
+
+    #[test]
+    fn prev_file_at_first_file_stays_at_first() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.selected_file = 0;
+        tab.prev_file();
+        assert_eq!(tab.selected_file, 0);
+    }
+
+    #[test]
+    fn next_file_moves_to_next_visible_file() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+            make_file("c.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.selected_file = 0;
+        tab.next_file();
+        assert_eq!(tab.selected_file, 1);
+    }
+
+    #[test]
+    fn prev_file_moves_to_previous_visible_file() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+            make_file("c.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.selected_file = 2;
+        tab.prev_file();
+        assert_eq!(tab.selected_file, 1);
+    }
+
+    #[test]
+    fn next_file_with_no_visible_files_no_crash() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.search_query = "zzz".to_string();
+        // Should not panic
+        tab.next_file();
+        assert_eq!(tab.selected_file, 0);
+    }
+
+    // ── next_hunk / prev_hunk ──
+
+    #[test]
+    fn next_hunk_increments_current_hunk() {
+        let files = vec![
+            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![])], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 0;
+        tab.next_hunk();
+        assert_eq!(tab.current_hunk, 1);
+    }
+
+    #[test]
+    fn next_hunk_at_last_hunk_stays() {
+        let files = vec![
+            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![])], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 1;
+        tab.next_hunk();
+        assert_eq!(tab.current_hunk, 1);
+    }
+
+    #[test]
+    fn prev_hunk_decrements_current_hunk() {
+        let files = vec![
+            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![])], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 1;
+        tab.prev_hunk();
+        assert_eq!(tab.current_hunk, 0);
+    }
+
+    #[test]
+    fn prev_hunk_at_zero_stays() {
+        let files = vec![
+            make_file("a.rs", vec![make_hunk(vec![])], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 0;
+        tab.prev_hunk();
+        assert_eq!(tab.current_hunk, 0);
+    }
+
+    // ── next_line / prev_line ──
+
+    #[test]
+    fn next_line_from_none_enters_line_mode_at_zero() {
+        let lines = vec![
+            make_line(LineType::Add, "x", Some(1)),
+            make_line(LineType::Add, "y", Some(2)),
+        ];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 2, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_line = None;
+        tab.next_line();
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn next_line_increments_within_hunk() {
+        let lines = vec![
+            make_line(LineType::Add, "x", Some(1)),
+            make_line(LineType::Add, "y", Some(2)),
+        ];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 2, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_line = Some(0);
+        tab.next_line();
+        assert_eq!(tab.current_line, Some(1));
+    }
+
+    #[test]
+    fn next_line_at_last_line_of_hunk_moves_to_next_hunk() {
+        let lines1 = vec![make_line(LineType::Add, "x", Some(1))];
+        let lines2 = vec![make_line(LineType::Add, "y", Some(2))];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines1), make_hunk(lines2)], 2, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 0;
+        tab.current_line = Some(0); // last line of hunk 0
+        tab.next_line();
+        assert_eq!(tab.current_hunk, 1);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn next_line_at_last_line_of_last_hunk_stays() {
+        let lines = vec![make_line(LineType::Add, "x", Some(1))];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 0;
+        tab.current_line = Some(0); // last (and only) line of last hunk
+        tab.next_line();
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn prev_line_from_none_enters_line_mode_at_last_line() {
+        let lines = vec![make_line(LineType::Add, "x", Some(1))];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_line = None;
+        tab.prev_line();
+        assert_eq!(tab.current_line, Some(0)); // last (and only) line
+        assert_eq!(tab.current_hunk, 0);
+    }
+
+    #[test]
+    fn prev_line_from_zero_at_hunk_zero_exits_line_mode() {
+        let lines = vec![make_line(LineType::Add, "x", Some(1))];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 0;
+        tab.current_line = Some(0);
+        tab.prev_line();
+        assert_eq!(tab.current_line, None);
+        assert_eq!(tab.current_hunk, 0);
+    }
+
+    #[test]
+    fn prev_line_from_zero_at_hunk_one_goes_to_previous_hunk_last_line() {
+        let lines1 = vec![
+            make_line(LineType::Add, "a", Some(1)),
+            make_line(LineType::Add, "b", Some(2)),
+        ];
+        let lines2 = vec![make_line(LineType::Add, "c", Some(3))];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines1), make_hunk(lines2)], 3, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 1;
+        tab.current_line = Some(0);
+        tab.prev_line();
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(1)); // last line of hunk 0 (2 lines, index 1)
+    }
+
+    #[test]
+    fn prev_line_decrements_within_hunk() {
+        let lines = vec![
+            make_line(LineType::Add, "x", Some(1)),
+            make_line(LineType::Add, "y", Some(2)),
+        ];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 2, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_line = Some(1);
+        tab.prev_line();
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    // ── total_hunks ──
+
+    #[test]
+    fn total_hunks_no_files_returns_zero() {
+        let tab = make_test_tab(vec![]);
+        assert_eq!(tab.total_hunks(), 0);
+    }
+
+    #[test]
+    fn total_hunks_file_with_three_hunks_returns_three() {
+        let files = vec![
+            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![]), make_hunk(vec![])], 3, 0),
+        ];
+        let tab = make_test_tab(files);
+        assert_eq!(tab.total_hunks(), 3);
+    }
+
+    // ── current_line_number ──
+
+    #[test]
+    fn current_line_number_with_new_num_returns_some() {
+        let lines = vec![
+            make_line(LineType::Add, "x", Some(42)),
+        ];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_line = Some(0);
+        assert_eq!(tab.current_line_number(), Some(42));
+    }
+
+    #[test]
+    fn current_line_number_with_none_current_line_returns_none() {
+        let lines = vec![make_line(LineType::Add, "x", Some(1))];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.current_line = None;
+        assert_eq!(tab.current_line_number(), None);
+    }
+
+    #[test]
+    fn current_line_number_delete_line_with_no_new_num_returns_none() {
+        let lines = vec![
+            make_line(LineType::Delete, "deleted", None),
+        ];
+        let files = vec![make_file("a.rs", vec![make_hunk(lines)], 0, 1)];
+        let mut tab = make_test_tab(files);
+        tab.current_line = Some(0);
+        assert_eq!(tab.current_line_number(), None);
+    }
+
+    // ── snap_to_visible ──
+
+    #[test]
+    fn snap_to_visible_selected_file_is_visible_no_change() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.selected_file = 1;
+        tab.snap_to_visible();
+        assert_eq!(tab.selected_file, 1);
+    }
+
+    #[test]
+    fn snap_to_visible_selected_file_filtered_out_snaps_to_first_visible() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("tests/foo.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.selected_file = 1; // points at tests/foo.rs
+        tab.search_query = "src".to_string(); // only src/main.rs visible
+        tab.snap_to_visible();
+        assert_eq!(tab.selected_file, 0); // snapped to src/main.rs (index 0)
+    }
+
+    // ── DiffMode methods ──
+
+    #[test]
+    fn diff_mode_label_returns_correct_strings() {
+        assert_eq!(DiffMode::Branch.label(), "BRANCH DIFF");
+        assert_eq!(DiffMode::Unstaged.label(), "UNSTAGED");
+        assert_eq!(DiffMode::Staged.label(), "STAGED");
+    }
+
+    #[test]
+    fn diff_mode_git_mode_returns_correct_strings() {
+        assert_eq!(DiffMode::Branch.git_mode(), "branch");
+        assert_eq!(DiffMode::Unstaged.git_mode(), "unstaged");
+        assert_eq!(DiffMode::Staged.git_mode(), "staged");
+    }
+
+    // ── clamp_hunk ──
+
+    #[test]
+    fn clamp_hunk_beyond_total_clamped_to_last() {
+        let files = vec![
+            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![])], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 99;
+        tab.clamp_hunk();
+        assert_eq!(tab.current_hunk, 1); // total 2 hunks → max index 1
+    }
+
+    #[test]
+    fn clamp_hunk_no_hunks_resets_to_zero_and_clears_line() {
+        let files = vec![
+            make_file("a.rs", vec![], 0, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.current_hunk = 5;
+        tab.current_line = Some(2);
+        tab.clamp_hunk();
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, None);
+    }
+
+    // ── scroll methods ──
+
+    #[test]
+    fn scroll_down_adds_to_diff_scroll() {
+        let mut tab = make_test_tab(vec![]);
+        tab.diff_scroll = 10;
+        tab.scroll_down(5);
+        assert_eq!(tab.diff_scroll, 15);
+    }
+
+    #[test]
+    fn scroll_up_subtracts_saturating() {
+        let mut tab = make_test_tab(vec![]);
+        tab.diff_scroll = 3;
+        tab.scroll_up(10);
+        assert_eq!(tab.diff_scroll, 0); // saturating — no underflow
+    }
+
+    #[test]
+    fn scroll_right_adds_to_h_scroll() {
+        let mut tab = make_test_tab(vec![]);
+        tab.h_scroll = 5;
+        tab.scroll_right(3);
+        assert_eq!(tab.h_scroll, 8);
+    }
+
+    #[test]
+    fn scroll_left_subtracts_saturating() {
+        let mut tab = make_test_tab(vec![]);
+        tab.h_scroll = 2;
+        tab.scroll_left(10);
+        assert_eq!(tab.h_scroll, 0); // saturating — no underflow
+    }
+
+    // ── sync_cursor_to_scroll ──
+
+    /// Layout for a file with 2 hunks (3 lines, 2 lines):
+    /// offset 0: file header
+    /// offset 1: blank
+    /// offset 2: hunk 0 header
+    /// offset 3: hunk 0 line 0
+    /// offset 4: hunk 0 line 1
+    /// offset 5: hunk 0 line 2
+    /// offset 6: blank
+    /// offset 7: hunk 1 header
+    /// offset 8: hunk 1 line 0
+    /// offset 9: hunk 1 line 1
+    /// offset 10: blank
+    fn make_two_hunk_tab() -> TabState {
+        let files = vec![make_file(
+            "a.rs",
+            vec![
+                make_hunk(vec![
+                    make_line(LineType::Context, "a", Some(1)),
+                    make_line(LineType::Add, "b", Some(2)),
+                    make_line(LineType::Context, "c", Some(3)),
+                ]),
+                make_hunk(vec![
+                    make_line(LineType::Delete, "d", None),
+                    make_line(LineType::Add, "e", Some(10)),
+                ]),
+            ],
+            2,
+            1,
+        )];
+        make_test_tab(files)
+    }
+
+    #[test]
+    fn scroll_down_syncs_cursor_to_first_hunk_first_line() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 3 → hunk 0, line 0
+        tab.scroll_down(3);
+        assert_eq!(tab.diff_scroll, 3);
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_down_syncs_cursor_mid_hunk() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 5 → hunk 0, line 2
+        tab.scroll_down(5);
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(2));
+    }
+
+    #[test]
+    fn scroll_down_syncs_cursor_to_second_hunk() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 8 → hunk 1, line 0
+        tab.scroll_down(8);
+        assert_eq!(tab.current_hunk, 1);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_down_on_hunk_header_snaps_to_first_content_line() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 7 → hunk 1 header → snaps to hunk 1 line 0
+        tab.scroll_down(7);
+        assert_eq!(tab.current_hunk, 1);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_down_past_end_clamps_to_last_line() {
+        let mut tab = make_two_hunk_tab();
+        tab.scroll_down(100);
+        assert_eq!(tab.current_hunk, 1);
+        assert_eq!(tab.current_line, Some(1)); // last line of last hunk
+    }
+
+    #[test]
+    fn scroll_up_syncs_cursor_back() {
+        let mut tab = make_two_hunk_tab();
+        tab.diff_scroll = 8;
+        tab.current_hunk = 1;
+        tab.current_line = Some(0);
+        // Scroll up to offset 3 → hunk 0, line 0
+        tab.scroll_up(5);
+        assert_eq!(tab.diff_scroll, 3);
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_up_to_file_header_snaps_to_first_content_line() {
+        let mut tab = make_two_hunk_tab();
+        tab.diff_scroll = 5;
+        // Scroll up to offset 0 → file header area → snaps to hunk 0 line 0
+        tab.scroll_up(5);
+        assert_eq!(tab.diff_scroll, 0);
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_on_blank_between_hunks_snaps_to_next_hunk() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 6 → blank after hunk 0 → snaps to hunk 1 line 0
+        tab.scroll_down(6);
+        assert_eq!(tab.current_hunk, 1);
+        assert_eq!(tab.current_line, Some(0));
+    }
 }

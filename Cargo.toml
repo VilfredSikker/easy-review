@@ -33,6 +33,9 @@ serde_json = "1"
 # Hashing (diff staleness detection)
 sha2 = "0.10"
 
+# File glob matching (filter system)
+glob = "0.3"
+
 # Error handling
 anyhow = "1"
 

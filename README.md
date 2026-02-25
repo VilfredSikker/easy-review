@@ -1,12 +1,12 @@
 # easy-review (`er`)
 
-A terminal-based git diff review tool built for developers who work with AI coding assistants.
+A terminal-based git diff review tool with AI-powered analysis, built for developers who work with AI coding assistants.
 
-Reviewing is the bottleneck — not coding. `er` makes review fast, visual, and live.
+Reviewing is the bottleneck — not coding. `er` makes review fast, visual, and AI-assisted.
 
 ## The Problem
 
-When working with Claude Code (or similar AI tools), code gets written faster than you can review it. You need to see what changed across the whole branch, navigate between files and hunks quickly, and follow changes in real-time as the AI writes code.
+When working with Claude Code (or similar AI tools), code gets written faster than you can review it. You need to see what changed across the whole branch, navigate between files and hunks quickly, get AI risk analysis on the changes, leave comments, and follow changes in real-time as the AI writes code.
 
 ## Install
 
@@ -18,27 +18,46 @@ Requires Rust 1.70+. The binary is called `er`.
 
 ## Usage
 
-Run `er` from any git repository. It auto-detects the base branch from upstream tracking, falling back to main/master/develop.
+Run `er` from any git repository. It auto-detects the base branch from upstream tracking, falling back to main/master/develop. If the current branch has an open PR targeting a different base, `er` shows a hint.
 
 ```bash
 # In any git repo
 er
 
-# In a worktree
-cd ~/worktrees/feature-branch
-er
+# Open a GitHub PR directly
+er https://github.com/owner/repo/pull/42
+er --pr 42
+
+# Open multiple repos/worktrees as tabs
+er ~/projects/api ~/projects/frontend
+
+# Pre-filter to only show Rust files
+er --filter '*.rs'
 ```
 
-For the best workflow with AI coding tools, split your terminal (Ghostty, tmux, zellij) with Claude Code on one side and `er` on the other. Press `w` to enable watch mode — diffs refresh automatically as files change.
+### AI Review Workflow
+
+1. Split your terminal with Claude Code on one side and `er` on the other
+2. Run `/er-review` in Claude Code to generate AI analysis
+3. Press `v` in `er` to toggle AI overlay — findings appear inline in the diff
+4. Press `c` to comment on findings — AI responds on next `/er-review` run
+5. Press `w` to enable watch mode — diffs refresh automatically as files change
 
 ## Features
 
+- **AI-powered review** — Run `/er-review` in Claude Code, get per-file risk levels, inline findings, and a review checklist
+- **Four view modes** — Default (clean diff), Overlay (inline AI banners), Side Panel (3-column with AI panel), AI Review (full-screen dashboard)
+- **Comment & feedback loop** — Press `c` to comment on findings, re-run `/er-review` for AI responses
+- **GitHub PR integration** — Open PRs directly: `er --pr 42` or `er <github-url>`
 - **Three diff modes** — Branch diff, unstaged changes, staged changes
+- **Line-level navigation** — Arrow keys move through individual diff lines within hunks
 - **Syntax highlighting** — Language-aware coloring via syntect
-- **Live watch mode** — Auto-refreshes when files change on disk
+- **Live watch mode** — Auto-refreshes when files change on disk; AI data reloads automatically
 - **Multi-repo tabs** — Open multiple repos or worktrees side-by-side
 - **Hunk staging** — Stage individual files or hunks without leaving the TUI
-- **Review tracking** — Mark files as reviewed, filter to unreviewed only
+- **Review tracking** — Mark files as reviewed, filter to unreviewed only. Status bar shows both filtered and total reviewed counts when a filter is active
+- **Composable filters** — Press `f` to filter files by glob, status, or size (`+*.rs,-*.lock,>50`). Press `F` for built-in presets (frontend, backend, config, docs) and filter history
+- **PR base hint** — When on a PR branch, `er` detects if the PR targets a different base than auto-detected and shows a hint (e.g. "PR #42 targets develop — run: er --pr 42")
 - **File search** — Fuzzy filter the file list
 - **Directory browser** — Open any repo on disk via `o`
 - **Worktree picker** — Switch between worktrees via `t`
@@ -53,6 +72,7 @@ For the best workflow with AI coding tools, split your terminal (Ghostty, tmux, 
 ```
 j / k             Next / prev file
 n / N             Next / prev hunk
+↓ / ↑             Next / prev line (within hunks)
 h / l             Scroll left / right
 Ctrl-d / Ctrl-u   Scroll half page down / up
 ```
@@ -72,11 +92,31 @@ s                 Stage / unstage file
 S                 Stage current hunk
 Space             Toggle file as reviewed
 u                 Filter to unreviewed files only
+c                 Comment on current hunk/line
 y                 Yank (copy) current hunk
 e                 Open file in $EDITOR
 r                 Refresh diff
 w                 Toggle live watch mode
-/                 Search / filter files
+/                 Search files by name
+f                 Filter files (glob, status, size expressions)
+F                 Filter presets & history
+```
+
+### AI Views
+
+```
+v / V             Cycle AI view mode forward / backward
+                  (Default → Overlay → Side Panel → AI Review)
+```
+
+In AI Review mode:
+
+```
+j / k             Navigate file list or checklist
+Tab               Switch focus between Files and Checklist columns
+Space             Toggle checklist item
+Enter             Jump to file in diff view
+Esc               Return to default view
 ```
 
 ### Tabs & Repos
@@ -91,7 +131,7 @@ o                 Directory browser (Backspace to go up)
 ### General
 
 ```
-Esc               Clear search filter
+Esc               Clear search, then filter (innermost first)
 q                 Quit
 ```
 
@@ -99,24 +139,48 @@ q                 Quit
 
 ```
 src/
-├── main.rs           Entry point, event loop, terminal setup
+├── main.rs           Entry point, CLI parsing (clap), event loop, input routing
 ├── app/
 │   ├── mod.rs        Module exports
-│   └── state.rs      App state, navigation, mode switching
+│   └── state.rs      App state, navigation, comments, AI state management
 ├── git/
 │   ├── mod.rs        Module exports
 │   ├── diff.rs       Unified diff parser (raw text → structured data)
 │   └── status.rs     Base branch detection, staging, git commands
+├── github.rs         GitHub PR integration (gh CLI wrapper)
+├── ai/
+│   ├── mod.rs        Module exports
+│   ├── review.rs     AI data model (AiState, findings, view modes)
+│   └── loader.rs     .er-* file loading, diff hashing, mtime polling
 ├── ui/
-│   ├── mod.rs        Layout coordinator (splits, composition)
-│   ├── styles.rs     Color scheme and style definitions
+│   ├── mod.rs        Layout coordinator (ViewMode-based dispatch)
+│   ├── styles.rs     Color scheme (blue-undertone dark theme)
 │   ├── highlight.rs  Syntax highlighting (syntect)
-│   ├── file_tree.rs  Left panel — file list with status indicators
-│   ├── diff_view.rs  Right panel — diff with line numbers and hunks
+│   ├── file_tree.rs  Left panel — file list with risk indicators
+│   ├── diff_view.rs  Right panel — diff with AI finding/comment banners
+│   ├── ai_panel.rs   Side panel — per-file AI findings column
+│   ├── ai_review_view.rs  Full-screen AI review dashboard
 │   ├── overlay.rs    Modal overlays (directory browser, worktree picker)
-│   └── status_bar.rs Top bar (tabs, branch, modes), bottom bar (keybinds)
+│   ├── status_bar.rs Top bar (tabs, AI badges), bottom bar (hints, comment input)
+│   └── utils.rs      Shared utilities (word wrapping)
 └── watch/
     └── mod.rs        Debounced file watcher (notify crate, 500ms)
 ```
 
-**Stack:** Rust, Ratatui, Crossterm, syntect, notify. Shells out to `git diff` for diff generation. Single binary, fast startup, no runtime dependencies beyond git.
+**Stack:** Rust, Ratatui, Crossterm, syntect, notify, serde/serde_json, sha2, clap. Shells out to `git` for diffs and `gh` for GitHub PRs. Single binary, no runtime dependencies beyond git (gh optional for PR features).
+
+## AI Integration
+
+`er` reads `.er-*.json` sidecar files written by Claude Code skills:
+
+| File | Purpose |
+|------|---------|
+| `.er-review.json` | Per-file risk levels, findings with hunk anchors |
+| `.er-order.json` | Suggested review order with groupings |
+| `.er-summary.md` | Markdown summary of overall changes |
+| `.er-checklist.json` | Review checklist items |
+| `.er-feedback.json` | Your comments (the only file `er` writes) |
+
+Claude Code skills: `/er-review` (full analysis), `/er-questions` (respond to comments), `/er-risk-sort`, `/er-summary`, `/er-checklist`. See `skills/README.md` for setup.
+
+Staleness detection: each file stores a SHA-256 hash of the diff it was generated against. When the diff changes, `er` dims the AI data and shows a stale warning.

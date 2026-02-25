@@ -14,6 +14,23 @@ Run as `/er-checklist`.
 4. Computes `diff_hash` for staleness detection
 5. Writes `.er-checklist.json`
 
+## Speed budget
+
+**Target: ≤5 tool calls, ≤30 seconds.**
+
+- TOOL CALLS 1-2: Read .er-review.json and .er-feedback.json (parallel — skip if missing)
+- TOOL CALL 3: Bash — `scripts/er-freshness-check.sh <base>` (captures diff + hash)
+- TOOL CALL 4: Read .er-diff-tmp (full diff into context)
+- IN-CONTEXT: Generate checklist — zero tool calls
+- TOOL CALL 5: Write .er-checklist.json
+
+Base branch comes from .er-review.json. If missing, detect: main then master.
+
+### Permission & hook constraints
+
+All Bash commands MUST start with an allowed command: `git`, `shasum`, `cp`, `mkdir`, `scripts/er-*`.
+Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
+
 ## Checklist design principles
 
 - Items should be things a human reviewer needs to **manually verify** — not things Claude already checked

@@ -105,7 +105,7 @@ The core review file. Contains per-file risk assessments and per-hunk findings.
 
 **Risk levels:** `"high"`, `"medium"`, `"low"`, `"info"`
 
-**Finding categories:** `"security"`, `"bug"`, `"performance"`, `"logic"`, `"style"`, `"test"`, `"docs"`
+**Finding categories:** `"security"`, `"logic"`, `"performance"`, `"correctness"`, `"error-handling"`, `"style"`, `"testing"`
 
 **Hunk targeting:** `hunk_index` is 0-based into the file's hunks array. `line_start`/`line_end` are new-file line numbers within that hunk (for precise annotation positioning). If both are null, the finding applies to the whole hunk.
 

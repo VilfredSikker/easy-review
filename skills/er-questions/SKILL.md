@@ -20,54 +20,65 @@ Run as `/er-questions`.
 5. Writes the updated `.er-review.json`
 6. Archives the processed feedback to `.er-feedback.prev.json`
 
+## Speed budget
+
+**Target: ~6 tool calls total.**
+
+### Permission & hook constraints
+
+All Bash commands MUST start with an allowed command: `git`, `shasum`, `cp`, `mkdir`, `scripts/er-*`.
+Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
+Use `scripts/er-freshness-check.sh <base>` for base validation + diff + hash.
+
 ## Step-by-step
 
 ```
-1. Read .er-feedback.json
-   - If it doesn't exist, print "No feedback to process" and exit
-   - Parse JSON, extract comments array
+TOOL CALL 1 — Read .er-feedback.json
+  - If it doesn't exist, print "No feedback to process" and exit
+  - Parse JSON: extract comments array and diff_hash
 
-2. Read .er-review.json
-   - If it doesn't exist, print "No review to update — run /er-review first" and exit
+TOOL CALL 2 — Read .er-review.json
+  - If it doesn't exist, print "No review to update — run /er-review first" and exit
+  - Extract base_branch (used in next step)
 
-3. Validate diff_hash
-   - Compute current diff hash: git diff <base>...HEAD | sha256sum
-   - If feedback.diff_hash != current hash, warn: "Feedback is stale (diff changed). Skipping."
-   - If review.diff_hash != current hash, warn: "Review is stale. Run /er-review first."
+TOOL CALL 3 — Bash (validate freshness):
+  scripts/er-freshness-check.sh <base_branch>
+  → Output: "ok", hash line, commit hash
+  - Compare hash against feedback.diff_hash and review.diff_hash
+  - If feedback stale: warn "Feedback is stale (diff changed). Skipping." and exit
+  - If review stale: warn "Review is stale. Run /er-review first." and exit
 
-4. Process each comment:
-   For each comment in feedback.comments where resolved == false:
+TOOL CALL 4 — Read .er-diff-tmp (full diff into context)
+  - This is ALL the code context needed. Do NOT read individual source files per comment.
 
-   a. Find context:
-      - Read the file at comment.file
-      - Look at the hunk at comment.hunk_index
-      - Read surrounding code at comment.line_start..comment.line_end
+IN-CONTEXT (zero tool calls) — Process all comments from the diff:
+  For each comment in feedback.comments where resolved == false:
 
-   b. If comment.in_reply_to is set:
-      - Find that finding in review.files[comment.file].findings
-      - Add a response to finding.responses:
-        {
-          "id": "r-<n>",
-          "in_reply_to": "<comment.id>",
-          "timestamp": "<ISO 8601>",
-          "text": "<thoughtful response>",
-          "new_findings": []
-        }
+  a. If comment.in_reply_to is set:
+     - Locate the hunk for comment.file / comment.hunk_index in the diff already in context
+     - Find that finding in review.files[comment.file].findings
+     - Add a response to finding.responses:
+       {
+         "id": "r-<n>",
+         "in_reply_to": "<comment.id>",
+         "timestamp": "<ISO 8601>",
+         "text": "<thoughtful response referencing actual code from the diff>",
+         "new_findings": []
+       }
 
-   c. If the comment is a general question (no in_reply_to):
-      - Create a new finding if warranted
-      - Or add a response to the most relevant existing finding
+  b. If the comment is a general question (no in_reply_to):
+     - Create a new finding if warranted
+     - Or add a response to the most relevant existing finding
 
-   d. If the comment says "resolved", "ok", "fixed", etc:
-      - Note in response that the concern is addressed
-      - Mark the comment's finding with a resolution note
+  c. If the comment says "resolved", "ok", "fixed", etc:
+     - Note in response that the concern is addressed
+     - Mark the comment's finding with a resolution note
 
-5. Write updated .er-review.json (same diff_hash, updated findings/responses)
+TOOL CALL 5 — Write updated .er-review.json (same diff_hash, updated findings/responses)
 
-6. Copy .er-feedback.json → .er-feedback.prev.json
+TOOL CALL 6 — Bash: cp .er-feedback.json .er-feedback.prev.json
 
-7. Print summary:
-   "Processed N comments. Added M responses, K new findings."
+Print summary: "Processed N comments. Added M responses, K new findings."
 ```
 
 ## Response quality guidelines

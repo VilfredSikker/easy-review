@@ -10,6 +10,7 @@ use crate::ai::agent::{AgentContext, AgentState, MessageRole};
 use crate::ai::{PanelTab, RiskLevel};
 use crate::app::{App, InputMode};
 use super::styles;
+use super::utils::word_wrap;
 
 /// Render the AI side panel (right side, in SidePanel view mode)
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
@@ -70,10 +71,13 @@ fn render_review_content(f: &mut Frame, area: Rect, app: &App) {
 
     let file = tab.selected_diff_file();
     let file_path = file.map(|f| f.path.as_str());
+    let file_stale = file_path.map_or(ai_stale, |p| tab.ai.is_file_stale(p));
+
+
     let fr = file_path.and_then(|p| tab.ai.file_review(p));
 
     if let (Some(path), Some(fr)) = (file_path, fr) {
-        let risk_style = if ai_stale {
+        let risk_style = if file_stale {
             styles::stale_style()
         } else {
             match fr.risk {
@@ -131,7 +135,7 @@ fn render_review_content(f: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(""));
 
             for finding in &fr.findings {
-                let sev_style = if ai_stale {
+                let sev_style = if file_stale {
                     styles::stale_style()
                 } else {
                     match finding.severity {
@@ -233,11 +237,22 @@ fn render_review_content(f: &mut Frame, area: Rect, app: &App) {
         )]));
     }
 
-    let stale_tag = if ai_stale { " [stale]" } else { "" };
-    let title = format!(" Review{} ", stale_tag);
+    let stale_tag = if file_stale {
+        " [stale]"
+    } else if ai_stale {
+        " [stale]"
+    } else {
+        ""
+    };
+    let title = format!(" AI Panel{} ", stale_tag);
+    let title_style = if stale_tag.is_empty() {
+        ratatui::style::Style::default().fg(styles::PURPLE)
+    } else {
+        styles::stale_style()
+    };
 
     let block = Block::default()
-        .title(Span::styled(title, Style::default().fg(styles::PURPLE)))
+        .title(Span::styled(title, title_style))
         .borders(Borders::LEFT)
         .border_style(Style::default().fg(styles::BORDER))
         .style(Style::default().bg(styles::SURFACE))
@@ -245,7 +260,7 @@ fn render_review_content(f: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((tab.diff_scroll, 0));
+        .scroll((tab.ai_panel_scroll, 0));
 
     f.render_widget(paragraph, area);
 }
@@ -449,36 +464,4 @@ fn render_prompt_input(
     f.render_widget(paragraph, area);
 }
 
-// ── Helpers ──
 
-fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-    let mut result = Vec::new();
-    for line in text.lines() {
-        if line.len() <= max_width {
-            result.push(line.to_string());
-        } else {
-            let mut current = String::new();
-            for word in line.split_whitespace() {
-                if current.is_empty() {
-                    current = word.to_string();
-                } else if current.len() + 1 + word.len() <= max_width {
-                    current.push(' ');
-                    current.push_str(word);
-                } else {
-                    result.push(current);
-                    current = word.to_string();
-                }
-            }
-            if !current.is_empty() {
-                result.push(current);
-            }
-        }
-    }
-    if result.is_empty() {
-        result.push(String::new());
-    }
-    result
-}

@@ -13,6 +13,7 @@ cp -r skills/er-questions ~/.claude/commands/er-questions
 cp -r skills/er-risk-sort ~/.claude/commands/er-risk-sort
 cp -r skills/er-summary ~/.claude/commands/er-summary
 cp -r skills/er-checklist ~/.claude/commands/er-checklist
+cp -r skills/er-publish ~/.claude/commands/er-publish
 ```
 
 Or symlink them for auto-updates:
@@ -22,31 +23,19 @@ ln -s $(pwd)/skills/er-questions ~/.claude/commands/er-questions
 ln -s $(pwd)/skills/er-risk-sort ~/.claude/commands/er-risk-sort
 ln -s $(pwd)/skills/er-summary ~/.claude/commands/er-summary
 ln -s $(pwd)/skills/er-checklist ~/.claude/commands/er-checklist
+ln -s $(pwd)/skills/er-publish ~/.claude/commands/er-publish
 ```
 
 ## Workflow
 
-```
-Terminal 1: er (TUI)          Terminal 2: Claude Code
-─────────────────────         ──────────────────────
-
-                              /er-review
-                              → writes .er-*.json files
-
-er auto-detects new files
-press v → AI Overlay mode
-review findings inline
-press c → add comment on hunk
-
-                              /er-questions
-                              → reads .er-feedback.json
-                              → adds responses to findings
-                              → archives old feedback
-
-er auto-refreshes
-see AI responses inline
-continue reviewing...
-```
+| Step | Where | What happens |
+|------|-------|--------------|
+| 1 | Claude Code | `/er-review` — writes `.er-*.json` files |
+| 2 | er (TUI) | Auto-detects new files, press `v` for AI Overlay mode |
+| 3 | er (TUI) | Review findings inline, press `c` to comment on a hunk |
+| 4 | Claude Code | `/er-questions` — reads feedback, responds, archives |
+| 5 | er (TUI) | Auto-refreshes, see AI responses inline, continue reviewing |
+| 6 | Claude Code | `/er-publish` — validates freshness, posts to GitHub PR |
 
 ## Skills
 
@@ -57,6 +46,7 @@ continue reviewing...
 | `er-risk-sort` | Re-sort file review order by risk and logical grouping |
 | `er-summary` | Regenerate the markdown summary |
 | `er-checklist` | Regenerate the review checklist |
+| `er-publish` | Publish review findings to GitHub PR as inline comments |
 
 ## Testing without skills
 
