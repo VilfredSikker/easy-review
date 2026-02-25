@@ -15,6 +15,7 @@ pub enum DiffMode {
     Branch,
     Unstaged,
     Staged,
+    Recent,
 }
 
 impl DiffMode {
@@ -24,12 +25,14 @@ impl DiffMode {
             DiffMode::Branch => "BRANCH DIFF",
             DiffMode::Unstaged => "UNSTAGED",
             DiffMode::Staged => "STAGED",
+            DiffMode::Recent => "RECENT",
         }
     }
 
     pub fn git_mode(&self) -> &'static str {
         match self {
-            DiffMode::Branch => "branch",
+            // Recent uses the same diff as Branch
+            DiffMode::Branch | DiffMode::Recent => "branch",
             DiffMode::Unstaged => "unstaged",
             DiffMode::Staged => "staged",
         }
@@ -201,14 +204,19 @@ impl TabState {
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
         self.files = git::parse_diff(&raw);
 
+        // Sort by mtime in Recent mode (newest first)
+        if self.mode == DiffMode::Recent {
+            self.sort_files_by_mtime();
+        }
+
         // Compute diff hash for the current mode
         self.diff_hash = ai::compute_diff_hash(&raw);
 
         // Branch diff hash for AI staleness detection.
-        // In Branch mode it's always the same as diff_hash (free).
+        // In Branch/Recent mode it's always the same as diff_hash (free).
         // In other modes, only recompute on explicit actions — watch events
         // skip this to avoid running two git diffs per file save.
-        if self.mode == DiffMode::Branch {
+        if self.mode == DiffMode::Branch || self.mode == DiffMode::Recent {
             self.branch_diff_hash = self.diff_hash.clone();
         } else if recompute_branch_hash {
             let branch_raw = git::git_diff_raw("branch", &self.base_branch, &self.repo_root)?;
@@ -221,7 +229,7 @@ impl TabState {
         // Compute per-file staleness when the review is stale and has file_hashes.
         // Use the branch diff for comparison (AI reviews are generated against branch diff).
         if self.ai.is_stale {
-            let branch_raw = if self.mode == DiffMode::Branch {
+            let branch_raw = if self.mode == DiffMode::Branch || self.mode == DiffMode::Recent {
                 Some(raw.as_str())
             } else if recompute_branch_hash {
                 // branch_raw was already fetched above for hash computation — re-fetch for per-file
@@ -583,13 +591,46 @@ impl TabState {
 
     pub fn set_mode(&mut self, mode: DiffMode) {
         if self.mode != mode {
+            // Remember current file path to restore selection after re-sort
+            let current_path = self.files
+                .get(self.selected_file)
+                .map(|f| f.path.clone());
+
             self.mode = mode;
-            self.selected_file = 0;
             self.current_hunk = 0;
             self.current_line = None;
             self.diff_scroll = 0;
             let _ = self.refresh_diff();
+
+            // Restore selection by path (file order may differ between modes)
+            if let Some(path) = current_path {
+                if let Some(idx) = self.files.iter().position(|f| f.path == path) {
+                    self.selected_file = idx;
+                } else {
+                    self.selected_file = 0;
+                }
+            } else {
+                self.selected_file = 0;
+            }
         }
+    }
+
+    /// Sort files by filesystem mtime (newest first) for Recent mode
+    fn sort_files_by_mtime(&mut self) {
+        use std::fs;
+        use std::time::SystemTime;
+
+        let repo_root = self.repo_root.clone();
+        self.files.sort_by(|a, b| {
+            let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let mtime_b = fs::metadata(format!("{}/{}", repo_root, b.path))
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            // Newest first (reverse chronological)
+            mtime_b.cmp(&mtime_a)
+        });
     }
 
     fn clamp_hunk(&mut self) {
@@ -960,7 +1001,7 @@ impl App {
         let repo_root = self.tab().repo_root.clone();
 
         match mode {
-            DiffMode::Branch | DiffMode::Unstaged => {
+            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Recent => {
                 git::git_stage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Staged: {}", file_path));
             }
@@ -1901,6 +1942,7 @@ mod tests {
         assert_eq!(DiffMode::Branch.label(), "BRANCH DIFF");
         assert_eq!(DiffMode::Unstaged.label(), "UNSTAGED");
         assert_eq!(DiffMode::Staged.label(), "STAGED");
+        assert_eq!(DiffMode::Recent.label(), "RECENT");
     }
 
     #[test]
@@ -1908,6 +1950,7 @@ mod tests {
         assert_eq!(DiffMode::Branch.git_mode(), "branch");
         assert_eq!(DiffMode::Unstaged.git_mode(), "unstaged");
         assert_eq!(DiffMode::Staged.git_mode(), "staged");
+        assert_eq!(DiffMode::Recent.git_mode(), "branch");
     }
 
     // ── clamp_hunk ──

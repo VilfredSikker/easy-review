@@ -181,7 +181,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
         // These banners are not counted by scroll_to_current_hunk — scroll is approximate in Overlay mode
         if in_overlay {
             let findings = match tab.mode {
-                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx),
+                DiffMode::Branch | DiffMode::Recent => tab.ai.findings_for_hunk(&file.path, hunk_idx),
                 DiffMode::Unstaged | DiffMode::Staged => {
                     tab.ai.findings_for_hunk_by_line_range(
                         &file.path,

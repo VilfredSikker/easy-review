@@ -5,10 +5,24 @@ use ratatui::{
     Frame,
 };
 
+use std::time::SystemTime;
+
 use crate::ai::{RiskLevel, ViewMode};
-use crate::app::App;
+use crate::app::{App, DiffMode};
 use crate::git::FileStatus;
 use super::styles;
+
+/// Format a SystemTime as a relative time string (e.g. "2m ago", "1h ago")
+fn format_relative_time(mtime: SystemTime) -> String {
+    let elapsed = SystemTime::now()
+        .duration_since(mtime)
+        .unwrap_or_default();
+    let secs = elapsed.as_secs();
+    if secs < 60 { return format!("{}s ago", secs); }
+    if secs < 3600 { return format!("{}m ago", secs / 60); }
+    if secs < 86400 { return format!("{}h ago", secs / 3600); }
+    format!("{}d ago", secs / 86400)
+}
 
 /// Render the file tree panel (left side)
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
@@ -75,11 +89,24 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 None
             };
 
-            // Adjust path width to account for risk dot
+            // Relative time for Recent mode
+            let is_recent = tab.mode == DiffMode::Recent;
+            let time_str = if is_recent {
+                let mtime = std::fs::metadata(format!("{}/{}", tab.repo_root, file.path))
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                Some(format_relative_time(mtime))
+            } else {
+                None
+            };
+            // Time column takes up to 8 chars (e.g. "15m ago " or "3h ago  ")
+            let time_width: usize = if time_str.is_some() { 8 } else { 0 };
+
+            // Adjust path width to account for risk dot and time column
             let extra_width = if risk_dot.is_some() { 2 } else { 0 };
             let path = shorten_path(
                 &file.path,
-                (area.width as usize).saturating_sub(16 + extra_width),
+                (area.width as usize).saturating_sub(16 + extra_width + time_width),
             );
 
             // Stats: +adds -dels
@@ -102,7 +129,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 symbol_style
             };
 
-            let path_width = (area.width as usize).saturating_sub(14 + extra_width).max(1);
+            let path_width = (area.width as usize).saturating_sub(14 + extra_width + time_width).max(1);
 
             let mut spans = vec![
                 Span::styled(format!(" {} ", symbol), effective_symbol_style),
@@ -123,6 +150,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::TEXT)
                 },
             ));
+            // Show relative time in Recent mode
+            if let Some(ref ts) = time_str {
+                spans.push(Span::styled(
+                    format!("{:>7} ", ts),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                ));
+            }
             if area.width > 24 {
                 spans.push(Span::styled(
                     format!("{:>8} ", stats),

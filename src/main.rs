@@ -190,6 +190,10 @@ fn handle_normal_input(
             app.tab_mut().set_mode(DiffMode::Staged);
             return Ok(());
         }
+        KeyCode::Char('4') => {
+            app.tab_mut().set_mode(DiffMode::Recent);
+            return Ok(());
+        }
 
         // Refresh
         KeyCode::Char('r') => {

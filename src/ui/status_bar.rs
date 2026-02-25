@@ -109,7 +109,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::GREEN),
         ),
     ];
-    if tab.mode == DiffMode::Branch {
+    if tab.mode == DiffMode::Branch || tab.mode == DiffMode::Recent {
         info_spans.push(Span::styled(
             format!(" (vs {})", tab.base_branch),
             ratatui::style::Style::default().fg(styles::DIM),
@@ -130,6 +130,9 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::raw(" "),
         Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)),
         Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)),
+        Span::raw(" "),
+        Span::styled(" 4 ", mode_style(DiffMode::Recent, tab.mode)),
+        Span::styled(" RECENT ", mode_style(DiffMode::Recent, tab.mode)),
     ];
 
     let mut right: Vec<Span> = Vec::new();
