@@ -46,7 +46,7 @@ er ~/projects/api ~/projects/frontend
 - **Four view modes** — Default (clean diff), Overlay (inline AI banners), Side Panel (3-column with AI panel), AI Review (full-screen dashboard)
 - **Comment & feedback loop** — Press `c` to comment on findings, re-run `/er-review` for AI responses
 - **GitHub PR integration** — Open PRs directly: `er --pr 42` or `er <github-url>`
-- **Three diff modes** — Branch diff, unstaged changes, staged changes
+- **Four diff modes** — Branch diff, unstaged changes, staged changes, recent (mtime-sorted)
 - **Line-level navigation** — Arrow keys move through individual diff lines within hunks
 - **Syntax highlighting** — Language-aware coloring via syntect
 - **Live watch mode** — Auto-refreshes when files change on disk; AI data reloads automatically
@@ -78,6 +78,7 @@ Ctrl-d / Ctrl-u   Scroll half page down / up
 1                 Branch diff (vs base branch)
 2                 Unstaged changes
 3                 Staged changes
+4                 Recent (branch diff sorted by file mtime, newest first)
 ```
 
 ### Actions
