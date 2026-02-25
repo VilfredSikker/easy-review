@@ -31,7 +31,7 @@ pub struct FilterPreset {
 
 pub const FILTER_PRESETS: &[FilterPreset] = &[
     FilterPreset { name: "frontend", expr: "*.ts,*.tsx,*.js,*.jsx,*.html,*.css,*.scss,*.svelte,*.vue" },
-    FilterPreset { name: "backend",  expr: "*.rs,*.py,*.go,*.java,*.sql,*.ts" },
+    FilterPreset { name: "backend",  expr: "*.rs,*.py,*.go,*.java,*.sql,*.ts" }, // *.ts intentionally in both — TS is used on both sides
     FilterPreset { name: "config",   expr: "*.toml,*.yaml,*.yml,*.json,*.env" },
     FilterPreset { name: "docs",     expr: "*.md,*.txt,*.rst" },
 ];

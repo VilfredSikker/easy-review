@@ -64,18 +64,25 @@ fn main() -> Result<()> {
         app.tab_mut().apply_filter_expr(filter_expr);
     }
 
-    // Hint: if current branch has a PR targeting a different base, show a tip
-    if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
+    // Hint: check for PR base mismatch in background (avoids blocking startup on network)
+    let hint_rx = if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
         let repo_root = app.tab().repo_root.clone();
-        if let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) {
-            if pr_base != app.tab().base_branch {
-                app.notify(&format!(
-                    "PR #{} targets {} — run: er --pr {}",
-                    pr_num, pr_base, pr_num
-                ));
+        let current_base = app.tab().base_branch.clone();
+        let (tx, rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            if let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) {
+                if pr_base != current_base {
+                    let _ = tx.send(format!(
+                        "PR #{} targets {} — run: er --pr {}",
+                        pr_num, pr_base, pr_num
+                    ));
+                }
             }
-        }
-    }
+        });
+        Some(rx)
+    } else {
+        None
+    };
 
     // Load syntax highlighting (once, reused for all files)
     let highlighter = ui::highlight::Highlighter::new();
@@ -88,7 +95,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run event loop
-    let result = run_app(&mut terminal, &mut app, &highlighter);
+    let result = run_app(&mut terminal, &mut app, &highlighter, hint_rx);
 
     // Cleanup
     disable_raw_mode()?;
@@ -112,10 +119,12 @@ fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     hl: &ui::highlight::Highlighter,
+    hint_rx: Option<mpsc::Receiver<String>>,
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
     let mut _watcher: Option<FileWatcher> = None;
+    let mut hint_rx = hint_rx;
 
     loop {
         // Draw
@@ -162,6 +171,14 @@ fn run_app<B: Backend>(
         if app.ai_poll_counter % 10 == 0 {
             if app.tab_mut().check_ai_files_changed() {
                 app.notify("✓ AI data refreshed");
+            }
+        }
+
+        // Check for PR base hint from background thread (fires once)
+        if let Some(rx) = &hint_rx {
+            if let Ok(msg) = rx.try_recv() {
+                app.notify(&msg);
+                hint_rx = None;
             }
         }
 

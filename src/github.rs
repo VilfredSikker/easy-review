@@ -197,8 +197,13 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
 /// Check if the current branch has an open PR. Returns (number, base_branch) or None.
 /// Silently returns None if gh is unavailable, not authenticated, or no PR exists.
 pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
+    // Use --jq to extract "number<tab>baseRefName" — robust against JSON formatting
     let output = Command::new("gh")
-        .args(["pr", "view", "--json", "number,baseRefName"])
+        .args([
+            "pr", "view",
+            "--json", "number,baseRefName",
+            "--jq", r#"[.number, .baseRefName] | @tsv"#,
+        ])
         .current_dir(repo_root)
         .output()
         .ok()?;
@@ -207,28 +212,16 @@ pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
         return None;
     }
 
-    let json = String::from_utf8_lossy(&output.stdout);
-    // Minimal JSON parsing: {"number":123,"baseRefName":"develop"}
-    let number = json
-        .split("\"number\":")
-        .nth(1)?
-        .split([',', '}'])
-        .next()?
-        .trim()
-        .parse::<u64>()
-        .ok()?;
-    let base = json
-        .split("\"baseRefName\":\"")
-        .nth(1)?
-        .split('"')
-        .next()?
-        .to_string();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
+    let (num_str, base) = text.split_once('\t')?;
+    let number = num_str.parse::<u64>().ok()?;
 
     if base.is_empty() {
         return None;
     }
 
-    Some((number, base))
+    Some((number, base.to_string()))
 }
 
 /// Check if a string looks like a GitHub PR URL

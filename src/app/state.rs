@@ -736,11 +736,15 @@ impl TabState {
         if self.filter_rules.is_empty() {
             return None;
         }
-        let filtered: Vec<&DiffFile> = self.files.iter()
-            .filter(|f| super::filter::apply_filter(&self.filter_rules, f))
-            .collect();
-        let total = filtered.len();
-        let reviewed = filtered.iter().filter(|f| self.reviewed.contains(&f.path)).count();
+        let (mut total, mut reviewed) = (0, 0);
+        for f in &self.files {
+            if super::filter::apply_filter(&self.filter_rules, f) {
+                total += 1;
+                if self.reviewed.contains(&f.path) {
+                    reviewed += 1;
+                }
+            }
+        }
         Some((reviewed, total))
     }
 
@@ -979,6 +983,8 @@ impl App {
                     *selected += 1;
                 }
             }
+            // `selected` indexes presets (0..preset_count) then history (preset_count..);
+            // the visual separator in the overlay is render-only and not selectable
             Some(OverlayData::FilterHistory { history, selected, preset_count }) => {
                 if *selected + 1 < *preset_count + history.len() {
                     *selected += 1;
