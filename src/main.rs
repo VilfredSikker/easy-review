@@ -123,8 +123,18 @@ fn run_app<B: Backend>(
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
-    let mut _watcher: Option<FileWatcher> = None;
     let mut hint_rx = hint_rx;
+
+    // Start watching by default
+    let root_str = app.tab().repo_root.clone();
+    let root = std::path::Path::new(&root_str);
+    let mut _watcher: Option<FileWatcher> = match FileWatcher::new(root, 500, watch_tx.clone()) {
+        Ok(w) => {
+            app.watching = true;
+            Some(w)
+        }
+        Err(_) => None,
+    };
 
     loop {
         // Draw
@@ -229,6 +239,15 @@ fn handle_normal_input(
         }
         KeyCode::Char('3') => {
             app.tab_mut().set_mode(DiffMode::Staged);
+            return Ok(());
+        }
+        // Toggle mtime sort (works in any mode)
+        KeyCode::Char('R') => {
+            let tab = app.tab_mut();
+            tab.sort_by_mtime = !tab.sort_by_mtime;
+            let _ = tab.refresh_diff();
+            let label = if app.tab().sort_by_mtime { "Sort: recent first" } else { "Sort: default" };
+            app.notify(label);
             return Ok(());
         }
 

@@ -113,6 +113,9 @@ pub struct TabState {
     /// Only show unreviewed files in the file tree
     pub show_unreviewed_only: bool,
 
+    /// Sort files by mtime (newest first) — works in any diff mode
+    pub sort_by_mtime: bool,
+
     /// AI review state (loaded from .er-* files)
     pub ai: AiState,
 
@@ -196,6 +199,7 @@ impl TabState {
             filter_history: Vec::new(),
             reviewed,
             show_unreviewed_only: false,
+            sort_by_mtime: false,
             ai: AiState::default(),
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
@@ -233,8 +237,17 @@ impl TabState {
     }
 
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool) -> Result<()> {
+        // Remember current position to restore after re-parse
+        let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
+        let prev_hunk = self.current_hunk;
+        let prev_line = self.current_line;
+
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
         self.files = git::parse_diff(&raw);
+
+        if self.sort_by_mtime {
+            self.sort_files_by_mtime();
+        }
 
         // Compute diff hash for the current mode
         self.diff_hash = ai::compute_diff_hash(&raw);
@@ -278,15 +291,29 @@ impl TabState {
             }
         }
 
-        // Clamp selection
-        if self.selected_file >= self.files.len() && !self.files.is_empty() {
-            self.selected_file = self.files.len() - 1;
-        }
-        if self.files.is_empty() {
+        // Restore selection by path (file order may change after sort/re-parse)
+        if let Some(ref path) = prev_path {
+            if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
+                self.selected_file = idx;
+                // Restore hunk/line if the file still has enough hunks
+                if prev_hunk < self.total_hunks() {
+                    self.current_hunk = prev_hunk;
+                    self.current_line = prev_line;
+                } else {
+                    self.clamp_hunk();
+                }
+            } else {
+                // File disappeared from diff — clamp index
+                if self.selected_file >= self.files.len() {
+                    self.selected_file = self.files.len().saturating_sub(1);
+                }
+                self.clamp_hunk();
+            }
+        } else {
             self.selected_file = 0;
+            self.clamp_hunk();
         }
-        self.clamp_hunk();
-        self.diff_scroll = 0;
+        self.scroll_to_current_hunk();
 
         Ok(())
     }
@@ -672,14 +699,55 @@ impl TabState {
 
     pub fn set_mode(&mut self, mode: DiffMode) {
         if self.mode != mode {
+            // Remember current position to restore after mode switch
+            let prev_path = self.files
+                .get(self.selected_file)
+                .map(|f| f.path.clone());
+            let prev_hunk = self.current_hunk;
+            let prev_line = self.current_line;
+
             self.mode = mode;
-            self.selected_file = 0;
             self.current_hunk = 0;
             self.current_line = None;
             self.diff_scroll = 0;
             let _ = self.refresh_diff();
+
+            // Restore selection by path (file order may differ between modes)
+            if let Some(path) = prev_path {
+                if let Some(idx) = self.files.iter().position(|f| f.path == path) {
+                    self.selected_file = idx;
+                    // Restore hunk/line if the file still has enough hunks
+                    if prev_hunk < self.total_hunks() {
+                        self.current_hunk = prev_hunk;
+                        self.current_line = prev_line;
+                    }
+                } else {
+                    self.selected_file = 0;
+                }
+            } else {
+                self.selected_file = 0;
+            }
             self.snap_to_visible();
+            self.scroll_to_current_hunk();
         }
+    }
+
+    /// Sort files by filesystem mtime (newest first)
+    fn sort_files_by_mtime(&mut self) {
+        use std::fs;
+        use std::time::SystemTime;
+
+        let repo_root = self.repo_root.clone();
+        self.files.sort_by(|a, b| {
+            let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let mtime_b = fs::metadata(format!("{}/{}", repo_root, b.path))
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            // Newest first (reverse chronological)
+            mtime_b.cmp(&mtime_a)
+        });
     }
 
     fn clamp_hunk(&mut self) {
@@ -1572,6 +1640,7 @@ mod tests {
             filter_history: Vec::new(),
             reviewed: HashSet::new(),
             show_unreviewed_only: false,
+            sort_by_mtime: false,
             ai: AiState::default(),
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
