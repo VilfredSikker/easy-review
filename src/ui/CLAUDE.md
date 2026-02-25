@@ -7,10 +7,10 @@ All Ratatui rendering. No state mutation — reads `App` and produces frames.
 | File | Lines | Purpose |
 |------|-------|---------|
 | `mod.rs` | ~83 | Top-level layout: splits screen, routes to sub-renderers |
-| `styles.rs` | ~138 | All colors and `Style` objects. Single source of truth. |
+| `styles.rs` | ~159 | All colors and `Style` objects. Single source of truth. |
 | `highlight.rs` | ~79 | Syntect-based syntax highlighting |
 | `diff_view.rs` | ~362 | Right panel: hunks, line numbers, syntax-highlighted diff |
-| `file_tree.rs` | ~240 | Left panel: file list with status/risk indicators |
+| `file_tree.rs` | ~330 | Left panel: file list with status/risk indicators + watched files section |
 | `status_bar.rs` | ~456 | Top bar (branch/tabs/modes) + bottom bar (key hints/input) |
 | `overlay.rs` | ~217 | Modal popups: worktree picker, directory browser |
 | `ai_panel.rs` | ~286 | AI side panel (SidePanel view): findings + comments per file |
@@ -43,6 +43,7 @@ Cool blue-undertone dark theme. All colors are constants, all styles are functio
 Background layers: `BG` (darkest) → `SURFACE` → `PANEL` → `BORDER`
 Diff colors: `ADD_BG/ADD_TEXT` (green), `DEL_BG/DEL_TEXT` (red), `HUNK_BG`
 AI colors: `STALE`, `FINDING_BG`, `COMMENT_BG`, `LINE_CURSOR_BG`
+Watched colors: `WATCHED_TEXT`, `WATCHED_MUTED`, `WATCHED_BG`
 
 Rule: never use raw `Color::*` outside this file.
 
@@ -78,3 +79,5 @@ Bottom bar: in Normal mode shows packed key hints; in Search/Comment mode shows 
 - Scroll is shared: `tab.diff_scroll` controls both diff_view and ai_panel in SidePanel mode
 - `shorten_path()` in file_tree.rs truncates directories with `…/filename` to fit column width
 - Finding banners truncated to `area.width - 6` with ellipsis
+- `render_watched()` in diff_view.rs handles content and snapshot diff display for watched files (no syntax highlighting — uses plain styled spans to avoid lifetime issues)
+- file_tree.rs renders watched files below a `── watched ──` separator with ◉ icon (⚠ if not gitignored), relative timestamps

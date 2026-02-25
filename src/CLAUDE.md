@@ -20,6 +20,7 @@ main.rs event loop
   ├── watch_rx.try_recv()    → App::refresh_diff()
   ├── hint_rx.try_recv()     → PR base hint (background thread, fires once)
   ├── check_ai_files_changed → reload .er-* files
+  ├── periodic rescan (~5s)  → refresh_watched_files()
   └── ui::draw(frame, app, highlighter)
 ```
 
@@ -35,6 +36,8 @@ Entry point. CLI parsing via clap (`--pr`, `--filter`, positional paths). Sets u
 - Overlay active → `handle_overlay_input()` (j/k/Enter/Esc in popup)
 
 **Watch toggle:** `w` key swaps `Option<FileWatcher>` between `Some` (watching) and `None` (stopped). Dropping the watcher stops it (RAII).
+
+**Watched files:** `W` key toggles visibility of watched files (configured via `.er-config.toml`). `s` key in watched context saves a snapshot. Rescan runs every ~50 ticks (~5s).
 
 ## github.rs (~200 lines)
 

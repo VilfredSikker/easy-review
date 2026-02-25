@@ -9,6 +9,23 @@ pub struct ErConfig {
     pub agent: AgentConfig,
     #[serde(default)]
     pub display: DisplayConfig,
+    #[serde(default)]
+    pub watched: WatchedConfig,
+}
+
+/// [watched] section configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WatchedConfig {
+    /// Glob patterns for git-ignored paths to include in the UI
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// How to diff watched files: "content" or "snapshot"
+    #[serde(default = "default_diff_mode")]
+    pub diff_mode: String,
+}
+
+fn default_diff_mode() -> String {
+    "content".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +88,7 @@ impl Default for ErConfig {
             features: FeatureFlags::default(),
             agent: AgentConfig::default(),
             display: DisplayConfig::default(),
+            watched: WatchedConfig::default(),
         }
     }
 }
