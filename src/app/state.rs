@@ -43,6 +43,7 @@ pub enum InputMode {
     Search,
     Comment,
     Filter,
+    Commit,
 }
 
 // ── Overlay types ──
@@ -160,6 +161,11 @@ pub struct TabState {
 
     /// Optional specific line number the comment targets (new-side)
     pub comment_line_num: Option<usize>,
+
+    // ── Commit input state ──
+
+    /// Text buffer for the commit message being typed
+    pub commit_input: String,
 }
 
 impl TabState {
@@ -209,6 +215,7 @@ impl TabState {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            commit_input: String::new(),
         };
 
         tab.refresh_diff()?;
@@ -1416,6 +1423,36 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    // ── Commit ──
+
+    /// Start commit input (only in Staged mode)
+    pub fn start_commit(&mut self) {
+        self.tab_mut().commit_input.clear();
+        self.input_mode = InputMode::Commit;
+    }
+
+    /// Run git commit with the typed message
+    pub fn submit_commit(&mut self) -> Result<()> {
+        let message = self.tab().commit_input.trim().to_string();
+        if message.is_empty() {
+            self.input_mode = InputMode::Normal;
+            return Ok(());
+        }
+        let repo_root = self.tab().repo_root.clone();
+        git::git_commit(&repo_root, &message)?;
+        self.tab_mut().commit_input.clear();
+        self.input_mode = InputMode::Normal;
+        let _ = self.tab_mut().refresh_diff();
+        self.notify("Committed!");
+        Ok(())
+    }
+
+    /// Cancel commit input
+    pub fn cancel_commit(&mut self) {
+        self.tab_mut().commit_input.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
     // ── AiReview Navigation ──
 
     /// Jump from AiReview to the selected file in SidePanel mode
@@ -1650,6 +1687,7 @@ mod tests {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            commit_input: String::new(),
         }
     }
 

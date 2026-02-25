@@ -151,6 +151,7 @@ fn run_app<B: Backend>(
                         InputMode::Search => handle_search_input(app, key),
                         InputMode::Comment => handle_comment_input(app, key)?,
                         InputMode::Filter => handle_filter_input(app, key),
+                        InputMode::Commit => handle_commit_input(app, key)?,
                         InputMode::Normal => {
                             handle_normal_input(app, key, &watch_tx, &mut _watcher)?
                         }
@@ -401,7 +402,11 @@ fn handle_normal_input(
 
         // Comment on current hunk
         KeyCode::Char('c') => {
-            app.start_comment();
+            if app.tab().mode == DiffMode::Staged {
+                app.start_commit();
+            } else {
+                app.start_comment();
+            }
         }
 
         // Toggle AI view mode (v forward, V backward)
@@ -590,6 +595,25 @@ fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Backspace => {
             app.tab_mut().comment_input.pop();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Enter => {
+            app.submit_commit()?;
+        }
+        KeyCode::Esc => {
+            app.cancel_commit();
+        }
+        KeyCode::Char(c) => {
+            app.tab_mut().commit_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.tab_mut().commit_input.pop();
         }
         _ => {}
     }
