@@ -31,6 +31,10 @@ struct Cli {
     /// Open a specific PR by number (from the current repo)
     #[arg(long)]
     pr: Option<u64>,
+
+    /// Pre-apply a file filter expression (e.g. '+*.rs,-*.lock')
+    #[arg(long)]
+    filter: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -53,6 +57,11 @@ fn main() -> Result<()> {
         let tab = app.tab_mut();
         tab.base_branch = base;
         tab.refresh_diff()?;
+    }
+
+    // Apply --filter flag if provided
+    if let Some(ref filter_expr) = cli.filter {
+        app.tab_mut().apply_filter_expr(filter_expr);
     }
 
     // Load syntax highlighting (once, reused for all files)
@@ -109,6 +118,7 @@ fn run_app<B: Backend>(
                     match app.input_mode {
                         InputMode::Search => handle_search_input(app, key),
                         InputMode::Comment => handle_comment_input(app, key)?,
+                        InputMode::Filter => handle_filter_input(app, key),
                         InputMode::Normal => {
                             handle_normal_input(app, key, &watch_tx, &mut _watcher)?
                         }
@@ -303,6 +313,18 @@ fn handle_normal_input(
             app.tab_mut().search_query.clear();
         }
 
+        // Filter
+        KeyCode::Char('f') => {
+            app.input_mode = InputMode::Filter;
+            // Pre-populate with current expression for editing
+            app.tab_mut().filter_input = app.tab().filter_expr.clone();
+        }
+
+        // Filter history
+        KeyCode::Char('F') => {
+            app.open_filter_history();
+        }
+
         // Stage/unstage file
         KeyCode::Char('s') => {
             app.toggle_stage_file()?;
@@ -349,10 +371,13 @@ fn handle_normal_input(
             app.notify(&format!("View: {}", mode));
         }
 
-        // Clear search filter
+        // Clear search first, then filter (innermost → outermost)
         KeyCode::Esc => {
             if !app.tab().search_query.is_empty() {
                 app.tab_mut().search_query.clear();
+            } else if !app.tab().filter_expr.is_empty() {
+                app.tab_mut().clear_filter();
+                app.notify("Filter cleared");
             }
         }
 
@@ -470,6 +495,34 @@ fn handle_search_input(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Backspace => {
             app.tab_mut().search_query.pop();
+        }
+        _ => {}
+    }
+}
+
+fn handle_filter_input(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter => {
+            let expr = app.tab().filter_input.clone();
+            app.tab_mut().apply_filter_expr(&expr);
+            app.input_mode = InputMode::Normal;
+            if expr.trim().is_empty() {
+                app.notify("Filter cleared");
+            } else {
+                let visible = app.tab().visible_files().len();
+                let total = app.tab().files.len();
+                app.notify(&format!("Filter: {} ({}/{})", expr.trim(), visible, total));
+            }
+        }
+        KeyCode::Esc => {
+            app.tab_mut().filter_input.clear();
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Char(c) => {
+            app.tab_mut().filter_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.tab_mut().filter_input.pop();
         }
         _ => {}
     }

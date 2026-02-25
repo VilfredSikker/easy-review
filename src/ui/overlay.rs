@@ -17,6 +17,9 @@ pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
         OverlayData::DirectoryBrowser { current_path, entries, selected } => {
             render_directory_browser(f, area, current_path, entries, *selected);
         }
+        OverlayData::FilterHistory { history, selected } => {
+            render_filter_history(f, area, history, *selected);
+        }
     }
 }
 
@@ -188,6 +191,83 @@ fn render_directory_browser(
         ))
         .borders(Borders::ALL)
         .border_style(ratatui::style::Style::default().fg(styles::CYAN))
+        .style(ratatui::style::Style::default().bg(styles::PANEL));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, popup);
+}
+
+fn render_filter_history(
+    f: &mut Frame,
+    area: Rect,
+    history: &[String],
+    selected: usize,
+) {
+    let popup_height = (history.len() as u16 + 2).min(area.height.saturating_sub(6)).max(4);
+    let popup_width = 60u16.min(area.width.saturating_sub(6));
+    let popup = centered_rect(popup_width, popup_height, area);
+
+    f.render_widget(Clear, popup);
+
+    if history.is_empty() {
+        let block = Block::default()
+            .title(Span::styled(
+                " FILTER HISTORY ",
+                ratatui::style::Style::default().fg(styles::YELLOW),
+            ))
+            .borders(Borders::ALL)
+            .border_style(ratatui::style::Style::default().fg(styles::YELLOW))
+            .style(ratatui::style::Style::default().bg(styles::PANEL));
+
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  (no filter history)",
+            ratatui::style::Style::default().fg(styles::MUTED),
+        )))
+        .block(block);
+
+        f.render_widget(empty, popup);
+        return;
+    }
+
+    let items: Vec<ListItem> = history
+        .iter()
+        .enumerate()
+        .map(|(idx, expr)| {
+            let is_sel = idx == selected;
+            let marker = if is_sel { "▶ " } else { "  " };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    marker,
+                    ratatui::style::Style::default().fg(styles::YELLOW),
+                ),
+                Span::styled(
+                    expr.as_str(),
+                    if is_sel {
+                        ratatui::style::Style::default().fg(styles::BRIGHT)
+                    } else {
+                        ratatui::style::Style::default().fg(styles::TEXT)
+                    },
+                ),
+            ]);
+
+            let style = if is_sel {
+                styles::selected_style()
+            } else {
+                ratatui::style::Style::default().bg(styles::PANEL)
+            };
+
+            ListItem::new(line).style(style)
+        })
+        .collect();
+
+    let block = Block::default()
+        .title(Span::styled(
+            " FILTER HISTORY (Enter=apply, Esc=close) ",
+            ratatui::style::Style::default().fg(styles::YELLOW),
+        ))
+        .borders(Borders::ALL)
+        .border_style(ratatui::style::Style::default().fg(styles::YELLOW))
         .style(ratatui::style::Style::default().bg(styles::PANEL));
 
     let list = List::new(items).block(block);

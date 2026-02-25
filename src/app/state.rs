@@ -42,6 +42,7 @@ pub enum InputMode {
     Normal,
     Search,
     Comment,
+    Filter,
 }
 
 // ── Overlay types ──
@@ -64,6 +65,10 @@ pub enum OverlayData {
     DirectoryBrowser {
         current_path: String,
         entries: Vec<DirEntry>,
+        selected: usize,
+    },
+    FilterHistory {
+        history: Vec<String>,
         selected: usize,
     },
 }
@@ -121,6 +126,20 @@ pub struct TabState {
     /// Timestamp of last .er-* file check (to avoid re-reading every tick)
     pub last_ai_check: Option<std::time::SystemTime>,
 
+    // ── Filter state ──
+
+    /// Active filter expression (user-visible string)
+    pub filter_expr: String,
+
+    /// Parsed filter rules from filter_expr
+    pub filter_rules: Vec<super::filter::FilterRule>,
+
+    /// Text buffer for filter input while typing
+    pub filter_input: String,
+
+    /// History of applied filter expressions (most recent first, in-memory only)
+    pub filter_history: Vec<String>,
+
     // ── Comment input state ──
 
     /// Text buffer for the comment being typed
@@ -170,6 +189,10 @@ impl TabState {
             h_scroll: 0,
             ai_panel_scroll: 0,
             search_query: String::new(),
+            filter_expr: String::new(),
+            filter_rules: Vec::new(),
+            filter_input: String::new(),
+            filter_history: Vec::new(),
             reviewed,
             show_unreviewed_only: false,
             ai: AiState::default(),
@@ -334,19 +357,23 @@ impl TabState {
         false
     }
 
-    /// Get the list of files, filtered by search query and reviewed status
+    /// Get the list of files, filtered by filter rules, search query, and reviewed status.
+    /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
-        let mut visible: Vec<(usize, &DiffFile)> = if self.search_query.is_empty() {
-            self.files.iter().enumerate().collect()
-        } else {
-            let q = self.search_query.to_lowercase();
-            self.files
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| f.path.to_lowercase().contains(&q))
-                .collect()
-        };
+        let mut visible: Vec<(usize, &DiffFile)> = self.files.iter().enumerate().collect();
 
+        // Phase 1: Apply filter rules
+        if !self.filter_rules.is_empty() {
+            visible.retain(|(_, f)| super::filter::apply_filter(&self.filter_rules, f));
+        }
+
+        // Phase 2: Apply search query
+        if !self.search_query.is_empty() {
+            let q = self.search_query.to_lowercase();
+            visible.retain(|(_, f)| f.path.to_lowercase().contains(&q));
+        }
+
+        // Phase 3: Apply unreviewed-only toggle
         if self.show_unreviewed_only {
             visible.retain(|(_, f)| !self.reviewed.contains(&f.path));
         }
@@ -650,6 +677,7 @@ impl TabState {
             self.current_line = None;
             self.diff_scroll = 0;
             let _ = self.refresh_diff();
+            self.snap_to_visible();
         }
     }
 
@@ -661,6 +689,35 @@ impl TabState {
         } else if self.current_hunk >= total {
             self.current_hunk = total - 1;
         }
+    }
+
+    // ── Filter ──
+
+    /// Parse and apply a filter expression, updating history
+    pub fn apply_filter_expr(&mut self, expr: &str) {
+        let expr = expr.trim().to_string();
+        if expr.is_empty() {
+            self.clear_filter();
+            return;
+        }
+        self.filter_expr = expr.clone();
+        self.filter_rules = super::filter::parse_filter_expr(&self.filter_expr);
+
+        // Add to history (remove duplicate if exists, push to front)
+        self.filter_history.retain(|h| h != &expr);
+        self.filter_history.insert(0, expr);
+
+        // Cap history at 20 entries
+        self.filter_history.truncate(20);
+
+        self.snap_to_visible();
+    }
+
+    /// Clear the active filter
+    pub fn clear_filter(&mut self) {
+        self.filter_expr.clear();
+        self.filter_rules.clear();
+        self.snap_to_visible();
     }
 
     // ── Reviewed-File Tracking ──
@@ -866,6 +923,19 @@ impl App {
         Ok(())
     }
 
+    /// Open the filter history overlay
+    pub fn open_filter_history(&mut self) {
+        let history = self.tab().filter_history.clone();
+        if history.is_empty() {
+            self.notify("No filter history");
+            return;
+        }
+        self.overlay = Some(OverlayData::FilterHistory {
+            history,
+            selected: 0,
+        });
+    }
+
     /// Open the directory browser overlay (starts from parent of repo root)
     pub fn open_directory_browser(&mut self) {
         let repo_root = self.tab().repo_root.clone();
@@ -896,6 +966,11 @@ impl App {
                     *selected += 1;
                 }
             }
+            Some(OverlayData::FilterHistory { history, selected }) => {
+                if *selected + 1 < history.len() {
+                    *selected += 1;
+                }
+            }
             None => {}
         }
     }
@@ -903,7 +978,8 @@ impl App {
     pub fn overlay_prev(&mut self) {
         match &mut self.overlay {
             Some(OverlayData::WorktreePicker { selected, .. })
-            | Some(OverlayData::DirectoryBrowser { selected, .. }) => {
+            | Some(OverlayData::DirectoryBrowser { selected, .. })
+            | Some(OverlayData::FilterHistory { selected, .. }) => {
                 if *selected > 0 {
                     *selected -= 1;
                 }
@@ -924,6 +1000,12 @@ impl App {
                 if let Some(wt) = worktrees.get(selected) {
                     let path = wt.path.clone();
                     self.open_in_new_tab(path)?;
+                }
+            }
+            OverlayData::FilterHistory { history, selected } => {
+                if let Some(expr) = history.get(selected).cloned() {
+                    self.tab_mut().apply_filter_expr(&expr);
+                    self.notify(&format!("Filter: {}", expr));
                 }
             }
             OverlayData::DirectoryBrowser { current_path, entries, selected } => {
@@ -1459,6 +1541,10 @@ mod tests {
             h_scroll: 0,
             ai_panel_scroll: 0,
             search_query: String::new(),
+            filter_expr: String::new(),
+            filter_rules: Vec::new(),
+            filter_input: String::new(),
+            filter_history: Vec::new(),
             reviewed: HashSet::new(),
             show_unreviewed_only: false,
             ai: AiState::default(),
