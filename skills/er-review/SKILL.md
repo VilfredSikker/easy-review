@@ -115,15 +115,12 @@ TOOL CALL 3 — Read .er-reviews/<branch>/<commit-hash>/.er-review.json:
 
 Step 3: Full analysis (~10 tool calls total)
 
-TOOL CALL 4 — Bash (per-file hashes via helper script):
-  scripts/er-hash-files.sh <scope-args>
-  → Outputs: <file>\t<hash>  .er-diff-tmp per line. Parse file name and hash.
-  → Matches Bash(~/.claude/scripts/*) allow rule — no permission prompt.
+TOOL CALL 4 — Bash (per-file hashes + full diff via helper script):
+  er-hash-files.sh <scope-args>
+  → Runs a single git diff, splits in-memory, outputs <file>\t<hash> per line.
+  → Also leaves the full diff in .er-diff-tmp (reused by TOOL CALL 5).
 
-TOOL CALL 5 — Bash (re-capture full diff for reading):
-  git diff <scope-args> > .er-diff-tmp
-
-TOOL CALL 6 — Read .er-diff-tmp (the full diff):
+TOOL CALL 5 — Read .er-diff-tmp (the full diff):
   → This loads the ENTIRE diff into context. Do NOT read individual files.
 
 (Optional) TOOL CALL 7 — Read .er-feedback.json if it exists
@@ -162,18 +159,16 @@ Step 4: Incremental analysis (~12 tool calls total)
 
 Uses the base review from Step 2 (already in context).
 
-TOOL CALL 4 — Bash (per-file hashes via helper script):
-  scripts/er-hash-files.sh <scope-args>
+TOOL CALL 4 — Bash (per-file hashes + full diff via helper script):
+  er-hash-files.sh <scope-args>
+  → Single git diff, in-memory split. Also leaves full diff in .er-diff-tmp.
 
 Compare each file hash against base review's file_hashes:
   - Hash matches → preserve findings as-is
   - Hash changed or new file → needs re-analysis
   - Files in base but not in new diff → drop
 
-TOOL CALL 5 — Bash (re-capture full diff):
-  git diff <scope-args> > .er-diff-tmp
-
-TOOL CALL 6 — Read .er-diff-tmp (full diff into context)
+TOOL CALL 5 — Read .er-diff-tmp (full diff into context)
 
 (Optional) TOOL CALL 7 — Read .er-feedback.json if it exists
 

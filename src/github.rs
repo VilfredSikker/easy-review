@@ -167,6 +167,92 @@ pub fn verify_remote_matches(repo_root: &str, pr_ref: &PrRef) -> Result<()> {
     Ok(())
 }
 
+/// Ensure a remote ref is available locally by fetching if needed.
+/// Returns the ref name that actually resolves — may be `origin/<base>` if
+/// no local branch exists.
+pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<String> {
+    let rev_parse_ok = |refname: &str| -> Result<bool> {
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", refname])
+            .current_dir(repo_root)
+            .output()
+            .context("Failed to check ref")?;
+        Ok(out.status.success())
+    };
+
+    // Local branch exists — use it directly
+    if rev_parse_ok(base_branch)? {
+        return Ok(base_branch.to_string());
+    }
+
+    // Remote-tracking ref exists — use it (no fetch needed)
+    let remote_ref = format!("origin/{}", base_branch);
+    if rev_parse_ok(&remote_ref)? {
+        return Ok(remote_ref);
+    }
+
+    // Fetch from origin
+    let fetch = Command::new("git")
+        .args(["fetch", "origin", base_branch])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to fetch base branch from origin")?;
+
+    if !fetch.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch.stderr);
+        anyhow::bail!(
+            "Base branch '{}' not found locally or on origin: {}",
+            base_branch,
+            stderr.trim()
+        );
+    }
+
+    // After fetch, origin/<base> should exist
+    if rev_parse_ok(&remote_ref)? {
+        return Ok(remote_ref);
+    }
+
+    // Fallback: the fetch may have created a local ref via FETCH_HEAD
+    if rev_parse_ok(base_branch)? {
+        return Ok(base_branch.to_string());
+    }
+
+    anyhow::bail!(
+        "Base branch '{}' fetched but still not resolvable",
+        base_branch
+    )
+}
+
+/// Check if the current branch has an open PR. Returns (number, base_branch) or None.
+/// Silently returns None if gh is unavailable, not authenticated, or no PR exists.
+pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
+    // Use --jq to extract "number<tab>baseRefName" — robust against JSON formatting
+    let output = Command::new("gh")
+        .args([
+            "pr", "view",
+            "--json", "number,baseRefName",
+            "--jq", r#"[.number, .baseRefName] | @tsv"#,
+        ])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
+    let (num_str, base) = text.split_once('\t')?;
+    let number = num_str.parse::<u64>().ok()?;
+
+    if base.is_empty() {
+        return None;
+    }
+
+    Some((number, base.to_string()))
+}
+
 /// Check if a string looks like a GitHub PR URL
 pub fn is_github_pr_url(s: &str) -> bool {
     parse_github_pr_url(s).is_some()

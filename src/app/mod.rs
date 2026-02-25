@@ -1,3 +1,4 @@
+pub mod filter;
 mod state;
 
 pub use state::{App, ConfirmAction, DiffMode, DirEntry, InputMode, OverlayData};
