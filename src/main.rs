@@ -31,6 +31,10 @@ struct Cli {
     /// Open a specific PR by number (from the current repo)
     #[arg(long)]
     pr: Option<u64>,
+
+    /// Pre-apply a file filter expression (e.g. '+*.rs,-*.lock')
+    #[arg(long)]
+    filter: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -49,10 +53,36 @@ fn main() -> Result<()> {
         github::ensure_gh_installed()?;
         let repo_root = app.tab().repo_root.clone();
         let base = github::gh_pr_base_branch(pr_number, &repo_root)?;
+        let base = github::ensure_base_ref_available(&repo_root, &base)?;
         let tab = app.tab_mut();
         tab.base_branch = base;
         tab.refresh_diff()?;
     }
+
+    // Apply --filter flag if provided
+    if let Some(ref filter_expr) = cli.filter {
+        app.tab_mut().apply_filter_expr(filter_expr);
+    }
+
+    // Hint: check for PR base mismatch in background (avoids blocking startup on network)
+    let hint_rx = if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
+        let repo_root = app.tab().repo_root.clone();
+        let current_base = app.tab().base_branch.clone();
+        let (tx, rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            if let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) {
+                if pr_base != current_base {
+                    let _ = tx.send(format!(
+                        "PR #{} targets {} — run: er --pr {}",
+                        pr_num, pr_base, pr_num
+                    ));
+                }
+            }
+        });
+        Some(rx)
+    } else {
+        None
+    };
 
     // Load syntax highlighting (once, reused for all files)
     let highlighter = ui::highlight::Highlighter::new();
@@ -65,7 +95,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run event loop
-    let result = run_app(&mut terminal, &mut app, &highlighter);
+    let result = run_app(&mut terminal, &mut app, &highlighter, hint_rx);
 
     // Cleanup
     disable_raw_mode()?;
@@ -89,10 +119,22 @@ fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     hl: &ui::highlight::Highlighter,
+    hint_rx: Option<mpsc::Receiver<String>>,
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
-    let mut _watcher: Option<FileWatcher> = None;
+    let mut hint_rx = hint_rx;
+
+    // Start watching by default
+    let root_str = app.tab().repo_root.clone();
+    let root = std::path::Path::new(&root_str);
+    let mut _watcher: Option<FileWatcher> = match FileWatcher::new(root, 500, watch_tx.clone()) {
+        Ok(w) => {
+            app.watching = true;
+            Some(w)
+        }
+        Err(_) => None,
+    };
 
     loop {
         // Draw
@@ -108,6 +150,8 @@ fn run_app<B: Backend>(
                     match app.input_mode {
                         InputMode::Search => handle_search_input(app, key),
                         InputMode::Comment => handle_comment_input(app, key)?,
+                        InputMode::Filter => handle_filter_input(app, key),
+                        InputMode::Commit => handle_commit_input(app, key)?,
                         InputMode::Normal => {
                             handle_normal_input(app, key, &watch_tx, &mut _watcher)?
                         }
@@ -144,6 +188,14 @@ fn run_app<B: Backend>(
         // Rescan watched files (every 50 ticks ≈ 5s)
         if app.ai_poll_counter % 50 == 0 {
             app.tab_mut().refresh_watched_files();
+        }
+
+        // Check for PR base hint from background thread (fires once)
+        if let Some(rx) = &hint_rx {
+            if let Ok(msg) = rx.try_recv() {
+                app.notify(&msg);
+                hint_rx = None;
+            }
         }
 
         // Tick — used for auto-clearing notifications
@@ -193,6 +245,15 @@ fn handle_normal_input(
         }
         KeyCode::Char('3') => {
             app.tab_mut().set_mode(DiffMode::Staged);
+            return Ok(());
+        }
+        // Toggle mtime sort (works in any mode)
+        KeyCode::Char('R') => {
+            let tab = app.tab_mut();
+            tab.sort_by_mtime = !tab.sort_by_mtime;
+            let _ = tab.refresh_diff();
+            let label = if app.tab().sort_by_mtime { "Sort: recent first" } else { "Sort: default" };
+            app.notify(label);
             return Ok(());
         }
 
@@ -326,6 +387,18 @@ fn handle_normal_input(
             app.tab_mut().search_query.clear();
         }
 
+        // Filter
+        KeyCode::Char('f') => {
+            app.input_mode = InputMode::Filter;
+            // Pre-populate with current expression for editing
+            app.tab_mut().filter_input = app.tab().filter_expr.clone();
+        }
+
+        // Filter history
+        KeyCode::Char('F') => {
+            app.open_filter_history();
+        }
+
         // Stage/unstage file (or update snapshot for watched files)
         KeyCode::Char('s') => {
             if app.tab().selected_watched.is_some() {
@@ -365,7 +438,11 @@ fn handle_normal_input(
 
         // Comment on current hunk
         KeyCode::Char('c') => {
-            app.start_comment();
+            if app.tab().mode == DiffMode::Staged {
+                app.start_commit();
+            } else {
+                app.start_comment();
+            }
         }
 
         // Toggle AI view mode (v forward, V backward)
@@ -384,10 +461,13 @@ fn handle_normal_input(
             app.notify(&format!("View: {}", mode));
         }
 
-        // Clear search filter
+        // Clear search first, then filter (innermost → outermost)
         KeyCode::Esc => {
             if !app.tab().search_query.is_empty() {
                 app.tab_mut().search_query.clear();
+            } else if !app.tab().filter_expr.is_empty() {
+                app.tab_mut().clear_filter();
+                app.notify("Filter cleared");
             }
         }
 
@@ -510,6 +590,34 @@ fn handle_search_input(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_filter_input(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter => {
+            let expr = app.tab().filter_input.clone();
+            app.tab_mut().apply_filter_expr(&expr);
+            app.input_mode = InputMode::Normal;
+            if expr.trim().is_empty() {
+                app.notify("Filter cleared");
+            } else {
+                let visible = app.tab().visible_files().len();
+                let total = app.tab().files.len();
+                app.notify(&format!("Filter: {} ({}/{})", expr.trim(), visible, total));
+            }
+        }
+        KeyCode::Esc => {
+            app.tab_mut().filter_input.clear();
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Char(c) => {
+            app.tab_mut().filter_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.tab_mut().filter_input.pop();
+        }
+        _ => {}
+    }
+}
+
 fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Enter => {
@@ -523,6 +631,25 @@ fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Backspace => {
             app.tab_mut().comment_input.pop();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Enter => {
+            app.submit_commit()?;
+        }
+        KeyCode::Esc => {
+            app.cancel_commit();
+        }
+        KeyCode::Char(c) => {
+            app.tab_mut().commit_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.tab_mut().commit_input.pop();
         }
         _ => {}
     }

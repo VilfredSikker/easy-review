@@ -18,7 +18,7 @@ Requires Rust 1.70+. The binary is called `er`.
 
 ## Usage
 
-Run `er` from any git repository. It auto-detects the base branch from upstream tracking, falling back to main/master/develop.
+Run `er` from any git repository. It auto-detects the base branch from upstream tracking, falling back to main/master/develop. If the current branch has an open PR targeting a different base, `er` shows a hint.
 
 ```bash
 # In any git repo
@@ -30,6 +30,9 @@ er --pr 42
 
 # Open multiple repos/worktrees as tabs
 er ~/projects/api ~/projects/frontend
+
+# Pre-filter to only show Rust files
+er --filter '*.rs'
 ```
 
 ### AI Review Workflow
@@ -38,7 +41,7 @@ er ~/projects/api ~/projects/frontend
 2. Run `/er-review` in Claude Code to generate AI analysis
 3. Press `v` in `er` to toggle AI overlay — findings appear inline in the diff
 4. Press `c` to comment on findings — AI responds on next `/er-review` run
-5. Press `w` to enable watch mode — diffs refresh automatically as files change
+5. Watch mode is on by default — diffs refresh automatically on edits, staging, and commits
 
 ## Features
 
@@ -46,14 +49,16 @@ er ~/projects/api ~/projects/frontend
 - **Four view modes** — Default (clean diff), Overlay (inline AI banners), Side Panel (3-column with AI panel), AI Review (full-screen dashboard)
 - **Comment & feedback loop** — Press `c` to comment on findings, re-run `/er-review` for AI responses
 - **GitHub PR integration** — Open PRs directly: `er --pr 42` or `er <github-url>`
-- **Three diff modes** — Branch diff, unstaged changes, staged changes
+- **Three diff modes** — Branch diff, unstaged changes, staged changes (plus `Shift+R` to sort by recency in any mode)
 - **Line-level navigation** — Arrow keys move through individual diff lines within hunks
 - **Syntax highlighting** — Language-aware coloring via syntect
-- **Live watch mode** — Auto-refreshes when files change on disk; AI data reloads automatically
+- **Live watch mode** — On by default. Auto-refreshes on file edits, staging, and commits; AI data reloads automatically
 - **Watched files** — Monitor git-ignored paths (like `.work/` folders) via `.er-config.toml`; view content or snapshot diffs inline
 - **Multi-repo tabs** — Open multiple repos or worktrees side-by-side
 - **Hunk staging** — Stage individual files or hunks without leaving the TUI
-- **Review tracking** — Mark files as reviewed, filter to unreviewed only
+- **Review tracking** — Mark files as reviewed, filter to unreviewed only. Status bar shows both filtered and total reviewed counts when a filter is active
+- **Composable filters** — Press `f` to filter files by glob, status, or size (`+*.rs,-*.lock,>50`). Press `F` for built-in presets (frontend, backend, config, docs) and filter history
+- **PR base hint** — When on a PR branch, `er` detects if the PR targets a different base than auto-detected and shows a hint (e.g. "PR #42 targets develop — run: er --pr 42")
 - **File search** — Fuzzy filter the file list
 - **Directory browser** — Open any repo on disk via `o`
 - **Worktree picker** — Switch between worktrees via `t`
@@ -79,6 +84,7 @@ Ctrl-d / Ctrl-u   Scroll half page down / up
 1                 Branch diff (vs base branch)
 2                 Unstaged changes
 3                 Staged changes
+R (Shift+R)       Toggle sort by recency (works in any mode)
 ```
 
 ### Actions
@@ -92,9 +98,11 @@ c                 Comment on current hunk/line
 y                 Yank (copy) current hunk
 e                 Open file in $EDITOR
 r                 Refresh diff
-w                 Toggle live watch mode
+w                 Toggle live watch mode (on by default)
 W                 Toggle watched files section
-/                 Search / filter files
+/                 Search files by name
+f                 Filter files (glob, status, size expressions)
+F                 Filter presets & history
 ```
 
 ### AI Views
@@ -126,7 +134,7 @@ o                 Directory browser (Backspace to go up)
 ### General
 
 ```
-Esc               Clear search filter
+Esc               Clear search, then filter (innermost first)
 q                 Quit
 ```
 

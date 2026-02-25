@@ -131,6 +131,16 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)),
         Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)),
     ];
+    if tab.sort_by_mtime {
+        modes.push(Span::raw(" "));
+        modes.push(Span::styled(
+            " R RECENT ",
+            ratatui::style::Style::default()
+                .fg(styles::BG)
+                .bg(styles::YELLOW)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
 
     let mut right: Vec<Span> = Vec::new();
 
@@ -157,11 +167,22 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // Show filtered reviewed count (yellow) then total reviewed count (blue)
+    if let Some((f_reviewed, f_total)) = tab.filtered_reviewed_count() {
+        right.push(Span::styled(
+            format!("{}/{}", f_reviewed, f_total),
+            ratatui::style::Style::default().fg(styles::YELLOW),
+        ));
+        right.push(Span::styled(
+            " · ",
+            ratatui::style::Style::default().fg(styles::MUTED),
+        ));
+    }
     let (reviewed, total) = tab.reviewed_count();
     if total > 0 {
         right.push(Span::styled(
             format!("{}/{} reviewed", reviewed, total),
-            ratatui::style::Style::default().fg(styles::PURPLE),
+            ratatui::style::Style::default().fg(styles::BLUE),
         ));
     }
     if app.watching {
@@ -248,7 +269,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("u", " unreviewed "),
         Hint::new("y", " yank "),
         Hint::new("/", " search "),
+        Hint::new("f", " filter "),
+        Hint::new("F", " history "),
         Hint::new("r", " reload "),
+        Hint::new("R", " recent "),
         Hint::new("w", " watch "),
         Hint::new("e", " edit "),
         Hint::new("t", " tree "),
@@ -256,7 +280,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("q", " quit "),
     ];
 
-    hints.push(Hint::new("c", " comment "));
+    if tab.mode == DiffMode::Staged {
+        hints.push(Hint::new("c", " commit "));
+    } else {
+        hints.push(Hint::new("c", " comment "));
+    }
 
     if !tab.watched_config.paths.is_empty() {
         hints.push(Hint::new("W", " watched "));
@@ -272,10 +300,16 @@ fn build_hints(app: &App) -> Vec<Hint> {
     }
 
     // Indicators (not really key+label, but reuse the structure)
+    if !tab.filter_expr.is_empty() {
+        hints.push(Hint {
+            key: "F:".to_string(),
+            label: format!(" {} ", tab.filter_expr),
+        });
+    }
     if !tab.search_query.is_empty() {
         hints.push(Hint {
             key: String::new(),
-            label: format!(" filter: \"{}\" ", tab.search_query),
+            label: format!(" search: \"{}\" ", tab.search_query),
         });
     }
     if tab.show_unreviewed_only {
@@ -320,12 +354,15 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
         current_spans.push(Span::styled(
             hint.label.clone(),
             if hint.key.is_empty() {
-                // Indicator style (filter, unreviewed)
-                if hint.label.contains("filter") {
+                // Indicator style (search, unreviewed)
+                if hint.label.contains("search") {
                     ratatui::style::Style::default().fg(styles::YELLOW)
                 } else {
                     ratatui::style::Style::default().fg(styles::PURPLE)
                 }
+            } else if hint.key == "F:" {
+                // Filter expression indicator — yellow accent
+                ratatui::style::Style::default().fg(styles::YELLOW)
             } else {
                 ratatui::style::Style::default().fg(styles::DIM)
             },
@@ -344,7 +381,7 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
 /// Calculate how many rows the bottom bar needs
 pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
     match app.input_mode {
-        InputMode::Search | InputMode::Comment => 1,
+        InputMode::Search | InputMode::Comment | InputMode::Filter | InputMode::Commit => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -393,6 +430,29 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
             f.render_widget(bar, area);
         }
+        InputMode::Filter => {
+            let spans = vec![
+                Span::styled(" filter ", ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::YELLOW)
+                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    format!(" {}", tab.filter_input),
+                    ratatui::style::Style::default().fg(styles::TEXT),
+                ),
+                Span::styled(
+                    "█",
+                    ratatui::style::Style::default().fg(styles::YELLOW),
+                ),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled("Enter", styles::key_hint_style()),
+                Span::styled(" apply  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled("Esc", styles::key_hint_style()),
+                Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
         InputMode::Search => {
             let spans = vec![
                 Span::styled(" /", styles::key_hint_style()),
@@ -407,6 +467,29 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
                 Span::styled(" confirm  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled("Esc", styles::key_hint_style()),
+                Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
+        InputMode::Commit => {
+            let spans = vec![
+                Span::styled(" commit ", ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::GREEN)
+                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    format!(" {}", tab.commit_input),
+                    ratatui::style::Style::default().fg(styles::TEXT),
+                ),
+                Span::styled(
+                    "█",
+                    ratatui::style::Style::default().fg(styles::GREEN),
+                ),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled("Enter", styles::key_hint_style()),
+                Span::styled(" commit  ", ratatui::style::Style::default().fg(styles::DIM)),
                 Span::styled("Esc", styles::key_hint_style()),
                 Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
             ];

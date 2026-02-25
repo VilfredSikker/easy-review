@@ -34,9 +34,14 @@ impl FileWatcher {
                         .filter(|e| e.kind == DebouncedEventKind::Any)
                         .filter_map(|e| {
                             let p = e.path.to_string_lossy().to_string();
-                            // Skip .git directory changes
+                            // Allow .git/index (staging) and .git/refs/ (commits) through
+                            // but skip other .git/ noise (objects, logs, etc.)
                             if p.contains("/.git/") {
-                                None
+                                if p.ends_with("/.git/index") || p.contains("/.git/refs/") {
+                                    Some(p)
+                                } else {
+                                    None
+                                }
                             } else {
                                 Some(p)
                             }

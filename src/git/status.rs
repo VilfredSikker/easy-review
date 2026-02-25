@@ -198,7 +198,51 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
         anyhow::bail!("git diff failed: {}", stderr.trim());
     }
 
+    // For unstaged mode, append synthetic diffs for untracked files
+    if mode == "unstaged" {
+        let untracked = untracked_files(repo_root)?;
+        if !untracked.is_empty() {
+            let mut combined = stdout;
+            for path in untracked {
+                if let Ok(content) = std::fs::read_to_string(
+                    std::path::Path::new(repo_root).join(&path),
+                ) {
+                    combined.push_str(&synthetic_new_file_diff(&path, &content));
+                }
+            }
+            return Ok(combined);
+        }
+    }
+
     Ok(stdout)
+}
+
+/// List untracked files (excluding gitignored)
+fn untracked_files(repo_root: &str) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to list untracked files")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+}
+
+/// Build a unified diff for a new untracked file
+fn synthetic_new_file_diff(path: &str, content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let count = lines.len();
+    let mut diff = String::new();
+    diff.push_str(&format!("diff --git a/{path} b/{path}\n"));
+    diff.push_str("new file mode 100644\n");
+    diff.push_str("--- /dev/null\n");
+    diff.push_str(&format!("+++ b/{path}\n"));
+    diff.push_str(&format!("@@ -0,0 +1,{count} @@\n"));
+    for line in &lines {
+        diff.push_str(&format!("+{line}\n"));
+    }
+    diff
 }
 
 // ── Worktrees ──
@@ -333,6 +377,21 @@ pub fn git_stage_hunk(repo_root: &str, file_path: &str, hunk: &DiffHunk) -> Resu
         anyhow::bail!("Failed to stage hunk: {}", stderr.trim());
     }
 
+    Ok(())
+}
+
+/// Commit staged changes with the given message
+pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["commit", "-m", message])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git commit")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git commit failed: {}", stderr.trim());
+    }
     Ok(())
 }
 
