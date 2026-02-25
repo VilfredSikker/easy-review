@@ -57,6 +57,138 @@ pub struct DiffFile {
     pub hunks: Vec<DiffHunk>,
     pub adds: usize,
     pub dels: usize,
+    /// Whether this file is compacted (hunks not parsed/rendered)
+    pub compacted: bool,
+    /// Raw hunk count before compaction (for display)
+    pub raw_hunk_count: usize,
+}
+
+/// Lightweight file header extracted from a fast scan of the raw diff.
+/// Contains metadata but no parsed hunks — used for lazy parsing.
+#[derive(Debug, Clone)]
+pub struct DiffFileHeader {
+    pub path: String,
+    pub status: FileStatus,
+    pub adds: usize,
+    pub dels: usize,
+    pub hunk_count: usize,
+    /// Byte offset of this file's section start in the raw diff string
+    pub byte_offset: usize,
+    /// Length of this file's section in bytes
+    pub byte_length: usize,
+}
+
+/// Threshold for enabling lazy (two-phase) parsing
+pub const LAZY_PARSE_THRESHOLD: usize = 5000;
+
+/// Fast header-only scan of a raw diff.
+/// Extracts file paths, status, +/- counts, and byte offsets without
+/// allocating DiffLine structs. ~10x faster than full parse for large diffs.
+pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
+    let mut headers: Vec<DiffFileHeader> = Vec::new();
+    let mut current_header: Option<DiffFileHeader> = None;
+    let mut byte_pos: usize = 0;
+
+    for line in raw.lines() {
+        let line_byte_end = byte_pos + line.len() + 1; // +1 for \n
+
+        if line.starts_with("diff --git") {
+            // Flush previous header
+            if let Some(ref mut h) = current_header {
+                h.byte_length = byte_pos.saturating_sub(h.byte_offset);
+                headers.push(h.clone());
+            }
+
+            // Extract path
+            let path = if let Some(after_a) = line.strip_prefix("diff --git a/") {
+                let path_len = (after_a.len().saturating_sub(3)) / 2;
+                if path_len > 0
+                    && after_a.len() >= path_len + 3
+                    && after_a.get(..path_len) == after_a.get(path_len + 3..)
+                {
+                    after_a[..path_len].to_string()
+                } else {
+                    after_a.split(" b/").last().unwrap_or("").to_string()
+                }
+            } else {
+                line.split(" b/").last().unwrap_or("").to_string()
+            };
+
+            current_header = Some(DiffFileHeader {
+                path,
+                status: FileStatus::Modified,
+                adds: 0,
+                dels: 0,
+                hunk_count: 0,
+                byte_offset: byte_pos,
+                byte_length: 0,
+            });
+        } else if let Some(ref mut h) = current_header {
+            // Detect file status
+            if line.starts_with("new file") {
+                h.status = FileStatus::Added;
+            } else if line.starts_with("deleted file") {
+                h.status = FileStatus::Deleted;
+            } else if line.starts_with("rename from ") {
+                let old_path = line.strip_prefix("rename from ").unwrap_or("").to_string();
+                h.status = FileStatus::Renamed(old_path);
+            } else if line.starts_with("@@") {
+                h.hunk_count += 1;
+            } else if line.starts_with('+') && !line.starts_with("+++") {
+                h.adds += 1;
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                h.dels += 1;
+            }
+        }
+
+        byte_pos = line_byte_end;
+    }
+
+    // Flush last header
+    if let Some(ref mut h) = current_header {
+        h.byte_length = raw.len().saturating_sub(h.byte_offset);
+        headers.push(h.clone());
+    }
+
+    headers
+}
+
+/// Parse hunks for a single file from a raw diff section.
+/// Used for on-demand (lazy) parsing when a file is selected.
+pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
+    let end = (header.byte_offset + header.byte_length).min(raw.len());
+    let section = &raw[header.byte_offset..end];
+    let mut files = parse_diff(section);
+    if let Some(mut file) = files.pop() {
+        // Ensure path matches (the section parse may produce a valid file)
+        file.path = header.path.clone();
+        file.status = header.status.clone();
+        file
+    } else {
+        // Fallback: empty file with header metadata
+        DiffFile {
+            path: header.path.clone(),
+            status: header.status.clone(),
+            hunks: Vec::new(),
+            adds: header.adds,
+            dels: header.dels,
+            compacted: false,
+            raw_hunk_count: 0,
+        }
+    }
+}
+
+/// Convert a DiffFileHeader to a DiffFile with no hunks (for display in file tree)
+pub fn header_to_stub(header: &DiffFileHeader) -> DiffFile {
+    DiffFile {
+        path: header.path.clone(),
+        status: header.status.clone(),
+        hunks: Vec::new(),
+        adds: header.adds,
+        dels: header.dels,
+        compacted: false,
+        raw_hunk_count: header.hunk_count,
+    }
 }
 
 /// Parse unified diff output into structured data
@@ -108,6 +240,8 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
                 hunks: Vec::new(),
                 adds: 0,
                 dels: 0,
+                compacted: false,
+                raw_hunk_count: 0,
             });
             continue;
         }
@@ -256,6 +390,123 @@ fn parse_range(s: &str) -> Option<(usize, usize)> {
     } else {
         Some((s.parse().ok()?, 1))
     }
+}
+
+// ── Compaction ──
+
+/// Default glob patterns for files that should be auto-compacted
+const DEFAULT_COMPACTION_PATTERNS: &[&str] = &[
+    "*.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "Cargo.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "composer.lock",
+    "go.sum",
+    "*.min.js",
+    "*.min.css",
+    "*.generated.*",
+    "*.snap",
+    "*.pb.go",
+    "*.g.dart",
+];
+
+/// Configuration for auto-compaction of low-value files
+#[derive(Debug, Clone)]
+pub struct CompactionConfig {
+    pub enabled: bool,
+    pub patterns: Vec<String>,
+    pub max_lines_before_compact: usize,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        CompactionConfig {
+            enabled: true,
+            patterns: DEFAULT_COMPACTION_PATTERNS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            max_lines_before_compact: 500,
+        }
+    }
+}
+
+/// Check if a file path matches a glob-like pattern.
+/// Supports: `*.ext`, `exact_name`, `prefix*suffix`, `dir/**`
+/// Public alias for use in lazy-mode compaction.
+pub fn compact_files_match(pattern: &str, path: &str) -> bool {
+    glob_match(pattern, path)
+}
+
+fn glob_match(pattern: &str, path: &str) -> bool {
+    // Get just the filename for extension-based patterns
+    let filename = path.rsplit('/').next().unwrap_or(path);
+
+    if let Some(suffix) = pattern.strip_prefix("*.") {
+        // *.ext — match against filename extension(s)
+        // For patterns like "*.generated.*", check if filename contains the pattern
+        if suffix.contains('*') {
+            // Complex pattern like "*.generated.*" — check if middle part is present
+            if let Some(middle) = suffix.strip_suffix(".*") {
+                return filename.contains(&format!(".{}.", middle))
+                    || filename.ends_with(&format!(".{}", middle));
+            }
+        }
+        filename.ends_with(&format!(".{}", suffix))
+    } else if pattern.ends_with("/**") {
+        // dir/** — match if path starts with dir/
+        let dir = pattern.trim_end_matches("/**");
+        path.starts_with(&format!("{}/", dir))
+    } else {
+        // Exact filename match (e.g., "package-lock.json")
+        filename == pattern || path == pattern
+    }
+}
+
+/// Apply compaction to files based on pattern matching and size thresholds.
+/// Compacted files have their hunks cleared to save memory.
+pub fn compact_files(files: &mut Vec<DiffFile>, config: &CompactionConfig) {
+    if !config.enabled {
+        return;
+    }
+    for file in files.iter_mut() {
+        let total_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+        let should_compact = config
+            .patterns
+            .iter()
+            .any(|p| glob_match(p, &file.path))
+            || total_lines > config.max_lines_before_compact;
+
+        if should_compact {
+            file.compacted = true;
+            file.raw_hunk_count = file.hunks.len();
+            file.hunks.clear();
+            file.hunks.shrink_to_fit();
+        }
+    }
+}
+
+/// Expand a previously compacted file by re-parsing its diff from git.
+/// Uses `git diff -- <path>` for just that one file.
+pub fn expand_compacted_file(
+    file: &mut DiffFile,
+    repo_root: &str,
+    mode: &str,
+    base: &str,
+) -> anyhow::Result<()> {
+    let raw = super::status::git_diff_raw_file(mode, base, repo_root, &file.path)?;
+    let parsed = parse_diff(&raw);
+    if let Some(f) = parsed.into_iter().next() {
+        file.hunks = f.hunks;
+        file.adds = f.adds;
+        file.dels = f.dels;
+        file.compacted = false;
+        file.raw_hunk_count = 0;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -736,5 +987,213 @@ index aaa..bbb 100644
         let text = hunk.to_text();
         // Empty context line renders as " \n" (space prefix, empty content, newline)
         assert_eq!(text, "@@ -5,3 +5,3 @@\n \n+fn foo() {}\n-fn bar() {}\n");
+    }
+
+    // ── glob_match ──
+
+    #[test]
+    fn glob_match_extension_pattern() {
+        assert!(super::glob_match("*.lock", "Cargo.lock"));
+        assert!(super::glob_match("*.lock", "some/path/Gemfile.lock"));
+        assert!(!super::glob_match("*.lock", "lockfile.txt"));
+    }
+
+    #[test]
+    fn glob_match_exact_filename() {
+        assert!(super::glob_match("package-lock.json", "package-lock.json"));
+        assert!(super::glob_match("package-lock.json", "some/dir/package-lock.json"));
+        assert!(!super::glob_match("package-lock.json", "other.json"));
+    }
+
+    #[test]
+    fn glob_match_dir_glob() {
+        assert!(super::glob_match("__generated__/**", "__generated__/types.ts"));
+        assert!(super::glob_match("__generated__/**", "__generated__/sub/file.rs"));
+        assert!(!super::glob_match("__generated__/**", "src/generated.rs"));
+    }
+
+    #[test]
+    fn glob_match_generated_wildcard() {
+        assert!(super::glob_match("*.generated.*", "types.generated.ts"));
+        assert!(super::glob_match("*.generated.*", "path/api.generated.go"));
+        assert!(!super::glob_match("*.generated.*", "generated.ts"));
+    }
+
+    #[test]
+    fn glob_match_min_js() {
+        assert!(super::glob_match("*.min.js", "bundle.min.js"));
+        assert!(super::glob_match("*.min.css", "styles.min.css"));
+        assert!(!super::glob_match("*.min.js", "bundle.js"));
+    }
+
+    // ── compact_files ──
+
+    #[test]
+    fn compact_files_by_pattern() {
+        let mut files = vec![
+            DiffFile {
+                path: "Cargo.lock".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![DiffHunk {
+                    header: "@@ -1,1 +1,1 @@".to_string(),
+                    old_start: 1, old_count: 1, new_start: 1, new_count: 1,
+                    lines: vec![DiffLine {
+                        line_type: LineType::Add, content: "x".to_string(),
+                        old_num: None, new_num: Some(1),
+                    }],
+                }],
+                adds: 1, dels: 0, compacted: false, raw_hunk_count: 0,
+            },
+            DiffFile {
+                path: "src/main.rs".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                adds: 0, dels: 0, compacted: false, raw_hunk_count: 0,
+            },
+        ];
+        let config = CompactionConfig::default();
+        compact_files(&mut files, &config);
+        assert!(files[0].compacted);
+        assert_eq!(files[0].raw_hunk_count, 1);
+        assert!(files[0].hunks.is_empty());
+        assert!(!files[1].compacted);
+    }
+
+    #[test]
+    fn compact_files_by_size_threshold() {
+        let many_lines: Vec<DiffLine> = (0..600).map(|i| DiffLine {
+            line_type: LineType::Add, content: format!("line {}", i),
+            old_num: None, new_num: Some(i),
+        }).collect();
+        let mut files = vec![DiffFile {
+            path: "src/big_file.rs".to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,600 @@".to_string(),
+                old_start: 1, old_count: 1, new_start: 1, new_count: 600,
+                lines: many_lines,
+            }],
+            adds: 600, dels: 0, compacted: false, raw_hunk_count: 0,
+        }];
+        let config = CompactionConfig::default();
+        compact_files(&mut files, &config);
+        assert!(files[0].compacted);
+        assert_eq!(files[0].raw_hunk_count, 1);
+    }
+
+    #[test]
+    fn compact_files_disabled_does_nothing() {
+        let mut files = vec![DiffFile {
+            path: "Cargo.lock".to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,1 @@".to_string(),
+                old_start: 1, old_count: 1, new_start: 1, new_count: 1,
+                lines: vec![DiffLine {
+                    line_type: LineType::Add, content: "x".to_string(),
+                    old_num: None, new_num: Some(1),
+                }],
+            }],
+            adds: 1, dels: 0, compacted: false, raw_hunk_count: 0,
+        }];
+        let config = CompactionConfig { enabled: false, ..Default::default() };
+        compact_files(&mut files, &config);
+        assert!(!files[0].compacted);
+    }
+
+    // ── parse_diff_headers ──
+
+    #[test]
+    fn parse_diff_headers_single_file() {
+        let raw = "diff --git a/src/main.rs b/src/main.rs\nindex abc..def 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,4 @@\n+use std::io;\n fn main() {\n }\n";
+        let headers = parse_diff_headers(raw);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].path, "src/main.rs");
+        assert_eq!(headers[0].adds, 1);
+        assert_eq!(headers[0].dels, 0);
+        assert_eq!(headers[0].hunk_count, 1);
+        assert!(headers[0].byte_length > 0);
+    }
+
+    #[test]
+    fn parse_diff_headers_multiple_files() {
+        let raw = "diff --git a/foo.rs b/foo.rs\n@@ -1,1 +1,2 @@\n+line1\n fn orig() {}\ndiff --git a/bar.rs b/bar.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+        let headers = parse_diff_headers(raw);
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0].path, "foo.rs");
+        assert_eq!(headers[0].adds, 1);
+        assert_eq!(headers[1].path, "bar.rs");
+        assert_eq!(headers[1].adds, 1);
+        assert_eq!(headers[1].dels, 1);
+    }
+
+    #[test]
+    fn parse_diff_headers_empty_diff() {
+        let headers = parse_diff_headers("");
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn parse_diff_headers_new_file_status() {
+        let raw = "diff --git a/new.rs b/new.rs\nnew file mode 100644\n--- /dev/null\n+++ b/new.rs\n@@ -0,0 +1,1 @@\n+hello\n";
+        let headers = parse_diff_headers(raw);
+        assert_eq!(headers.len(), 1);
+        assert!(matches!(headers[0].status, FileStatus::Added));
+    }
+
+    #[test]
+    fn parse_diff_headers_deleted_file_status() {
+        let raw = "diff --git a/old.rs b/old.rs\ndeleted file mode 100644\n--- a/old.rs\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-goodbye\n";
+        let headers = parse_diff_headers(raw);
+        assert_eq!(headers.len(), 1);
+        assert!(matches!(headers[0].status, FileStatus::Deleted));
+    }
+
+    // ── parse_file_at_offset ──
+
+    #[test]
+    fn parse_file_at_offset_extracts_hunks() {
+        let raw = "diff --git a/foo.rs b/foo.rs\nindex abc..def 100644\n--- a/foo.rs\n+++ b/foo.rs\n@@ -1,1 +1,2 @@\n context\n+added line\n";
+        let headers = parse_diff_headers(raw);
+        assert_eq!(headers.len(), 1);
+        let file = parse_file_at_offset(raw, &headers[0]);
+        assert_eq!(file.hunks.len(), 1);
+        assert_eq!(file.hunks[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn parse_file_at_offset_from_multi_file_diff() {
+        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,2 @@\n ctx\n+added\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1,2 +1,1 @@\n ctx\n-removed\n";
+        let headers = parse_diff_headers(raw);
+        assert_eq!(headers.len(), 2);
+
+        let file_a = parse_file_at_offset(raw, &headers[0]);
+        assert_eq!(file_a.path, "a.rs");
+        assert!(!file_a.hunks.is_empty());
+
+        let file_b = parse_file_at_offset(raw, &headers[1]);
+        assert_eq!(file_b.path, "b.rs");
+        assert!(!file_b.hunks.is_empty());
+    }
+
+    // ── header_to_stub ──
+
+    #[test]
+    fn header_to_stub_creates_empty_hunks_file() {
+        let header = DiffFileHeader {
+            path: "test.rs".to_string(),
+            status: FileStatus::Modified,
+            adds: 5,
+            dels: 3,
+            hunk_count: 2,
+            byte_offset: 0,
+            byte_length: 100,
+        };
+        let file = header_to_stub(&header);
+        assert_eq!(file.path, "test.rs");
+        assert_eq!(file.adds, 5);
+        assert_eq!(file.dels, 3);
+        assert_eq!(file.raw_hunk_count, 2);
+        assert!(file.hunks.is_empty());
     }
 }

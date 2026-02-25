@@ -18,7 +18,7 @@ use ratatui::prelude::*;
 use std::io;
 use std::path::Path;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use watch::{FileWatcher, WatchEvent};
 
 /// Terminal UI for reviewing git diffs
@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     }
 
     // Load syntax highlighting (once, reused for all files)
-    let highlighter = ui::highlight::Highlighter::new();
+    let mut highlighter = ui::highlight::Highlighter::new();
 
     // Terminal setup
     enable_raw_mode()?;
@@ -65,7 +65,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run event loop
-    let result = run_app(&mut terminal, &mut app, &highlighter);
+    let result = run_app(&mut terminal, &mut app, &mut highlighter);
 
     // Cleanup
     disable_raw_mode()?;
@@ -88,11 +88,16 @@ fn main() -> Result<()> {
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-    hl: &ui::highlight::Highlighter,
+    hl: &mut ui::highlight::Highlighter,
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
     let mut _watcher: Option<FileWatcher> = None;
+
+    // Debounce state for file watcher refreshes
+    let mut pending_refresh = false;
+    let mut refresh_deadline = Instant::now();
+    let mut pending_file_count = 0usize;
 
     loop {
         // Draw
@@ -116,9 +121,18 @@ fn run_app<B: Backend>(
             }
         }
 
-        // Check for file watch events (non-blocking)
+        // Check for file watch events (non-blocking) — debounced
         if let Ok(WatchEvent::FilesChanged(paths)) = watch_rx.try_recv() {
-            let count = paths.len();
+            pending_file_count += paths.len();
+            pending_refresh = true;
+            refresh_deadline = Instant::now() + Duration::from_millis(200);
+        }
+
+        // Execute debounced refresh when deadline passes
+        if pending_refresh && Instant::now() >= refresh_deadline {
+            pending_refresh = false;
+            let count = pending_file_count;
+            pending_file_count = 0;
             let _ = app.tab_mut().refresh_diff_quick();
             let ai_status = if app.tab().ai.has_data() {
                 if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
@@ -320,6 +334,14 @@ fn handle_normal_input(
         // Toggle unreviewed-only filter
         KeyCode::Char('u') => {
             app.toggle_unreviewed_filter();
+        }
+
+        // Expand/compact toggle for compacted files
+        KeyCode::Enter => {
+            let is_compacted = app.tab().selected_diff_file().map_or(false, |f| f.compacted);
+            if is_compacted {
+                app.tab_mut().toggle_compacted()?;
+            }
         }
 
         // Yank hunk to clipboard

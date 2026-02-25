@@ -169,12 +169,36 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             right.push(Span::raw("  "));
         }
         right.push(Span::styled(
-            "● WATCHING",
+            "\u{25cf} WATCHING",
             ratatui::style::Style::default()
                 .fg(styles::GREEN)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
+
+    // Memory budget indicator (debug mode)
+    if std::env::var("ER_DEBUG").is_ok() {
+        let budget = &tab.mem_budget;
+        if !right.is_empty() {
+            right.push(Span::raw("  "));
+        }
+        let mut mem_label = format!(
+            "MEM: {}K lines  {} files",
+            (budget.total_lines + 500) / 1000,
+            budget.parsed_files,
+        );
+        if budget.compacted_files > 0 {
+            mem_label.push_str(&format!("  {} compacted", budget.compacted_files));
+        }
+        if tab.lazy_mode {
+            mem_label.push_str("  [lazy]");
+        }
+        right.push(Span::styled(
+            mem_label,
+            ratatui::style::Style::default().fg(styles::DIM),
+        ));
+    }
+
     if !right.is_empty() {
         right.push(Span::raw(" "));
     }

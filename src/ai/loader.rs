@@ -1,13 +1,24 @@
 use super::review::*;
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-/// Compute SHA-256 hash of raw diff output (for staleness detection)
+/// Compute SHA-256 hash of raw diff output (for staleness detection).
+/// Used for .er-review.json compatibility where the hash is persisted.
 pub fn compute_diff_hash(raw_diff: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(raw_diff.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+/// Compute a fast (non-cryptographic) hash for internal change detection.
+/// Much faster than SHA-256 — used for detecting if the diff has changed
+/// between ticks without the overhead of a full cryptographic hash.
+pub fn compute_diff_hash_fast(raw_diff: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    raw_diff.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Split a combined diff into per-file sections and hash each one.

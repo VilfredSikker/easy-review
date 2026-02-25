@@ -15,7 +15,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 
 /// Render the entire UI
-pub fn draw(f: &mut Frame, app: &App, hl: &Highlighter) {
+pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
     let top_height = status_bar::top_bar_height(app, f.area().width);
 
     let bottom_height = status_bar::bottom_bar_height(app, f.area().width);
