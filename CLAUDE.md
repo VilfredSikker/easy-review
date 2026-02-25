@@ -21,8 +21,8 @@ No runtime dependencies beyond git. Single binary. (`gh` CLI optional for GitHub
 Rust + Ratatui TUI. Five modules + a standalone GitHub integration file:
 
 - **`git/`** — Shells out to `git diff` and parses unified diff format into structured data (`DiffFile` → `DiffHunk` → `DiffLine`). Handles base branch auto-detection: upstream tracking → main → master → develop → dev. Also provides staging (file + hunk level) and worktree listing.
-- **`watch/`** — File system watcher using `notify` + `notify-debouncer-mini`. 500ms debounce. Filters out `.git/` directory changes. Sends events via `std::sync::mpsc` channel.
-- **`app/`** — All application state in one `App` struct. Four diff modes (Branch, Unstaged, Staged, Recent). Four input modes (Normal, Search, Comment, Filter). File/hunk/line navigation, AI state management, comment persistence, watch notifications. Composable filter system (`filter.rs`) with glob, status, and size rules.
+- **`watch/`** — File system watcher using `notify` + `notify-debouncer-mini`. 500ms debounce. Watches working tree changes plus `.git/index` (staging) and `.git/refs/` (commits). Sends events via `std::sync::mpsc` channel. Starts automatically on launch.
+- **`app/`** — All application state in one `App` struct. Three diff modes (Branch, Unstaged, Staged). Four input modes (Normal, Search, Comment, Filter). File/hunk/line navigation, AI state management, comment persistence, watch notifications. Composable filter system (`filter.rs`) with glob, status, and size rules. Mtime sort toggle (`Shift+R`) works in any diff mode.
 - **`ui/`** — Ratatui rendering. Four view modes: Default (2-col), Overlay (2-col + inline AI banners), SidePanel (3-col with AI panel), AiReview (full-screen dashboard). Cool blue-undertone dark theme in `styles.rs`.
 - **`ai/`** — Data model and file loader for AI-generated review artifacts. Reads `.er-*.json` sidecar files written by external Claude Code skills. Manages staleness detection via SHA-256 diff hashing. Does NOT run AI — reads AI output.
 - **`github.rs`** — GitHub CLI (`gh`) wrapper for PR integration. Parses PR URLs, checks out PR branches, resolves base branches, detects open PRs for current branch. No API token needed — uses `gh auth`.
@@ -83,6 +83,6 @@ v1.1 with AI integration. Building locally with `cargo install --path .`. Debug 
 
 **v1 (done):** Branch/unstaged/staged diffs, file+hunk navigation, search, live file watching, auto base branch detection, syntax highlighting (syntect), open-in-editor (`e` key).
 
-**v1.1 (current):** AI review integration (4 view modes, inline findings, comments), GitHub PR support (`--pr` flag, URL arguments), line-level navigation (arrow keys), comment system (`c` key → `.er-feedback.json`), composable filter system (`f` key, `--filter` flag, built-in presets via `F`), PR base hint when detected base differs from PR target, filtered reviewed count in status bar, Recent mode (key `4` — branch diff sorted by file mtime, newest first).
+**v1.1 (current):** AI review integration (4 view modes, inline findings, comments), GitHub PR support (`--pr` flag, URL arguments), line-level navigation (arrow keys), comment system (`c` key → `.er-feedback.json`), composable filter system (`f` key, `--filter` flag, built-in presets via `F`), PR base hint when detected base differs from PR target, filtered reviewed count in status bar, mtime sort toggle (`Shift+R` — sort files by recency in any mode), watch mode on by default (detects edits, staging, and commits).
 
 **v2:** Multi-worktree tabs (Tab/Shift+Tab to cycle), per-worktree state, cross-worktree watch notifications.

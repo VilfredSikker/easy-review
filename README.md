@@ -41,7 +41,7 @@ er --filter '*.rs'
 2. Run `/er-review` in Claude Code to generate AI analysis
 3. Press `v` in `er` to toggle AI overlay — findings appear inline in the diff
 4. Press `c` to comment on findings — AI responds on next `/er-review` run
-5. Press `w` to enable watch mode — diffs refresh automatically as files change
+5. Watch mode is on by default — diffs refresh automatically on edits, staging, and commits
 
 ## Features
 
@@ -49,10 +49,10 @@ er --filter '*.rs'
 - **Four view modes** — Default (clean diff), Overlay (inline AI banners), Side Panel (3-column with AI panel), AI Review (full-screen dashboard)
 - **Comment & feedback loop** — Press `c` to comment on findings, re-run `/er-review` for AI responses
 - **GitHub PR integration** — Open PRs directly: `er --pr 42` or `er <github-url>`
-- **Four diff modes** — Branch diff, unstaged changes, staged changes, recent (mtime-sorted)
+- **Three diff modes** — Branch diff, unstaged changes, staged changes (plus `Shift+R` to sort by recency in any mode)
 - **Line-level navigation** — Arrow keys move through individual diff lines within hunks
 - **Syntax highlighting** — Language-aware coloring via syntect
-- **Live watch mode** — Auto-refreshes when files change on disk; AI data reloads automatically
+- **Live watch mode** — On by default. Auto-refreshes on file edits, staging, and commits; AI data reloads automatically
 - **Multi-repo tabs** — Open multiple repos or worktrees side-by-side
 - **Hunk staging** — Stage individual files or hunks without leaving the TUI
 - **Review tracking** — Mark files as reviewed, filter to unreviewed only. Status bar shows both filtered and total reviewed counts when a filter is active
@@ -83,7 +83,7 @@ Ctrl-d / Ctrl-u   Scroll half page down / up
 1                 Branch diff (vs base branch)
 2                 Unstaged changes
 3                 Staged changes
-4                 Recent (branch diff sorted by file mtime, newest first)
+R (Shift+R)       Toggle sort by recency (works in any mode)
 ```
 
 ### Actions
@@ -97,7 +97,7 @@ c                 Comment on current hunk/line
 y                 Yank (copy) current hunk
 e                 Open file in $EDITOR
 r                 Refresh diff
-w                 Toggle live watch mode
+w                 Toggle live watch mode (on by default)
 /                 Search files by name
 f                 Filter files (glob, status, size expressions)
 F                 Filter presets & history
