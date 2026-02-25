@@ -131,6 +131,16 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)),
         Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)),
     ];
+    if tab.sort_by_mtime {
+        modes.push(Span::raw(" "));
+        modes.push(Span::styled(
+            " R RECENT ",
+            ratatui::style::Style::default()
+                .fg(styles::BG)
+                .bg(styles::YELLOW)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
 
     let mut right: Vec<Span> = Vec::new();
 
@@ -262,6 +272,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("f", " filter "),
         Hint::new("F", " history "),
         Hint::new("r", " reload "),
+        Hint::new("R", " recent "),
         Hint::new("w", " watch "),
         Hint::new("e", " edit "),
         Hint::new("t", " tree "),
@@ -269,7 +280,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("q", " quit "),
     ];
 
-    hints.push(Hint::new("c", " comment "));
+    if tab.mode == DiffMode::Staged {
+        hints.push(Hint::new("c", " commit "));
+    } else {
+        hints.push(Hint::new("c", " comment "));
+    }
 
     if tab.ai.has_data() {
         hints.push(Hint::new("v/V", " AI view "));
@@ -356,7 +371,7 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
 /// Calculate how many rows the bottom bar needs
 pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
     match app.input_mode {
-        InputMode::Search | InputMode::Comment | InputMode::AgentPrompt | InputMode::Filter => 1,
+        InputMode::Search | InputMode::Comment | InputMode::AgentPrompt | InputMode::Filter | InputMode::Commit => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -461,6 +476,29 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(" exit  ", ratatui::style::Style::default().fg(styles::DIM)),
                 Span::styled("Ctrl+C", styles::key_hint_style()),
                 Span::styled(" kill", ratatui::style::Style::default().fg(styles::DIM)),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
+        InputMode::Commit => {
+            let spans = vec![
+                Span::styled(" commit ", ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::GREEN)
+                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    format!(" {}", tab.commit_input),
+                    ratatui::style::Style::default().fg(styles::TEXT),
+                ),
+                Span::styled(
+                    "█",
+                    ratatui::style::Style::default().fg(styles::GREEN),
+                ),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled("Enter", styles::key_hint_style()),
+                Span::styled(" commit  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled("Esc", styles::key_hint_style()),
+                Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
             ];
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
             f.render_widget(bar, area);

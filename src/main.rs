@@ -124,8 +124,18 @@ fn run_app<B: Backend>(
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
-    let mut _watcher: Option<FileWatcher> = None;
     let mut hint_rx = hint_rx;
+
+    // Start watching by default
+    let root_str = app.tab().repo_root.clone();
+    let root = std::path::Path::new(&root_str);
+    let mut _watcher: Option<FileWatcher> = match FileWatcher::new(root, 500, watch_tx.clone()) {
+        Ok(w) => {
+            app.watching = true;
+            Some(w)
+        }
+        Err(_) => None,
+    };
 
     loop {
         // Draw
@@ -143,6 +153,7 @@ fn run_app<B: Backend>(
                         InputMode::Comment => handle_comment_input(app, key)?,
                         InputMode::AgentPrompt => handle_agent_input(app, key)?,
                         InputMode::Filter => handle_filter_input(app, key),
+                        InputMode::Commit => handle_commit_input(app, key)?,
                         InputMode::Normal => {
                             handle_normal_input(app, key, &watch_tx, &mut _watcher)?
                         }
@@ -234,6 +245,15 @@ fn handle_normal_input(
         }
         KeyCode::Char('3') => {
             app.tab_mut().set_mode(DiffMode::Staged);
+            return Ok(());
+        }
+        // Toggle mtime sort (works in any mode)
+        KeyCode::Char('R') => {
+            let tab = app.tab_mut();
+            tab.sort_by_mtime = !tab.sort_by_mtime;
+            let _ = tab.refresh_diff();
+            let label = if app.tab().sort_by_mtime { "Sort: recent first" } else { "Sort: default" };
+            app.notify(label);
             return Ok(());
         }
 
@@ -387,7 +407,11 @@ fn handle_normal_input(
 
         // Comment on current hunk
         KeyCode::Char('c') => {
-            app.start_comment();
+            if app.tab().mode == DiffMode::Staged {
+                app.start_commit();
+            } else {
+                app.start_comment();
+            }
         }
 
         // Toggle AI view mode (v forward, V backward)
@@ -635,6 +659,25 @@ fn handle_agent_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Backspace => {
             app.tab_mut().ai.agent.input.pop();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Enter => {
+            app.submit_commit()?;
+        }
+        KeyCode::Esc => {
+            app.cancel_commit();
+        }
+        KeyCode::Char(c) => {
+            app.tab_mut().commit_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.tab_mut().commit_input.pop();
         }
         _ => {}
     }

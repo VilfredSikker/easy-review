@@ -12,5 +12,5 @@ pub use status::{
     get_current_branch_in,
     git_diff_raw,
     list_worktrees,
-    git_stage_file, git_unstage_file, git_stage_all, git_stage_hunk,
+    git_stage_file, git_unstage_file, git_stage_all, git_stage_hunk, git_commit,
 };
