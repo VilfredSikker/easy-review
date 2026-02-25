@@ -185,6 +185,11 @@ fn run_app<B: Backend>(
             }
         }
 
+        // Rescan watched files (every 50 ticks ≈ 5s)
+        if app.ai_poll_counter % 50 == 0 {
+            app.tab_mut().refresh_watched_files();
+        }
+
         // Check for PR base hint from background thread (fires once)
         if let Some(rx) = &hint_rx {
             if let Ok(msg) = rx.try_recv() {
@@ -317,6 +322,25 @@ fn handle_normal_input(
             return Ok(());
         }
 
+        // Toggle watched files section visibility
+        KeyCode::Char('W') => {
+            let tab = app.tab_mut();
+            if tab.watched_config.paths.is_empty() {
+                app.notify("No watched paths in .er-config.toml");
+            } else {
+                tab.show_watched = !tab.show_watched;
+                if tab.show_watched {
+                    tab.refresh_watched_files();
+                    app.notify("Watched files shown");
+                } else {
+                    tab.watched_files.clear();
+                    tab.selected_watched = None;
+                    app.notify("Watched files hidden");
+                }
+            }
+            return Ok(());
+        }
+
         _ => {}
     }
 
@@ -375,9 +399,21 @@ fn handle_normal_input(
             app.open_filter_history();
         }
 
-        // Stage/unstage file
+        // Stage/unstage file (or update snapshot for watched files)
         KeyCode::Char('s') => {
-            app.toggle_stage_file()?;
+            if app.tab().selected_watched.is_some() {
+                // Update snapshot for watched file
+                if app.tab().watched_config.diff_mode == "snapshot" {
+                    match app.tab_mut().update_watched_snapshot() {
+                        Ok(()) => app.notify("Snapshot updated"),
+                        Err(e) => app.notify(&format!("Snapshot error: {}", e)),
+                    }
+                } else {
+                    app.notify("Snapshot mode not enabled (diff_mode = \"content\")");
+                }
+            } else {
+                app.toggle_stage_file()?;
+            }
         }
 
         // Stage current hunk

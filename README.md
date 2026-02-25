@@ -53,6 +53,7 @@ er --filter '*.rs'
 - **Line-level navigation** — Arrow keys move through individual diff lines within hunks
 - **Syntax highlighting** — Language-aware coloring via syntect
 - **Live watch mode** — On by default. Auto-refreshes on file edits, staging, and commits; AI data reloads automatically
+- **Watched files** — Monitor git-ignored paths (like `.work/` folders) via `.er-config.toml`; view content or snapshot diffs inline
 - **Multi-repo tabs** — Open multiple repos or worktrees side-by-side
 - **Hunk staging** — Stage individual files or hunks without leaving the TUI
 - **Review tracking** — Mark files as reviewed, filter to unreviewed only. Status bar shows both filtered and total reviewed counts when a filter is active
@@ -89,7 +90,7 @@ R (Shift+R)       Toggle sort by recency (works in any mode)
 ### Actions
 
 ```
-s                 Stage / unstage file
+s                 Stage / unstage file (or snapshot watched file)
 S                 Stage current hunk
 Space             Toggle file as reviewed
 u                 Filter to unreviewed files only
@@ -98,6 +99,7 @@ y                 Yank (copy) current hunk
 e                 Open file in $EDITOR
 r                 Refresh diff
 w                 Toggle live watch mode (on by default)
+W                 Toggle watched files section
 /                 Search files by name
 f                 Filter files (glob, status, size expressions)
 F                 Filter presets & history
@@ -136,6 +138,23 @@ Esc               Clear search, then filter (innermost first)
 q                 Quit
 ```
 
+## Watched Files
+
+Monitor git-ignored paths (like `.work/` agent sync folders) directly in the `er` file tree. Configure via `.er-config.toml` in your repo root:
+
+```toml
+[watched]
+paths = [".work/**/*.md", ".work/**/*.txt", "notes/*.log"]
+diff_mode = "content"   # "content" (default) or "snapshot"
+```
+
+- **content** mode shows the full file contents with line numbers
+- **snapshot** mode saves a baseline on `s` and shows a unified diff against it
+
+Watched files appear below a `── watched ──` separator in the file tree. Files not in `.gitignore` show a warning icon. The list rescans automatically every ~5 seconds.
+
+Press `W` to toggle the watched section. Navigate into watched files with `j`/`k` as usual.
+
 ## Architecture
 
 ```
@@ -143,11 +162,11 @@ src/
 ├── main.rs           Entry point, CLI parsing (clap), event loop, input routing
 ├── app/
 │   ├── mod.rs        Module exports
-│   └── state.rs      App state, navigation, comments, AI state management
+│   └── state.rs      App state, navigation, comments, AI state, watched files config
 ├── git/
 │   ├── mod.rs        Module exports
 │   ├── diff.rs       Unified diff parser (raw text → structured data)
-│   └── status.rs     Base branch detection, staging, git commands
+│   └── status.rs     Base branch detection, staging, git commands, watched file discovery
 ├── github.rs         GitHub PR integration (gh CLI wrapper)
 ├── ai/
 │   ├── mod.rs        Module exports
@@ -168,7 +187,7 @@ src/
     └── mod.rs        Debounced file watcher (notify crate, 500ms)
 ```
 
-**Stack:** Rust, Ratatui, Crossterm, syntect, notify, serde/serde_json, sha2, clap. Shells out to `git` for diffs and `gh` for GitHub PRs. Single binary, no runtime dependencies beyond git (gh optional for PR features).
+**Stack:** Rust, Ratatui, Crossterm, syntect, notify, serde/serde_json, sha2, clap, toml, glob. Shells out to `git` for diffs and `gh` for GitHub PRs. Single binary, no runtime dependencies beyond git (gh optional for PR features).
 
 ## AI Integration
 

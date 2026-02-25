@@ -8,7 +8,7 @@ Pure diff parsing + shelling out to git. No application state, no UI.
 |------|-------|---------|
 | `mod.rs` | ~14 | Re-exports public types and functions |
 | `diff.rs` | ~717 | `parse_diff()` — unified diff text to structured data |
-| `status.rs` | ~527 | All git commands (diff, staging, branches, worktrees) |
+| `status.rs` | ~650 | All git commands (diff, staging, branches, worktrees, watched files) |
 
 ## diff.rs — Parser
 
@@ -37,6 +37,11 @@ Key functions:
 - `git_stage_file / git_unstage_file` — `git add` / `git reset HEAD`
 - `git_stage_hunk(path, hunk, repo_root)` — builds a minimal patch via `reconstruct_hunk_patch()` and pipes to `git apply --cached --unidiff-zero`
 - `list_worktrees(repo_root)` — parses `git worktree list --porcelain`
+- `discover_watched_files(repo_root, patterns)` — glob-matches patterns, returns `Vec<WatchedFile>` with path/mtime/size
+- `verify_gitignored(repo_root, path)` — checks `git check-ignore` for safety warnings
+- `save_snapshot(repo_root, rel_path)` — copies file to `.er-snapshots/` for snapshot diff mode
+- `read_watched_file_content(repo_root, rel_path)` — reads file content, detects binary (null byte in first 8KB)
+- `diff_watched_file_snapshot(repo_root, rel_path)` — runs `git diff --no-index` between snapshot and current file
 
 Debug logging: when `$ER_DEBUG` is set, `git_diff_raw` writes the raw command and output to `/tmp/er_debug.log`.
 
