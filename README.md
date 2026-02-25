@@ -191,6 +191,10 @@ split_diff = true         # side-by-side diff view
 exit_heatmap = true       # review coverage summary on quit
 blame_annotations = false # git blame on findings (slower startup)
 bookmarks = true          # hunk bookmarks with m/' keys
+view_branch = true        # enable branch diff mode (1 key)
+view_unstaged = true      # enable unstaged changes mode (2 key)
+view_staged = true        # enable staged changes mode (3 key)
+ai_overlays = true        # enable AI view cycling (v/V keys)
 
 [agent]
 command = "claude"

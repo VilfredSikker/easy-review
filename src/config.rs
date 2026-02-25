@@ -21,6 +21,14 @@ pub struct FeatureFlags {
     pub blame_annotations: bool,
     #[serde(default = "default_true")]
     pub bookmarks: bool,
+    #[serde(default = "default_true")]
+    pub view_branch: bool,
+    #[serde(default = "default_true")]
+    pub view_unstaged: bool,
+    #[serde(default = "default_true")]
+    pub view_staged: bool,
+    #[serde(default = "default_true")]
+    pub ai_overlays: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +82,10 @@ impl Default for FeatureFlags {
             exit_heatmap: true,
             blame_annotations: false,
             bookmarks: true,
+            view_branch: true,
+            view_unstaged: true,
+            view_staged: true,
+            ai_overlays: true,
         }
     }
 }
@@ -170,6 +182,27 @@ pub fn settings_items() -> Vec<SettingsItem> {
             label: "Bookmarks".into(),
             get: |c| c.features.bookmarks,
             set: |c, v| c.features.bookmarks = v,
+        },
+        SettingsItem::SectionHeader("Views".into()),
+        SettingsItem::BoolToggle {
+            label: "Branch diff (1)".into(),
+            get: |c| c.features.view_branch,
+            set: |c, v| c.features.view_branch = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Unstaged changes (2)".into(),
+            get: |c| c.features.view_unstaged,
+            set: |c, v| c.features.view_unstaged = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Staged changes (3)".into(),
+            get: |c| c.features.view_staged,
+            set: |c, v| c.features.view_staged = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "AI overlays (v/V)".into(),
+            get: |c| c.features.ai_overlays,
+            set: |c, v| c.features.ai_overlays = v,
         },
         SettingsItem::SectionHeader("Display".into()),
         SettingsItem::BoolToggle {
