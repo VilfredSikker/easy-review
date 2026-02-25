@@ -194,6 +194,43 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
     )
 }
 
+/// Check if the current branch has an open PR. Returns (number, base_branch) or None.
+/// Silently returns None if gh is unavailable, not authenticated, or no PR exists.
+pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
+    let output = Command::new("gh")
+        .args(["pr", "view", "--json", "number,baseRefName"])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let json = String::from_utf8_lossy(&output.stdout);
+    // Minimal JSON parsing: {"number":123,"baseRefName":"develop"}
+    let number = json
+        .split("\"number\":")
+        .nth(1)?
+        .split([',', '}'])
+        .next()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    let base = json
+        .split("\"baseRefName\":\"")
+        .nth(1)?
+        .split('"')
+        .next()?
+        .to_string();
+
+    if base.is_empty() {
+        return None;
+    }
+
+    Some((number, base))
+}
+
 /// Check if a string looks like a GitHub PR URL
 pub fn is_github_pr_url(s: &str) -> bool {
     parse_github_pr_url(s).is_some()

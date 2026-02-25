@@ -64,6 +64,19 @@ fn main() -> Result<()> {
         app.tab_mut().apply_filter_expr(filter_expr);
     }
 
+    // Hint: if current branch has a PR targeting a different base, show a tip
+    if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
+        let repo_root = app.tab().repo_root.clone();
+        if let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) {
+            if pr_base != app.tab().base_branch {
+                app.notify(&format!(
+                    "PR #{} targets {} — run: er --pr {}",
+                    pr_num, pr_base, pr_num
+                ));
+            }
+        }
+    }
+
     // Load syntax highlighting (once, reused for all files)
     let highlighter = ui::highlight::Highlighter::new();
 

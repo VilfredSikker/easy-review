@@ -157,11 +157,22 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    // Show filtered reviewed count (yellow) then total reviewed count (blue)
+    if let Some((f_reviewed, f_total)) = tab.filtered_reviewed_count() {
+        right.push(Span::styled(
+            format!("{}/{}", f_reviewed, f_total),
+            ratatui::style::Style::default().fg(styles::YELLOW),
+        ));
+        right.push(Span::styled(
+            " · ",
+            ratatui::style::Style::default().fg(styles::MUTED),
+        ));
+    }
     let (reviewed, total) = tab.reviewed_count();
     if total > 0 {
         right.push(Span::styled(
             format!("{}/{} reviewed", reviewed, total),
-            ratatui::style::Style::default().fg(styles::PURPLE),
+            ratatui::style::Style::default().fg(styles::BLUE),
         ));
     }
     if app.watching {
