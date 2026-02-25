@@ -258,6 +258,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
 
     hints.push(Hint::new("c", " comment "));
 
+    if !tab.watched_config.paths.is_empty() {
+        hints.push(Hint::new("W", " watched "));
+    }
+
     if tab.ai.has_data() {
         hints.push(Hint::new("v/V", " AI view "));
     }
@@ -278,6 +282,12 @@ fn build_hints(app: &App) -> Vec<Hint> {
         hints.push(Hint {
             key: String::new(),
             label: " [unreviewed] ".to_string(),
+        });
+    }
+    if tab.show_watched && !tab.watched_files.is_empty() {
+        hints.push(Hint {
+            key: String::new(),
+            label: format!(" [watched: {}] ", tab.watched_files.len()),
         });
     }
 
