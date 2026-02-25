@@ -126,12 +126,52 @@ pub fn line_cursor_del() -> Style {
 /// Human comment background (cool tint to distinguish from AI findings)
 pub const COMMENT_BG: Color = Color::Rgb(18, 28, 38);
 
+/// Inline line-comment background (slightly lighter for visual distinction)
+pub const INLINE_COMMENT_BG: Color = Color::Rgb(22, 32, 42);
+
+/// Focused comment background (highlighted border/bg for selected comment)
+pub const COMMENT_FOCUS_BG: Color = Color::Rgb(28, 38, 52);
+
 /// Human comment style
+#[allow(dead_code)]
 pub fn comment_style() -> Style {
     Style::default().fg(CYAN).bg(COMMENT_BG)
+}
+
+/// Inline line-comment style
+#[allow(dead_code)]
+pub fn inline_comment_style() -> Style {
+    Style::default().fg(CYAN).bg(INLINE_COMMENT_BG)
+}
+
+/// Focused comment style
+#[allow(dead_code)]
+pub fn comment_focus_style() -> Style {
+    Style::default().fg(CYAN).bg(COMMENT_FOCUS_BG)
 }
 
 /// Stale warning style
 pub fn stale_style() -> Style {
     Style::default().fg(STALE)
+}
+
+// ── Watched file colors ──
+
+/// Watched file text color (cool blue to distinguish from diff files)
+pub const WATCHED_TEXT: Color = Color::Rgb(120, 160, 220);
+
+/// Watched file separator/muted color
+pub const WATCHED_MUTED: Color = Color::Rgb(70, 85, 110);
+
+/// Watched file background for content view
+pub const WATCHED_BG: Color = Color::Rgb(14, 16, 24);
+
+/// Watched file content line style
+pub fn watched_line_style() -> Style {
+    Style::default().fg(TEXT).bg(WATCHED_BG)
+}
+
+/// Watched file gutter style
+pub fn watched_gutter_style() -> Style {
+    Style::default().fg(DIM).bg(WATCHED_BG)
 }

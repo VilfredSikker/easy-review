@@ -33,7 +33,11 @@ serde_json = "1"
 # Hashing (diff staleness detection)
 sha2 = "0.10"
 
-# File glob matching (filter system)
+# Config file parsing
+toml = "0.8"
+dirs = "5"
+
+# File glob matching (filter system + watched files)
 glob = "0.3"
 
 # Error handling

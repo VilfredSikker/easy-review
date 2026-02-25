@@ -18,14 +18,15 @@ No runtime dependencies beyond git. Single binary. (`gh` CLI optional for GitHub
 
 ## Architecture
 
-Rust + Ratatui TUI. Five modules + a standalone GitHub integration file:
+Rust + Ratatui TUI. Six modules + a standalone GitHub integration file:
 
-- **`git/`** — Shells out to `git diff` and parses unified diff format into structured data (`DiffFile` → `DiffHunk` → `DiffLine`). Handles base branch auto-detection: upstream tracking → main → master → develop → dev. Also provides staging (file + hunk level) and worktree listing. Includes two-phase lazy parsing for large diffs (header-only scan + on-demand file parse) and auto-compaction of low-value files (lock files, generated code).
-- **`watch/`** — File system watcher using `notify` + `notify-debouncer-mini`. 500ms debounce. Filters out `.git/` directory changes. Sends events via `std::sync::mpsc` channel.
-- **`app/`** — All application state in one `App` struct. Three diff modes (Branch, Unstaged, Staged). Four input modes (Normal, Search, Comment, Filter). File/hunk/line navigation, AI state management, comment persistence, watch notifications. Composable filter system (`filter.rs`) with glob, status, and size rules.
-- **`ui/`** — Ratatui rendering. Four view modes: Default (2-col), Overlay (2-col + inline AI banners), SidePanel (3-col with AI panel), AiReview (full-screen dashboard). Cool blue-undertone dark theme in `styles.rs`. Viewport-based rendering for diff and file tree (only builds `Line` objects for visible rows). Syntax highlighting is cached by content hash.
+- **`git/`** — Shells out to `git diff` and parses unified diff format into structured data (`DiffFile` → `DiffHunk` → `DiffLine`). Handles base branch auto-detection: upstream tracking → main → master → develop → dev. Also provides staging (file + hunk level), worktree listing, and watched file discovery/diffing. Includes two-phase lazy parsing for large diffs (header-only scan + on-demand file parse) and auto-compaction of low-value files (lock files, generated code).
+- **`watch/`** — File system watcher using `notify` + `notify-debouncer-mini`. 500ms debounce. Watches working tree changes plus `.git/index` (staging) and `.git/refs/` (commits). Sends events via `std::sync::mpsc` channel. Starts automatically on launch.
+- **`app/`** — All application state in one `App` struct. Three diff modes (Branch, Unstaged, Staged). Six input modes (Normal, Search, Comment, Confirm, Filter, Commit). File/hunk/line navigation, AI state management, comment persistence (with replies and deletion), comment focus navigation, watch notifications. Holds `ErConfig` for settings. Loads `.er-config.toml` for watched files configuration. Composable filter system (`filter.rs`) with glob, status, and size rules. Mtime sort toggle (`Shift+R`) works in any diff mode.
+- **`ui/`** — Ratatui rendering. Four view modes: Default (2-col), Overlay (2-col + inline AI banners), SidePanel (3-col with AI panel), AiReview (full-screen dashboard). Cool blue-undertone dark theme in `styles.rs`. Viewport-based rendering for diff and file tree (only builds `Line` objects for visible rows). Syntax highlighting is cached by content hash. Settings overlay for live config editing via `S` key.
 - **`ai/`** — Data model and file loader for AI-generated review artifacts. Reads `.er-*.json` sidecar files written by external Claude Code skills. Manages staleness detection via SHA-256 diff hashing. Does NOT run AI — reads AI output.
-- **`github.rs`** — GitHub CLI (`gh`) wrapper for PR integration. Parses PR URLs, checks out PR branches, resolves base branches, detects open PRs for current branch. No API token needed — uses `gh auth`.
+- **`config.rs`** — Configuration system. Loads `.er-config.toml` (per-repo) or `~/.config/er/config.toml` (global) with serde defaults. `ErConfig` struct holds `FeatureFlags`, `AgentConfig`, and `DisplayConfig`. Settings items for the overlay UI are defined here.
+- **`github.rs`** — GitHub CLI (`gh`) wrapper for PR integration. Parses PR URLs, checks out PR branches, resolves base branches, detects open PRs for current branch. Two-way comment sync: pull review comments from GitHub, push local comments back, reply to threads, delete comments. No API token needed — uses `gh auth`.
 
 The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks for file watch events each tick. Watch events are debounced (200ms) to batch rapid changes. PR base hint check runs on a background thread to avoid blocking startup. No async runtime needed — crossterm polling + mpsc channels.
 
@@ -46,6 +47,12 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 - **Syntax highlighting cache.** Content+filename hash → cached spans. 10K entry limit, full eviction on overflow. High hit rate since most lines don't change between frames.
 - **Fast diff hash for watch events.** `DefaultHasher` (non-cryptographic) for internal change detection during watch-mode refreshes. SHA-256 only used for `.er-review.json` compatibility where hashes are persisted.
 - **Deduplicated git calls.** `refresh_diff_impl` guarantees at most 2 `git diff` invocations per refresh (down from 3) by reusing the raw output for both parsing and hash computation.
+- **Split comment system.** Two separate files: `.er-questions.json` for personal review questions (read by `/er-questions` skill), `.er-github-comments.json` for GitHub PR comments (two-way sync). Questions use `q`/`Q` keys (yellow), comments use `c`/`C` keys (cyan). Questions are private; GitHub comments get pushed via `/er-publish`.
+- **Flat single-level comment threads.** GitHub comments can have replies, but replies cannot have replies. Keeps the model simple — parent + N children, no recursive nesting. Questions don't support replies (use `/er-questions` for AI responses).
+- **GitHub comments track source and sync state.** Each `GitHubReviewComment` has `source` (local/github), `github_id`, `author`, and `synced` fields. Deduplication on pull uses `github_id`. Push marks comments as synced.
+- **Per-comment staleness.** Comments store `line_content` of their target line. When the diff changes, individual comments are marked stale and rendered dimmed with a warning indicator.
+- **Config via TOML, not CLI flags.** Per-repo (`.er-config.toml`) overrides global (`~/.config/er/config.toml`) overrides built-in defaults. Every feature is gated behind `config.features.*`. Settings overlay applies changes live; `s` persists, Esc reverts.
+- **Watched files for git-ignored paths.** `.er-config.toml` with `[watched]` section specifies glob patterns for files to monitor (e.g., `.work/` agent sync folders). Two diff modes: "content" (show file contents) and "snapshot" (diff against saved baseline). Gitignore safety check warns if watched files aren't ignored.
 
 ## Code Conventions
 
@@ -55,45 +62,54 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 - GitHub commands: all in `github.rs`. Shell out to `gh` CLI, never use HTTP API directly.
 - UI styles: all colors and composed styles in `ui/styles.rs`. Don't use raw colors elsewhere.
 - Syntax highlighting: `syntect` crate via `ui/highlight.rs`. Highlighter is created once in main and passed as `&mut` to diff_view (mutable for cache writes). Uses `base16-ocean.dark` theme. Language detection is automatic from filename. Results are cached by content hash.
-- AI sidecar files: `.er-*` in repo root, gitignored. `er` reads all, writes only `.er-feedback.json`. Atomic writes via tmp+rename.
+- AI sidecar files: `.er-*` in repo root, gitignored. `er` reads all, writes `.er-questions.json` and `.er-github-comments.json`. Atomic writes via tmp+rename.
+- Question fields: `ReviewQuestion` has `id`, `file`, `hunk_index`, `line_start`, `line_content`, `text`, `resolved`, `stale` (runtime-only).
+- GitHub comment fields: `GitHubReviewComment` has `source` ("local"/"github"), `github_id` (Option<u64>), `author` (String), `synced` (bool), `in_reply_to` (Option<String>), `line_start` (Option<usize>), `stale` (runtime-only). Line comments have `line_start`; hunk comments do not.
+- Unified query via `CommentRef` enum: query methods on `AiState` return `Vec<CommentRef>` which wraps either a `ReviewQuestion`, `GitHubReviewComment`, or legacy `FeedbackComment`.
 - Diff parsing: the parser in `git/diff.rs` has unit tests. Run them with `cargo test`. For large diffs, `parse_diff_headers()` provides a fast header-only scan; `parse_file_at_offset()` parses a single file on demand.
 - Compaction: `DiffFile.compacted` flag indicates a file whose hunks have been cleared. `compact_files()` applies pattern + size threshold. `expand_compacted_file()` re-fetches from git on demand. Glob matching via `glob_match()` in `diff.rs`.
 - Performance state: `HunkOffsets`, `MemoryBudget`, `FileTreeCache`, and `lazy_mode` flag live on `TabState`. The `ensure_file_parsed()` method triggers on-demand parsing in lazy mode.
+- Configuration: TOML via `toml` crate + `dirs` for platform config paths. All config types in `src/config.rs`. Feature flags default to `true` except `blame_annotations`. New features should add a flag to `FeatureFlags` and a `SettingsItem` entry in `settings_items()`.
+- Config file: `.er-config.toml` in repo root, parsed with `toml` crate + `serde::Deserialize`. Watched file globs use the `glob` crate.
 
 ## File Map
 
 ```
 src/main.rs              Event loop, CLI parsing (clap), input routing, debounced watch refresh
-src/app/state.rs         App struct, all state, navigation, comments, filter, HunkOffsets, MemoryBudget, lazy parsing
+src/config.rs            ErConfig, FeatureFlags, load/save, settings items
+src/app/state.rs         App struct, all state, navigation, comments, comment focus, replies, watched files config, filter, HunkOffsets, MemoryBudget, lazy parsing
 src/app/filter.rs        Composable filter system (glob, status, size rules, presets)
 src/git/diff.rs          parse_diff(), parse_diff_headers(), compact_files(), expand_compacted_file()
-src/git/status.rs        detect_base_branch(), git_diff_raw(), git_diff_raw_file(), staging, worktrees
-src/github.rs            GitHub PR URL parsing, gh CLI wrapper, PR base hint
-src/ai/review.rs         AI data model (AiState, ErReview, Finding, ViewMode)
+src/git/status.rs        detect_base_branch(), git_diff_raw(), git_diff_raw_file(), staging, worktrees, watched file ops
+src/github.rs            GitHub PR URL parsing, gh CLI wrapper, comment sync (pull/push/reply/delete), PR base hint
+src/ai/review.rs         AI data model (AiState, ErReview, Finding, ViewMode, CommentRef, ReviewQuestion, GitHubReviewComment)
 src/ai/loader.rs         .er-* file loading, SHA-256 + fast diff hashing, mtime polling
 src/watch/mod.rs         FileWatcher — debounced notify watcher
 src/ui/mod.rs            draw() — ViewMode-based layout dispatch
 src/ui/styles.rs         Color constants and style helpers (blue-undertone theme)
 src/ui/highlight.rs      Syntect-based syntax highlighting with content-hash cache
 src/ui/file_tree.rs      Left panel — virtualized file list with risk indicators
-src/ui/diff_view.rs      Right panel — viewport-based rendering, compacted file view
-src/ui/ai_panel.rs       SidePanel mode — per-file findings + comments column
+src/ui/diff_view.rs      Right panel — viewport-based rendering, compacted file view, inline line comments
+src/ui/ai_panel.rs       SidePanel mode — per-file findings + comments with threaded replies
 src/ui/ai_review_view.rs AiReview mode — full-screen risk dashboard + checklist
 src/ui/status_bar.rs     Top bar, bottom bar, AI status badges, memory budget (debug), comment input
 src/ui/overlay.rs        Modal popups (worktree picker, directory browser, filter history)
+src/ui/settings.rs       Settings overlay — toggleable config items
 src/ui/utils.rs          Shared utilities (word_wrap)
 ```
 
 ## Current State
 
-v1.2 with performance hardening. Building locally with `cargo install --path .`. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log` and shows memory budget in the status bar. Test fixtures via `scripts/generate-test-fixtures.sh`.
+v1.3 with split comment system, settings system, and performance hardening. Building locally with `cargo install --path .`. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log` and shows memory budget in the status bar. Test fixtures via `scripts/generate-test-fixtures.sh`.
 
 ## Roadmap
 
 **v1 (done):** Branch/unstaged/staged diffs, file+hunk navigation, search, live file watching, auto base branch detection, syntax highlighting (syntect), open-in-editor (`e` key).
 
-**v1.1 (done):** AI review integration (4 view modes, inline findings, comments), GitHub PR support (`--pr` flag, URL arguments), line-level navigation (arrow keys), comment system (`c` key → `.er-feedback.json`), composable filter system (`f` key, `--filter` flag, built-in presets via `F`), PR base hint when detected base differs from PR target, filtered reviewed count in status bar.
+**v1.1 (done):** AI review integration (4 view modes, inline findings, comments), GitHub PR support (`--pr` flag, URL arguments), line-level navigation (arrow keys), basic comment system (`c` key → `.er-feedback.json`), watched files for git-ignored paths (`.er-config.toml`), composable filter system (`f` key, `--filter` flag, built-in presets via `F`), PR base hint when detected base differs from PR target, filtered reviewed count in status bar, mtime sort toggle (`Shift+R` — sort files by recency in any mode), watch mode on by default (detects edits, staging, and commits). Large diff performance — auto-compaction, two-phase lazy parsing, viewport-based rendering, syntax highlight cache, precomputed hunk offsets, debounced watch refresh, deduplicated git calls, fast diff hash, memory budget tracking.
 
-**v1.2 (current):** Large diff performance — auto-compaction, two-phase lazy parsing, viewport-based rendering, syntax highlight cache, precomputed hunk offsets, debounced watch refresh, deduplicated git calls, fast diff hash, memory budget tracking.
+**v1.2 (done):** Enhanced comment system — GitHub PR comment sync (pull with `G`, push with `P`), single-level reply threads (`r` key), comment deletion with cascade (`d` key), inline line-comment rendering (comments appear after their target line, not just at hunk end), comment focus navigation (`Tab` to enter, arrows to move between comments). Settings system (`S` key → settings overlay, `.er-config.toml` config file). Feature flags for split diff, exit heatmap, blame annotations, bookmarks. Display options (line numbers, wrap lines, tab width). Agent configuration.
 
-**v2:** Multi-worktree tabs (Tab/Shift+Tab to cycle), per-worktree state, cross-worktree watch notifications.
+**v1.3 (current):** Split comment system — personal questions (`q`/`Q` → `.er-questions.json`, yellow) vs GitHub comments (`c`/`C` → `.er-github-comments.json`, cyan). Per-comment staleness detection (dimmed when diff changes). Quit moved to `Ctrl+q`. `/er-publish` includes GitHub comments in PR review. `/er-questions` reads from `.er-questions.json`.
+
+**v2:** Split diff mode, review heatmap on exit, blame-aware findings, diff bookmarks. Multi-worktree tabs (Tab/Shift+Tab to cycle), per-worktree state, cross-worktree watch notifications.

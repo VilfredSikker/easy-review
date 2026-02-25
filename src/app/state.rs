@@ -1,5 +1,6 @@
-use crate::ai::{self, AiState, ReviewFocus, ViewMode};
-use crate::git::{self, DiffFile, DiffFileHeader, CompactionConfig, Worktree};
+use crate::ai::{self, AiState, CommentType, ReviewFocus, ViewMode};
+use crate::config::{self, ErConfig, WatchedConfig};
+use crate::git::{self, DiffFile, DiffFileHeader, CompactionConfig, WatchedFile, Worktree};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::io::Write;
@@ -39,12 +40,28 @@ impl DiffMode {
 }
 
 /// Whether we're navigating or typing in the search filter / comment
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
     Normal,
     Search,
     Comment,
+    Confirm(ConfirmAction),
     Filter,
+    Commit,
+}
+
+/// Actions that require user confirmation (y/n)
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfirmAction {
+    DeleteComment { comment_id: String },
+}
+
+/// Tracks which comment is focused for reply/delete operations
+#[derive(Debug, Clone)]
+pub struct CommentFocus {
+    pub file: String,
+    pub hunk_index: Option<usize>,
+    pub comment_id: String,
 }
 
 // ── Overlay types ──
@@ -68,6 +85,11 @@ pub enum OverlayData {
         current_path: String,
         entries: Vec<DirEntry>,
         selected: usize,
+    },
+    Settings {
+        selected: usize,
+        /// Snapshot of config at overlay open time, for Cancel revert
+        saved_config: ErConfig,
     },
     FilterHistory {
         history: Vec<String>,
@@ -115,6 +137,9 @@ pub struct TabState {
     /// Only show unreviewed files in the file tree
     pub show_unreviewed_only: bool,
 
+    /// Sort files by mtime (newest first) — works in any diff mode
+    pub sort_by_mtime: bool,
+
     /// AI review state (loaded from .er-* files)
     pub ai: AiState,
 
@@ -159,6 +184,34 @@ pub struct TabState {
 
     /// Optional specific line number the comment targets (new-side)
     pub comment_line_num: Option<usize>,
+
+    /// Currently focused comment (for reply/delete operations)
+    pub comment_focus: Option<CommentFocus>,
+
+    /// Which type of comment is being created (Question vs GitHubComment)
+    pub comment_type: CommentType,
+
+    // ── Watched files state ──
+
+    /// Configuration for watched files
+    pub watched_config: WatchedConfig,
+
+    /// Git-ignored files opted into visibility
+    pub watched_files: Vec<WatchedFile>,
+
+    /// When Some, a watched file is selected (index into watched_files)
+    pub selected_watched: Option<usize>,
+
+    /// Whether the watched files section is visible
+    pub show_watched: bool,
+
+    /// Paths that are watched but NOT gitignored (warning)
+    pub watched_not_ignored: Vec<String>,
+
+    // ── Commit input state ──
+
+    /// Text buffer for the commit message being typed
+    pub commit_input: String,
 
     // ── Performance ──
 
@@ -251,6 +304,9 @@ impl TabState {
 
     fn new_inner(repo_root: String, current_branch: String, base_branch: String) -> Result<Self> {
         let reviewed = Self::load_reviewed_files(&repo_root);
+        let er_config = config::load_config(&repo_root);
+        let watched_config = er_config.watched.clone();
+        let has_watched = !watched_config.paths.is_empty();
 
         let mut tab = TabState {
             mode: DiffMode::Branch,
@@ -271,6 +327,7 @@ impl TabState {
             filter_history: Vec::new(),
             reviewed,
             show_unreviewed_only: false,
+            sort_by_mtime: false,
             ai: AiState::default(),
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
@@ -280,6 +337,14 @@ impl TabState {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            comment_focus: None,
+            comment_type: CommentType::GitHubComment,
+            watched_config,
+            watched_files: Vec::new(),
+            selected_watched: None,
+            show_watched: has_watched,
+            watched_not_ignored: Vec::new(),
+            commit_input: String::new(),
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,
@@ -290,6 +355,7 @@ impl TabState {
         };
 
         tab.refresh_diff()?;
+        tab.refresh_watched_files();
         Ok(tab)
     }
 
@@ -315,6 +381,11 @@ impl TabState {
     }
 
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool) -> Result<()> {
+        // Remember current position to restore after re-parse
+        let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
+        let prev_hunk = self.current_hunk;
+        let prev_line = self.current_line;
+
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
 
         // Decide parsing strategy based on diff size
@@ -347,6 +418,10 @@ impl TabState {
 
             // Apply auto-compaction to low-value files
             git::compact_files(&mut self.files, &self.compaction_config);
+        }
+
+        if self.sort_by_mtime {
+            self.sort_files_by_mtime();
         }
 
         // Update memory budget
@@ -390,15 +465,29 @@ impl TabState {
             }
         }
 
-        // Clamp selection
-        if self.selected_file >= self.files.len() && !self.files.is_empty() {
-            self.selected_file = self.files.len() - 1;
-        }
-        if self.files.is_empty() {
+        // Restore selection by path (file order may change after sort/re-parse)
+        if let Some(ref path) = prev_path {
+            if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
+                self.selected_file = idx;
+                // Restore hunk/line if the file still has enough hunks
+                if prev_hunk < self.total_hunks() {
+                    self.current_hunk = prev_hunk;
+                    self.current_line = prev_line;
+                } else {
+                    self.clamp_hunk();
+                }
+            } else {
+                // File disappeared from diff — clamp index
+                if self.selected_file >= self.files.len() {
+                    self.selected_file = self.files.len().saturating_sub(1);
+                }
+                self.clamp_hunk();
+            }
+        } else {
             self.selected_file = 0;
+            self.clamp_hunk();
         }
-        self.clamp_hunk();
-        self.diff_scroll = 0;
+        self.scroll_to_current_hunk();
 
         // In lazy mode, parse the initially selected file on demand
         self.ensure_file_parsed();
@@ -503,9 +592,35 @@ impl TabState {
         visible
     }
 
+    /// Get the list of watched files, filtered by search query
+    pub fn visible_watched_files(&self) -> Vec<(usize, &WatchedFile)> {
+        if !self.show_watched {
+            return Vec::new();
+        }
+        if self.search_query.is_empty() {
+            self.watched_files.iter().enumerate().collect()
+        } else {
+            let q = self.search_query.to_lowercase();
+            self.watched_files
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.path.to_lowercase().contains(&q))
+                .collect()
+        }
+    }
+
     /// Get the currently selected file
     pub fn selected_diff_file(&self) -> Option<&DiffFile> {
+        if self.selected_watched.is_some() {
+            return None;
+        }
         self.files.get(self.selected_file)
+    }
+
+    /// Get the currently selected watched file
+    pub fn selected_watched_file(&self) -> Option<&WatchedFile> {
+        self.selected_watched
+            .and_then(|idx| self.watched_files.get(idx))
     }
 
     /// Total hunks in the currently selected file
@@ -519,70 +634,142 @@ impl TabState {
 
     /// Snap selected_file to the first visible file if current selection is not visible
     pub fn snap_to_visible(&mut self) {
-        let visible = self.visible_files();
-        if visible.is_empty() {
-            return;
-        }
-        if !visible.iter().any(|(i, _)| *i == self.selected_file) {
-            self.selected_file = visible[0].0;
-            self.current_hunk = 0;
-            self.current_line = None;
-            self.diff_scroll = 0;
-            self.h_scroll = 0;
+        if let Some(idx) = self.selected_watched {
+            // In watched section — check if selection is still visible
+            let visible_watched = self.visible_watched_files();
+            if !visible_watched.iter().any(|(i, _)| *i == idx) {
+                if !visible_watched.is_empty() {
+                    self.selected_watched = Some(visible_watched[0].0);
+                } else {
+                    self.selected_watched = None;
+                    // Fall back to diff files
+                    let visible = self.visible_files();
+                    if !visible.is_empty() {
+                        self.selected_file = visible[0].0;
+                        self.current_hunk = 0;
+                        self.current_line = None;
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                    }
+                }
+            }
+        } else {
+            let visible = self.visible_files();
+            if visible.is_empty() {
+                return;
+            }
+            if !visible.iter().any(|(i, _)| *i == self.selected_file) {
+                self.selected_file = visible[0].0;
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.diff_scroll = 0;
+                self.h_scroll = 0;
+            }
         }
     }
 
     pub fn next_file(&mut self) {
-        let visible = self.visible_files();
-        if visible.is_empty() {
-            return;
-        }
-        if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
-            if pos + 1 < visible.len() {
-                self.selected_file = visible[pos + 1].0;
+        if let Some(idx) = self.selected_watched {
+            // In watched section — move down within watched files
+            let visible_watched = self.visible_watched_files();
+            if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
+                if pos + 1 < visible_watched.len() {
+                    self.selected_watched = Some(visible_watched[pos + 1].0);
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                }
+            }
+        } else {
+            // In diff section
+            let visible = self.visible_files();
+            if visible.is_empty() {
+                // No diff files — jump to watched if available
+                let visible_watched = self.visible_watched_files();
+                if !visible_watched.is_empty() {
+                    self.selected_watched = Some(visible_watched[0].0);
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                }
+                return;
+            }
+            if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
+                if pos + 1 < visible.len() {
+                    self.selected_file = visible[pos + 1].0;
+                    self.current_hunk = 0;
+                    self.current_line = None;
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                    self.ai_panel_scroll = 0;
+                } else {
+                    // At last diff file — transition to watched section
+                    let visible_watched = self.visible_watched_files();
+                    if !visible_watched.is_empty() {
+                        self.selected_watched = Some(visible_watched[0].0);
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                    }
+                }
+            } else {
+                // Current selection not in visible set — snap to first
+                self.selected_file = visible[0].0;
                 self.current_hunk = 0;
-                self.current_line = None;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
                 self.ai_panel_scroll = 0;
                 self.ensure_file_parsed();
                 self.rebuild_hunk_offsets();
             }
-        } else {
-            self.selected_file = visible[0].0;
-            self.current_hunk = 0;
-            self.diff_scroll = 0;
-            self.h_scroll = 0;
-            self.ai_panel_scroll = 0;
-            self.ensure_file_parsed();
-            self.rebuild_hunk_offsets();
         }
     }
 
     pub fn prev_file(&mut self) {
-        let visible = self.visible_files();
-        if visible.is_empty() {
-            return;
-        }
-        if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
-            if pos > 0 {
-                self.selected_file = visible[pos - 1].0;
+        if let Some(idx) = self.selected_watched {
+            // In watched section — move up within watched files
+            let visible_watched = self.visible_watched_files();
+            if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
+                if pos > 0 {
+                    self.selected_watched = Some(visible_watched[pos - 1].0);
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                } else {
+                    // At first watched file — transition back to diff section
+                    self.selected_watched = None;
+                    let visible = self.visible_files();
+                    if !visible.is_empty() {
+                        self.selected_file = visible.last().unwrap().0;
+                        self.current_hunk = 0;
+                        self.current_line = None;
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                        self.ai_panel_scroll = 0;
+                    }
+                }
+            }
+        } else {
+            // In diff section — normal navigation
+            let visible = self.visible_files();
+            if visible.is_empty() {
+                return;
+            }
+            if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
+                if pos > 0 {
+                    self.selected_file = visible[pos - 1].0;
+                    self.current_hunk = 0;
+                    self.current_line = None;
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                    self.ai_panel_scroll = 0;
+                }
+            } else {
+                // Current selection not in visible set — snap to first
+                self.selected_file = visible[0].0;
                 self.current_hunk = 0;
-                self.current_line = None;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
                 self.ai_panel_scroll = 0;
                 self.ensure_file_parsed();
                 self.rebuild_hunk_offsets();
             }
-        } else {
-            self.selected_file = visible[0].0;
-            self.current_hunk = 0;
-            self.diff_scroll = 0;
-            self.h_scroll = 0;
-            self.ai_panel_scroll = 0;
-            self.ensure_file_parsed();
-            self.rebuild_hunk_offsets();
         }
     }
 
@@ -916,14 +1103,112 @@ impl TabState {
 
     pub fn set_mode(&mut self, mode: DiffMode) {
         if self.mode != mode {
+            // Remember current position to restore after mode switch
+            let prev_path = self.files
+                .get(self.selected_file)
+                .map(|f| f.path.clone());
+            let prev_hunk = self.current_hunk;
+            let prev_line = self.current_line;
+
             self.mode = mode;
-            self.selected_file = 0;
             self.current_hunk = 0;
             self.current_line = None;
+            self.selected_watched = None;
             self.diff_scroll = 0;
             let _ = self.refresh_diff();
+
+            // Restore selection by path (file order may differ between modes)
+            if let Some(path) = prev_path {
+                if let Some(idx) = self.files.iter().position(|f| f.path == path) {
+                    self.selected_file = idx;
+                    // Restore hunk/line if the file still has enough hunks
+                    if prev_hunk < self.total_hunks() {
+                        self.current_hunk = prev_hunk;
+                        self.current_line = prev_line;
+                    }
+                } else {
+                    self.selected_file = 0;
+                }
+            } else {
+                self.selected_file = 0;
+            }
             self.snap_to_visible();
+            self.scroll_to_current_hunk();
         }
+    }
+
+    // ── Watched Files ──
+
+    /// Reload watched files from disk
+    pub fn refresh_watched_files(&mut self) {
+        if !self.show_watched || self.watched_config.paths.is_empty() {
+            self.watched_files.clear();
+            return;
+        }
+        match git::discover_watched_files(&self.repo_root, &self.watched_config.paths) {
+            Ok(files) => {
+                // Check gitignore status for warnings
+                self.watched_not_ignored = files
+                    .iter()
+                    .filter(|f| !git::verify_gitignored(&self.repo_root, &f.path))
+                    .map(|f| f.path.clone())
+                    .collect();
+                self.watched_files = files;
+            }
+            Err(_) => {
+                self.watched_files.clear();
+            }
+        }
+        // Clamp selection
+        if let Some(idx) = self.selected_watched {
+            if idx >= self.watched_files.len() {
+                if self.watched_files.is_empty() {
+                    self.selected_watched = None;
+                } else {
+                    self.selected_watched = Some(self.watched_files.len() - 1);
+                }
+            }
+        }
+    }
+
+    /// Reload config from .er-config.toml
+    #[allow(dead_code)]
+    pub fn reload_config(&mut self) {
+        let er_config = config::load_config(&self.repo_root);
+        self.watched_config = er_config.watched;
+        let has_paths = !self.watched_config.paths.is_empty();
+        if !has_paths {
+            self.show_watched = false;
+            self.watched_files.clear();
+            self.selected_watched = None;
+        }
+    }
+
+    /// Update snapshot for the currently selected watched file
+    pub fn update_watched_snapshot(&mut self) -> Result<()> {
+        if let Some(watched) = self.selected_watched_file() {
+            let path = watched.path.clone();
+            git::save_snapshot(&self.repo_root, &path)?;
+        }
+        Ok(())
+    }
+
+    /// Sort files by filesystem mtime (newest first)
+    fn sort_files_by_mtime(&mut self) {
+        use std::fs;
+        use std::time::SystemTime;
+
+        let repo_root = self.repo_root.clone();
+        self.files.sort_by(|a, b| {
+            let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let mtime_b = fs::metadata(format!("{}/{}", repo_root, b.path))
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            // Newest first (reverse chronological)
+            mtime_b.cmp(&mtime_a)
+        });
     }
 
     fn clamp_hunk(&mut self) {
@@ -1048,6 +1333,9 @@ pub struct App {
 
     /// Counter for throttling AI file polling (check every 10 ticks ≈ 1s)
     pub ai_poll_counter: u8,
+
+    /// Application configuration (loaded from .er-config.toml)
+    pub config: ErConfig,
 }
 
 impl App {
@@ -1092,6 +1380,10 @@ impl App {
             tabs
         };
 
+        // Load config from the first tab's repo root
+        let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
+        let er_config = config::load_config(repo_root);
+
         Ok(App {
             tabs,
             active_tab: 0,
@@ -1102,6 +1394,7 @@ impl App {
             watch_message: None,
             watch_message_ticks: 0,
             ai_poll_counter: 0,
+            config: er_config,
         })
     }
 
@@ -1213,6 +1506,51 @@ impl App {
         });
     }
 
+    // ── Overlay: Settings ──
+
+    /// Open the settings overlay
+    pub fn open_settings(&mut self) {
+        let items = config::settings_items();
+        // Find the first selectable (non-header) item
+        let first_selectable = items.iter().position(|item| {
+            !matches!(item, config::SettingsItem::SectionHeader(_))
+        }).unwrap_or(0);
+
+        self.overlay = Some(OverlayData::Settings {
+            selected: first_selectable,
+            saved_config: self.config.clone(),
+        });
+    }
+
+    /// Toggle the currently selected boolean setting
+    pub fn settings_toggle(&mut self) {
+        let items = config::settings_items();
+        if let Some(OverlayData::Settings { selected, .. }) = &self.overlay {
+            let idx = *selected;
+            if let Some(config::SettingsItem::BoolToggle { get, set, .. }) = items.get(idx) {
+                let current = get(&self.config);
+                set(&mut self.config, !current);
+            }
+        }
+    }
+
+    /// Save settings to disk and close the overlay
+    pub fn settings_save(&mut self) {
+        if let Err(e) = config::save_config(&self.config) {
+            self.notify(&format!("Failed to save: {}", e));
+        } else {
+            self.notify("Settings saved");
+        }
+        self.overlay = None;
+    }
+
+    /// Revert settings to the saved snapshot and close the overlay
+    pub fn settings_cancel(&mut self) {
+        if let Some(OverlayData::Settings { saved_config, .. }) = self.overlay.take() {
+            self.config = saved_config;
+        }
+    }
+
     // ── Overlay: Navigation ──
 
     pub fn overlay_next(&mut self) {
@@ -1225,6 +1563,20 @@ impl App {
             Some(OverlayData::DirectoryBrowser { entries, selected, .. }) => {
                 if *selected + 1 < entries.len() {
                     *selected += 1;
+                }
+            }
+            Some(OverlayData::Settings { selected, .. }) => {
+                let items = config::settings_items();
+                // Skip section headers when navigating down
+                let mut next = *selected + 1;
+                while next < items.len() {
+                    if !matches!(items[next], config::SettingsItem::SectionHeader(_)) {
+                        break;
+                    }
+                    next += 1;
+                }
+                if next < items.len() {
+                    *selected = next;
                 }
             }
             // `selected` indexes presets (0..preset_count) then history (preset_count..);
@@ -1247,12 +1599,44 @@ impl App {
                     *selected -= 1;
                 }
             }
+            Some(OverlayData::Settings { selected, .. }) => {
+                let items = config::settings_items();
+                // Skip section headers when navigating up
+                if *selected > 0 {
+                    let mut prev = *selected - 1;
+                    while prev > 0 && matches!(items[prev], config::SettingsItem::SectionHeader(_)) {
+                        prev -= 1;
+                    }
+                    if !matches!(items[prev], config::SettingsItem::SectionHeader(_)) {
+                        *selected = prev;
+                    }
+                }
+            }
             None => {}
         }
     }
 
-    /// Handle Enter in an overlay — opens selection in a new tab
+    /// Handle Enter in an overlay — opens selection in a new tab or saves settings
     pub fn overlay_select(&mut self) -> Result<()> {
+        // Settings overlay: Enter on a toggle item toggles it; otherwise treat as Save
+        if let Some(OverlayData::Settings { selected, .. }) = &self.overlay {
+            let items = config::settings_items();
+            if let Some(item) = items.get(*selected) {
+                match item {
+                    config::SettingsItem::BoolToggle { .. } => {
+                        self.settings_toggle();
+                        return Ok(());
+                    }
+                    _ => {
+                        // Non-toggleable item — treat Enter as Save
+                        self.settings_save();
+                        return Ok(());
+                    }
+                }
+            }
+            return Ok(());
+        }
+
         let overlay = match self.overlay.take() {
             Some(o) => o,
             None => return Ok(()),
@@ -1304,6 +1688,9 @@ impl App {
                     });
                 }
             }
+            OverlayData::Settings { .. } => {
+                // Already handled above
+            }
         }
         Ok(())
     }
@@ -1322,9 +1709,13 @@ impl App {
         }
     }
 
-    /// Close the overlay
+    /// Close the overlay (reverts settings changes if in Settings overlay)
     pub fn overlay_close(&mut self) {
-        self.overlay = None;
+        if matches!(self.overlay, Some(OverlayData::Settings { .. })) {
+            self.settings_cancel();
+        } else {
+            self.overlay = None;
+        }
     }
 
     /// Read directory entries, sorted: directories first (with git repo marker), then files
@@ -1461,7 +1852,7 @@ impl App {
     // ── Comment System ──
 
     /// Enter comment mode for the current file + hunk (and optionally line)
-    pub fn start_comment(&mut self) {
+    pub fn start_comment(&mut self, comment_type: CommentType) {
         let tab = self.tab_mut();
         let file_path = match tab.selected_diff_file() {
             Some(f) => f.path.clone(),
@@ -1472,10 +1863,11 @@ impl App {
         tab.comment_hunk = tab.current_hunk;
         tab.comment_line_num = tab.current_line_number();
         tab.comment_reply_to = None;
+        tab.comment_type = comment_type;
         self.input_mode = InputMode::Comment;
     }
 
-    /// Submit the current comment: append to .er-feedback.json
+    /// Submit the current comment/question to the appropriate file
     pub fn submit_comment(&mut self) -> Result<()> {
         let tab = self.tab();
         let text = tab.comment_input.trim().to_string();
@@ -1484,68 +1876,54 @@ impl App {
             return Ok(());
         }
 
+        let comment_type = tab.comment_type;
+        match comment_type {
+            CommentType::Question => self.submit_question(text),
+            CommentType::GitHubComment => self.submit_github_comment(text),
+        }
+    }
+
+    /// Submit a personal review question to .er-questions.json
+    fn submit_question(&mut self, text: String) -> Result<()> {
+        let tab = self.tab();
         let repo_root = tab.repo_root.clone();
         let diff_hash = tab.branch_diff_hash.clone();
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
-        let reply_to = tab.comment_reply_to.clone();
-
-        // Get line context — use specific line if available, else hunk start
         let comment_line_num = tab.comment_line_num;
-        let (line_start, line_content) = {
-            let tab = self.tab();
-            if let Some(df) = tab.selected_diff_file() {
-                if let Some(hunk) = df.hunks.get(hunk_index) {
-                    if let Some(ln) = comment_line_num {
-                        // Line-level comment: find the content at that line
-                        let content = hunk.lines.iter()
-                            .find(|l| l.new_num == Some(ln))
-                            .map(|l| l.content.clone())
-                            .unwrap_or_default();
-                        (Some(ln), content)
-                    } else {
-                        // Hunk-level comment: hunk_index identifies the hunk; line_start is not meaningful here
-                        (None, hunk.header.clone())
-                    }
-                } else {
-                    (None, String::new())
-                }
-            } else {
-                (None, String::new())
-            }
-        };
 
-        // Load existing feedback or create new
-        let feedback_path = format!("{}/.er-feedback.json", repo_root);
-        let mut feedback: ai::ErFeedback = match std::fs::read_to_string(&feedback_path) {
+        let (line_start, line_content) = self.get_line_context(hunk_index, comment_line_num);
+
+        // Load or create .er-questions.json
+        let questions_path = format!("{}/.er-questions.json", repo_root);
+        let mut questions: ai::ErQuestions = match std::fs::read_to_string(&questions_path) {
             Ok(content) => match serde_json::from_str(&content) {
-                Ok(fb) => fb,
+                Ok(qs) => qs,
                 Err(_) => {
-                    self.notify("Warning: .er-feedback.json is invalid JSON — starting fresh");
-                    ai::ErFeedback {
+                    self.notify("Warning: .er-questions.json is invalid JSON — starting fresh");
+                    ai::ErQuestions {
                         version: 1,
                         diff_hash: diff_hash.clone(),
-                        comments: Vec::new(),
+                        questions: Vec::new(),
                     }
                 }
             },
-            Err(_) => ai::ErFeedback {
+            Err(_) => ai::ErQuestions {
                 version: 1,
                 diff_hash: diff_hash.clone(),
-                comments: Vec::new(),
+                questions: Vec::new(),
             },
         };
 
         // If diff hash changed, start fresh
-        if feedback.diff_hash != diff_hash {
-            feedback.diff_hash = diff_hash;
-            feedback.comments.clear();
+        if questions.diff_hash != diff_hash {
+            questions.diff_hash = diff_hash;
+            questions.questions.clear();
         }
 
-        // Generate comment ID using epoch millis + sequence counter to avoid collisions
         let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
-        let comment_id = format!(
-            "fb-{}-{}",
+        let id = format!(
+            "q-{}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
@@ -1553,9 +1931,85 @@ impl App {
             seq
         );
 
-        // Create the comment
-        let comment = ai::FeedbackComment {
-            id: comment_id,
+        questions.questions.push(ai::ReviewQuestion {
+            id,
+            timestamp: chrono_now(),
+            file: file_path,
+            hunk_index: Some(hunk_index),
+            line_start,
+            line_content,
+            text: text.clone(),
+            resolved: false,
+            stale: false,
+        });
+
+        // Write atomically
+        let json = serde_json::to_string_pretty(&questions)?;
+        let tmp_path = format!("{}.tmp", questions_path);
+        std::fs::write(&tmp_path, json)?;
+        std::fs::rename(&tmp_path, &questions_path)?;
+
+        self.tab_mut().comment_input.clear();
+        self.input_mode = InputMode::Normal;
+        self.tab_mut().reload_ai_state();
+        self.notify(&format!("Question added: {}", truncate(&text, 40)));
+        Ok(())
+    }
+
+    /// Submit a GitHub PR comment to .er-github-comments.json
+    fn submit_github_comment(&mut self, text: String) -> Result<()> {
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let diff_hash = tab.branch_diff_hash.clone();
+        let file_path = tab.comment_file.clone();
+        let hunk_index = tab.comment_hunk;
+        let reply_to = tab.comment_reply_to.clone();
+        let comment_line_num = tab.comment_line_num;
+
+        let (line_start, line_content) = self.get_line_context(hunk_index, comment_line_num);
+
+        // Load or create .er-github-comments.json
+        let comments_path = format!("{}/.er-github-comments.json", repo_root);
+        let mut gh_comments: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(gc) => gc,
+                Err(_) => {
+                    self.notify("Warning: .er-github-comments.json is invalid JSON — starting fresh");
+                    ai::ErGitHubComments {
+                        version: 1,
+                        diff_hash: diff_hash.clone(),
+                        github: None,
+                        comments: Vec::new(),
+                    }
+                }
+            },
+            Err(_) => ai::ErGitHubComments {
+                version: 1,
+                diff_hash: diff_hash.clone(),
+                github: None,
+                comments: Vec::new(),
+            },
+        };
+
+        // If diff hash changed, start fresh for local comments only
+        if gh_comments.diff_hash != diff_hash {
+            gh_comments.diff_hash = diff_hash;
+            // Keep synced GitHub comments, clear local-only ones
+            gh_comments.comments.retain(|c| c.source == "github");
+        }
+
+        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
+        let id = format!(
+            "c-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            seq
+        );
+
+        gh_comments.comments.push(ai::GitHubReviewComment {
+            id,
             timestamp: chrono_now(),
             file: file_path,
             hunk_index: Some(hunk_index),
@@ -1565,30 +2019,322 @@ impl App {
             comment: text.clone(),
             in_reply_to: reply_to,
             resolved: false,
-        };
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced: false,
+            stale: false,
+        });
 
-        feedback.comments.push(comment);
-
-        // Write atomically via temp file + rename
-        let json = serde_json::to_string_pretty(&feedback)?;
-        let tmp_path = format!("{}.tmp", feedback_path);
+        // Write atomically
+        let json = serde_json::to_string_pretty(&gh_comments)?;
+        let tmp_path = format!("{}.tmp", comments_path);
         std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &feedback_path)?;
+        std::fs::rename(&tmp_path, &comments_path)?;
 
-        // Clear state and return to normal
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
-
-        // Reload AI state to pick up the new feedback
         self.tab_mut().reload_ai_state();
-
         self.notify(&format!("Comment added: {}", truncate(&text, 40)));
         Ok(())
+    }
+
+    /// Helper: get line context for a comment target
+    fn get_line_context(&self, hunk_index: usize, comment_line_num: Option<usize>) -> (Option<usize>, String) {
+        let tab = self.tab();
+        if let Some(df) = tab.selected_diff_file() {
+            if let Some(hunk) = df.hunks.get(hunk_index) {
+                if let Some(ln) = comment_line_num {
+                    let content = hunk.lines.iter()
+                        .find(|l| l.new_num == Some(ln))
+                        .map(|l| l.content.clone())
+                        .unwrap_or_default();
+                    (Some(ln), content)
+                } else {
+                    (None, hunk.header.clone())
+                }
+            } else {
+                (None, String::new())
+            }
+        } else {
+            (None, String::new())
+        }
     }
 
     /// Cancel comment input
     pub fn cancel_comment(&mut self) {
         self.tab_mut().comment_input.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    // ── Comment Focus & Navigation ──
+
+    /// Toggle comment focus mode. When in a hunk with comments, Tab enters
+    /// comment focus; pressing Tab again exits it.
+    pub fn toggle_comment_focus(&mut self) {
+        let tab = self.tab_mut();
+        if tab.comment_focus.is_some() {
+            // Exit comment focus
+            tab.comment_focus = None;
+            return;
+        }
+
+        // Enter comment focus: find first comment in the current hunk
+        let file_path = match tab.selected_diff_file() {
+            Some(f) => f.path.clone(),
+            None => return,
+        };
+        let hunk_idx = tab.current_hunk;
+
+        // Collect all top-level comments for this hunk (line + hunk-level)
+        let comments = tab.ai.comments_for_hunk(&file_path, hunk_idx);
+        let top_level: Vec<_> = comments.iter()
+            .filter(|c| c.in_reply_to().is_none())
+            .collect();
+
+        if let Some(first) = top_level.first() {
+            tab.comment_focus = Some(CommentFocus {
+                file: file_path,
+                hunk_index: Some(hunk_idx),
+                comment_id: first.id().to_string(),
+            });
+        }
+    }
+
+    /// Navigate to next comment in the current hunk
+    pub fn next_comment(&mut self) {
+        let tab = self.tab_mut();
+        let focus = match &tab.comment_focus {
+            Some(f) => f.clone(),
+            None => return,
+        };
+
+        // All comments in this hunk (including replies)
+        let hunk_idx = focus.hunk_index.unwrap_or(0);
+        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
+        let ids: Vec<String> = all_comments.iter().map(|c| c.id().to_string()).collect();
+
+        if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
+            if pos + 1 < ids.len() {
+                tab.comment_focus = Some(CommentFocus {
+                    file: focus.file,
+                    hunk_index: focus.hunk_index,
+                    comment_id: ids[pos + 1].clone(),
+                });
+            }
+        }
+    }
+
+    /// Navigate to previous comment in the current hunk
+    pub fn prev_comment(&mut self) {
+        let tab = self.tab_mut();
+        let focus = match &tab.comment_focus {
+            Some(f) => f.clone(),
+            None => return,
+        };
+
+        let hunk_idx = focus.hunk_index.unwrap_or(0);
+        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
+        let ids: Vec<String> = all_comments.iter().map(|c| c.id().to_string()).collect();
+
+        if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
+            if pos > 0 {
+                tab.comment_focus = Some(CommentFocus {
+                    file: focus.file,
+                    hunk_index: focus.hunk_index,
+                    comment_id: ids[pos - 1].clone(),
+                });
+            }
+        }
+    }
+
+    // ── Reply System ──
+
+    /// Start replying to the focused comment (GitHub comments only)
+    pub fn start_reply(&mut self) {
+        let tab = self.tab();
+        let focus = match &tab.comment_focus {
+            Some(f) => f.clone(),
+            None => return,
+        };
+
+        // Find the focused comment in the unified view
+        let hunk_idx = focus.hunk_index.unwrap_or(0);
+        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
+        let comment = all_comments.iter().find(|c| c.id() == focus.comment_id);
+
+        match comment {
+            Some(c) => {
+                // Can only reply to GitHub comments, not questions
+                if c.comment_type() == CommentType::Question {
+                    self.notify("Cannot reply to a question — use /er-questions instead");
+                    return;
+                }
+                // Block nested replies
+                if !c.can_reply() {
+                    self.notify("Cannot reply to a reply");
+                    return;
+                }
+            }
+            None => return,
+        }
+
+        let tab = self.tab_mut();
+        tab.comment_input.clear();
+        tab.comment_file = focus.file;
+        tab.comment_hunk = focus.hunk_index.unwrap_or(0);
+        tab.comment_line_num = None;
+        tab.comment_reply_to = Some(focus.comment_id);
+        tab.comment_type = CommentType::GitHubComment;
+        self.input_mode = InputMode::Comment;
+    }
+
+    // ── Comment Deletion ──
+
+    /// Initiate comment deletion (enters confirm mode)
+    pub fn start_delete_comment(&mut self) {
+        let tab = self.tab();
+        let focus = match &tab.comment_focus {
+            Some(f) => f.clone(),
+            None => return,
+        };
+
+        // Find the comment in the unified view to check deletability
+        let hunk_idx = focus.hunk_index.unwrap_or(0);
+        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
+        let comment = all_comments.iter().find(|c| c.id() == focus.comment_id);
+
+        match comment {
+            Some(c) => {
+                if !c.can_delete() {
+                    self.notify("Cannot delete others' comments");
+                    return;
+                }
+            }
+            None => return,
+        }
+
+        self.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
+            comment_id: focus.comment_id,
+        });
+    }
+
+    /// Execute comment deletion after confirmation
+    pub fn confirm_delete_comment(&mut self, comment_id: &str) -> Result<()> {
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+
+        // Determine which file this comment lives in
+        let is_question = comment_id.starts_with("q-");
+
+        if is_question {
+            // Delete from .er-questions.json
+            let path = format!("{}/.er-questions.json", repo_root);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
+                    qs.questions.retain(|q| q.id != comment_id);
+                    let json = serde_json::to_string_pretty(&qs)?;
+                    let tmp_path = format!("{}.tmp", path);
+                    std::fs::write(&tmp_path, &json)?;
+                    std::fs::rename(&tmp_path, &path)?;
+                }
+            }
+        } else {
+            // Delete from .er-github-comments.json
+            let path = format!("{}/.er-github-comments.json", repo_root);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
+                    // Check if the comment has a github_id for API deletion
+                    let github_id = gc.comments.iter()
+                        .find(|c| c.id == comment_id)
+                        .and_then(|c| c.github_id);
+
+                    let reply_github_ids: Vec<u64> = gc.comments.iter()
+                        .filter(|c| c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some())
+                        .filter_map(|c| c.github_id)
+                        .collect();
+
+                    // Delete from GitHub if applicable
+                    if let Some(gh_id) = github_id {
+                        if let Some(ref gh) = gc.github {
+                            let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, gh_id);
+                            for reply_id in &reply_github_ids {
+                                let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, *reply_id);
+                            }
+                        }
+                    }
+
+                    // Remove comment and cascade replies
+                    gc.comments.retain(|c| {
+                        c.id != comment_id && c.in_reply_to.as_deref() != Some(comment_id)
+                    });
+
+                    let json = serde_json::to_string_pretty(&gc)?;
+                    let tmp_path = format!("{}.tmp", path);
+                    std::fs::write(&tmp_path, &json)?;
+                    std::fs::rename(&tmp_path, &path)?;
+                }
+            }
+        }
+
+        // Clear focus and return to normal
+        self.tab_mut().comment_focus = None;
+        self.input_mode = InputMode::Normal;
+        self.tab_mut().reload_ai_state();
+        self.notify("Comment deleted");
+        Ok(())
+    }
+
+    /// Cancel the confirm dialog
+    pub fn cancel_confirm(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    // ── Hunk Comment (Shift-C) ──
+
+    /// Enter comment mode for a hunk-level comment (no line_start)
+    pub fn start_hunk_comment(&mut self, comment_type: CommentType) {
+        let tab = self.tab_mut();
+        let file_path = match tab.selected_diff_file() {
+            Some(f) => f.path.clone(),
+            None => return,
+        };
+        tab.comment_input.clear();
+        tab.comment_file = file_path;
+        tab.comment_hunk = tab.current_hunk;
+        tab.comment_line_num = None; // Force hunk-level
+        tab.comment_reply_to = None;
+        tab.comment_type = comment_type;
+        self.input_mode = InputMode::Comment;
+    }
+
+    // ── Commit ──
+
+    /// Start commit input (only in Staged mode)
+    pub fn start_commit(&mut self) {
+        self.tab_mut().commit_input.clear();
+        self.input_mode = InputMode::Commit;
+    }
+
+    /// Run git commit with the typed message
+    pub fn submit_commit(&mut self) -> Result<()> {
+        let message = self.tab().commit_input.trim().to_string();
+        if message.is_empty() {
+            self.input_mode = InputMode::Normal;
+            return Ok(());
+        }
+        let repo_root = self.tab().repo_root.clone();
+        git::git_commit(&repo_root, &message)?;
+        self.tab_mut().commit_input.clear();
+        self.input_mode = InputMode::Normal;
+        let _ = self.tab_mut().refresh_diff();
+        self.notify("Committed!");
+        Ok(())
+    }
+
+    /// Cancel commit input
+    pub fn cancel_commit(&mut self) {
+        self.tab_mut().commit_input.clear();
         self.input_mode = InputMode::Normal;
     }
 
@@ -1732,7 +2478,7 @@ impl App {
 
 /// Simple ISO 8601 UTC timestamp (no external crate needed).
 /// Kept in ISO format so .er-feedback.json timestamps are human-readable.
-fn chrono_now() -> String {
+pub(crate) fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1816,6 +2562,7 @@ mod tests {
             filter_history: Vec::new(),
             reviewed: HashSet::new(),
             show_unreviewed_only: false,
+            sort_by_mtime: false,
             ai: AiState::default(),
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
@@ -1825,6 +2572,14 @@ mod tests {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            comment_focus: None,
+            comment_type: CommentType::GitHubComment,
+            watched_config: WatchedConfig::default(),
+            watched_files: Vec::new(),
+            selected_watched: None,
+            show_watched: false,
+            watched_not_ignored: Vec::new(),
+            commit_input: String::new(),
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,

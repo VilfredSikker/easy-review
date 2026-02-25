@@ -10,12 +10,14 @@ pub use diff::{
 #[cfg(test)]
 pub(crate) use diff::DiffLine;
 pub use status::{
-    FileStatus, Worktree,
+    FileStatus, Worktree, WatchedFile,
     detect_base_branch_in,
     get_repo_root,
     get_repo_root_in,
     get_current_branch_in,
     git_diff_raw,
     list_worktrees,
-    git_stage_file, git_unstage_file, git_stage_all, git_stage_hunk,
+    git_stage_file, git_unstage_file, git_stage_all, git_stage_hunk, git_commit,
+    discover_watched_files, verify_gitignored, save_snapshot,
+    read_watched_file_content, diff_watched_file_snapshot,
 };
