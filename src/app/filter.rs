@@ -24,6 +24,18 @@ pub enum FilterRule {
     Size { include: bool, op: SizeOp, threshold: usize },
 }
 
+pub struct FilterPreset {
+    pub name: &'static str,
+    pub expr: &'static str,
+}
+
+pub const FILTER_PRESETS: &[FilterPreset] = &[
+    FilterPreset { name: "frontend", expr: "*.ts,*.tsx,*.js,*.jsx,*.html,*.css,*.scss,*.svelte,*.vue" },
+    FilterPreset { name: "backend",  expr: "*.rs,*.py,*.go,*.java,*.sql,*.ts" }, // *.ts intentionally in both — TS is used on both sides
+    FilterPreset { name: "config",   expr: "*.toml,*.yaml,*.yml,*.json,*.env" },
+    FilterPreset { name: "docs",     expr: "*.md,*.txt,*.rst" },
+];
+
 impl FilterRule {
     fn is_include(&self) -> bool {
         match self {

@@ -70,6 +70,7 @@ pub enum OverlayData {
     FilterHistory {
         history: Vec<String>,
         selected: usize,
+        preset_count: usize,
     },
 }
 
@@ -722,11 +723,29 @@ impl TabState {
 
     // ── Reviewed-File Tracking ──
 
-    /// Count of reviewed files vs total
+    /// Count of reviewed files vs total (all files, ignoring filters)
     pub fn reviewed_count(&self) -> (usize, usize) {
         let total = self.files.len();
         let reviewed = self.files.iter().filter(|f| self.reviewed.contains(&f.path)).count();
         (reviewed, total)
+    }
+
+    /// Count of reviewed files vs total among filtered files only.
+    /// Returns None if no filter is active.
+    pub fn filtered_reviewed_count(&self) -> Option<(usize, usize)> {
+        if self.filter_rules.is_empty() {
+            return None;
+        }
+        let (mut total, mut reviewed) = (0, 0);
+        for f in &self.files {
+            if super::filter::apply_filter(&self.filter_rules, f) {
+                total += 1;
+                if self.reviewed.contains(&f.path) {
+                    reviewed += 1;
+                }
+            }
+        }
+        Some((reviewed, total))
     }
 
     fn load_reviewed_files(repo_root: &str) -> HashSet<String> {
@@ -925,14 +944,12 @@ impl App {
 
     /// Open the filter history overlay
     pub fn open_filter_history(&mut self) {
+        use crate::app::filter::FILTER_PRESETS;
         let history = self.tab().filter_history.clone();
-        if history.is_empty() {
-            self.notify("No filter history");
-            return;
-        }
         self.overlay = Some(OverlayData::FilterHistory {
             history,
             selected: 0,
+            preset_count: FILTER_PRESETS.len(),
         });
     }
 
@@ -966,8 +983,10 @@ impl App {
                     *selected += 1;
                 }
             }
-            Some(OverlayData::FilterHistory { history, selected }) => {
-                if *selected + 1 < history.len() {
+            // `selected` indexes presets (0..preset_count) then history (preset_count..);
+            // the visual separator in the overlay is render-only and not selectable
+            Some(OverlayData::FilterHistory { history, selected, preset_count }) => {
+                if *selected + 1 < *preset_count + history.len() {
                     *selected += 1;
                 }
             }
@@ -1002,8 +1021,14 @@ impl App {
                     self.open_in_new_tab(path)?;
                 }
             }
-            OverlayData::FilterHistory { history, selected } => {
-                if let Some(expr) = history.get(selected).cloned() {
+            OverlayData::FilterHistory { history, selected, preset_count } => {
+                use crate::app::filter::FILTER_PRESETS;
+                let expr = if selected < preset_count {
+                    FILTER_PRESETS.get(selected).map(|p| p.expr.to_string())
+                } else {
+                    history.get(selected - preset_count).cloned()
+                };
+                if let Some(expr) = expr {
                     self.tab_mut().apply_filter_expr(&expr);
                     self.notify(&format!("Filter: {}", expr));
                 }
