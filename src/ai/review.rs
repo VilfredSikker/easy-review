@@ -1,5 +1,14 @@
+use crate::ai::agent::AgentState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+// ── Panel Tabs ──
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PanelTab {
+    Review,
+    Agent,
+}
 
 // ── View Modes ──
 
@@ -223,7 +232,6 @@ pub enum ReviewFocus {
 // ── Aggregate AI state for a tab ──
 
 /// All loaded AI data for a single repo tab
-#[derive(Debug, Clone)]
 pub struct AiState {
     pub review: Option<ErReview>,
     pub order: Option<ErOrder>,
@@ -238,6 +246,10 @@ pub struct AiState {
     pub review_focus: ReviewFocus,
     /// Cursor position within the focused section in AiReview mode
     pub review_cursor: usize,
+    /// Which tab is active in the side panel
+    pub panel_tab: PanelTab,
+    /// Agent terminal state
+    pub agent: AgentState,
 }
 
 impl Default for AiState {
@@ -252,6 +264,8 @@ impl Default for AiState {
             view_mode: ViewMode::Default,
             review_focus: ReviewFocus::Files,
             review_cursor: 0,
+            panel_tab: PanelTab::Review,
+            agent: AgentState::new(),
         }
     }
 }

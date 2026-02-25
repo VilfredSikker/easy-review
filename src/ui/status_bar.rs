@@ -330,7 +330,7 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
 /// Calculate how many rows the bottom bar needs
 pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
     match app.input_mode {
-        InputMode::Search | InputMode::Comment => 1,
+        InputMode::Search | InputMode::Comment | InputMode::AgentPrompt => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -399,11 +399,27 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
             f.render_widget(bar, area);
         }
+        InputMode::AgentPrompt => {
+            let spans = vec![
+                Span::styled(" agent ", ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::GREEN)
+                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled("Enter", styles::key_hint_style()),
+                Span::styled(" send  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled("Esc", styles::key_hint_style()),
+                Span::styled(" exit  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled("Ctrl+C", styles::key_hint_style()),
+                Span::styled(" kill", ratatui::style::Style::default().fg(styles::DIM)),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, area.width as usize);
 
-            // Split area into rows
             let row_count = lines.len() as u16;
             let constraints: Vec<ratatui::layout::Constraint> = (0..row_count)
                 .map(|_| ratatui::layout::Constraint::Length(1))

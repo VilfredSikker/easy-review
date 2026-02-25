@@ -1,8 +1,12 @@
+use crate::ai::agent::{
+    self, AgentContext, AgentConfigInner, AgentMessage, MessageRole,
+};
 use crate::ai::{self, AiState, ReviewFocus, ViewMode};
 use crate::git::{self, DiffFile, Worktree};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::io::Write;
+use std::process::{Command, Stdio};
 
 // ── Enums ──
 
@@ -33,12 +37,13 @@ impl DiffMode {
     }
 }
 
-/// Whether we're navigating or typing in the search filter / comment
+/// Whether we're navigating or typing in the search filter / comment / agent prompt
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputMode {
     Normal,
     Search,
     Comment,
+    AgentPrompt,
 }
 
 // ── Overlay types ──
@@ -202,10 +207,15 @@ impl TabState {
         let current_mode = self.ai.view_mode;
         let current_focus = self.ai.review_focus;
         let current_cursor = self.ai.review_cursor;
+        let current_panel_tab = self.ai.panel_tab;
+        // Take ownership of agent state to preserve across reload
+        let current_agent = std::mem::replace(&mut self.ai.agent, agent::AgentState::new());
         self.ai = ai::load_ai_state(&self.repo_root, &self.diff_hash);
         self.ai.view_mode = current_mode;
         self.ai.review_focus = current_focus;
         self.ai.review_cursor = current_cursor;
+        self.ai.panel_tab = current_panel_tab;
+        self.ai.agent = current_agent;
         // Clamp cursor to valid range after reload (item count may have decreased)
         let item_count = match current_focus {
             ReviewFocus::Files => self.ai.review_file_count(),
@@ -301,12 +311,12 @@ impl TabState {
                 self.h_scroll = 0;
             }
         } else {
-            // Current selection not in visible set — snap to first
             self.selected_file = visible[0].0;
             self.current_hunk = 0;
             self.diff_scroll = 0;
             self.h_scroll = 0;
         }
+        self.update_agent_context();
     }
 
     pub fn prev_file(&mut self) {
@@ -323,12 +333,12 @@ impl TabState {
                 self.h_scroll = 0;
             }
         } else {
-            // Current selection not in visible set — snap to first
             self.selected_file = visible[0].0;
             self.current_hunk = 0;
             self.diff_scroll = 0;
             self.h_scroll = 0;
         }
+        self.update_agent_context();
     }
 
     pub fn next_hunk(&mut self) {
@@ -338,6 +348,7 @@ impl TabState {
             self.current_line = None;
             self.scroll_to_current_hunk();
         }
+        self.update_agent_context();
     }
 
     pub fn prev_hunk(&mut self) {
@@ -346,6 +357,7 @@ impl TabState {
             self.current_line = None;
             self.scroll_to_current_hunk();
         }
+        self.update_agent_context();
     }
 
     /// Move to the next line within the current hunk (arrow down)
@@ -356,14 +368,12 @@ impl TabState {
         }
         match self.current_line {
             None => {
-                // Enter line mode at first line
                 self.current_line = Some(0);
             }
             Some(line) => {
                 if line + 1 < total_lines {
                     self.current_line = Some(line + 1);
                 } else {
-                    // At last line of this hunk — move to next hunk's first line
                     let total_hunks = self.total_hunks();
                     if self.current_hunk + 1 < total_hunks {
                         self.current_hunk += 1;
@@ -373,6 +383,7 @@ impl TabState {
                 }
             }
         }
+        self.update_agent_context();
     }
 
     /// Move to the previous line within the current hunk (arrow up)
@@ -380,14 +391,12 @@ impl TabState {
         match self.current_line {
             None => {}
             Some(0) => {
-                // At first line — move to prev hunk's last line
                 if self.current_hunk > 0 {
                     self.current_hunk -= 1;
                     let count = self.current_hunk_line_count();
                     self.current_line = if count > 0 { Some(count - 1) } else { None };
                     self.scroll_to_current_hunk();
                 } else {
-                    // Already at top — exit line mode
                     self.current_line = None;
                 }
             }
@@ -395,6 +404,7 @@ impl TabState {
                 self.current_line = Some(line - 1);
             }
         }
+        self.update_agent_context();
     }
 
     /// Get the number of lines in the current hunk
@@ -531,6 +541,144 @@ impl TabState {
         let content = lines.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
         std::fs::write(&path, format!("{}\n", content))?;
         Ok(())
+    }
+
+    // ── Agent ──
+
+    /// Rebuild AgentContext from current navigation state
+    pub fn update_agent_context(&mut self) {
+        let ctx = &mut self.ai.agent.context;
+
+        ctx.base_branch = self.base_branch.clone();
+        ctx.head_branch = self.current_branch.clone();
+
+        let file = match self.files.get(self.selected_file) {
+            Some(f) => f,
+            None => {
+                *ctx = AgentContext {
+                    base_branch: ctx.base_branch.clone(),
+                    head_branch: ctx.head_branch.clone(),
+                    ..Default::default()
+                };
+                return;
+            }
+        };
+        ctx.file = Some(file.path.clone());
+
+        if let Some(hunk) = file.hunks.get(self.current_hunk) {
+            ctx.hunk_index = Some(self.current_hunk);
+            ctx.hunk_header = Some(hunk.header.clone());
+            ctx.hunk_diff = Some(
+                hunk.lines
+                    .iter()
+                    .map(|l| l.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+
+            if let Some(line_idx) = self.current_line {
+                if let Some(line) = hunk.lines.get(line_idx) {
+                    ctx.line_number = line.new_num;
+                    ctx.line_content = Some(line.content.clone());
+                } else {
+                    ctx.line_number = None;
+                    ctx.line_content = None;
+                }
+            } else {
+                ctx.line_number = None;
+                ctx.line_content = None;
+            }
+        } else {
+            ctx.hunk_index = None;
+            ctx.hunk_header = None;
+            ctx.hunk_diff = None;
+            ctx.line_number = None;
+            ctx.line_content = None;
+        }
+
+        // Finding from AI review data
+        let finding = self
+            .ai
+            .review
+            .as_ref()
+            .and_then(|r| r.files.get(&file.path))
+            .and_then(|f| {
+                f.findings
+                    .iter()
+                    .find(|f| f.hunk_index == ctx.hunk_index)
+            });
+
+        if let Some(f) = finding {
+            ctx.finding_title = Some(f.title.clone());
+            ctx.finding_severity = Some(format!("{:?}", f.severity));
+            ctx.finding_description = Some(f.description.clone());
+            ctx.finding_suggestion = Some(f.suggestion.clone());
+        } else {
+            ctx.finding_title = None;
+            ctx.finding_severity = None;
+            ctx.finding_description = None;
+            ctx.finding_suggestion = None;
+        }
+    }
+
+    /// Spawn an agent process with the current prompt and context
+    pub fn spawn_agent(&mut self, config: &AgentConfigInner) -> Result<()> {
+        let prompt = self.ai.agent.input.trim().to_string();
+        if prompt.is_empty() {
+            return Ok(());
+        }
+
+        // Expand slash commands
+        let prompt = agent::expand_slash_command(&prompt).unwrap_or(prompt);
+
+        // Write context to temp file
+        let ctx_path = format!("{}/.er-agent-context.json", self.repo_root);
+        let ctx_json = serde_json::to_string_pretty(&self.ai.agent.context)?;
+        std::fs::write(&ctx_path, &ctx_json)?;
+
+        // Build full prompt with context preamble
+        let full_prompt = agent::build_full_prompt(&prompt, &self.ai.agent.context);
+
+        // Resolve command + args from config
+        let (cmd, args) =
+            agent::resolve_command(config, &full_prompt, &ctx_path, &self.ai.agent.context);
+
+        // Spawn child process
+        let child = Command::new(&cmd)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(&self.repo_root)
+            .spawn()
+            .with_context(|| format!("Failed to run agent: {cmd}"))?;
+
+        // Set stdout to non-blocking
+        #[cfg(unix)]
+        if let Some(ref stdout) = child.stdout {
+            use std::os::unix::io::AsRawFd;
+            set_nonblocking(stdout.as_raw_fd());
+        }
+
+        // Record user message
+        self.ai.agent.messages.push(AgentMessage {
+            role: MessageRole::User,
+            text: prompt,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+        self.ai.agent.child = Some(child);
+        self.ai.agent.is_running = true;
+        self.ai.agent.partial_response.clear();
+        self.ai.agent.input.clear();
+
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn set_nonblocking(fd: i32) {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
     }
 }
 

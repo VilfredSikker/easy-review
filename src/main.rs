@@ -6,7 +6,8 @@ mod watch;
 
 use anyhow::Result;
 use app::{App, DiffMode, InputMode};
-use crate::ai::ViewMode;
+use crate::ai::{PanelTab, ViewMode};
+use crate::ai::agent::{self, AgentMessage, MessageRole};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -71,6 +72,7 @@ fn run_app<B: Backend>(
                     match app.input_mode {
                         InputMode::Search => handle_search_input(app, key),
                         InputMode::Comment => handle_comment_input(app, key)?,
+                        InputMode::AgentPrompt => handle_agent_input(app, key)?,
                         InputMode::Normal => {
                             handle_normal_input(app, key, &watch_tx, &mut _watcher)?
                         }
@@ -94,6 +96,9 @@ fn run_app<B: Backend>(
         if app.tab_mut().check_ai_files_changed() {
             app.notify("✓ AI data refreshed");
         }
+
+        // Poll agent child process for streaming output
+        poll_agent(app);
 
         // Tick — used for auto-clearing notifications
         app.tick();
@@ -293,9 +298,32 @@ fn handle_normal_input(
             app.notify(&format!("View: {}", mode));
         }
 
+        // Open agent prompt
+        KeyCode::Char('a') => {
+            app.tab_mut().ai.view_mode = ViewMode::SidePanel;
+            app.tab_mut().ai.panel_tab = PanelTab::Agent;
+            app.tab_mut().update_agent_context();
+            app.input_mode = InputMode::AgentPrompt;
+        }
+
+        // Tab to toggle panel tabs (only in SidePanel mode)
+        KeyCode::Tab => {
+            if app.tab().ai.view_mode == ViewMode::SidePanel {
+                let tab = app.tab_mut();
+                tab.ai.panel_tab = match tab.ai.panel_tab {
+                    PanelTab::Review => PanelTab::Agent,
+                    PanelTab::Agent => PanelTab::Review,
+                };
+            }
+        }
+
         // Clear search filter
         KeyCode::Esc => {
-            if !app.tab().search_query.is_empty() {
+            if app.tab().ai.view_mode == ViewMode::SidePanel
+                && app.tab().ai.panel_tab == PanelTab::Agent
+            {
+                app.tab_mut().ai.view_mode = ViewMode::Default;
+            } else if !app.tab().search_query.is_empty() {
                 app.tab_mut().search_query.clear();
             }
         }
@@ -409,4 +437,105 @@ fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn handle_agent_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Enter => {
+            let config = agent::load_agent_config(&app.tab().repo_root);
+            app.tab_mut().spawn_agent(&config)?;
+        }
+        KeyCode::Esc => {
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(ref mut child) = app.tab_mut().ai.agent.child {
+                let _ = child.kill();
+            }
+            app.tab_mut().ai.agent.is_running = false;
+            app.tab_mut().ai.agent.child = None;
+            app.tab_mut().ai.agent.messages.push(AgentMessage {
+                role: MessageRole::System,
+                text: "cancelled".to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+        }
+        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().ai.agent.messages.clear();
+            app.tab_mut().ai.agent.scroll = 0;
+        }
+        KeyCode::Char(c) => {
+            app.tab_mut().ai.agent.input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.tab_mut().ai.agent.input.pop();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn poll_agent(app: &mut App) {
+    use std::io::Read;
+
+    let agent = &mut app.tab_mut().ai.agent;
+    if !agent.is_running {
+        return;
+    }
+
+    let child = match agent.child.as_mut() {
+        Some(c) => c,
+        None => return,
+    };
+
+    // Try reading stdout
+    if let Some(ref mut stdout) = child.stdout {
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdout.read(&mut buf) {
+                Ok(0) => {
+                    finalize_agent_response(agent);
+                    return;
+                }
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]);
+                    agent.partial_response.push_str(&chunk);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    break;
+                }
+                Err(_) => {
+                    finalize_agent_response(agent);
+                    return;
+                }
+            }
+        }
+    }
+
+    // Check if process exited
+    if let Ok(Some(_status)) = child.try_wait() {
+        if let Some(ref mut stdout) = child.stdout {
+            let mut remaining = String::new();
+            let _ = stdout.read_to_string(&mut remaining);
+            agent.partial_response.push_str(&remaining);
+        }
+        finalize_agent_response(agent);
+    }
+}
+
+fn finalize_agent_response(agent: &mut crate::ai::agent::AgentState) {
+    let text = std::mem::take(&mut agent.partial_response)
+        .trim()
+        .to_string();
+
+    if !text.is_empty() {
+        agent.messages.push(AgentMessage {
+            role: MessageRole::Agent,
+            text,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+    }
+
+    agent.is_running = false;
+    agent.child = None;
 }

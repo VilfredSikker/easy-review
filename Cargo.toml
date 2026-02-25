@@ -40,6 +40,12 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 
+# Agent panel
+toml = "0.8"
+dirs = "5"
+chrono = "0.4"
+libc = "0.2"
+
 [profile.release]
 opt-level = 3
 lto = true

@@ -135,3 +135,38 @@ pub fn comment_style() -> Style {
 pub fn stale_style() -> Style {
     Style::default().fg(STALE)
 }
+
+// ── Agent panel colors ──
+
+/// Agent context badge background
+pub const AGENT_BADGE_BG: Color = Color::Rgb(22, 22, 36);
+
+/// Agent user message prefix
+pub fn agent_user_style() -> Style {
+    Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+}
+
+/// Agent response prefix
+pub fn agent_response_style() -> Style {
+    Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+}
+
+/// Agent system message
+pub fn agent_system_style() -> Style {
+    Style::default().fg(DIM).add_modifier(Modifier::ITALIC)
+}
+
+/// Agent prompt input
+pub fn agent_prompt_style() -> Style {
+    Style::default().fg(TEXT)
+}
+
+/// Active tab in panel tab bar
+pub fn tab_active_style() -> Style {
+    Style::default().fg(BRIGHT).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+}
+
+/// Inactive tab in panel tab bar
+pub fn tab_inactive_style() -> Style {
+    Style::default().fg(MUTED)
+}
