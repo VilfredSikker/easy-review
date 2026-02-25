@@ -123,8 +123,18 @@ fn run_app<B: Backend>(
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
-    let mut _watcher: Option<FileWatcher> = None;
     let mut hint_rx = hint_rx;
+
+    // Start watching by default
+    let root_str = app.tab().repo_root.clone();
+    let root = std::path::Path::new(&root_str);
+    let mut _watcher: Option<FileWatcher> = match FileWatcher::new(root, 500, watch_tx.clone()) {
+        Ok(w) => {
+            app.watching = true;
+            Some(w)
+        }
+        Err(_) => None,
+    };
 
     loop {
         // Draw
@@ -142,6 +152,7 @@ fn run_app<B: Backend>(
                         InputMode::Comment => handle_comment_input(app, key)?,
                         InputMode::Confirm(_) => handle_confirm_input(app, key)?,
                         InputMode::Filter => handle_filter_input(app, key),
+                        InputMode::Commit => handle_commit_input(app, key)?,
                         InputMode::Normal => {
                             handle_normal_input(app, key, &watch_tx, &mut _watcher)?
                         }
@@ -173,6 +184,11 @@ fn run_app<B: Backend>(
             if app.tab_mut().check_ai_files_changed() {
                 app.notify("✓ AI data refreshed");
             }
+        }
+
+        // Rescan watched files (every 50 ticks ≈ 5s)
+        if app.ai_poll_counter % 50 == 0 {
+            app.tab_mut().refresh_watched_files();
         }
 
         // Check for PR base hint from background thread (fires once)
@@ -236,6 +252,15 @@ fn handle_normal_input(
         }
         KeyCode::Char('3') => {
             app.tab_mut().set_mode(DiffMode::Staged);
+            return Ok(());
+        }
+        // Toggle mtime sort (works in any mode)
+        KeyCode::Char('R') => {
+            let tab = app.tab_mut();
+            tab.sort_by_mtime = !tab.sort_by_mtime;
+            let _ = tab.refresh_diff();
+            let label = if app.tab().sort_by_mtime { "Sort: recent first" } else { "Sort: default" };
+            app.notify(label);
             return Ok(());
         }
 
@@ -305,6 +330,25 @@ fn handle_normal_input(
         }
         KeyCode::Char('o') => {
             app.open_directory_browser();
+            return Ok(());
+        }
+
+        // Toggle watched files section visibility
+        KeyCode::Char('W') => {
+            let tab = app.tab_mut();
+            if tab.watched_config.paths.is_empty() {
+                app.notify("No watched paths in .er-config.toml");
+            } else {
+                tab.show_watched = !tab.show_watched;
+                if tab.show_watched {
+                    tab.refresh_watched_files();
+                    app.notify("Watched files shown");
+                } else {
+                    tab.watched_files.clear();
+                    tab.selected_watched = None;
+                    app.notify("Watched files hidden");
+                }
+            }
             return Ok(());
         }
 
@@ -378,9 +422,21 @@ fn handle_normal_input(
             app.open_filter_history();
         }
 
-        // Stage/unstage file
+        // Stage/unstage file (or update snapshot for watched files)
         KeyCode::Char('s') => {
-            app.toggle_stage_file()?;
+            if app.tab().selected_watched.is_some() {
+                // Update snapshot for watched file
+                if app.tab().watched_config.diff_mode == "snapshot" {
+                    match app.tab_mut().update_watched_snapshot() {
+                        Ok(()) => app.notify("Snapshot updated"),
+                        Err(e) => app.notify(&format!("Snapshot error: {}", e)),
+                    }
+                } else {
+                    app.notify("Snapshot mode not enabled (diff_mode = \"content\")");
+                }
+            } else {
+                app.toggle_stage_file()?;
+            }
         }
 
         // Stage current hunk
@@ -403,9 +459,13 @@ fn handle_normal_input(
             app.yank_hunk()?;
         }
 
-        // GitHub comment on current line (c) or hunk (C)
+        // In Staged mode, c = commit; otherwise c = GitHub comment
         KeyCode::Char('c') => {
-            app.start_comment(crate::ai::CommentType::GitHubComment);
+            if app.tab().mode == DiffMode::Staged {
+                app.start_commit();
+            } else {
+                app.start_comment(crate::ai::CommentType::GitHubComment);
+            }
         }
         KeyCode::Char('C') => {
             app.start_hunk_comment(crate::ai::CommentType::GitHubComment);
@@ -660,6 +720,25 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             app.cancel_confirm();
         }
         _ => {} // Ignore all other keys in confirm mode
+    }
+    Ok(())
+}
+
+fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Enter => {
+            app.submit_commit()?;
+        }
+        KeyCode::Esc => {
+            app.cancel_commit();
+        }
+        KeyCode::Char(c) => {
+            app.tab_mut().commit_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.tab_mut().commit_input.pop();
+        }
+        _ => {}
     }
     Ok(())
 }
