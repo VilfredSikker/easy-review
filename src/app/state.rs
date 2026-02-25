@@ -1,10 +1,12 @@
 use crate::ai::{self, AiState, CommentType, ReviewFocus, ViewMode};
 use crate::config::{self, ErConfig, WatchedConfig};
-use crate::git::{self, DiffFile, WatchedFile, Worktree};
+use crate::git::{self, DiffFile, DiffFileHeader, CompactionConfig, WatchedFile, Worktree};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[allow(unused_imports)]
+use std::time::Instant;
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -210,6 +212,79 @@ pub struct TabState {
 
     /// Text buffer for the commit message being typed
     pub commit_input: String,
+
+    // ── Performance ──
+
+    /// Configuration for auto-compaction of low-value files
+    pub compaction_config: CompactionConfig,
+
+    /// Precomputed hunk offsets for O(1) scroll position lookup
+    pub hunk_offsets: Option<HunkOffsets>,
+
+    /// Cached visible file indices (invalidated on search/filter/file list change)
+    pub file_tree_cache: Option<FileTreeCache>,
+
+    /// Memory budget tracking
+    pub mem_budget: MemoryBudget,
+
+    // ── Lazy parsing state ──
+
+    /// Whether we're using lazy (two-phase) parsing for this diff
+    pub lazy_mode: bool,
+
+    /// File headers from lazy parse (only populated in lazy mode)
+    pub file_headers: Vec<DiffFileHeader>,
+
+    /// Raw diff string kept for on-demand parsing (only in lazy mode)
+    raw_diff: Option<String>,
+}
+
+/// Precomputed cumulative line offsets for each hunk in the selected file
+#[derive(Debug, Clone)]
+pub struct HunkOffsets {
+    /// offsets[i] = logical line number where hunk i starts
+    pub offsets: Vec<usize>,
+    /// Total logical lines for this file
+    #[allow(dead_code)]
+    pub total: usize,
+}
+
+impl HunkOffsets {
+    pub fn build(hunks: &[git::DiffHunk]) -> Self {
+        let mut offsets = Vec::with_capacity(hunks.len());
+        let mut cursor: usize = 2; // file header lines
+        for hunk in hunks {
+            offsets.push(cursor);
+            cursor += 1; // hunk header
+            cursor += hunk.lines.len();
+            cursor += 1; // blank line between hunks
+        }
+        Self {
+            offsets,
+            total: cursor,
+        }
+    }
+}
+
+/// Cached visible file indices for file tree rendering
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct FileTreeCache {
+    /// Indices into the files array that pass filters
+    pub visible: Vec<usize>,
+    /// Inputs that produced this cache
+    search_query: String,
+    show_unreviewed_only: bool,
+    file_count: usize,
+    reviewed_count: usize,
+}
+
+/// Lightweight memory tracking
+#[derive(Debug, Clone, Default)]
+pub struct MemoryBudget {
+    pub parsed_files: usize,
+    pub total_lines: usize,
+    pub compacted_files: usize,
 }
 
 impl TabState {
@@ -270,6 +345,13 @@ impl TabState {
             show_watched: has_watched,
             watched_not_ignored: Vec::new(),
             commit_input: String::new(),
+            compaction_config: CompactionConfig::default(),
+            hunk_offsets: None,
+            file_tree_cache: None,
+            mem_budget: MemoryBudget::default(),
+            lazy_mode: false,
+            file_headers: Vec::new(),
+            raw_diff: None,
         };
 
         tab.refresh_diff()?;
@@ -305,51 +387,81 @@ impl TabState {
         let prev_line = self.current_line;
 
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
-        self.files = git::parse_diff(&raw);
+
+        // Decide parsing strategy based on diff size
+        let line_count = raw.as_bytes().iter().filter(|&&b| b == b'\n').count();
+        if line_count > git::LAZY_PARSE_THRESHOLD {
+            // Lazy mode: header-only parse, files get hunks on demand
+            let headers = git::parse_diff_headers(&raw);
+            self.files = headers.iter().map(git::header_to_stub).collect();
+            self.file_headers = headers;
+            self.raw_diff = Some(raw.clone());
+            self.lazy_mode = true;
+
+            // Apply compaction to the stub files (pattern-based only, since hunks are empty)
+            for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
+                let total_lines = header.adds + header.dels;
+                let should_compact = self.compaction_config.enabled
+                    && (self.compaction_config.patterns.iter().any(|p| git::compact_files_match(p, &file.path))
+                        || total_lines > self.compaction_config.max_lines_before_compact);
+                if should_compact {
+                    file.compacted = true;
+                    file.raw_hunk_count = header.hunk_count;
+                }
+            }
+        } else {
+            // Eager mode: full parse (fast enough for smaller diffs)
+            self.files = git::parse_diff(&raw);
+            self.file_headers.clear();
+            self.raw_diff = None;
+            self.lazy_mode = false;
+
+            // Apply auto-compaction to low-value files
+            git::compact_files(&mut self.files, &self.compaction_config);
+        }
 
         if self.sort_by_mtime {
             self.sort_files_by_mtime();
         }
 
-        // Compute diff hash for the current mode
-        self.diff_hash = ai::compute_diff_hash(&raw);
+        // Update memory budget
+        self.update_mem_budget();
+
+        // Compute diff hash for the current mode.
+        // Use fast hash for quick refreshes (watch events), SHA-256 for full refreshes
+        // (AI staleness needs SHA-256 to compare with .er-review.json).
+        let branch_raw_owned: Option<String>;
+        if recompute_branch_hash {
+            // Full refresh: compute SHA-256 for AI compatibility
+            self.diff_hash = ai::compute_diff_hash(&raw);
+        } else {
+            // Quick refresh: use fast hash (skip expensive SHA-256)
+            self.diff_hash = format!("{:016x}", ai::compute_diff_hash_fast(&raw));
+        }
 
         // Branch diff hash for AI staleness detection.
-        // In Branch mode it's always the same as diff_hash (free).
-        // In other modes, only recompute on explicit actions — watch events
-        // skip this to avoid running two git diffs per file save.
+        // In Branch mode, reuse — no second git call needed.
+        // In other modes, only run the extra git diff on explicit refresh.
+        // This guarantees at most 2 git diff calls (down from 3).
         if self.mode == DiffMode::Branch {
             self.branch_diff_hash = self.diff_hash.clone();
+            branch_raw_owned = Some(raw.clone());
         } else if recompute_branch_hash {
-            let branch_raw = git::git_diff_raw("branch", &self.base_branch, &self.repo_root)?;
-            self.branch_diff_hash = ai::compute_diff_hash(&branch_raw);
+            let br = git::git_diff_raw("branch", &self.base_branch, &self.repo_root)?;
+            self.branch_diff_hash = ai::compute_diff_hash(&br);
+            branch_raw_owned = Some(br);
+        } else {
+            branch_raw_owned = None;
         }
 
         // Load AI state from .er-* files
         self.reload_ai_state();
 
         // Compute per-file staleness when the review is stale and has file_hashes.
-        // Use the branch diff for comparison (AI reviews are generated against branch diff).
+        // Reuse the branch_raw we already fetched — no additional git call.
         if self.ai.is_stale {
-            let branch_raw = if self.mode == DiffMode::Branch {
-                Some(raw.as_str())
-            } else if recompute_branch_hash {
-                // branch_raw was already fetched above for hash computation — re-fetch for per-file
-                // (stored in branch_diff_hash; re-running git diff here is acceptable since
-                // recompute_branch_hash is only true on explicit actions, not watch events)
-                None
-            } else {
-                None
-            };
-            if let Some(branch_diff) = branch_raw {
+            if let Some(ref branch_diff) = branch_raw_owned {
                 self.compute_stale_files(branch_diff);
-            } else if recompute_branch_hash {
-                // Non-branch mode with explicit refresh: fetch branch diff for per-file staleness
-                if let Ok(branch_raw) =
-                    git::git_diff_raw("branch", &self.base_branch, &self.repo_root)
-                {
-                    self.compute_stale_files(&branch_raw);
-                }
             }
         }
 
@@ -376,6 +488,15 @@ impl TabState {
             self.clamp_hunk();
         }
         self.scroll_to_current_hunk();
+
+        // In lazy mode, parse the initially selected file on demand
+        self.ensure_file_parsed();
+
+        // Rebuild hunk offsets for the new selection
+        self.rebuild_hunk_offsets();
+
+        // Invalidate file tree cache
+        self.file_tree_cache = None;
 
         Ok(())
     }
@@ -595,6 +716,8 @@ impl TabState {
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
                 self.ai_panel_scroll = 0;
+                self.ensure_file_parsed();
+                self.rebuild_hunk_offsets();
             }
         }
     }
@@ -644,6 +767,8 @@ impl TabState {
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
                 self.ai_panel_scroll = 0;
+                self.ensure_file_parsed();
+                self.rebuild_hunk_offsets();
             }
         }
     }
@@ -742,14 +867,19 @@ impl TabState {
     }
 
     fn scroll_to_current_hunk(&mut self) {
-        // Note: In Overlay mode, scroll position is approximate — banner lines
-        // (AI findings, comments) inserted by the renderer inflate the actual
-        // offset but aren't counted here. Acceptable for v1.
+        // Use precomputed hunk offsets if available (O(1) lookup)
+        if let Some(ref offsets) = self.hunk_offsets {
+            if let Some(&base) = offsets.offsets.get(self.current_hunk) {
+                let line_offset = base + self.current_line.unwrap_or(0);
+                self.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
+                return;
+            }
+        }
+        // Fallback: compute from hunks (for Overlay mode where offsets are approximate)
         if let Some(file) = self.selected_diff_file() {
             let mut line_offset: usize = 2;
             for (i, hunk) in file.hunks.iter().enumerate() {
                 if i == self.current_hunk {
-                    // Account for current line position within the hunk
                     line_offset += self.current_line.unwrap_or(0);
                     self.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
                     return;
@@ -823,6 +953,118 @@ impl TabState {
 
     pub fn scroll_left(&mut self, amount: u16) {
         self.h_scroll = self.h_scroll.saturating_sub(amount);
+    }
+
+    // ── Performance helpers ──
+
+    /// Rebuild hunk offsets for the currently selected file
+    fn rebuild_hunk_offsets(&mut self) {
+        self.hunk_offsets = self.selected_diff_file().map(|f| HunkOffsets::build(&f.hunks));
+    }
+
+    /// Update memory budget counters
+    fn update_mem_budget(&mut self) {
+        let mut total_lines = 0usize;
+        let mut compacted = 0usize;
+        let mut parsed = 0usize;
+        for file in &self.files {
+            if file.compacted {
+                compacted += 1;
+            } else {
+                parsed += 1;
+                total_lines += file.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
+            }
+        }
+        self.mem_budget = MemoryBudget {
+            parsed_files: parsed,
+            total_lines,
+            compacted_files: compacted,
+        };
+    }
+
+    /// In lazy mode, ensure the currently selected file has its hunks parsed.
+    /// No-op in eager mode or if already parsed.
+    pub fn ensure_file_parsed(&mut self) {
+        if !self.lazy_mode {
+            return;
+        }
+        if let Some(file) = self.files.get(self.selected_file) {
+            // Already parsed (has hunks) or is compacted — skip
+            if !file.hunks.is_empty() || file.compacted {
+                return;
+            }
+        }
+        // Parse on demand from raw diff
+        if let (Some(ref raw), Some(header)) = (&self.raw_diff, self.file_headers.get(self.selected_file)) {
+            let parsed = git::parse_file_at_offset(raw, header);
+            if let Some(file) = self.files.get_mut(self.selected_file) {
+                file.hunks = parsed.hunks;
+                // Update adds/dels from actual parse
+                file.adds = parsed.adds;
+                file.dels = parsed.dels;
+            }
+            self.rebuild_hunk_offsets();
+            self.update_mem_budget();
+        }
+    }
+
+    /// Toggle expand/compact for the currently selected file.
+    /// If compacted, expand by re-fetching from git.
+    /// If expanded (and was compacted), re-compact it.
+    pub fn toggle_compacted(&mut self) -> Result<()> {
+        if let Some(file) = self.files.get_mut(self.selected_file) {
+            if file.compacted {
+                git::expand_compacted_file(
+                    file,
+                    &self.repo_root,
+                    self.mode.git_mode(),
+                    &self.base_branch,
+                )?;
+                self.rebuild_hunk_offsets();
+                self.update_mem_budget();
+            } else {
+                // Re-compact: only if it matched a pattern or was large
+                file.compacted = true;
+                file.raw_hunk_count = file.hunks.len();
+                file.hunks.clear();
+                file.hunks.shrink_to_fit();
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.diff_scroll = 0;
+                self.hunk_offsets = None;
+                self.update_mem_budget();
+            }
+        }
+        Ok(())
+    }
+
+    /// Get cached visible files, rebuilding cache if needed
+    #[allow(dead_code)]
+    pub fn visible_files_cached(&mut self) -> Vec<usize> {
+        let reviewed_count = self.reviewed.len();
+        let needs_rebuild = match &self.file_tree_cache {
+            Some(cache) => {
+                cache.search_query != self.search_query
+                    || cache.show_unreviewed_only != self.show_unreviewed_only
+                    || cache.file_count != self.files.len()
+                    || cache.reviewed_count != reviewed_count
+            }
+            None => true,
+        };
+
+        if needs_rebuild {
+            let visible = self.visible_files().iter().map(|(i, _)| *i).collect::<Vec<_>>();
+            self.file_tree_cache = Some(FileTreeCache {
+                visible: visible.clone(),
+                search_query: self.search_query.clone(),
+                show_unreviewed_only: self.show_unreviewed_only,
+                file_count: self.files.len(),
+                reviewed_count,
+            });
+            visible
+        } else {
+            self.file_tree_cache.as_ref().unwrap().visible.clone()
+        }
     }
 
     // ── Editor ──
@@ -2338,6 +2580,13 @@ mod tests {
             show_watched: false,
             watched_not_ignored: Vec::new(),
             commit_input: String::new(),
+            compaction_config: CompactionConfig::default(),
+            hunk_offsets: None,
+            file_tree_cache: None,
+            mem_budget: MemoryBudget::default(),
+            lazy_mode: false,
+            file_headers: Vec::new(),
+            raw_diff: None,
         }
     }
 
@@ -2348,6 +2597,8 @@ mod tests {
             hunks,
             adds,
             dels,
+            compacted: false,
+            raw_hunk_count: 0,
         }
     }
 

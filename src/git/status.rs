@@ -217,6 +217,32 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
     Ok(stdout)
 }
 
+/// Get the raw diff output for a single file
+pub fn git_diff_raw_file(mode: &str, base: &str, repo_root: &str, path: &str) -> Result<String> {
+    let mut args: Vec<&str> = match mode {
+        "branch" => vec!["diff", base, "--unified=3", "--no-color", "--no-ext-diff", "--"],
+        "unstaged" => vec!["diff", "--unified=3", "--no-color", "--no-ext-diff", "--"],
+        "staged" => vec!["diff", "--staged", "--unified=3", "--no-color", "--no-ext-diff", "--"],
+        _ => anyhow::bail!("Unknown diff mode: {}", mode),
+    };
+    args.push(path);
+
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git diff for single file")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !stderr.is_empty() && !output.status.success() {
+        anyhow::bail!("git diff failed for {}: {}", path, stderr.trim());
+    }
+
+    Ok(stdout)
+}
+
 /// List untracked files (excluding gitignored)
 fn untracked_files(repo_root: &str) -> Result<Vec<String>> {
     let output = Command::new("git")

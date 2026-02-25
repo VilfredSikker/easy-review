@@ -56,7 +56,27 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         format!(" FILES ({}) ", count_label)
     };
 
-    let mut items: Vec<ListItem> = visible
+    // Virtualized rendering: find which position the selected file is in the visible list,
+    // then only render items in the viewport window
+    let viewport_height = area.height.saturating_sub(1) as usize; // -1 for border/title
+    let selected_pos = visible.iter().position(|(i, _)| *i == tab.selected_file).unwrap_or(0);
+
+    // Calculate file_scroll to keep selection visible
+    // We compute the scroll position based on the selected file's position in visible list
+    let file_scroll = if visible.len() <= viewport_height {
+        0 // Everything fits, no scroll needed
+    } else if selected_pos < viewport_height / 2 {
+        0 // Near the top
+    } else if selected_pos > visible.len().saturating_sub(viewport_height / 2) {
+        visible.len().saturating_sub(viewport_height) // Near the bottom
+    } else {
+        selected_pos.saturating_sub(viewport_height / 2) // Center the selection
+    };
+
+    let viewport_end = (file_scroll + viewport_height).min(visible.len());
+    let viewport_slice = &visible[file_scroll..viewport_end];
+
+    let mut items: Vec<ListItem> = viewport_slice
         .iter()
         .map(|(idx, file)| {
             let is_selected = tab.selected_watched.is_none() && *idx == tab.selected_file;
@@ -122,9 +142,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             let stats = format!("+{} -{}", file.adds, file.dels);
 
             let is_reviewed = tab.reviewed.contains(&file.path);
+            let is_compacted = file.compacted;
 
             let line_style = if is_selected {
                 styles::selected_style()
+            } else if is_compacted {
+                ratatui::style::Style::default().fg(styles::DIM).bg(styles::SURFACE)
             } else if is_reviewed {
                 ratatui::style::Style::default().fg(styles::DIM).bg(styles::SURFACE)
             } else {

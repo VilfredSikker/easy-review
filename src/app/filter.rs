@@ -201,6 +201,8 @@ mod tests {
             hunks: Vec::new(),
             adds,
             dels,
+            compacted: false,
+            raw_hunk_count: 0,
         }
     }
 
