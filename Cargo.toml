@@ -37,6 +37,9 @@ sha2 = "0.10"
 toml = "0.8"
 dirs = "5"
 
+# File glob matching (filter system)
+glob = "0.3"
+
 # Error handling
 anyhow = "1"
 

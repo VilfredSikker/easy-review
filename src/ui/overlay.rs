@@ -21,6 +21,9 @@ pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
         OverlayData::Settings { .. } => {
             // Handled in ui/mod.rs draw()
         }
+        OverlayData::FilterHistory { history, selected, preset_count } => {
+            render_filter_history(f, area, history, *selected, *preset_count);
+        }
     }
 }
 
@@ -188,6 +191,108 @@ fn render_directory_browser(
     let block = Block::default()
         .title(Span::styled(
             format!(" {} (Enter=open, Bksp=up, Esc=close) ", title_path),
+            ratatui::style::Style::default().fg(styles::CYAN),
+        ))
+        .borders(Borders::ALL)
+        .border_style(ratatui::style::Style::default().fg(styles::CYAN))
+        .style(ratatui::style::Style::default().bg(styles::PANEL));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, popup);
+}
+
+fn render_filter_history(
+    f: &mut Frame,
+    area: Rect,
+    history: &[String],
+    selected: usize,
+    preset_count: usize,
+) {
+    use crate::app::filter::FILTER_PRESETS;
+
+    let separator_lines = if !history.is_empty() { 1 } else { 0 };
+    let total_rows = preset_count + separator_lines + history.len();
+    let popup_height = (total_rows as u16 + 2).min(area.height.saturating_sub(6)).max(4);
+    let popup_width = 60u16.min(area.width.saturating_sub(6));
+    let popup = centered_rect(popup_width, popup_height, area);
+
+    f.render_widget(Clear, popup);
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // Presets section
+    for (idx, preset) in FILTER_PRESETS.iter().enumerate().take(preset_count) {
+        let is_sel = idx == selected;
+        let marker = if is_sel { "▶ " } else { "  " };
+
+        let line = Line::from(vec![
+            Span::styled(
+                marker,
+                ratatui::style::Style::default().fg(styles::CYAN),
+            ),
+            Span::styled(
+                format!("{:<10}", preset.name),
+                if is_sel {
+                    ratatui::style::Style::default().fg(styles::BRIGHT).add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    ratatui::style::Style::default().fg(styles::BLUE).add_modifier(ratatui::style::Modifier::BOLD)
+                },
+            ),
+            Span::styled(
+                preset.expr,
+                ratatui::style::Style::default().fg(styles::DIM),
+            ),
+        ]);
+
+        let style = if is_sel {
+            styles::selected_style()
+        } else {
+            ratatui::style::Style::default().bg(styles::PANEL)
+        };
+
+        items.push(ListItem::new(line).style(style));
+    }
+
+    // Separator + history section
+    if !history.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "── history ──",
+            ratatui::style::Style::default().fg(styles::MUTED),
+        ))).style(ratatui::style::Style::default().bg(styles::PANEL)));
+
+        for (idx, expr) in history.iter().enumerate() {
+            let abs_idx = preset_count + idx;
+            let is_sel = abs_idx == selected;
+            let marker = if is_sel { "▶ " } else { "  " };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    marker,
+                    ratatui::style::Style::default().fg(styles::YELLOW),
+                ),
+                Span::styled(
+                    expr.as_str(),
+                    if is_sel {
+                        ratatui::style::Style::default().fg(styles::BRIGHT)
+                    } else {
+                        ratatui::style::Style::default().fg(styles::TEXT)
+                    },
+                ),
+            ]);
+
+            let style = if is_sel {
+                styles::selected_style()
+            } else {
+                ratatui::style::Style::default().bg(styles::PANEL)
+            };
+
+            items.push(ListItem::new(line).style(style));
+        }
+    }
+
+    let block = Block::default()
+        .title(Span::styled(
+            " FILTERS (Enter=apply, Esc=close) ",
             ratatui::style::Style::default().fg(styles::CYAN),
         ))
         .borders(Borders::ALL)

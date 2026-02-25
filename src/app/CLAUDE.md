@@ -7,7 +7,8 @@ All state lives here. No rendering, no I/O beyond git commands and file persiste
 | File | Lines | Purpose |
 |------|-------|---------|
 | `mod.rs` | ~4 | Re-exports `App`, `TabState`, enums |
-| `state.rs` | ~1250 | Everything else |
+| `state.rs` | ~1300 | App state, navigation, comments, overlays |
+| `filter.rs` | ~200 | Composable filter system (parse, apply, presets) |
 
 ## Key Types
 
@@ -17,13 +18,16 @@ All state lives here. No rendering, no I/O beyond git commands and file persiste
 - Diff data: `files: Vec<DiffFile>`, `selected_file`, `current_hunk`, `current_line`
 - Mode: `DiffMode` (Branch/Unstaged/Staged), `base_branch`, `current_branch`
 - Scroll: `diff_scroll`, `h_scroll`
-- Review tracking: `reviewed: HashSet<String>`, `show_unreviewed_only`
+- Review tracking: `reviewed: HashSet<String>`, `show_unreviewed_only`, `filtered_reviewed_count()`
+- Filters: `filter_expr`, `filter_rules: Vec<FilterRule>`, `filter_history`, `filter_input`
 - AI: `ai: AiState` (loaded from `.er-*` files)
 - Comments: `comment_input`, `comment_file`, `comment_hunk`, `comment_line_num`
 
 **`DiffMode`** — `Branch | Unstaged | Staged`. Each has a `git_mode()` string for `git_diff_raw`.
 
-**`InputMode`** — `Normal | Search | Comment`. Determines which input handler runs in main.rs.
+**`InputMode`** — `Normal | Search | Comment | Filter`. Determines which input handler runs in main.rs.
+
+**`OverlayData`** — `WorktreePicker | DirectoryBrowser | FilterHistory`. FilterHistory combines built-in presets (`FILTER_PRESETS` in `filter.rs`) with user history. `selected` indexes presets (0..preset_count) then history items; the visual separator in the overlay is render-only.
 
 ## Navigation Model
 
@@ -51,3 +55,6 @@ All state lives here. No rendering, no I/O beyond git commands and file persiste
 - `check_ai_files_changed()` — compares `.er-*` file mtimes against `last_ai_check`; triggers reload if changed
 - `chrono_now()` — hand-rolled ISO 8601 UTC timestamp (avoids chrono crate dependency)
 - `notify(msg)` + `tick()` — notification auto-clears after 20 ticks (~2 seconds at 100ms poll)
+- `apply_filter_expr()` — parses filter expression into rules, updates history (MRU, deduped, max 20)
+- `filtered_reviewed_count()` — single-pass reviewed count among filtered files; returns `None` when no filter active
+- Filter rules: `Glob` (include/exclude by pattern), `Status` (added/modified/deleted/renamed), `Size` (line count threshold)

@@ -313,6 +313,7 @@
                 <span><span class="text-text">j</span><span class="text-text-muted">/</span><span class="text-text">k</span> navigate</span>
                 <span><span class="text-text">n</span><span class="text-text-muted">/</span><span class="text-text">N</span> hunks</span>
                 <span><span class="text-text">s</span> stage</span>
+                <span><span class="text-text">f</span> filter</span>
                 <span><span class="text-text">Space</span> reviewed</span>
                 <span><span class="text-text">w</span> watch</span>
               </div>
@@ -404,6 +405,21 @@
           <div class="w-9 h-9 rounded-md bg-green/10 border border-green/20 flex items-center justify-center mb-4 font-mono text-green text-sm">↕</div>
           <h3 class="font-body font-500 text-base mb-2">Line-level navigation</h3>
           <p class="text-sm text-text-dim leading-relaxed">Arrow keys navigate individual lines within hunks. Comment on exact lines, not just hunks. <span class="keycap">n</span><span class="keycap">N</span> jumps between hunks.</p>
+        </div>
+
+        <!-- Feature 10: Composable filters -->
+        <div class="reveal bg-surface border border-cyan/30 rounded-lg p-6 hover:border-cyan/50 transition group relative overflow-hidden">
+          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.06)_0%,transparent_70%)] pointer-events-none"></div>
+          <div class="w-9 h-9 rounded-md bg-cyan/15 border border-cyan/25 flex items-center justify-center mb-4 font-mono text-cyan text-sm">f</div>
+          <h3 class="font-body font-500 text-base mb-2">Composable filters</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">f</span> to filter by glob, status, or size (<span class="font-mono text-xs text-cyan">+*.rs,-*.lock,>50</span>). Press <span class="keycap">F</span> for built-in presets and filter history. Reviewed counter tracks both filtered and total progress.</p>
+        </div>
+
+        <!-- Feature 11: PR base hint -->
+        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
+          <div class="w-9 h-9 rounded-md bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 font-mono text-accent text-sm">PR</div>
+          <h3 class="font-body font-500 text-base mb-2">Smart PR detection</h3>
+          <p class="text-sm text-text-dim leading-relaxed">On a PR branch targeting a different base? <span class="font-mono text-accent text-xs">er</span> detects it and suggests <span class="font-mono text-xs text-text">er --pr 42</span> so you always see the right diff.</p>
         </div>
       </div>
     </div>
