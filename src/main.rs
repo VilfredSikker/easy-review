@@ -49,6 +49,7 @@ fn main() -> Result<()> {
         github::ensure_gh_installed()?;
         let repo_root = app.tab().repo_root.clone();
         let base = github::gh_pr_base_branch(pr_number, &repo_root)?;
+        let base = github::ensure_base_ref_available(&repo_root, &base)?;
         let tab = app.tab_mut();
         tab.base_branch = base;
         tab.refresh_diff()?;

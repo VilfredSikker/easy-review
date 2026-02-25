@@ -144,6 +144,17 @@ impl TabState {
     pub fn new(repo_root: String) -> Result<Self> {
         let current_branch = git::get_current_branch_in(&repo_root)?;
         let base_branch = git::detect_base_branch_in(&repo_root)?;
+        Self::new_inner(repo_root, current_branch, base_branch)
+    }
+
+    /// Create a TabState with a known base branch (skips auto-detection).
+    /// Used for PR flows where the base is known from the GitHub API.
+    pub fn new_with_base(repo_root: String, base_branch: String) -> Result<Self> {
+        let current_branch = git::get_current_branch_in(&repo_root)?;
+        Self::new_inner(repo_root, current_branch, base_branch)
+    }
+
+    fn new_inner(repo_root: String, current_branch: String, base_branch: String) -> Result<Self> {
         let reviewed = Self::load_reviewed_files(&repo_root);
 
         let mut tab = TabState {
@@ -694,10 +705,9 @@ impl App {
 
                     crate::github::gh_pr_checkout(pr_ref.number, &repo_root)?;
                     let base = crate::github::gh_pr_base_branch(pr_ref.number, &repo_root)?;
+                    let base = crate::github::ensure_base_ref_available(&repo_root, &base)?;
 
-                    let mut tab = TabState::new(repo_root)?;
-                    tab.base_branch = base;
-                    tab.refresh_diff()?;
+                    let tab = TabState::new_with_base(repo_root, base)?;
                     tabs.push(tab);
                 } else {
                     // Local path

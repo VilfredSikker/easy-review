@@ -138,6 +138,62 @@ pub fn verify_remote_matches(repo_root: &str, pr_ref: &PrRef) -> Result<()> {
     Ok(())
 }
 
+/// Ensure a remote ref is available locally by fetching if needed.
+/// Returns the ref name that actually resolves — may be `origin/<base>` if
+/// no local branch exists.
+pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<String> {
+    let rev_parse_ok = |refname: &str| -> Result<bool> {
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", refname])
+            .current_dir(repo_root)
+            .output()
+            .context("Failed to check ref")?;
+        Ok(out.status.success())
+    };
+
+    // Local branch exists — use it directly
+    if rev_parse_ok(base_branch)? {
+        return Ok(base_branch.to_string());
+    }
+
+    // Remote-tracking ref exists — use it (no fetch needed)
+    let remote_ref = format!("origin/{}", base_branch);
+    if rev_parse_ok(&remote_ref)? {
+        return Ok(remote_ref);
+    }
+
+    // Fetch from origin
+    let fetch = Command::new("git")
+        .args(["fetch", "origin", base_branch])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to fetch base branch from origin")?;
+
+    if !fetch.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch.stderr);
+        anyhow::bail!(
+            "Base branch '{}' not found locally or on origin: {}",
+            base_branch,
+            stderr.trim()
+        );
+    }
+
+    // After fetch, origin/<base> should exist
+    if rev_parse_ok(&remote_ref)? {
+        return Ok(remote_ref);
+    }
+
+    // Fallback: the fetch may have created a local ref via FETCH_HEAD
+    if rev_parse_ok(base_branch)? {
+        return Ok(base_branch.to_string());
+    }
+
+    anyhow::bail!(
+        "Base branch '{}' fetched but still not resolvable",
+        base_branch
+    )
+}
+
 /// Check if a string looks like a GitHub PR URL
 pub fn is_github_pr_url(s: &str) -> bool {
     parse_github_pr_url(s).is_some()
