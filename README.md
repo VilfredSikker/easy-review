@@ -49,7 +49,8 @@ er ~/projects/api ~/projects/frontend
 - **Three diff modes** — Branch diff, unstaged changes, staged changes
 - **Line-level navigation** — Arrow keys move through individual diff lines within hunks
 - **Syntax highlighting** — Language-aware coloring via syntect
-- **Live watch mode** — Auto-refreshes when files change on disk; AI data reloads automatically
+- **Large diff performance** — Auto-compacts lock files and generated code; lazy-parses diffs with 500+ files; viewport-based rendering only builds visible lines
+- **Live watch mode** — Auto-refreshes when files change on disk; AI data reloads automatically; debounced to batch rapid changes
 - **Multi-repo tabs** — Open multiple repos or worktrees side-by-side
 - **Hunk staging** — Stage individual files or hunks without leaving the TUI
 - **Review tracking** — Mark files as reviewed, filter to unreviewed only
@@ -93,6 +94,7 @@ e                 Open file in $EDITOR
 r                 Refresh diff
 w                 Toggle live watch mode
 /                 Search / filter files
+Enter             Expand compacted file (lock files, generated code)
 ```
 
 ### AI Views
@@ -128,6 +130,17 @@ Esc               Clear search filter
 q                 Quit
 ```
 
+## Large Diff Performance
+
+`er` is designed to handle PRs touching 500+ files and 10,000+ changed lines without slowing down:
+
+- **Auto-compaction** — Lock files (`*.lock`, `package-lock.json`, etc.), generated code (`*.pb.go`, `*.generated.*`), minified assets (`*.min.js`), and any file with 500+ changed lines are automatically compacted. Compacted files show a summary with add/del counts — press `Enter` to expand on demand.
+- **Lazy parsing** — Diffs above 5,000 lines use a fast header-only scan for the file list, then parse individual files when you navigate to them.
+- **Viewport rendering** — Both the diff view and file tree only allocate objects for visible terminal rows. A 5,000-line file renders ~60 lines per frame instead of 5,000.
+- **Syntax highlight cache** — Highlighted line spans are cached by content hash, avoiding re-computation across frames.
+- **Debounced watch** — Rapid file changes (e.g., during `git checkout`) are batched into a single 200ms refresh.
+- **Debug mode** — Run `ER_DEBUG=1 er` to see memory budget in the status bar (parsed files, total lines, compacted count, lazy mode indicator).
+
 ## Architecture
 
 ```
@@ -138,7 +151,7 @@ src/
 │   └── state.rs      App state, navigation, comments, AI state management
 ├── git/
 │   ├── mod.rs        Module exports
-│   ├── diff.rs       Unified diff parser (raw text → structured data)
+│   ├── diff.rs       Unified diff parser, header-only scanner, compaction engine
 │   └── status.rs     Base branch detection, staging, git commands
 ├── github.rs         GitHub PR integration (gh CLI wrapper)
 ├── ai/
@@ -148,9 +161,9 @@ src/
 ├── ui/
 │   ├── mod.rs        Layout coordinator (ViewMode-based dispatch)
 │   ├── styles.rs     Color scheme (blue-undertone dark theme)
-│   ├── highlight.rs  Syntax highlighting (syntect)
-│   ├── file_tree.rs  Left panel — file list with risk indicators
-│   ├── diff_view.rs  Right panel — diff with AI finding/comment banners
+│   ├── highlight.rs  Syntax highlighting (syntect) with content-hash cache
+│   ├── file_tree.rs  Left panel — virtualized file list with risk indicators
+│   ├── diff_view.rs  Right panel — viewport-based diff with AI banners, compacted view
 │   ├── ai_panel.rs   Side panel — per-file AI findings column
 │   ├── ai_review_view.rs  Full-screen AI review dashboard
 │   ├── overlay.rs    Modal overlays (directory browser, worktree picker)
