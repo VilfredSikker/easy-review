@@ -33,17 +33,24 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let ai_stale = tab.ai.is_stale;
 
     let stale_count = tab.ai.stale_files.len();
+    let visible_count = visible.len();
+    let has_filter = !tab.filter_expr.is_empty() || !tab.search_query.is_empty() || tab.show_unreviewed_only;
+    let count_label = if has_filter {
+        format!("{}/{}", visible_count, total)
+    } else {
+        format!("{}", total)
+    };
     let title = if in_overlay && tab.ai.has_data() {
         let findings = tab.ai.total_findings();
         if ai_stale && stale_count > 0 {
-            format!(" FILES ({}) ⚠ {} findings · {} stale ", total, findings, stale_count)
+            format!(" FILES ({}) ⚠ {} findings · {} stale ", count_label, findings, stale_count)
         } else if ai_stale {
-            format!(" FILES ({}) ⚠ {} findings [stale] ", total, findings)
+            format!(" FILES ({}) ⚠ {} findings [stale] ", count_label, findings)
         } else {
-            format!(" FILES ({}) · {} findings ", total, findings)
+            format!(" FILES ({}) · {} findings ", count_label, findings)
         }
     } else {
-        format!(" FILES ({}) ", total)
+        format!(" FILES ({}) ", count_label)
     };
 
     let items: Vec<ListItem> = visible
