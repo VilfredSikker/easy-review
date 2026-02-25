@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::process::Command;
 
 /// Parsed reference to a GitHub PR
@@ -7,6 +8,34 @@ pub struct PrRef {
     pub owner: String,
     pub repo: String,
     pub number: u64,
+}
+
+/// GitHub review comment from the API
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct GitHubComment {
+    pub id: u64,
+    pub body: String,
+    pub path: Option<String>,
+    pub line: Option<usize>,
+    pub original_line: Option<usize>,
+    pub side: Option<String>,
+    pub in_reply_to_id: Option<u64>,
+    pub user: GitHubUser,
+    pub created_at: String,
+    pub updated_at: String,
+    pub diff_hunk: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitHubUser {
+    pub login: String,
+}
+
+/// Response from creating a comment (we only need the id)
+#[derive(Debug, Deserialize)]
+struct CreateCommentResponse {
+    id: u64,
 }
 
 /// Parse a GitHub PR URL into its components.
@@ -227,6 +256,177 @@ pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
 /// Check if a string looks like a GitHub PR URL
 pub fn is_github_pr_url(s: &str) -> bool {
     parse_github_pr_url(s).is_some()
+}
+
+/// Get PR info (owner, repo, number) for the current branch
+pub fn get_pr_info(repo_root: &str) -> Result<(String, String, u64)> {
+    // Try `gh pr view --json number,headRepository,baseRefName`
+    let output = Command::new("gh")
+        .args(["pr", "view", "--json", "number,headRepository"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to get PR info")?;
+
+    if !output.status.success() {
+        anyhow::bail!("No PR associated with current branch");
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&json_str)
+        .context("Failed to parse PR info JSON")?;
+
+    let number = v["number"].as_u64()
+        .context("Missing PR number")?;
+
+    let owner = v["headRepository"]["owner"]["login"].as_str()
+        .unwrap_or("");
+    let repo_name = v["headRepository"]["name"].as_str()
+        .unwrap_or("");
+
+    // If headRepository is missing, try to get owner/repo from remote
+    if owner.is_empty() || repo_name.is_empty() {
+        let remote_output = Command::new("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(repo_root)
+            .output()?;
+        let remote = String::from_utf8_lossy(&remote_output.stdout).trim().to_string();
+        // Parse owner/repo from remote URL
+        let (o, r) = parse_owner_repo_from_remote(&remote)?;
+        return Ok((o, r, number));
+    }
+
+    Ok((owner.to_string(), repo_name.to_string(), number))
+}
+
+/// Parse owner/repo from a git remote URL
+fn parse_owner_repo_from_remote(remote: &str) -> Result<(String, String)> {
+    // SSH: git@github.com:owner/repo.git
+    // HTTPS: https://github.com/owner/repo.git
+    let stripped = remote
+        .strip_prefix("https://github.com/")
+        .or_else(|| remote.strip_prefix("http://github.com/"))
+        .or_else(|| remote.strip_prefix("git@github.com:"))
+        .unwrap_or(remote);
+
+    let stripped = stripped.strip_suffix(".git").unwrap_or(stripped);
+    let parts: Vec<&str> = stripped.split('/').collect();
+    if parts.len() >= 2 {
+        Ok((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        anyhow::bail!("Cannot parse owner/repo from remote: {}", remote);
+    }
+}
+
+/// Fetch all review comments for a PR
+pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComment>> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
+            "--paginate",
+        ])
+        .output()
+        .context("Failed to fetch PR comments")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to fetch PR comments: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let comments: Vec<GitHubComment> = serde_json::from_str(&stdout)
+        .context("Failed to parse PR comments JSON")?;
+
+    Ok(comments)
+}
+
+/// Push a new review comment to a PR
+pub fn gh_pr_push_comment(
+    owner: &str, repo: &str, pr: u64,
+    path: &str, line: usize, body: &str,
+) -> Result<u64> {
+    // Get the latest commit SHA for the PR (required for review comments)
+    let sha_output = Command::new("gh")
+        .args(["pr", "view", &pr.to_string(), "--json", "headRefOid", "--jq", ".headRefOid"])
+        .output()
+        .context("Failed to get PR head SHA")?;
+
+    let commit_id = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X", "POST",
+            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
+            "-f", &format!("body={}", body),
+            "-f", &format!("path={}", path),
+            "-F", &format!("line={}", line),
+            "-f", "side=RIGHT",
+            "-f", &format!("commit_id={}", commit_id),
+        ])
+        .output()
+        .context("Failed to push comment to GitHub")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to push comment: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resp: CreateCommentResponse = serde_json::from_str(&stdout)
+        .context("Failed to parse create comment response")?;
+
+    Ok(resp.id)
+}
+
+/// Push a reply to an existing review comment
+pub fn gh_pr_reply_comment(
+    owner: &str, repo: &str, pr: u64,
+    in_reply_to: u64, body: &str,
+) -> Result<u64> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X", "POST",
+            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
+            "-f", &format!("body={}", body),
+            "-F", &format!("in_reply_to={}", in_reply_to),
+        ])
+        .output()
+        .context("Failed to push reply to GitHub")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to push reply: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resp: CreateCommentResponse = serde_json::from_str(&stdout)
+        .context("Failed to parse reply response")?;
+
+    Ok(resp.id)
+}
+
+/// Delete a review comment from a PR
+pub fn gh_pr_delete_comment(owner: &str, repo: &str, comment_id: u64) -> Result<()> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X", "DELETE",
+            &format!("repos/{}/{}/pulls/comments/{}", owner, repo, comment_id),
+        ])
+        .output()
+        .context("Failed to delete comment from GitHub")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // 404 is OK — comment may already be deleted
+        if !stderr.contains("404") {
+            anyhow::bail!("Failed to delete comment: {}", stderr.trim());
+        }
+    }
+
+    Ok(())
 }
 
 /// Test whether a remote URL belongs to the given owner/repo.

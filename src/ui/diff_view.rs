@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::ai::{RiskLevel, ViewMode};
+use crate::ai::{CommentRef, CommentType, RiskLevel, ViewMode};
 use crate::app::{App, DiffMode};
 use crate::git::LineType;
 use super::highlight::Highlighter;
@@ -182,6 +182,34 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
             }
 
             lines.push(Line::from(spans).style(base_style));
+
+            // ── Inline line comments (rendered directly after the target line) ──
+            if let Some(new_line_num) = diff_line.new_num {
+                let line_comments = tab.ai.comments_for_line(&file.path, hunk_idx, new_line_num);
+                let is_focused = |c: &CommentRef| {
+                    tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id())
+                };
+                for comment in &line_comments {
+                    render_comment_lines(
+                        &mut lines,
+                        comment,
+                        area.width,
+                        true,
+                        is_focused(comment),
+                    );
+                    // Render replies to this line comment (GitHub comments only)
+                    let replies = tab.ai.replies_to(comment.id());
+                    for reply in &replies {
+                        render_reply_lines(
+                            &mut lines,
+                            &reply,
+                            area.width,
+                            true,
+                            is_focused(&reply),
+                        );
+                    }
+                }
+            }
         }
 
         // ── AI finding banners after each hunk (overlay mode) ──
@@ -263,53 +291,31 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
             }
         }
 
-        // ── Human comments after each hunk ──
+        // ── Hunk-level comments after the hunk ──
         {
-            let comments = tab.ai.comments_for_hunk(&file.path, hunk_idx);
-            for comment in &comments {
-                // Comment header
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "  💬 ",
-                        styles::comment_style(),
-                    ),
-                    Span::styled(
-                        "You",
-                        ratatui::style::Style::default()
-                            .fg(styles::CYAN)
-                            .bg(styles::COMMENT_BG)
-                            .add_modifier(ratatui::style::Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if comment.timestamp.is_empty() {
-                            String::new()
-                        } else {
-                            // Show just the time portion
-                            let time_part = comment.timestamp
-                                .split('T')
-                                .nth(1)
-                                .unwrap_or("")
-                                .trim_end_matches('Z');
-                            format!("  {}", time_part)
-                        },
-                        ratatui::style::Style::default().fg(styles::DIM).bg(styles::COMMENT_BG),
-                    ),
-                ]).style(ratatui::style::Style::default().bg(styles::COMMENT_BG)));
-
-                // Comment text
-                let max_len = area.width.saturating_sub(6) as usize;
-                let text = &comment.comment;
-                let truncated = if text.chars().count() > max_len {
-                    format!("{}…", text.chars().take(max_len.saturating_sub(1)).collect::<String>())
-                } else {
-                    text.to_string()
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("    {}", truncated),
-                        ratatui::style::Style::default().fg(styles::TEXT).bg(styles::COMMENT_BG),
-                    ),
-                ]).style(ratatui::style::Style::default().bg(styles::COMMENT_BG)));
+            let hunk_comments = tab.ai.comments_for_hunk_only(&file.path, hunk_idx);
+            let is_focused = |c: &CommentRef| {
+                tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id())
+            };
+            for comment in &hunk_comments {
+                render_comment_lines(
+                    &mut lines,
+                    comment,
+                    area.width,
+                    false,
+                    is_focused(comment),
+                );
+                // Render replies to this hunk comment (GitHub comments only)
+                let replies = tab.ai.replies_to(comment.id());
+                for reply in &replies {
+                    render_reply_lines(
+                        &mut lines,
+                        &reply,
+                        area.width,
+                        false,
+                        is_focused(&reply),
+                    );
+                }
             }
         }
 
@@ -351,6 +357,190 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
         )));
         f.render_widget(indicator, indicator_area);
     }
+}
+
+/// Render a single comment (line-level or hunk-level) into the lines buffer
+fn render_comment_lines(
+    lines: &mut Vec<Line<'_>>,
+    comment: &CommentRef,
+    width: u16,
+    inline: bool,
+    focused: bool,
+) {
+    let is_question = comment.comment_type() == CommentType::Question;
+    let is_stale = comment.is_stale();
+
+    let bg = if focused {
+        styles::COMMENT_FOCUS_BG
+    } else if inline {
+        styles::INLINE_COMMENT_BG
+    } else {
+        styles::COMMENT_BG
+    };
+
+    // Questions use yellow/orange, GitHub comments use cyan
+    let accent = if is_stale {
+        styles::STALE
+    } else if is_question {
+        styles::YELLOW
+    } else {
+        styles::CYAN
+    };
+
+    let icon = if is_question { "❓" } else { "💬" };
+    let author = comment.author();
+
+    let mut header_spans = vec![
+        Span::styled(
+            if inline { format!("     {} ", icon) } else { format!("  {} ", icon) },
+            ratatui::style::Style::default().fg(accent).bg(bg),
+        ),
+        Span::styled(
+            author.to_string(),
+            ratatui::style::Style::default()
+                .fg(accent)
+                .bg(bg)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+    ];
+
+    // Timestamp
+    let ts = comment.timestamp();
+    if !ts.is_empty() {
+        let time_part = ts
+            .split('T')
+            .nth(1)
+            .unwrap_or("")
+            .trim_end_matches('Z');
+        header_spans.push(Span::styled(
+            format!("  {}", time_part),
+            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+        ));
+    }
+
+    // Stale indicator
+    if is_stale {
+        header_spans.push(Span::styled(
+            "  ⚠ stale",
+            ratatui::style::Style::default().fg(styles::STALE).bg(bg),
+        ));
+    }
+
+    // Synced indicator (GitHub comments only)
+    if comment.is_synced() {
+        header_spans.push(Span::styled(
+            "  ↑ synced",
+            ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
+        ));
+    }
+
+    // Focus indicator
+    if focused {
+        header_spans.push(Span::styled(
+            "  ◆",
+            ratatui::style::Style::default().fg(styles::PURPLE).bg(bg),
+        ));
+    }
+
+    lines.push(Line::from(header_spans).style(ratatui::style::Style::default().bg(bg)));
+
+    // Comment text
+    let indent: usize = if inline { 8 } else { 6 };
+    let max_len = width.saturating_sub(indent as u16) as usize;
+    let text = comment.text();
+    let text_fg = if is_stale { styles::DIM } else { styles::TEXT };
+    let truncated = if text.chars().count() > max_len {
+        format!("{}…", text.chars().take(max_len.saturating_sub(1)).collect::<String>())
+    } else {
+        text.to_string()
+    };
+    let padding = " ".repeat(indent.saturating_sub(2));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {}{}", padding, truncated),
+            ratatui::style::Style::default().fg(text_fg).bg(bg),
+        ),
+    ]).style(ratatui::style::Style::default().bg(bg)));
+}
+
+/// Render a reply comment (indented with ↳ prefix)
+fn render_reply_lines(
+    lines: &mut Vec<Line<'_>>,
+    reply: &CommentRef,
+    width: u16,
+    inline: bool,
+    focused: bool,
+) {
+    let bg = if focused {
+        styles::COMMENT_FOCUS_BG
+    } else if inline {
+        styles::INLINE_COMMENT_BG
+    } else {
+        styles::COMMENT_BG
+    };
+
+    let author = reply.author();
+
+    let prefix = if inline { "       ↳ 💬 " } else { "    ↳ 💬 " };
+    let mut header_spans = vec![
+        Span::styled(
+            prefix,
+            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+        ),
+        Span::styled(
+            author.to_string(),
+            ratatui::style::Style::default()
+                .fg(styles::CYAN)
+                .bg(bg)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+    ];
+
+    let ts = reply.timestamp();
+    if !ts.is_empty() {
+        let time_part = ts
+            .split('T')
+            .nth(1)
+            .unwrap_or("")
+            .trim_end_matches('Z');
+        header_spans.push(Span::styled(
+            format!("  {}", time_part),
+            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+        ));
+    }
+
+    if reply.is_synced() {
+        header_spans.push(Span::styled(
+            "  ↑ synced",
+            ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
+        ));
+    }
+
+    if focused {
+        header_spans.push(Span::styled(
+            "  ◆",
+            ratatui::style::Style::default().fg(styles::PURPLE).bg(bg),
+        ));
+    }
+
+    lines.push(Line::from(header_spans).style(ratatui::style::Style::default().bg(bg)));
+
+    // Reply text
+    let indent: usize = if inline { 12 } else { 10 };
+    let max_len = width.saturating_sub(indent as u16) as usize;
+    let text = reply.text();
+    let truncated = if text.chars().count() > max_len {
+        format!("{}…", text.chars().take(max_len.saturating_sub(1)).collect::<String>())
+    } else {
+        text.to_string()
+    };
+    let padding = " ".repeat(indent.saturating_sub(2));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {}{}", padding, truncated),
+            ratatui::style::Style::default().fg(styles::TEXT).bg(bg),
+        ),
+    ]).style(ratatui::style::Style::default().bg(bg)));
 }
 
 /// Render an empty state when no file is selected

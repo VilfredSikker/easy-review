@@ -108,15 +108,55 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-feedback.json
-    let feedback_path = Path::new(repo_root).join(".er-feedback.json");
-    if let Ok(content) = std::fs::read_to_string(&feedback_path) {
-        match serde_json::from_str::<ErFeedback>(&content) {
-            Ok(feedback) => {
-                state.feedback = Some(feedback);
+    // Load .er-questions.json (personal review questions)
+    let questions_path = Path::new(repo_root).join(".er-questions.json");
+    if let Ok(content) = std::fs::read_to_string(&questions_path) {
+        match serde_json::from_str::<ErQuestions>(&content) {
+            Ok(mut questions) => {
+                // Per-comment staleness: mark all stale if diff changed
+                if questions.diff_hash != current_diff_hash {
+                    for q in &mut questions.questions {
+                        q.stale = true;
+                    }
+                }
+                state.questions = Some(questions);
             }
             Err(e) => {
-                log::warn!("Failed to parse .er-feedback.json: {}", e);
+                log::warn!("Failed to parse .er-questions.json: {}", e);
+            }
+        }
+    }
+
+    // Load .er-github-comments.json (GitHub PR comments)
+    let gh_comments_path = Path::new(repo_root).join(".er-github-comments.json");
+    if let Ok(content) = std::fs::read_to_string(&gh_comments_path) {
+        match serde_json::from_str::<ErGitHubComments>(&content) {
+            Ok(mut gh_comments) => {
+                // Per-comment staleness
+                if gh_comments.diff_hash != current_diff_hash {
+                    for c in &mut gh_comments.comments {
+                        c.stale = true;
+                    }
+                }
+                state.github_comments = Some(gh_comments);
+            }
+            Err(e) => {
+                log::warn!("Failed to parse .er-github-comments.json: {}", e);
+            }
+        }
+    }
+
+    // Load legacy .er-feedback.json (only if new files don't exist — migration support)
+    if state.questions.is_none() && state.github_comments.is_none() {
+        let feedback_path = Path::new(repo_root).join(".er-feedback.json");
+        if let Ok(content) = std::fs::read_to_string(&feedback_path) {
+            match serde_json::from_str::<ErFeedback>(&content) {
+                Ok(feedback) => {
+                    state.feedback = Some(feedback);
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse .er-feedback.json: {}", e);
+                }
             }
         }
     }

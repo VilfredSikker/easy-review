@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DiffMode, InputMode};
+use crate::app::{App, DiffMode, InputMode, ConfirmAction};
 use crate::ai::ViewMode;
 use super::styles;
 
@@ -277,14 +277,27 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("e", " edit "),
         Hint::new("t", " tree "),
         Hint::new("o", " open "),
-        Hint::new("q", " quit "),
+        Hint::new("^q", " quit "),
     ];
+
+    hints.push(Hint::new("q", " question "));
+    hints.push(Hint::new("Q", " hunk Q "));
 
     if tab.mode == DiffMode::Staged {
         hints.push(Hint::new("c", " commit "));
     } else {
         hints.push(Hint::new("c", " comment "));
+        hints.push(Hint::new("C", " hunk C "));
     }
+
+    if tab.comment_focus.is_some() {
+        hints.push(Hint::new("r", " reply "));
+        hints.push(Hint::new("d", " delete "));
+        hints.push(Hint::new("R", " resolve "));
+    }
+
+    hints.push(Hint::new("G", " gh sync "));
+    hints.push(Hint::new("P", " push "));
 
     if !tab.watched_config.paths.is_empty() {
         hints.push(Hint::new("W", " watched "));
@@ -380,8 +393,8 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
 
 /// Calculate how many rows the bottom bar needs
 pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
-    match app.input_mode {
-        InputMode::Search | InputMode::Comment | InputMode::Filter | InputMode::Commit => 1,
+    match &app.input_mode {
+        InputMode::Search | InputMode::Comment | InputMode::Confirm(_) | InputMode::Filter | InputMode::Commit => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -395,19 +408,42 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.tab();
     let panel_bg = ratatui::style::Style::default().bg(styles::PANEL);
 
-    match app.input_mode {
+    match &app.input_mode {
+        InputMode::Confirm(action) => {
+            let prompt = match action {
+                ConfirmAction::DeleteComment { .. } => "Delete comment? (y/n)",
+            };
+            let spans = vec![
+                Span::styled(" ⚠ ", ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::YELLOW)
+                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    format!(" {} ", prompt),
+                    ratatui::style::Style::default().fg(styles::YELLOW),
+                ),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
         InputMode::Comment => {
-            // Show: 💬 file:hunk > comment_input█  Enter send  Esc cancel
+            let is_question = tab.comment_type == crate::ai::CommentType::Question;
+            let (label, icon, accent) = if is_question {
+                ("question", "❓", styles::YELLOW)
+            } else {
+                ("comment", "💬", styles::CYAN)
+            };
             let file_short = tab.comment_file.rsplit('/').next().unwrap_or(&tab.comment_file);
             let target_label = if let Some(ln) = tab.comment_line_num {
                 format!("{}:L{}", file_short, ln)
             } else {
                 format!("{}:h{}", file_short, tab.comment_hunk + 1)
             };
+            let _icon = icon; // icon shown via label badge
             let spans = vec![
-                Span::styled(" comment ", ratatui::style::Style::default()
+                Span::styled(format!(" {} ", label), ratatui::style::Style::default()
                     .fg(styles::BG)
-                    .bg(styles::CYAN)
+                    .bg(accent)
                     .add_modifier(ratatui::style::Modifier::BOLD)),
                 Span::styled(
                     format!(" {} ", target_label),
@@ -419,7 +455,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 ),
                 Span::styled(
                     "█",
-                    ratatui::style::Style::default().fg(styles::CYAN),
+                    ratatui::style::Style::default().fg(accent),
                 ),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
