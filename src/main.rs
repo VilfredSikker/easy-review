@@ -628,6 +628,15 @@ fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Esc => {
             app.cancel_comment();
         }
+        // Scroll the diff view while composing a comment
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().scroll_down(10);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().scroll_up(10);
+        }
+        KeyCode::PageDown => app.tab_mut().scroll_down(20),
+        KeyCode::PageUp => app.tab_mut().scroll_up(20),
         KeyCode::Char(c) => {
             app.tab_mut().comment_input.push(c);
         }
