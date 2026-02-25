@@ -1,10 +1,14 @@
 mod file_tree;
 mod diff_view;
+mod ai_panel;
+mod ai_review_view;
 pub mod highlight;
 mod overlay;
 mod status_bar;
 mod styles;
+mod utils;
 
+use crate::ai::ViewMode;
 use crate::app::App;
 use highlight::Highlighter;
 use ratatui::Frame;
@@ -28,17 +32,55 @@ pub fn draw(f: &mut Frame, app: &App, hl: &Highlighter) {
     // Top bar
     status_bar::render_top_bar(f, outer[0], app);
 
-    // Main area: file tree (left) + diff view (right)
-    let main_area = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(32), // file tree width
-            Constraint::Min(1),    // diff view
-        ])
-        .split(outer[1]);
+    // Main content — layout depends on view mode
+    match app.tab().ai.view_mode {
+        ViewMode::AiReview => {
+            // Full-screen AI review replaces file tree + diff
+            ai_review_view::render(f, outer[1], app);
+        }
+        ViewMode::SidePanel => {
+            if outer[1].width < 80 {
+                // Narrow terminal: fall back to 2-column layout (file tree + diff)
+                let main_area = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Length(32),
+                        Constraint::Min(1),
+                    ])
+                    .split(outer[1]);
 
-    file_tree::render(f, main_area[0], app);
-    diff_view::render(f, main_area[1], app, hl);
+                file_tree::render(f, main_area[0], app);
+                diff_view::render(f, main_area[1], app, hl);
+            } else {
+                // Three columns: file tree + diff (2/3) + AI panel (1/3)
+                let main_area = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Length(32),  // file tree
+                        Constraint::Fill(2),     // diff view (2/3 of remaining)
+                        Constraint::Fill(1),     // AI panel (1/3 of remaining)
+                    ])
+                    .split(outer[1]);
+
+                file_tree::render(f, main_area[0], app);
+                diff_view::render(f, main_area[1], app, hl);
+                ai_panel::render(f, main_area[2], app);
+            }
+        }
+        _ => {
+            // Default & Overlay: file tree + diff view
+            let main_area = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(32), // file tree width
+                    Constraint::Min(1),    // diff view
+                ])
+                .split(outer[1]);
+
+            file_tree::render(f, main_area[0], app);
+            diff_view::render(f, main_area[1], app, hl);
+        }
+    }
 
     // Bottom status bar
     status_bar::render_bottom_bar(f, outer[2], app);

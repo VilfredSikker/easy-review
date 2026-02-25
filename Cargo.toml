@@ -26,6 +26,13 @@ clap = { version = "4", features = ["derive"] }
 # Syntax highlighting
 syntect = "5"
 
+# JSON (AI review files)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Hashing (diff staleness detection)
+sha2 = "0.10"
+
 # Error handling
 anyhow = "1"
 

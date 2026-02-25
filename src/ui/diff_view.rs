@@ -5,7 +5,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::App;
+use crate::ai::{RiskLevel, ViewMode};
+use crate::app::{App, DiffMode};
 use crate::git::LineType;
 use super::highlight::Highlighter;
 use super::styles;
@@ -21,6 +22,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
         }
     };
 
+    let in_overlay = tab.ai.view_mode == ViewMode::Overlay;
+    let file_stale = tab.ai.is_file_stale(&file.path);
+
     let title = format!(" {} ", file.path);
     let total_hunks = file.hunks.len();
 
@@ -28,7 +32,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
     let mut lines: Vec<Line> = Vec::new();
 
     // Add file header
-    lines.push(Line::from(vec![
+    let mut header_spans = vec![
         Span::styled(
             format!("  {} ", file.status.symbol()),
             match &file.status {
@@ -45,7 +49,58 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
             format!("  +{} -{}", file.adds, file.dels),
             ratatui::style::Style::default().fg(styles::DIM),
         ),
-    ]));
+    ];
+
+    // Add AI risk + summary to file header in AI modes
+    let show_ai_header = matches!(tab.ai.view_mode, ViewMode::Overlay | ViewMode::SidePanel);
+    if show_ai_header {
+        if let Some(fr) = tab.ai.file_review(&file.path) {
+            let risk_style = if file_stale {
+                styles::stale_style()
+            } else {
+                match fr.risk {
+                    RiskLevel::High => styles::risk_high(),
+                    RiskLevel::Medium => styles::risk_medium(),
+                    RiskLevel::Low => styles::risk_low(),
+                    RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
+                }
+            };
+            let risk_label = match fr.risk {
+                RiskLevel::High => "HIGH",
+                RiskLevel::Medium => "MED",
+                RiskLevel::Low => "LOW",
+                RiskLevel::Info => "INFO",
+            };
+            header_spans.push(Span::styled("  ", ratatui::style::Style::default()));
+            header_spans.push(Span::styled(
+                format!("{} {}", fr.risk.symbol(), risk_label),
+                risk_style,
+            ));
+            if !fr.risk_reason.is_empty() {
+                header_spans.push(Span::styled(
+                    format!(" — {}", fr.risk_reason),
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ));
+            }
+        }
+    }
+
+    lines.push(Line::from(header_spans));
+
+    // Add file summary line in overlay mode
+    if in_overlay {
+        if let Some(fr) = tab.ai.file_review(&file.path) {
+            if !fr.summary.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  ℹ {}", fr.summary),
+                        ratatui::style::Style::default().fg(styles::MUTED),
+                    ),
+                ]));
+            }
+        }
+    }
+
     lines.push(Line::from(""));
 
     // Render hunks
@@ -58,16 +113,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
             Span::styled(
                 format!(" {} ", marker),
                 if is_current {
-                    ratatui::style::Style::default().fg(styles::CYAN)
+                    ratatui::style::Style::default().fg(styles::CYAN).bg(styles::HUNK_BG)
                 } else {
-                    ratatui::style::Style::default().fg(styles::DIM)
+                    ratatui::style::Style::default().fg(styles::DIM).bg(styles::HUNK_BG)
                 },
             ),
             Span::styled(&hunk.header, styles::hunk_header_style()),
-        ]));
+        ]).style(styles::hunk_header_style()));
 
         // Hunk lines
-        for diff_line in &hunk.lines {
+        for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+            let is_selected_line = is_current
+                && tab.current_line == Some(line_idx);
+
             let old_num = diff_line
                 .old_num
                 .map(|n| format!("{:>4}", n))
@@ -77,13 +135,30 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                 .map(|n| format!("{:>4}", n))
                 .unwrap_or_else(|| "    ".to_string());
 
-            let (prefix, base_style) = match diff_line.line_type {
-                LineType::Add => ("+", styles::add_style()),
-                LineType::Delete => ("-", styles::del_style()),
-                LineType::Context => (" ", styles::default_style()),
+            let (prefix, base_style) = if is_selected_line {
+                // Selected line gets a distinct cursor style
+                match diff_line.line_type {
+                    LineType::Add => ("+", styles::line_cursor_add()),
+                    LineType::Delete => ("-", styles::line_cursor_del()),
+                    LineType::Context => (" ", styles::line_cursor()),
+                }
+            } else {
+                match diff_line.line_type {
+                    LineType::Add => ("+", styles::add_style()),
+                    LineType::Delete => ("-", styles::del_style()),
+                    LineType::Context => (" ", styles::default_style()),
+                }
             };
 
-            let gutter_style = ratatui::style::Style::default().fg(styles::DIM);
+            let gutter_style = if is_selected_line {
+                ratatui::style::Style::default().fg(styles::BRIGHT).bg(styles::LINE_CURSOR_BG)
+            } else {
+                match diff_line.line_type {
+                    LineType::Add => ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG),
+                    LineType::Delete => ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG),
+                    LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                }
+            };
 
             // Build the line: gutter + prefix + syntax-highlighted content
             let mut spans = vec![
@@ -99,7 +174,136 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                 spans.extend(highlighted);
             }
 
-            lines.push(Line::from(spans));
+            lines.push(Line::from(spans).style(base_style));
+        }
+
+        // ── AI finding banners after each hunk (overlay mode) ──
+        // These banners are not counted by scroll_to_current_hunk — scroll is approximate in Overlay mode
+        if in_overlay {
+            let findings = match tab.mode {
+                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx),
+                DiffMode::Unstaged | DiffMode::Staged => {
+                    tab.ai.findings_for_hunk_by_line_range(
+                        &file.path,
+                        hunk.new_start,
+                        hunk.new_count,
+                    )
+                }
+            };
+            for finding in &findings {
+                let severity_style = if file_stale {
+                    styles::stale_style()
+                } else {
+                    match finding.severity {
+                        RiskLevel::High => styles::risk_high(),
+                        RiskLevel::Medium => styles::risk_medium(),
+                        RiskLevel::Low => styles::risk_low(),
+                        RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
+                    }
+                };
+
+                let stale_tag = if file_stale { " [stale]" } else { "" };
+
+                // Finding header line
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {} ", finding.severity.symbol()),
+                        severity_style,
+                    ),
+                    Span::styled(
+                        format!("[{}]", finding.category),
+                        ratatui::style::Style::default().fg(styles::DIM).bg(styles::FINDING_BG),
+                    ),
+                    Span::styled(
+                        format!(" {}{}", finding.title, stale_tag),
+                        ratatui::style::Style::default().fg(styles::ORANGE).bg(styles::FINDING_BG),
+                    ),
+                ]).style(styles::finding_style()));
+
+                // Finding description (truncated to one line)
+                if !finding.description.is_empty() {
+                    let desc = finding.description.lines().next().unwrap_or("");
+                    let max_len = area.width.saturating_sub(6) as usize;
+                    let truncated = if desc.chars().count() > max_len {
+                        format!("{}…", desc.chars().take(max_len.saturating_sub(1)).collect::<String>())
+                    } else {
+                        desc.to_string()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("    {}", truncated),
+                            ratatui::style::Style::default().fg(styles::MUTED).bg(styles::FINDING_BG),
+                        ),
+                    ]).style(ratatui::style::Style::default().bg(styles::FINDING_BG)));
+                }
+
+                // Suggestion (if present)
+                if !finding.suggestion.is_empty() {
+                    let sug = finding.suggestion.lines().next().unwrap_or("");
+                    let max_len = area.width.saturating_sub(8) as usize;
+                    let truncated = if sug.chars().count() > max_len {
+                        format!("{}…", sug.chars().take(max_len.saturating_sub(1)).collect::<String>())
+                    } else {
+                        sug.to_string()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("    → {}", truncated),
+                            ratatui::style::Style::default().fg(styles::GREEN).bg(styles::FINDING_BG),
+                        ),
+                    ]).style(ratatui::style::Style::default().bg(styles::FINDING_BG)));
+                }
+            }
+        }
+
+        // ── Human comments after each hunk ──
+        {
+            let comments = tab.ai.comments_for_hunk(&file.path, hunk_idx);
+            for comment in &comments {
+                // Comment header
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "  💬 ",
+                        styles::comment_style(),
+                    ),
+                    Span::styled(
+                        "You",
+                        ratatui::style::Style::default()
+                            .fg(styles::CYAN)
+                            .bg(styles::COMMENT_BG)
+                            .add_modifier(ratatui::style::Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        if comment.timestamp.is_empty() {
+                            String::new()
+                        } else {
+                            // Show just the time portion
+                            let time_part = comment.timestamp
+                                .split('T')
+                                .nth(1)
+                                .unwrap_or("")
+                                .trim_end_matches('Z');
+                            format!("  {}", time_part)
+                        },
+                        ratatui::style::Style::default().fg(styles::DIM).bg(styles::COMMENT_BG),
+                    ),
+                ]).style(ratatui::style::Style::default().bg(styles::COMMENT_BG)));
+
+                // Comment text
+                let max_len = area.width.saturating_sub(6) as usize;
+                let text = &comment.comment;
+                let truncated = if text.chars().count() > max_len {
+                    format!("{}…", text.chars().take(max_len.saturating_sub(1)).collect::<String>())
+                } else {
+                    text.to_string()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("    {}", truncated),
+                        ratatui::style::Style::default().fg(styles::TEXT).bg(styles::COMMENT_BG),
+                    ),
+                ]).style(ratatui::style::Style::default().bg(styles::COMMENT_BG)));
+            }
         }
 
         // Blank line between hunks
@@ -126,9 +330,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
 
     // Render hunk indicator overlay in top-right corner
     if total_hunks > 0 {
-        let indicator_width = (tab.current_hunk + 1).to_string().len()
-            + total_hunks.to_string().len()
-            + 9;
+        let indicator_text = format!("Hunk {}/{}", tab.current_hunk + 1, total_hunks);
+        let indicator_width = indicator_text.len() + 3; // +3 for padding
         let indicator_area = Rect {
             x: area.x + area.width.saturating_sub(indicator_width as u16 + 1),
             y: area.y,
@@ -136,7 +339,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
             height: 1,
         };
         let indicator = Paragraph::new(Line::from(Span::styled(
-            format!("Hunk {}/{}", tab.current_hunk + 1, total_hunks),
+            indicator_text,
             ratatui::style::Style::default().fg(styles::MUTED),
         )));
         f.render_widget(indicator, indicator_area);
