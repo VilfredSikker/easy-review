@@ -46,7 +46,8 @@ er ~/projects/api ~/projects/frontend
 - **Four view modes** — Default (clean diff), Overlay (inline AI banners), Side Panel (3-column with AI panel), AI Review (full-screen dashboard)
 - **Comment & feedback loop** — Press `c` to comment on findings, re-run `/er-review` for AI responses
 - **GitHub PR integration** — Open PRs directly: `er --pr 42` or `er <github-url>`
-- **Three diff modes** — Branch diff, unstaged changes, staged changes
+- **Four diff modes** — Branch diff, unstaged changes, staged changes, commit history
+- **Commit history** — Browse individual commits on the branch; left panel shows commit list, right panel shows the full diff with file-sectioned navigation
 - **Line-level navigation** — Arrow keys move through individual diff lines within hunks
 - **Syntax highlighting** — Language-aware coloring via syntect
 - **Live watch mode** — Auto-refreshes when files change on disk; AI data reloads automatically
@@ -78,6 +79,7 @@ Ctrl-d / Ctrl-u   Scroll half page down / up
 1                 Branch diff (vs base branch)
 2                 Unstaged changes
 3                 Staged changes
+4                 Commit history
 ```
 
 ### Actions
@@ -112,6 +114,18 @@ Enter             Jump to file in diff view
 Esc               Return to default view
 ```
 
+### Commit History (mode 4)
+
+```
+j / k             Next / prev commit
+n / N             Next / prev file within commit
+↓ / ↑             Next / prev line (crosses hunk and file boundaries)
+h / l             Scroll left / right
+/                 Search commits by subject, hash, or author
+```
+
+Commits load lazily (50 at a time) and diffs are cached. AI review, staging, and commenting are disabled in History mode — switch to Branch mode for those features.
+
 ### Tabs & Repos
 
 ```
@@ -139,7 +153,7 @@ src/
 ├── git/
 │   ├── mod.rs        Module exports
 │   ├── diff.rs       Unified diff parser (raw text → structured data)
-│   └── status.rs     Base branch detection, staging, git commands
+│   └── status.rs     Base branch detection, staging, commit log, git commands
 ├── github.rs         GitHub PR integration (gh CLI wrapper)
 ├── ai/
 │   ├── mod.rs        Module exports
