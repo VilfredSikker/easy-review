@@ -544,10 +544,60 @@ impl TabState {
 
     pub fn scroll_down(&mut self, amount: u16) {
         self.diff_scroll = self.diff_scroll.saturating_add(amount);
+        self.sync_cursor_to_scroll();
     }
 
     pub fn scroll_up(&mut self, amount: u16) {
         self.diff_scroll = self.diff_scroll.saturating_sub(amount);
+        self.sync_cursor_to_scroll();
+    }
+
+    /// Move the cursor (current_hunk + current_line) to match the current
+    /// diff_scroll position.  Uses the same layout model as the renderer:
+    /// 2 header lines, then per hunk: 1 header + N content lines + 1 blank.
+    fn sync_cursor_to_scroll(&mut self) {
+        // Compute target (hunk, line) from the scroll offset without
+        // holding a borrow across the mutation.
+        let result = {
+            let file = match self.selected_diff_file() {
+                Some(f) => f,
+                None => return,
+            };
+            if file.hunks.is_empty() {
+                return;
+            }
+
+            let target = self.diff_scroll as usize;
+            let mut offset: usize = 2; // file header + blank
+
+            let mut found: Option<(usize, usize)> = None;
+            for (i, hunk) in file.hunks.iter().enumerate() {
+                offset += 1; // hunk header line
+                let content_start = offset;
+                let content_end = offset + hunk.lines.len();
+
+                if target < content_end {
+                    let line_idx = if target >= content_start {
+                        target - content_start
+                    } else {
+                        0 // target is on/before hunk header — snap to first line
+                    };
+                    found = Some((i, line_idx));
+                    break;
+                }
+
+                offset = content_end + 1; // blank line after hunk
+            }
+
+            found.unwrap_or_else(|| {
+                // Past the end — clamp to last line of last hunk
+                let last = file.hunks.len() - 1;
+                (last, file.hunks[last].lines.len().saturating_sub(1))
+            })
+        };
+
+        self.current_hunk = result.0;
+        self.current_line = Some(result.1);
     }
 
     pub fn scroll_right(&mut self, amount: u16) {
@@ -1978,5 +2028,117 @@ mod tests {
         tab.h_scroll = 2;
         tab.scroll_left(10);
         assert_eq!(tab.h_scroll, 0); // saturating — no underflow
+    }
+
+    // ── sync_cursor_to_scroll ──
+
+    /// Layout for a file with 2 hunks (3 lines, 2 lines):
+    /// offset 0: file header
+    /// offset 1: blank
+    /// offset 2: hunk 0 header
+    /// offset 3: hunk 0 line 0
+    /// offset 4: hunk 0 line 1
+    /// offset 5: hunk 0 line 2
+    /// offset 6: blank
+    /// offset 7: hunk 1 header
+    /// offset 8: hunk 1 line 0
+    /// offset 9: hunk 1 line 1
+    /// offset 10: blank
+    fn make_two_hunk_tab() -> TabState {
+        let files = vec![make_file(
+            "a.rs",
+            vec![
+                make_hunk(vec![
+                    make_line(LineType::Context, "a", Some(1)),
+                    make_line(LineType::Add, "b", Some(2)),
+                    make_line(LineType::Context, "c", Some(3)),
+                ]),
+                make_hunk(vec![
+                    make_line(LineType::Delete, "d", None),
+                    make_line(LineType::Add, "e", Some(10)),
+                ]),
+            ],
+            2,
+            1,
+        )];
+        make_test_tab(files)
+    }
+
+    #[test]
+    fn scroll_down_syncs_cursor_to_first_hunk_first_line() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 3 → hunk 0, line 0
+        tab.scroll_down(3);
+        assert_eq!(tab.diff_scroll, 3);
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_down_syncs_cursor_mid_hunk() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 5 → hunk 0, line 2
+        tab.scroll_down(5);
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(2));
+    }
+
+    #[test]
+    fn scroll_down_syncs_cursor_to_second_hunk() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 8 → hunk 1, line 0
+        tab.scroll_down(8);
+        assert_eq!(tab.current_hunk, 1);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_down_on_hunk_header_snaps_to_first_content_line() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 7 → hunk 1 header → snaps to hunk 1 line 0
+        tab.scroll_down(7);
+        assert_eq!(tab.current_hunk, 1);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_down_past_end_clamps_to_last_line() {
+        let mut tab = make_two_hunk_tab();
+        tab.scroll_down(100);
+        assert_eq!(tab.current_hunk, 1);
+        assert_eq!(tab.current_line, Some(1)); // last line of last hunk
+    }
+
+    #[test]
+    fn scroll_up_syncs_cursor_back() {
+        let mut tab = make_two_hunk_tab();
+        tab.diff_scroll = 8;
+        tab.current_hunk = 1;
+        tab.current_line = Some(0);
+        // Scroll up to offset 3 → hunk 0, line 0
+        tab.scroll_up(5);
+        assert_eq!(tab.diff_scroll, 3);
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_up_to_file_header_snaps_to_first_content_line() {
+        let mut tab = make_two_hunk_tab();
+        tab.diff_scroll = 5;
+        // Scroll up to offset 0 → file header area → snaps to hunk 0 line 0
+        tab.scroll_up(5);
+        assert_eq!(tab.diff_scroll, 0);
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, Some(0));
+    }
+
+    #[test]
+    fn scroll_on_blank_between_hunks_snaps_to_next_hunk() {
+        let mut tab = make_two_hunk_tab();
+        // Scroll to offset 6 → blank after hunk 0 → snaps to hunk 1 line 0
+        tab.scroll_down(6);
+        assert_eq!(tab.current_hunk, 1);
+        assert_eq!(tab.current_line, Some(0));
     }
 }
