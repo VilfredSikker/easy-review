@@ -266,11 +266,13 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("e", " edit "),
         Hint::new("t", " tree "),
         Hint::new("o", " open "),
-        Hint::new("q", " quit "),
+        Hint::new("^q", " quit "),
     ];
 
+    hints.push(Hint::new("q", " question "));
+    hints.push(Hint::new("Q", " hunk Q "));
     hints.push(Hint::new("c", " comment "));
-    hints.push(Hint::new("C", " hunk comment "));
+    hints.push(Hint::new("C", " hunk C "));
 
     if tab.comment_focus.is_some() {
         hints.push(Hint::new("r", " reply "));
@@ -399,17 +401,23 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(bar, area);
         }
         InputMode::Comment => {
-            // Show: 💬 file:hunk > comment_input█  Enter send  Esc cancel
+            let is_question = tab.comment_type == crate::ai::CommentType::Question;
+            let (label, icon, accent) = if is_question {
+                ("question", "❓", styles::YELLOW)
+            } else {
+                ("comment", "💬", styles::CYAN)
+            };
             let file_short = tab.comment_file.rsplit('/').next().unwrap_or(&tab.comment_file);
             let target_label = if let Some(ln) = tab.comment_line_num {
                 format!("{}:L{}", file_short, ln)
             } else {
                 format!("{}:h{}", file_short, tab.comment_hunk + 1)
             };
+            let _icon = icon; // icon shown via label badge
             let spans = vec![
-                Span::styled(" comment ", ratatui::style::Style::default()
+                Span::styled(format!(" {} ", label), ratatui::style::Style::default()
                     .fg(styles::BG)
-                    .bg(styles::CYAN)
+                    .bg(accent)
                     .add_modifier(ratatui::style::Modifier::BOLD)),
                 Span::styled(
                     format!(" {} ", target_label),
@@ -421,7 +429,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 ),
                 Span::styled(
                     "█",
-                    ratatui::style::Style::default().fg(styles::CYAN),
+                    ratatui::style::Style::default().fg(accent),
                 ),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),

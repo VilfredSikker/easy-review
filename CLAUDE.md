@@ -39,8 +39,10 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 - **Staleness via diff hashing.** Each `.er-*` file stores the SHA-256 hash of the diff it was generated against. When the diff changes, the UI warns that AI data may be out of date.
 - **`gh` CLI for GitHub, not HTTP API.** No API token management. Users already have `gh auth login` configured.
 - **One `er` instance per worktree.** Multi-worktree tabs work via `t` key (worktree picker).
-- **Flat single-level comment threads.** A comment can have replies, but replies cannot have replies. Keeps the model simple — parent + N children, no recursive nesting. Matches GitHub's review comment model.
-- **Comments track source and sync state.** Each `FeedbackComment` has `source` (local/github), `github_id`, `author`, and `synced` fields. Deduplication on pull uses `github_id`. Push marks comments as synced.
+- **Split comment system.** Two separate files: `.er-questions.json` for personal review questions (read by `/er-questions` skill), `.er-github-comments.json` for GitHub PR comments (two-way sync). Questions use `q`/`Q` keys (yellow), comments use `c`/`C` keys (cyan). Questions are private; GitHub comments get pushed via `/er-publish`.
+- **Flat single-level comment threads.** GitHub comments can have replies, but replies cannot have replies. Keeps the model simple — parent + N children, no recursive nesting. Questions don't support replies (use `/er-questions` for AI responses).
+- **GitHub comments track source and sync state.** Each `GitHubReviewComment` has `source` (local/github), `github_id`, `author`, and `synced` fields. Deduplication on pull uses `github_id`. Push marks comments as synced.
+- **Per-comment staleness.** Comments store `line_content` of their target line. When the diff changes, individual comments are marked stale and rendered dimmed with a warning indicator.
 
 ## Code Conventions
 
@@ -50,8 +52,10 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 - GitHub commands: all in `github.rs`. Shell out to `gh` CLI, never use HTTP API directly.
 - UI styles: all colors and composed styles in `ui/styles.rs`. Don't use raw colors elsewhere.
 - Syntax highlighting: `syntect` crate via `ui/highlight.rs`. Highlighter is created once in main and passed through to diff_view. Uses `base16-ocean.dark` theme. Language detection is automatic from filename.
-- AI sidecar files: `.er-*` in repo root, gitignored. `er` reads all, writes only `.er-feedback.json`. Atomic writes via tmp+rename.
-- Comment fields: `FeedbackComment` has `source` ("local"/"github"), `github_id` (Option<u64>), `author` (String), `synced` (bool), `in_reply_to` (Option<String>), `line_start` (Option<usize>). Line comments have `line_start`; hunk comments do not.
+- AI sidecar files: `.er-*` in repo root, gitignored. `er` reads all, writes `.er-questions.json` and `.er-github-comments.json`. Atomic writes via tmp+rename.
+- Question fields: `ReviewQuestion` has `id`, `file`, `hunk_index`, `line_start`, `line_content`, `text`, `resolved`, `stale` (runtime-only).
+- GitHub comment fields: `GitHubReviewComment` has `source` ("local"/"github"), `github_id` (Option<u64>), `author` (String), `synced` (bool), `in_reply_to` (Option<String>), `line_start` (Option<usize>), `stale` (runtime-only). Line comments have `line_start`; hunk comments do not.
+- Unified query via `CommentRef` enum: query methods on `AiState` return `Vec<CommentRef>` which wraps either a `ReviewQuestion`, `GitHubReviewComment`, or legacy `FeedbackComment`.
 - Diff parsing: the parser in `git/diff.rs` has unit tests. Run them with `cargo test`.
 
 ## File Map
@@ -63,7 +67,7 @@ src/app/filter.rs        Composable filter system (glob, status, size rules, pre
 src/git/diff.rs          parse_diff() — unified diff text → Vec<DiffFile>
 src/git/status.rs        detect_base_branch(), git_diff_raw(), staging, worktrees
 src/github.rs            GitHub PR URL parsing, gh CLI wrapper, comment sync (pull/push/reply/delete), PR base hint
-src/ai/review.rs         AI data model (AiState, ErReview, Finding, ViewMode, FeedbackComment with threading)
+src/ai/review.rs         AI data model (AiState, ErReview, Finding, ViewMode, CommentRef, ReviewQuestion, GitHubReviewComment)
 src/ai/loader.rs         .er-* file loading, SHA-256 diff hashing, mtime polling
 src/watch/mod.rs         FileWatcher — debounced notify watcher
 src/ui/mod.rs            draw() — ViewMode-based layout dispatch
@@ -80,7 +84,7 @@ src/ui/utils.rs          Shared utilities (word_wrap)
 
 ## Current State
 
-v1.2 with enhanced comment system. Building locally with `cargo install --path .`. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log`. Test fixtures via `scripts/generate-test-fixtures.sh`.
+v1.3 with split comment system (questions + GitHub comments). Building locally with `cargo install --path .`. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log`. Test fixtures via `scripts/generate-test-fixtures.sh`.
 
 ## Roadmap
 
@@ -88,6 +92,8 @@ v1.2 with enhanced comment system. Building locally with `cargo install --path .
 
 **v1.1 (done):** AI review integration (4 view modes, inline findings, comments), GitHub PR support (`--pr` flag, URL arguments), line-level navigation (arrow keys), basic comment system (`c` key → `.er-feedback.json`), composable filter system (`f` key, `--filter` flag, built-in presets via `F`), PR base hint when detected base differs from PR target, filtered reviewed count in status bar.
 
-**v1.2 (current):** Enhanced comment system — GitHub PR comment sync (pull with `G`, push with `P`), single-level reply threads (`r` key), comment deletion with cascade (`d` key), inline line-comment rendering (comments appear after their target line, not just at hunk end), comment focus navigation (`Tab` to enter, arrows to move between comments).
+**v1.2 (done):** Enhanced comment system — GitHub PR comment sync (pull with `G`, push with `P`), single-level reply threads (`r` key), comment deletion with cascade (`d` key), inline line-comment rendering (comments appear after their target line, not just at hunk end), comment focus navigation (`Tab` to enter, arrows to move between comments).
+
+**v1.3 (current):** Split comment system — personal questions (`q`/`Q` → `.er-questions.json`, yellow) vs GitHub comments (`c`/`C` → `.er-github-comments.json`, cyan). Per-comment staleness detection (dimmed when diff changes). Quit moved to `Ctrl+q`. `/er-publish` includes GitHub comments in PR review. `/er-questions` reads from `.er-questions.json`.
 
 **v2:** Multi-worktree tabs (Tab/Shift+Tab to cycle), per-worktree state, cross-worktree watch notifications.

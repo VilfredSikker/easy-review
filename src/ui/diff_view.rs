@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::ai::{FeedbackComment, RiskLevel, ViewMode};
+use crate::ai::{CommentRef, CommentType, RiskLevel, ViewMode};
 use crate::app::{App, DiffMode};
 use crate::git::LineType;
 use super::highlight::Highlighter;
@@ -179,8 +179,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
             // ── Inline line comments (rendered directly after the target line) ──
             if let Some(new_line_num) = diff_line.new_num {
                 let line_comments = tab.ai.comments_for_line(&file.path, hunk_idx, new_line_num);
-                let is_focused_comment = |c: &FeedbackComment| {
-                    tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id)
+                let is_focused = |c: &CommentRef| {
+                    tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id())
                 };
                 for comment in &line_comments {
                     render_comment_lines(
@@ -188,17 +188,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                         comment,
                         area.width,
                         true,
-                        is_focused_comment(comment),
+                        is_focused(comment),
                     );
-                    // Render replies to this line comment
-                    let replies = tab.ai.replies_to(&comment.id);
+                    // Render replies to this line comment (GitHub comments only)
+                    let replies = tab.ai.replies_to(comment.id());
                     for reply in &replies {
                         render_reply_lines(
                             &mut lines,
-                            reply,
+                            &reply,
                             area.width,
                             true,
-                            is_focused_comment(reply),
+                            is_focused(&reply),
                         );
                     }
                 }
@@ -287,8 +287,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
         // ── Hunk-level comments after the hunk ──
         {
             let hunk_comments = tab.ai.comments_for_hunk_only(&file.path, hunk_idx);
-            let is_focused_comment = |c: &FeedbackComment| {
-                tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id)
+            let is_focused = |c: &CommentRef| {
+                tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id())
             };
             for comment in &hunk_comments {
                 render_comment_lines(
@@ -296,17 +296,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
                     comment,
                     area.width,
                     false,
-                    is_focused_comment(comment),
+                    is_focused(comment),
                 );
-                // Render replies to this hunk comment
-                let replies = tab.ai.replies_to(&comment.id);
+                // Render replies to this hunk comment (GitHub comments only)
+                let replies = tab.ai.replies_to(comment.id());
                 for reply in &replies {
                     render_reply_lines(
                         &mut lines,
-                        reply,
+                        &reply,
                         area.width,
                         false,
-                        is_focused_comment(reply),
+                        is_focused(&reply),
                     );
                 }
             }
@@ -355,11 +355,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
 /// Render a single comment (line-level or hunk-level) into the lines buffer
 fn render_comment_lines(
     lines: &mut Vec<Line<'_>>,
-    comment: &FeedbackComment,
+    comment: &CommentRef,
     width: u16,
     inline: bool,
     focused: bool,
 ) {
+    let is_question = comment.comment_type() == CommentType::Question;
+    let is_stale = comment.is_stale();
+
     let bg = if focused {
         styles::COMMENT_FOCUS_BG
     } else if inline {
@@ -368,25 +371,36 @@ fn render_comment_lines(
         styles::COMMENT_BG
     };
 
-    let author = if comment.author.is_empty() { "You" } else { &comment.author };
+    // Questions use yellow/orange, GitHub comments use cyan
+    let accent = if is_stale {
+        styles::STALE
+    } else if is_question {
+        styles::YELLOW
+    } else {
+        styles::CYAN
+    };
+
+    let icon = if is_question { "❓" } else { "💬" };
+    let author = comment.author();
 
     let mut header_spans = vec![
         Span::styled(
-            if inline { "     💬 " } else { "  💬 " },
-            ratatui::style::Style::default().fg(styles::CYAN).bg(bg),
+            if inline { format!("     {} ", icon) } else { format!("  {} ", icon) },
+            ratatui::style::Style::default().fg(accent).bg(bg),
         ),
         Span::styled(
             author.to_string(),
             ratatui::style::Style::default()
-                .fg(styles::CYAN)
+                .fg(accent)
                 .bg(bg)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
     ];
 
     // Timestamp
-    if !comment.timestamp.is_empty() {
-        let time_part = comment.timestamp
+    let ts = comment.timestamp();
+    if !ts.is_empty() {
+        let time_part = ts
             .split('T')
             .nth(1)
             .unwrap_or("")
@@ -397,8 +411,16 @@ fn render_comment_lines(
         ));
     }
 
-    // Synced indicator
-    if comment.synced {
+    // Stale indicator
+    if is_stale {
+        header_spans.push(Span::styled(
+            "  ⚠ stale",
+            ratatui::style::Style::default().fg(styles::STALE).bg(bg),
+        ));
+    }
+
+    // Synced indicator (GitHub comments only)
+    if comment.is_synced() {
         header_spans.push(Span::styled(
             "  ↑ synced",
             ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
@@ -418,7 +440,8 @@ fn render_comment_lines(
     // Comment text
     let indent: usize = if inline { 8 } else { 6 };
     let max_len = width.saturating_sub(indent as u16) as usize;
-    let text = &comment.comment;
+    let text = comment.text();
+    let text_fg = if is_stale { styles::DIM } else { styles::TEXT };
     let truncated = if text.chars().count() > max_len {
         format!("{}…", text.chars().take(max_len.saturating_sub(1)).collect::<String>())
     } else {
@@ -428,7 +451,7 @@ fn render_comment_lines(
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {}{}", padding, truncated),
-            ratatui::style::Style::default().fg(styles::TEXT).bg(bg),
+            ratatui::style::Style::default().fg(text_fg).bg(bg),
         ),
     ]).style(ratatui::style::Style::default().bg(bg)));
 }
@@ -436,7 +459,7 @@ fn render_comment_lines(
 /// Render a reply comment (indented with ↳ prefix)
 fn render_reply_lines(
     lines: &mut Vec<Line<'_>>,
-    reply: &FeedbackComment,
+    reply: &CommentRef,
     width: u16,
     inline: bool,
     focused: bool,
@@ -449,7 +472,7 @@ fn render_reply_lines(
         styles::COMMENT_BG
     };
 
-    let author = if reply.author.is_empty() { "You" } else { &reply.author };
+    let author = reply.author();
 
     let prefix = if inline { "       ↳ 💬 " } else { "    ↳ 💬 " };
     let mut header_spans = vec![
@@ -466,8 +489,9 @@ fn render_reply_lines(
         ),
     ];
 
-    if !reply.timestamp.is_empty() {
-        let time_part = reply.timestamp
+    let ts = reply.timestamp();
+    if !ts.is_empty() {
+        let time_part = ts
             .split('T')
             .nth(1)
             .unwrap_or("")
@@ -478,7 +502,7 @@ fn render_reply_lines(
         ));
     }
 
-    if reply.synced {
+    if reply.is_synced() {
         header_spans.push(Span::styled(
             "  ↑ synced",
             ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
@@ -497,7 +521,7 @@ fn render_reply_lines(
     // Reply text
     let indent: usize = if inline { 12 } else { 10 };
     let max_len = width.saturating_sub(indent as u16) as usize;
-    let text = &reply.comment;
+    let text = reply.text();
     let truncated = if text.chars().count() > max_len {
         format!("{}…", text.chars().take(max_len.saturating_sub(1)).collect::<String>())
     } else {

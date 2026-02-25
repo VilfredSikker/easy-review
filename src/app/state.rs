@@ -1,4 +1,4 @@
-use crate::ai::{self, AiState, ReviewFocus, ViewMode};
+use crate::ai::{self, AiState, CommentType, ReviewFocus, ViewMode};
 use crate::git::{self, DiffFile, Worktree};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -175,6 +175,9 @@ pub struct TabState {
 
     /// Currently focused comment (for reply/delete operations)
     pub comment_focus: Option<CommentFocus>,
+
+    /// Which type of comment is being created (Question vs GitHubComment)
+    pub comment_type: CommentType,
 }
 
 impl TabState {
@@ -224,6 +227,7 @@ impl TabState {
             comment_reply_to: None,
             comment_line_num: None,
             comment_focus: None,
+            comment_type: CommentType::GitHubComment,
         };
 
         tab.refresh_diff()?;
@@ -1236,7 +1240,7 @@ impl App {
     // ── Comment System ──
 
     /// Enter comment mode for the current file + hunk (and optionally line)
-    pub fn start_comment(&mut self) {
+    pub fn start_comment(&mut self, comment_type: CommentType) {
         let tab = self.tab_mut();
         let file_path = match tab.selected_diff_file() {
             Some(f) => f.path.clone(),
@@ -1247,10 +1251,11 @@ impl App {
         tab.comment_hunk = tab.current_hunk;
         tab.comment_line_num = tab.current_line_number();
         tab.comment_reply_to = None;
+        tab.comment_type = comment_type;
         self.input_mode = InputMode::Comment;
     }
 
-    /// Submit the current comment: append to .er-feedback.json
+    /// Submit the current comment/question to the appropriate file
     pub fn submit_comment(&mut self) -> Result<()> {
         let tab = self.tab();
         let text = tab.comment_input.trim().to_string();
@@ -1259,70 +1264,54 @@ impl App {
             return Ok(());
         }
 
+        let comment_type = tab.comment_type;
+        match comment_type {
+            CommentType::Question => self.submit_question(text),
+            CommentType::GitHubComment => self.submit_github_comment(text),
+        }
+    }
+
+    /// Submit a personal review question to .er-questions.json
+    fn submit_question(&mut self, text: String) -> Result<()> {
+        let tab = self.tab();
         let repo_root = tab.repo_root.clone();
         let diff_hash = tab.branch_diff_hash.clone();
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
-        let reply_to = tab.comment_reply_to.clone();
-
-        // Get line context — use specific line if available, else hunk start
         let comment_line_num = tab.comment_line_num;
-        let (line_start, line_content) = {
-            let tab = self.tab();
-            if let Some(df) = tab.selected_diff_file() {
-                if let Some(hunk) = df.hunks.get(hunk_index) {
-                    if let Some(ln) = comment_line_num {
-                        // Line-level comment: find the content at that line
-                        let content = hunk.lines.iter()
-                            .find(|l| l.new_num == Some(ln))
-                            .map(|l| l.content.clone())
-                            .unwrap_or_default();
-                        (Some(ln), content)
-                    } else {
-                        // Hunk-level comment: hunk_index identifies the hunk; line_start is not meaningful here
-                        (None, hunk.header.clone())
-                    }
-                } else {
-                    (None, String::new())
-                }
-            } else {
-                (None, String::new())
-            }
-        };
 
-        // Load existing feedback or create new
-        let feedback_path = format!("{}/.er-feedback.json", repo_root);
-        let mut feedback: ai::ErFeedback = match std::fs::read_to_string(&feedback_path) {
+        let (line_start, line_content) = self.get_line_context(hunk_index, comment_line_num);
+
+        // Load or create .er-questions.json
+        let questions_path = format!("{}/.er-questions.json", repo_root);
+        let mut questions: ai::ErQuestions = match std::fs::read_to_string(&questions_path) {
             Ok(content) => match serde_json::from_str(&content) {
-                Ok(fb) => fb,
+                Ok(qs) => qs,
                 Err(_) => {
-                    self.notify("Warning: .er-feedback.json is invalid JSON — starting fresh");
-                    ai::ErFeedback {
+                    self.notify("Warning: .er-questions.json is invalid JSON — starting fresh");
+                    ai::ErQuestions {
                         version: 1,
                         diff_hash: diff_hash.clone(),
-                        github: None,
-                        comments: Vec::new(),
+                        questions: Vec::new(),
                     }
                 }
             },
-            Err(_) => ai::ErFeedback {
+            Err(_) => ai::ErQuestions {
                 version: 1,
                 diff_hash: diff_hash.clone(),
-                github: None,
-                comments: Vec::new(),
+                questions: Vec::new(),
             },
         };
 
         // If diff hash changed, start fresh
-        if feedback.diff_hash != diff_hash {
-            feedback.diff_hash = diff_hash;
-            feedback.comments.clear();
+        if questions.diff_hash != diff_hash {
+            questions.diff_hash = diff_hash;
+            questions.questions.clear();
         }
 
-        // Generate comment ID using epoch millis + sequence counter to avoid collisions
         let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
-        let comment_id = format!(
-            "fb-{}-{}",
+        let id = format!(
+            "q-{}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
@@ -1330,9 +1319,85 @@ impl App {
             seq
         );
 
-        // Create the comment
-        let comment = ai::FeedbackComment {
-            id: comment_id,
+        questions.questions.push(ai::ReviewQuestion {
+            id,
+            timestamp: chrono_now(),
+            file: file_path,
+            hunk_index: Some(hunk_index),
+            line_start,
+            line_content,
+            text: text.clone(),
+            resolved: false,
+            stale: false,
+        });
+
+        // Write atomically
+        let json = serde_json::to_string_pretty(&questions)?;
+        let tmp_path = format!("{}.tmp", questions_path);
+        std::fs::write(&tmp_path, json)?;
+        std::fs::rename(&tmp_path, &questions_path)?;
+
+        self.tab_mut().comment_input.clear();
+        self.input_mode = InputMode::Normal;
+        self.tab_mut().reload_ai_state();
+        self.notify(&format!("Question added: {}", truncate(&text, 40)));
+        Ok(())
+    }
+
+    /// Submit a GitHub PR comment to .er-github-comments.json
+    fn submit_github_comment(&mut self, text: String) -> Result<()> {
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let diff_hash = tab.branch_diff_hash.clone();
+        let file_path = tab.comment_file.clone();
+        let hunk_index = tab.comment_hunk;
+        let reply_to = tab.comment_reply_to.clone();
+        let comment_line_num = tab.comment_line_num;
+
+        let (line_start, line_content) = self.get_line_context(hunk_index, comment_line_num);
+
+        // Load or create .er-github-comments.json
+        let comments_path = format!("{}/.er-github-comments.json", repo_root);
+        let mut gh_comments: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(gc) => gc,
+                Err(_) => {
+                    self.notify("Warning: .er-github-comments.json is invalid JSON — starting fresh");
+                    ai::ErGitHubComments {
+                        version: 1,
+                        diff_hash: diff_hash.clone(),
+                        github: None,
+                        comments: Vec::new(),
+                    }
+                }
+            },
+            Err(_) => ai::ErGitHubComments {
+                version: 1,
+                diff_hash: diff_hash.clone(),
+                github: None,
+                comments: Vec::new(),
+            },
+        };
+
+        // If diff hash changed, start fresh for local comments only
+        if gh_comments.diff_hash != diff_hash {
+            gh_comments.diff_hash = diff_hash;
+            // Keep synced GitHub comments, clear local-only ones
+            gh_comments.comments.retain(|c| c.source == "github");
+        }
+
+        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
+        let id = format!(
+            "c-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            seq
+        );
+
+        gh_comments.comments.push(ai::GitHubReviewComment {
+            id,
             timestamp: chrono_now(),
             file: file_path,
             hunk_index: Some(hunk_index),
@@ -1346,25 +1411,42 @@ impl App {
             github_id: None,
             author: "You".to_string(),
             synced: false,
-        };
+            stale: false,
+        });
 
-        feedback.comments.push(comment);
-
-        // Write atomically via temp file + rename
-        let json = serde_json::to_string_pretty(&feedback)?;
-        let tmp_path = format!("{}.tmp", feedback_path);
+        // Write atomically
+        let json = serde_json::to_string_pretty(&gh_comments)?;
+        let tmp_path = format!("{}.tmp", comments_path);
         std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &feedback_path)?;
+        std::fs::rename(&tmp_path, &comments_path)?;
 
-        // Clear state and return to normal
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
-
-        // Reload AI state to pick up the new feedback
         self.tab_mut().reload_ai_state();
-
         self.notify(&format!("Comment added: {}", truncate(&text, 40)));
         Ok(())
+    }
+
+    /// Helper: get line context for a comment target
+    fn get_line_context(&self, hunk_index: usize, comment_line_num: Option<usize>) -> (Option<usize>, String) {
+        let tab = self.tab();
+        if let Some(df) = tab.selected_diff_file() {
+            if let Some(hunk) = df.hunks.get(hunk_index) {
+                if let Some(ln) = comment_line_num {
+                    let content = hunk.lines.iter()
+                        .find(|l| l.new_num == Some(ln))
+                        .map(|l| l.content.clone())
+                        .unwrap_or_default();
+                    (Some(ln), content)
+                } else {
+                    (None, hunk.header.clone())
+                }
+            } else {
+                (None, String::new())
+            }
+        } else {
+            (None, String::new())
+        }
     }
 
     /// Cancel comment input
@@ -1395,14 +1477,14 @@ impl App {
         // Collect all top-level comments for this hunk (line + hunk-level)
         let comments = tab.ai.comments_for_hunk(&file_path, hunk_idx);
         let top_level: Vec<_> = comments.iter()
-            .filter(|c| c.in_reply_to.is_none())
+            .filter(|c| c.in_reply_to().is_none())
             .collect();
 
         if let Some(first) = top_level.first() {
             tab.comment_focus = Some(CommentFocus {
                 file: file_path,
                 hunk_index: Some(hunk_idx),
-                comment_id: first.id.clone(),
+                comment_id: first.id().to_string(),
             });
         }
     }
@@ -1418,14 +1500,14 @@ impl App {
         // All comments in this hunk (including replies)
         let hunk_idx = focus.hunk_index.unwrap_or(0);
         let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let ids: Vec<&str> = all_comments.iter().map(|c| c.id.as_str()).collect();
+        let ids: Vec<String> = all_comments.iter().map(|c| c.id().to_string()).collect();
 
         if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
             if pos + 1 < ids.len() {
                 tab.comment_focus = Some(CommentFocus {
                     file: focus.file,
                     hunk_index: focus.hunk_index,
-                    comment_id: ids[pos + 1].to_string(),
+                    comment_id: ids[pos + 1].clone(),
                 });
             }
         }
@@ -1441,14 +1523,14 @@ impl App {
 
         let hunk_idx = focus.hunk_index.unwrap_or(0);
         let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let ids: Vec<&str> = all_comments.iter().map(|c| c.id.as_str()).collect();
+        let ids: Vec<String> = all_comments.iter().map(|c| c.id().to_string()).collect();
 
         if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
             if pos > 0 {
                 tab.comment_focus = Some(CommentFocus {
                     file: focus.file,
                     hunk_index: focus.hunk_index,
-                    comment_id: ids[pos - 1].to_string(),
+                    comment_id: ids[pos - 1].clone(),
                 });
             }
         }
@@ -1456,7 +1538,7 @@ impl App {
 
     // ── Reply System ──
 
-    /// Start replying to the focused comment
+    /// Start replying to the focused comment (GitHub comments only)
     pub fn start_reply(&mut self) {
         let tab = self.tab();
         let focus = match &tab.comment_focus {
@@ -1464,22 +1546,34 @@ impl App {
             None => return,
         };
 
-        // Check if the focused comment is itself a reply (block nested replies)
-        if let Some(ref fb) = tab.ai.feedback {
-            if let Some(comment) = fb.comments.iter().find(|c| c.id == focus.comment_id) {
-                if comment.in_reply_to.is_some() {
+        // Find the focused comment in the unified view
+        let hunk_idx = focus.hunk_index.unwrap_or(0);
+        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
+        let comment = all_comments.iter().find(|c| c.id() == focus.comment_id);
+
+        match comment {
+            Some(c) => {
+                // Can only reply to GitHub comments, not questions
+                if c.comment_type() == CommentType::Question {
+                    self.notify("Cannot reply to a question — use /er-questions instead");
+                    return;
+                }
+                // Block nested replies
+                if !c.can_reply() {
                     self.notify("Cannot reply to a reply");
                     return;
                 }
             }
+            None => return,
         }
 
         let tab = self.tab_mut();
         tab.comment_input.clear();
         tab.comment_file = focus.file;
         tab.comment_hunk = focus.hunk_index.unwrap_or(0);
-        tab.comment_line_num = None; // Reply inherits parent's position
+        tab.comment_line_num = None;
         tab.comment_reply_to = Some(focus.comment_id);
+        tab.comment_type = CommentType::GitHubComment;
         self.input_mode = InputMode::Comment;
     }
 
@@ -1493,19 +1587,19 @@ impl App {
             None => return,
         };
 
-        // Check if the comment exists and is deletable
-        if let Some(ref fb) = tab.ai.feedback {
-            if let Some(comment) = fb.comments.iter().find(|c| c.id == focus.comment_id) {
-                // Can't delete others' GitHub comments
-                if comment.source == "github" && comment.author != "You" {
+        // Find the comment in the unified view to check deletability
+        let hunk_idx = focus.hunk_index.unwrap_or(0);
+        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
+        let comment = all_comments.iter().find(|c| c.id() == focus.comment_id);
+
+        match comment {
+            Some(c) => {
+                if !c.can_delete() {
                     self.notify("Cannot delete others' comments");
                     return;
                 }
-            } else {
-                return;
             }
-        } else {
-            return;
+            None => return,
         }
 
         self.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
@@ -1517,61 +1611,64 @@ impl App {
     pub fn confirm_delete_comment(&mut self, comment_id: &str) -> Result<()> {
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();
-        let feedback_path = format!("{}/.er-feedback.json", repo_root);
 
-        let mut feedback: ai::ErFeedback = match std::fs::read_to_string(&feedback_path) {
-            Ok(content) => match serde_json::from_str(&content) {
-                Ok(fb) => fb,
-                Err(_) => {
-                    self.input_mode = InputMode::Normal;
-                    return Ok(());
+        // Determine which file this comment lives in
+        let is_question = comment_id.starts_with("q-");
+
+        if is_question {
+            // Delete from .er-questions.json
+            let path = format!("{}/.er-questions.json", repo_root);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
+                    qs.questions.retain(|q| q.id != comment_id);
+                    let json = serde_json::to_string_pretty(&qs)?;
+                    let tmp_path = format!("{}.tmp", path);
+                    std::fs::write(&tmp_path, &json)?;
+                    std::fs::rename(&tmp_path, &path)?;
                 }
-            },
-            Err(_) => {
-                self.input_mode = InputMode::Normal;
-                return Ok(());
             }
-        };
+        } else {
+            // Delete from .er-github-comments.json
+            let path = format!("{}/.er-github-comments.json", repo_root);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
+                    // Check if the comment has a github_id for API deletion
+                    let github_id = gc.comments.iter()
+                        .find(|c| c.id == comment_id)
+                        .and_then(|c| c.github_id);
 
-        // Check if the comment has a github_id for API deletion
-        let github_id = feedback.comments.iter()
-            .find(|c| c.id == comment_id)
-            .and_then(|c| c.github_id);
+                    let reply_github_ids: Vec<u64> = gc.comments.iter()
+                        .filter(|c| c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some())
+                        .filter_map(|c| c.github_id)
+                        .collect();
 
-        // Also collect github_ids of replies that need to be deleted from GitHub
-        let reply_github_ids: Vec<u64> = feedback.comments.iter()
-            .filter(|c| c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some())
-            .filter_map(|c| c.github_id)
-            .collect();
+                    // Delete from GitHub if applicable
+                    if let Some(gh_id) = github_id {
+                        if let Some(ref gh) = gc.github {
+                            let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, gh_id);
+                            for reply_id in &reply_github_ids {
+                                let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, *reply_id);
+                            }
+                        }
+                    }
 
-        // Delete from GitHub if applicable
-        if let Some(gh_id) = github_id {
-            if let Some(ref gh) = feedback.github {
-                let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, gh_id);
-                for reply_id in &reply_github_ids {
-                    let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, *reply_id);
+                    // Remove comment and cascade replies
+                    gc.comments.retain(|c| {
+                        c.id != comment_id && c.in_reply_to.as_deref() != Some(comment_id)
+                    });
+
+                    let json = serde_json::to_string_pretty(&gc)?;
+                    let tmp_path = format!("{}.tmp", path);
+                    std::fs::write(&tmp_path, &json)?;
+                    std::fs::rename(&tmp_path, &path)?;
                 }
             }
         }
 
-        // Remove the comment and all its replies (cascade)
-        feedback.comments.retain(|c| {
-            c.id != comment_id && c.in_reply_to.as_deref() != Some(comment_id)
-        });
-
-        // Write atomically
-        let json = serde_json::to_string_pretty(&feedback)?;
-        let tmp_path = format!("{}.tmp", feedback_path);
-        std::fs::write(&tmp_path, &json)?;
-        std::fs::rename(&tmp_path, &feedback_path)?;
-
         // Clear focus and return to normal
         self.tab_mut().comment_focus = None;
         self.input_mode = InputMode::Normal;
-
-        // Reload AI state
         self.tab_mut().reload_ai_state();
-
         self.notify("Comment deleted");
         Ok(())
     }
@@ -1584,7 +1681,7 @@ impl App {
     // ── Hunk Comment (Shift-C) ──
 
     /// Enter comment mode for a hunk-level comment (no line_start)
-    pub fn start_hunk_comment(&mut self) {
+    pub fn start_hunk_comment(&mut self, comment_type: CommentType) {
         let tab = self.tab_mut();
         let file_path = match tab.selected_diff_file() {
             Some(f) => f.path.clone(),
@@ -1595,6 +1692,7 @@ impl App {
         tab.comment_hunk = tab.current_hunk;
         tab.comment_line_num = None; // Force hunk-level
         tab.comment_reply_to = None;
+        tab.comment_type = comment_type;
         self.input_mode = InputMode::Comment;
     }
 
@@ -1832,6 +1930,7 @@ mod tests {
             comment_reply_to: None,
             comment_line_num: None,
             comment_focus: None,
+            comment_type: CommentType::GitHubComment,
         }
     }
 

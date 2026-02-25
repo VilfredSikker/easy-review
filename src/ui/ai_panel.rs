@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::ai::RiskLevel;
+use crate::ai::{CommentRef, CommentType, RiskLevel};
 use crate::app::App;
 use super::styles;
 use super::utils::word_wrap;
@@ -173,15 +173,34 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             }
         }
 
-        // Human comments for this file
-        if let Some(fb) = &tab.ai.feedback {
-            let file_comments: Vec<_> = fb.comments.iter()
-                .filter(|c| c.file == path && c.in_reply_to.is_none())
-                .collect();
+        // Questions + GitHub comments for this file
+        {
+            // Collect all top-level comments (questions + github) for this file
+            // Use all hunks' comments filtered to top-level
+            let mut file_comments: Vec<CommentRef> = Vec::new();
+            for (hi, _) in tab.files.get(tab.selected_file).map(|f| f.hunks.iter().enumerate().collect::<Vec<_>>()).unwrap_or_default() {
+                for cr in tab.ai.comments_for_hunk(&path, hi) {
+                    if cr.in_reply_to().is_none() {
+                        file_comments.push(cr);
+                    }
+                }
+            }
+
             if !file_comments.is_empty() {
+                // Count questions vs github comments
+                let q_count = file_comments.iter().filter(|c| c.comment_type() == CommentType::Question).count();
+                let gh_count = file_comments.iter().filter(|c| c.comment_type() == CommentType::GitHubComment).count();
+                let header = if q_count > 0 && gh_count > 0 {
+                    format!(" Questions ({}) + Comments ({})", q_count, gh_count)
+                } else if q_count > 0 {
+                    format!(" Questions ({})", q_count)
+                } else {
+                    format!(" Comments ({})", gh_count)
+                };
+
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!(" Comments ({})", file_comments.len()),
+                        header,
                         ratatui::style::Style::default()
                             .fg(styles::CYAN)
                             .add_modifier(ratatui::style::Modifier::BOLD),
@@ -190,25 +209,35 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 lines.push(Line::from(""));
 
                 for comment in &file_comments {
-                    let target = comment.hunk_index
+                    let is_question = comment.comment_type() == CommentType::Question;
+                    let accent = if comment.is_stale() {
+                        styles::STALE
+                    } else if is_question {
+                        styles::YELLOW
+                    } else {
+                        styles::CYAN
+                    };
+                    let icon = if is_question { "❓" } else { "💬" };
+
+                    let target = comment.hunk_index()
                         .map(|hi| {
-                            comment.line_start
+                            comment.line_start()
                                 .map(|l| format!("h{}:L{}", hi + 1, l))
                                 .unwrap_or_else(|| format!("h{}", hi + 1))
                         })
                         .unwrap_or_else(|| "file".to_string());
 
-                    let author = if comment.author.is_empty() { "You" } else { &comment.author };
+                    let author = comment.author();
 
                     let mut header_spans = vec![
                         Span::styled(
-                            " 💬 ",
-                            styles::comment_style(),
+                            format!(" {} ", icon),
+                            ratatui::style::Style::default().fg(accent),
                         ),
                         Span::styled(
                             author.to_string(),
                             ratatui::style::Style::default()
-                                .fg(styles::CYAN)
+                                .fg(accent)
                                 .add_modifier(ratatui::style::Modifier::BOLD),
                         ),
                         Span::styled(
@@ -217,7 +246,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                         ),
                     ];
 
-                    if comment.synced {
+                    if comment.is_stale() {
+                        header_spans.push(Span::styled(
+                            "  ⚠ stale",
+                            ratatui::style::Style::default().fg(styles::STALE),
+                        ));
+                    }
+
+                    if comment.is_synced() {
                         header_spans.push(Span::styled(
                             "  ↑ synced",
                             ratatui::style::Style::default().fg(styles::GREEN),
@@ -227,19 +263,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     lines.push(Line::from(header_spans));
 
                     let max_w = area.width.saturating_sub(5) as usize;
-                    for wrapped in word_wrap(&comment.comment, max_w) {
+                    let text_fg = if comment.is_stale() { styles::DIM } else { styles::TEXT };
+                    for wrapped in word_wrap(comment.text(), max_w) {
                         lines.push(Line::from(vec![
                             Span::styled(
                                 format!("   {}", wrapped),
-                                ratatui::style::Style::default().fg(styles::TEXT),
+                                ratatui::style::Style::default().fg(text_fg),
                             ),
                         ]));
                     }
 
-                    // Render replies
-                    let replies = tab.ai.replies_to(&comment.id);
+                    // Render replies (GitHub comments only)
+                    let replies = tab.ai.replies_to(comment.id());
                     for reply in &replies {
-                        let reply_author = if reply.author.is_empty() { "You" } else { &reply.author };
+                        let reply_author = reply.author();
                         lines.push(Line::from(vec![
                             Span::styled(
                                 "   ↳ 💬 ",
@@ -252,7 +289,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                                     .add_modifier(ratatui::style::Modifier::BOLD),
                             ),
                         ]));
-                        for wrapped in word_wrap(&reply.comment, max_w.saturating_sub(4)) {
+                        for wrapped in word_wrap(reply.text(), max_w.saturating_sub(4)) {
                             lines.push(Line::from(vec![
                                 Span::styled(
                                     format!("       {}", wrapped),

@@ -133,6 +133,7 @@ pub const INLINE_COMMENT_BG: Color = Color::Rgb(22, 32, 42);
 pub const COMMENT_FOCUS_BG: Color = Color::Rgb(28, 38, 52);
 
 /// Human comment style
+#[allow(dead_code)]
 pub fn comment_style() -> Style {
     Style::default().fg(CYAN).bg(COMMENT_BG)
 }

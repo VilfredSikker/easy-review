@@ -213,9 +213,15 @@ fn handle_normal_input(
     // ── Global keys: work in all view modes including AiReview ──
 
     match key.code {
-        // Quit
-        KeyCode::Char('q') => {
+        // Quit (Ctrl+q)
+        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
+            return Ok(());
+        }
+
+        // Personal question on current line (q)
+        KeyCode::Char('q') => {
+            app.start_comment(crate::ai::CommentType::Question);
             return Ok(());
         }
 
@@ -397,12 +403,17 @@ fn handle_normal_input(
             app.yank_hunk()?;
         }
 
-        // Comment on current line (c) or hunk (C)
+        // GitHub comment on current line (c) or hunk (C)
         KeyCode::Char('c') => {
-            app.start_comment();
+            app.start_comment(crate::ai::CommentType::GitHubComment);
         }
         KeyCode::Char('C') => {
-            app.start_hunk_comment();
+            app.start_hunk_comment(crate::ai::CommentType::GitHubComment);
+        }
+
+        // Personal question on current line (q) or hunk (Q)
+        KeyCode::Char('Q') => {
+            app.start_hunk_comment(crate::ai::CommentType::Question);
         }
 
         // Tab: toggle comment focus within current hunk
@@ -648,32 +659,52 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
 fn toggle_comment_resolved(app: &mut App, comment_id: &str) -> Result<()> {
     let tab = app.tab();
     let repo_root = tab.repo_root.clone();
-    let feedback_path = format!("{}/.er-feedback.json", repo_root);
+    let is_question = comment_id.starts_with("q-");
 
-    let mut feedback: crate::ai::ErFeedback = match std::fs::read_to_string(&feedback_path) {
-        Ok(content) => match serde_json::from_str(&content) {
-            Ok(fb) => fb,
-            Err(_) => return Ok(()),
-        },
-        Err(_) => return Ok(()),
-    };
-
-    let mut toggled = false;
-    for c in &mut feedback.comments {
-        if c.id == comment_id {
-            c.resolved = !c.resolved;
-            toggled = true;
-            break;
+    if is_question {
+        let path = format!("{}/.er-questions.json", repo_root);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(mut qs) = serde_json::from_str::<crate::ai::ErQuestions>(&content) {
+                let mut toggled = false;
+                for q in &mut qs.questions {
+                    if q.id == comment_id {
+                        q.resolved = !q.resolved;
+                        toggled = true;
+                        break;
+                    }
+                }
+                if toggled {
+                    let json = serde_json::to_string_pretty(&qs)?;
+                    let tmp_path = format!("{}.tmp", path);
+                    std::fs::write(&tmp_path, &json)?;
+                    std::fs::rename(&tmp_path, &path)?;
+                    app.tab_mut().reload_ai_state();
+                    app.notify("Toggled resolved");
+                }
+            }
         }
-    }
-
-    if toggled {
-        let json = serde_json::to_string_pretty(&feedback)?;
-        let tmp_path = format!("{}.tmp", feedback_path);
-        std::fs::write(&tmp_path, &json)?;
-        std::fs::rename(&tmp_path, &feedback_path)?;
-        app.tab_mut().reload_ai_state();
-        app.notify("Toggled resolved");
+    } else {
+        let path = format!("{}/.er-github-comments.json", repo_root);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(mut gc) = serde_json::from_str::<crate::ai::ErGitHubComments>(&content) {
+                let mut toggled = false;
+                for c in &mut gc.comments {
+                    if c.id == comment_id {
+                        c.resolved = !c.resolved;
+                        toggled = true;
+                        break;
+                    }
+                }
+                if toggled {
+                    let json = serde_json::to_string_pretty(&gc)?;
+                    let tmp_path = format!("{}.tmp", path);
+                    std::fs::write(&tmp_path, &json)?;
+                    std::fs::rename(&tmp_path, &path)?;
+                    app.tab_mut().reload_ai_state();
+                    app.notify("Toggled resolved");
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -683,7 +714,6 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     let tab = app.tab();
     let repo_root = tab.repo_root.clone();
 
-    // Check if we have a PR context
     let pr_info = github::get_pr_info(&repo_root);
     let pr_info = match pr_info {
         Ok(info) => info,
@@ -695,7 +725,6 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
 
     let (owner, repo_name, pr_number) = pr_info;
 
-    // Fetch review comments
     let gh_comments = match github::gh_pr_comments(&owner, &repo_name, pr_number) {
         Ok(c) => c,
         Err(e) => {
@@ -704,17 +733,17 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
         }
     };
 
-    // Load existing feedback
-    let feedback_path = format!("{}/.er-feedback.json", repo_root);
+    // Load existing .er-github-comments.json
+    let comments_path = format!("{}/.er-github-comments.json", repo_root);
     let diff_hash = tab.branch_diff_hash.clone();
-    let mut feedback: crate::ai::ErFeedback = match std::fs::read_to_string(&feedback_path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| crate::ai::ErFeedback {
+    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| crate::ai::ErGitHubComments {
             version: 1,
             diff_hash: diff_hash.clone(),
             github: None,
             comments: Vec::new(),
         }),
-        Err(_) => crate::ai::ErFeedback {
+        Err(_) => crate::ai::ErGitHubComments {
             version: 1,
             diff_hash: diff_hash.clone(),
             github: None,
@@ -722,43 +751,35 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
         },
     };
 
-    // Update GitHub sync state
-    feedback.github = Some(crate::ai::GitHubSyncState {
+    gc.github = Some(crate::ai::GitHubSyncState {
         pr_number: Some(pr_number),
         owner: owner.clone(),
         repo: repo_name.clone(),
         last_synced: chrono_now(),
     });
 
-    // Dedup: build set of known github_ids
-    let known_github_ids: std::collections::HashSet<u64> = feedback.comments.iter()
+    let known_github_ids: std::collections::HashSet<u64> = gc.comments.iter()
         .filter_map(|c| c.github_id)
         .collect();
 
-    // Track which github_ids are still present in the API response
     let mut remote_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-
     let mut added = 0u32;
     let mut updated = 0u32;
-
     let tab_files = &app.tab().files;
 
     for gh in &gh_comments {
         remote_ids.insert(gh.id);
 
         if known_github_ids.contains(&gh.id) {
-            // Update existing
-            if let Some(c) = feedback.comments.iter_mut().find(|c| c.github_id == Some(gh.id)) {
+            if let Some(c) = gc.comments.iter_mut().find(|c| c.github_id == Some(gh.id)) {
                 if c.comment != gh.body {
                     c.comment = gh.body.clone();
                     updated += 1;
                 }
             }
         } else {
-            // New comment — map to our data model
             let file_path = gh.path.clone().unwrap_or_default();
             let hunk_index = gh.line.and_then(|line| {
-                // Find hunk that contains this line
                 tab_files.iter()
                     .find(|f| f.path == file_path)
                     .and_then(|f| {
@@ -769,12 +790,12 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
             });
 
             let in_reply_to = gh.in_reply_to_id.and_then(|parent_gh_id| {
-                feedback.comments.iter()
+                gc.comments.iter()
                     .find(|c| c.github_id == Some(parent_gh_id))
                     .map(|c| c.id.clone())
             });
 
-            let comment = crate::ai::FeedbackComment {
+            let comment = crate::ai::GitHubReviewComment {
                 id: format!("gh-{}", gh.id),
                 timestamp: gh.created_at.clone(),
                 file: file_path,
@@ -789,18 +810,18 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
                 github_id: Some(gh.id),
                 author: gh.user.login.clone(),
                 synced: true,
+                stale: false,
             };
 
-            feedback.comments.push(comment);
+            gc.comments.push(comment);
             added += 1;
         }
     }
 
-    // Remove comments that were deleted on GitHub
-    let removed = feedback.comments.iter()
+    let removed = gc.comments.iter()
         .filter(|c| c.source == "github" && c.github_id.is_some() && !remote_ids.contains(&c.github_id.unwrap()))
         .count() as u32;
-    feedback.comments.retain(|c| {
+    gc.comments.retain(|c| {
         if c.source == "github" {
             c.github_id.map_or(true, |id| remote_ids.contains(&id))
         } else {
@@ -808,11 +829,10 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
         }
     });
 
-    // Write
-    let json = serde_json::to_string_pretty(&feedback)?;
-    let tmp_path = format!("{}.tmp", feedback_path);
+    let json = serde_json::to_string_pretty(&gc)?;
+    let tmp_path = format!("{}.tmp", comments_path);
     std::fs::write(&tmp_path, &json)?;
-    std::fs::rename(&tmp_path, &feedback_path)?;
+    std::fs::rename(&tmp_path, &comments_path)?;
 
     app.tab_mut().reload_ai_state();
     app.notify(&format!("GitHub sync: +{} ~{} -{}", added, updated, removed));
@@ -827,6 +847,12 @@ fn push_comment_to_github(app: &mut App) -> Result<()> {
         None => return Ok(()),
     };
 
+    // Questions can't be pushed to GitHub
+    if focus.comment_id.starts_with("q-") {
+        app.notify("Questions are private — use /er-publish for GitHub comments");
+        return Ok(());
+    }
+
     let repo_root = tab.repo_root.clone();
     let pr_info = match github::get_pr_info(&repo_root) {
         Ok(info) => info,
@@ -837,17 +863,16 @@ fn push_comment_to_github(app: &mut App) -> Result<()> {
     };
     let (owner, repo_name, pr_number) = pr_info;
 
-    // Find the comment
-    let feedback_path = format!("{}/.er-feedback.json", repo_root);
-    let mut feedback: crate::ai::ErFeedback = match std::fs::read_to_string(&feedback_path) {
+    let comments_path = format!("{}/.er-github-comments.json", repo_root);
+    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
         Ok(content) => match serde_json::from_str(&content) {
-            Ok(fb) => fb,
+            Ok(gc) => gc,
             Err(_) => return Ok(()),
         },
         Err(_) => return Ok(()),
     };
 
-    let comment = match feedback.comments.iter().find(|c| c.id == focus.comment_id) {
+    let comment = match gc.comments.iter().find(|c| c.id == focus.comment_id) {
         Some(c) => c.clone(),
         None => return Ok(()),
     };
@@ -862,9 +887,8 @@ fn push_comment_to_github(app: &mut App) -> Result<()> {
         return Ok(());
     }
 
-    // Push to GitHub
     let result = if let Some(reply_to_id) = comment.in_reply_to.as_ref()
-        .and_then(|rt| feedback.comments.iter().find(|c| c.id == *rt))
+        .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
         .and_then(|c| c.github_id)
     {
         github::gh_pr_reply_comment(&owner, &repo_name, pr_number, reply_to_id, &comment.comment)
@@ -876,15 +900,14 @@ fn push_comment_to_github(app: &mut App) -> Result<()> {
 
     match result {
         Ok(github_id) => {
-            // Update the comment with github_id and synced flag
-            if let Some(c) = feedback.comments.iter_mut().find(|c| c.id == focus.comment_id) {
+            if let Some(c) = gc.comments.iter_mut().find(|c| c.id == focus.comment_id) {
                 c.github_id = Some(github_id);
                 c.synced = true;
             }
-            let json = serde_json::to_string_pretty(&feedback)?;
-            let tmp_path = format!("{}.tmp", feedback_path);
+            let json = serde_json::to_string_pretty(&gc)?;
+            let tmp_path = format!("{}.tmp", comments_path);
             std::fs::write(&tmp_path, &json)?;
-            std::fs::rename(&tmp_path, &feedback_path)?;
+            std::fs::rename(&tmp_path, &comments_path)?;
             app.tab_mut().reload_ai_state();
             app.notify("Comment pushed to GitHub");
         }
@@ -909,10 +932,10 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     };
     let (owner, repo_name, pr_number) = pr_info;
 
-    let feedback_path = format!("{}/.er-feedback.json", repo_root);
-    let mut feedback: crate::ai::ErFeedback = match std::fs::read_to_string(&feedback_path) {
+    let comments_path = format!("{}/.er-github-comments.json", repo_root);
+    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
         Ok(content) => match serde_json::from_str(&content) {
-            Ok(fb) => fb,
+            Ok(gc) => gc,
             Err(_) => return Ok(()),
         },
         Err(_) => return Ok(()),
@@ -921,20 +944,20 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     let mut pushed = 0u32;
     let mut failed = 0u32;
 
-    // Collect indices of unpushed local comments (push parents before replies)
-    let comment_ids: Vec<String> = feedback.comments.iter()
+    // Push parents first
+    let comment_ids: Vec<String> = gc.comments.iter()
         .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.is_none())
         .map(|c| c.id.clone())
         .collect();
 
     for cid in &comment_ids {
-        let comment = feedback.comments.iter().find(|c| c.id == *cid).cloned();
+        let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
         if let Some(comment) = comment {
             let path = &comment.file;
             let line = comment.line_start.unwrap_or(1);
             match github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment) {
                 Ok(github_id) => {
-                    if let Some(c) = feedback.comments.iter_mut().find(|c| c.id == *cid) {
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                         c.github_id = Some(github_id);
                         c.synced = true;
                     }
@@ -945,23 +968,23 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
         }
     }
 
-    // Now push replies (they need parent's github_id)
-    let reply_ids: Vec<String> = feedback.comments.iter()
+    // Then push replies
+    let reply_ids: Vec<String> = gc.comments.iter()
         .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.is_some())
         .map(|c| c.id.clone())
         .collect();
 
     for cid in &reply_ids {
-        let comment = feedback.comments.iter().find(|c| c.id == *cid).cloned();
+        let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
         if let Some(comment) = comment {
             let parent_gh_id = comment.in_reply_to.as_ref()
-                .and_then(|rt| feedback.comments.iter().find(|c| c.id == *rt))
+                .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
                 .and_then(|c| c.github_id);
 
             if let Some(parent_gh_id) = parent_gh_id {
                 match github::gh_pr_reply_comment(&owner, &repo_name, pr_number, parent_gh_id, &comment.comment) {
                     Ok(github_id) => {
-                        if let Some(c) = feedback.comments.iter_mut().find(|c| c.id == *cid) {
+                        if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                             c.github_id = Some(github_id);
                             c.synced = true;
                         }
@@ -975,11 +998,10 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
         }
     }
 
-    // Write back
-    let json = serde_json::to_string_pretty(&feedback)?;
-    let tmp_path = format!("{}.tmp", feedback_path);
+    let json = serde_json::to_string_pretty(&gc)?;
+    let tmp_path = format!("{}.tmp", comments_path);
     std::fs::write(&tmp_path, &json)?;
-    std::fs::rename(&tmp_path, &feedback_path)?;
+    std::fs::rename(&tmp_path, &comments_path)?;
     app.tab_mut().reload_ai_state();
 
     if failed > 0 {
