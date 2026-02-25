@@ -237,6 +237,11 @@ impl TabState {
     }
 
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool) -> Result<()> {
+        // Remember current position to restore after re-parse
+        let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
+        let prev_hunk = self.current_hunk;
+        let prev_line = self.current_line;
+
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
         self.files = git::parse_diff(&raw);
 
@@ -286,15 +291,29 @@ impl TabState {
             }
         }
 
-        // Clamp selection
-        if self.selected_file >= self.files.len() && !self.files.is_empty() {
-            self.selected_file = self.files.len() - 1;
-        }
-        if self.files.is_empty() {
+        // Restore selection by path (file order may change after sort/re-parse)
+        if let Some(ref path) = prev_path {
+            if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
+                self.selected_file = idx;
+                // Restore hunk/line if the file still has enough hunks
+                if prev_hunk < self.total_hunks() {
+                    self.current_hunk = prev_hunk;
+                    self.current_line = prev_line;
+                } else {
+                    self.clamp_hunk();
+                }
+            } else {
+                // File disappeared from diff — clamp index
+                if self.selected_file >= self.files.len() {
+                    self.selected_file = self.files.len().saturating_sub(1);
+                }
+                self.clamp_hunk();
+            }
+        } else {
             self.selected_file = 0;
+            self.clamp_hunk();
         }
-        self.clamp_hunk();
-        self.diff_scroll = 0;
+        self.scroll_to_current_hunk();
 
         Ok(())
     }
