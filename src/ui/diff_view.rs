@@ -470,6 +470,8 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
     let total_files = history.commit_files.len();
 
     let mut lines: Vec<Line> = Vec::new();
+    // Track the line index where each file header starts (for sticky header)
+    let mut file_header_line_indices: Vec<usize> = Vec::new();
 
     // Render each file as a section
     for (file_idx, file) in history.commit_files.iter().enumerate() {
@@ -517,6 +519,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
             ratatui::style::Style::default().bg(file_header_bg),
         ));
 
+        file_header_line_indices.push(lines.len());
         lines.push(Line::from(header_spans));
         lines.push(Line::from(""));
 
@@ -612,6 +615,62 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
         .scroll((history.diff_scroll, history.h_scroll));
 
     f.render_widget(paragraph, area);
+
+    // Sticky filename header: when a file's header scrolls above the viewport,
+    // pin it at the top so the user always knows which file they're looking at.
+    // The block title occupies the first row of `area`, so content starts at area.y + 1.
+    let scroll = history.diff_scroll as usize;
+    if scroll > 0 && !file_header_line_indices.is_empty() {
+        // Find which file's section is at the top of the viewport:
+        // the last file whose header line index <= scroll position.
+        let topmost_file_idx = file_header_line_indices
+            .iter()
+            .rposition(|&line_idx| line_idx <= scroll)
+            .unwrap_or(0);
+
+        // Only show the sticky header if the file's header has scrolled off-screen
+        // (i.e., the scroll position is past the header line itself).
+        let header_line = file_header_line_indices[topmost_file_idx];
+        if scroll > header_line {
+            let file = &history.commit_files[topmost_file_idx];
+            let sticky_bg = styles::PANEL;
+
+            let mut sticky_spans = vec![
+                Span::styled(
+                    format!("{} ", file.status.symbol()),
+                    match &file.status {
+                        crate::git::FileStatus::Added => ratatui::style::Style::default().fg(styles::GREEN).bg(sticky_bg),
+                        crate::git::FileStatus::Deleted => ratatui::style::Style::default().fg(styles::RED).bg(sticky_bg),
+                        _ => ratatui::style::Style::default().fg(styles::YELLOW).bg(sticky_bg),
+                    },
+                ),
+                Span::styled(
+                    &file.path,
+                    ratatui::style::Style::default().fg(styles::BRIGHT).bg(sticky_bg),
+                ),
+                Span::styled(
+                    format!("  +{} -{}", file.adds, file.dels),
+                    ratatui::style::Style::default().fg(styles::DIM).bg(sticky_bg),
+                ),
+            ];
+
+            // Pad the sticky header to fill the full width
+            let sticky_len: usize = sticky_spans.iter().map(|s| s.content.chars().count()).sum();
+            let sticky_remaining = (area.width as usize).saturating_sub(sticky_len);
+            sticky_spans.push(Span::styled(
+                " ".repeat(sticky_remaining),
+                ratatui::style::Style::default().bg(sticky_bg),
+            ));
+
+            let sticky_area = Rect {
+                x: area.x,
+                y: area.y,
+                width: area.width,
+                height: 1,
+            };
+            f.render_widget(Paragraph::new(Line::from(sticky_spans)), sticky_area);
+        }
+    }
 
     // File indicator overlay in top-right corner
     if total_files > 0 {
