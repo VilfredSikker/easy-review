@@ -18,6 +18,7 @@ pub const CYAN: Color = Color::Rgb(34, 211, 238);
 pub const GREEN: Color = Color::Rgb(74, 222, 128);
 pub const YELLOW: Color = Color::Rgb(250, 204, 21);
 pub const RED: Color = Color::Rgb(248, 113, 113);
+pub const RED_TEXT: Color = RED;
 pub const PURPLE: Color = Color::Rgb(167, 139, 250);
 
 // ── Diff colors (subtle tinted backgrounds, vivid text) ──
@@ -154,6 +155,12 @@ pub fn comment_focus_style() -> Style {
 pub fn stale_style() -> Style {
     Style::default().fg(STALE)
 }
+
+/// Relocated comment indicator color (soft green)
+pub const RELOCATED_INDICATOR: Color = Color::Rgb(100, 200, 150);
+
+/// Lost comment indicator color (dimmed red)
+pub const LOST_INDICATOR: Color = Color::Rgb(180, 100, 100);
 
 // ── Watched file colors ──
 

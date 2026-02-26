@@ -241,9 +241,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             // ── Inline line comments (rendered directly after the target line) ──
             if let Some(new_line_num) = diff_line.new_num {
                 let line_comments = tab.ai.comments_for_line(&file.path, hunk_idx, new_line_num);
-                let is_focused = |c: &CommentRef| {
-                    tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id())
-                };
                 for comment in &line_comments {
                     let visible = match comment {
                         CommentRef::Question(_) => tab.layers.show_questions,
@@ -252,12 +249,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     if !visible {
                         continue;
                     }
+                    let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
                     render_comment_lines(
                         &mut lines,
                         comment,
                         area.width,
                         true,
-                        is_focused(comment),
+                        is_focused,
                     );
                     // Render replies to this line comment (GitHub comments only)
                     let replies = tab.ai.replies_to(comment.id());
@@ -267,7 +265,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                             &reply,
                             area.width,
                             true,
-                            is_focused(&reply),
+                            false,
                         );
                     }
                 }
@@ -362,9 +360,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         // ── Hunk-level comments after the hunk ──
         {
             let hunk_comments = tab.ai.comments_for_hunk_only(&file.path, hunk_idx);
-            let is_focused = |c: &CommentRef| {
-                tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id())
-            };
             for comment in &hunk_comments {
                 let visible = match comment {
                     CommentRef::Question(_) => tab.layers.show_questions,
@@ -373,12 +368,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 if !visible {
                     continue;
                 }
+                let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
                 render_comment_lines(
                     &mut lines,
                     comment,
                     area.width,
                     false,
-                    is_focused(comment),
+                    is_focused,
                 );
                 // Render replies to this hunk comment (GitHub comments only)
                 let replies = tab.ai.replies_to(comment.id());
@@ -388,7 +384,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         &reply,
                         area.width,
                         false,
-                        is_focused(&reply),
+                        false,
                     );
                 }
             }
@@ -399,6 +395,48 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             lines.push(Line::from(""));
         }
         logical_line += 1;
+    }
+
+    // ── Orphaned lost comments (hunk_index exceeded file hunk count) ──
+    // Render after the last hunk so they don't disappear entirely
+    {
+        let num_hunks = file.hunks.len();
+        let orphaned: Vec<CommentRef> = {
+            let mut v = Vec::new();
+            if let Some(qs) = &tab.ai.questions {
+                for q in &qs.questions {
+                    if q.file == file.path && q.anchor_status == "lost" {
+                        if q.hunk_index.map_or(false, |hi| hi >= num_hunks) {
+                            if tab.layers.show_questions {
+                                v.push(CommentRef::Question(q));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(gc) = &tab.ai.github_comments {
+                for c in &gc.comments {
+                    if c.file == file.path && c.anchor_status == "lost" && c.in_reply_to.is_none() {
+                        if c.hunk_index.map_or(false, |hi| hi >= num_hunks) {
+                            if tab.layers.show_github_comments {
+                                v.push(CommentRef::GitHubComment(c));
+                            }
+                        }
+                    }
+                }
+            }
+            v
+        };
+        if !orphaned.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  -- comments from deleted hunks --",
+                ratatui::style::Style::default().fg(styles::MUTED),
+            )));
+            for comment in &orphaned {
+                let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
+                render_comment_lines(&mut lines, comment, area.width, false, is_focused);
+            }
+        }
     }
 
     let block = Block::default()
@@ -836,10 +874,24 @@ fn render_comment_lines(
         ));
     }
 
+    // Relocated/lost anchor indicators
+    let anchor = comment.anchor_status();
+    if anchor == "relocated" {
+        header_spans.push(Span::styled(
+            "  \u{21aa} moved",
+            ratatui::style::Style::default().fg(styles::RELOCATED_INDICATOR).bg(bg),
+        ));
+    } else if anchor == "lost" {
+        header_spans.push(Span::styled(
+            "  ? lost",
+            ratatui::style::Style::default().fg(styles::LOST_INDICATOR).bg(bg),
+        ));
+    }
+
     // Stale indicator
     if is_stale {
         header_spans.push(Span::styled(
-            "  ⚠ stale",
+            "  \u{26a0} stale",
             ratatui::style::Style::default().fg(styles::STALE).bg(bg),
         ));
     }
@@ -866,7 +918,8 @@ fn render_comment_lines(
     let indent: usize = if inline { 8 } else { 6 };
     let max_len = width.saturating_sub(indent as u16) as usize;
     let text = comment.text();
-    let text_fg = if is_stale { styles::DIM } else { styles::TEXT };
+    let is_lost = anchor == "lost";
+    let text_fg = if is_stale || is_lost { styles::DIM } else { styles::TEXT };
     let padding = " ".repeat(indent.saturating_sub(2));
     for wrapped in word_wrap(text, max_len) {
         lines.push(Line::from(vec![
