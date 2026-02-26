@@ -907,6 +907,8 @@ impl TabState {
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
                     self.ai_panel_scroll = 0;
+                    self.ensure_file_parsed();
+                    self.rebuild_hunk_offsets();
                 } else {
                     // At last diff file — transition to watched section
                     let visible_watched = self.visible_watched_files();
@@ -950,6 +952,8 @@ impl TabState {
                         self.diff_scroll = 0;
                         self.h_scroll = 0;
                         self.ai_panel_scroll = 0;
+                        self.ensure_file_parsed();
+                        self.rebuild_hunk_offsets();
                     }
                 }
             }
@@ -968,6 +972,8 @@ impl TabState {
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
                     self.ai_panel_scroll = 0;
+                    self.ensure_file_parsed();
+                    self.rebuild_hunk_offsets();
                 }
             } else {
                 // Current selection not in visible set — snap to first

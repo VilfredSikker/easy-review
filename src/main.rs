@@ -783,6 +783,24 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
 
+        // Toggle AI findings layer
+        KeyCode::Char('a') => {
+            app.tab_mut().toggle_layer_ai();
+            let on = app.tab().layers.show_ai_findings;
+            app.notify(if on { "AI findings: ON" } else { "AI findings: OFF" });
+        }
+        // Toggle context panel
+        KeyCode::Char('p') => {
+            app.tab_mut().toggle_panel();
+        }
+        // Toggle panel focus
+        KeyCode::Tab => {
+            let tab = app.tab_mut();
+            if tab.panel.is_some() {
+                tab.panel_focus = !tab.panel_focus;
+            }
+        }
+
         _ => {}
     }
     Ok(())
