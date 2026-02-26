@@ -72,9 +72,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
                 state.is_stale = review.diff_hash != current_diff_hash;
                 state.review = Some(review);
             }
-            Err(e) => {
-                log::warn!("Failed to parse .er-review.json: {}", e);
-            }
+            Err(_) => {}
         }
     }
 
@@ -89,9 +87,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
                 }
                 state.order = Some(order);
             }
-            Err(e) => {
-                log::warn!("Failed to parse .er-order.json: {}", e);
-            }
+            Err(_) => {}
         }
     }
 
@@ -113,9 +109,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
                 }
                 state.checklist = Some(checklist);
             }
-            Err(e) => {
-                log::warn!("Failed to parse .er-checklist.json: {}", e);
-            }
+            Err(_) => {}
         }
     }
 
@@ -132,9 +126,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
                 }
                 state.questions = Some(questions);
             }
-            Err(e) => {
-                log::warn!("Failed to parse .er-questions.json: {}", e);
-            }
+            Err(_) => {}
         }
     }
 
@@ -151,9 +143,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
                 }
                 state.github_comments = Some(gh_comments);
             }
-            Err(e) => {
-                log::warn!("Failed to parse .er-github-comments.json: {}", e);
-            }
+            Err(_) => {}
         }
     }
 
@@ -165,9 +155,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
                 Ok(feedback) => {
                     state.feedback = Some(feedback);
                 }
-                Err(e) => {
-                    log::warn!("Failed to parse .er-feedback.json: {}", e);
-                }
+                Err(_) => {}
             }
         }
     }
