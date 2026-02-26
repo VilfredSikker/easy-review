@@ -1043,15 +1043,41 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
             }
         } else {
             let file_path = gh.path.clone().unwrap_or_default();
-            let hunk_index = gh.line.and_then(|line| {
-                tab_files.iter()
-                    .find(|f| f.path == file_path)
-                    .and_then(|f| {
-                        f.hunks.iter().enumerate().find(|(_, h)| {
+            // Extract hunk_index and anchor data from the diff in one pass
+            let (hunk_index, anchor_line_content, anchor_ctx_before, anchor_ctx_after, anchor_old_line, anchor_hunk_header) =
+                if let Some(line) = gh.line {
+                    if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
+                        if let Some((i, hunk)) = f.hunks.iter().enumerate().find(|(_, h)| {
                             line >= h.new_start && line < h.new_start + h.new_count
-                        }).map(|(i, _)| i)
-                    })
-            });
+                        }) {
+                            let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
+                            let (lc, old_ln) = if let Some(idx) = target_idx {
+                                (hunk.lines[idx].content.clone(), hunk.lines[idx].old_num)
+                            } else {
+                                (String::new(), None)
+                            };
+                            let ctx_before: Vec<String> = if let Some(idx) = target_idx {
+                                let start = idx.saturating_sub(3);
+                                hunk.lines[start..idx].iter().map(|l| l.content.clone()).collect()
+                            } else {
+                                Vec::new()
+                            };
+                            let ctx_after: Vec<String> = if let Some(idx) = target_idx {
+                                let end = (idx + 4).min(hunk.lines.len());
+                                hunk.lines[(idx + 1)..end].iter().map(|l| l.content.clone()).collect()
+                            } else {
+                                Vec::new()
+                            };
+                            (Some(i), lc, ctx_before, ctx_after, old_ln, hunk.header.clone())
+                        } else {
+                            (None, String::new(), Vec::new(), Vec::new(), None, String::new())
+                        }
+                    } else {
+                        (None, String::new(), Vec::new(), Vec::new(), None, String::new())
+                    }
+                } else {
+                    (None, String::new(), Vec::new(), Vec::new(), None, String::new())
+                };
 
             let in_reply_to = gh.in_reply_to_id.and_then(|parent_gh_id| {
                 gc.comments.iter()
@@ -1066,7 +1092,7 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
                 hunk_index,
                 line_start: gh.line,
                 line_end: None,
-                line_content: String::new(),
+                line_content: anchor_line_content,
                 comment: gh.body.clone(),
                 in_reply_to,
                 resolved: false,
@@ -1075,10 +1101,10 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
                 author: gh.user.login.clone(),
                 synced: true,
                 stale: false,
-                context_before: Vec::new(),
-                context_after: Vec::new(),
-                old_line_start: None,
-                hunk_header: String::new(),
+                context_before: anchor_ctx_before,
+                context_after: anchor_ctx_after,
+                old_line_start: anchor_old_line,
+                hunk_header: anchor_hunk_header,
                 anchor_status: "original".to_string(),
                 relocated_at_hash: String::new(),
                 finding_ref: None,
