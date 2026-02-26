@@ -9,7 +9,7 @@ pub struct DiffLine {
     pub new_num: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LineType {
     Context,
     Add,

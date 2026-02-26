@@ -1,11 +1,44 @@
 use crate::ai::{self, AiState, ReviewFocus, ViewMode};
-use crate::git::{self, CommitInfo, DiffFile, Worktree};
+use crate::git::{self, CommitInfo, DiffFile, WatchedFile, Worktree};
 use anyhow::{Context, Result};
 use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+// ── Config ──
+
+/// Configuration from .er-config.toml
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ErConfig {
+    #[serde(default)]
+    pub watched: WatchedConfig,
+}
+
+/// [watched] section configuration
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct WatchedConfig {
+    /// Glob patterns for git-ignored paths to include in the UI
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// How to diff watched files: "content" or "snapshot"
+    #[serde(default = "default_diff_mode")]
+    pub diff_mode: String,
+}
+
+fn default_diff_mode() -> String {
+    "content".to_string()
+}
+
+/// Load config from .er-config.toml
+fn load_er_config(repo_root: &str) -> ErConfig {
+    let config_path = format!("{}/.er-config.toml", repo_root);
+    match std::fs::read_to_string(&config_path) {
+        Ok(content) => toml::from_str(&content).unwrap_or_default(),
+        Err(_) => ErConfig::default(),
+    }
+}
 
 // ── Enums ──
 
@@ -98,6 +131,7 @@ pub enum InputMode {
     Search,
     Comment,
     Filter,
+    Commit,
 }
 
 // ── Overlay types ──
@@ -168,6 +202,9 @@ pub struct TabState {
     /// Only show unreviewed files in the file tree
     pub show_unreviewed_only: bool,
 
+    /// Sort files by mtime (newest first) — works in any diff mode
+    pub sort_by_mtime: bool,
+
     /// AI review state (loaded from .er-* files)
     pub ai: AiState,
 
@@ -215,6 +252,28 @@ pub struct TabState {
 
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
+
+    // ── Watched files state ──
+
+    /// Configuration for watched files
+    pub watched_config: WatchedConfig,
+
+    /// Git-ignored files opted into visibility
+    pub watched_files: Vec<WatchedFile>,
+
+    /// When Some, a watched file is selected (index into watched_files)
+    pub selected_watched: Option<usize>,
+
+    /// Whether the watched files section is visible
+    pub show_watched: bool,
+
+    /// Paths that are watched but NOT gitignored (warning)
+    pub watched_not_ignored: Vec<String>,
+
+    // ── Commit input state ──
+
+    /// Text buffer for the commit message being typed
+    pub commit_input: String,
 }
 
 impl TabState {
@@ -234,6 +293,9 @@ impl TabState {
 
     fn new_inner(repo_root: String, current_branch: String, base_branch: String) -> Result<Self> {
         let reviewed = Self::load_reviewed_files(&repo_root);
+        let config = load_er_config(&repo_root);
+        let watched_config = config.watched;
+        let has_watched = !watched_config.paths.is_empty();
 
         let mut tab = TabState {
             mode: DiffMode::Branch,
@@ -254,6 +316,7 @@ impl TabState {
             filter_history: Vec::new(),
             reviewed,
             show_unreviewed_only: false,
+            sort_by_mtime: false,
             ai: AiState::default(),
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
@@ -264,9 +327,16 @@ impl TabState {
             comment_reply_to: None,
             comment_line_num: None,
             history: None,
+            watched_config,
+            watched_files: Vec::new(),
+            selected_watched: None,
+            show_watched: has_watched,
+            watched_not_ignored: Vec::new(),
+            commit_input: String::new(),
         };
 
         tab.refresh_diff()?;
+        tab.refresh_watched_files();
         Ok(tab)
     }
 
@@ -296,8 +366,18 @@ impl TabState {
         if self.mode == DiffMode::History {
             return Ok(());
         }
+
+        // Remember current position to restore after re-parse
+        let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
+        let prev_hunk = self.current_hunk;
+        let prev_line = self.current_line;
+
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
         self.files = git::parse_diff(&raw);
+
+        if self.sort_by_mtime {
+            self.sort_files_by_mtime();
+        }
 
         // Compute diff hash for the current mode
         self.diff_hash = ai::compute_diff_hash(&raw);
@@ -341,15 +421,29 @@ impl TabState {
             }
         }
 
-        // Clamp selection
-        if self.selected_file >= self.files.len() && !self.files.is_empty() {
-            self.selected_file = self.files.len() - 1;
-        }
-        if self.files.is_empty() {
+        // Restore selection by path (file order may change after sort/re-parse)
+        if let Some(ref path) = prev_path {
+            if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
+                self.selected_file = idx;
+                // Restore hunk/line if the file still has enough hunks
+                if prev_hunk < self.total_hunks() {
+                    self.current_hunk = prev_hunk;
+                    self.current_line = prev_line;
+                } else {
+                    self.clamp_hunk();
+                }
+            } else {
+                // File disappeared from diff — clamp index
+                if self.selected_file >= self.files.len() {
+                    self.selected_file = self.files.len().saturating_sub(1);
+                }
+                self.clamp_hunk();
+            }
+        } else {
             self.selected_file = 0;
+            self.clamp_hunk();
         }
-        self.clamp_hunk();
-        self.diff_scroll = 0;
+        self.scroll_to_current_hunk();
 
         Ok(())
     }
@@ -445,9 +539,35 @@ impl TabState {
         visible
     }
 
+    /// Get the list of watched files, filtered by search query
+    pub fn visible_watched_files(&self) -> Vec<(usize, &WatchedFile)> {
+        if !self.show_watched {
+            return Vec::new();
+        }
+        if self.search_query.is_empty() {
+            self.watched_files.iter().enumerate().collect()
+        } else {
+            let q = self.search_query.to_lowercase();
+            self.watched_files
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.path.to_lowercase().contains(&q))
+                .collect()
+        }
+    }
+
     /// Get the currently selected file
     pub fn selected_diff_file(&self) -> Option<&DiffFile> {
+        if self.selected_watched.is_some() {
+            return None;
+        }
         self.files.get(self.selected_file)
+    }
+
+    /// Get the currently selected watched file
+    pub fn selected_watched_file(&self) -> Option<&WatchedFile> {
+        self.selected_watched
+            .and_then(|idx| self.watched_files.get(idx))
     }
 
     /// Total hunks in the currently selected file
@@ -461,64 +581,138 @@ impl TabState {
 
     /// Snap selected_file to the first visible file if current selection is not visible
     pub fn snap_to_visible(&mut self) {
-        let visible = self.visible_files();
-        if visible.is_empty() {
-            return;
-        }
-        if !visible.iter().any(|(i, _)| *i == self.selected_file) {
-            self.selected_file = visible[0].0;
-            self.current_hunk = 0;
-            self.current_line = None;
-            self.diff_scroll = 0;
-            self.h_scroll = 0;
+        if let Some(idx) = self.selected_watched {
+            // In watched section — check if selection is still visible
+            let visible_watched = self.visible_watched_files();
+            if !visible_watched.iter().any(|(i, _)| *i == idx) {
+                if !visible_watched.is_empty() {
+                    self.selected_watched = Some(visible_watched[0].0);
+                } else {
+                    self.selected_watched = None;
+                    // Fall back to diff files
+                    let visible = self.visible_files();
+                    if !visible.is_empty() {
+                        self.selected_file = visible[0].0;
+                        self.current_hunk = 0;
+                        self.current_line = None;
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                    }
+                }
+            }
+        } else {
+            let visible = self.visible_files();
+            if visible.is_empty() {
+                return;
+            }
+            if !visible.iter().any(|(i, _)| *i == self.selected_file) {
+                self.selected_file = visible[0].0;
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.diff_scroll = 0;
+                self.h_scroll = 0;
+            }
         }
     }
 
     pub fn next_file(&mut self) {
-        let visible = self.visible_files();
-        if visible.is_empty() {
-            return;
-        }
-        if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
-            if pos + 1 < visible.len() {
-                self.selected_file = visible[pos + 1].0;
+        if let Some(idx) = self.selected_watched {
+            // In watched section — move down within watched files
+            let visible_watched = self.visible_watched_files();
+            if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
+                if pos + 1 < visible_watched.len() {
+                    self.selected_watched = Some(visible_watched[pos + 1].0);
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                }
+            }
+        } else {
+            // In diff section
+            let visible = self.visible_files();
+            if visible.is_empty() {
+                // No diff files — jump to watched if available
+                let visible_watched = self.visible_watched_files();
+                if !visible_watched.is_empty() {
+                    self.selected_watched = Some(visible_watched[0].0);
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                }
+                return;
+            }
+            if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
+                if pos + 1 < visible.len() {
+                    self.selected_file = visible[pos + 1].0;
+                    self.current_hunk = 0;
+                    self.current_line = None;
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                    self.ai_panel_scroll = 0;
+                } else {
+                    // At last diff file — transition to watched section
+                    let visible_watched = self.visible_watched_files();
+                    if !visible_watched.is_empty() {
+                        self.selected_watched = Some(visible_watched[0].0);
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                    }
+                }
+            } else {
+                // Current selection not in visible set — snap to first
+                self.selected_file = visible[0].0;
                 self.current_hunk = 0;
-                self.current_line = None;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
                 self.ai_panel_scroll = 0;
             }
-        } else {
-            // Current selection not in visible set — snap to first
-            self.selected_file = visible[0].0;
-            self.current_hunk = 0;
-            self.diff_scroll = 0;
-            self.h_scroll = 0;
-            self.ai_panel_scroll = 0;
         }
     }
 
     pub fn prev_file(&mut self) {
-        let visible = self.visible_files();
-        if visible.is_empty() {
-            return;
-        }
-        if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
-            if pos > 0 {
-                self.selected_file = visible[pos - 1].0;
+        if let Some(idx) = self.selected_watched {
+            // In watched section — move up within watched files
+            let visible_watched = self.visible_watched_files();
+            if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
+                if pos > 0 {
+                    self.selected_watched = Some(visible_watched[pos - 1].0);
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                } else {
+                    // At first watched file — transition back to diff section
+                    self.selected_watched = None;
+                    let visible = self.visible_files();
+                    if !visible.is_empty() {
+                        self.selected_file = visible.last().unwrap().0;
+                        self.current_hunk = 0;
+                        self.current_line = None;
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                        self.ai_panel_scroll = 0;
+                    }
+                }
+            }
+        } else {
+            // In diff section — normal navigation
+            let visible = self.visible_files();
+            if visible.is_empty() {
+                return;
+            }
+            if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
+                if pos > 0 {
+                    self.selected_file = visible[pos - 1].0;
+                    self.current_hunk = 0;
+                    self.current_line = None;
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                    self.ai_panel_scroll = 0;
+                }
+            } else {
+                // Current selection not in visible set — snap to first
+                self.selected_file = visible[0].0;
                 self.current_hunk = 0;
-                self.current_line = None;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
                 self.ai_panel_scroll = 0;
             }
-        } else {
-            // Current selection not in visible set — snap to first
-            self.selected_file = visible[0].0;
-            self.current_hunk = 0;
-            self.diff_scroll = 0;
-            self.h_scroll = 0;
-            self.ai_panel_scroll = 0;
         }
     }
 
@@ -1031,6 +1225,13 @@ impl TabState {
 
     pub fn set_mode(&mut self, mode: DiffMode) {
         if self.mode != mode {
+            // Remember current position to restore after mode switch
+            let prev_path = self.files
+                .get(self.selected_file)
+                .map(|f| f.path.clone());
+            let prev_hunk = self.current_hunk;
+            let prev_line = self.current_line;
+
             self.mode = mode;
             if mode == DiffMode::History {
                 // Initialize history state if first time
@@ -1070,14 +1271,105 @@ impl TabState {
                     });
                 }
             } else {
-                self.selected_file = 0;
                 self.current_hunk = 0;
                 self.current_line = None;
+                self.selected_watched = None;
                 self.diff_scroll = 0;
                 let _ = self.refresh_diff();
+
+                // Restore selection by path (file order may differ between modes)
+                if let Some(path) = prev_path {
+                    if let Some(idx) = self.files.iter().position(|f| f.path == path) {
+                        self.selected_file = idx;
+                        // Restore hunk/line if the file still has enough hunks
+                        if prev_hunk < self.total_hunks() {
+                            self.current_hunk = prev_hunk;
+                            self.current_line = prev_line;
+                        }
+                    } else {
+                        self.selected_file = 0;
+                    }
+                } else {
+                    self.selected_file = 0;
+                }
                 self.snap_to_visible();
+                self.scroll_to_current_hunk();
             }
         }
+    }
+
+    // ── Watched Files ──
+
+    /// Reload watched files from disk
+    pub fn refresh_watched_files(&mut self) {
+        if !self.show_watched || self.watched_config.paths.is_empty() {
+            self.watched_files.clear();
+            return;
+        }
+        match git::discover_watched_files(&self.repo_root, &self.watched_config.paths) {
+            Ok(files) => {
+                // Check gitignore status for warnings
+                self.watched_not_ignored = files
+                    .iter()
+                    .filter(|f| !git::verify_gitignored(&self.repo_root, &f.path))
+                    .map(|f| f.path.clone())
+                    .collect();
+                self.watched_files = files;
+            }
+            Err(_) => {
+                self.watched_files.clear();
+            }
+        }
+        // Clamp selection
+        if let Some(idx) = self.selected_watched {
+            if idx >= self.watched_files.len() {
+                if self.watched_files.is_empty() {
+                    self.selected_watched = None;
+                } else {
+                    self.selected_watched = Some(self.watched_files.len() - 1);
+                }
+            }
+        }
+    }
+
+    /// Reload config from .er-config.toml
+    #[allow(dead_code)]
+    pub fn reload_config(&mut self) {
+        let config = load_er_config(&self.repo_root);
+        self.watched_config = config.watched;
+        let has_paths = !self.watched_config.paths.is_empty();
+        if !has_paths {
+            self.show_watched = false;
+            self.watched_files.clear();
+            self.selected_watched = None;
+        }
+    }
+
+    /// Update snapshot for the currently selected watched file
+    pub fn update_watched_snapshot(&mut self) -> Result<()> {
+        if let Some(watched) = self.selected_watched_file() {
+            let path = watched.path.clone();
+            git::save_snapshot(&self.repo_root, &path)?;
+        }
+        Ok(())
+    }
+
+    /// Sort files by filesystem mtime (newest first)
+    fn sort_files_by_mtime(&mut self) {
+        use std::fs;
+        use std::time::SystemTime;
+
+        let repo_root = self.repo_root.clone();
+        self.files.sort_by(|a, b| {
+            let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let mtime_b = fs::metadata(format!("{}/{}", repo_root, b.path))
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            // Newest first (reverse chronological)
+            mtime_b.cmp(&mtime_a)
+        });
     }
 
     fn clamp_hunk(&mut self) {
@@ -1750,6 +2042,36 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
+    // ── Commit ──
+
+    /// Start commit input (only in Staged mode)
+    pub fn start_commit(&mut self) {
+        self.tab_mut().commit_input.clear();
+        self.input_mode = InputMode::Commit;
+    }
+
+    /// Run git commit with the typed message
+    pub fn submit_commit(&mut self) -> Result<()> {
+        let message = self.tab().commit_input.trim().to_string();
+        if message.is_empty() {
+            self.input_mode = InputMode::Normal;
+            return Ok(());
+        }
+        let repo_root = self.tab().repo_root.clone();
+        git::git_commit(&repo_root, &message)?;
+        self.tab_mut().commit_input.clear();
+        self.input_mode = InputMode::Normal;
+        let _ = self.tab_mut().refresh_diff();
+        self.notify("Committed!");
+        Ok(())
+    }
+
+    /// Cancel commit input
+    pub fn cancel_commit(&mut self) {
+        self.tab_mut().commit_input.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
     // ── AiReview Navigation ──
 
     /// Jump from AiReview to the selected file in SidePanel mode
@@ -1974,6 +2296,7 @@ mod tests {
             filter_history: Vec::new(),
             reviewed: HashSet::new(),
             show_unreviewed_only: false,
+            sort_by_mtime: false,
             ai: AiState::default(),
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
@@ -1984,6 +2307,12 @@ mod tests {
             comment_reply_to: None,
             comment_line_num: None,
             history: None,
+            watched_config: WatchedConfig::default(),
+            watched_files: Vec::new(),
+            selected_watched: None,
+            show_watched: false,
+            watched_not_ignored: Vec::new(),
+            commit_input: String::new(),
         }
     }
 

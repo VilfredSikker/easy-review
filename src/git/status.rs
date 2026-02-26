@@ -1,7 +1,9 @@
 use super::diff::{DiffHunk, LineType};
 use anyhow::{Context, Result};
 use std::io::Write;
+use std::path::Path;
 use std::process::Command;
+use std::time::SystemTime;
 
 /// Metadata for a single commit (used in History mode)
 #[derive(Debug, Clone)]
@@ -212,7 +214,51 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
         anyhow::bail!("git diff failed: {}", stderr.trim());
     }
 
+    // For unstaged mode, append synthetic diffs for untracked files
+    if mode == "unstaged" {
+        let untracked = untracked_files(repo_root)?;
+        if !untracked.is_empty() {
+            let mut combined = stdout;
+            for path in untracked {
+                if let Ok(content) = std::fs::read_to_string(
+                    std::path::Path::new(repo_root).join(&path),
+                ) {
+                    combined.push_str(&synthetic_new_file_diff(&path, &content));
+                }
+            }
+            return Ok(combined);
+        }
+    }
+
     Ok(stdout)
+}
+
+/// List untracked files (excluding gitignored)
+fn untracked_files(repo_root: &str) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to list untracked files")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+}
+
+/// Build a unified diff for a new untracked file
+fn synthetic_new_file_diff(path: &str, content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let count = lines.len();
+    let mut diff = String::new();
+    diff.push_str(&format!("diff --git a/{path} b/{path}\n"));
+    diff.push_str("new file mode 100644\n");
+    diff.push_str("--- /dev/null\n");
+    diff.push_str(&format!("+++ b/{path}\n"));
+    diff.push_str(&format!("@@ -0,0 +1,{count} @@\n"));
+    for line in &lines {
+        diff.push_str(&format!("+{line}\n"));
+    }
+    diff
 }
 
 // ── Worktrees ──
@@ -347,6 +393,21 @@ pub fn git_stage_hunk(repo_root: &str, file_path: &str, hunk: &DiffHunk) -> Resu
         anyhow::bail!("Failed to stage hunk: {}", stderr.trim());
     }
 
+    Ok(())
+}
+
+/// Commit staged changes with the given message
+pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["commit", "-m", message])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git commit")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git commit failed: {}", stderr.trim());
+    }
     Ok(())
 }
 
@@ -540,6 +601,118 @@ pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String> {
         .context("Failed to run git diff-tree for root commit")?;
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+// ── Watched Files ──
+
+/// A git-ignored file opted into visibility via .er-config.toml
+#[derive(Debug, Clone)]
+pub struct WatchedFile {
+    pub path: String,
+    pub modified: SystemTime,
+    pub size: u64,
+}
+
+/// Discover watched files matching glob patterns relative to repo root
+pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Vec<WatchedFile>> {
+    let mut files = Vec::new();
+    for pattern in patterns {
+        let full_pattern = format!("{}/{}", repo_root, pattern);
+        let entries = glob::glob(&full_pattern)
+            .with_context(|| format!("Invalid glob pattern: {}", pattern))?;
+        for entry in entries {
+            let path = match entry {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if path.is_file() {
+                let rel_path = path
+                    .strip_prefix(repo_root)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                let metadata = match std::fs::metadata(&path) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                let size = metadata.len();
+                files.push(WatchedFile {
+                    path: rel_path,
+                    modified,
+                    size,
+                });
+            }
+        }
+    }
+    // Sort by modification time (most recent first)
+    files.sort_by(|a, b| b.modified.cmp(&a.modified));
+    Ok(files)
+}
+
+/// Check if a path is gitignored
+pub fn verify_gitignored(repo_root: &str, path: &str) -> bool {
+    let output = Command::new("git")
+        .args(["check-ignore", "-q", path])
+        .current_dir(repo_root)
+        .output();
+    matches!(output, Ok(o) if o.status.success())
+}
+
+/// Save a snapshot of a watched file for later diffing
+pub fn save_snapshot(repo_root: &str, rel_path: &str) -> Result<()> {
+    let src = Path::new(repo_root).join(rel_path);
+    let dst = Path::new(repo_root).join(".er-snapshots").join(rel_path);
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(src, dst)?;
+    Ok(())
+}
+
+/// Read the content of a watched file, returning None if binary
+pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
+    let full_path = Path::new(repo_root).join(rel_path);
+    let bytes = std::fs::read(&full_path)
+        .with_context(|| format!("Failed to read watched file: {}", rel_path))?;
+
+    // Check for binary content (null bytes in first 8KB)
+    let check_len = bytes.len().min(8192);
+    if bytes[..check_len].contains(&0) {
+        return Ok(None);
+    }
+
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("Watched file is not valid UTF-8: {}", rel_path))
+}
+
+/// Diff a watched file against its snapshot using git diff --no-index
+pub fn diff_watched_file_snapshot(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
+    let current_path = Path::new(repo_root).join(rel_path);
+    let snapshot_path = Path::new(repo_root).join(".er-snapshots").join(rel_path);
+
+    if !snapshot_path.exists() {
+        // First time seeing this file — save snapshot, signal "new file"
+        save_snapshot(repo_root, rel_path)?;
+        return Ok(None);
+    }
+
+    let output = Command::new("git")
+        .args([
+            "diff", "--no-index", "--unified=3", "--no-color", "--no-ext-diff",
+        ])
+        .arg(&snapshot_path)
+        .arg(&current_path)
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git diff --no-index")?;
+
+    let raw = String::from_utf8_lossy(&output.stdout).to_string();
+    if raw.is_empty() {
+        return Ok(Some(String::new())); // No changes since snapshot
+    }
+
+    Ok(Some(raw))
 }
 
 #[cfg(test)]

@@ -4,11 +4,24 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Padding},
     Frame,
 };
+use std::time::SystemTime;
 
 use crate::ai::{RiskLevel, ViewMode};
 use crate::app::{App, DiffMode};
 use crate::git::FileStatus;
 use super::styles;
+
+/// Format a SystemTime as a relative time string (e.g. "2m ago", "1h ago")
+fn format_relative_time(mtime: SystemTime) -> String {
+    let elapsed = SystemTime::now()
+        .duration_since(mtime)
+        .unwrap_or_default();
+    let secs = elapsed.as_secs();
+    if secs < 60 { return format!("{}s ago", secs); }
+    if secs < 3600 { return format!("{}m ago", secs / 60); }
+    if secs < 86400 { return format!("{}h ago", secs / 3600); }
+    format!("{}d ago", secs / 86400)
+}
 
 /// Render the file tree panel (left side)
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
@@ -26,6 +39,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let ai_stale = tab.ai.is_stale;
 
     let stale_count = tab.ai.stale_files.len();
+    let visible_watched = tab.visible_watched_files();
+    let watched_count = visible_watched.len();
     let visible_count = visible.len();
     let has_filter = !tab.filter_expr.is_empty() || !tab.search_query.is_empty() || tab.show_unreviewed_only;
     let count_label = if has_filter {
@@ -42,14 +57,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         } else {
             format!(" FILES ({}) · {} findings ", count_label, findings)
         }
+    } else if watched_count > 0 {
+        format!(" FILES ({}) · {} watched ", total, watched_count)
     } else {
         format!(" FILES ({}) ", count_label)
     };
 
-    let items: Vec<ListItem> = visible
+    let mut items: Vec<ListItem> = visible
         .iter()
         .map(|(idx, file)| {
-            let is_selected = *idx == tab.selected_file;
+            let is_selected = tab.selected_watched.is_none() && *idx == tab.selected_file;
 
             // Status symbol with color
             let (symbol, symbol_style) = match &file.status {
@@ -89,11 +106,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 None
             };
 
-            // Adjust path width to account for risk dot
+            // Relative time when sorting by mtime
+            let time_str = if tab.sort_by_mtime {
+                let mtime = std::fs::metadata(format!("{}/{}", tab.repo_root, file.path))
+                    .and_then(|m| m.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                Some(format_relative_time(mtime))
+            } else {
+                None
+            };
+            // Time column takes up to 8 chars (e.g. "15m ago " or "3h ago  ")
+            let time_width: usize = if time_str.is_some() { 8 } else { 0 };
+
+            // Adjust path width to account for risk dot and time column
             let extra_width = if risk_dot.is_some() { 2 } else { 0 };
             let path = shorten_path(
                 &file.path,
-                (area.width as usize).saturating_sub(16 + extra_width),
+                (area.width as usize).saturating_sub(16 + extra_width + time_width),
             );
 
             // Stats: +adds -dels
@@ -116,7 +145,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 symbol_style
             };
 
-            let path_width = (area.width as usize).saturating_sub(14 + extra_width).max(1);
+            let path_width = (area.width as usize).saturating_sub(14 + extra_width + time_width).max(1);
 
             let mut spans = vec![
                 Span::styled(format!(" {} ", symbol), effective_symbol_style),
@@ -137,6 +166,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::TEXT)
                 },
             ));
+            // Show relative time when sorting by mtime
+            if let Some(ref ts) = time_str {
+                spans.push(Span::styled(
+                    format!("{:>7} ", ts),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                ));
+            }
             if area.width > 24 {
                 spans.push(Span::styled(
                     format!("{:>8} ", stats),
@@ -147,6 +183,71 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             ListItem::new(Line::from(spans)).style(line_style)
         })
         .collect();
+
+    // ── Watched files section ──
+    if !visible_watched.is_empty() {
+        // Separator
+        let sep_width = area.width.saturating_sub(2) as usize;
+        let sep_label = " watched ";
+        let dash_count = sep_width.saturating_sub(sep_label.len()) / 2;
+        let sep_text = format!(
+            "{}{}{}",
+            "\u{2500}".repeat(dash_count),
+            sep_label,
+            "\u{2500}".repeat(sep_width.saturating_sub(dash_count + sep_label.len()))
+        );
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!(" {}", sep_text),
+            ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
+        ))).style(styles::surface_style()));
+
+        // Watched files
+        for (idx, watched) in &visible_watched {
+            let is_selected = tab.selected_watched == Some(*idx);
+            let age = format_relative_time(watched.modified);
+            let not_ignored = tab.watched_not_ignored.contains(&watched.path);
+
+            let path = shorten_path(
+                &watched.path,
+                (area.width as usize).saturating_sub(16),
+            );
+            let path_width = (area.width as usize).saturating_sub(14).max(1);
+
+            let line_style = if is_selected {
+                styles::selected_style()
+            } else {
+                styles::surface_style()
+            };
+
+            let icon = if not_ignored { "\u{26a0}" } else { "\u{25c9}" };
+            let icon_style = if not_ignored {
+                ratatui::style::Style::default().fg(styles::YELLOW)
+            } else {
+                ratatui::style::Style::default().fg(styles::WATCHED_TEXT)
+            };
+
+            let mut spans = vec![
+                Span::styled(format!(" {} ", icon), icon_style),
+            ];
+
+            spans.push(Span::styled(
+                format!("{:<width$}", path, width = path_width),
+                if is_selected {
+                    styles::selected_style()
+                } else {
+                    ratatui::style::Style::default().fg(styles::WATCHED_TEXT)
+                },
+            ));
+            if area.width > 24 {
+                spans.push(Span::styled(
+                    format!("{:>8} ", age),
+                    ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
+                ));
+            }
+
+            items.push(ListItem::new(Line::from(spans)).style(line_style));
+        }
+    }
 
     let title_style = if in_overlay && tab.ai.has_data() && !ai_stale {
         ratatui::style::Style::default().fg(styles::PURPLE)
@@ -304,6 +405,7 @@ fn shorten_path(path: &str, max_width: usize) -> String {
     let truncated: String = path.chars().take(max_width.saturating_sub(1)).collect();
     format!("{}…", truncated)
 }
+
 
 #[cfg(test)]
 mod tests {
