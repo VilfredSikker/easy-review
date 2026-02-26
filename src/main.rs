@@ -358,19 +358,27 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Open in editor
+        // Open in editor (or edit focused comment if own top-level)
         KeyCode::Char('e') => {
+            if let Some(id) = app.tab().focused_comment_id.clone() {
+                if let Some(comment) = app.tab().ai.find_comment(&id) {
+                    if comment.author() == "You" && comment.in_reply_to().is_none() {
+                        app.start_edit_comment(&id);
+                        return Ok(());
+                    }
+                }
+            }
             app.tab().open_in_editor()?;
             return Ok(());
         }
 
-        // Comment jumping across files (Shift+J / Shift+K)
+        // Unified hint jumping across files (Shift+J / Shift+K)
         KeyCode::Char('J') => {
-            app.prev_comment();
+            app.prev_hint();
             return Ok(());
         }
         KeyCode::Char('K') => {
-            app.next_comment();
+            app.next_hint();
             return Ok(());
         }
         // AI finding jumping across files (Ctrl+j / Ctrl+k)
@@ -382,19 +390,29 @@ fn handle_normal_input(
             app.prev_finding();
             return Ok(());
         }
-        // Delete focused comment (after J/K jump)
+        // Delete focused comment (after J/K jump) — only if deletable
         KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => {
             if let Some(ref id) = app.tab().focused_comment_id.clone() {
-                app.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
-                    comment_id: id.clone(),
-                });
+                if let Some(comment) = app.tab().ai.find_comment(id) {
+                    if comment.can_delete() {
+                        app.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
+                            comment_id: id.clone(),
+                        });
+                    }
+                }
             }
             return Ok(());
         }
-        // Edit focused comment (after J/K jump)
+        // Reply to focused comment/question or finding
         KeyCode::Char('r') => {
             if let Some(id) = app.tab().focused_comment_id.clone() {
-                app.start_edit_comment(&id);
+                if let Some(comment) = app.tab().ai.find_comment(&id) {
+                    if comment.can_reply() {
+                        app.start_reply_comment(&id);
+                    }
+                }
+            } else if let Some(id) = app.tab().focused_finding_id.clone() {
+                app.start_reply_finding(&id);
             }
             return Ok(());
         }
@@ -1063,6 +1081,7 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
                 hunk_header: String::new(),
                 anchor_status: "original".to_string(),
                 relocated_at_hash: String::new(),
+                finding_ref: None,
             };
 
             gc.comments.push(comment);
@@ -1310,6 +1329,30 @@ mod tests {
     #[test]
     fn bare_d_triggers_delete_confirm_when_comment_focused() {
         let mut app = make_app(vec![make_file_with_hunk()]);
+        // Add a question to AI state so find_comment + can_delete succeeds
+        app.tab_mut().ai.questions = Some(crate::ai::ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![crate::ai::ReviewQuestion {
+                id: "q-abc".to_string(),
+                timestamp: String::new(),
+                file: "test.rs".to_string(),
+                hunk_index: Some(0),
+                line_start: None,
+                line_content: String::new(),
+                text: "test".to_string(),
+                resolved: false,
+                stale: false,
+                context_before: vec![],
+                context_after: vec![],
+                old_line_start: None,
+                hunk_header: String::new(),
+                anchor_status: "original".to_string(),
+                relocated_at_hash: String::new(),
+                in_reply_to: None,
+                author: "You".to_string(),
+            }],
+        });
         app.tab_mut().focused_comment_id = Some("q-abc".to_string());
         send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
         assert_eq!(

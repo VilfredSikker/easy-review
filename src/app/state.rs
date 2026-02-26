@@ -297,6 +297,9 @@ pub struct TabState {
     /// When editing an existing comment, holds the comment ID being edited
     pub comment_edit_id: Option<String>,
 
+    /// Optional finding ID this comment responds to (for finding replies)
+    pub comment_finding_ref: Option<String>,
+
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
 
@@ -482,6 +485,7 @@ impl TabState {
             comment_line_num: None,
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
+            comment_finding_ref: None,
             pr_data: None,
             history: None,
             watched_config,
@@ -553,6 +557,7 @@ impl TabState {
             comment_line_num: None,
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
+            comment_finding_ref: None,
             pr_data: None,
             history: None,
             watched_config: WatchedConfig::default(),
@@ -2835,6 +2840,7 @@ impl App {
         tab.comment_hunk = tab.current_hunk;
         tab.comment_line_num = tab.current_line_number();
         tab.comment_reply_to = None;
+        tab.comment_finding_ref = None;
         tab.comment_type = comment_type;
         self.input_mode = InputMode::Comment;
     }
@@ -2872,6 +2878,69 @@ impl App {
         self.input_mode = InputMode::Comment;
     }
 
+    /// Start replying to a comment or question — creates a threaded reply
+    pub fn start_reply_comment(&mut self, comment_id: &str) {
+        let tab = self.tab();
+        // Determine type from ID prefix and find the parent comment's location
+        let (file, hunk_index, line_start, is_question) = if comment_id.starts_with("q-") {
+            if let Some(qs) = &tab.ai.questions {
+                if let Some(q) = qs.questions.iter().find(|q| q.id == comment_id) {
+                    (q.file.clone(), q.hunk_index.unwrap_or(0), q.line_start, true)
+                } else { return; }
+            } else { return; }
+        } else {
+            if let Some(gc) = &tab.ai.github_comments {
+                if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
+                    (c.file.clone(), c.hunk_index.unwrap_or(0), c.line_start, false)
+                } else { return; }
+            } else { return; }
+        };
+
+        let tab = self.tab_mut();
+        tab.comment_input.clear();
+        tab.comment_file = file;
+        tab.comment_hunk = hunk_index;
+        tab.comment_line_num = line_start;
+        tab.comment_reply_to = Some(comment_id.to_string());
+        tab.comment_finding_ref = None;
+        tab.comment_type = if is_question { CommentType::Question } else { CommentType::GitHubComment };
+        tab.comment_edit_id = None;
+        self.input_mode = InputMode::Comment;
+    }
+
+    /// Start replying to an AI finding — creates a GitHubComment referencing the finding
+    pub fn start_reply_finding(&mut self, finding_id: &str) {
+        let tab = self.tab();
+        // Find the finding's file and location
+        let (file, hunk_index, line_start) = if let Some(review) = &tab.ai.review {
+            let mut found = None;
+            for (file_path, file_review) in &review.files {
+                for finding in &file_review.findings {
+                    if finding.id == finding_id {
+                        found = Some((file_path.clone(), finding.hunk_index.unwrap_or(0), finding.line_start));
+                        break;
+                    }
+                }
+                if found.is_some() { break; }
+            }
+            match found {
+                Some(f) => f,
+                None => return,
+            }
+        } else { return; };
+
+        let tab = self.tab_mut();
+        tab.comment_input.clear();
+        tab.comment_file = file;
+        tab.comment_hunk = hunk_index;
+        tab.comment_line_num = line_start;
+        tab.comment_reply_to = None;
+        tab.comment_finding_ref = Some(finding_id.to_string());
+        tab.comment_type = CommentType::GitHubComment;
+        tab.comment_edit_id = None;
+        self.input_mode = InputMode::Comment;
+    }
+
     /// Submit the current comment/question to the appropriate file
     pub fn submit_comment(&mut self) -> Result<()> {
         let tab = self.tab();
@@ -2901,6 +2970,7 @@ impl App {
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
         let comment_line_num = tab.comment_line_num;
+        let reply_to = tab.comment_reply_to.clone();
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
@@ -2941,6 +3011,7 @@ impl App {
             seq
         );
 
+        let is_reply = reply_to.is_some();
         questions.questions.push(ai::ReviewQuestion {
             id,
             timestamp: chrono_now(),
@@ -2957,6 +3028,8 @@ impl App {
             hunk_header: anchor.hunk_header,
             anchor_status: "original".to_string(),
             relocated_at_hash: self.tab().diff_hash.clone(),
+            in_reply_to: reply_to,
+            author: "You".to_string(),
         });
 
         // Write atomically
@@ -2968,7 +3041,8 @@ impl App {
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
         self.tab_mut().reload_ai_state();
-        self.notify(&format!("Question added: {}", truncate(&text, 40)));
+        let label = if is_reply { "Reply" } else { "Question" };
+        self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
     }
 
@@ -2980,6 +3054,7 @@ impl App {
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
         let reply_to = tab.comment_reply_to.clone();
+        let finding_ref = tab.comment_finding_ref.clone();
         let comment_line_num = tab.comment_line_num;
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
@@ -3023,6 +3098,7 @@ impl App {
             seq
         );
 
+        let is_reply = reply_to.is_some();
         gh_comments.comments.push(ai::GitHubReviewComment {
             id,
             timestamp: chrono_now(),
@@ -3045,6 +3121,7 @@ impl App {
             hunk_header: anchor.hunk_header,
             anchor_status: "original".to_string(),
             relocated_at_hash: self.tab().diff_hash.clone(),
+            finding_ref,
         });
 
         // Write atomically
@@ -3056,7 +3133,8 @@ impl App {
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
         self.tab_mut().reload_ai_state();
-        self.notify(&format!("Comment added: {}", truncate(&text, 40)));
+        let label = if is_reply { "Reply" } else { "Comment" };
+        self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
     }
 
@@ -3200,11 +3278,13 @@ impl App {
     // ── Comment Navigation ──
 
     /// Jump to the next comment across all files.
+    #[allow(dead_code)]
     pub fn next_comment(&mut self) {
         self.jump_comment(true, false);
     }
 
     /// Jump to the previous comment across all files.
+    #[allow(dead_code)]
     pub fn prev_comment(&mut self) {
         self.jump_comment(false, false);
     }
@@ -3223,10 +3303,14 @@ impl App {
 
 
     /// Core jump logic: navigate forward/backward through comments or questions across all files.
+    /// Uses focused_comment_id for exact position tracking instead of file+hunk guessing.
     fn jump_comment(&mut self, forward: bool, questions_only: bool) {
         let tab = self.tab_mut();
         let all = if questions_only {
-            tab.ai.all_questions_ordered()
+            // Convert 3-tuple to 4-tuple for uniform handling
+            tab.ai.all_questions_ordered().into_iter()
+                .map(|(f, h, id)| (f, h, None::<usize>, id))
+                .collect::<Vec<_>>()
         } else {
             tab.ai.all_comments_ordered()
         };
@@ -3235,12 +3319,17 @@ impl App {
             return;
         }
 
-        // Find current position by matching current file+hunk
-        let current_file = tab.files.get(tab.selected_file).map(|f| f.path.clone());
-        let current_hunk = tab.current_hunk;
-        let current_pos = current_file.as_ref().and_then(|cf| {
-            all.iter().position(|(file, hunk_index, _)| {
-                file == cf && hunk_index.map_or(true, |hi| hi == current_hunk)
+        // Find current position by exact ID match first, then fallback to file position
+        let current_pos = tab.focused_comment_id.as_ref().and_then(|fid| {
+            all.iter().position(|(_, _, _, id)| id == fid)
+        }).or_else(|| {
+            let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+            current_file.and_then(|cf| {
+                if forward {
+                    all.iter().position(|(f, _, _, _)| f == cf)
+                } else {
+                    all.iter().rposition(|(f, _, _, _)| f == cf)
+                }
             })
         });
 
@@ -3253,26 +3342,15 @@ impl App {
                 }
             }
             None => {
-                // No exact match — prefer first/last comment in current file
-                if let Some(cf) = &current_file {
-                    if forward {
-                        all.iter().position(|(f, _, _)| f == cf).unwrap_or(0)
-                    } else {
-                        all.iter().rposition(|(f, _, _)| f == cf).unwrap_or(all.len() - 1)
-                    }
-                } else {
-                    if forward { 0 } else { all.len() - 1 }
-                }
+                if forward { 0 } else { all.len() - 1 }
             }
         };
 
-        let (ref file, hunk_index, ref comment_id) = all[next_idx];
+        let (ref file, hunk_index, _, ref comment_id) = all[next_idx];
 
-        // Highlight the jumped-to comment, clear finding focus
         tab.focused_comment_id = Some(comment_id.clone());
         tab.focused_finding_id = None;
 
-        // Navigate to the file if different from current
         let needs_file_change = tab.files.get(tab.selected_file)
             .map_or(true, |f| f.path != *file);
 
@@ -3306,6 +3384,7 @@ impl App {
     }
 
     /// Core jump logic: navigate forward/backward through AI findings across all files.
+    /// Uses focused_finding_id for exact position tracking.
     fn jump_finding(&mut self, forward: bool) {
         let tab = self.tab_mut();
         let all = tab.ai.all_findings_ordered();
@@ -3314,12 +3393,17 @@ impl App {
             return;
         }
 
-        // Find current position by matching current file+hunk
-        let current_file = tab.files.get(tab.selected_file).map(|f| f.path.clone());
-        let current_hunk = tab.current_hunk;
-        let current_pos = current_file.as_ref().and_then(|cf| {
-            all.iter().position(|(file, hunk_index, _)| {
-                file == cf && hunk_index.map_or(true, |hi| hi == current_hunk)
+        // Find current position by exact ID match first, then fallback to file position
+        let current_pos = tab.focused_finding_id.as_ref().and_then(|fid| {
+            all.iter().position(|(_, _, _, id)| id == fid)
+        }).or_else(|| {
+            let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+            current_file.and_then(|cf| {
+                if forward {
+                    all.iter().position(|(f, _, _, _)| f == cf)
+                } else {
+                    all.iter().rposition(|(f, _, _, _)| f == cf)
+                }
             })
         });
 
@@ -3332,26 +3416,101 @@ impl App {
                 }
             }
             None => {
-                // No exact match — prefer first/last finding in current file
-                if let Some(cf) = &current_file {
-                    if forward {
-                        all.iter().position(|(f, _, _)| f == cf).unwrap_or(0)
-                    } else {
-                        all.iter().rposition(|(f, _, _)| f == cf).unwrap_or(all.len() - 1)
-                    }
-                } else {
-                    if forward { 0 } else { all.len() - 1 }
-                }
+                if forward { 0 } else { all.len() - 1 }
             }
         };
 
-        let (ref file, hunk_index, ref finding_id) = all[next_idx];
+        let (ref file, hunk_index, _, ref finding_id) = all[next_idx];
 
-        // Highlight the jumped-to finding, clear comment focus
         tab.focused_finding_id = Some(finding_id.clone());
         tab.focused_comment_id = None;
 
-        // Navigate to the file if different from current
+        let needs_file_change = tab.files.get(tab.selected_file)
+            .map_or(true, |f| f.path != *file);
+
+        if needs_file_change {
+            if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
+                tab.selected_file = idx;
+                tab.current_hunk = hunk_index.unwrap_or(0);
+                tab.current_line = None;
+                tab.selection_anchor = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.ensure_file_parsed();
+                tab.rebuild_hunk_offsets();
+            }
+        } else if let Some(hi) = hunk_index {
+            tab.current_hunk = hi;
+            tab.current_line = None;
+        }
+
+        tab.scroll_to_current_hunk();
+    }
+
+    /// Jump to the next hint (unified: comments + questions + findings).
+    pub fn next_hint(&mut self) {
+        self.jump_hint(true);
+    }
+
+    /// Jump to the previous hint (unified: comments + questions + findings).
+    pub fn prev_hint(&mut self) {
+        self.jump_hint(false);
+    }
+
+    /// Unified navigation across comments, questions, and findings.
+    fn jump_hint(&mut self, forward: bool) {
+        use crate::ai::HintType;
+
+        let tab = self.tab_mut();
+        let all = tab.ai.all_hints_ordered();
+
+        if all.is_empty() {
+            return;
+        }
+
+        // Find current position by matching the currently focused ID
+        let current_id = tab.focused_comment_id.as_ref()
+            .or(tab.focused_finding_id.as_ref());
+        let current_pos = current_id.and_then(|fid| {
+            all.iter().position(|(_, _, _, id, _)| id == fid)
+        }).or_else(|| {
+            let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+            current_file.and_then(|cf| {
+                if forward {
+                    all.iter().position(|(f, _, _, _, _)| f == cf)
+                } else {
+                    all.iter().rposition(|(f, _, _, _, _)| f == cf)
+                }
+            })
+        });
+
+        let next_idx = match current_pos {
+            Some(pos) => {
+                if forward {
+                    if pos + 1 < all.len() { pos + 1 } else { 0 }
+                } else {
+                    if pos > 0 { pos - 1 } else { all.len() - 1 }
+                }
+            }
+            None => {
+                if forward { 0 } else { all.len() - 1 }
+            }
+        };
+
+        let (ref file, hunk_index, _, ref id, hint_type) = all[next_idx];
+
+        // Set the appropriate focus ID based on hint type
+        match hint_type {
+            HintType::Question | HintType::GitHubComment => {
+                tab.focused_comment_id = Some(id.clone());
+                tab.focused_finding_id = None;
+            }
+            HintType::Finding => {
+                tab.focused_finding_id = Some(id.clone());
+                tab.focused_comment_id = None;
+            }
+        }
+
         let needs_file_change = tab.files.get(tab.selected_file)
             .map_or(true, |f| f.path != *file);
 
@@ -3820,6 +3979,7 @@ mod tests {
             comment_line_num: None,
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
+            comment_finding_ref: None,
             pr_data: None,
             history: None,
             watched_config: WatchedConfig::default(),

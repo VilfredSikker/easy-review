@@ -419,13 +419,24 @@ fn build_hints(app: &App) -> Vec<Hint> {
                 hints.push(Hint::new("c", " comment "));
             }
 
-            if tab.focused_comment_id.is_some() || tab.focused_finding_id.is_some() {
-                hints.push(Hint::new("d", " delete "));
-                hints.push(Hint::new("r", " edit "));
+            if let Some(ref fid) = tab.focused_comment_id {
+                if let Some(comment) = tab.ai.find_comment(fid) {
+                    if comment.can_reply() {
+                        hints.push(Hint::new("r", " reply "));
+                    }
+                    if comment.author() == "You" && comment.in_reply_to().is_none() {
+                        hints.push(Hint::new("e", " edit "));
+                    }
+                    if comment.can_delete() {
+                        hints.push(Hint::new("d", " delete "));
+                    }
+                }
+            } else if tab.focused_finding_id.is_some() {
+                hints.push(Hint::new("r", " reply "));
             }
 
-            // Comment jump hints — only when targets exist
-            if !tab.ai.all_comments_ordered().is_empty() {
+            // Comment/finding jump hints — only when targets exist
+            if !tab.ai.all_hints_ordered().is_empty() {
                 hints.push(Hint::new("J/K", " hints "));
             }
         }
@@ -587,7 +598,13 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         InputMode::Comment => {
             let is_question = tab.comment_type == crate::ai::CommentType::Question;
-            let (label, accent) = if is_question {
+            let is_reply = tab.comment_reply_to.is_some();
+            let is_finding_reply = tab.comment_finding_ref.is_some();
+            let (label, accent) = if is_reply {
+                ("reply", if is_question { styles::YELLOW } else { styles::CYAN })
+            } else if is_finding_reply {
+                ("response", styles::CYAN)
+            } else if is_question {
                 ("question", styles::YELLOW)
             } else {
                 ("comment", styles::CYAN)

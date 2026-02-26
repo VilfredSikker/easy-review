@@ -367,6 +367,28 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     }
                     logical_line += 1;
                 }
+
+                // Render response comments for this finding
+                let finding_comments = tab.ai.comments_for_finding(&finding.id);
+                for fc in &finding_comments {
+                    if !tab.layers.show_github_comments {
+                        continue;
+                    }
+                    let is_focused = tab.focused_comment_id.as_deref() == Some(fc.id());
+                    let pre_len = lines.len();
+                    render_reply_lines(
+                        &mut lines,
+                        fc,
+                        area.width,
+                        false,
+                        is_focused,
+                    );
+                    let fc_line_count = lines.len() - pre_len;
+                    if logical_line < render_start || logical_line >= render_end {
+                        lines.truncate(pre_len);
+                    }
+                    logical_line += fc_line_count;
+                }
             }
         }
 

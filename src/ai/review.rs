@@ -178,6 +178,14 @@ pub enum CommentType {
     GitHubComment,
 }
 
+/// Type of navigable hint for unified J/K navigation
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HintType {
+    Question,
+    GitHubComment,
+    Finding,
+}
+
 /// Unified reference to either a question, GitHub comment, or legacy comment.
 /// Used by query methods and UI rendering to handle both types uniformly.
 #[derive(Debug, Clone)]
@@ -213,7 +221,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn author(&self) -> &str {
         match self {
-            CommentRef::Question(_) => "You",
+            CommentRef::Question(q) => if q.author.is_empty() { "You" } else { &q.author },
             CommentRef::GitHubComment(c) => if c.author.is_empty() { "You" } else { &c.author },
             CommentRef::Legacy(c) => if c.author.is_empty() { "You" } else { &c.author },
         }
@@ -254,9 +262,19 @@ impl<'a> CommentRef<'a> {
 
     pub fn in_reply_to(&self) -> Option<&str> {
         match self {
-            CommentRef::Question(_) => None,
+            CommentRef::Question(q) => q.in_reply_to.as_deref(),
             CommentRef::GitHubComment(c) => c.in_reply_to.as_deref(),
             CommentRef::Legacy(c) => c.in_reply_to.as_deref(),
+        }
+    }
+
+    /// Reference to an AI finding this comment responds to
+    #[allow(dead_code)]
+    pub fn finding_ref(&self) -> Option<&str> {
+        match self {
+            CommentRef::Question(_) => None,
+            CommentRef::GitHubComment(c) => c.finding_ref.as_deref(),
+            CommentRef::Legacy(_) => None,
         }
     }
 
@@ -294,11 +312,10 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    /// Whether this comment can be replied to (only GitHub comments, not replies themselves)
-    #[allow(dead_code)]
+    /// Whether this comment can be replied to (top-level comments/questions, not replies themselves)
     pub fn can_reply(&self) -> bool {
         match self {
-            CommentRef::Question(_) => false,
+            CommentRef::Question(q) => q.in_reply_to.is_none(),
             CommentRef::GitHubComment(c) => c.in_reply_to.is_none(),
             CommentRef::Legacy(c) => c.in_reply_to.is_none(),
         }
@@ -377,6 +394,13 @@ pub struct ReviewQuestion {
     /// Diff hash when this comment was last relocated
     #[serde(default)]
     pub relocated_at_hash: String,
+    /// ID of the question this is a reply to (None = top-level question)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+    /// Author display name (defaults to "You")
+    #[serde(default = "default_author")]
+    pub author: String,
 }
 
 // ── .er-github-comments.json — GitHub PR comments ──
@@ -453,6 +477,10 @@ pub struct GitHubReviewComment {
     /// Diff hash when this comment was last relocated
     #[serde(default)]
     pub relocated_at_hash: String,
+    /// Optional reference to an AI finding this comment responds to
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub finding_ref: Option<String>,
 }
 
 fn default_source() -> String {
@@ -726,9 +754,18 @@ impl AiState {
         result
     }
 
-    /// Replies to a specific comment (GitHub comments only — questions don't have replies)
+    /// Replies to a specific comment (questions or GitHub comments)
     pub fn replies_to(&self, comment_id: &str) -> Vec<CommentRef<'_>> {
         let mut result = Vec::new();
+        // Question replies
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.in_reply_to.as_deref() == Some(comment_id) {
+                    result.push(CommentRef::Question(q));
+                }
+            }
+        }
+        // GitHub comment replies
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.in_reply_to.as_deref() == Some(comment_id) {
@@ -791,23 +828,26 @@ impl AiState {
         })
     }
 
-    /// All comments (questions + GitHub) across all files, ordered by file path then hunk index.
-    /// Returns (file, hunk_index, comment_id) tuples for navigation.
-    pub fn all_comments_ordered(&self) -> Vec<(String, Option<usize>, String)> {
+    /// All top-level comments (questions + GitHub, excluding replies) across all files,
+    /// ordered by file path, then hunk index, then line_start.
+    /// Returns (file, hunk_index, line_start, comment_id) tuples for navigation.
+    pub fn all_comments_ordered(&self) -> Vec<(String, Option<usize>, Option<usize>, String)> {
         let mut result = Vec::new();
         if let Some(qs) = &self.questions {
             for q in &qs.questions {
-                result.push((q.file.clone(), q.hunk_index, q.id.clone()));
+                if q.in_reply_to.is_none() {
+                    result.push((q.file.clone(), q.hunk_index, q.line_start, q.id.clone()));
+                }
             }
         }
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.in_reply_to.is_none() {
-                    result.push((c.file.clone(), c.hunk_index, c.id.clone()));
+                    result.push((c.file.clone(), c.hunk_index, c.line_start, c.id.clone()));
                 }
             }
         }
-        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
         result
     }
 
@@ -816,25 +856,106 @@ impl AiState {
         let mut result = Vec::new();
         if let Some(qs) = &self.questions {
             for q in &qs.questions {
-                result.push((q.file.clone(), q.hunk_index, q.id.clone()));
+                if q.in_reply_to.is_none() {
+                    result.push((q.file.clone(), q.hunk_index, q.id.clone()));
+                }
             }
         }
         result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         result
     }
 
-    /// All findings across all files, ordered by file path then hunk index.
-    /// Returns (file, hunk_index, finding_id) tuples for navigation.
-    pub fn all_findings_ordered(&self) -> Vec<(String, Option<usize>, String)> {
+    /// All findings across all files, ordered by file path then hunk index then line_start.
+    /// Returns (file, hunk_index, line_start, finding_id) tuples for navigation.
+    pub fn all_findings_ordered(&self) -> Vec<(String, Option<usize>, Option<usize>, String)> {
         let mut result = Vec::new();
         if let Some(review) = &self.review {
             for (file_path, file_review) in &review.files {
                 for finding in &file_review.findings {
-                    result.push((file_path.clone(), finding.hunk_index, finding.id.clone()));
+                    result.push((file_path.clone(), finding.hunk_index, finding.line_start, finding.id.clone()));
                 }
             }
         }
-        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        result
+    }
+
+    /// All navigable hints (comments + questions + findings) merged and sorted by file + line.
+    /// Returns (file, hunk_index, line_start, id, hint_type) tuples.
+    pub fn all_hints_ordered(&self) -> Vec<(String, Option<usize>, Option<usize>, String, HintType)> {
+        let mut result = Vec::new();
+        // Top-level questions
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.in_reply_to.is_none() {
+                    result.push((q.file.clone(), q.hunk_index, q.line_start, q.id.clone(), HintType::Question));
+                }
+            }
+        }
+        // Top-level GitHub comments
+        if let Some(gc) = &self.github_comments {
+            for c in &gc.comments {
+                if c.in_reply_to.is_none() {
+                    result.push((c.file.clone(), c.hunk_index, c.line_start, c.id.clone(), HintType::GitHubComment));
+                }
+            }
+        }
+        // Findings
+        if let Some(review) = &self.review {
+            for (file_path, file_review) in &review.files {
+                for finding in &file_review.findings {
+                    result.push((file_path.clone(), finding.hunk_index, finding.line_start, finding.id.clone(), HintType::Finding));
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        result
+    }
+
+    /// Find a comment by ID across all comment types
+    pub fn find_comment(&self, id: &str) -> Option<CommentRef<'_>> {
+        if let Some(qs) = &self.questions {
+            if let Some(q) = qs.questions.iter().find(|q| q.id == id) {
+                return Some(CommentRef::Question(q));
+            }
+        }
+        if let Some(gc) = &self.github_comments {
+            if let Some(c) = gc.comments.iter().find(|c| c.id == id) {
+                return Some(CommentRef::GitHubComment(c));
+            }
+        }
+        if let Some(fb) = &self.feedback {
+            if let Some(c) = fb.comments.iter().find(|c| c.id == id) {
+                return Some(CommentRef::Legacy(c));
+            }
+        }
+        None
+    }
+
+    /// Replies to a question (question replies stored in .er-questions.json)
+    #[allow(dead_code)]
+    pub fn replies_for_question(&self, question_id: &str) -> Vec<CommentRef<'_>> {
+        let mut result = Vec::new();
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.in_reply_to.as_deref() == Some(question_id) {
+                    result.push(CommentRef::Question(q));
+                }
+            }
+        }
+        result
+    }
+
+    /// GitHub comments that reference a specific AI finding
+    pub fn comments_for_finding(&self, finding_id: &str) -> Vec<CommentRef<'_>> {
+        let mut result = Vec::new();
+        if let Some(gc) = &self.github_comments {
+            for c in &gc.comments {
+                if c.finding_ref.as_deref() == Some(finding_id) {
+                    result.push(CommentRef::GitHubComment(c));
+                }
+            }
+        }
         result
     }
 
@@ -1557,6 +1678,8 @@ mod tests {
             hunk_header: String::new(),
             anchor_status: "original".to_string(),
             relocated_at_hash: String::new(),
+            in_reply_to: None,
+            author: "You".to_string(),
         }
     }
 
@@ -1583,6 +1706,7 @@ mod tests {
             hunk_header: String::new(),
             anchor_status: "original".to_string(),
             relocated_at_hash: String::new(),
+            finding_ref: None,
         }
     }
 
@@ -1629,7 +1753,7 @@ mod tests {
         });
         let ordered = state.all_comments_ordered();
         assert_eq!(ordered.len(), 1);
-        assert_eq!(ordered[0].2, "c1");
+        assert_eq!(ordered[0].3, "c1");
     }
 
     #[test]
@@ -1648,7 +1772,7 @@ mod tests {
         });
         let ordered = state.all_comments_ordered();
         assert_eq!(ordered.len(), 2);
-        let ids: Vec<&str> = ordered.iter().map(|(_, _, id)| id.as_str()).collect();
+        let ids: Vec<&str> = ordered.iter().map(|(_, _, _, id)| id.as_str()).collect();
         assert!(ids.contains(&"q1"));
         assert!(ids.contains(&"c1"));
     }
@@ -1810,11 +1934,11 @@ mod tests {
         let ordered = state.all_findings_ordered();
         assert_eq!(ordered.len(), 3);
         assert_eq!(ordered[0].1, Some(0));
-        assert_eq!(ordered[0].2, "f0");
+        assert_eq!(ordered[0].3, "f0");
         assert_eq!(ordered[1].1, Some(1));
-        assert_eq!(ordered[1].2, "f1");
+        assert_eq!(ordered[1].3, "f1");
         assert_eq!(ordered[2].1, Some(2));
-        assert_eq!(ordered[2].2, "f2");
+        assert_eq!(ordered[2].3, "f2");
     }
 
     #[test]
@@ -1839,11 +1963,11 @@ mod tests {
         assert_eq!(ordered.len(), 3);
         // sorted by file path first: a.rs < z.rs
         assert_eq!(ordered[0].0, "a.rs");
-        assert_eq!(ordered[0].2, "fa0");
+        assert_eq!(ordered[0].3, "fa0");
         assert_eq!(ordered[1].0, "a.rs");
-        assert_eq!(ordered[1].2, "fa1");
+        assert_eq!(ordered[1].3, "fa1");
         assert_eq!(ordered[2].0, "z.rs");
-        assert_eq!(ordered[2].2, "fz0");
+        assert_eq!(ordered[2].3, "fz0");
     }
 
     #[test]
@@ -1861,8 +1985,8 @@ mod tests {
         assert_eq!(ordered.len(), 2);
         // None < Some(0) in Rust Ord for Option<usize>
         assert_eq!(ordered[0].1, None);
-        assert_eq!(ordered[0].2, "f_none");
+        assert_eq!(ordered[0].3, "f_none");
         assert_eq!(ordered[1].1, Some(0));
-        assert_eq!(ordered[1].2, "f_some");
+        assert_eq!(ordered[1].3, "f_some");
     }
 }
