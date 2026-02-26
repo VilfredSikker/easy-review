@@ -11,6 +11,26 @@ use crate::app::App;
 use super::styles;
 use super::utils::word_wrap;
 
+// PR check conclusion display helpers
+fn check_icon(conclusion: Option<&str>) -> (&'static str, ratatui::style::Color) {
+    match conclusion {
+        Some("success") => ("✓", styles::GREEN),
+        Some("failure") | Some("cancelled") | Some("timed_out") => ("✗", styles::RED_TEXT),
+        Some("skipped") => ("–", styles::MUTED),
+        _ => ("○", styles::DIM),
+    }
+}
+
+fn review_state_style(state: &str) -> (&'static str, ratatui::style::Color) {
+    match state {
+        "APPROVED" => ("✓ approved", styles::GREEN),
+        "CHANGES_REQUESTED" => ("✗ changes requested", styles::RED_TEXT),
+        "COMMENTED" => ("◆ commented", styles::CYAN),
+        "DISMISSED" => ("– dismissed", styles::MUTED),
+        _ => ("○ pending", styles::DIM),
+    }
+}
+
 /// Render the context panel (right side, when tab.panel is Some)
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.tab();
@@ -26,32 +46,45 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
     let tab = app.tab();
     let mut lines: Vec<Line> = Vec::new();
 
-    // Title bar: [File] [AI] [PR] with active one highlighted
+    // Title bar: [File] [AI] [PR] — AI and PR only shown when available
+    let has_ai = tab.ai.has_data();
+    let has_pr = tab.pr_data.is_some();
+
     let file_style = if content == PanelContent::FileDetail {
         Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(styles::DIM)
     };
-    let ai_style = if content == PanelContent::AiSummary {
-        Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(styles::DIM)
-    };
-    let pr_style = if content == PanelContent::PrOverview {
-        Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(styles::DIM)
-    };
 
-    lines.push(Line::from(vec![
+    let mut tab_spans = vec![
         Span::styled(" [", Style::default().fg(styles::MUTED)),
         Span::styled("File", file_style),
-        Span::styled("] [", Style::default().fg(styles::MUTED)),
-        Span::styled("AI", ai_style),
-        Span::styled("] [", Style::default().fg(styles::MUTED)),
-        Span::styled("PR", pr_style),
         Span::styled("]", Style::default().fg(styles::MUTED)),
-    ]));
+    ];
+
+    if has_ai {
+        let ai_style = if content == PanelContent::AiSummary {
+            Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(styles::DIM)
+        };
+        tab_spans.push(Span::styled(" [", Style::default().fg(styles::MUTED)));
+        tab_spans.push(Span::styled("AI", ai_style));
+        tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED)));
+    }
+
+    if has_pr {
+        let pr_style = if content == PanelContent::PrOverview {
+            Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(styles::DIM)
+        };
+        tab_spans.push(Span::styled(" [", Style::default().fg(styles::MUTED)));
+        tab_spans.push(Span::styled("PR", pr_style));
+        tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED)));
+    }
+
+    lines.push(Line::from(tab_spans));
     lines.push(Line::from(vec![Span::styled(
         "─".repeat(area.width.saturating_sub(2) as usize),
         Style::default().fg(styles::BORDER),
@@ -61,7 +94,7 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
     match content {
         PanelContent::FileDetail => render_file_detail(&mut lines, area, tab),
         PanelContent::AiSummary => render_ai_summary(&mut lines, area, tab),
-        PanelContent::PrOverview => render_pr_overview(&mut lines),
+        PanelContent::PrOverview => render_pr_overview(&mut lines, area, tab),
     }
 
     let border_style = if tab.panel_focus {
@@ -515,7 +548,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
 
 // ── PrOverview ──
 
-fn render_pr_overview(lines: &mut Vec<Line<'_>>) {
+fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::app::TabState) {
     lines.push(Line::from(vec![Span::styled(
         " PR Overview",
         Style::default()
@@ -523,8 +556,154 @@ fn render_pr_overview(lines: &mut Vec<Line<'_>>) {
             .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        " No PR data loaded",
-        Style::default().fg(styles::DIM),
-    )]));
+
+    let Some(pr) = tab.pr_data.as_ref() else {
+        lines.push(Line::from(vec![Span::styled(
+            " No PR data loaded",
+            Style::default().fg(styles::DIM),
+        )]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            " Open a branch with an active PR",
+            Style::default().fg(styles::MUTED),
+        )]));
+        return;
+    };
+
+    // PR number + state
+    let state_color = match pr.state.as_str() {
+        "OPEN" => styles::GREEN,
+        "CLOSED" => styles::RED_TEXT,
+        "MERGED" => styles::PURPLE,
+        _ => styles::MUTED,
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(" #{} ", pr.number),
+            Style::default().fg(styles::CYAN).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            pr.state.to_lowercase(),
+            Style::default().fg(state_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  @{}", pr.author),
+            Style::default().fg(styles::DIM),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // Title (word-wrapped)
+    let max_w = area.width.saturating_sub(3) as usize;
+    for wrapped in word_wrap(&pr.title, max_w) {
+        lines.push(Line::from(vec![Span::styled(
+            format!(" {}", wrapped),
+            Style::default().fg(styles::BRIGHT).add_modifier(Modifier::BOLD),
+        )]));
+    }
+    lines.push(Line::from(""));
+
+    // Branch info
+    lines.push(Line::from(vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(&pr.head_branch, Style::default().fg(styles::CYAN)),
+        Span::styled(" → ", Style::default().fg(styles::DIM)),
+        Span::styled(&pr.base_branch, Style::default().fg(styles::TEXT)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Body (first few lines, truncated)
+    if !pr.body.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            " ─── Description ───",
+            Style::default().fg(styles::BORDER),
+        )]));
+        lines.push(Line::from(""));
+        let mut shown = 0;
+        for line in pr.body.lines() {
+            if shown >= 8 {
+                lines.push(Line::from(vec![Span::styled(
+                    " [scroll for more]",
+                    Style::default().fg(styles::MUTED),
+                )]));
+                break;
+            }
+            if line.is_empty() {
+                lines.push(Line::from(""));
+            } else {
+                for wrapped in word_wrap(line, max_w) {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(" {}", wrapped),
+                        Style::default().fg(styles::TEXT),
+                    )]));
+                    shown += 1;
+                }
+            }
+        }
+        lines.push(Line::from(""));
+    }
+
+    // CI checks
+    if !pr.checks.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            " ─── CI Checks ───",
+            Style::default().fg(styles::BORDER),
+        )]));
+        lines.push(Line::from(""));
+        for check in &pr.checks {
+            let (icon, color) = check_icon(check.conclusion.as_deref());
+            let status_text = if check.status == "completed" {
+                check.conclusion.as_deref().unwrap_or("unknown").to_string()
+            } else {
+                check.status.clone()
+            };
+            let check_name = if check.name.chars().count() > max_w.saturating_sub(12) {
+                format!("{}…", check.name.chars().take(max_w.saturating_sub(13)).collect::<String>())
+            } else {
+                check.name.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", icon),
+                    Style::default().fg(color),
+                ),
+                Span::styled(
+                    check_name,
+                    Style::default().fg(styles::TEXT),
+                ),
+                Span::styled(
+                    format!("  {}", status_text),
+                    Style::default().fg(styles::MUTED),
+                ),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Reviewers
+    if !pr.reviewers.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            " ─── Reviewers ───",
+            Style::default().fg(styles::BORDER),
+        )]));
+        lines.push(Line::from(""));
+        // Deduplicate: keep latest review state per reviewer
+        let mut seen: std::collections::HashMap<&str, &crate::github::ReviewerStatus> = std::collections::HashMap::new();
+        for r in &pr.reviewers {
+            seen.insert(&r.login, r);
+        }
+        let mut sorted_reviewers: Vec<&crate::github::ReviewerStatus> = seen.values().copied().collect();
+        sorted_reviewers.sort_by(|a, b| a.login.cmp(&b.login));
+        for reviewer in sorted_reviewers {
+            let (label, color) = review_state_style(&reviewer.state);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" @{}  ", reviewer.login),
+                    Style::default().fg(styles::TEXT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(label, Style::default().fg(color)),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
 }

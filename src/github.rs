@@ -10,6 +10,33 @@ pub struct PrRef {
     pub number: u64,
 }
 
+/// Fetched PR overview data for the PrOverview panel
+#[derive(Debug, Clone)]
+pub struct PrOverviewData {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub state: String,
+    pub author: String,
+    pub base_branch: String,
+    pub head_branch: String,
+    pub checks: Vec<CiCheck>,
+    pub reviewers: Vec<ReviewerStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CiCheck {
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewerStatus {
+    pub login: String,
+    pub state: String,
+}
+
 /// GitHub review comment from the API
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -429,6 +456,97 @@ pub fn gh_pr_delete_comment(owner: &str, repo: &str, comment_id: u64) -> Result<
     Ok(())
 }
 
+/// Fetch PR overview data: title, body, state, author, branches, reviewers
+pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
+    // Fetch core PR fields
+    let view_output = Command::new("gh")
+        .args([
+            "pr", "view",
+            "--json", "number,title,body,state,author,baseRefName,headRefName,reviews",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+
+    if !view_output.status.success() {
+        return None;
+    }
+
+    let json_str = String::from_utf8_lossy(&view_output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+
+    let number = v["number"].as_u64().unwrap_or(0);
+    let title = v["title"].as_str().unwrap_or("").to_string();
+    let body = v["body"].as_str().unwrap_or("").to_string();
+    let state = v["state"].as_str().unwrap_or("").to_string();
+    let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+    let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
+    let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
+
+    let reviewers = v["reviews"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| {
+                    let login = r["author"]["login"].as_str()?;
+                    let state = r["state"].as_str().unwrap_or("PENDING");
+                    Some(ReviewerStatus {
+                        login: login.to_string(),
+                        state: state.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Fetch CI checks (separate call — may fail if no checks configured)
+    let checks = gh_pr_checks_data(repo_root).unwrap_or_default();
+
+    Some(PrOverviewData {
+        number,
+        title,
+        body,
+        state,
+        author,
+        base_branch,
+        head_branch,
+        checks,
+        reviewers,
+    })
+}
+
+/// Fetch CI check runs for the current PR
+fn gh_pr_checks_data(repo_root: &str) -> Result<Vec<CiCheck>> {
+    let output = Command::new("gh")
+        .args(["pr", "checks", "--json", "name,status,conclusion"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run gh pr checks")?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+
+    let checks = arr
+        .iter()
+        .filter_map(|c| {
+            let name = c["name"].as_str()?;
+            let status = c["status"].as_str().unwrap_or("unknown");
+            let conclusion = c["conclusion"].as_str().map(|s| s.to_string());
+            Some(CiCheck {
+                name: name.to_string(),
+                status: status.to_string(),
+                conclusion,
+            })
+        })
+        .collect();
+
+    Ok(checks)
+}
+
 /// Test whether a remote URL belongs to the given owner/repo.
 /// HTTPS URLs contain "/owner/repo" and SSH URLs contain ":owner/repo".
 fn remote_matches_repo(remote: &str, owner: &str, repo: &str) -> bool {
@@ -566,5 +684,175 @@ mod tests {
             "owner",
             "repo"
         ));
+    }
+
+    // ── PrOverviewData struct ──
+
+    #[test]
+    fn pr_overview_data_fields_accessible() {
+        let data = PrOverviewData {
+            number: 42,
+            title: "Fix the bug".to_string(),
+            body: "Detailed description".to_string(),
+            state: "OPEN".to_string(),
+            author: "contributor".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "fix/the-bug".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        };
+        assert_eq!(data.number, 42);
+        assert_eq!(data.title, "Fix the bug");
+        assert_eq!(data.state, "OPEN");
+        assert_eq!(data.author, "contributor");
+        assert_eq!(data.base_branch, "main");
+        assert_eq!(data.head_branch, "fix/the-bug");
+        assert!(data.checks.is_empty());
+        assert!(data.reviewers.is_empty());
+    }
+
+    #[test]
+    fn ci_check_fields_accessible() {
+        let check = CiCheck {
+            name: "CI / test".to_string(),
+            status: "completed".to_string(),
+            conclusion: Some("success".to_string()),
+        };
+        assert_eq!(check.name, "CI / test");
+        assert_eq!(check.status, "completed");
+        assert_eq!(check.conclusion, Some("success".to_string()));
+    }
+
+    #[test]
+    fn ci_check_conclusion_can_be_none() {
+        let check = CiCheck {
+            name: "CI / test".to_string(),
+            status: "in_progress".to_string(),
+            conclusion: None,
+        };
+        assert!(check.conclusion.is_none());
+    }
+
+    #[test]
+    fn reviewer_status_fields_accessible() {
+        let reviewer = ReviewerStatus {
+            login: "octocat".to_string(),
+            state: "APPROVED".to_string(),
+        };
+        assert_eq!(reviewer.login, "octocat");
+        assert_eq!(reviewer.state, "APPROVED");
+    }
+
+    // ── gh pr view JSON parsing (unit tests using serde_json directly) ──
+
+    #[test]
+    fn pr_overview_parsed_from_gh_json() {
+        // Simulate the JSON output of `gh pr view --json number,title,body,state,author,...`
+        let json = r#"{
+            "number": 123,
+            "title": "Add feature X",
+            "body": "This PR adds feature X",
+            "state": "OPEN",
+            "author": {"login": "developer"},
+            "baseRefName": "main",
+            "headRefName": "feature/x",
+            "reviews": [
+                {"author": {"login": "reviewer1"}, "state": "APPROVED"},
+                {"author": {"login": "reviewer2"}, "state": "CHANGES_REQUESTED"}
+            ]
+        }"#;
+
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        let number = v["number"].as_u64().unwrap_or(0);
+        let title = v["title"].as_str().unwrap_or("").to_string();
+        let state = v["state"].as_str().unwrap_or("").to_string();
+        let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+        let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
+        let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
+        let reviewers: Vec<ReviewerStatus> = v["reviews"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| {
+                        let login = r["author"]["login"].as_str()?;
+                        let state = r["state"].as_str().unwrap_or("PENDING");
+                        Some(ReviewerStatus {
+                            login: login.to_string(),
+                            state: state.to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(number, 123);
+        assert_eq!(title, "Add feature X");
+        assert_eq!(state, "OPEN");
+        assert_eq!(author, "developer");
+        assert_eq!(base_branch, "main");
+        assert_eq!(head_branch, "feature/x");
+        assert_eq!(reviewers.len(), 2);
+        assert_eq!(reviewers[0].login, "reviewer1");
+        assert_eq!(reviewers[0].state, "APPROVED");
+        assert_eq!(reviewers[1].login, "reviewer2");
+        assert_eq!(reviewers[1].state, "CHANGES_REQUESTED");
+    }
+
+    #[test]
+    fn pr_overview_handles_missing_optional_fields() {
+        // Minimal JSON with only required fields
+        let json = r#"{"number": 1, "title": "T", "state": "OPEN"}"#;
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        let number = v["number"].as_u64().unwrap_or(0);
+        let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+        let reviews: Vec<ReviewerStatus> = v["reviews"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| {
+                        let login = r["author"]["login"].as_str()?;
+                        let state = r["state"].as_str().unwrap_or("PENDING");
+                        Some(ReviewerStatus {
+                            login: login.to_string(),
+                            state: state.to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(number, 1);
+        assert_eq!(author, ""); // missing → empty string default
+        assert!(reviews.is_empty()); // missing → empty vec
+    }
+
+    #[test]
+    fn ci_checks_parsed_from_gh_json() {
+        // Simulate `gh pr checks --json name,status,conclusion` output
+        let json = r#"[
+            {"name": "test", "status": "completed", "conclusion": "success"},
+            {"name": "lint", "status": "completed", "conclusion": "failure"},
+            {"name": "build", "status": "in_progress"}
+        ]"#;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
+        let checks: Vec<CiCheck> = arr
+            .iter()
+            .filter_map(|c| {
+                let name = c["name"].as_str()?;
+                let status = c["status"].as_str().unwrap_or("unknown");
+                let conclusion = c["conclusion"].as_str().map(|s| s.to_string());
+                Some(CiCheck {
+                    name: name.to_string(),
+                    status: status.to_string(),
+                    conclusion,
+                })
+            })
+            .collect();
+
+        assert_eq!(checks.len(), 3);
+        assert_eq!(checks[0].name, "test");
+        assert_eq!(checks[0].conclusion, Some("success".to_string()));
+        assert_eq!(checks[1].conclusion, Some("failure".to_string()));
+        assert!(checks[2].conclusion.is_none()); // in_progress — no conclusion yet
     }
 }
