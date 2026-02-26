@@ -250,6 +250,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         continue;
                     }
                     let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
+                    let pre_len = lines.len();
                     render_comment_lines(
                         &mut lines,
                         comment,
@@ -257,9 +258,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         true,
                         is_focused,
                     );
+                    let comment_line_count = lines.len() - pre_len;
+                    if logical_line < render_start || logical_line >= render_end {
+                        lines.truncate(pre_len);
+                    }
+                    logical_line += comment_line_count;
+
                     // Render replies to this line comment (GitHub comments only)
                     let replies = tab.ai.replies_to(comment.id());
                     for reply in &replies {
+                        let pre_len = lines.len();
                         render_reply_lines(
                             &mut lines,
                             &reply,
@@ -267,6 +275,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                             true,
                             false,
                         );
+                        let reply_line_count = lines.len() - pre_len;
+                        if logical_line < render_start || logical_line >= render_end {
+                            lines.truncate(pre_len);
+                        }
+                        logical_line += reply_line_count;
                     }
                 }
             }
@@ -428,13 +441,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             v
         };
         if !orphaned.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  -- comments from deleted hunks --",
-                ratatui::style::Style::default().fg(styles::MUTED),
-            )));
+            if logical_line >= render_start && logical_line < render_end {
+                lines.push(Line::from(Span::styled(
+                    "  -- comments from deleted hunks --",
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                )));
+            }
+            logical_line += 1;
+
             for comment in &orphaned {
                 let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
+                let pre_len = lines.len();
                 render_comment_lines(&mut lines, comment, area.width, false, is_focused);
+                let comment_line_count = lines.len() - pre_len;
+                if logical_line < render_start || logical_line >= render_end {
+                    lines.truncate(pre_len);
+                }
+                logical_line += comment_line_count;
             }
         }
     }

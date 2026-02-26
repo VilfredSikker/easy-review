@@ -163,7 +163,7 @@ fn pass3_fuzzy(anchor: &CommentAnchor, diff_file: &DiffFile) -> Option<Relocatio
     // For 2 context lines: need > 1 (i.e. both)
     // For 3 context lines: need > 1 (i.e. >= 2)
     // For 6 context lines: need > 3 (i.e. >= 4)
-    let min_required = ((total_context * 2 + 2) / 3).max(2);
+    let min_required = ((total_context * 2 + 2) / 3).max(1);
     let mut best_score = min_required.saturating_sub(1); // > this to qualify
     let mut best: Option<(usize, usize)> = None;
 
@@ -211,12 +211,8 @@ fn pass3_fuzzy(anchor: &CommentAnchor, diff_file: &DiffFile) -> Option<Relocatio
 
 fn relocate_hunk_level(anchor: &CommentAnchor, diff_file: &DiffFile) -> RelocationResult {
     if anchor.hunk_header.is_empty() {
-        // No header to match on — use hunk_index
-        if let Some(hi) = anchor.hunk_index {
-            if hi < diff_file.hunks.len() {
-                return RelocationResult::Unchanged;
-            }
-        }
+        // No header to verify identity — can't confirm the hunk at the same index is the same one
+        let _ = diff_file;
         return RelocationResult::Lost;
     }
 

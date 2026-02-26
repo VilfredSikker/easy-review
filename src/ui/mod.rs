@@ -33,7 +33,7 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
 
     // Main content — layout depends on panel state
     let tab = app.tab();
-    if tab.panel.is_some() && outer[1].width >= 100 {
+    if tab.panel.is_some() && outer[1].width >= 102 {
         // 3-col layout: file_tree + diff + panel
         let main_area = Layout::default()
             .direction(Direction::Horizontal)

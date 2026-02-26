@@ -248,8 +248,8 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     // Settings overlay has additional keybindings
     if matches!(app.overlay, Some(app::OverlayData::Settings { .. })) {
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+            KeyCode::Char('k') | KeyCode::Down => app.overlay_next(),
+            KeyCode::Char('j') | KeyCode::Up => app.overlay_prev(),
             KeyCode::Char(' ') | KeyCode::Enter => {
                 // Space and Enter both toggle the current item
                 app.settings_toggle();
@@ -366,11 +366,20 @@ fn handle_normal_input(
 
         // Comment jumping across files (Shift+J / Shift+K)
         KeyCode::Char('J') => {
-            app.next_comment();
+            app.prev_comment();
             return Ok(());
         }
         KeyCode::Char('K') => {
-            app.prev_comment();
+            app.next_comment();
+            return Ok(());
+        }
+        // AI finding jumping across files (Ctrl+j / Ctrl+k)
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.next_finding();
+            return Ok(());
+        }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.prev_finding();
             return Ok(());
         }
         // Delete focused comment (after J/K jump)
@@ -391,6 +400,15 @@ fn handle_normal_input(
         }
         KeyCode::Char('x') => {
             app.close_tab();
+            return Ok(());
+        }
+        // Tab switching ([ / ])
+        KeyCode::Char(']') => {
+            app.next_tab();
+            return Ok(());
+        }
+        KeyCode::Char('[') => {
+            app.prev_tab();
             return Ok(());
         }
 
@@ -433,11 +451,11 @@ fn handle_normal_input(
         }
         // FileDetail / PrOverview panels: route j/k and arrow keys to panel scrolling
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('k') | KeyCode::Down => {
                 app.tab_mut().panel_scroll_down(1);
                 return Ok(());
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('j') | KeyCode::Up => {
                 app.tab_mut().panel_scroll_up(1);
                 return Ok(());
             }
@@ -458,8 +476,8 @@ fn handle_normal_input(
 
     match key.code {
         // File navigation
-        KeyCode::Char('j') => app.tab_mut().next_file(),
-        KeyCode::Char('k') => app.tab_mut().prev_file(),
+        KeyCode::Char('j') => app.tab_mut().prev_file(),
+        KeyCode::Char('k') => app.tab_mut().next_file(),
 
         // Line/comment navigation (arrow keys: comments when focused, else lines)
         // Shift+arrow extends selection, plain arrow clears it
@@ -687,10 +705,10 @@ fn handle_normal_input(
 fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         // Navigation within focused column
-        KeyCode::Char('j') | KeyCode::Down => {
+        KeyCode::Char('k') | KeyCode::Down => {
             app.tab_mut().review_next();
         }
-        KeyCode::Char('k') | KeyCode::Up => {
+        KeyCode::Char('j') | KeyCode::Up => {
             app.tab_mut().review_prev();
         }
 
@@ -738,7 +756,7 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
 fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         // Commit navigation (left panel)
-        KeyCode::Char('j') => {
+        KeyCode::Char('k') => {
             // Check if at the end and need to load more
             let at_end = app.tab().history.as_ref()
                 .map(|h| h.selected_commit + 1 >= h.commits.len())
@@ -748,7 +766,7 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             app.tab_mut().history_next_commit();
         }
-        KeyCode::Char('k') => {
+        KeyCode::Char('j') => {
             app.tab_mut().history_prev_commit();
         }
 
@@ -953,7 +971,7 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
 
     let (owner, repo_name, pr_number) = pr_info;
 
-    let gh_comments = match github::gh_pr_comments(&owner, &repo_name, pr_number) {
+    let gh_comments = match github::gh_pr_comments(&owner, &repo_name, pr_number, &repo_root) {
         Ok(c) => c,
         Err(e) => {
             app.notify(&format!("GitHub sync error: {}", e));
@@ -1110,7 +1128,7 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
         if let Some(comment) = comment {
             let path = &comment.file;
             let line = comment.line_start.unwrap_or(1);
-            match github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment) {
+            match github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment, &repo_root) {
                 Ok(github_id) => {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                         c.github_id = Some(github_id);
@@ -1137,7 +1155,7 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
                 .and_then(|c| c.github_id);
 
             if let Some(parent_gh_id) = parent_gh_id {
-                match github::gh_pr_reply_comment(&owner, &repo_name, pr_number, parent_gh_id, &comment.comment) {
+                match github::gh_pr_reply_comment(&owner, &repo_name, pr_number, parent_gh_id, &comment.comment, &repo_root) {
                     Ok(github_id) => {
                         if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                             c.github_id = Some(github_id);

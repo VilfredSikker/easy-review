@@ -13,7 +13,7 @@ pub use status::{
     get_repo_root,
     get_repo_root_in,
     get_current_branch_in,
-    git_diff_raw,
+    git_diff_raw, git_diff_raw_file,
     list_worktrees,
     git_stage_file, git_unstage_file, git_stage_all, git_stage_hunk, git_commit,
     git_log_branch, git_diff_commit,

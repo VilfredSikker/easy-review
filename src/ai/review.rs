@@ -822,6 +822,21 @@ impl AiState {
         result
     }
 
+    /// All findings across all files, ordered by file path then hunk index.
+    /// Returns (file, hunk_index, finding_id) tuples for navigation.
+    pub fn all_findings_ordered(&self) -> Vec<(String, Option<usize>, String)> {
+        let mut result = Vec::new();
+        if let Some(review) = &self.review {
+            for (file_path, file_review) in &review.files {
+                for finding in &file_review.findings {
+                    result.push((file_path.clone(), finding.hunk_index, finding.id.clone()));
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        result
+    }
+
     /// Total number of findings across all files
     pub fn total_findings(&self) -> usize {
         match &self.review {
@@ -1762,5 +1777,91 @@ mod tests {
         assert_eq!(state.file_github_comment_count("a.rs"), 2);
         assert_eq!(state.file_github_comment_count("b.rs"), 1);
         assert_eq!(state.file_github_comment_count("c.rs"), 0);
+    }
+
+    // ── AiState::all_findings_ordered ──
+
+    #[test]
+    fn all_findings_ordered_empty_state_returns_empty() {
+        let state = AiState::default();
+        assert!(state.all_findings_ordered().is_empty());
+    }
+
+    #[test]
+    fn all_findings_ordered_no_review_returns_empty() {
+        let mut state = AiState::default();
+        state.summary = Some("some summary".to_string());
+        assert!(state.all_findings_ordered().is_empty());
+    }
+
+    #[test]
+    fn all_findings_ordered_single_file_sorted_by_hunk_index() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![
+                make_finding("f2", Some(2), RiskLevel::Medium),
+                make_finding("f0", Some(0), RiskLevel::High),
+                make_finding("f1", Some(1), RiskLevel::Low),
+            ],
+        )]));
+        let ordered = state.all_findings_ordered();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].1, Some(0));
+        assert_eq!(ordered[0].2, "f0");
+        assert_eq!(ordered[1].1, Some(1));
+        assert_eq!(ordered[1].2, "f1");
+        assert_eq!(ordered[2].1, Some(2));
+        assert_eq!(ordered[2].2, "f2");
+    }
+
+    #[test]
+    fn all_findings_ordered_multiple_files_sorted_by_file_then_hunk() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![
+            (
+                "z.rs",
+                RiskLevel::Low,
+                vec![make_finding("fz0", Some(0), RiskLevel::Low)],
+            ),
+            (
+                "a.rs",
+                RiskLevel::High,
+                vec![
+                    make_finding("fa1", Some(1), RiskLevel::High),
+                    make_finding("fa0", Some(0), RiskLevel::Medium),
+                ],
+            ),
+        ]));
+        let ordered = state.all_findings_ordered();
+        assert_eq!(ordered.len(), 3);
+        // sorted by file path first: a.rs < z.rs
+        assert_eq!(ordered[0].0, "a.rs");
+        assert_eq!(ordered[0].2, "fa0");
+        assert_eq!(ordered[1].0, "a.rs");
+        assert_eq!(ordered[1].2, "fa1");
+        assert_eq!(ordered[2].0, "z.rs");
+        assert_eq!(ordered[2].2, "fz0");
+    }
+
+    #[test]
+    fn all_findings_ordered_none_hunk_sorts_before_some() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![
+                make_finding("f_some", Some(0), RiskLevel::High),
+                make_finding("f_none", None, RiskLevel::Medium),
+            ],
+        )]));
+        let ordered = state.all_findings_ordered();
+        assert_eq!(ordered.len(), 2);
+        // None < Some(0) in Rust Ord for Option<usize>
+        assert_eq!(ordered[0].1, None);
+        assert_eq!(ordered[0].2, "f_none");
+        assert_eq!(ordered[1].1, Some(0));
+        assert_eq!(ordered[1].2, "f_some");
     }
 }

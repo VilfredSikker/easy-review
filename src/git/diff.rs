@@ -429,7 +429,7 @@ impl Default for CompactionConfig {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            max_lines_before_compact: 500,
+            max_lines_before_compact: 1000,
         }
     }
 }
@@ -1061,7 +1061,7 @@ index aaa..bbb 100644
 
     #[test]
     fn compact_files_by_size_threshold() {
-        let many_lines: Vec<DiffLine> = (0..600).map(|i| DiffLine {
+        let many_lines: Vec<DiffLine> = (0..1100).map(|i| DiffLine {
             line_type: LineType::Add, content: format!("line {}", i),
             old_num: None, new_num: Some(i),
         }).collect();
@@ -1069,11 +1069,11 @@ index aaa..bbb 100644
             path: "src/big_file.rs".to_string(),
             status: FileStatus::Modified,
             hunks: vec![DiffHunk {
-                header: "@@ -1,1 +1,600 @@".to_string(),
-                old_start: 1, old_count: 1, new_start: 1, new_count: 600,
+                header: "@@ -1,1 +1,1100 @@".to_string(),
+                old_start: 1, old_count: 1, new_start: 1, new_count: 1100,
                 lines: many_lines,
             }],
-            adds: 600, dels: 0, compacted: false, raw_hunk_count: 0,
+            adds: 1100, dels: 0, compacted: false, raw_hunk_count: 0,
         }];
         let config = CompactionConfig::default();
         compact_files(&mut files, &config);

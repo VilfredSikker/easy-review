@@ -328,6 +328,7 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
     ];
 
     if app.tabs.len() > 1 {
+        hints.push(Hint::new("[/]", " tabs "));
         hints.push(Hint::new("x", " close tab "));
     }
 
@@ -383,6 +384,9 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("Tab", " focus panel "));
         }
         hints.push(Hint::new("p", " close panel "));
+        if app.tabs.len() > 1 {
+            hints.push(Hint::new("[/]", " tabs "));
+        }
         hints.push(Hint::new("^q", " quit "));
     } else {
         // Default normal mode: minimal essential set
@@ -402,14 +406,28 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("c", " comment "));
         }
 
-        if tab.focused_comment_id.is_some() {
+        if tab.focused_comment_id.is_some() || tab.focused_finding_id.is_some() {
             hints.push(Hint::new("d", " delete "));
             hints.push(Hint::new("r", " edit "));
         }
+
+        // Comment/finding jump hints — only when targets exist
+        if !tab.ai.all_comments_ordered().is_empty() {
+            hints.push(Hint::new("J/K", " hints "));
+        }
+        if tab.layers.show_ai_findings && tab.ai.total_findings() > 0 {
+            hints.push(Hint::new("^j/^k", " findings "));
+        }
+
         hints.push(Hint::new("e", " edit "));
         hints.push(Hint::new("p", " panel "));
+
+        // Tab switching — only when multiple tabs open
+        if app.tabs.len() > 1 {
+            hints.push(Hint::new("[/]", " tabs "));
+        }
+
         hints.push(Hint::new("^q", " quit "));
-        hints.push(Hint::new("?", ":keys "));
     }
 
     // Status indicators always shown

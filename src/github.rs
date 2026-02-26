@@ -345,13 +345,14 @@ fn parse_owner_repo_from_remote(remote: &str) -> Result<(String, String)> {
 }
 
 /// Fetch all review comments for a PR
-pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComment>> {
+pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64, repo_root: &str) -> Result<Vec<GitHubComment>> {
     let output = Command::new("gh")
         .args([
             "api",
             &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
             "--paginate",
         ])
+        .current_dir(repo_root)
         .output()
         .context("Failed to fetch PR comments")?;
 
@@ -361,7 +362,9 @@ pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComm
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let comments: Vec<GitHubComment> = serde_json::from_str(&stdout)
+    // --paginate may return concatenated JSON arrays like [...][...] — merge them
+    let fixed = stdout.replace("][", ",");
+    let comments: Vec<GitHubComment> = serde_json::from_str(&fixed)
         .context("Failed to parse PR comments JSON")?;
 
     Ok(comments)
@@ -371,14 +374,24 @@ pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComm
 pub fn gh_pr_push_comment(
     owner: &str, repo: &str, pr: u64,
     path: &str, line: usize, body: &str,
+    repo_root: &str,
 ) -> Result<u64> {
     // Get the latest commit SHA for the PR (required for review comments)
     let sha_output = Command::new("gh")
         .args(["pr", "view", &pr.to_string(), "--json", "headRefOid", "--jq", ".headRefOid"])
+        .current_dir(repo_root)
         .output()
         .context("Failed to get PR head SHA")?;
 
+    if !sha_output.status.success() {
+        let stderr = String::from_utf8_lossy(&sha_output.stderr);
+        anyhow::bail!("Failed to get HEAD SHA from gh pr view: {}", stderr.trim());
+    }
+
     let commit_id = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+    if commit_id.is_empty() {
+        anyhow::bail!("Failed to get HEAD SHA from gh pr view: empty output");
+    }
 
     let output = Command::new("gh")
         .args([
@@ -391,6 +404,7 @@ pub fn gh_pr_push_comment(
             "-f", "side=RIGHT",
             "-f", &format!("commit_id={}", commit_id),
         ])
+        .current_dir(repo_root)
         .output()
         .context("Failed to push comment to GitHub")?;
 
@@ -410,6 +424,7 @@ pub fn gh_pr_push_comment(
 pub fn gh_pr_reply_comment(
     owner: &str, repo: &str, pr: u64,
     in_reply_to: u64, body: &str,
+    repo_root: &str,
 ) -> Result<u64> {
     let output = Command::new("gh")
         .args([
@@ -419,6 +434,7 @@ pub fn gh_pr_reply_comment(
             "-f", &format!("body={}", body),
             "-F", &format!("in_reply_to={}", in_reply_to),
         ])
+        .current_dir(repo_root)
         .output()
         .context("Failed to push reply to GitHub")?;
 
@@ -435,13 +451,14 @@ pub fn gh_pr_reply_comment(
 }
 
 /// Delete a review comment from a PR
-pub fn gh_pr_delete_comment(owner: &str, repo: &str, comment_id: u64) -> Result<()> {
+pub fn gh_pr_delete_comment(owner: &str, repo: &str, comment_id: u64, repo_root: &str) -> Result<()> {
     let output = Command::new("gh")
         .args([
             "api",
             "-X", "DELETE",
             &format!("repos/{}/{}/pulls/comments/{}", owner, repo, comment_id),
         ])
+        .current_dir(repo_root)
         .output()
         .context("Failed to delete comment from GitHub")?;
 

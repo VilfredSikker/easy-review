@@ -264,6 +264,8 @@ pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
         ".er-summary.md",
         ".er-checklist.json",
         ".er-feedback.json",
+        ".er-questions.json",
+        ".er-github-comments.json",
     ];
 
     files
