@@ -366,15 +366,12 @@ fn build_hints(app: &App) -> Vec<Hint> {
     let mut hints = vec![
         Hint::new("j/k", " nav "),
         Hint::new("n/N", " hunks "),
-        Hint::new("s", " stage "),
-        Hint::new("S", " hunk "),
         Hint::new("␣", " review "),
         Hint::new("u", " unreviewed "),
         Hint::new("y", " yank "),
         Hint::new("/", " search "),
         Hint::new("f", " filter "),
         Hint::new("F", " presets "),
-        Hint::new("r", " reload "),
         Hint::new("m", " recent "),
         Hint::new("w", " watch "),
         Hint::new("e", " edit "),
@@ -383,6 +380,12 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new(",", " settings "),
         Hint::new("^q", " quit "),
     ];
+
+    // Staging hints only apply in Unstaged and Staged modes
+    if tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged {
+        hints.push(Hint::new("s", " stage "));
+        hints.push(Hint::new("S", " stage hunk "));
+    }
 
     hints.push(Hint::new("A", " context "));
     hints.push(Hint::new("q", " question "));
@@ -395,10 +398,13 @@ fn build_hints(app: &App) -> Vec<Hint> {
         hints.push(Hint::new("C", " toggle C "));
     }
 
+    hints.push(Hint::new("R", " reload "));
+
+    // When a comment is focused, show comment actions
     if tab.comment_focus.is_some() {
         hints.push(Hint::new("r", " reply "));
         hints.push(Hint::new("d", " delete "));
-        hints.push(Hint::new("R", " resolve "));
+        hints.push(Hint::new("z", " resolve "));
     }
 
     hints.push(Hint::new("G", " gh sync "));
@@ -415,10 +421,14 @@ fn build_hints(app: &App) -> Vec<Hint> {
     hints.push(Hint::new("p", " panel "));
 
     if tab.panel.is_some() {
-        hints.push(Hint::new("Tab", " focus "));
+        if tab.panel_focus {
+            hints.push(Hint::new("Esc", " unfocus "));
+        } else {
+            hints.push(Hint::new("Tab", " focus "));
+        }
     }
 
-    hints.push(Hint::new("[/]", " comments "));
+    hints.push(Hint::new("J/K", " jump notes "));
 
     if app.tabs.len() > 1 {
         hints.push(Hint::new("x", " close tab "));

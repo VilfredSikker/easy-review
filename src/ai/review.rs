@@ -723,6 +723,38 @@ impl AiState {
         })
     }
 
+    /// All comments (questions + GitHub) across all files, ordered by file path then hunk index.
+    /// Returns (file, hunk_index, comment_id) tuples for navigation.
+    pub fn all_comments_ordered(&self) -> Vec<(String, Option<usize>, String)> {
+        let mut result = Vec::new();
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                result.push((q.file.clone(), q.hunk_index, q.id.clone()));
+            }
+        }
+        if let Some(gc) = &self.github_comments {
+            for c in &gc.comments {
+                if c.in_reply_to.is_none() {
+                    result.push((c.file.clone(), c.hunk_index, c.id.clone()));
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        result
+    }
+
+    /// All questions across all files, ordered by file path then hunk index.
+    pub fn all_questions_ordered(&self) -> Vec<(String, Option<usize>, String)> {
+        let mut result = Vec::new();
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                result.push((q.file.clone(), q.hunk_index, q.id.clone()));
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        result
+    }
+
     /// Total number of findings across all files
     pub fn total_findings(&self) -> usize {
         match &self.review {

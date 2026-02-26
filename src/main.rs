@@ -302,19 +302,23 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Refresh / Reply (r = reply when comment focused, else refresh)
+        // Reply to focused comment
         KeyCode::Char('r') => {
             if app.tab().comment_focus.is_some() {
                 app.start_reply();
-            } else {
-                app.tab_mut().refresh_diff()?;
-                let ai_status = if app.tab().ai.has_data() {
-                    if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
-                } else {
-                    ""
-                };
-                app.notify(&format!("Refreshed{}", ai_status));
             }
+            return Ok(());
+        }
+
+        // Reload/refresh diff
+        KeyCode::Char('R') => {
+            app.tab_mut().refresh_diff()?;
+            let ai_status = if app.tab().ai.has_data() {
+                if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
+            } else {
+                ""
+            };
+            app.notify(&format!("Refreshed{}", ai_status));
             return Ok(());
         }
 
@@ -347,12 +351,12 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Comment jumping across files
-        KeyCode::Char(']') => {
+        // Comment jumping across files (Shift+J / Shift+K)
+        KeyCode::Char('J') => {
             app.next_comment();
             return Ok(());
         }
-        KeyCode::Char('[') => {
+        KeyCode::Char('K') => {
             app.prev_comment();
             return Ok(());
         }
@@ -629,7 +633,7 @@ fn handle_normal_input(
         }
 
         // Toggle resolved on focused comment
-        KeyCode::Char('R') => {
+        KeyCode::Char('z') => {
             if let Some(focus) = app.tab().comment_focus.clone() {
                 toggle_comment_resolved(app, &focus.comment_id)?;
             }

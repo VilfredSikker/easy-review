@@ -129,8 +129,8 @@ pub const COMMENT_BG: Color = Color::Rgb(18, 28, 38);
 /// Inline line-comment background (slightly lighter for visual distinction)
 pub const INLINE_COMMENT_BG: Color = Color::Rgb(22, 32, 42);
 
-/// Focused comment background (highlighted border/bg for selected comment)
-pub const COMMENT_FOCUS_BG: Color = Color::Rgb(28, 38, 52);
+/// Focused comment background (brighter to clearly show selection)
+pub const COMMENT_FOCUS_BG: Color = Color::Rgb(35, 50, 70);
 
 /// Human comment style
 #[allow(dead_code)]

@@ -10,6 +10,7 @@ use crate::ai::RiskLevel;
 use crate::app::{App, DiffMode};
 use crate::git::FileStatus;
 use super::styles;
+use super::utils::word_wrap;
 
 /// Format a SystemTime as a relative time string (e.g. "2m ago", "1h ago")
 fn format_relative_time(mtime: SystemTime) -> String {
@@ -321,7 +322,9 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
 
     let title = format!(" COMMITS ({}) ", total);
 
-    let max_subject_width = (area.width as usize).saturating_sub(16);
+    // " ● " = 3 chars for the indicator prefix; leave 1 char margin on the right
+    let indicator_width: usize = 3;
+    let subject_width = (area.width as usize).saturating_sub(indicator_width + 1).max(1);
 
     let items: Vec<ListItem> = visible
         .iter()
@@ -334,51 +337,50 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
                 styles::surface_style()
             };
 
-            // Line 1: indicator + short hash + subject + relative date
             let indicator = if is_selected { "●" } else { "○" };
             let merge_prefix = if commit.is_merge { "⊕ " } else { "" };
+            let full_subject = format!("{}{}", merge_prefix, commit.subject);
 
-            let subject = truncate_str(&commit.subject, max_subject_width);
+            let wrapped_lines = word_wrap(&full_subject, subject_width);
 
-            let line1 = Line::from(vec![
+            let indicator_style = if is_selected {
+                ratatui::style::Style::default().fg(styles::PURPLE)
+            } else {
+                ratatui::style::Style::default().fg(styles::DIM)
+            };
+            let subject_style = if is_selected {
+                ratatui::style::Style::default().fg(styles::BRIGHT)
+            } else {
+                ratatui::style::Style::default().fg(styles::TEXT)
+            };
+            let continuation_indent = " ".repeat(indicator_width);
+
+            // First wrapped line: indicator + subject text
+            let first_line = Line::from(vec![
+                Span::styled(format!(" {} ", indicator), indicator_style),
                 Span::styled(
-                    format!(" {} ", indicator),
-                    if is_selected {
-                        ratatui::style::Style::default().fg(styles::PURPLE)
-                    } else {
-                        ratatui::style::Style::default().fg(styles::DIM)
-                    },
-                ),
-                Span::styled(
-                    format!("{}{}", merge_prefix, commit.short_hash),
-                    if is_selected {
-                        ratatui::style::Style::default().fg(styles::CYAN)
-                    } else {
-                        ratatui::style::Style::default().fg(styles::DIM)
-                    },
-                ),
-                Span::styled(
-                    format!("  {}", subject),
-                    if is_selected {
-                        ratatui::style::Style::default().fg(styles::BRIGHT)
-                    } else {
-                        ratatui::style::Style::default().fg(styles::TEXT)
-                    },
+                    wrapped_lines.first().cloned().unwrap_or_default(),
+                    subject_style,
                 ),
             ]);
 
-            // Line 2: author + file count + stats + relative date
-            let stats = format!(
-                "+{} −{}",
-                commit.adds, commit.dels
-            );
-            let file_label = if commit.file_count == 1 { "file" } else { "files" };
+            // Additional wrapped lines (indented to align with subject)
+            let continuation_lines: Vec<ListItem> = wrapped_lines
+                .iter()
+                .skip(1)
+                .map(|segment| {
+                    let line = Line::from(vec![
+                        Span::styled(continuation_indent.clone(), ratatui::style::Style::default()),
+                        Span::styled(segment.clone(), subject_style),
+                    ]);
+                    ListItem::new(line).style(line_style)
+                })
+                .collect();
 
-            let line2 = Line::from(vec![
+            // Author line: indented, dimmed
+            let author_line = Line::from(vec![
                 Span::styled(
-                    format!("     {} · {} {} {} · {}",
-                        commit.author, commit.file_count, file_label, stats, commit.relative_date
-                    ),
+                    format!("   {}", commit.author),
                     ratatui::style::Style::default().fg(styles::DIM),
                 ),
             ]);
@@ -389,11 +391,11 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
                 ratatui::style::Style::default().fg(styles::BORDER),
             ));
 
-            vec![
-                ListItem::new(line1).style(line_style),
-                ListItem::new(line2).style(line_style),
-                ListItem::new(separator).style(styles::surface_style()),
-            ]
+            let mut result = vec![ListItem::new(first_line).style(line_style)];
+            result.extend(continuation_lines);
+            result.push(ListItem::new(author_line).style(line_style));
+            result.push(ListItem::new(separator).style(styles::surface_style()));
+            result
         })
         .collect();
 
@@ -409,16 +411,6 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
 
     let list = List::new(items).block(block);
     f.render_widget(list, area);
-}
-
-/// Truncate a string with ellipsis if too long
-fn truncate_str(s: &str, max_width: usize) -> String {
-    if s.chars().count() <= max_width {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_width.saturating_sub(1)).collect();
-        format!("{}…", truncated)
-    }
 }
 
 /// Shorten a file path to fit within max_width

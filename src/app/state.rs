@@ -2622,51 +2622,88 @@ impl App {
 
     // ── Comment Focus & Navigation ──
 
-    /// Navigate to next comment in the current hunk
+    /// Jump to the next comment across all files. Starts from the first comment if none focused.
     pub fn next_comment(&mut self) {
-        let tab = self.tab_mut();
-        let focus = match &tab.comment_focus {
-            Some(f) => f.clone(),
-            None => return,
-        };
-
-        // All comments in this hunk (including replies)
-        let hunk_idx = focus.hunk_index.unwrap_or(0);
-        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let ids: Vec<String> = all_comments.iter().map(|c| c.id().to_string()).collect();
-
-        if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
-            if pos + 1 < ids.len() {
-                tab.comment_focus = Some(CommentFocus {
-                    file: focus.file,
-                    hunk_index: focus.hunk_index,
-                    comment_id: ids[pos + 1].clone(),
-                });
-            }
-        }
+        self.jump_comment(true, false);
     }
 
-    /// Navigate to previous comment in the current hunk
+    /// Jump to the previous comment across all files.
     pub fn prev_comment(&mut self) {
+        self.jump_comment(false, false);
+    }
+
+    /// Jump to the next question across all files. Starts from the first question if none focused.
+    #[allow(dead_code)]
+    pub fn next_question(&mut self) {
+        self.jump_comment(true, true);
+    }
+
+    /// Jump to the previous question across all files.
+    #[allow(dead_code)]
+    pub fn prev_question(&mut self) {
+        self.jump_comment(false, true);
+    }
+
+    /// Core jump logic: navigate forward/backward through comments or questions across all files.
+    fn jump_comment(&mut self, forward: bool, questions_only: bool) {
         let tab = self.tab_mut();
-        let focus = match &tab.comment_focus {
-            Some(f) => f.clone(),
-            None => return,
+        let all = if questions_only {
+            tab.ai.all_questions_ordered()
+        } else {
+            tab.ai.all_comments_ordered()
         };
 
-        let hunk_idx = focus.hunk_index.unwrap_or(0);
-        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let ids: Vec<String> = all_comments.iter().map(|c| c.id().to_string()).collect();
-
-        if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
-            if pos > 0 {
-                tab.comment_focus = Some(CommentFocus {
-                    file: focus.file,
-                    hunk_index: focus.hunk_index,
-                    comment_id: ids[pos - 1].clone(),
-                });
-            }
+        if all.is_empty() {
+            return;
         }
+
+        let next_idx = match &tab.comment_focus {
+            Some(focus) => {
+                // Find current position in the ordered list
+                let current_pos = all.iter().position(|(_, _, id)| *id == focus.comment_id);
+                match current_pos {
+                    Some(pos) => {
+                        if forward {
+                            if pos + 1 < all.len() { pos + 1 } else { 0 }
+                        } else {
+                            if pos > 0 { pos - 1 } else { all.len() - 1 }
+                        }
+                    }
+                    // Current focus not in this list (e.g. focused comment, jumping questions)
+                    None => if forward { 0 } else { all.len() - 1 },
+                }
+            }
+            // No focus yet — start from first or last
+            None => if forward { 0 } else { all.len() - 1 },
+        };
+
+        let (ref file, hunk_index, ref comment_id) = all[next_idx];
+
+        // Navigate to the file if different from current
+        let needs_file_change = tab.files.get(tab.selected_file)
+            .map_or(true, |f| f.path != *file);
+
+        if needs_file_change {
+            if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
+                tab.selected_file = idx;
+                tab.current_hunk = hunk_index.unwrap_or(0);
+                tab.current_line = None;
+                tab.selection_anchor = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.rebuild_hunk_offsets();
+            }
+        } else if let Some(hi) = hunk_index {
+            tab.current_hunk = hi;
+            tab.current_line = None;
+        }
+
+        tab.comment_focus = Some(CommentFocus {
+            file: file.clone(),
+            hunk_index,
+            comment_id: comment_id.clone(),
+        });
+        tab.scroll_to_current_hunk();
     }
 
     // ── Reply System ──

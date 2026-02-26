@@ -10,6 +10,7 @@ use crate::app::{App, DiffMode};
 use crate::git::LineType;
 use super::highlight::Highlighter;
 use super::styles;
+use super::utils::word_wrap;
 
 /// Threshold (total diff lines) above which viewport-based rendering is used
 const VIRTUALIZE_THRESHOLD: usize = 200;
@@ -804,8 +805,13 @@ fn render_comment_lines(
 
     let mut header_spans = vec![
         Span::styled(
-            if inline { format!("     {} ", icon) } else { format!("  {} ", icon) },
-            ratatui::style::Style::default().fg(accent).bg(bg),
+            if focused {
+                // Bright left marker when focused
+                if inline { format!("  ▸  {} ", icon) } else { format!("▸ {} ", icon) }
+            } else {
+                if inline { format!("     {} ", icon) } else { format!("  {} ", icon) }
+            },
+            ratatui::style::Style::default().fg(if focused { styles::PURPLE } else { accent }).bg(bg),
         ),
         Span::styled(
             author.to_string(),
@@ -849,30 +855,27 @@ fn render_comment_lines(
     // Focus indicator
     if focused {
         header_spans.push(Span::styled(
-            "  ◆",
-            ratatui::style::Style::default().fg(styles::PURPLE).bg(bg),
+            "  ◆ focused",
+            ratatui::style::Style::default().fg(styles::PURPLE).bg(bg).add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
 
     lines.push(Line::from(header_spans).style(ratatui::style::Style::default().bg(bg)));
 
-    // Comment text
+    // Comment text — split by lines first so paragraph breaks and bullet points are preserved
     let indent: usize = if inline { 8 } else { 6 };
     let max_len = width.saturating_sub(indent as u16) as usize;
     let text = comment.text();
     let text_fg = if is_stale { styles::DIM } else { styles::TEXT };
-    let truncated = if text.chars().count() > max_len {
-        format!("{}…", text.chars().take(max_len.saturating_sub(1)).collect::<String>())
-    } else {
-        text.to_string()
-    };
     let padding = " ".repeat(indent.saturating_sub(2));
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("  {}{}", padding, truncated),
-            ratatui::style::Style::default().fg(text_fg).bg(bg),
-        ),
-    ]).style(ratatui::style::Style::default().bg(bg)));
+    for wrapped in word_wrap(text, max_len) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {}{}", padding, wrapped),
+                ratatui::style::Style::default().fg(text_fg).bg(bg),
+            ),
+        ]).style(ratatui::style::Style::default().bg(bg)));
+    }
 }
 
 /// Render a reply comment (indented with ↳ prefix)
@@ -937,22 +940,19 @@ fn render_reply_lines(
 
     lines.push(Line::from(header_spans).style(ratatui::style::Style::default().bg(bg)));
 
-    // Reply text
+    // Reply text — split by lines first so paragraph breaks and bullet points are preserved
     let indent: usize = if inline { 12 } else { 10 };
     let max_len = width.saturating_sub(indent as u16) as usize;
     let text = reply.text();
-    let truncated = if text.chars().count() > max_len {
-        format!("{}…", text.chars().take(max_len.saturating_sub(1)).collect::<String>())
-    } else {
-        text.to_string()
-    };
     let padding = " ".repeat(indent.saturating_sub(2));
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("  {}{}", padding, truncated),
-            ratatui::style::Style::default().fg(styles::TEXT).bg(bg),
-        ),
-    ]).style(ratatui::style::Style::default().bg(bg)));
+    for wrapped in word_wrap(text, max_len) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {}{}", padding, wrapped),
+                ratatui::style::Style::default().fg(styles::TEXT).bg(bg),
+            ),
+        ]).style(ratatui::style::Style::default().bg(bg)));
+    }
 }
 
 /// Render an empty state when no file is selected
