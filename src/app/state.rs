@@ -1949,23 +1949,6 @@ impl App {
         self.notify(&format!("Closed: {}", name));
     }
 
-    /// Switch to the next tab (circular)
-    pub fn next_tab(&mut self) {
-        if self.tabs.len() > 1 {
-            self.active_tab = (self.active_tab + 1) % self.tabs.len();
-        }
-    }
-
-    /// Switch to the previous tab (circular)
-    pub fn prev_tab(&mut self) {
-        if self.tabs.len() > 1 {
-            self.active_tab = if self.active_tab == 0 {
-                self.tabs.len() - 1
-            } else {
-                self.active_tab - 1
-            };
-        }
-    }
 
     // ── Overlay: Worktree Picker ──
 
@@ -2574,38 +2557,6 @@ impl App {
 
     // ── Comment Focus & Navigation ──
 
-    /// Toggle comment focus mode. When in a hunk with comments, Tab enters
-    /// comment focus; pressing Tab again exits it.
-    pub fn toggle_comment_focus(&mut self) {
-        let tab = self.tab_mut();
-        if tab.comment_focus.is_some() {
-            // Exit comment focus
-            tab.comment_focus = None;
-            return;
-        }
-
-        // Enter comment focus: find first comment in the current hunk
-        let file_path = match tab.selected_diff_file() {
-            Some(f) => f.path.clone(),
-            None => return,
-        };
-        let hunk_idx = tab.current_hunk;
-
-        // Collect all top-level comments for this hunk (line + hunk-level)
-        let comments = tab.ai.comments_for_hunk(&file_path, hunk_idx);
-        let top_level: Vec<_> = comments.iter()
-            .filter(|c| c.in_reply_to().is_none())
-            .collect();
-
-        if let Some(first) = top_level.first() {
-            tab.comment_focus = Some(CommentFocus {
-                file: file_path,
-                hunk_index: Some(hunk_idx),
-                comment_id: first.id().to_string(),
-            });
-        }
-    }
-
     /// Navigate to next comment in the current hunk
     pub fn next_comment(&mut self) {
         let tab = self.tab_mut();
@@ -2796,22 +2747,6 @@ impl App {
     }
 
     // ── Hunk Comment (Shift-C) ──
-
-    /// Enter comment mode for a hunk-level comment (no line_start)
-    pub fn start_hunk_comment(&mut self, comment_type: CommentType) {
-        let tab = self.tab_mut();
-        let file_path = match tab.selected_diff_file() {
-            Some(f) => f.path.clone(),
-            None => return,
-        };
-        tab.comment_input.clear();
-        tab.comment_file = file_path;
-        tab.comment_hunk = tab.current_hunk;
-        tab.comment_line_num = None; // Force hunk-level
-        tab.comment_reply_to = None;
-        tab.comment_type = comment_type;
-        self.input_mode = InputMode::Comment;
-    }
 
     // ── Commit ──
 
