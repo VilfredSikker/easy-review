@@ -309,7 +309,7 @@ fn handle_normal_input(
             app.tab_mut().set_mode(DiffMode::Staged);
             return Ok(());
         }
-        KeyCode::Char('4') => {
+        KeyCode::Char('4') if app.config.features.view_history => {
             app.tab_mut().set_mode(DiffMode::History);
             return Ok(());
         }

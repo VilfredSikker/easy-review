@@ -33,21 +33,13 @@ fn default_diff_mode() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureFlags {
     #[serde(default = "default_true")]
-    pub split_diff: bool,
-    #[serde(default = "default_true")]
-    pub exit_heatmap: bool,
-    #[serde(default)]
-    pub blame_annotations: bool,
-    #[serde(default = "default_true")]
-    pub bookmarks: bool,
-    #[serde(default = "default_true")]
     pub view_branch: bool,
     #[serde(default = "default_true")]
     pub view_unstaged: bool,
     #[serde(default = "default_true")]
     pub view_staged: bool,
     #[serde(default = "default_true")]
-    pub ai_overlays: bool,
+    pub view_history: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,14 +127,10 @@ impl Default for ErConfig {
 impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
-            split_diff: true,
-            exit_heatmap: true,
-            blame_annotations: false,
-            bookmarks: true,
             view_branch: true,
             view_unstaged: true,
             view_staged: true,
-            ai_overlays: true,
+            view_history: true,
         }
     }
 }
@@ -256,27 +244,6 @@ pub enum SettingsItem {
 /// Build the list of settings items for the settings overlay.
 pub fn settings_items() -> Vec<SettingsItem> {
     vec![
-        SettingsItem::SectionHeader("Features".into()),
-        SettingsItem::BoolToggle {
-            label: "Split diff (side-by-side)".into(),
-            get: |c| c.features.split_diff,
-            set: |c, v| c.features.split_diff = v,
-        },
-        SettingsItem::BoolToggle {
-            label: "Exit heatmap".into(),
-            get: |c| c.features.exit_heatmap,
-            set: |c, v| c.features.exit_heatmap = v,
-        },
-        SettingsItem::BoolToggle {
-            label: "Blame annotations".into(),
-            get: |c| c.features.blame_annotations,
-            set: |c, v| c.features.blame_annotations = v,
-        },
-        SettingsItem::BoolToggle {
-            label: "Bookmarks".into(),
-            get: |c| c.features.bookmarks,
-            set: |c, v| c.features.bookmarks = v,
-        },
         SettingsItem::SectionHeader("Views".into()),
         SettingsItem::BoolToggle {
             label: "Branch diff (1)".into(),
@@ -294,9 +261,9 @@ pub fn settings_items() -> Vec<SettingsItem> {
             set: |c, v| c.features.view_staged = v,
         },
         SettingsItem::BoolToggle {
-            label: "AI overlays (v/V)".into(),
-            get: |c| c.features.ai_overlays,
-            set: |c, v| c.features.ai_overlays = v,
+            label: "History (4)".into(),
+            get: |c| c.features.view_history,
+            set: |c, v| c.features.view_history = v,
         },
         SettingsItem::SectionHeader("Display".into()),
         SettingsItem::BoolToggle {
