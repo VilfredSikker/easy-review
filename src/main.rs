@@ -373,6 +373,22 @@ fn handle_normal_input(
             app.prev_comment();
             return Ok(());
         }
+        // Delete focused comment (after J/K jump)
+        KeyCode::Char('d') => {
+            if let Some(ref id) = app.tab().focused_comment_id.clone() {
+                app.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
+                    comment_id: id.clone(),
+                });
+            }
+            return Ok(());
+        }
+        // Edit focused comment (after J/K jump)
+        KeyCode::Char('r') => {
+            if let Some(id) = app.tab().focused_comment_id.clone() {
+                app.start_edit_comment(&id);
+            }
+            return Ok(());
+        }
         KeyCode::Char('x') => {
             app.close_tab();
             return Ok(());

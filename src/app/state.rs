@@ -282,6 +282,9 @@ pub struct TabState {
     /// Which type of comment is being created (Question vs GitHubComment)
     pub comment_type: CommentType,
 
+    /// When editing an existing comment, holds the comment ID being edited
+    pub comment_edit_id: Option<String>,
+
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
 
@@ -442,6 +445,7 @@ impl TabState {
             comment_reply_to: None,
             comment_line_num: None,
             comment_type: CommentType::GitHubComment,
+            comment_edit_id: None,
             pr_data: None,
             history: None,
             watched_config,
@@ -2615,6 +2619,39 @@ impl App {
         self.input_mode = InputMode::Comment;
     }
 
+    /// Start editing an existing comment — opens comment input pre-filled with its text
+    pub fn start_edit_comment(&mut self, comment_id: &str) {
+        let tab = self.tab();
+        // Find the comment text and type
+        let (text, is_question) = if comment_id.starts_with("q-") {
+            if let Some(qs) = &tab.ai.questions {
+                if let Some(q) = qs.questions.iter().find(|q| q.id == comment_id) {
+                    (q.text.clone(), true)
+                } else { return; }
+            } else { return; }
+        } else {
+            if let Some(gc) = &tab.ai.github_comments {
+                if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
+                    (c.comment.clone(), false)
+                } else { return; }
+            } else { return; }
+        };
+
+        let tab = self.tab_mut();
+        let file_path = match tab.selected_diff_file() {
+            Some(f) => f.path.clone(),
+            None => return,
+        };
+        tab.comment_input = text;
+        tab.comment_file = file_path;
+        tab.comment_hunk = tab.current_hunk;
+        tab.comment_line_num = tab.current_line_number();
+        tab.comment_reply_to = None;
+        tab.comment_type = if is_question { CommentType::Question } else { CommentType::GitHubComment };
+        tab.comment_edit_id = Some(comment_id.to_string());
+        self.input_mode = InputMode::Comment;
+    }
+
     /// Submit the current comment/question to the appropriate file
     pub fn submit_comment(&mut self) -> Result<()> {
         let tab = self.tab();
@@ -2622,6 +2659,11 @@ impl App {
         if text.is_empty() {
             self.input_mode = InputMode::Normal;
             return Ok(());
+        }
+
+        // If editing an existing comment, update it in-place
+        if let Some(edit_id) = tab.comment_edit_id.clone() {
+            return self.update_comment(edit_id, text);
         }
 
         let comment_type = tab.comment_type;
@@ -2866,7 +2908,74 @@ impl App {
     /// Cancel comment input
     pub fn cancel_comment(&mut self) {
         self.tab_mut().comment_input.clear();
+        self.tab_mut().comment_edit_id = None;
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Update an existing comment in-place: new text, re-anchored to current position
+    fn update_comment(&mut self, comment_id: String, new_text: String) -> Result<()> {
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let hunk_index = tab.comment_hunk;
+        let comment_line_num = tab.comment_line_num;
+
+        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
+        let diff_hash = self.tab().diff_hash.clone();
+
+        if comment_id.starts_with("q-") {
+            let path = format!("{}/.er-questions.json", repo_root);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
+                    if let Some(q) = qs.questions.iter_mut().find(|q| q.id == comment_id) {
+                        q.text = new_text.clone();
+                        q.line_start = anchor.line_start;
+                        q.line_content = anchor.line_content.clone();
+                        q.context_before = anchor.context_before.clone();
+                        q.context_after = anchor.context_after.clone();
+                        q.old_line_start = anchor.old_line_start;
+                        q.hunk_header = anchor.hunk_header.clone();
+                        q.hunk_index = Some(hunk_index);
+                        q.anchor_status = "original".to_string();
+                        q.relocated_at_hash = diff_hash;
+                        q.stale = false;
+                    }
+                    let json = serde_json::to_string_pretty(&qs)?;
+                    let tmp = format!("{}.tmp", path);
+                    std::fs::write(&tmp, json)?;
+                    std::fs::rename(&tmp, &path)?;
+                }
+            }
+        } else {
+            let path = format!("{}/.er-github-comments.json", repo_root);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
+                        c.comment = new_text.clone();
+                        c.line_start = anchor.line_start;
+                        c.line_content = anchor.line_content.clone();
+                        c.context_before = anchor.context_before.clone();
+                        c.context_after = anchor.context_after.clone();
+                        c.old_line_start = anchor.old_line_start;
+                        c.hunk_header = anchor.hunk_header.clone();
+                        c.hunk_index = Some(hunk_index);
+                        c.anchor_status = "original".to_string();
+                        c.relocated_at_hash = diff_hash;
+                        c.stale = false;
+                    }
+                    let json = serde_json::to_string_pretty(&gc)?;
+                    let tmp = format!("{}.tmp", path);
+                    std::fs::write(&tmp, json)?;
+                    std::fs::rename(&tmp, &path)?;
+                }
+            }
+        }
+
+        self.tab_mut().comment_input.clear();
+        self.tab_mut().comment_edit_id = None;
+        self.input_mode = InputMode::Normal;
+        self.tab_mut().reload_ai_state();
+        self.notify(&format!("Comment updated: {}", truncate(&new_text, 40)));
+        Ok(())
     }
 
     // ── Comment Navigation ──
@@ -3395,6 +3504,7 @@ mod tests {
             comment_reply_to: None,
             comment_line_num: None,
             comment_type: CommentType::GitHubComment,
+            comment_edit_id: None,
             pr_data: None,
             history: None,
             watched_config: WatchedConfig::default(),

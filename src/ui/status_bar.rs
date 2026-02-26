@@ -402,6 +402,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("c", " comment "));
         }
 
+        if tab.focused_comment_id.is_some() {
+            hints.push(Hint::new("d", " delete "));
+            hints.push(Hint::new("r", " edit "));
+        }
         hints.push(Hint::new("e", " edit "));
         hints.push(Hint::new("p", " panel "));
         hints.push(Hint::new("^q", " quit "));
