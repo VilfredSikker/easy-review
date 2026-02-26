@@ -1,4 +1,4 @@
-use crate::ai::{self, AiState, CommentType, ReviewFocus, ViewMode};
+use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, WatchedConfig};
 use crate::git::{self, DiffFile, DiffFileHeader, CompactionConfig, WatchedFile, Worktree};
 use anyhow::{Context, Result};
@@ -130,6 +130,24 @@ pub struct TabState {
 
     /// Vertical scroll offset for the AI side panel (independent of diff_scroll)
     pub ai_panel_scroll: u16,
+
+    /// Inline layer visibility toggles
+    pub layers: InlineLayers,
+
+    /// Optional context panel content (None = panel closed)
+    pub panel: Option<PanelContent>,
+
+    /// Vertical scroll offset for the context panel
+    pub panel_scroll: u16,
+
+    /// Whether keyboard focus is on the panel (vs diff view)
+    pub panel_focus: bool,
+
+    /// Which column has focus in panel's AiSummary view
+    pub review_focus: ReviewFocus,
+
+    /// Cursor position within the focused panel section
+    pub review_cursor: usize,
 
     /// Search/filter input
     pub search_query: String,
@@ -324,6 +342,12 @@ impl TabState {
             diff_scroll: 0,
             h_scroll: 0,
             ai_panel_scroll: 0,
+            layers: InlineLayers::default(),
+            panel: None,
+            panel_scroll: 0,
+            panel_focus: false,
+            review_focus: ReviewFocus::Files,
+            review_cursor: 0,
             search_query: String::new(),
             filter_expr: String::new(),
             filter_rules: Vec::new(),
@@ -505,32 +529,21 @@ impl TabState {
         Ok(())
     }
 
-    /// Reload AI state from .er-* files (preserving current view/nav state)
+    /// Reload AI state from .er-* files (preserving current nav state)
     pub fn reload_ai_state(&mut self) {
-        let current_mode = self.ai.view_mode;
-        let current_focus = self.ai.review_focus;
-        let current_cursor = self.ai.review_cursor;
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         self.ai = ai::load_ai_state(&self.repo_root, &self.branch_diff_hash);
-        self.ai.view_mode = current_mode;
-        self.ai.review_focus = current_focus;
-        self.ai.review_cursor = current_cursor;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
         if self.ai.is_stale {
             self.ai.stale_files = prev_stale_files;
         }
         // Clamp cursor to valid range after reload (item count may have decreased)
-        let item_count = match current_focus {
+        let item_count = match self.review_focus {
             ReviewFocus::Files => self.ai.review_file_count(),
             ReviewFocus::Checklist => self.ai.review_checklist_count(),
         };
-        // cursor 0 on empty is safe — all access methods are bounds-checked
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
-        self.ai.review_cursor = self.ai.review_cursor.min(max_cursor);
-        // If the current mode requires AI data that's not available, fall back
-        if self.ai.view_mode != ViewMode::Default && !self.ai.overlay_available() {
-            self.ai.view_mode = ViewMode::Default;
-        }
+        self.review_cursor = self.review_cursor.min(max_cursor);
         self.last_ai_check = ai::latest_er_mtime(&self.repo_root);
     }
 
@@ -570,6 +583,80 @@ impl TabState {
             return true;
         }
         false
+    }
+
+    // ── Layer toggles ──
+
+    pub fn toggle_layer_questions(&mut self) {
+        self.layers.show_questions = !self.layers.show_questions;
+    }
+
+    pub fn toggle_layer_comments(&mut self) {
+        self.layers.show_github_comments = !self.layers.show_github_comments;
+    }
+
+    pub fn toggle_layer_ai(&mut self) {
+        self.layers.show_ai_findings = !self.layers.show_ai_findings;
+    }
+
+    /// Cycle panel: None → FileDetail → AiSummary (if AI data) → None
+    pub fn toggle_panel(&mut self) {
+        self.panel = match self.panel {
+            None => Some(PanelContent::FileDetail),
+            Some(PanelContent::FileDetail) => {
+                if self.ai.has_data() {
+                    Some(PanelContent::AiSummary)
+                } else {
+                    None
+                }
+            }
+            Some(PanelContent::AiSummary) => None,
+            Some(PanelContent::PrOverview) => None,
+        };
+        self.panel_scroll = 0;
+        if self.panel.is_none() {
+            self.panel_focus = false;
+        }
+    }
+
+    // ── Panel/review navigation ──
+
+    /// Number of items in the left column (file risk list)
+    pub fn review_file_count(&self) -> usize {
+        self.ai.review_file_count()
+    }
+
+    /// Number of items in the right column (checklist items)
+    pub fn review_checklist_count(&self) -> usize {
+        self.ai.review_checklist_count()
+    }
+
+    fn review_item_count(&self) -> usize {
+        match self.review_focus {
+            ReviewFocus::Files => self.review_file_count(),
+            ReviewFocus::Checklist => self.review_checklist_count(),
+        }
+    }
+
+    pub fn review_next(&mut self) {
+        let count = self.review_item_count();
+        if count > 0 && self.review_cursor + 1 < count {
+            self.review_cursor += 1;
+        }
+    }
+
+    pub fn review_prev(&mut self) {
+        if self.review_cursor > 0 {
+            self.review_cursor -= 1;
+        }
+    }
+
+    pub fn review_toggle_focus(&mut self) {
+        self.review_focus = match self.review_focus {
+            ReviewFocus::Files => ReviewFocus::Checklist,
+            ReviewFocus::Checklist => ReviewFocus::Files,
+        };
+        self.review_cursor = 0;
     }
 
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
@@ -2355,18 +2442,17 @@ impl App {
 
     // ── AiReview Navigation ──
 
-    /// Jump from AiReview to the selected file in SidePanel mode
+    /// Jump from AiSummary panel to the selected file in FileDetail mode
     pub fn review_jump_to_file(&mut self) {
         let file_path = {
-            let ai = &self.tab().ai;
-            match ai.review_focus {
-                ReviewFocus::Files => ai.review_file_at(ai.review_cursor),
-                ReviewFocus::Checklist => ai.checklist_file_at(ai.review_cursor),
+            let tab = self.tab();
+            match tab.review_focus {
+                ReviewFocus::Files => tab.ai.review_file_at(tab.review_cursor),
+                ReviewFocus::Checklist => tab.ai.checklist_file_at(tab.review_cursor),
             }
         };
 
         if let Some(path) = file_path {
-            // Find the file index in the file list
             let file_idx = self.tab().files.iter().position(|f| f.path == path);
             if let Some(idx) = file_idx {
                 let tab = self.tab_mut();
@@ -2375,7 +2461,7 @@ impl App {
                 tab.current_line = None;
                 tab.diff_scroll = 0;
                 tab.h_scroll = 0;
-                tab.ai.view_mode = ViewMode::SidePanel;
+                tab.panel = Some(PanelContent::FileDetail);
                 self.notify(&format!("Jumped to: {}", path));
             } else {
                 self.notify(&format!("File not in diff: {}", path));
@@ -2386,11 +2472,11 @@ impl App {
     /// Toggle the checklist item at cursor and persist to .er-checklist.json
     pub fn review_toggle_checklist(&mut self) -> Result<()> {
         let tab = self.tab_mut();
-        if tab.ai.review_focus != ReviewFocus::Checklist {
+        if tab.review_focus != ReviewFocus::Checklist {
             return Ok(());
         }
 
-        let cursor = tab.ai.review_cursor;
+        let cursor = tab.review_cursor;
         tab.ai.toggle_checklist_item(cursor);
 
         // Persist atomically via temp file + rename
@@ -2654,6 +2740,7 @@ mod tests {
     use std::collections::HashSet;
 
     fn make_test_tab(files: Vec<DiffFile>) -> TabState {
+        use crate::ai::{InlineLayers, ReviewFocus};
         TabState {
             mode: DiffMode::Branch,
             base_branch: "main".to_string(),
@@ -2667,6 +2754,12 @@ mod tests {
             diff_scroll: 0,
             h_scroll: 0,
             ai_panel_scroll: 0,
+            layers: InlineLayers::default(),
+            panel: None,
+            panel_scroll: 0,
+            panel_focus: false,
+            review_focus: ReviewFocus::Files,
+            review_cursor: 0,
             search_query: String::new(),
             filter_expr: String::new(),
             filter_rules: Vec::new(),
@@ -3371,5 +3464,124 @@ mod tests {
         tab.scroll_down(6);
         assert_eq!(tab.current_hunk, 1);
         assert_eq!(tab.current_line, Some(0));
+    }
+
+    // ── TabState new field defaults ──
+
+    #[test]
+    fn new_tab_state_has_default_layers() {
+        let tab = make_test_tab(vec![]);
+        assert!(tab.layers.show_questions);
+        assert!(tab.layers.show_github_comments);
+        assert!(!tab.layers.show_ai_findings);
+    }
+
+    #[test]
+    fn new_tab_state_panel_is_none() {
+        let tab = make_test_tab(vec![]);
+        assert!(tab.panel.is_none());
+    }
+
+    #[test]
+    fn new_tab_state_panel_focus_is_false() {
+        let tab = make_test_tab(vec![]);
+        assert!(!tab.panel_focus);
+    }
+
+    // ── Layer toggles ──
+
+    #[test]
+    fn toggle_layer_ai_flips_show_ai_findings() {
+        let mut tab = make_test_tab(vec![]);
+        assert!(!tab.layers.show_ai_findings);
+        tab.toggle_layer_ai();
+        assert!(tab.layers.show_ai_findings);
+        tab.toggle_layer_ai();
+        assert!(!tab.layers.show_ai_findings);
+    }
+
+    #[test]
+    fn toggle_layer_questions_flips_show_questions() {
+        let mut tab = make_test_tab(vec![]);
+        assert!(tab.layers.show_questions);
+        tab.toggle_layer_questions();
+        assert!(!tab.layers.show_questions);
+        tab.toggle_layer_questions();
+        assert!(tab.layers.show_questions);
+    }
+
+    #[test]
+    fn toggle_layer_comments_flips_show_github_comments() {
+        let mut tab = make_test_tab(vec![]);
+        assert!(tab.layers.show_github_comments);
+        tab.toggle_layer_comments();
+        assert!(!tab.layers.show_github_comments);
+        tab.toggle_layer_comments();
+        assert!(tab.layers.show_github_comments);
+    }
+
+    // ── toggle_panel ──
+
+    #[test]
+    fn toggle_panel_opens_file_detail_from_none() {
+        let mut tab = make_test_tab(vec![]);
+        tab.toggle_panel();
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+    }
+
+    #[test]
+    fn toggle_panel_cycles_to_ai_summary_when_ai_data_present() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("some summary".to_string());
+        tab.panel = Some(crate::ai::PanelContent::FileDetail);
+        tab.toggle_panel();
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
+    }
+
+    #[test]
+    fn toggle_panel_skips_ai_summary_when_no_ai_data() {
+        let mut tab = make_test_tab(vec![]);
+        tab.panel = Some(crate::ai::PanelContent::FileDetail);
+        tab.toggle_panel();
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_closes_from_ai_summary() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.panel = Some(crate::ai::PanelContent::AiSummary);
+        tab.toggle_panel();
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_resets_panel_scroll_on_each_toggle() {
+        let mut tab = make_test_tab(vec![]);
+        tab.panel_scroll = 42;
+        tab.toggle_panel();
+        assert_eq!(tab.panel_scroll, 0);
+
+        tab.panel_scroll = 10;
+        tab.toggle_panel(); // FileDetail → None (no AI data)
+        assert_eq!(tab.panel_scroll, 0);
+    }
+
+    #[test]
+    fn toggle_panel_sets_panel_focus_false_when_closing() {
+        let mut tab = make_test_tab(vec![]);
+        tab.panel = Some(crate::ai::PanelContent::FileDetail);
+        tab.panel_focus = true;
+        tab.toggle_panel(); // FileDetail → None (no AI data)
+        assert!(!tab.panel_focus);
+    }
+
+    #[test]
+    fn toggle_panel_does_not_clear_panel_focus_when_opening() {
+        let mut tab = make_test_tab(vec![]);
+        tab.panel_focus = false;
+        tab.toggle_panel(); // None → FileDetail
+        // panel_focus stays as-is when panel is opened
+        assert!(!tab.panel_focus);
     }
 }

@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::{App, DiffMode, InputMode, ConfirmAction};
-use crate::ai::ViewMode;
+use crate::ai::PanelContent;
 use super::styles;
 
 /// Compute the display width of a list of spans
@@ -144,7 +144,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let mut right: Vec<Span> = Vec::new();
 
-    // AI view mode + staleness indicator
+    // AI badge + panel label
     if tab.ai.has_data() {
         if tab.ai.is_stale {
             let stale_count = tab.ai.stale_files.len();
@@ -156,15 +156,35 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             right.push(Span::styled(stale_label, styles::stale_style()));
             right.push(Span::raw("  "));
         }
-        if tab.ai.view_mode != ViewMode::Default {
+        if tab.layers.show_ai_findings {
             right.push(Span::styled(
-                format!("⬡ {}", tab.ai.view_mode.label()),
+                " AI ",
                 ratatui::style::Style::default()
-                    .fg(styles::PURPLE)
+                    .fg(styles::BG)
+                    .bg(styles::PURPLE)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ));
             right.push(Span::raw("  "));
         }
+    }
+    if let Some(panel) = tab.panel {
+        let panel_label = match panel {
+            PanelContent::FileDetail => " File Detail ",
+            PanelContent::AiSummary => " AI Summary ",
+            PanelContent::PrOverview => " PR Overview ",
+        };
+        let panel_style = if tab.panel_focus {
+            ratatui::style::Style::default()
+                .fg(styles::BG)
+                .bg(styles::BLUE)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            ratatui::style::Style::default()
+                .fg(styles::BLUE)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        };
+        right.push(Span::styled(panel_label, panel_style));
+        right.push(Span::raw("  "));
     }
 
     // Show filtered reviewed count (yellow) then total reviewed count (blue)
@@ -249,21 +269,18 @@ impl Hint {
     }
 }
 
-/// Build the hint list for AiReview mode
-fn build_ai_review_hints(app: &App) -> Vec<Hint> {
+/// Build the hint list for when the AI Summary panel is focused
+fn build_ai_panel_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
     let mut hints = vec![
-        Hint::new("j/k", " nav "),
-        Hint::new("Tab", " switch column "),
-        Hint::new("␣", " toggle check "),
-        Hint::new("Enter", " jump to file "),
-        Hint::new("v/V", " view "),
-        Hint::new("Esc", " default view "),
-        Hint::new("q", " quit "),
+        Hint::new("j/k", " navigate "),
+        Hint::new("Tab", " focus "),
+        Hint::new("␣", " toggle "),
+        Hint::new("Enter", " jump "),
     ];
 
     // Show which column is focused
-    let focus_label = match tab.ai.review_focus {
+    let focus_label = match tab.review_focus {
         crate::ai::ReviewFocus::Files => " [Files] ",
         crate::ai::ReviewFocus::Checklist => " [Checklist] ",
     };
@@ -279,9 +296,9 @@ fn build_ai_review_hints(app: &App) -> Vec<Hint> {
 fn build_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
 
-    // Delegate to AiReview-specific hints when in that mode
-    if tab.ai.view_mode == ViewMode::AiReview {
-        return build_ai_review_hints(app);
+    // Delegate to AI panel hints when focus is on the AI Summary panel
+    if tab.panel_focus && tab.panel == Some(PanelContent::AiSummary) {
+        return build_ai_panel_hints(app);
     }
 
     let mut hints = vec![
@@ -329,7 +346,13 @@ fn build_hints(app: &App) -> Vec<Hint> {
     }
 
     if tab.ai.has_data() {
-        hints.push(Hint::new("v/V", " AI view "));
+        hints.push(Hint::new("a", " AI "));
+    }
+
+    hints.push(Hint::new("p", " panel "));
+
+    if tab.panel.is_some() {
+        hints.push(Hint::new("Tab", " focus "));
     }
 
     if app.tabs.len() > 1 {

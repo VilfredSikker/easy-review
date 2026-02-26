@@ -6,7 +6,7 @@ use ratatui::{
 };
 use std::time::SystemTime;
 
-use crate::ai::{RiskLevel, ViewMode};
+use crate::ai::RiskLevel;
 use crate::app::App;
 use crate::git::FileStatus;
 use super::styles;
@@ -28,7 +28,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.tab();
     let visible = tab.visible_files();
     let total = tab.files.len();
-    let in_overlay = matches!(tab.ai.view_mode, ViewMode::Overlay | ViewMode::SidePanel);
+    let in_overlay = tab.layers.show_ai_findings;
     let ai_stale = tab.ai.is_stale;
 
     let stale_count = tab.ai.stale_files.len();
@@ -119,6 +119,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 None
             };
 
+            // Comment indicators (questions = yellow ◆, github = cyan ◆)
+            let has_questions = tab.ai.file_has_questions(&file.path);
+            let has_gh_comments = tab.ai.file_has_github_comments(&file.path);
+
             // Relative time when sorting by mtime
             let time_str = if tab.sort_by_mtime {
                 let mtime = std::fs::metadata(format!("{}/{}", tab.repo_root, file.path))
@@ -131,11 +135,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             // Time column takes up to 8 chars (e.g. "15m ago " or "3h ago  ")
             let time_width: usize = if time_str.is_some() { 8 } else { 0 };
 
-            // Adjust path width to account for risk dot and time column
+            // Comment indicator width: each type takes 2 chars (symbol + space)
+            let comment_width: usize = if has_questions { 2 } else { 0 }
+                + if has_gh_comments { 2 } else { 0 };
+
+            // Adjust path width to account for risk dot, comment indicators, and time column
             let extra_width = if risk_dot.is_some() { 2 } else { 0 };
             let path = shorten_path(
                 &file.path,
-                (area.width as usize).saturating_sub(16 + extra_width + time_width),
+                (area.width as usize).saturating_sub(16 + extra_width + comment_width + time_width),
             );
 
             // Stats: +adds -dels
@@ -161,7 +169,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 symbol_style
             };
 
-            let path_width = (area.width as usize).saturating_sub(14 + extra_width + time_width).max(1);
+            let path_width = (area.width as usize).saturating_sub(14 + extra_width + comment_width + time_width).max(1);
 
             let mut spans = vec![
                 Span::styled(format!(" {} ", symbol), effective_symbol_style),
@@ -182,6 +190,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::TEXT)
                 },
             ));
+            // Comment indicators after path
+            if has_questions {
+                spans.push(Span::styled(
+                    "\u{25c6} ",
+                    ratatui::style::Style::default().fg(styles::YELLOW),
+                ));
+            }
+            if has_gh_comments {
+                spans.push(Span::styled(
+                    "\u{25c6} ",
+                    ratatui::style::Style::default().fg(styles::CYAN),
+                ));
+            }
             // Show relative time when sorting by mtime
             if let Some(ref ts) = time_str {
                 spans.push(Span::styled(

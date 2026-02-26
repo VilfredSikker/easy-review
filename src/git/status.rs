@@ -128,16 +128,17 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
 
     // Try upstream tracking branch
     if let Some(upstream) = run(&["rev-parse", "--abbrev-ref", "@{upstream}"]) {
-        if let Some(branch) = upstream.split('/').last() {
-            if branch != current && !branch.is_empty() {
-                // Verify the short name is a valid revision
-                if run(&["rev-parse", "--verify", branch]).is_some() {
-                    return Ok(branch.to_string());
-                }
-                // Fall back to the full upstream ref (e.g. origin/main)
-                if run(&["rev-parse", "--verify", &upstream]).is_some() {
-                    return Ok(upstream);
-                }
+        // Strip remote name prefix (first component) to get the branch name.
+        // e.g. "origin/stack/foo" → "stack/foo", "origin/main" → "main"
+        let branch = upstream.find('/').map(|i| &upstream[i + 1..]).unwrap_or(&upstream);
+        if branch != current && !branch.is_empty() {
+            // Verify the short name is a valid revision
+            if run(&["rev-parse", "--verify", branch]).is_some() {
+                return Ok(branch.to_string());
+            }
+            // Fall back to the full upstream ref (e.g. origin/main)
+            if run(&["rev-parse", "--verify", &upstream]).is_some() {
+                return Ok(upstream);
             }
         }
     }
@@ -165,8 +166,9 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
 
 /// Get the raw diff output from git for a given mode
 pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
+    let merge_base_ref = format!("{}...HEAD", base);
     let args: Vec<&str> = match mode {
-        "branch" => vec!["diff", base, "--unified=3", "--no-color", "--no-ext-diff"],
+        "branch" => vec!["diff", &merge_base_ref, "--unified=3", "--no-color", "--no-ext-diff"],
         "unstaged" => vec!["diff", "--unified=3", "--no-color", "--no-ext-diff"],
         "staged" => vec!["diff", "--staged", "--unified=3", "--no-color", "--no-ext-diff"],
         _ => anyhow::bail!("Unknown diff mode: {}", mode),
@@ -219,8 +221,9 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
 
 /// Get the raw diff output for a single file
 pub fn git_diff_raw_file(mode: &str, base: &str, repo_root: &str, path: &str) -> Result<String> {
+    let merge_base_ref = format!("{}...HEAD", base);
     let mut args: Vec<&str> = match mode {
-        "branch" => vec!["diff", base, "--unified=3", "--no-color", "--no-ext-diff", "--"],
+        "branch" => vec!["diff", &merge_base_ref, "--unified=3", "--no-color", "--no-ext-diff", "--"],
         "unstaged" => vec!["diff", "--unified=3", "--no-color", "--no-ext-diff", "--"],
         "staged" => vec!["diff", "--staged", "--unified=3", "--no-color", "--no-ext-diff", "--"],
         _ => anyhow::bail!("Unknown diff mode: {}", mode),
@@ -770,5 +773,31 @@ mod tests {
     #[test]
     fn quote_git_path_double_quote_in_name() {
         assert_eq!(quote_git_path("say \"hi\".rs"), "\"say \\\"hi\\\".rs\"");
+    }
+
+    // ── upstream branch name extraction (detect_base_branch) ──
+
+    #[test]
+    fn upstream_strip_simple_branch() {
+        // "origin/main" → strip remote prefix → "main"
+        let upstream = "origin/main";
+        let branch = upstream.find('/').map(|i| &upstream[i + 1..]).unwrap_or(upstream);
+        assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn upstream_strip_slashed_branch() {
+        // "origin/stack/foo-bar" → strip remote prefix → "stack/foo-bar"
+        // This must match current branch "stack/foo-bar" to skip upstream detection
+        let upstream = "origin/stack/foo-bar";
+        let branch = upstream.find('/').map(|i| &upstream[i + 1..]).unwrap_or(upstream);
+        assert_eq!(branch, "stack/foo-bar");
+    }
+
+    #[test]
+    fn upstream_strip_deeply_nested_branch() {
+        let upstream = "origin/user/feature/sub-task";
+        let branch = upstream.find('/').map(|i| &upstream[i + 1..]).unwrap_or(upstream);
+        assert_eq!(branch, "user/feature/sub-task");
     }
 }

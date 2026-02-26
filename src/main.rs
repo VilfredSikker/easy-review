@@ -8,7 +8,7 @@ mod watch;
 
 use anyhow::Result;
 use app::{App, ConfirmAction, DiffMode, InputMode};
-use crate::ai::ViewMode;
+use crate::ai::PanelContent;
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -289,7 +289,7 @@ fn handle_normal_input(
             return Ok(());
         }
         // Toggle mtime sort (works in any mode)
-        KeyCode::Char('R') => {
+        KeyCode::Char('m') => {
             let tab = app.tab_mut();
             tab.sort_by_mtime = !tab.sort_by_mtime;
             let _ = tab.refresh_diff();
@@ -343,13 +343,13 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Tab navigation
+        // Comment jumping across files
         KeyCode::Char(']') => {
-            app.next_tab();
+            app.next_comment();
             return Ok(());
         }
         KeyCode::Char('[') => {
-            app.prev_tab();
+            app.prev_comment();
             return Ok(());
         }
         KeyCode::Char('x') => {
@@ -389,8 +389,8 @@ fn handle_normal_input(
         _ => {}
     }
 
-    // ── AiReview mode: route remaining keys to dedicated handler ──
-    if app.tab().ai.view_mode == ViewMode::AiReview {
+    // ── AiSummary panel focused: route remaining keys to dedicated handler ──
+    if app.tab().panel_focus && app.tab().panel == Some(PanelContent::AiSummary) {
         return handle_ai_review_input(app, key);
     }
 
@@ -480,8 +480,8 @@ fn handle_normal_input(
             app.tab_mut().search_query.clear();
         }
 
-        // Stage current hunk (Ctrl+s)
-        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        // Stage current hunk (S)
+        KeyCode::Char('S') => {
             app.stage_current_hunk()?;
         }
 
@@ -515,7 +515,7 @@ fn handle_normal_input(
         }
 
         // Open settings overlay
-        KeyCode::Char('S') => {
+        KeyCode::Char(',') => {
             app.open_settings();
         }
 
@@ -556,17 +556,24 @@ fn handle_normal_input(
             }
         }
         KeyCode::Char('C') => {
-            app.start_hunk_comment(crate::ai::CommentType::GitHubComment);
+            app.tab_mut().toggle_layer_comments();
+            let on = app.tab().layers.show_github_comments;
+            app.notify(if on { "Comments: visible" } else { "Comments: hidden" });
         }
 
-        // Personal question on current line (q) or hunk (Q)
+        // Toggle question layer visibility (Q)
         KeyCode::Char('Q') => {
-            app.start_hunk_comment(crate::ai::CommentType::Question);
+            app.tab_mut().toggle_layer_questions();
+            let on = app.tab().layers.show_questions;
+            app.notify(if on { "Questions: visible" } else { "Questions: hidden" });
         }
 
-        // Tab: toggle comment focus within current hunk
+        // Tab: toggle panel focus (only when panel is open)
         KeyCode::Tab => {
-            app.toggle_comment_focus();
+            let tab = app.tab_mut();
+            if tab.panel.is_some() {
+                tab.panel_focus = !tab.panel_focus;
+            }
         }
 
         // Delete focused comment
@@ -595,20 +602,15 @@ fn handle_normal_input(
             }
         }
 
-        // Toggle AI view mode (v forward, V backward) — gated by ai_overlays flag
-        KeyCode::Char('v') if app.config.features.ai_overlays => {
-            app.tab_mut().ai.cycle_view_mode();
-            app.tab_mut().diff_scroll = 0;
-            app.tab_mut().ai_panel_scroll = 0;
-            let mode = app.tab().ai.view_mode.label();
-            app.notify(&format!("View: {}", mode));
+        // Toggle AI findings layer (a)
+        KeyCode::Char('a') => {
+            app.tab_mut().toggle_layer_ai();
+            let on = app.tab().layers.show_ai_findings;
+            app.notify(if on { "AI findings: ON" } else { "AI findings: OFF" });
         }
-        KeyCode::Char('V') if app.config.features.ai_overlays => {
-            app.tab_mut().ai.cycle_view_mode_prev();
-            app.tab_mut().diff_scroll = 0;
-            app.tab_mut().ai_panel_scroll = 0;
-            let mode = app.tab().ai.view_mode.label();
-            app.notify(&format!("View: {}", mode));
+        // Toggle context panel (p) — cycles through panel states
+        KeyCode::Char('p') => {
+            app.tab_mut().toggle_panel();
         }
 
         // Clear search first, then filter (innermost → outermost)
@@ -630,20 +632,20 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         // Navigation within focused column
         KeyCode::Char('j') | KeyCode::Down => {
-            app.tab_mut().ai.review_next();
+            app.tab_mut().review_next();
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.tab_mut().ai.review_prev();
+            app.tab_mut().review_prev();
         }
 
         // Switch focus between left/right columns
         KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
             ai_review_reset_outgoing_scroll(app);
-            app.tab_mut().ai.review_toggle_focus();
+            app.tab_mut().review_toggle_focus();
         }
         KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
             ai_review_reset_outgoing_scroll(app);
-            app.tab_mut().ai.review_toggle_focus();
+            app.tab_mut().review_toggle_focus();
         }
 
         // Toggle checklist item
@@ -666,27 +668,10 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::PageDown => ai_review_scroll(app, 20, true),
         KeyCode::PageUp => ai_review_scroll(app, 20, false),
 
-        // Cycle view mode (v forward, V backward)
-        KeyCode::Char('v') => {
-            app.tab_mut().ai.cycle_view_mode();
-            app.tab_mut().diff_scroll = 0;
-            app.tab_mut().ai_panel_scroll = 0;
-            let mode = app.tab().ai.view_mode.label();
-            app.notify(&format!("View: {}", mode));
-        }
-        KeyCode::Char('V') => {
-            app.tab_mut().ai.cycle_view_mode_prev();
-            app.tab_mut().diff_scroll = 0;
-            app.tab_mut().ai_panel_scroll = 0;
-            let mode = app.tab().ai.view_mode.label();
-            app.notify(&format!("View: {}", mode));
-        }
-
-        // Esc goes back to default view
+        // Esc closes panel focus
         KeyCode::Esc => {
-            app.tab_mut().ai.view_mode = ViewMode::Default;
+            app.tab_mut().panel_focus = false;
             app.tab_mut().diff_scroll = 0;
-            app.notify("View: DEFAULT");
         }
 
         _ => {}
@@ -694,21 +679,21 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Reset the outgoing column's scroll when switching focus in AiReview
+/// Reset the outgoing column's scroll when switching focus in AiSummary panel
 fn ai_review_reset_outgoing_scroll(app: &mut App) {
     use crate::ai::ReviewFocus;
     let tab = app.tab_mut();
-    match tab.ai.review_focus {
+    match tab.review_focus {
         ReviewFocus::Files => tab.diff_scroll = 0,
         ReviewFocus::Checklist => tab.ai_panel_scroll = 0,
     }
 }
 
-/// Scroll the focused column in AiReview mode
+/// Scroll the focused column in AiSummary panel
 fn ai_review_scroll(app: &mut App, amount: u16, down: bool) {
     use crate::ai::ReviewFocus;
     let tab = app.tab_mut();
-    let scroll = match tab.ai.review_focus {
+    let scroll = match tab.review_focus {
         ReviewFocus::Files => &mut tab.diff_scroll,
         ReviewFocus::Checklist => &mut tab.ai_panel_scroll,
     };

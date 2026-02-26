@@ -127,21 +127,58 @@ impl Default for DisplayConfig {
     }
 }
 
-/// Load config from per-repo or global config file, falling back to defaults.
+/// Load config by merging global defaults with per-repo overrides.
+/// Priority: per-repo `.er-config.toml` > global `~/.config/er/config.toml` > built-in defaults.
+/// Merging is deep: individual fields within sections (e.g. `[features]`) override independently.
 pub fn load_config(repo_root: &str) -> ErConfig {
-    let local = format!("{repo_root}/.er-config.toml");
-    let global = dirs::config_dir()
+    let local_path = format!("{repo_root}/.er-config.toml");
+    let global_path = dirs::config_dir()
         .map(|d| d.join("er/config.toml").to_string_lossy().to_string());
 
-    for path in [Some(local), global].into_iter().flatten() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(config) = toml::from_str::<ErConfig>(&content) {
-                return config;
+    let global_table = global_path
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|c| c.parse::<toml::Value>().ok())
+        .and_then(|v| match v {
+            toml::Value::Table(t) => Some(t),
+            _ => None,
+        });
+
+    let local_table = std::fs::read_to_string(&local_path)
+        .ok()
+        .and_then(|c| c.parse::<toml::Value>().ok())
+        .and_then(|v| match v {
+            toml::Value::Table(t) => Some(t),
+            _ => None,
+        });
+
+    let merged = match (global_table, local_table) {
+        (Some(mut global), Some(local)) => {
+            deep_merge(&mut global, local);
+            toml::Value::Table(global)
+        }
+        (Some(global), None) => toml::Value::Table(global),
+        (None, Some(local)) => toml::Value::Table(local),
+        (None, None) => return ErConfig::default(),
+    };
+
+    merged.try_into().unwrap_or_default()
+}
+
+/// Recursively merge `overlay` into `base`. Overlay values win; nested tables are merged recursively.
+fn deep_merge(
+    base: &mut toml::map::Map<String, toml::Value>,
+    overlay: toml::map::Map<String, toml::Value>,
+) {
+    for (key, value) in overlay {
+        match (base.get_mut(&key), &value) {
+            (Some(toml::Value::Table(base_table)), toml::Value::Table(overlay_table)) => {
+                deep_merge(base_table, overlay_table.clone());
+            }
+            _ => {
+                base.insert(key, value);
             }
         }
     }
-
-    ErConfig::default()
 }
 
 /// Save config to the global config dir (~/.config/er/config.toml).

@@ -1,50 +1,32 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-// ── View Modes ──
+// ── Inline layer visibility ──
 
-/// Which AI view mode is active
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ViewMode {
-    /// No AI data shown
-    Default,
-    /// AI findings rendered inline in the diff
-    Overlay,
-    /// Dedicated right panel showing findings for the current file
-    SidePanel,
-    /// Full-screen AI review summary (summary, checklist, review order)
-    AiReview,
+/// Inline annotation layer visibility (replaces ViewMode)
+#[derive(Debug, Clone)]
+pub struct InlineLayers {
+    pub show_questions: bool,
+    pub show_github_comments: bool,
+    pub show_ai_findings: bool,
 }
 
-impl ViewMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            ViewMode::Default => "DEFAULT",
-            ViewMode::Overlay => "AI OVERLAY",
-            ViewMode::SidePanel => "SIDE PANEL",
-            ViewMode::AiReview => "AI REVIEW",
+impl Default for InlineLayers {
+    fn default() -> Self {
+        InlineLayers {
+            show_questions: true,
+            show_github_comments: true,
+            show_ai_findings: false,
         }
     }
+}
 
-    /// Cycle to the next available mode
-    pub fn next(&self) -> ViewMode {
-        match self {
-            ViewMode::Default => ViewMode::Overlay,
-            ViewMode::Overlay => ViewMode::SidePanel,
-            ViewMode::SidePanel => ViewMode::AiReview,
-            ViewMode::AiReview => ViewMode::Default,
-        }
-    }
-
-    /// Cycle to the previous available mode
-    pub fn prev(&self) -> ViewMode {
-        match self {
-            ViewMode::Default => ViewMode::AiReview,
-            ViewMode::Overlay => ViewMode::Default,
-            ViewMode::SidePanel => ViewMode::Overlay,
-            ViewMode::AiReview => ViewMode::SidePanel,
-        }
-    }
+/// What the right context panel shows (replaces ViewMode::SidePanel/AiReview)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PanelContent {
+    PrOverview,
+    AiSummary,
+    FileDetail,
 }
 
 // ── .er-review.json ──
@@ -505,12 +487,6 @@ pub struct AiState {
     pub is_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
     pub stale_files: HashSet<String>,
-    /// Current view mode
-    pub view_mode: ViewMode,
-    /// Which column has focus in AiReview mode
-    pub review_focus: ReviewFocus,
-    /// Cursor position within the focused section in AiReview mode
-    pub review_cursor: usize,
 }
 
 impl Default for AiState {
@@ -525,9 +501,6 @@ impl Default for AiState {
             feedback: None,
             is_stale: false,
             stale_files: HashSet::new(),
-            view_mode: ViewMode::Default,
-            review_focus: ReviewFocus::Files,
-            review_cursor: 0,
         }
     }
 }
@@ -544,11 +517,6 @@ impl AiState {
             || self.order.is_some()
             || self.summary.is_some()
             || self.checklist.is_some()
-    }
-
-    /// Whether overlay mode is available (requires review data)
-    pub fn overlay_available(&self) -> bool {
-        self.review.is_some()
     }
 
     /// Get file review for a given path
@@ -741,35 +709,25 @@ impl AiState {
         self.questions.as_ref()
     }
 
+    /// Whether a file has any questions (top-level, not replies)
+    pub fn file_has_questions(&self, path: &str) -> bool {
+        self.questions.as_ref().is_some_and(|qs| {
+            qs.questions.iter().any(|q| q.file == path)
+        })
+    }
+
+    /// Whether a file has any GitHub comments (top-level, not replies)
+    pub fn file_has_github_comments(&self, path: &str) -> bool {
+        self.github_comments.as_ref().is_some_and(|gc| {
+            gc.comments.iter().any(|c| c.file == path && c.in_reply_to.is_none())
+        })
+    }
+
     /// Total number of findings across all files
     pub fn total_findings(&self) -> usize {
         match &self.review {
             Some(r) => r.files.values().map(|f| f.findings.len()).sum(),
             None => 0,
-        }
-    }
-
-    /// Cycle to next available view mode
-    // Invariant: view_mode != ViewMode::Default requires overlay_available().
-    // When overlay data is lost (e.g. stale .er-review.json deleted), reload_ai_state
-    // collapses view_mode back to Default via the same guard.
-    pub fn cycle_view_mode(&mut self) {
-        let next = self.view_mode.next();
-        // Skip modes that need review data when it's not present
-        if !self.overlay_available() && next != ViewMode::Default {
-            self.view_mode = ViewMode::Default;
-        } else {
-            self.view_mode = next;
-        }
-    }
-
-    /// Cycle to previous available view mode
-    pub fn cycle_view_mode_prev(&mut self) {
-        let prev = self.view_mode.prev();
-        if !self.overlay_available() && prev != ViewMode::Default {
-            self.view_mode = ViewMode::Default;
-        } else {
-            self.view_mode = prev;
         }
     }
 
@@ -783,38 +741,6 @@ impl AiState {
     /// Number of items in the right column (checklist items)
     pub fn review_checklist_count(&self) -> usize {
         self.checklist.as_ref().map(|c| c.items.len()).unwrap_or(0)
-    }
-
-    /// Max cursor value for the current focus
-    fn review_item_count(&self) -> usize {
-        match self.review_focus {
-            ReviewFocus::Files => self.review_file_count(),
-            ReviewFocus::Checklist => self.review_checklist_count(),
-        }
-    }
-
-    /// Move cursor down in AiReview
-    pub fn review_next(&mut self) {
-        let count = self.review_item_count();
-        if count > 0 && self.review_cursor + 1 < count {
-            self.review_cursor += 1;
-        }
-    }
-
-    /// Move cursor up in AiReview
-    pub fn review_prev(&mut self) {
-        if self.review_cursor > 0 {
-            self.review_cursor -= 1;
-        }
-    }
-
-    /// Switch focus between columns, resetting cursor to 0
-    pub fn review_toggle_focus(&mut self) {
-        self.review_focus = match self.review_focus {
-            ReviewFocus::Files => ReviewFocus::Checklist,
-            ReviewFocus::Checklist => ReviewFocus::Files,
-        };
-        self.review_cursor = 0;
     }
 
     /// Get the file path at the given cursor index in the risk list (sorted high→low)
@@ -977,32 +903,6 @@ mod tests {
         }
     }
 
-    // ── ViewMode ──
-
-    #[test]
-    fn view_mode_next_cycles_forward() {
-        assert_eq!(ViewMode::Default.next(), ViewMode::Overlay);
-        assert_eq!(ViewMode::Overlay.next(), ViewMode::SidePanel);
-        assert_eq!(ViewMode::SidePanel.next(), ViewMode::AiReview);
-        assert_eq!(ViewMode::AiReview.next(), ViewMode::Default);
-    }
-
-    #[test]
-    fn view_mode_prev_cycles_backward() {
-        assert_eq!(ViewMode::Default.prev(), ViewMode::AiReview);
-        assert_eq!(ViewMode::AiReview.prev(), ViewMode::SidePanel);
-        assert_eq!(ViewMode::SidePanel.prev(), ViewMode::Overlay);
-        assert_eq!(ViewMode::Overlay.prev(), ViewMode::Default);
-    }
-
-    #[test]
-    fn view_mode_label_returns_correct_string() {
-        assert_eq!(ViewMode::Default.label(), "DEFAULT");
-        assert_eq!(ViewMode::Overlay.label(), "AI OVERLAY");
-        assert_eq!(ViewMode::SidePanel.label(), "SIDE PANEL");
-        assert_eq!(ViewMode::AiReview.label(), "AI REVIEW");
-    }
-
     // ── RiskLevel ──
 
     #[test]
@@ -1044,21 +944,6 @@ mod tests {
             items: vec![],
         });
         assert!(state.has_data());
-    }
-
-    // ── AiState::overlay_available ──
-
-    #[test]
-    fn overlay_available_no_review_is_false() {
-        let state = AiState::default();
-        assert!(!state.overlay_available());
-    }
-
-    #[test]
-    fn overlay_available_with_review_is_true() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![]));
-        assert!(state.overlay_available());
     }
 
     // ── AiState::total_findings ──
@@ -1381,119 +1266,6 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    // ── AiState::cycle_view_mode ──
-
-    #[test]
-    fn cycle_view_mode_with_overlay_available_cycles_all_modes() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![]));
-        assert_eq!(state.view_mode, ViewMode::Default);
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::Overlay);
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::SidePanel);
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::AiReview);
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::Default);
-    }
-
-    #[test]
-    fn cycle_view_mode_without_overlay_stays_at_default() {
-        let mut state = AiState::default();
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::Default);
-    }
-
-    // ── AiState::cycle_view_mode_prev ──
-
-    #[test]
-    fn cycle_view_mode_prev_with_overlay_available_cycles_backward() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![]));
-        assert_eq!(state.view_mode, ViewMode::Default);
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::AiReview);
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::SidePanel);
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::Overlay);
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::Default);
-    }
-
-    #[test]
-    fn cycle_view_mode_prev_without_overlay_stays_at_default() {
-        let mut state = AiState::default();
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::Default);
-    }
-
-    // ── AiState::review_next / review_prev ──
-
-    #[test]
-    fn review_next_increments_cursor() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![
-            ("a.rs", RiskLevel::High, vec![]),
-            ("b.rs", RiskLevel::Low, vec![]),
-        ]));
-        assert_eq!(state.review_cursor, 0);
-        state.review_next();
-        assert_eq!(state.review_cursor, 1);
-    }
-
-    #[test]
-    fn review_next_at_last_item_stays() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![("a.rs", RiskLevel::High, vec![])]));
-        state.review_cursor = 0;
-        state.review_next();
-        assert_eq!(state.review_cursor, 0);
-    }
-
-    #[test]
-    fn review_prev_decrements_cursor() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![
-            ("a.rs", RiskLevel::High, vec![]),
-            ("b.rs", RiskLevel::Low, vec![]),
-        ]));
-        state.review_cursor = 1;
-        state.review_prev();
-        assert_eq!(state.review_cursor, 0);
-    }
-
-    #[test]
-    fn review_prev_at_zero_stays() {
-        let mut state = AiState::default();
-        state.review_cursor = 0;
-        state.review_prev();
-        assert_eq!(state.review_cursor, 0);
-    }
-
-    // ── AiState::review_toggle_focus ──
-
-    #[test]
-    fn review_toggle_focus_files_to_checklist_resets_cursor() {
-        let mut state = AiState::default();
-        state.review_cursor = 3;
-        assert_eq!(state.review_focus, ReviewFocus::Files);
-        state.review_toggle_focus();
-        assert_eq!(state.review_focus, ReviewFocus::Checklist);
-        assert_eq!(state.review_cursor, 0);
-    }
-
-    #[test]
-    fn review_toggle_focus_checklist_to_files_resets_cursor() {
-        let mut state = AiState::default();
-        state.review_focus = ReviewFocus::Checklist;
-        state.review_cursor = 5;
-        state.review_toggle_focus();
-        assert_eq!(state.review_focus, ReviewFocus::Files);
-        assert_eq!(state.review_cursor, 0);
-    }
-
     // ── AiState::review_file_at ──
 
     #[test]
@@ -1618,5 +1390,36 @@ mod tests {
     fn checklist_file_at_no_checklist_returns_none() {
         let state = AiState::default();
         assert_eq!(state.checklist_file_at(0), None);
+    }
+
+    // ── InlineLayers ──
+
+    #[test]
+    fn inline_layers_default_questions_true() {
+        let layers = InlineLayers::default();
+        assert!(layers.show_questions);
+    }
+
+    #[test]
+    fn inline_layers_default_github_comments_true() {
+        let layers = InlineLayers::default();
+        assert!(layers.show_github_comments);
+    }
+
+    #[test]
+    fn inline_layers_default_ai_findings_false() {
+        let layers = InlineLayers::default();
+        assert!(!layers.show_ai_findings);
+    }
+
+    // ── PanelContent ──
+
+    #[test]
+    fn panel_content_variants_are_comparable() {
+        assert_eq!(PanelContent::FileDetail, PanelContent::FileDetail);
+        assert_eq!(PanelContent::AiSummary, PanelContent::AiSummary);
+        assert_eq!(PanelContent::PrOverview, PanelContent::PrOverview);
+        assert_ne!(PanelContent::FileDetail, PanelContent::AiSummary);
+        assert_ne!(PanelContent::AiSummary, PanelContent::PrOverview);
     }
 }

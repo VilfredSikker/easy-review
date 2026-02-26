@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::ai::{CommentRef, CommentType, RiskLevel, ViewMode};
+use crate::ai::{CommentRef, CommentType, RiskLevel};
 use crate::app::{App, DiffMode};
 use crate::git::LineType;
 use super::highlight::Highlighter;
@@ -41,7 +41,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         return;
     }
 
-    let in_overlay = tab.ai.view_mode == ViewMode::Overlay;
+    let in_overlay = tab.layers.show_ai_findings;
     let file_stale = tab.ai.is_file_stale(&file.path);
 
     let total_hunks = file.hunks.len();
@@ -88,7 +88,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     ];
 
     // Add AI risk + summary to file header in AI modes
-    let show_ai_header = matches!(tab.ai.view_mode, ViewMode::Overlay | ViewMode::SidePanel);
+    let show_ai_header = tab.layers.show_ai_findings || tab.panel.is_some();
     if show_ai_header {
         if let Some(fr) = tab.ai.file_review(&file.path) {
             let risk_style = if file_stale {
@@ -238,6 +238,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id())
                 };
                 for comment in &line_comments {
+                    let visible = match comment {
+                        CommentRef::Question(_) => tab.layers.show_questions,
+                        CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
+                    };
+                    if !visible {
+                        continue;
+                    }
                     render_comment_lines(
                         &mut lines,
                         comment,
@@ -351,6 +358,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 tab.comment_focus.as_ref().map_or(false, |cf| cf.comment_id == c.id())
             };
             for comment in &hunk_comments {
+                let visible = match comment {
+                    CommentRef::Question(_) => tab.layers.show_questions,
+                    CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
+                };
+                if !visible {
+                    continue;
+                }
                 render_comment_lines(
                     &mut lines,
                     comment,
