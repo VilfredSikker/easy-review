@@ -284,7 +284,17 @@ impl<'a> CommentRef<'a> {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn anchor_status(&self) -> &str {
+        match self {
+            CommentRef::Question(q) => &q.anchor_status,
+            CommentRef::GitHubComment(c) => &c.anchor_status,
+            CommentRef::Legacy(_) => "original",
+        }
+    }
+
     /// Whether this comment can be replied to (only GitHub comments, not replies themselves)
+    #[allow(dead_code)]
     pub fn can_reply(&self) -> bool {
         match self {
             CommentRef::Question(_) => false,
@@ -294,6 +304,7 @@ impl<'a> CommentRef<'a> {
     }
 
     /// Whether this comment can be deleted by the user
+    #[allow(dead_code)]
     pub fn can_delete(&self) -> bool {
         match self {
             CommentRef::Question(_) => true,
@@ -347,6 +358,24 @@ pub struct ReviewQuestion {
     /// Runtime-only staleness flag (not persisted)
     #[serde(skip)]
     pub stale: bool,
+    /// Up to 3 content lines before the target line in the same hunk
+    #[serde(default)]
+    pub context_before: Vec<String>,
+    /// Up to 3 content lines after the target line in the same hunk
+    #[serde(default)]
+    pub context_after: Vec<String>,
+    /// Old-side line number from diff at creation time
+    #[serde(default)]
+    pub old_line_start: Option<usize>,
+    /// Hunk header string at creation time
+    #[serde(default)]
+    pub hunk_header: String,
+    /// "original" | "relocated" | "lost"
+    #[serde(default = "default_anchor_status")]
+    pub anchor_status: String,
+    /// Diff hash when this comment was last relocated
+    #[serde(default)]
+    pub relocated_at_hash: String,
 }
 
 // ── .er-github-comments.json — GitHub PR comments ──
@@ -405,10 +434,32 @@ pub struct GitHubReviewComment {
     /// Runtime-only staleness flag (not persisted)
     #[serde(skip)]
     pub stale: bool,
+    /// Up to 3 content lines before the target line in the same hunk
+    #[serde(default)]
+    pub context_before: Vec<String>,
+    /// Up to 3 content lines after the target line in the same hunk
+    #[serde(default)]
+    pub context_after: Vec<String>,
+    /// Old-side line number from diff at creation time
+    #[serde(default)]
+    pub old_line_start: Option<usize>,
+    /// Hunk header string at creation time
+    #[serde(default)]
+    pub hunk_header: String,
+    /// "original" | "relocated" | "lost"
+    #[serde(default = "default_anchor_status")]
+    pub anchor_status: String,
+    /// Diff hash when this comment was last relocated
+    #[serde(default)]
+    pub relocated_at_hash: String,
 }
 
 fn default_source() -> String {
     "local".to_string()
+}
+
+fn default_anchor_status() -> String {
+    "original".to_string()
 }
 
 fn default_author() -> String {
@@ -710,16 +761,32 @@ impl AiState {
     }
 
     /// Whether a file has any questions (top-level, not replies)
+    #[allow(dead_code)]
     pub fn file_has_questions(&self, path: &str) -> bool {
         self.questions.as_ref().is_some_and(|qs| {
             qs.questions.iter().any(|q| q.file == path)
         })
     }
 
+    /// Count of questions for a file (top-level only)
+    pub fn file_question_count(&self, path: &str) -> usize {
+        self.questions.as_ref().map_or(0, |qs| {
+            qs.questions.iter().filter(|q| q.file == path).count()
+        })
+    }
+
     /// Whether a file has any GitHub comments (top-level, not replies)
+    #[allow(dead_code)]
     pub fn file_has_github_comments(&self, path: &str) -> bool {
         self.github_comments.as_ref().is_some_and(|gc| {
             gc.comments.iter().any(|c| c.file == path && c.in_reply_to.is_none())
+        })
+    }
+
+    /// Count of GitHub comments for a file (top-level only)
+    pub fn file_github_comment_count(&self, path: &str) -> usize {
+        self.github_comments.as_ref().map_or(0, |gc| {
+            gc.comments.iter().filter(|c| c.file == path && c.in_reply_to.is_none()).count()
         })
     }
 
@@ -1453,5 +1520,247 @@ mod tests {
         assert_eq!(PanelContent::PrOverview, PanelContent::PrOverview);
         assert_ne!(PanelContent::FileDetail, PanelContent::AiSummary);
         assert_ne!(PanelContent::AiSummary, PanelContent::PrOverview);
+    }
+
+    // ── Helpers for question / github comment tests ──
+
+    fn make_question(id: &str, file: &str, hunk_index: Option<usize>) -> ReviewQuestion {
+        ReviewQuestion {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index,
+            line_start: None,
+            line_content: String::new(),
+            text: "question text".to_string(),
+            resolved: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+        }
+    }
+
+    fn make_github_comment(id: &str, file: &str, hunk_index: Option<usize>, in_reply_to: Option<&str>) -> GitHubReviewComment {
+        GitHubReviewComment {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index,
+            line_start: None,
+            line_end: None,
+            line_content: String::new(),
+            comment: "comment text".to_string(),
+            in_reply_to: in_reply_to.map(|s| s.to_string()),
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+        }
+    }
+
+    // ── AiState::all_comments_ordered ──
+
+    #[test]
+    fn all_comments_ordered_empty_returns_empty() {
+        let state = AiState::default();
+        assert!(state.all_comments_ordered().is_empty());
+    }
+
+    #[test]
+    fn all_comments_ordered_sorts_by_file_then_hunk() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "b.rs", Some(0)),
+                make_question("q2", "a.rs", Some(1)),
+                make_question("q3", "a.rs", Some(0)),
+            ],
+        });
+        let ordered = state.all_comments_ordered();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].0, "a.rs");
+        assert_eq!(ordered[0].1, Some(0));
+        assert_eq!(ordered[1].0, "a.rs");
+        assert_eq!(ordered[1].1, Some(1));
+        assert_eq!(ordered[2].0, "b.rs");
+        assert_eq!(ordered[2].1, Some(0));
+    }
+
+    #[test]
+    fn all_comments_ordered_excludes_replies() {
+        let mut state = AiState::default();
+        let parent = make_github_comment("c1", "a.rs", Some(0), None);
+        let reply = make_github_comment("c2", "a.rs", Some(0), Some("c1"));
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![parent, reply],
+        });
+        let ordered = state.all_comments_ordered();
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0].2, "c1");
+    }
+
+    #[test]
+    fn all_comments_ordered_merges_questions_and_github_comments() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q1", "a.rs", Some(0))],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_github_comment("c1", "a.rs", Some(1), None)],
+        });
+        let ordered = state.all_comments_ordered();
+        assert_eq!(ordered.len(), 2);
+        let ids: Vec<&str> = ordered.iter().map(|(_, _, id)| id.as_str()).collect();
+        assert!(ids.contains(&"q1"));
+        assert!(ids.contains(&"c1"));
+    }
+
+    // ── AiState::all_questions_ordered ──
+
+    #[test]
+    fn all_questions_ordered_empty_returns_empty() {
+        let state = AiState::default();
+        assert!(state.all_questions_ordered().is_empty());
+    }
+
+    #[test]
+    fn all_questions_ordered_sorts_by_file_then_hunk() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "z.rs", Some(0)),
+                make_question("q2", "a.rs", Some(2)),
+                make_question("q3", "a.rs", Some(0)),
+            ],
+        });
+        let ordered = state.all_questions_ordered();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].2, "q3"); // a.rs hunk 0
+        assert_eq!(ordered[1].2, "q2"); // a.rs hunk 2
+        assert_eq!(ordered[2].2, "q1"); // z.rs hunk 0
+    }
+
+    #[test]
+    fn all_questions_ordered_none_hunk_sorts_before_some() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "a.rs", Some(0)),
+                make_question("q2", "a.rs", None),
+            ],
+        });
+        let ordered = state.all_questions_ordered();
+        assert_eq!(ordered.len(), 2);
+        // None < Some(0) in Rust Ord for Option<usize>
+        assert_eq!(ordered[0].2, "q2"); // None hunk
+        assert_eq!(ordered[1].2, "q1"); // Some(0) hunk
+    }
+
+    // ── AiState::file_question_count ──
+
+    #[test]
+    fn file_question_count_no_questions_returns_zero() {
+        let state = AiState::default();
+        assert_eq!(state.file_question_count("a.rs"), 0);
+    }
+
+    #[test]
+    fn file_question_count_returns_count_for_file() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "a.rs", Some(0)),
+                make_question("q2", "a.rs", Some(1)),
+                make_question("q3", "b.rs", Some(0)),
+            ],
+        });
+        assert_eq!(state.file_question_count("a.rs"), 2);
+        assert_eq!(state.file_question_count("b.rs"), 1);
+        assert_eq!(state.file_question_count("c.rs"), 0);
+    }
+
+    #[test]
+    fn file_question_count_counts_all_hunks_for_file() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "a.rs", Some(0)),
+                make_question("q2", "a.rs", Some(0)), // same hunk, different question
+                make_question("q3", "a.rs", None),
+            ],
+        });
+        assert_eq!(state.file_question_count("a.rs"), 3);
+    }
+
+    // ── AiState::file_github_comment_count ──
+
+    #[test]
+    fn file_github_comment_count_no_comments_returns_zero() {
+        let state = AiState::default();
+        assert_eq!(state.file_github_comment_count("a.rs"), 0);
+    }
+
+    #[test]
+    fn file_github_comment_count_returns_top_level_only() {
+        let mut state = AiState::default();
+        let parent = make_github_comment("c1", "a.rs", Some(0), None);
+        let reply = make_github_comment("c2", "a.rs", Some(0), Some("c1"));
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![parent, reply],
+        });
+        // Reply should not be counted
+        assert_eq!(state.file_github_comment_count("a.rs"), 1);
+    }
+
+    #[test]
+    fn file_github_comment_count_correct_per_file() {
+        let mut state = AiState::default();
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                make_github_comment("c1", "a.rs", Some(0), None),
+                make_github_comment("c2", "a.rs", Some(1), None),
+                make_github_comment("c3", "b.rs", Some(0), None),
+                make_github_comment("c4", "a.rs", Some(0), Some("c1")), // reply, not counted
+            ],
+        });
+        assert_eq!(state.file_github_comment_count("a.rs"), 2);
+        assert_eq!(state.file_github_comment_count("b.rs"), 1);
+        assert_eq!(state.file_github_comment_count("c.rs"), 0);
     }
 }
