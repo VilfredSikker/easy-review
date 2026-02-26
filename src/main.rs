@@ -65,24 +65,35 @@ fn main() -> Result<()> {
         app.tab_mut().apply_filter_expr(filter_expr);
     }
 
-    // Hint: check for PR base mismatch in background (avoids blocking startup on network)
-    let hint_rx = if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
+    // Hint + PR data: check for PR in background (avoids blocking startup on network)
+    let (hint_rx, pr_data_rx) = if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
         let repo_root = app.tab().repo_root.clone();
         let current_base = app.tab().base_branch.clone();
-        let (tx, rx) = mpsc::channel::<String>();
+        let (hint_tx, hint_rx) = mpsc::channel::<String>();
+        let (pr_tx, pr_rx) = mpsc::channel::<github::PrOverviewData>();
         std::thread::spawn(move || {
             if let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) {
                 if pr_base != current_base {
-                    let _ = tx.send(format!(
+                    let _ = hint_tx.send(format!(
                         "PR #{} targets {} — run: er --pr {}",
                         pr_num, pr_base, pr_num
                     ));
                 }
+                // Fetch PR overview data regardless of base mismatch
+                if let Some(data) = github::gh_pr_overview(&repo_root) {
+                    let _ = pr_tx.send(data);
+                }
             }
         });
-        Some(rx)
+        (Some(hint_rx), Some(pr_rx))
     } else {
-        None
+        // For --pr flag or PR URL, fetch PR data synchronously (already in the right state)
+        let repo_root = app.tab().repo_root.clone();
+        let pr_data = github::gh_pr_overview(&repo_root);
+        if let Some(data) = pr_data {
+            app.tab_mut().pr_data = Some(data);
+        }
+        (None, None)
     };
 
     // Load syntax highlighting (once, reused for all files)
@@ -96,7 +107,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run event loop
-    let result = run_app(&mut terminal, &mut app, &mut highlighter, hint_rx);
+    let result = run_app(&mut terminal, &mut app, &mut highlighter, hint_rx, pr_data_rx);
 
     // Cleanup
     disable_raw_mode()?;
@@ -121,10 +132,12 @@ fn run_app<B: Backend>(
     app: &mut App,
     hl: &mut ui::highlight::Highlighter,
     hint_rx: Option<mpsc::Receiver<String>>,
+    pr_data_rx: Option<mpsc::Receiver<github::PrOverviewData>>,
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
     let mut hint_rx = hint_rx;
+    let mut pr_data_rx = pr_data_rx;
 
     // Debounce state for file watcher refreshes
     let mut pending_refresh = false;
@@ -214,6 +227,14 @@ fn run_app<B: Backend>(
             }
         }
 
+        // Check for PR overview data from background thread (fires once)
+        if let Some(rx) = &pr_data_rx {
+            if let Ok(data) = rx.try_recv() {
+                app.tab_mut().pr_data = Some(data);
+                pr_data_rx = None;
+            }
+        }
+
         // Tick — used for auto-clearing notifications
         app.tick();
 
@@ -299,14 +320,6 @@ fn handle_normal_input(
             let _ = tab.refresh_diff();
             let label = if app.tab().sort_by_mtime { "Sort: recent first" } else { "Sort: default" };
             app.notify(label);
-            return Ok(());
-        }
-
-        // Reply to focused comment
-        KeyCode::Char('r') => {
-            if app.tab().comment_focus.is_some() {
-                app.start_reply();
-            }
             return Ok(());
         }
 
@@ -470,18 +483,10 @@ fn handle_normal_input(
             }
         }
         KeyCode::Down => {
-            if app.tab().comment_focus.is_some() {
-                app.next_comment();
-            } else {
-                app.tab_mut().next_line();
-            }
+            app.tab_mut().next_line();
         }
         KeyCode::Up => {
-            if app.tab().comment_focus.is_some() {
-                app.prev_comment();
-            } else {
-                app.tab_mut().prev_line();
-            }
+            app.tab_mut().prev_line();
         }
 
         // Hunk navigation
@@ -627,30 +632,14 @@ fn handle_normal_input(
             }
         }
 
-        // Delete focused comment
-        KeyCode::Char('d') if app.tab().comment_focus.is_some() => {
-            app.start_delete_comment();
-        }
-
-        // Toggle resolved on focused comment
-        KeyCode::Char('z') => {
-            if let Some(focus) = app.tab().comment_focus.clone() {
-                toggle_comment_resolved(app, &focus.comment_id)?;
-            }
-        }
-
         // GitHub comment sync (pull)
         KeyCode::Char('G') => {
             sync_github_comments(app)?;
         }
 
-        // Push comment(s) to GitHub: P on focused comment pushes one, P with no focus pushes all
+        // Push all comments to GitHub
         KeyCode::Char('P') => {
-            if app.tab().comment_focus.is_some() {
-                push_comment_to_github(app)?;
-            } else {
-                push_all_comments_to_github(app)?;
-            }
+            push_all_comments_to_github(app)?;
         }
 
         // Toggle AI findings layer (a)
@@ -932,60 +921,6 @@ fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Toggle the resolved flag on a comment and persist
-fn toggle_comment_resolved(app: &mut App, comment_id: &str) -> Result<()> {
-    let tab = app.tab();
-    let repo_root = tab.repo_root.clone();
-    let is_question = comment_id.starts_with("q-");
-
-    if is_question {
-        let path = format!("{}/.er-questions.json", repo_root);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(mut qs) = serde_json::from_str::<crate::ai::ErQuestions>(&content) {
-                let mut toggled = false;
-                for q in &mut qs.questions {
-                    if q.id == comment_id {
-                        q.resolved = !q.resolved;
-                        toggled = true;
-                        break;
-                    }
-                }
-                if toggled {
-                    let json = serde_json::to_string_pretty(&qs)?;
-                    let tmp_path = format!("{}.tmp", path);
-                    std::fs::write(&tmp_path, &json)?;
-                    std::fs::rename(&tmp_path, &path)?;
-                    app.tab_mut().reload_ai_state();
-                    app.notify("Toggled resolved");
-                }
-            }
-        }
-    } else {
-        let path = format!("{}/.er-github-comments.json", repo_root);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(mut gc) = serde_json::from_str::<crate::ai::ErGitHubComments>(&content) {
-                let mut toggled = false;
-                for c in &mut gc.comments {
-                    if c.id == comment_id {
-                        c.resolved = !c.resolved;
-                        toggled = true;
-                        break;
-                    }
-                }
-                if toggled {
-                    let json = serde_json::to_string_pretty(&gc)?;
-                    let tmp_path = format!("{}.tmp", path);
-                    std::fs::write(&tmp_path, &json)?;
-                    std::fs::rename(&tmp_path, &path)?;
-                    app.tab_mut().reload_ai_state();
-                    app.notify("Toggled resolved");
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Sync GitHub PR comments (pull)
 fn sync_github_comments(app: &mut App) -> Result<()> {
     let tab = app.tab();
@@ -1088,6 +1023,12 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
                 author: gh.user.login.clone(),
                 synced: true,
                 stale: false,
+                context_before: Vec::new(),
+                context_after: Vec::new(),
+                old_line_start: None,
+                hunk_header: String::new(),
+                anchor_status: "original".to_string(),
+                relocated_at_hash: String::new(),
             };
 
             gc.comments.push(comment);
@@ -1113,85 +1054,6 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
 
     app.tab_mut().reload_ai_state();
     app.notify(&format!("GitHub sync: +{} ~{} -{}", added, updated, removed));
-    Ok(())
-}
-
-/// Push a single focused comment to GitHub
-fn push_comment_to_github(app: &mut App) -> Result<()> {
-    let tab = app.tab();
-    let focus = match &tab.comment_focus {
-        Some(f) => f.clone(),
-        None => return Ok(()),
-    };
-
-    // Questions can't be pushed to GitHub
-    if focus.comment_id.starts_with("q-") {
-        app.notify("Questions are private — use /er-publish for GitHub comments");
-        return Ok(());
-    }
-
-    let repo_root = tab.repo_root.clone();
-    let pr_info = match github::get_pr_info(&repo_root) {
-        Ok(info) => info,
-        Err(_) => {
-            app.notify("No PR found for current branch");
-            return Ok(());
-        }
-    };
-    let (owner, repo_name, pr_number) = pr_info;
-
-    let comments_path = format!("{}/.er-github-comments.json", repo_root);
-    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
-        Ok(content) => match serde_json::from_str(&content) {
-            Ok(gc) => gc,
-            Err(_) => return Ok(()),
-        },
-        Err(_) => return Ok(()),
-    };
-
-    let comment = match gc.comments.iter().find(|c| c.id == focus.comment_id) {
-        Some(c) => c.clone(),
-        None => return Ok(()),
-    };
-
-    if comment.synced {
-        app.notify("Comment already synced");
-        return Ok(());
-    }
-
-    if comment.source != "local" {
-        app.notify("Only local comments can be pushed");
-        return Ok(());
-    }
-
-    let result = if let Some(reply_to_id) = comment.in_reply_to.as_ref()
-        .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
-        .and_then(|c| c.github_id)
-    {
-        github::gh_pr_reply_comment(&owner, &repo_name, pr_number, reply_to_id, &comment.comment)
-    } else {
-        let path = &comment.file;
-        let line = comment.line_start.unwrap_or(1);
-        github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment)
-    };
-
-    match result {
-        Ok(github_id) => {
-            if let Some(c) = gc.comments.iter_mut().find(|c| c.id == focus.comment_id) {
-                c.github_id = Some(github_id);
-                c.synced = true;
-            }
-            let json = serde_json::to_string_pretty(&gc)?;
-            let tmp_path = format!("{}.tmp", comments_path);
-            std::fs::write(&tmp_path, &json)?;
-            std::fs::rename(&tmp_path, &comments_path)?;
-            app.tab_mut().reload_ai_state();
-            app.notify("Comment pushed to GitHub");
-        }
-        Err(e) => {
-            app.notify(&format!("Push failed: {}", e));
-        }
-    }
     Ok(())
 }
 

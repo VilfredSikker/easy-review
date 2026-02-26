@@ -127,9 +127,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 None
             };
 
-            // Comment indicators (questions = yellow ◆, github = cyan ◆)
-            let has_questions = tab.ai.file_has_questions(&file.path);
-            let has_gh_comments = tab.ai.file_has_github_comments(&file.path);
+            // Comment indicators (questions = yellow ◆N, github = cyan ◆N)
+            let question_count = tab.ai.file_question_count(&file.path);
+            let gh_comment_count = tab.ai.file_github_comment_count(&file.path);
+            let has_questions = question_count > 0;
+            let has_gh_comments = gh_comment_count > 0;
 
             // Relative time when sorting by mtime
             let time_str = if tab.sort_by_mtime {
@@ -143,9 +145,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             // Time column takes up to 8 chars (e.g. "15m ago " or "3h ago  ")
             let time_width: usize = if time_str.is_some() { 8 } else { 0 };
 
-            // Comment indicator width: each type takes 2 chars (symbol + space)
-            let comment_width: usize = if has_questions { 2 } else { 0 }
-                + if has_gh_comments { 2 } else { 0 };
+            // Comment indicator width: "◆N " where N is 1-2 digits (3-4 chars each)
+            let q_indicator = if has_questions {
+                format!("\u{25c6}{} ", question_count)
+            } else {
+                String::new()
+            };
+            let gh_indicator = if has_gh_comments {
+                format!("\u{25c6}{} ", gh_comment_count)
+            } else {
+                String::new()
+            };
+            let comment_width: usize = q_indicator.chars().count() + gh_indicator.chars().count();
 
             // Adjust path width to account for risk dot, comment indicators, and time column
             let extra_width = if risk_dot.is_some() { 2 } else { 0 };
@@ -198,16 +209,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::TEXT)
                 },
             ));
-            // Comment indicators after path
+            // Comment indicators after path (with counts)
             if has_questions {
                 spans.push(Span::styled(
-                    "\u{25c6} ",
+                    q_indicator,
                     ratatui::style::Style::default().fg(styles::YELLOW),
                 ));
             }
             if has_gh_comments {
                 spans.push(Span::styled(
-                    "\u{25c6} ",
+                    gh_indicator,
                     ratatui::style::Style::default().fg(styles::CYAN),
                 ));
             }

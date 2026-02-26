@@ -148,7 +148,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(
-            " R RECENT ",
+            " m RECENT ",
             ratatui::style::Style::default()
                 .fg(styles::BG)
                 .bg(styles::YELLOW)
@@ -172,14 +172,21 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         if tab.layers.show_ai_findings {
             right.push(Span::styled(
-                " AI ",
+                " AI ON ",
                 ratatui::style::Style::default()
                     .fg(styles::BG)
-                    .bg(styles::PURPLE)
+                    .bg(styles::ORANGE)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ));
-            right.push(Span::raw("  "));
+        } else {
+            right.push(Span::styled(
+                " AI OFF ",
+                ratatui::style::Style::default()
+                    .fg(styles::MUTED)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
         }
+        right.push(Span::raw("  "));
     }
     if let Some(panel) = tab.panel {
         let panel_label = match panel {
@@ -363,78 +370,45 @@ fn build_hints(app: &App) -> Vec<Hint> {
         return build_history_hints(app);
     }
 
-    let mut hints = vec![
-        Hint::new("j/k", " nav "),
-        Hint::new("n/N", " hunks "),
-        Hint::new("␣", " review "),
-        Hint::new("u", " unreviewed "),
-        Hint::new("y", " yank "),
-        Hint::new("/", " search "),
-        Hint::new("f", " filter "),
-        Hint::new("F", " presets "),
-        Hint::new("m", " recent "),
-        Hint::new("w", " watch "),
-        Hint::new("e", " edit "),
-        Hint::new("t", " tree "),
-        Hint::new("o", " open "),
-        Hint::new(",", " settings "),
-        Hint::new("^q", " quit "),
-    ];
-
-    // Staging hints only apply in Unstaged and Staged modes
-    if tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged {
-        hints.push(Hint::new("s", " stage "));
-        hints.push(Hint::new("S", " stage hunk "));
-    }
-
-    hints.push(Hint::new("A", " context "));
-    hints.push(Hint::new("q", " question "));
-    hints.push(Hint::new("Q", " toggle Q "));
-
-    if tab.mode == DiffMode::Staged {
-        hints.push(Hint::new("c", " commit "));
-    } else {
-        hints.push(Hint::new("c", " comment "));
-        hints.push(Hint::new("C", " toggle C "));
-    }
-
-    hints.push(Hint::new("R", " reload "));
-
-    // When a comment is focused, show comment actions
-    if tab.comment_focus.is_some() {
-        hints.push(Hint::new("r", " reply "));
-        hints.push(Hint::new("d", " delete "));
-        hints.push(Hint::new("z", " resolve "));
-    }
-
-    hints.push(Hint::new("G", " gh sync "));
-    hints.push(Hint::new("P", " push "));
-
-    if !tab.watched_config.paths.is_empty() {
-        hints.push(Hint::new("W", " watched "));
-    }
-
-    if tab.ai.has_data() {
-        hints.push(Hint::new("a", " AI "));
-    }
-
-    hints.push(Hint::new("p", " panel "));
+    let mut hints: Vec<Hint> = Vec::new();
 
     if tab.panel.is_some() {
+        // Context: panel open — show panel + core nav
+        hints.push(Hint::new("j/k", " nav "));
+        hints.push(Hint::new("n/N", " hunks "));
+        hints.push(Hint::new("␣", " review "));
         if tab.panel_focus {
             hints.push(Hint::new("Esc", " unfocus "));
         } else {
-            hints.push(Hint::new("Tab", " focus "));
+            hints.push(Hint::new("Tab", " focus panel "));
         }
+        hints.push(Hint::new("p", " close panel "));
+        hints.push(Hint::new("^q", " quit "));
+    } else {
+        // Default normal mode: minimal essential set
+        hints.push(Hint::new("j/k", " nav "));
+        hints.push(Hint::new("n/N", " hunks "));
+        hints.push(Hint::new("␣", " review "));
+        hints.push(Hint::new("/", " search "));
+
+        // Mode-specific
+        if tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged {
+            hints.push(Hint::new("s", " stage "));
+        }
+        if tab.mode == DiffMode::Staged {
+            hints.push(Hint::new("c", " commit "));
+        } else {
+            hints.push(Hint::new("q", " question "));
+            hints.push(Hint::new("c", " comment "));
+        }
+
+        hints.push(Hint::new("e", " edit "));
+        hints.push(Hint::new("p", " panel "));
+        hints.push(Hint::new("^q", " quit "));
+        hints.push(Hint::new("?", ":keys "));
     }
 
-    hints.push(Hint::new("J/K", " jump notes "));
-
-    if app.tabs.len() > 1 {
-        hints.push(Hint::new("x", " close tab "));
-    }
-
-    // Indicators (not really key+label, but reuse the structure)
+    // Status indicators always shown
     if !tab.filter_expr.is_empty() {
         hints.push(Hint {
             key: "F:".to_string(),
@@ -550,10 +524,10 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         InputMode::Comment => {
             let is_question = tab.comment_type == crate::ai::CommentType::Question;
-            let (label, icon, accent) = if is_question {
-                ("question", "❓", styles::YELLOW)
+            let (label, accent) = if is_question {
+                ("question", styles::YELLOW)
             } else {
-                ("comment", "💬", styles::CYAN)
+                ("comment", styles::CYAN)
             };
             let file_short = tab.comment_file.rsplit('/').next().unwrap_or(&tab.comment_file);
             let target_label = if let Some(ln) = tab.comment_line_num {
@@ -561,7 +535,6 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 format!("{}:h{}", file_short, tab.comment_hunk + 1)
             };
-            let _icon = icon; // icon shown via label badge
             let spans = vec![
                 Span::styled(format!(" {} ", label), ratatui::style::Style::default()
                     .fg(styles::BG)
