@@ -482,6 +482,72 @@ impl TabState {
         Ok(tab)
     }
 
+    /// Create a minimal TabState for unit tests.
+    /// Uses fixed repo root "/tmp/test" and no git I/O.
+    #[cfg(test)]
+    pub fn new_for_test(files: Vec<crate::git::DiffFile>) -> Self {
+        use crate::ai::{AiState, CommentType, InlineLayers, ReviewFocus};
+        use crate::config::WatchedConfig;
+        use crate::git::CompactionConfig;
+        use std::collections::HashSet;
+        TabState {
+            mode: DiffMode::Branch,
+            base_branch: "main".to_string(),
+            current_branch: "feature".to_string(),
+            repo_root: "/tmp/test".to_string(),
+            files,
+            selected_file: 0,
+            current_hunk: 0,
+            current_line: None,
+            selection_anchor: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+            layers: InlineLayers::default(),
+            panel: None,
+            panel_scroll: 0,
+            panel_focus: false,
+            focused_comment_id: None,
+            focused_finding_id: None,
+            user_expanded: HashSet::new(),
+            review_focus: ReviewFocus::Files,
+            review_cursor: 0,
+            search_query: String::new(),
+            filter_expr: String::new(),
+            filter_rules: Vec::new(),
+            filter_input: String::new(),
+            filter_history: Vec::new(),
+            reviewed: HashSet::new(),
+            show_unreviewed_only: false,
+            sort_by_mtime: false,
+            ai: AiState::default(),
+            diff_hash: String::new(),
+            branch_diff_hash: String::new(),
+            last_ai_check: None,
+            comment_input: String::new(),
+            comment_file: String::new(),
+            comment_hunk: 0,
+            comment_reply_to: None,
+            comment_line_num: None,
+            comment_type: CommentType::GitHubComment,
+            comment_edit_id: None,
+            pr_data: None,
+            history: None,
+            watched_config: WatchedConfig::default(),
+            watched_files: Vec::new(),
+            selected_watched: None,
+            show_watched: false,
+            watched_not_ignored: Vec::new(),
+            commit_input: String::new(),
+            compaction_config: CompactionConfig::default(),
+            hunk_offsets: None,
+            file_tree_cache: None,
+            mem_budget: MemoryBudget::default(),
+            lazy_mode: false,
+            file_headers: Vec::new(),
+            raw_diff: None,
+        }
+    }
+
     /// Short name for display in tab bar (last path component)
     pub fn tab_name(&self) -> String {
         std::path::Path::new(&self.repo_root)

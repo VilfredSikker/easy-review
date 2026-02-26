@@ -11,6 +11,8 @@ pub struct ErConfig {
     pub display: DisplayConfig,
     #[serde(default)]
     pub watched: WatchedConfig,
+    #[serde(default)]
+    pub hints: HintConfig,
 }
 
 /// [watched] section configuration
@@ -66,6 +68,42 @@ pub struct DisplayConfig {
     pub wrap_lines: bool,
 }
 
+/// [hints] section — toggle visibility of key hint groups in the bottom bar
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HintConfig {
+    #[serde(default = "default_true")]
+    pub navigation: bool,
+    #[serde(default = "default_true")]
+    pub comments: bool,
+    #[serde(default = "default_true")]
+    pub github: bool,
+    #[serde(default = "default_true")]
+    pub staging: bool,
+    #[serde(default = "default_true")]
+    pub ai: bool,
+    #[serde(default = "default_true")]
+    pub filter: bool,
+    #[serde(default = "default_true")]
+    pub sort: bool,
+    #[serde(default = "default_true")]
+    pub settings: bool,
+}
+
+impl Default for HintConfig {
+    fn default() -> Self {
+        Self {
+            navigation: true,
+            comments: true,
+            github: true,
+            staging: true,
+            ai: true,
+            filter: true,
+            sort: true,
+            settings: true,
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -89,6 +127,7 @@ impl Default for ErConfig {
             agent: AgentConfig::default(),
             display: DisplayConfig::default(),
             watched: WatchedConfig::default(),
+            hints: HintConfig::default(),
         }
     }
 }
@@ -274,6 +313,42 @@ pub fn settings_items() -> Vec<SettingsItem> {
             label: "Tab width".into(),
             get: |c| c.display.tab_width,
             set: |c, v| c.display.tab_width = v,
+        },
+        SettingsItem::SectionHeader("Key Hints".into()),
+        SettingsItem::BoolToggle {
+            label: "Navigation (j/k, n/N, ↑↓)".into(),
+            get: |c| c.hints.navigation,
+            set: |c, v| c.hints.navigation = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Comments (q, c, J/K, d/r)".into(),
+            get: |c| c.hints.comments,
+            set: |c, v| c.hints.comments = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "GitHub sync (G, P)".into(),
+            get: |c| c.hints.github,
+            set: |c, v| c.hints.github = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Staging (s, S, c commit)".into(),
+            get: |c| c.hints.staging,
+            set: |c, v| c.hints.staging = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "AI (a, ^j/^k)".into(),
+            get: |c| c.hints.ai,
+            set: |c, v| c.hints.ai = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Filter & sort (f, u, m)".into(),
+            get: |c| c.hints.filter,
+            set: |c, v| c.hints.filter = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Settings (,)".into(),
+            get: |c| c.hints.settings,
+            set: |c, v| c.hints.settings = v,
         },
         SettingsItem::SectionHeader("Agent".into()),
         SettingsItem::StringDisplay {

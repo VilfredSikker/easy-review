@@ -360,6 +360,7 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
 /// Build the normal-mode hint list
 fn build_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
+    let h = &app.config.hints;
 
     // Delegate to AI panel hints when focus is on the AI Summary panel
     if tab.panel_focus && tab.panel == Some(PanelContent::AiSummary) {
@@ -375,9 +376,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
 
     if tab.panel.is_some() {
         // Context: panel open — show panel + core nav
-        hints.push(Hint::new("j/k", " nav "));
-        hints.push(Hint::new("n/N", " hunks "));
-        hints.push(Hint::new("␣", " review "));
+        if h.navigation {
+            hints.push(Hint::new("j/k", " nav "));
+            hints.push(Hint::new("n/N", " hunks "));
+            hints.push(Hint::new("␣", " review "));
+        }
         if tab.panel_focus {
             hints.push(Hint::new("Esc", " unfocus "));
         } else {
@@ -389,42 +392,79 @@ fn build_hints(app: &App) -> Vec<Hint> {
         }
         hints.push(Hint::new("^q", " quit "));
     } else {
-        // Default normal mode: minimal essential set
-        hints.push(Hint::new("j/k", " nav "));
-        hints.push(Hint::new("n/N", " hunks "));
-        hints.push(Hint::new("␣", " review "));
-        hints.push(Hint::new("/", " search "));
-
-        // Mode-specific
-        if tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged {
-            hints.push(Hint::new("s", " stage "));
-        }
-        if tab.mode == DiffMode::Staged {
-            hints.push(Hint::new("c", " commit "));
-        } else {
-            hints.push(Hint::new("q", " question "));
-            hints.push(Hint::new("c", " comment "));
+        // Default normal mode
+        if h.navigation {
+            hints.push(Hint::new("j/k", " nav "));
+            hints.push(Hint::new("n/N", " hunks "));
+            hints.push(Hint::new("␣", " review "));
+            hints.push(Hint::new("/", " search "));
         }
 
-        if tab.focused_comment_id.is_some() || tab.focused_finding_id.is_some() {
-            hints.push(Hint::new("d", " delete "));
-            hints.push(Hint::new("r", " edit "));
+        // Staging hints
+        if h.staging {
+            if tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged {
+                hints.push(Hint::new("s", " stage "));
+            }
         }
 
-        // Comment/finding jump hints — only when targets exist
-        if !tab.ai.all_comments_ordered().is_empty() {
-            hints.push(Hint::new("J/K", " hints "));
-        }
-        if tab.layers.show_ai_findings && tab.ai.total_findings() > 0 {
-            hints.push(Hint::new("^j/^k", " findings "));
+        // Comment hints
+        if h.comments {
+            if tab.mode == DiffMode::Staged {
+                if h.staging {
+                    hints.push(Hint::new("c", " commit "));
+                }
+            } else {
+                hints.push(Hint::new("q", " question "));
+                hints.push(Hint::new("c", " comment "));
+            }
+
+            if tab.focused_comment_id.is_some() || tab.focused_finding_id.is_some() {
+                hints.push(Hint::new("d", " delete "));
+                hints.push(Hint::new("r", " edit "));
+            }
+
+            // Comment jump hints — only when targets exist
+            if !tab.ai.all_comments_ordered().is_empty() {
+                hints.push(Hint::new("J/K", " hints "));
+            }
         }
 
-        hints.push(Hint::new("e", " edit "));
-        hints.push(Hint::new("p", " panel "));
+        // AI hints
+        if h.ai {
+            if tab.layers.show_ai_findings && tab.ai.total_findings() > 0 {
+                hints.push(Hint::new("^j/^k", " findings "));
+            }
+            if tab.ai.has_data() {
+                hints.push(Hint::new("a", " AI "));
+            }
+        }
+
+        // GitHub sync — only when PR data is available
+        if h.github && tab.pr_data.is_some() {
+            hints.push(Hint::new("G", " gh pull "));
+            hints.push(Hint::new("P", " gh push "));
+        }
+
+        // Filter & sort
+        if h.filter {
+            hints.push(Hint::new("m", " recent "));
+            hints.push(Hint::new("u", " unreviewed "));
+            hints.push(Hint::new("f", " filter "));
+        }
+
+        if h.navigation {
+            hints.push(Hint::new("e", " edit "));
+            hints.push(Hint::new("p", " panel "));
+        }
 
         // Tab switching — only when multiple tabs open
         if app.tabs.len() > 1 {
             hints.push(Hint::new("[/]", " tabs "));
+        }
+
+        // Settings
+        if h.settings {
+            hints.push(Hint::new(",", " settings "));
         }
 
         hints.push(Hint::new("^q", " quit "));

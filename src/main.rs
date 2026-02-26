@@ -383,7 +383,7 @@ fn handle_normal_input(
             return Ok(());
         }
         // Delete focused comment (after J/K jump)
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => {
             if let Some(ref id) = app.tab().focused_comment_id.clone() {
                 app.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
                     comment_id: id.clone(),
@@ -1187,4 +1187,273 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
 
 fn chrono_now() -> String {
     app::chrono_now()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{ConfirmAction, InputMode, TabState};
+    use crate::config::ErConfig;
+    use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::sync::mpsc;
+
+    // ── Test helpers ──
+
+    fn make_app(files: Vec<DiffFile>) -> App {
+        App {
+            tabs: vec![TabState::new_for_test(files)],
+            active_tab: 0,
+            input_mode: InputMode::Normal,
+            should_quit: false,
+            overlay: None,
+            watching: false,
+            watch_message: None,
+            watch_message_ticks: 0,
+            ai_poll_counter: 0,
+            config: ErConfig::default(),
+        }
+    }
+
+    fn make_file_with_hunk() -> DiffFile {
+        DiffFile {
+            path: "src/main.rs".to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                header: "@@ -1,3 +1,4 @@".to_string(),
+                old_start: 1,
+                old_count: 3,
+                new_start: 1,
+                new_count: 4,
+                lines: vec![DiffLine {
+                    line_type: LineType::Add,
+                    content: "let x = 1;".to_string(),
+                    old_num: None,
+                    new_num: Some(1),
+                }],
+            }],
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+        }
+    }
+
+    fn send_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        let (tx, _rx) = mpsc::channel::<watch::WatchEvent>();
+        let mut watcher: Option<watch::FileWatcher> = None;
+        let key = KeyEvent::new(code, modifiers);
+        handle_normal_input(app, key, &tx, &mut watcher).unwrap();
+    }
+
+    // ── Ctrl+q vs bare q ──
+
+    #[test]
+    fn ctrl_q_sets_should_quit() {
+        let mut app = make_app(vec![]);
+        send_key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert!(app.should_quit, "Ctrl+q must set should_quit = true");
+        assert_eq!(app.input_mode, InputMode::Normal, "Ctrl+q must not change input_mode");
+    }
+
+    #[test]
+    fn bare_q_starts_comment_mode_when_file_selected() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        send_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(
+            app.input_mode,
+            InputMode::Comment,
+            "bare q must enter Comment mode"
+        );
+        assert!(!app.should_quit, "bare q must not set should_quit");
+    }
+
+    #[test]
+    fn bare_q_does_not_quit() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        send_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(!app.should_quit);
+    }
+
+    // ── Ctrl+d vs bare d ──
+
+    #[test]
+    fn ctrl_d_scrolls_diff_when_no_focused_comment() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        assert_eq!(app.tab().diff_scroll, 0);
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.tab().diff_scroll,
+            10,
+            "Ctrl+d must scroll diff down by 10"
+        );
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "Ctrl+d must not change input_mode"
+        );
+    }
+
+    #[test]
+    fn ctrl_d_does_not_trigger_delete_confirm_even_when_comment_focused() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().focused_comment_id = Some("q-123".to_string());
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        // Ctrl+d should scroll, not enter Confirm mode
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "Ctrl+d must not enter Confirm mode — it scrolls"
+        );
+    }
+
+    #[test]
+    fn bare_d_triggers_delete_confirm_when_comment_focused() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().focused_comment_id = Some("q-abc".to_string());
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert_eq!(
+            app.input_mode,
+            InputMode::Confirm(ConfirmAction::DeleteComment {
+                comment_id: "q-abc".to_string()
+            }),
+            "bare d with focused comment must enter Confirm(DeleteComment)"
+        );
+    }
+
+    #[test]
+    fn bare_d_does_nothing_when_no_comment_focused() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        // focused_comment_id is None by default
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "bare d with no focused comment must stay in Normal mode"
+        );
+    }
+
+    // ── Ctrl+u vs bare u ──
+
+    #[test]
+    fn ctrl_u_scrolls_diff_up() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().diff_scroll = 20;
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.tab().diff_scroll,
+            10,
+            "Ctrl+u must scroll diff up by 10"
+        );
+    }
+
+    #[test]
+    fn ctrl_u_does_not_toggle_unreviewed_filter() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        assert!(!app.tab().show_unreviewed_only);
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert!(
+            !app.tab().show_unreviewed_only,
+            "Ctrl+u must not toggle show_unreviewed_only"
+        );
+    }
+
+    #[test]
+    fn bare_u_toggles_unreviewed_filter_on() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        assert!(!app.tab().show_unreviewed_only);
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert!(
+            app.tab().show_unreviewed_only,
+            "bare u must toggle show_unreviewed_only to true"
+        );
+    }
+
+    #[test]
+    fn bare_u_does_not_scroll_diff() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().diff_scroll = 20;
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(
+            app.tab().diff_scroll,
+            20,
+            "bare u must not change diff_scroll"
+        );
+    }
+
+    // ── Ctrl+j vs bare j (panel not focused) ──
+
+    #[test]
+    fn ctrl_j_calls_prev_finding_not_panel_scroll() {
+        // Without any AI findings loaded, prev_finding is a no-op on selection
+        // but it must NOT change panel_scroll (which bare j would do in panel mode).
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().panel = Some(PanelContent::FileDetail);
+        app.tab_mut().panel_focus = false; // panel not focused
+        app.tab_mut().panel_scroll = 5;
+        send_key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        // panel_scroll must be unchanged — Ctrl+j navigates findings, not panel
+        assert_eq!(
+            app.tab().panel_scroll,
+            5,
+            "Ctrl+j must not scroll panel"
+        );
+    }
+
+    #[test]
+    fn bare_j_navigates_files_not_panel() {
+        // bare j calls prev_file when panel is NOT focused
+        let files = vec![
+            make_file_with_hunk(),
+            DiffFile {
+                path: "src/lib.rs".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                adds: 0,
+                dels: 0,
+                compacted: false,
+                raw_hunk_count: 0,
+            },
+        ];
+        let mut app = make_app(files);
+        app.tab_mut().selected_file = 1; // start at second file
+        app.tab_mut().panel_focus = false;
+        send_key(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        // prev_file moves selected_file from 1 → 0
+        assert_eq!(
+            app.tab().selected_file,
+            0,
+            "bare j must navigate to previous file"
+        );
+    }
+
+    // ── Modifier isolation: Ctrl+k vs bare k ──
+
+    #[test]
+    fn ctrl_k_calls_next_finding_not_panel_scroll() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().panel = Some(PanelContent::FileDetail);
+        app.tab_mut().panel_focus = false;
+        app.tab_mut().panel_scroll = 5;
+        send_key(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.tab().panel_scroll,
+            5,
+            "Ctrl+k must not scroll panel"
+        );
+    }
+
+    // ── KeyModifiers::NONE guard is exact ──
+
+    #[test]
+    fn d_with_shift_does_not_trigger_delete_or_scroll() {
+        // Shift+d has no handler in the current map, so nothing should change
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().focused_comment_id = Some("q-abc".to_string());
+        let before_scroll = app.tab().diff_scroll;
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::SHIFT);
+        // Shift+d is not handled — state unchanged
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tab().diff_scroll, before_scroll);
+    }
 }
