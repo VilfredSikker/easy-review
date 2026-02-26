@@ -131,20 +131,26 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     row_idx += 1;
 
     // ── Modes row: modes (left) + reviewed (right) ──
-    let mut modes: Vec<Span> = vec![
-        Span::raw(" "),
-        Span::styled(" 1 ", mode_style(DiffMode::Branch, tab.mode)),
-        Span::styled(" BRANCH ", mode_style(DiffMode::Branch, tab.mode)),
-        Span::raw(" "),
-        Span::styled(" 2 ", mode_style(DiffMode::Unstaged, tab.mode)),
-        Span::styled(" UNSTAGED ", mode_style(DiffMode::Unstaged, tab.mode)),
-        Span::raw(" "),
-        Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)),
-        Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)),
-        Span::raw(" "),
-        Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)),
-        Span::styled(" HISTORY ", mode_style(DiffMode::History, tab.mode)),
-    ];
+    let mut modes: Vec<Span> = vec![Span::raw(" ")];
+    if app.config.features.view_branch {
+        modes.push(Span::styled(" 1 ", mode_style(DiffMode::Branch, tab.mode)));
+        modes.push(Span::styled(" BRANCH ", mode_style(DiffMode::Branch, tab.mode)));
+        modes.push(Span::raw(" "));
+    }
+    if app.config.features.view_unstaged {
+        modes.push(Span::styled(" 2 ", mode_style(DiffMode::Unstaged, tab.mode)));
+        modes.push(Span::styled(" UNSTAGED ", mode_style(DiffMode::Unstaged, tab.mode)));
+        modes.push(Span::raw(" "));
+    }
+    if app.config.features.view_staged {
+        modes.push(Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)));
+        modes.push(Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)));
+        modes.push(Span::raw(" "));
+    }
+    if app.config.features.view_history {
+        modes.push(Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)));
+        modes.push(Span::styled(" HISTORY ", mode_style(DiffMode::History, tab.mode)));
+    }
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(

@@ -945,14 +945,17 @@ impl TabState {
 
     /// Check if .er-* files have been updated since last load (called on tick)
     pub fn check_ai_files_changed(&mut self) -> bool {
-        let latest_mtime = match ai::latest_er_mtime(&self.repo_root) {
-            Some(t) => t,
-            None => return false,
+        let latest_mtime = ai::latest_er_mtime(&self.repo_root);
+
+        let should_reload = match latest_mtime {
+            Some(t) => match self.last_ai_check {
+                Some(last_check) => t > last_check,
+                None => true,
+            },
+            // Files deleted — clear stale in-memory state if we had any
+            None => self.last_ai_check.is_some(),
         };
-        let should_reload = match self.last_ai_check {
-            Some(last_check) => latest_mtime > last_check,
-            None => true,
-        };
+
         if should_reload {
             self.reload_ai_state();
             return true;
@@ -3658,7 +3661,9 @@ impl App {
                 tab.h_scroll = 0;
                 tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
-                tab.panel = Some(PanelContent::FileDetail);
+                if tab.panel.is_none() {
+                    tab.panel = Some(PanelContent::FileDetail);
+                }
                 self.notify(&format!("Jumped to: {}", path));
             } else {
                 self.notify(&format!("File not in diff: {}", path));
