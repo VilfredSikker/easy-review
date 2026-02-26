@@ -962,6 +962,11 @@ fn render_comment_lines(
             "  ↑ synced",
             ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
         ));
+    } else if comment.comment_type() == CommentType::GitHubComment {
+        header_spans.push(Span::styled(
+            "  ↑ local",
+            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+        ));
     }
 
     // Focus indicator
@@ -1048,6 +1053,11 @@ fn render_reply_lines(
         header_spans.push(Span::styled(
             "  ↑ synced",
             ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
+        ));
+    } else if reply.comment_type() == CommentType::GitHubComment {
+        header_spans.push(Span::styled(
+            "  ↑ local",
+            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
         ));
     }
 

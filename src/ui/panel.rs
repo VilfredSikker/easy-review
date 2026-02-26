@@ -298,6 +298,11 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 "  ↑ synced",
                 Style::default().fg(styles::GREEN),
             ));
+        } else if comment.comment_type() == CommentType::GitHubComment {
+            header_spans.push(Span::styled(
+                "  ↑ local",
+                Style::default().fg(styles::DIM),
+            ));
         }
 
         // Reply indicator
