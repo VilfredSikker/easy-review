@@ -1,6 +1,7 @@
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, WatchedConfig};
 use crate::git::{self, CommitInfo, DiffFile, DiffFileHeader, CompactionConfig, WatchedFile, Worktree};
+use crate::github::PrOverviewData;
 use anyhow::{Context, Result};
 use std::collections::{HashSet, VecDeque};
 use std::io::Write;
@@ -9,6 +10,29 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Anchor data captured at comment creation time for later relocation
+struct LineAnchor {
+    line_start: Option<usize>,
+    line_content: String,
+    context_before: Vec<String>,
+    context_after: Vec<String>,
+    old_line_start: Option<usize>,
+    hunk_header: String,
+}
+
+impl Default for LineAnchor {
+    fn default() -> Self {
+        LineAnchor {
+            line_start: None,
+            line_content: String::new(),
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+            old_line_start: None,
+            hunk_header: String::new(),
+        }
+    }
+}
 
 // ── Enums ──
 
@@ -22,7 +46,7 @@ pub enum DiffMode {
 }
 
 impl DiffMode {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn label(&self) -> &'static str {
         match self {
             DiffMode::Branch => "BRANCH DIFF",
@@ -96,6 +120,7 @@ impl DiffCache {
 
 /// Whether we're navigating or typing in the search filter / comment
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum InputMode {
     Normal,
     Search,
@@ -107,16 +132,9 @@ pub enum InputMode {
 
 /// Actions that require user confirmation (y/n)
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum ConfirmAction {
     DeleteComment { comment_id: String },
-}
-
-/// Tracks which comment is focused for reply/delete operations
-#[derive(Debug, Clone)]
-pub struct CommentFocus {
-    pub file: String,
-    pub hunk_index: Option<usize>,
-    pub comment_id: String,
 }
 
 // ── Overlay types ──
@@ -183,9 +201,6 @@ pub struct TabState {
     /// Horizontal scroll offset within the diff view (for long lines)
     pub h_scroll: u16,
 
-    /// Vertical scroll offset for the AI side panel (independent of diff_scroll)
-    pub ai_panel_scroll: u16,
-
     /// Inline layer visibility toggles
     pub layers: InlineLayers,
 
@@ -197,6 +212,9 @@ pub struct TabState {
 
     /// Whether keyboard focus is on the panel (vs diff view)
     pub panel_focus: bool,
+
+    /// ID of the comment/question currently highlighted by J/K jumping
+    pub focused_comment_id: Option<String>,
 
     /// Which column has focus in panel's AiSummary view
     pub review_focus: ReviewFocus,
@@ -261,9 +279,6 @@ pub struct TabState {
     /// Optional specific line number the comment targets (new-side)
     pub comment_line_num: Option<usize>,
 
-    /// Currently focused comment (for reply/delete operations)
-    pub comment_focus: Option<CommentFocus>,
-
     /// Which type of comment is being created (Question vs GitHubComment)
     pub comment_type: CommentType,
 
@@ -286,6 +301,9 @@ pub struct TabState {
 
     /// Paths that are watched but NOT gitignored (warning)
     pub watched_not_ignored: Vec<String>,
+
+    /// Fetched PR overview data (loaded on startup if PR detected)
+    pub pr_data: Option<PrOverviewData>,
 
     // ── Commit input state ──
 
@@ -399,11 +417,11 @@ impl TabState {
             selection_anchor: None,
             diff_scroll: 0,
             h_scroll: 0,
-            ai_panel_scroll: 0,
             layers: InlineLayers::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
+            focused_comment_id: None,
             review_focus: ReviewFocus::Files,
             review_cursor: 0,
             search_query: String::new(),
@@ -423,8 +441,8 @@ impl TabState {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
-            comment_focus: None,
             comment_type: CommentType::GitHubComment,
+            pr_data: None,
             history: None,
             watched_config,
             watched_files: Vec::new(),
@@ -549,6 +567,9 @@ impl TabState {
         // Load AI state from .er-* files
         self.reload_ai_state();
 
+        // Relocate comments to follow moved code
+        self.relocate_all_comments();
+
         // Compute per-file staleness when the review is stale and has file_hashes.
         // Reuse the branch_raw we already fetched — no additional git call.
         if self.ai.is_stale {
@@ -611,6 +632,166 @@ impl TabState {
         self.last_ai_check = ai::latest_er_mtime(&self.repo_root);
     }
 
+    /// Relocate all comments to their new positions after a diff change.
+    fn relocate_all_comments(&mut self) {
+        let current_hash = self.diff_hash.clone();
+        let repo_root = self.repo_root.clone();
+
+        // Build rename map: old path → new path
+        let rename_map: std::collections::HashMap<String, String> = self.files.iter()
+            .filter_map(|f| {
+                if let git::FileStatus::Renamed(ref old_path) = f.status {
+                    Some((old_path.clone(), f.path.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let is_lazy = self.lazy_mode;
+
+        // Helper: find DiffFile by path, respecting renames.
+        // Returns None for lazy stubs (hunks not yet parsed) to avoid false Lost results.
+        let find_file = |path: &str| -> Option<usize> {
+            let find_idx = |p: &str| -> Option<usize> {
+                self.files.iter().position(|f| f.path == p)
+            };
+            let idx = find_idx(path)
+                .or_else(|| rename_map.get(path).and_then(|np| find_idx(np)))?;
+            // Skip unparsed lazy stubs — hunks empty and not compacted
+            if is_lazy {
+                let f = &self.files[idx];
+                if f.hunks.is_empty() && !f.compacted {
+                    return None;
+                }
+            }
+            Some(idx)
+        };
+
+        // Process questions
+        let questions_changed = if let Some(ref mut qs) = self.ai.questions {
+            let mut changed = false;
+            for q in &mut qs.questions {
+                if q.relocated_at_hash == current_hash {
+                    continue;
+                }
+                let result = if let Some(idx) = find_file(&q.file) {
+                    let anchor = ai::CommentAnchor {
+                        file: q.file.clone(),
+                        hunk_index: q.hunk_index,
+                        line_start: q.line_start,
+                        line_content: q.line_content.clone(),
+                        context_before: q.context_before.clone(),
+                        context_after: q.context_after.clone(),
+                        old_line_start: q.old_line_start,
+                        hunk_header: q.hunk_header.clone(),
+                    };
+                    ai::relocate_comment(&anchor, &self.files[idx])
+                } else {
+                    ai::RelocationResult::Lost
+                };
+                match result {
+                    ai::RelocationResult::Unchanged => {
+                        q.anchor_status = "original".to_string();
+                        q.relocated_at_hash = current_hash.clone();
+                        q.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Relocated { new_hunk_index, new_line_start } => {
+                        q.hunk_index = Some(new_hunk_index);
+                        q.line_start = Some(new_line_start);
+                        q.anchor_status = "relocated".to_string();
+                        q.relocated_at_hash = current_hash.clone();
+                        q.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Lost => {
+                        q.anchor_status = "lost".to_string();
+                        q.stale = true;
+                        q.relocated_at_hash = current_hash.clone();
+                        changed = true;
+                    }
+                }
+            }
+            changed
+        } else {
+            false
+        };
+
+        // Process GitHub comments (top-level only; replies follow their parent)
+        let comments_changed = if let Some(ref mut gc) = self.ai.github_comments {
+            let mut changed = false;
+            for c in &mut gc.comments {
+                if c.relocated_at_hash == current_hash {
+                    continue;
+                }
+                if c.in_reply_to.is_some() {
+                    continue;
+                }
+                let result = if let Some(idx) = find_file(&c.file) {
+                    let anchor = ai::CommentAnchor {
+                        file: c.file.clone(),
+                        hunk_index: c.hunk_index,
+                        line_start: c.line_start,
+                        line_content: c.line_content.clone(),
+                        context_before: c.context_before.clone(),
+                        context_after: c.context_after.clone(),
+                        old_line_start: c.old_line_start,
+                        hunk_header: c.hunk_header.clone(),
+                    };
+                    ai::relocate_comment(&anchor, &self.files[idx])
+                } else {
+                    ai::RelocationResult::Lost
+                };
+                match result {
+                    ai::RelocationResult::Unchanged => {
+                        c.anchor_status = "original".to_string();
+                        c.relocated_at_hash = current_hash.clone();
+                        c.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Relocated { new_hunk_index, new_line_start } => {
+                        c.hunk_index = Some(new_hunk_index);
+                        c.line_start = Some(new_line_start);
+                        c.anchor_status = "relocated".to_string();
+                        c.relocated_at_hash = current_hash.clone();
+                        c.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Lost => {
+                        c.anchor_status = "lost".to_string();
+                        c.stale = true;
+                        c.relocated_at_hash = current_hash.clone();
+                        changed = true;
+                    }
+                }
+            }
+            changed
+        } else {
+            false
+        };
+
+        // Write back to disk if anything changed
+        if questions_changed {
+            if let Some(ref qs) = self.ai.questions {
+                let path = format!("{}/.er-questions.json", repo_root);
+                if let Ok(json) = serde_json::to_string_pretty(qs) {
+                    let tmp = format!("{}.tmp", path);
+                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                }
+            }
+        }
+        if comments_changed {
+            if let Some(ref gc) = self.ai.github_comments {
+                let path = format!("{}/.er-github-comments.json", repo_root);
+                if let Ok(json) = serde_json::to_string_pretty(gc) {
+                    let tmp = format!("{}.tmp", path);
+                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                }
+            }
+        }
+    }
+
     /// Compute which files have changed since the review, populating stale_files
     fn compute_stale_files(&mut self, branch_raw_diff: &str) {
         if let Some(ref review) = self.ai.review {
@@ -663,18 +844,28 @@ impl TabState {
         self.layers.show_ai_findings = !self.layers.show_ai_findings;
     }
 
-    /// Cycle panel: None → FileDetail → AiSummary (if AI data) → PrOverview → None
+    /// Cycle panel: None → FileDetail → AiSummary (if AI data) → PrOverview (if PR live) → None
     pub fn toggle_panel(&mut self) {
+        let has_ai = self.layers.show_ai_findings && self.ai.has_data();
+        let has_pr = self.pr_data.is_some();
         self.panel = match self.panel {
             None => Some(PanelContent::FileDetail),
             Some(PanelContent::FileDetail) => {
-                if self.ai.has_data() {
+                if has_ai {
                     Some(PanelContent::AiSummary)
-                } else {
+                } else if has_pr {
                     Some(PanelContent::PrOverview)
+                } else {
+                    None
                 }
             }
-            Some(PanelContent::AiSummary) => Some(PanelContent::PrOverview),
+            Some(PanelContent::AiSummary) => {
+                if has_pr {
+                    Some(PanelContent::PrOverview)
+                } else {
+                    None
+                }
+            }
             Some(PanelContent::PrOverview) => None,
         };
         self.panel_scroll = 0;
@@ -875,6 +1066,7 @@ impl TabState {
     }
 
     pub fn next_file(&mut self) {
+        self.focused_comment_id = None;
         if let Some(idx) = self.selected_watched {
             // In watched section — move down within watched files
             let visible_watched = self.visible_watched_files();
@@ -906,7 +1098,7 @@ impl TabState {
                     self.selection_anchor = None;
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
-                    self.ai_panel_scroll = 0;
+                    self.panel_scroll = 0;
                     self.ensure_file_parsed();
                     self.rebuild_hunk_offsets();
                 } else {
@@ -924,7 +1116,7 @@ impl TabState {
                 self.current_hunk = 0;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
-                self.ai_panel_scroll = 0;
+                self.panel_scroll = 0;
                 self.ensure_file_parsed();
                 self.rebuild_hunk_offsets();
             }
@@ -932,6 +1124,7 @@ impl TabState {
     }
 
     pub fn prev_file(&mut self) {
+        self.focused_comment_id = None;
         if let Some(idx) = self.selected_watched {
             // In watched section — move up within watched files
             let visible_watched = self.visible_watched_files();
@@ -951,7 +1144,7 @@ impl TabState {
                         self.selection_anchor = None;
                         self.diff_scroll = 0;
                         self.h_scroll = 0;
-                        self.ai_panel_scroll = 0;
+                        self.panel_scroll = 0;
                         self.ensure_file_parsed();
                         self.rebuild_hunk_offsets();
                     }
@@ -971,7 +1164,7 @@ impl TabState {
                     self.selection_anchor = None;
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
-                    self.ai_panel_scroll = 0;
+                    self.panel_scroll = 0;
                     self.ensure_file_parsed();
                     self.rebuild_hunk_offsets();
                 }
@@ -981,7 +1174,7 @@ impl TabState {
                 self.current_hunk = 0;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
-                self.ai_panel_scroll = 0;
+                self.panel_scroll = 0;
                 self.ensure_file_parsed();
                 self.rebuild_hunk_offsets();
             }
@@ -989,6 +1182,7 @@ impl TabState {
     }
 
     pub fn next_hunk(&mut self) {
+        self.focused_comment_id = None;
         let total = self.total_hunks();
         if total > 0 && self.current_hunk < total - 1 {
             self.current_hunk += 1;
@@ -999,6 +1193,7 @@ impl TabState {
     }
 
     pub fn prev_hunk(&mut self) {
+        self.focused_comment_id = None;
         if self.current_hunk > 0 {
             self.current_hunk -= 1;
             self.current_line = None;
@@ -2445,7 +2640,7 @@ impl App {
         let hunk_index = tab.comment_hunk;
         let comment_line_num = tab.comment_line_num;
 
-        let (line_start, line_content) = self.get_line_context(hunk_index, comment_line_num);
+        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
         // Load or create .er-questions.json
         let questions_path = format!("{}/.er-questions.json", repo_root);
@@ -2489,11 +2684,17 @@ impl App {
             timestamp: chrono_now(),
             file: file_path,
             hunk_index: Some(hunk_index),
-            line_start,
-            line_content,
+            line_start: anchor.line_start,
+            line_content: anchor.line_content,
             text: text.clone(),
             resolved: false,
             stale: false,
+            context_before: anchor.context_before,
+            context_after: anchor.context_after,
+            old_line_start: anchor.old_line_start,
+            hunk_header: anchor.hunk_header,
+            anchor_status: "original".to_string(),
+            relocated_at_hash: self.tab().diff_hash.clone(),
         });
 
         // Write atomically
@@ -2519,7 +2720,7 @@ impl App {
         let reply_to = tab.comment_reply_to.clone();
         let comment_line_num = tab.comment_line_num;
 
-        let (line_start, line_content) = self.get_line_context(hunk_index, comment_line_num);
+        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
         // Load or create .er-github-comments.json
         let comments_path = format!("{}/.er-github-comments.json", repo_root);
@@ -2566,9 +2767,9 @@ impl App {
             timestamp: chrono_now(),
             file: file_path,
             hunk_index: Some(hunk_index),
-            line_start,
+            line_start: anchor.line_start,
             line_end: None,
-            line_content,
+            line_content: anchor.line_content,
             comment: text.clone(),
             in_reply_to: reply_to,
             resolved: false,
@@ -2577,6 +2778,12 @@ impl App {
             author: "You".to_string(),
             synced: false,
             stale: false,
+            context_before: anchor.context_before,
+            context_after: anchor.context_after,
+            old_line_start: anchor.old_line_start,
+            hunk_header: anchor.hunk_header,
+            anchor_status: "original".to_string(),
+            relocated_at_hash: self.tab().diff_hash.clone(),
         });
 
         // Write atomically
@@ -2592,25 +2799,67 @@ impl App {
         Ok(())
     }
 
-    /// Helper: get line context for a comment target
-    fn get_line_context(&self, hunk_index: usize, comment_line_num: Option<usize>) -> (Option<usize>, String) {
+    /// Richer anchor data captured when placing a comment
+    fn get_line_anchor(&self, hunk_index: usize, comment_line_num: Option<usize>) -> LineAnchor {
         let tab = self.tab();
         if let Some(df) = tab.selected_diff_file() {
             if let Some(hunk) = df.hunks.get(hunk_index) {
                 if let Some(ln) = comment_line_num {
-                    let content = hunk.lines.iter()
-                        .find(|l| l.new_num == Some(ln))
-                        .map(|l| l.content.clone())
-                        .unwrap_or_default();
-                    (Some(ln), content)
+                    // Find the target line index within the hunk
+                    let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(ln));
+                    let (line_content, old_line_start) = if let Some(idx) = target_idx {
+                        let dl = &hunk.lines[idx];
+                        (dl.content.clone(), dl.old_num)
+                    } else {
+                        (String::new(), None)
+                    };
+
+                    // Collect up to 3 content lines before the target (same hunk)
+                    let context_before = if let Some(idx) = target_idx {
+                        let start = idx.saturating_sub(3);
+                        hunk.lines[start..idx]
+                            .iter()
+                            .map(|l| l.content.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Collect up to 3 content lines after the target (same hunk)
+                    let context_after = if let Some(idx) = target_idx {
+                        let end = (idx + 4).min(hunk.lines.len());
+                        hunk.lines[(idx + 1)..end]
+                            .iter()
+                            .map(|l| l.content.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                    LineAnchor {
+                        line_start: Some(ln),
+                        line_content,
+                        context_before,
+                        context_after,
+                        old_line_start,
+                        hunk_header: hunk.header.clone(),
+                    }
                 } else {
-                    (None, hunk.header.clone())
+                    // Hunk-level comment
+                    LineAnchor {
+                        line_start: None,
+                        line_content: hunk.header.clone(),
+                        context_before: Vec::new(),
+                        context_after: Vec::new(),
+                        old_line_start: None,
+                        hunk_header: hunk.header.clone(),
+                    }
                 }
             } else {
-                (None, String::new())
+                LineAnchor::default()
             }
         } else {
-            (None, String::new())
+            LineAnchor::default()
         }
     }
 
@@ -2620,9 +2869,9 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
-    // ── Comment Focus & Navigation ──
+    // ── Comment Navigation ──
 
-    /// Jump to the next comment across all files. Starts from the first comment if none focused.
+    /// Jump to the next comment across all files.
     pub fn next_comment(&mut self) {
         self.jump_comment(true, false);
     }
@@ -2632,7 +2881,7 @@ impl App {
         self.jump_comment(false, false);
     }
 
-    /// Jump to the next question across all files. Starts from the first question if none focused.
+    /// Jump to the next question across all files.
     #[allow(dead_code)]
     pub fn next_question(&mut self) {
         self.jump_comment(true, true);
@@ -2643,6 +2892,7 @@ impl App {
     pub fn prev_question(&mut self) {
         self.jump_comment(false, true);
     }
+
 
     /// Core jump logic: navigate forward/backward through comments or questions across all files.
     fn jump_comment(&mut self, forward: bool, questions_only: bool) {
@@ -2657,27 +2907,30 @@ impl App {
             return;
         }
 
-        let next_idx = match &tab.comment_focus {
-            Some(focus) => {
-                // Find current position in the ordered list
-                let current_pos = all.iter().position(|(_, _, id)| *id == focus.comment_id);
-                match current_pos {
-                    Some(pos) => {
-                        if forward {
-                            if pos + 1 < all.len() { pos + 1 } else { 0 }
-                        } else {
-                            if pos > 0 { pos - 1 } else { all.len() - 1 }
-                        }
-                    }
-                    // Current focus not in this list (e.g. focused comment, jumping questions)
-                    None => if forward { 0 } else { all.len() - 1 },
+        // Find current position by matching current file+hunk
+        let current_file = tab.files.get(tab.selected_file).map(|f| f.path.clone());
+        let current_hunk = tab.current_hunk;
+        let current_pos = current_file.as_ref().and_then(|cf| {
+            all.iter().position(|(file, hunk_index, _)| {
+                file == cf && hunk_index.map_or(true, |hi| hi == current_hunk)
+            })
+        });
+
+        let next_idx = match current_pos {
+            Some(pos) => {
+                if forward {
+                    if pos + 1 < all.len() { pos + 1 } else { 0 }
+                } else {
+                    if pos > 0 { pos - 1 } else { all.len() - 1 }
                 }
             }
-            // No focus yet — start from first or last
             None => if forward { 0 } else { all.len() - 1 },
         };
 
         let (ref file, hunk_index, ref comment_id) = all[next_idx];
+
+        // Highlight the jumped-to comment
+        tab.focused_comment_id = Some(comment_id.clone());
 
         // Navigate to the file if different from current
         let needs_file_change = tab.files.get(tab.selected_file)
@@ -2698,83 +2951,7 @@ impl App {
             tab.current_line = None;
         }
 
-        tab.comment_focus = Some(CommentFocus {
-            file: file.clone(),
-            hunk_index,
-            comment_id: comment_id.clone(),
-        });
         tab.scroll_to_current_hunk();
-    }
-
-    // ── Reply System ──
-
-    /// Start replying to the focused comment (GitHub comments only)
-    pub fn start_reply(&mut self) {
-        let tab = self.tab();
-        let focus = match &tab.comment_focus {
-            Some(f) => f.clone(),
-            None => return,
-        };
-
-        // Find the focused comment in the unified view
-        let hunk_idx = focus.hunk_index.unwrap_or(0);
-        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let comment = all_comments.iter().find(|c| c.id() == focus.comment_id);
-
-        match comment {
-            Some(c) => {
-                // Can only reply to GitHub comments, not questions
-                if c.comment_type() == CommentType::Question {
-                    self.notify("Cannot reply to a question — use /er-questions instead");
-                    return;
-                }
-                // Block nested replies
-                if !c.can_reply() {
-                    self.notify("Cannot reply to a reply");
-                    return;
-                }
-            }
-            None => return,
-        }
-
-        let tab = self.tab_mut();
-        tab.comment_input.clear();
-        tab.comment_file = focus.file;
-        tab.comment_hunk = focus.hunk_index.unwrap_or(0);
-        tab.comment_line_num = None;
-        tab.comment_reply_to = Some(focus.comment_id);
-        tab.comment_type = CommentType::GitHubComment;
-        self.input_mode = InputMode::Comment;
-    }
-
-    // ── Comment Deletion ──
-
-    /// Initiate comment deletion (enters confirm mode)
-    pub fn start_delete_comment(&mut self) {
-        let tab = self.tab();
-        let focus = match &tab.comment_focus {
-            Some(f) => f.clone(),
-            None => return,
-        };
-
-        // Find the comment in the unified view to check deletability
-        let hunk_idx = focus.hunk_index.unwrap_or(0);
-        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let comment = all_comments.iter().find(|c| c.id() == focus.comment_id);
-
-        match comment {
-            Some(c) => {
-                if !c.can_delete() {
-                    self.notify("Cannot delete others' comments");
-                    return;
-                }
-            }
-            None => return,
-        }
-
-        self.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
-            comment_id: focus.comment_id,
-        });
     }
 
     /// Execute comment deletion after confirmation
@@ -2835,8 +3012,6 @@ impl App {
             }
         }
 
-        // Clear focus and return to normal
-        self.tab_mut().comment_focus = None;
         self.input_mode = InputMode::Normal;
         self.tab_mut().reload_ai_state();
         self.notify("Comment deleted");
@@ -3195,11 +3370,11 @@ mod tests {
             selection_anchor: None,
             diff_scroll: 0,
             h_scroll: 0,
-            ai_panel_scroll: 0,
             layers: InlineLayers::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
+            focused_comment_id: None,
             review_focus: ReviewFocus::Files,
             review_cursor: 0,
             search_query: String::new(),
@@ -3219,8 +3394,8 @@ mod tests {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
-            comment_focus: None,
             comment_type: CommentType::GitHubComment,
+            pr_data: None,
             history: None,
             watched_config: WatchedConfig::default(),
             watched_files: Vec::new(),
@@ -3978,6 +4153,7 @@ mod tests {
     fn toggle_panel_cycles_to_ai_summary_when_ai_data_present() {
         let mut tab = make_test_tab(vec![]);
         tab.ai.summary = Some("some summary".to_string());
+        tab.layers.show_ai_findings = true;
         tab.panel = Some(crate::ai::PanelContent::FileDetail);
         tab.toggle_panel();
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
@@ -3988,17 +4164,58 @@ mod tests {
         let mut tab = make_test_tab(vec![]);
         tab.panel = Some(crate::ai::PanelContent::FileDetail);
         tab.toggle_panel();
-        // No AI data: FileDetail → PrOverview (skips AiSummary)
+        // No AI data, no PR data: FileDetail → None (both skipped)
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_skips_ai_goes_to_pr_when_pr_available() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 1,
+            title: "t".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "u".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "feat".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        tab.panel = Some(crate::ai::PanelContent::FileDetail);
+        tab.toggle_panel();
+        // No AI data, but PR available: FileDetail → PrOverview
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
     }
 
     #[test]
-    fn toggle_panel_closes_from_ai_summary() {
+    fn toggle_panel_closes_from_ai_summary_when_no_pr() {
         let mut tab = make_test_tab(vec![]);
         tab.ai.summary = Some("summary".to_string());
         tab.panel = Some(crate::ai::PanelContent::AiSummary);
         tab.toggle_panel();
-        // AiSummary → PrOverview (not None — PrOverview is next in cycle)
+        // AiSummary → None (no PR available)
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_cycles_ai_to_pr_when_pr_available() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 1,
+            title: "t".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "u".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "feat".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        tab.panel = Some(crate::ai::PanelContent::AiSummary);
+        tab.toggle_panel();
+        // AiSummary → PrOverview (PR available)
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
     }
 
@@ -4010,7 +4227,7 @@ mod tests {
         assert_eq!(tab.panel_scroll, 0);
 
         tab.panel_scroll = 10;
-        tab.toggle_panel(); // FileDetail → PrOverview (no AI data)
+        tab.toggle_panel(); // FileDetail → None (no AI or PR data)
         assert_eq!(tab.panel_scroll, 0);
     }
 
@@ -4031,5 +4248,110 @@ mod tests {
         tab.toggle_panel(); // None → FileDetail
         // panel_focus stays as-is when panel is opened
         assert!(!tab.panel_focus);
+    }
+
+    // ── toggle_panel full cycle ──
+
+    #[test]
+    fn toggle_panel_full_cycle_no_ai_no_pr() {
+        let mut tab = make_test_tab(vec![]);
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel(); // None → FileDetail
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel(); // FileDetail → None (no AI, no PR)
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_full_cycle_with_ai_only() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.layers.show_ai_findings = true;
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel(); // None → FileDetail
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel(); // FileDetail → AiSummary (AI present)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
+        tab.toggle_panel(); // AiSummary → None (no PR)
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_full_cycle_with_ai_and_pr() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.layers.show_ai_findings = true;
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 42,
+            title: "My PR".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "user".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "feature".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel(); // None → FileDetail
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel(); // FileDetail → AiSummary
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
+        tab.toggle_panel(); // AiSummary → PrOverview
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
+        tab.toggle_panel(); // PrOverview → None
+        assert_eq!(tab.panel, None);
+    }
+
+    // ── DiffCache ──
+
+    #[test]
+    fn diff_cache_get_on_empty_returns_none() {
+        let cache = DiffCache::new(5);
+        assert!(cache.get("abc123").is_none());
+    }
+
+    #[test]
+    fn diff_cache_insert_then_get_returns_stored_files() {
+        let mut cache = DiffCache::new(5);
+        let files = vec![make_file("a.rs", vec![], 1, 0)];
+        cache.insert("abc123".to_string(), files);
+        let result = cache.get("abc123");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 1);
+        assert_eq!(result.unwrap()[0].path, "a.rs");
+    }
+
+    #[test]
+    fn diff_cache_get_wrong_hash_returns_none() {
+        let mut cache = DiffCache::new(5);
+        cache.insert("abc123".to_string(), vec![]);
+        assert!(cache.get("xyz789").is_none());
+    }
+
+    #[test]
+    fn diff_cache_evicts_oldest_when_full() {
+        let mut cache = DiffCache::new(2);
+        cache.insert("first".to_string(), vec![make_file("first.rs", vec![], 1, 0)]);
+        cache.insert("second".to_string(), vec![make_file("second.rs", vec![], 1, 0)]);
+        // Cache is full (max_size=2). Insert a third entry.
+        cache.insert("third".to_string(), vec![make_file("third.rs", vec![], 1, 0)]);
+        // Oldest ("first") should be evicted
+        assert!(cache.get("first").is_none());
+        assert!(cache.get("second").is_some());
+        assert!(cache.get("third").is_some());
+    }
+
+    #[test]
+    fn diff_cache_reinserting_same_hash_updates_entry() {
+        let mut cache = DiffCache::new(3);
+        cache.insert("hash1".to_string(), vec![make_file("v1.rs", vec![], 1, 0)]);
+        cache.insert("hash2".to_string(), vec![]);
+        // Re-insert hash1 with new data
+        cache.insert("hash1".to_string(), vec![make_file("v2.rs", vec![], 2, 0)]);
+        // Updated entry should have new data
+        let result = cache.get("hash1").unwrap();
+        assert_eq!(result[0].path, "v2.rs");
+        assert!(cache.get("hash2").is_some());
     }
 }
