@@ -84,6 +84,17 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
         tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED)));
     }
 
+    if tab.symbol_refs.is_some() {
+        let refs_style = if content == PanelContent::SymbolRefs {
+            Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(styles::DIM)
+        };
+        tab_spans.push(Span::styled(" [", Style::default().fg(styles::MUTED)));
+        tab_spans.push(Span::styled("Refs", refs_style));
+        tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED)));
+    }
+
     lines.push(Line::from(tab_spans));
     lines.push(Line::from(vec![Span::styled(
         "─".repeat(area.width.saturating_sub(2) as usize),
@@ -95,6 +106,7 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
         PanelContent::FileDetail => render_file_detail(&mut lines, area, tab),
         PanelContent::AiSummary => render_ai_summary(&mut lines, area, tab),
         PanelContent::PrOverview => render_pr_overview(&mut lines, area, tab),
+        PanelContent::SymbolRefs => render_symbol_refs(&mut lines, area, tab),
     }
 
     let border_style = if tab.panel_focus {
@@ -705,5 +717,117 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             ]));
         }
         lines.push(Line::from(""));
+    }
+}
+
+// ── SymbolRefs ──
+
+fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::app::TabState) {
+    let state = match tab.symbol_refs.as_ref() {
+        Some(s) => s,
+        None => {
+            lines.push(Line::from(vec![Span::styled(
+                " No symbol references",
+                Style::default().fg(styles::MUTED),
+            )]));
+            return;
+        }
+    };
+
+    // Header: symbol name
+    lines.push(Line::from(vec![
+        Span::styled(" Symbol: ", Style::default().fg(styles::DIM)),
+        Span::styled(
+            &*state.symbol,
+            Style::default().fg(styles::BLUE).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    let max_w = area.width.saturating_sub(4) as usize;
+    let mut entry_idx: usize = 0;
+
+    // In-diff section
+    if !state.in_diff.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            format!(" In this diff ({})", state.in_diff.len()),
+            Style::default().fg(styles::CYAN).add_modifier(Modifier::BOLD),
+        )]));
+
+        for entry in &state.in_diff {
+            let is_selected = entry_idx == state.cursor && tab.panel_focus;
+            let loc = format!(" {}:{}", entry.file, entry.line_num);
+            let content = entry.line_content.trim();
+            let truncated = if content.chars().count() > max_w {
+                format!("{}…", content.chars().take(max_w.saturating_sub(1)).collect::<String>())
+            } else {
+                content.to_string()
+            };
+
+            let style = if is_selected {
+                Style::default().fg(styles::TEXT).bg(styles::PANEL)
+            } else {
+                Style::default().fg(styles::TEXT)
+            };
+            let loc_style = if is_selected {
+                Style::default().fg(styles::BLUE).bg(styles::PANEL).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(styles::BLUE)
+            };
+
+            lines.push(Line::from(vec![Span::styled(loc, loc_style)]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("   {}", truncated),
+                style,
+            )]));
+
+            entry_idx += 1;
+        }
+        lines.push(Line::from(""));
+    }
+
+    // External section
+    if !state.external.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            format!(" Other files ({})", state.external.len()),
+            Style::default().fg(styles::DIM).add_modifier(Modifier::BOLD),
+        )]));
+
+        for entry in &state.external {
+            let is_selected = entry_idx == state.cursor && tab.panel_focus;
+            let loc = format!(" {}:{}", entry.file, entry.line_num);
+            let content = entry.line_content.trim();
+            let truncated = if content.chars().count() > max_w {
+                format!("{}…", content.chars().take(max_w.saturating_sub(1)).collect::<String>())
+            } else {
+                content.to_string()
+            };
+
+            let style = if is_selected {
+                Style::default().fg(styles::DIM).bg(styles::PANEL)
+            } else {
+                Style::default().fg(styles::DIM)
+            };
+            let loc_style = if is_selected {
+                Style::default().fg(styles::MUTED).bg(styles::PANEL).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(styles::MUTED)
+            };
+
+            lines.push(Line::from(vec![Span::styled(loc, loc_style)]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("   {}", truncated),
+                style,
+            )]));
+
+            entry_idx += 1;
+        }
+    }
+
+    if state.in_diff.is_empty() && state.external.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            " No references found",
+            Style::default().fg(styles::MUTED),
+        )]));
     }
 }

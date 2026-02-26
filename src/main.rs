@@ -265,8 +265,8 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-        KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+        KeyCode::Char('k') | KeyCode::Down => app.overlay_next(),
+        KeyCode::Char('j') | KeyCode::Up => app.overlay_prev(),
         KeyCode::Enter => app.overlay_select()?,
         KeyCode::Backspace => app.overlay_go_up(),
         KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),

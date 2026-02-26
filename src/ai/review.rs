@@ -27,6 +27,7 @@ pub enum PanelContent {
     PrOverview,
     AiSummary,
     FileDetail,
+    SymbolRefs,
 }
 
 // ── .er-review.json ──

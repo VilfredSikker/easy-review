@@ -2,6 +2,7 @@ use crate::git::{DiffFile, LineType};
 
 /// Anchor data extracted from a comment for relocation matching
 pub struct CommentAnchor {
+    #[allow(dead_code)]
     pub file: String,
     pub hunk_index: Option<usize>,
     pub line_start: Option<usize>,
@@ -203,10 +204,25 @@ fn pass3_fuzzy(anchor: &CommentAnchor, diff_file: &DiffFile) -> Option<Relocatio
         }
     }
 
-    best.map(|(hunk_idx, new_line_start)| RelocationResult::Relocated {
-        new_hunk_index: hunk_idx,
-        new_line_start,
-    })
+    if let Some((best_hunk_idx, best_line)) = best {
+        // Proximity guard: a match that only barely meets the threshold is likely a false
+        // positive in files with repetitive structure (JSON, YAML, protobuf). If the best
+        // candidate is more than 50 lines away and only matched the minimum required context
+        // lines, treat it as Lost rather than silently attaching to the wrong location.
+        if let Some(original_line) = anchor.line_start {
+            let distance = (best_line as isize - original_line as isize).unsigned_abs();
+            if distance > 50 && best_score <= min_required {
+                return Some(RelocationResult::Lost);
+            }
+        }
+
+        Some(RelocationResult::Relocated {
+            new_hunk_index: best_hunk_idx,
+            new_line_start: best_line,
+        })
+    } else {
+        None
+    }
 }
 
 fn relocate_hunk_level(anchor: &CommentAnchor, diff_file: &DiffFile) -> RelocationResult {
@@ -477,5 +493,64 @@ mod tests {
         // Both should be Unchanged
         assert!(matches!(r1, RelocationResult::Unchanged));
         assert!(matches!(r2, RelocationResult::Unchanged));
+    }
+
+    #[test]
+    fn pass3_fuzzy_rejects_distant_weak_match() {
+        // A comment anchored near line 5 whose single context line ("  item: value") also
+        // appears at lines 11, 21, 31 … (every 10th line) in a repetitive YAML-like file.
+        // The deleted target content is gone so pass1/pass2 won't fire.
+        // The closest context match is at line 1 or 11 — both within 50 lines of line 5, so
+        // the proximity guard should NOT fire and the comment should be Relocated.
+        // This test validates that nearby weak matches still relocate, while the guard itself
+        // is exercised by the far-anchor variant below.
+        let mut lines = Vec::new();
+        for i in 0..100usize {
+            let content = if i % 10 == 0 {
+                "  item: value".to_string()
+            } else {
+                format!("  field{}: {}", i, i)
+            };
+            lines.push(ctx_line(&content, i + 1, i + 1));
+        }
+        let file = make_file(vec![make_hunk("@@ -1,100 +1,100 @@", lines)]);
+
+        // Anchor at line 5; content was deleted; single context line matches at line 1, 11, …
+        // Nearest match is line 1 (distance 4) or line 11 (distance 6) — both within 50.
+        let near_anchor = CommentAnchor {
+            file: "test.yaml".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(5),
+            line_content: "  DELETED_LINE".to_string(),
+            context_before: vec!["  item: value".to_string()],
+            context_after: vec![],
+            old_line_start: Some(5),
+            hunk_header: "@@ -1,100 +1,100 @@".to_string(),
+        };
+        let near_result = relocate_comment(&near_anchor, &file);
+        // Nearest context match is within 50 lines — should relocate, not be lost
+        assert!(
+            matches!(near_result, RelocationResult::Relocated { .. }),
+            "expected Relocated for near match but got Lost"
+        );
+
+        // Anchor at line 5 but context only matches at line 91 (distance 86 > 50).
+        // "  field90: 90" appears exactly once in the file, at index 90 (new_num = 91).
+        let far_anchor = CommentAnchor {
+            file: "test.yaml".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(5),
+            line_content: "  DELETED_LINE".to_string(),
+            context_before: vec!["  field90: 90".to_string()],
+            context_after: vec![],
+            old_line_start: Some(5),
+            hunk_header: "@@ -1,100 +1,100 @@".to_string(),
+        };
+        let far_result = relocate_comment(&far_anchor, &file);
+        // Single context match more than 50 lines away — proximity guard should mark as Lost
+        assert!(
+            matches!(far_result, RelocationResult::Lost),
+            "expected Lost for distant weak match but got Relocated"
+        );
     }
 }

@@ -337,7 +337,49 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
     let indicator_width: usize = 3;
     let subject_width = (area.width as usize).saturating_sub(indicator_width + 1).max(1);
 
-    let items: Vec<ListItem> = visible
+    // Calculate the visual height of each commit item (subject lines + author + separator)
+    let item_heights: Vec<usize> = visible
+        .iter()
+        .map(|(_, commit)| {
+            let merge_prefix = if commit.is_merge { "⊕ " } else { "" };
+            let full_subject = format!("{}{}", merge_prefix, commit.subject);
+            let subject_lines = word_wrap(&full_subject, subject_width).len().max(1);
+            subject_lines + 2 // author line + separator
+        })
+        .collect();
+
+    // Find which visual index corresponds to the selected commit
+    let selected_visual_idx = visible
+        .iter()
+        .position(|(i, _)| *i == selected_commit)
+        .unwrap_or(0);
+
+    let available_height = area.height.saturating_sub(2) as usize; // account for border/title
+
+    // Determine scroll_start: the first commit index to render, so selection stays in view
+    let height_before_selected: usize = item_heights[..selected_visual_idx].iter().sum();
+    let selected_height = item_heights.get(selected_visual_idx).copied().unwrap_or(3);
+
+    let scroll_start = if height_before_selected + selected_height > available_height {
+        // Selection would fall below the viewport — scroll down
+        let target = height_before_selected + selected_height - available_height;
+        let mut accumulated = 0;
+        let mut start = 0;
+        for (i, h) in item_heights.iter().enumerate() {
+            if accumulated >= target {
+                break;
+            }
+            accumulated += h;
+            start = i + 1;
+        }
+        start
+    } else {
+        0
+    };
+
+    let visible_from_scroll = &visible[scroll_start..];
+
+    let items: Vec<ListItem> = visible_from_scroll
         .iter()
         .flat_map(|(idx, commit)| {
             let is_selected = *idx == selected_commit;

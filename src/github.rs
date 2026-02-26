@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::process::Command;
 
 /// Parsed reference to a GitHub PR
@@ -362,12 +363,34 @@ pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64, repo_root: &str) -> Resu
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // --paginate may return concatenated JSON arrays like [...][...] — merge them
-    let fixed = stdout.replace("][", ",");
-    let comments: Vec<GitHubComment> = serde_json::from_str(&fixed)
-        .context("Failed to parse PR comments JSON")?;
+    // gh api --paginate concatenates JSON arrays: [...][...]
+    // Parse each chunk separately and merge
+    let all_comments: Vec<GitHubComment> = if stdout.contains("][") {
+        // Split paginated response into individual arrays
+        let mut results = Vec::new();
+        let mut depth = 0i32;
+        let mut start = 0;
+        for (i, ch) in stdout.char_indices() {
+            match ch {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Ok(mut batch) = serde_json::from_str::<Vec<GitHubComment>>(&stdout[start..=i]) {
+                            results.append(&mut batch);
+                        }
+                        start = i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        results
+    } else {
+        serde_json::from_str(&stdout)?
+    };
 
-    Ok(comments)
+    Ok(all_comments)
 }
 
 /// Push a new review comment to a PR
@@ -500,21 +523,21 @@ pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
     let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
     let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
 
-    let reviewers = v["reviews"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|r| {
-                    let login = r["author"]["login"].as_str()?;
-                    let state = r["state"].as_str().unwrap_or("PENDING");
-                    Some(ReviewerStatus {
-                        login: login.to_string(),
-                        state: state.to_string(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // Deduplicate reviewers by login, keeping the latest state
+    let reviewers: Vec<ReviewerStatus> = if let Some(reviews_arr) = v["reviews"].as_array() {
+        let mut reviewer_map: HashMap<String, String> = HashMap::new();
+        for r in reviews_arr {
+            if let Some(login) = r["author"]["login"].as_str() {
+                let state = r["state"].as_str().unwrap_or("PENDING").to_string();
+                reviewer_map.insert(login.to_string(), state);
+            }
+        }
+        reviewer_map.into_iter()
+            .map(|(login, state)| ReviewerStatus { login, state })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Fetch CI checks (separate call — may fail if no checks configured)
     let checks = gh_pr_checks_data(repo_root).unwrap_or_default();

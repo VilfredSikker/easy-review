@@ -15,8 +15,11 @@ pub struct CommitInfo {
     #[allow(dead_code)]
     pub date: String,
     pub relative_date: String,
+    #[allow(dead_code)]
     pub file_count: usize,
+    #[allow(dead_code)]
     pub adds: usize,
+    #[allow(dead_code)]
     pub dels: usize,
     pub is_merge: bool,
 }
@@ -480,7 +483,7 @@ fn reconstruct_hunk_patch(file_path: &str, hunk: &DiffHunk) -> String {
 /// Get commit log for the branch (relative to base), skipping `skip` commits.
 pub fn git_log_branch(base: &str, repo_root: &str, limit: usize, skip: usize) -> Result<Vec<CommitInfo>> {
     let range = format!("{}..HEAD", base);
-    let format_str = "--format=%H%n%h%n%s%n%an%n%aI%n%ar%n%P";
+    let format_str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
     let limit_str = format!("--max-count={}", limit);
     let skip_str = format!("--skip={}", skip);
 
@@ -505,47 +508,45 @@ pub fn git_log_branch(base: &str, repo_root: &str, limit: usize, skip: usize) ->
 }
 
 /// Parse the output of `git log --format=... --shortstat`
+///
+/// The format string uses `\x1e` (ASCII record separator) as the field delimiter,
+/// so each commit's metadata appears on one line regardless of subject content.
+/// `--shortstat` output follows on the next line(s), still newline-separated.
 fn parse_git_log(output: &str) -> Result<Vec<CommitInfo>> {
     let mut commits = Vec::new();
-    let lines: Vec<&str> = output.lines().collect();
-    let mut i = 0;
+    let mut lines = output.lines().peekable();
 
-    while i < lines.len() {
-        // Skip blank lines
-        if lines[i].trim().is_empty() {
-            i += 1;
+    while let Some(line) = lines.next() {
+        // Format lines are identified by the \x1e delimiter we injected
+        if !line.contains('\x1e') {
             continue;
         }
 
-        // Need at least 7 lines for a commit record (hash, short_hash, subject, author, date, relative_date, parents)
-        if i + 6 >= lines.len() {
-            break;
+        let parts: Vec<&str> = line.split('\x1e').collect();
+        if parts.len() < 7 {
+            continue;
         }
 
-        let hash = lines[i].trim().to_string();
-        let short_hash = lines[i + 1].trim().to_string();
-        let subject = lines[i + 2].trim().to_string();
-        let author = lines[i + 3].trim().to_string();
-        let date = lines[i + 4].trim().to_string();
-        let relative_date = lines[i + 5].trim().to_string();
-        let parents = lines[i + 6].trim().to_string();
+        let hash = parts[0].to_string();
+        let short_hash = parts[1].to_string();
+        let subject = parts[2].to_string();
+        let author = parts[3].to_string();
+        let date = parts[4].to_string();
+        let relative_date = parts[5].to_string();
+        let parents = parts[6];
         let is_merge = parents.split_whitespace().count() > 1;
 
-        i += 7;
-
-        // Parse the optional shortstat line (may be blank for empty commits)
-        let (file_count, adds, dels) = if i < lines.len() && !lines[i].trim().is_empty() && !is_hash_line(lines[i].trim()) {
-            let stats = parse_shortstat(lines[i]);
-            i += 1;
-            stats
+        // Parse the optional --shortstat line that follows (absent for empty commits)
+        let (file_count, adds, dels) = if let Some(next) = lines.peek() {
+            if !next.contains('\x1e') && !next.trim().is_empty() {
+                let stat_line = lines.next().unwrap();
+                parse_shortstat(stat_line)
+            } else {
+                (0, 0, 0)
+            }
         } else {
             (0, 0, 0)
         };
-
-        // Skip any trailing blank line
-        if i < lines.len() && lines[i].trim().is_empty() {
-            i += 1;
-        }
 
         commits.push(CommitInfo {
             hash,
@@ -562,11 +563,6 @@ fn parse_git_log(output: &str) -> Result<Vec<CommitInfo>> {
     }
 
     Ok(commits)
-}
-
-/// Check if a line looks like a git hash (40 hex chars)
-fn is_hash_line(s: &str) -> bool {
-    s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Parse a --shortstat line like " 3 files changed, 45 insertions(+), 12 deletions(-)"
@@ -1015,16 +1011,7 @@ mod tests {
 
     #[test]
     fn parse_git_log_single_commit() {
-        let output = "\
-abc1234def5678901234567890abcdef12345678
-abc1234
-Fix token expiry bug
-Will
-2026-02-25T10:00:00+01:00
-2 hours ago
-parenthash1234567890abcdef12345678901234
- 3 files changed, 45 insertions(+), 12 deletions(-)
-";
+        let output = "abc1234def5678901234567890abcdef12345678\x1eabc1234\x1eFix token expiry bug\x1eWill\x1e2026-02-25T10:00:00+01:00\x1e2 hours ago\x1eparenthash1234567890abcdef12345678901234\n 3 files changed, 45 insertions(+), 12 deletions(-)\n";
         let commits = parse_git_log(output).unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].short_hash, "abc1234");
@@ -1039,16 +1026,7 @@ parenthash1234567890abcdef12345678901234
 
     #[test]
     fn parse_git_log_merge_commit_has_two_parents() {
-        let output = "\
-abc1234def5678901234567890abcdef12345678
-abc1234
-Merge branch 'feature'
-Will
-2026-02-25T10:00:00+01:00
-1 day ago
-parent1hash234567890abcdef1234567890123 parent2hash234567890abcdef1234567890123
- 5 files changed, 100 insertions(+), 50 deletions(-)
-";
+        let output = "abc1234def5678901234567890abcdef12345678\x1eabc1234\x1eMerge branch 'feature'\x1eWill\x1e2026-02-25T10:00:00+01:00\x1e1 day ago\x1eparent1hash234567890abcdef1234567890123 parent2hash234567890abcdef1234567890123\n 5 files changed, 100 insertions(+), 50 deletions(-)\n";
         let commits = parse_git_log(output).unwrap();
         assert_eq!(commits.len(), 1);
         assert!(commits[0].is_merge);
@@ -1062,45 +1040,30 @@ parent1hash234567890abcdef1234567890123 parent2hash234567890abcdef1234567890123
 
     #[test]
     fn parse_git_log_multiple_commits() {
-        let output = "\
-aaaa1234567890abcdef1234567890abcdef1234
-aaaa123
-First commit
-Alice
-2026-02-25T10:00:00+01:00
-1 hour ago
-parenthash1234567890abcdef12345678901234
- 1 file changed, 10 insertions(+)
-
-bbbb1234567890abcdef1234567890abcdef1234
-bbbb123
-Second commit
-Bob
-2026-02-24T10:00:00+01:00
-1 day ago
-parenthash2234567890abcdef12345678901234
- 2 files changed, 20 insertions(+), 5 deletions(-)
-";
+        let output = concat!(
+            "aaaa1234567890abcdef1234567890abcdef1234\x1eaaaa123\x1eFirst commit\x1eAlice\x1e2026-02-25T10:00:00+01:00\x1e1 hour ago\x1eparenthash1234567890abcdef12345678901234\n",
+            " 1 file changed, 10 insertions(+)\n",
+            "\n",
+            "bbbb1234567890abcdef1234567890abcdef1234\x1ebbbb123\x1eSecond commit\x1eBob\x1e2026-02-24T10:00:00+01:00\x1e1 day ago\x1eparenthash2234567890abcdef12345678901234\n",
+            " 2 files changed, 20 insertions(+), 5 deletions(-)\n",
+        );
         let commits = parse_git_log(output).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].short_hash, "aaaa123");
         assert_eq!(commits[1].short_hash, "bbbb123");
     }
 
-    // ── is_hash_line ──
-
     #[test]
-    fn is_hash_line_valid_40_hex_chars() {
-        assert!(is_hash_line("abc1234def5678901234567890abcdef12345678"));
-    }
-
-    #[test]
-    fn is_hash_line_too_short() {
-        assert!(!is_hash_line("abc123"));
-    }
-
-    #[test]
-    fn is_hash_line_non_hex() {
-        assert!(!is_hash_line("xyz1234def5678901234567890abcdef12345678"));
+    fn parse_git_log_subject_with_special_chars() {
+        // With \x1e delimiters, subjects containing characters that would previously
+        // confuse a line-count parser (colons, parentheses, numbers) are handled safely.
+        // git's %s outputs only the first line of the subject, so embedded newlines
+        // cannot occur in real output.
+        let output = "abc123def5678901234567890abcdef12345678\x1eabc123\x1efix(auth): handle 401 errors\x1eAuthor Name\x1e2025-01-01T00:00:00Z\x1e1 hour ago\x1edef456\n 1 file changed, 5 insertions(+)\n";
+        let commits = parse_git_log(output).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].subject, "fix(auth): handle 401 errors");
+        assert_eq!(commits[0].author, "Author Name");
+        assert_eq!(commits[0].adds, 5);
     }
 }

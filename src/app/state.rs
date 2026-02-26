@@ -349,6 +349,28 @@ pub struct TabState {
 
     /// Raw diff string kept for on-demand parsing (only in lazy mode)
     raw_diff: Option<String>,
+
+    // ── Symbol references ──
+
+    /// Symbol reference lookup state (populated via panel action)
+    pub symbol_refs: Option<SymbolRefsState>,
+}
+
+/// A single reference to a symbol (file + line)
+#[derive(Debug, Clone)]
+pub struct SymbolRefEntry {
+    pub file: String,
+    pub line_num: usize,
+    pub line_content: String,
+}
+
+/// State for the symbol references panel
+#[derive(Debug, Clone)]
+pub struct SymbolRefsState {
+    pub symbol: String,
+    pub in_diff: Vec<SymbolRefEntry>,
+    pub external: Vec<SymbolRefEntry>,
+    pub cursor: usize,
 }
 
 /// Precomputed cumulative line offsets for each hunk in the selected file
@@ -475,6 +497,7 @@ impl TabState {
             lazy_mode: false,
             file_headers: Vec::new(),
             raw_diff: None,
+            symbol_refs: None,
         };
 
         tab.refresh_diff()?;
@@ -545,6 +568,7 @@ impl TabState {
             lazy_mode: false,
             file_headers: Vec::new(),
             raw_diff: None,
+            symbol_refs: None,
         }
     }
 
@@ -967,7 +991,14 @@ impl TabState {
                     None
                 }
             }
-            Some(PanelContent::PrOverview) => None,
+            Some(PanelContent::PrOverview) => {
+                if self.symbol_refs.is_some() {
+                    Some(PanelContent::SymbolRefs)
+                } else {
+                    None
+                }
+            }
+            Some(PanelContent::SymbolRefs) => None,
         };
         self.panel_scroll = 0;
         if self.panel.is_none() {
@@ -2976,11 +3007,10 @@ impl App {
             },
         };
 
-        // If diff hash changed, start fresh for local comments only
+        // If diff hash changed, update it but preserve existing comments
+        // (the relocation system handles comment drift)
         if gh_comments.diff_hash != diff_hash {
             gh_comments.diff_hash = diff_hash;
-            // Keep synced GitHub comments, clear local-only ones
-            gh_comments.comments.retain(|c| c.source == "github");
         }
 
         let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -3254,6 +3284,7 @@ impl App {
                 tab.selection_anchor = None;
                 tab.diff_scroll = 0;
                 tab.h_scroll = 0;
+                tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
             }
         } else if let Some(hi) = hunk_index {
@@ -3332,6 +3363,7 @@ impl App {
                 tab.selection_anchor = None;
                 tab.diff_scroll = 0;
                 tab.h_scroll = 0;
+                tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
             }
         } else if let Some(hi) = hunk_index {
@@ -3464,6 +3496,8 @@ impl App {
                 tab.current_line = None;
                 tab.diff_scroll = 0;
                 tab.h_scroll = 0;
+                tab.ensure_file_parsed();
+                tab.rebuild_hunk_offsets();
                 tab.panel = Some(PanelContent::FileDetail);
                 self.notify(&format!("Jumped to: {}", path));
             } else {
@@ -3801,6 +3835,7 @@ mod tests {
             lazy_mode: false,
             file_headers: Vec::new(),
             raw_diff: None,
+            symbol_refs: None,
         }
     }
 
@@ -4744,6 +4779,49 @@ mod tests {
         let result = cache.get("hash1").unwrap();
         assert_eq!(result[0].path, "v2.rs");
         assert!(cache.get("hash2").is_some());
+    }
+
+    // ── DiffCache basic behavior ──
+
+    #[test]
+    fn diff_cache_evicts_oldest_at_capacity() {
+        let mut cache = DiffCache::new(2);
+        cache.insert("a".to_string(), vec![]);
+        cache.insert("b".to_string(), vec![]);
+        cache.insert("c".to_string(), vec![]); // should evict "a"
+        assert!(cache.get("a").is_none());
+        assert!(cache.get("b").is_some());
+        assert!(cache.get("c").is_some());
+    }
+
+    #[test]
+    fn diff_cache_get_promotes_to_mru() {
+        let mut cache = DiffCache::new(2);
+        cache.insert("a".to_string(), vec![]);
+        cache.insert("b".to_string(), vec![]);
+        cache.get("a"); // promote "a" to MRU
+        cache.insert("c".to_string(), vec![]); // should evict "b", not "a"
+        assert!(cache.get("a").is_some());
+        assert!(cache.get("b").is_none());
+        assert!(cache.get("c").is_some());
+    }
+
+    #[test]
+    fn diff_cache_miss_returns_none() {
+        let mut cache = DiffCache::new(2);
+        assert!(cache.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn diff_cache_insert_existing_key_replaces() {
+        let mut cache = DiffCache::new(2);
+        cache.insert("a".to_string(), vec![make_file("test.rs", vec![], 1, 0)]);
+        cache.insert("a".to_string(), vec![
+            make_file("test.rs", vec![], 1, 0),
+            make_file("other.rs", vec![], 2, 0),
+        ]);
+        let result = cache.get("a").unwrap();
+        assert_eq!(result.len(), 2); // updated, not original
     }
 
     // ── DiffCache MRU promotion ──
