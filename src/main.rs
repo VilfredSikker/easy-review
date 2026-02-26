@@ -8,7 +8,7 @@ mod watch;
 
 use anyhow::Result;
 use app::{App, ConfirmAction, DiffMode, InputMode};
-use crate::ai::PanelContent;
+use crate::ai::{PanelContent, ReviewFocus};
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -393,9 +393,27 @@ fn handle_normal_input(
         _ => {}
     }
 
-    // ── AiSummary panel focused: route remaining keys to dedicated handler ──
-    if app.tab().panel_focus && app.tab().panel == Some(PanelContent::AiSummary) {
-        return handle_ai_review_input(app, key);
+    // ── Panel focused: route navigation keys to the appropriate panel handler ──
+    if app.tab().panel_focus && app.tab().panel.is_some() {
+        if app.tab().panel == Some(PanelContent::AiSummary) {
+            return handle_ai_review_input(app, key);
+        }
+        // FileDetail / PrOverview panels: route j/k and arrow keys to panel scrolling
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                app.tab_mut().panel_scroll_down(1);
+                return Ok(());
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                app.tab_mut().panel_scroll_up(1);
+                return Ok(());
+            }
+            KeyCode::Esc => {
+                app.tab_mut().panel_focus = false;
+                return Ok(());
+            }
+            _ => {}
+        }
     }
 
     // ── History mode: route to dedicated handler ──
@@ -473,15 +491,35 @@ fn handle_normal_input(
             app.tab_mut().h_scroll = 0;
         }
 
-        // Scroll
+        // Scroll — routes to panel when panel is focused
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.tab_mut().scroll_down(10);
+            if app.tab().panel_focus && app.tab().panel.is_some() {
+                app.tab_mut().panel_scroll_down(10);
+            } else {
+                app.tab_mut().scroll_down(10);
+            }
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.tab_mut().scroll_up(10);
+            if app.tab().panel_focus && app.tab().panel.is_some() {
+                app.tab_mut().panel_scroll_up(10);
+            } else {
+                app.tab_mut().scroll_up(10);
+            }
         }
-        KeyCode::PageDown => app.tab_mut().scroll_down(20),
-        KeyCode::PageUp => app.tab_mut().scroll_up(20),
+        KeyCode::PageDown => {
+            if app.tab().panel_focus && app.tab().panel.is_some() {
+                app.tab_mut().panel_scroll_down(20);
+            } else {
+                app.tab_mut().scroll_down(20);
+            }
+        }
+        KeyCode::PageUp => {
+            if app.tab().panel_focus && app.tab().panel.is_some() {
+                app.tab_mut().panel_scroll_up(20);
+            } else {
+                app.tab_mut().scroll_up(20);
+            }
+        }
 
         // Search
         KeyCode::Char('/') => {
@@ -648,13 +686,14 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         // Switch focus between left/right columns
-        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
-            ai_review_reset_outgoing_scroll(app);
+        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right
+        | KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
             app.tab_mut().review_toggle_focus();
-        }
-        KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
-            ai_review_reset_outgoing_scroll(app);
-            app.tab_mut().review_toggle_focus();
+            let (files_offset, checklist_offset) = app.tab().ai_summary_section_offsets();
+            app.tab_mut().panel_scroll = match app.tab().review_focus {
+                ReviewFocus::Files => files_offset,
+                ReviewFocus::Checklist => checklist_offset,
+            };
         }
 
         // Toggle checklist item
@@ -680,7 +719,6 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
         // Esc closes panel focus
         KeyCode::Esc => {
             app.tab_mut().panel_focus = false;
-            app.tab_mut().diff_scroll = 0;
         }
 
         _ => {}
@@ -750,28 +788,13 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Reset the outgoing column's scroll when switching focus in AiSummary panel
-fn ai_review_reset_outgoing_scroll(app: &mut App) {
-    use crate::ai::ReviewFocus;
-    let tab = app.tab_mut();
-    match tab.review_focus {
-        ReviewFocus::Files => tab.diff_scroll = 0,
-        ReviewFocus::Checklist => tab.ai_panel_scroll = 0,
-    }
-}
-
 /// Scroll the focused column in AiSummary panel
 fn ai_review_scroll(app: &mut App, amount: u16, down: bool) {
-    use crate::ai::ReviewFocus;
     let tab = app.tab_mut();
-    let scroll = match tab.review_focus {
-        ReviewFocus::Files => &mut tab.diff_scroll,
-        ReviewFocus::Checklist => &mut tab.ai_panel_scroll,
-    };
     if down {
-        *scroll = scroll.saturating_add(amount);
+        tab.panel_scroll = tab.panel_scroll.saturating_add(amount);
     } else {
-        *scroll = scroll.saturating_sub(amount);
+        tab.panel_scroll = tab.panel_scroll.saturating_sub(amount);
     }
 }
 

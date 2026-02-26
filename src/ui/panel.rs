@@ -64,9 +64,15 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
         PanelContent::PrOverview => render_pr_overview(&mut lines),
     }
 
+    let border_style = if tab.panel_focus {
+        Style::default().fg(styles::PURPLE)
+    } else {
+        Style::default().fg(styles::BORDER)
+    };
+
     let block = Block::default()
         .borders(Borders::LEFT)
-        .border_style(Style::default().fg(styles::BORDER))
+        .border_style(border_style)
         .style(Style::default().bg(styles::SURFACE))
         .padding(Padding::new(0, 1, 0, 0));
 

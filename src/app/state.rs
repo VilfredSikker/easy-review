@@ -723,6 +723,57 @@ impl TabState {
         self.review_cursor = 0;
     }
 
+    /// Estimate the panel_scroll value needed to show the start of each AiSummary section.
+    /// Returns (files_section_line, checklist_section_line).
+    /// Must mirror the line-building logic in render_ai_summary() in ui/panel.rs.
+    pub fn ai_summary_section_offsets(&self) -> (u16, u16) {
+        let mut line: u16 = 0;
+
+        // Title bar + separator (added by render_panel before content)
+        line += 2;
+
+        // "AI Review Summary" header + blank
+        line += 2;
+
+        // Summary content
+        if let Some(ref summary) = self.ai.summary {
+            for text_line in summary.lines() {
+                if text_line.is_empty() || text_line.starts_with('#') {
+                    line += 1;
+                } else {
+                    // Approximate word_wrap: each ~70 chars = 1 line (rough estimate)
+                    let chars = text_line.len();
+                    line += ((chars / 70) + 1) as u16;
+                }
+            }
+        } else {
+            line += 1; // "No .er-summary.md found"
+        }
+
+        line += 1; // blank after summary
+
+        let files_start = line;
+
+        // "File Risk Overview" header + blank
+        line += 2;
+
+        // File entries
+        if let Some(ref review) = self.ai.review {
+            line += review.files.len() as u16;
+            if self.ai.total_findings() > 0 {
+                line += 2; // total findings + blank
+            }
+        } else {
+            line += 1; // "No .er-review.json"
+        }
+
+        line += 1; // blank
+
+        let checklist_start = line;
+
+        (files_start, checklist_start)
+    }
+
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
     /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
@@ -1062,6 +1113,14 @@ impl TabState {
     pub fn scroll_up(&mut self, amount: u16) {
         self.diff_scroll = self.diff_scroll.saturating_sub(amount);
         self.sync_cursor_to_scroll();
+    }
+
+    pub fn panel_scroll_down(&mut self, amount: u16) {
+        self.panel_scroll = self.panel_scroll.saturating_add(amount);
+    }
+
+    pub fn panel_scroll_up(&mut self, amount: u16) {
+        self.panel_scroll = self.panel_scroll.saturating_sub(amount);
     }
 
     /// Move the cursor (current_hunk + current_line) to match the current
@@ -2804,6 +2863,8 @@ impl App {
             } else {
                 self.notify(&format!("File not in diff: {}", path));
             }
+        } else {
+            self.notify("No file associated with this item");
         }
     }
 
