@@ -444,7 +444,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 }
 
 /// Render multi-file commit diff (History mode)
-fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
+fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let tab = app.tab();
     let history = match tab.history.as_ref() {
         Some(h) => h,
