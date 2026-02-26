@@ -155,9 +155,6 @@ pub fn stale_style() -> Style {
     Style::default().fg(STALE)
 }
 
-/// Selection highlight background (for shift+arrow line selection)
-pub const SELECTION_BG: Color = Color::Rgb(28, 36, 52);
-
 // ── Watched file colors ──
 
 /// Watched file text color (cool blue to distinguish from diff files)
