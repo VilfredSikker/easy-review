@@ -5,6 +5,22 @@ use std::path::Path;
 use std::process::Command;
 use std::time::SystemTime;
 
+/// Metadata for a single commit (used in History mode)
+#[derive(Debug, Clone)]
+pub struct CommitInfo {
+    pub hash: String,
+    pub short_hash: String,
+    pub subject: String,
+    pub author: String,
+    #[allow(dead_code)]
+    pub date: String,
+    pub relative_date: String,
+    pub file_count: usize,
+    pub adds: usize,
+    pub dels: usize,
+    pub is_merge: bool,
+}
+
 /// A git worktree entry
 #[derive(Debug, Clone)]
 pub struct Worktree {
@@ -459,6 +475,163 @@ fn reconstruct_hunk_patch(file_path: &str, hunk: &DiffHunk) -> String {
     patch
 }
 
+// ── History (commit log + commit diffs) ──
+
+/// Get commit log for the branch (relative to base), skipping `skip` commits.
+pub fn git_log_branch(base: &str, repo_root: &str, limit: usize, skip: usize) -> Result<Vec<CommitInfo>> {
+    let range = format!("{}..HEAD", base);
+    let format_str = "--format=%H%n%h%n%s%n%an%n%aI%n%ar%n%P";
+    let limit_str = format!("--max-count={}", limit);
+    let skip_str = format!("--skip={}", skip);
+
+    let output = Command::new("git")
+        .args(["log", &range, &limit_str, &skip_str, format_str, "--shortstat"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git log")?;
+
+    if !output.status.success() {
+        // Might be on a detached HEAD or base doesn't exist — try without range
+        let output = Command::new("git")
+            .args(["log", &limit_str, &skip_str, format_str, "--shortstat"])
+            .current_dir(repo_root)
+            .output()
+            .context("Failed to run git log")?;
+
+        return parse_git_log(&String::from_utf8_lossy(&output.stdout));
+    }
+
+    parse_git_log(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse the output of `git log --format=... --shortstat`
+fn parse_git_log(output: &str) -> Result<Vec<CommitInfo>> {
+    let mut commits = Vec::new();
+    let lines: Vec<&str> = output.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        // Skip blank lines
+        if lines[i].trim().is_empty() {
+            i += 1;
+            continue;
+        }
+
+        // Need at least 7 lines for a commit record (hash, short_hash, subject, author, date, relative_date, parents)
+        if i + 6 >= lines.len() {
+            break;
+        }
+
+        let hash = lines[i].trim().to_string();
+        let short_hash = lines[i + 1].trim().to_string();
+        let subject = lines[i + 2].trim().to_string();
+        let author = lines[i + 3].trim().to_string();
+        let date = lines[i + 4].trim().to_string();
+        let relative_date = lines[i + 5].trim().to_string();
+        let parents = lines[i + 6].trim().to_string();
+        let is_merge = parents.split_whitespace().count() > 1;
+
+        i += 7;
+
+        // Parse the optional shortstat line (may be blank for empty commits)
+        let (file_count, adds, dels) = if i < lines.len() && !lines[i].trim().is_empty() && !is_hash_line(lines[i].trim()) {
+            let stats = parse_shortstat(lines[i]);
+            i += 1;
+            stats
+        } else {
+            (0, 0, 0)
+        };
+
+        // Skip any trailing blank line
+        if i < lines.len() && lines[i].trim().is_empty() {
+            i += 1;
+        }
+
+        commits.push(CommitInfo {
+            hash,
+            short_hash,
+            subject,
+            author,
+            date,
+            relative_date,
+            file_count,
+            adds,
+            dels,
+            is_merge,
+        });
+    }
+
+    Ok(commits)
+}
+
+/// Check if a line looks like a git hash (40 hex chars)
+fn is_hash_line(s: &str) -> bool {
+    s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Parse a --shortstat line like " 3 files changed, 45 insertions(+), 12 deletions(-)"
+fn parse_shortstat(line: &str) -> (usize, usize, usize) {
+    let mut file_count = 0;
+    let mut adds = 0;
+    let mut dels = 0;
+
+    let parts: Vec<&str> = line.split(',').collect();
+    for part in parts {
+        let trimmed = part.trim();
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        if tokens.len() >= 2 {
+            if let Ok(n) = tokens[0].parse::<usize>() {
+                if trimmed.contains("file") {
+                    file_count = n;
+                } else if trimmed.contains("insertion") {
+                    adds = n;
+                } else if trimmed.contains("deletion") {
+                    dels = n;
+                }
+            }
+        }
+    }
+
+    (file_count, adds, dels)
+}
+
+/// Get the diff for a single commit, handling merge commits and root commits
+pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String> {
+    // Try diff against first parent
+    let output = Command::new("git")
+        .args([
+            "diff",
+            &format!("{}^..{}", hash, hash),
+            "--unified=3",
+            "--no-color",
+            "--no-ext-diff",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git diff for commit")?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+
+    // Fallback: might be the initial commit (no parent) — use diff-tree --root
+    let output = Command::new("git")
+        .args([
+            "diff-tree",
+            "-p",
+            "--root",
+            "--unified=3",
+            "--no-color",
+            "--no-ext-diff",
+            hash,
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git diff-tree for root commit")?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 // ── Watched Files ──
 
 /// A git-ignored file opted into visibility via .er-config.toml
@@ -799,5 +972,135 @@ mod tests {
         let upstream = "origin/user/feature/sub-task";
         let branch = upstream.find('/').map(|i| &upstream[i + 1..]).unwrap_or(upstream);
         assert_eq!(branch, "user/feature/sub-task");
+    }
+
+    // ── parse_shortstat ──
+
+    #[test]
+    fn parse_shortstat_typical_output() {
+        let (files, adds, dels) =
+            parse_shortstat(" 3 files changed, 45 insertions(+), 12 deletions(-)");
+        assert_eq!(files, 3);
+        assert_eq!(adds, 45);
+        assert_eq!(dels, 12);
+    }
+
+    #[test]
+    fn parse_shortstat_only_insertions() {
+        let (files, adds, dels) =
+            parse_shortstat(" 1 file changed, 10 insertions(+)");
+        assert_eq!(files, 1);
+        assert_eq!(adds, 10);
+        assert_eq!(dels, 0);
+    }
+
+    #[test]
+    fn parse_shortstat_only_deletions() {
+        let (files, adds, dels) =
+            parse_shortstat(" 2 files changed, 5 deletions(-)");
+        assert_eq!(files, 2);
+        assert_eq!(adds, 0);
+        assert_eq!(dels, 5);
+    }
+
+    #[test]
+    fn parse_shortstat_empty_returns_zeros() {
+        let (files, adds, dels) = parse_shortstat("");
+        assert_eq!(files, 0);
+        assert_eq!(adds, 0);
+        assert_eq!(dels, 0);
+    }
+
+    // ── parse_git_log ──
+
+    #[test]
+    fn parse_git_log_single_commit() {
+        let output = "\
+abc1234def5678901234567890abcdef12345678
+abc1234
+Fix token expiry bug
+Will
+2026-02-25T10:00:00+01:00
+2 hours ago
+parenthash1234567890abcdef12345678901234
+ 3 files changed, 45 insertions(+), 12 deletions(-)
+";
+        let commits = parse_git_log(output).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].short_hash, "abc1234");
+        assert_eq!(commits[0].subject, "Fix token expiry bug");
+        assert_eq!(commits[0].author, "Will");
+        assert_eq!(commits[0].relative_date, "2 hours ago");
+        assert_eq!(commits[0].file_count, 3);
+        assert_eq!(commits[0].adds, 45);
+        assert_eq!(commits[0].dels, 12);
+        assert!(!commits[0].is_merge);
+    }
+
+    #[test]
+    fn parse_git_log_merge_commit_has_two_parents() {
+        let output = "\
+abc1234def5678901234567890abcdef12345678
+abc1234
+Merge branch 'feature'
+Will
+2026-02-25T10:00:00+01:00
+1 day ago
+parent1hash234567890abcdef1234567890123 parent2hash234567890abcdef1234567890123
+ 5 files changed, 100 insertions(+), 50 deletions(-)
+";
+        let commits = parse_git_log(output).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert!(commits[0].is_merge);
+    }
+
+    #[test]
+    fn parse_git_log_empty_input() {
+        let commits = parse_git_log("").unwrap();
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn parse_git_log_multiple_commits() {
+        let output = "\
+aaaa1234567890abcdef1234567890abcdef1234
+aaaa123
+First commit
+Alice
+2026-02-25T10:00:00+01:00
+1 hour ago
+parenthash1234567890abcdef12345678901234
+ 1 file changed, 10 insertions(+)
+
+bbbb1234567890abcdef1234567890abcdef1234
+bbbb123
+Second commit
+Bob
+2026-02-24T10:00:00+01:00
+1 day ago
+parenthash2234567890abcdef12345678901234
+ 2 files changed, 20 insertions(+), 5 deletions(-)
+";
+        let commits = parse_git_log(output).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].short_hash, "aaaa123");
+        assert_eq!(commits[1].short_hash, "bbbb123");
+    }
+
+    // ── is_hash_line ──
+
+    #[test]
+    fn is_hash_line_valid_40_hex_chars() {
+        assert!(is_hash_line("abc1234def5678901234567890abcdef12345678"));
+    }
+
+    #[test]
+    fn is_hash_line_too_short() {
+        assert!(!is_hash_line("abc123"));
+    }
+
+    #[test]
+    fn is_hash_line_non_hex() {
+        assert!(!is_hash_line("xyz1234def5678901234567890abcdef12345678"));
     }
 }

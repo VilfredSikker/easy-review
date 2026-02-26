@@ -21,6 +21,12 @@ const LARGE_FILE_WARNING_LINES: usize = 2000;
 pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let tab = app.tab();
 
+    // History mode: render multi-file commit diff
+    if tab.mode == DiffMode::History {
+        render_history_diff(f, area, app, hl);
+        return;
+    }
+
     // Check if a watched file is selected
     if let Some(watched) = tab.selected_watched_file() {
         render_watched(f, area, app, &watched.path.clone(), watched.size);
@@ -278,6 +284,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         hunk.new_count,
                     )
                 }
+                DiffMode::History => vec![], // AI findings not shown in History mode
             };
             for finding in &findings {
                 let severity_style = if file_stale {
@@ -434,6 +441,222 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         )));
         f.render_widget(indicator, indicator_area);
     }
+}
+
+/// Render multi-file commit diff (History mode)
+fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &Highlighter) {
+    let tab = app.tab();
+    let history = match tab.history.as_ref() {
+        Some(h) => h,
+        None => {
+            render_history_empty(f, area, "No history available");
+            return;
+        }
+    };
+
+    if history.commits.is_empty() {
+        render_history_empty(f, area, "No commits ahead of base branch");
+        return;
+    }
+
+    if history.commit_files.is_empty() {
+        let commit = &history.commits[history.selected_commit];
+        render_history_empty(f, area, &format!("Empty commit: {}", commit.short_hash));
+        return;
+    }
+
+    let commit = &history.commits[history.selected_commit];
+    let title = format!(" {} · {} ", commit.short_hash, commit.subject);
+    let total_files = history.commit_files.len();
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Render each file as a section
+    for (file_idx, file) in history.commit_files.iter().enumerate() {
+        let is_current_file = file_idx == history.selected_file;
+
+        // File header
+        let file_header_bg = if is_current_file {
+            styles::HUNK_BG
+        } else {
+            styles::BG
+        };
+
+        let mut header_spans = vec![
+            Span::styled(
+                if is_current_file { " ▶ " } else { "   " },
+                ratatui::style::Style::default()
+                    .fg(if is_current_file { styles::CYAN } else { styles::DIM })
+                    .bg(file_header_bg),
+            ),
+            Span::styled(
+                format!("{} ", file.status.symbol()),
+                match &file.status {
+                    crate::git::FileStatus::Added => ratatui::style::Style::default().fg(styles::GREEN).bg(file_header_bg),
+                    crate::git::FileStatus::Deleted => ratatui::style::Style::default().fg(styles::RED).bg(file_header_bg),
+                    _ => ratatui::style::Style::default().fg(styles::YELLOW).bg(file_header_bg),
+                },
+            ),
+            Span::styled(
+                &file.path,
+                ratatui::style::Style::default()
+                    .fg(if is_current_file { styles::BRIGHT } else { styles::TEXT })
+                    .bg(file_header_bg),
+            ),
+            Span::styled(
+                format!("  +{} -{}", file.adds, file.dels),
+                ratatui::style::Style::default().fg(styles::DIM).bg(file_header_bg),
+            ),
+        ];
+
+        // Pad the rest of the file header line
+        let header_len: usize = header_spans.iter().map(|s| s.content.chars().count()).sum();
+        let remaining = (area.width as usize).saturating_sub(header_len);
+        header_spans.push(Span::styled(
+            " ".repeat(remaining),
+            ratatui::style::Style::default().bg(file_header_bg),
+        ));
+
+        lines.push(Line::from(header_spans));
+        lines.push(Line::from(""));
+
+        // Render hunks for this file
+        for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+            let is_current_hunk = is_current_file && hunk_idx == history.current_hunk;
+
+            // Hunk header
+            let marker = if is_current_hunk { "▶" } else { " " };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", marker),
+                    if is_current_hunk {
+                        ratatui::style::Style::default().fg(styles::CYAN).bg(styles::HUNK_BG)
+                    } else {
+                        ratatui::style::Style::default().fg(styles::DIM).bg(styles::HUNK_BG)
+                    },
+                ),
+                Span::styled(&hunk.header, styles::hunk_header_style()),
+            ]).style(styles::hunk_header_style()));
+
+            // Hunk lines
+            for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+                let is_selected_line = is_current_hunk
+                    && history.current_line == Some(line_idx);
+
+                let old_num = diff_line
+                    .old_num
+                    .map(|n| format!("{:>4}", n))
+                    .unwrap_or_else(|| "    ".to_string());
+                let new_num = diff_line
+                    .new_num
+                    .map(|n| format!("{:>4}", n))
+                    .unwrap_or_else(|| "    ".to_string());
+
+                let (prefix, base_style) = if is_selected_line {
+                    match diff_line.line_type {
+                        LineType::Add => ("+", styles::line_cursor_add()),
+                        LineType::Delete => ("-", styles::line_cursor_del()),
+                        LineType::Context => (" ", styles::line_cursor()),
+                    }
+                } else {
+                    match diff_line.line_type {
+                        LineType::Add => ("+", styles::add_style()),
+                        LineType::Delete => ("-", styles::del_style()),
+                        LineType::Context => (" ", styles::default_style()),
+                    }
+                };
+
+                let gutter_style = if is_selected_line {
+                    ratatui::style::Style::default().fg(styles::BRIGHT).bg(styles::LINE_CURSOR_BG)
+                } else {
+                    match diff_line.line_type {
+                        LineType::Add => ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG),
+                        LineType::Delete => ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG),
+                        LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                    }
+                };
+
+                let mut spans = vec![
+                    Span::styled(format!("{} {} │", old_num, new_num), gutter_style),
+                    Span::styled(prefix, base_style),
+                ];
+
+                if diff_line.content.is_empty() {
+                    spans.push(Span::styled("", base_style));
+                } else {
+                    let highlighted = hl.highlight_line(&diff_line.content, &file.path, base_style);
+                    spans.extend(highlighted);
+                }
+
+                lines.push(Line::from(spans).style(base_style));
+            }
+
+            // Blank line between hunks
+            lines.push(Line::from(""));
+        }
+    }
+
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            ratatui::style::Style::default().fg(styles::BRIGHT),
+        ))
+        .title_position(ratatui::widgets::block::Position::Top)
+        .title_alignment(ratatui::layout::Alignment::Left)
+        .borders(Borders::NONE)
+        .style(ratatui::style::Style::default().bg(styles::BG))
+        .padding(Padding::new(0, 1, 0, 0));
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((history.diff_scroll, history.h_scroll));
+
+    f.render_widget(paragraph, area);
+
+    // File indicator overlay in top-right corner
+    if total_files > 0 {
+        let indicator_text = format!(
+            "File {}/{}",
+            history.selected_file + 1,
+            total_files
+        );
+        let indicator_width = indicator_text.len() + 3;
+        let indicator_area = Rect {
+            x: area.x + area.width.saturating_sub(indicator_width as u16 + 1),
+            y: area.y,
+            width: indicator_width as u16,
+            height: 1,
+        };
+        let indicator = Paragraph::new(Line::from(Span::styled(
+            indicator_text,
+            ratatui::style::Style::default().fg(styles::MUTED),
+        )));
+        f.render_widget(indicator, indicator_area);
+    }
+}
+
+/// Render empty state for history mode
+fn render_history_empty(f: &mut Frame, area: Rect, message: &str) {
+    let block = Block::default()
+        .borders(Borders::NONE)
+        .style(ratatui::style::Style::default().bg(styles::BG));
+
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {}", message),
+            ratatui::style::Style::default().fg(styles::MUTED),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Switch modes with [1] [2] [3]",
+            ratatui::style::Style::default().fg(styles::DIM),
+        )),
+    ])
+    .block(block);
+
+    f.render_widget(text, area);
 }
 
 /// Render a compacted file summary

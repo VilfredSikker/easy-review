@@ -1,8 +1,8 @@
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, WatchedConfig};
-use crate::git::{self, DiffFile, DiffFileHeader, CompactionConfig, WatchedFile, Worktree};
+use crate::git::{self, CommitInfo, DiffFile, DiffFileHeader, CompactionConfig, WatchedFile, Worktree};
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[allow(unused_imports)]
@@ -18,6 +18,7 @@ pub enum DiffMode {
     Branch,
     Unstaged,
     Staged,
+    History,
 }
 
 impl DiffMode {
@@ -27,6 +28,7 @@ impl DiffMode {
             DiffMode::Branch => "BRANCH DIFF",
             DiffMode::Unstaged => "UNSTAGED",
             DiffMode::Staged => "STAGED",
+            DiffMode::History => "HISTORY",
         }
     }
 
@@ -35,7 +37,60 @@ impl DiffMode {
             DiffMode::Branch => "branch",
             DiffMode::Unstaged => "unstaged",
             DiffMode::Staged => "staged",
+            DiffMode::History => "history",
         }
+    }
+}
+
+/// State for History mode — commit list + selected commit's diff
+pub struct HistoryState {
+    /// Loaded commits for the current branch
+    pub commits: Vec<CommitInfo>,
+    /// Currently selected commit index (left panel)
+    pub selected_commit: usize,
+    /// Parsed diff for the selected commit (right panel)
+    pub commit_files: Vec<DiffFile>,
+    /// File navigation within the commit diff
+    pub selected_file: usize,
+    /// Hunk navigation within the selected file
+    pub current_hunk: usize,
+    /// Line navigation within the selected hunk
+    pub current_line: Option<usize>,
+    /// Vertical scroll in the diff pane
+    pub diff_scroll: u16,
+    /// Horizontal scroll
+    pub h_scroll: u16,
+    /// Whether all commits have been loaded (no more to fetch)
+    pub all_loaded: bool,
+    /// LRU cache of recently viewed commit diffs
+    pub diff_cache: DiffCache,
+}
+
+/// Simple LRU cache for parsed commit diffs
+pub struct DiffCache {
+    entries: VecDeque<(String, Vec<DiffFile>)>,
+    max_size: usize,
+}
+
+impl DiffCache {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            max_size,
+        }
+    }
+
+    pub fn get(&self, hash: &str) -> Option<&Vec<DiffFile>> {
+        self.entries.iter().find(|(h, _)| h == hash).map(|(_, f)| f)
+    }
+
+    pub fn insert(&mut self, hash: String, files: Vec<DiffFile>) {
+        // Remove existing entry for this hash if present
+        self.entries.retain(|(h, _)| h != &hash);
+        if self.entries.len() >= self.max_size {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((hash, files));
     }
 }
 
@@ -212,6 +267,9 @@ pub struct TabState {
     /// Which type of comment is being created (Question vs GitHubComment)
     pub comment_type: CommentType,
 
+    /// History mode state (only populated when mode == History)
+    pub history: Option<HistoryState>,
+
     // ── Watched files state ──
 
     /// Configuration for watched files
@@ -367,6 +425,7 @@ impl TabState {
             comment_line_num: None,
             comment_focus: None,
             comment_type: CommentType::GitHubComment,
+            history: None,
             watched_config,
             watched_files: Vec::new(),
             selected_watched: None,
@@ -409,6 +468,11 @@ impl TabState {
     }
 
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool) -> Result<()> {
+        // History mode doesn't use git_diff_raw — skip normal diff refresh
+        if self.mode == DiffMode::History {
+            return Ok(());
+        }
+
         // Remember current position to restore after re-parse
         let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
         let prev_hunk = self.current_hunk;
@@ -599,7 +663,7 @@ impl TabState {
         self.layers.show_ai_findings = !self.layers.show_ai_findings;
     }
 
-    /// Cycle panel: None → FileDetail → AiSummary (if AI data) → None
+    /// Cycle panel: None → FileDetail → AiSummary (if AI data) → PrOverview → None
     pub fn toggle_panel(&mut self) {
         self.panel = match self.panel {
             None => Some(PanelContent::FileDetail),
@@ -607,10 +671,10 @@ impl TabState {
                 if self.ai.has_data() {
                     Some(PanelContent::AiSummary)
                 } else {
-                    None
+                    Some(PanelContent::PrOverview)
                 }
             }
-            Some(PanelContent::AiSummary) => None,
+            Some(PanelContent::AiSummary) => Some(PanelContent::PrOverview),
             Some(PanelContent::PrOverview) => None,
         };
         self.panel_scroll = 0;
@@ -1200,6 +1264,302 @@ impl TabState {
         Ok(())
     }
 
+    // ── History Mode Navigation ──
+
+    /// Move to the next commit in history (older)
+    pub fn history_next_commit(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        if history.selected_commit + 1 < history.commits.len() {
+            history.selected_commit += 1;
+            self.history_load_selected_diff();
+        }
+    }
+
+    /// Move to the previous commit in history (newer)
+    pub fn history_prev_commit(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        if history.selected_commit > 0 {
+            history.selected_commit -= 1;
+            self.history_load_selected_diff();
+        }
+    }
+
+    /// Load the diff for the currently selected commit
+    fn history_load_selected_diff(&mut self) {
+        let (hash, repo_root) = {
+            let history = match self.history.as_ref() {
+                Some(h) => h,
+                None => return,
+            };
+            let commit = match history.commits.get(history.selected_commit) {
+                Some(c) => c,
+                None => return,
+            };
+            // Check cache first
+            if let Some(cached) = history.diff_cache.get(&commit.hash) {
+                let files = cached.clone();
+                let history = self.history.as_mut().unwrap();
+                history.commit_files = files;
+                history.selected_file = 0;
+                history.current_hunk = 0;
+                history.current_line = None;
+                history.diff_scroll = 0;
+                history.h_scroll = 0;
+                return;
+            }
+            (commit.hash.clone(), self.repo_root.clone())
+        };
+
+        let files = match git::git_diff_commit(&hash, &repo_root) {
+            Ok(raw) => git::parse_diff(&raw),
+            Err(_) => vec![],
+        };
+
+        let history = self.history.as_mut().unwrap();
+        history.diff_cache.insert(hash, files.clone());
+        history.commit_files = files;
+        history.selected_file = 0;
+        history.current_hunk = 0;
+        history.current_line = None;
+        history.diff_scroll = 0;
+        history.h_scroll = 0;
+    }
+
+    /// Move to next file within the selected commit's diff
+    pub fn history_next_file(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        if history.commit_files.is_empty() {
+            return;
+        }
+        if history.selected_file + 1 < history.commit_files.len() {
+            history.selected_file += 1;
+            history.current_hunk = 0;
+            history.current_line = None;
+            Self::history_scroll_to_file(history);
+        }
+    }
+
+    /// Move to previous file within the selected commit's diff
+    pub fn history_prev_file(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        if history.selected_file > 0 {
+            history.selected_file -= 1;
+            history.current_hunk = 0;
+            history.current_line = None;
+            Self::history_scroll_to_file(history);
+        }
+    }
+
+    /// Move to next line within the commit diff
+    pub fn history_next_line(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        let file = match history.commit_files.get(history.selected_file) {
+            Some(f) => f,
+            None => return,
+        };
+        let hunk_count = file.hunks.len();
+        let line_count = file.hunks.get(history.current_hunk).map(|h| h.lines.len()).unwrap_or(0);
+
+        match history.current_line {
+            None => {
+                if line_count > 0 {
+                    history.current_line = Some(0);
+                    Self::history_scroll_to_current(history);
+                }
+            }
+            Some(line) => {
+                if line + 1 < line_count {
+                    history.current_line = Some(line + 1);
+                    Self::history_scroll_to_current(history);
+                } else if history.current_hunk + 1 < hunk_count {
+                    // Move to next hunk's first line
+                    history.current_hunk += 1;
+                    history.current_line = Some(0);
+                    Self::history_scroll_to_current(history);
+                } else if history.selected_file + 1 < history.commit_files.len() {
+                    // Move to next file's first hunk's first line
+                    history.selected_file += 1;
+                    history.current_hunk = 0;
+                    history.current_line = Some(0);
+                    Self::history_scroll_to_current(history);
+                }
+            }
+        }
+    }
+
+    /// Move to previous line within the commit diff
+    pub fn history_prev_line(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        let file = match history.commit_files.get(history.selected_file) {
+            Some(f) => f,
+            None => return,
+        };
+
+        match history.current_line {
+            None => {
+                let count = file.hunks.get(history.current_hunk).map(|h| h.lines.len()).unwrap_or(0);
+                if count > 0 {
+                    history.current_line = Some(count - 1);
+                    Self::history_scroll_to_current(history);
+                }
+            }
+            Some(0) => {
+                if history.current_hunk > 0 {
+                    history.current_hunk -= 1;
+                    let count = file.hunks.get(history.current_hunk).map(|h| h.lines.len()).unwrap_or(0);
+                    history.current_line = if count > 0 { Some(count - 1) } else { None };
+                    Self::history_scroll_to_current(history);
+                } else if history.selected_file > 0 {
+                    // Move to prev file's last hunk's last line
+                    history.selected_file -= 1;
+                    let prev_file = &history.commit_files[history.selected_file];
+                    if let Some(last_hunk) = prev_file.hunks.last() {
+                        history.current_hunk = prev_file.hunks.len() - 1;
+                        history.current_line = if last_hunk.lines.is_empty() { None } else { Some(last_hunk.lines.len() - 1) };
+                    } else {
+                        history.current_hunk = 0;
+                        history.current_line = None;
+                    }
+                    Self::history_scroll_to_current(history);
+                } else {
+                    history.current_line = None;
+                }
+            }
+            Some(line) => {
+                history.current_line = Some(line - 1);
+                Self::history_scroll_to_current(history);
+            }
+        }
+    }
+
+    /// Scroll to the current file header in history mode
+    fn history_scroll_to_file(history: &mut HistoryState) {
+        let mut line_offset: usize = 0;
+        for (file_idx, file) in history.commit_files.iter().enumerate() {
+            if file_idx == history.selected_file {
+                history.diff_scroll = line_offset.min(u16::MAX as usize) as u16;
+                return;
+            }
+            // File header (1) + blank line (1) + per-hunk (header + lines + blank)
+            line_offset += 2; // header + blank
+            for hunk in &file.hunks {
+                line_offset += 1 + hunk.lines.len() + 1; // header + lines + blank
+            }
+        }
+    }
+
+    /// Scroll to the current line position in history mode
+    fn history_scroll_to_current(history: &mut HistoryState) {
+        let mut line_offset: usize = 0;
+        for (file_idx, file) in history.commit_files.iter().enumerate() {
+            line_offset += 2; // file header + blank
+            for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+                if file_idx == history.selected_file && hunk_idx == history.current_hunk {
+                    line_offset += history.current_line.unwrap_or(0);
+                    history.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
+                    return;
+                }
+                line_offset += 1 + hunk.lines.len() + 1;
+            }
+        }
+    }
+
+    /// Load more commits when scrolling past the end
+    pub fn history_load_more(&mut self) {
+        let (skip, all_loaded) = match self.history.as_ref() {
+            Some(h) => (h.commits.len(), h.all_loaded),
+            None => return,
+        };
+        if all_loaded {
+            return;
+        }
+
+        let new_commits = git::git_log_branch(
+            &self.base_branch,
+            &self.repo_root,
+            50,
+            skip,
+        )
+        .unwrap_or_default();
+
+        let history = self.history.as_mut().unwrap();
+        if new_commits.is_empty() {
+            history.all_loaded = true;
+        } else {
+            history.commits.extend(new_commits);
+        }
+    }
+
+    /// Get visible commits (filtered by search query)
+    pub fn visible_commits(&self) -> Vec<(usize, &CommitInfo)> {
+        let history = match self.history.as_ref() {
+            Some(h) => h,
+            None => return vec![],
+        };
+
+        if self.search_query.is_empty() {
+            history.commits.iter().enumerate().collect()
+        } else {
+            let q = self.search_query.to_lowercase();
+            history
+                .commits
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.subject.to_lowercase().contains(&q)
+                        || c.short_hash.contains(&q)
+                        || c.author.to_lowercase().contains(&q)
+                })
+                .collect()
+        }
+    }
+
+    /// Scroll down in history mode
+    pub fn history_scroll_down(&mut self, amount: u16) {
+        if let Some(ref mut h) = self.history {
+            h.diff_scroll = h.diff_scroll.saturating_add(amount);
+        }
+    }
+
+    /// Scroll up in history mode
+    pub fn history_scroll_up(&mut self, amount: u16) {
+        if let Some(ref mut h) = self.history {
+            h.diff_scroll = h.diff_scroll.saturating_sub(amount);
+        }
+    }
+
+    /// Scroll right in history mode
+    pub fn history_scroll_right(&mut self, amount: u16) {
+        if let Some(ref mut h) = self.history {
+            h.h_scroll = h.h_scroll.saturating_add(amount);
+        }
+    }
+
+    /// Scroll left in history mode
+    pub fn history_scroll_left(&mut self, amount: u16) {
+        if let Some(ref mut h) = self.history {
+            h.h_scroll = h.h_scroll.saturating_sub(amount);
+        }
+    }
+
     // ── Mode ──
 
     pub fn set_mode(&mut self, mode: DiffMode) {
@@ -1212,29 +1572,68 @@ impl TabState {
             let prev_line = self.current_line;
 
             self.mode = mode;
-            self.current_hunk = 0;
-            self.current_line = None;
-            self.selected_watched = None;
-            self.diff_scroll = 0;
-            let _ = self.refresh_diff();
+            if mode == DiffMode::History {
+                // Initialize history state if first time
+                if self.history.is_none() {
+                    let commits = git::git_log_branch(
+                        &self.base_branch,
+                        &self.repo_root,
+                        50,
+                        0,
+                    )
+                    .unwrap_or_default();
 
-            // Restore selection by path (file order may differ between modes)
-            if let Some(path) = prev_path {
-                if let Some(idx) = self.files.iter().position(|f| f.path == path) {
-                    self.selected_file = idx;
-                    // Restore hunk/line if the file still has enough hunks
-                    if prev_hunk < self.total_hunks() {
-                        self.current_hunk = prev_hunk;
-                        self.current_line = prev_line;
+                    let first_diff = if let Some(c) = commits.first() {
+                        let raw = git::git_diff_commit(&c.hash, &self.repo_root)
+                            .unwrap_or_default();
+                        git::parse_diff(&raw)
+                    } else {
+                        vec![]
+                    };
+
+                    let mut cache = DiffCache::new(5);
+                    if let Some(c) = commits.first() {
+                        cache.insert(c.hash.clone(), first_diff.clone());
+                    }
+
+                    self.history = Some(HistoryState {
+                        commits,
+                        selected_commit: 0,
+                        commit_files: first_diff,
+                        selected_file: 0,
+                        current_hunk: 0,
+                        current_line: None,
+                        diff_scroll: 0,
+                        h_scroll: 0,
+                        all_loaded: false,
+                        diff_cache: cache,
+                    });
+                }
+            } else {
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selected_watched = None;
+                self.diff_scroll = 0;
+                let _ = self.refresh_diff();
+
+                // Restore selection by path (file order may differ between modes)
+                if let Some(path) = prev_path {
+                    if let Some(idx) = self.files.iter().position(|f| f.path == path) {
+                        self.selected_file = idx;
+                        // Restore hunk/line if the file still has enough hunks
+                        if prev_hunk < self.total_hunks() {
+                            self.current_hunk = prev_hunk;
+                            self.current_line = prev_line;
+                        }
+                    } else {
+                        self.selected_file = 0;
                     }
                 } else {
                     self.selected_file = 0;
                 }
-            } else {
-                self.selected_file = 0;
+                self.snap_to_visible();
+                self.scroll_to_current_hunk();
             }
-            self.snap_to_visible();
-            self.scroll_to_current_hunk();
         }
     }
 
@@ -1871,6 +2270,10 @@ impl App {
             DiffMode::Staged => {
                 git::git_unstage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Unstaged: {}", file_path));
+            }
+            DiffMode::History => {
+                self.notify("Staging not available in History mode");
+                return Ok(());
             }
         }
 
@@ -2779,6 +3182,7 @@ mod tests {
             comment_line_num: None,
             comment_focus: None,
             comment_type: CommentType::GitHubComment,
+            history: None,
             watched_config: WatchedConfig::default(),
             watched_files: Vec::new(),
             selected_watched: None,
@@ -3285,6 +3689,7 @@ mod tests {
         assert_eq!(DiffMode::Branch.label(), "BRANCH DIFF");
         assert_eq!(DiffMode::Unstaged.label(), "UNSTAGED");
         assert_eq!(DiffMode::Staged.label(), "STAGED");
+        assert_eq!(DiffMode::History.label(), "HISTORY");
     }
 
     #[test]
@@ -3292,6 +3697,7 @@ mod tests {
         assert_eq!(DiffMode::Branch.git_mode(), "branch");
         assert_eq!(DiffMode::Unstaged.git_mode(), "unstaged");
         assert_eq!(DiffMode::Staged.git_mode(), "staged");
+        assert_eq!(DiffMode::History.git_mode(), "history");
     }
 
     // ── clamp_hunk ──
@@ -3543,7 +3949,8 @@ mod tests {
         let mut tab = make_test_tab(vec![]);
         tab.panel = Some(crate::ai::PanelContent::FileDetail);
         tab.toggle_panel();
-        assert_eq!(tab.panel, None);
+        // No AI data: FileDetail → PrOverview (skips AiSummary)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
     }
 
     #[test]
@@ -3552,7 +3959,8 @@ mod tests {
         tab.ai.summary = Some("summary".to_string());
         tab.panel = Some(crate::ai::PanelContent::AiSummary);
         tab.toggle_panel();
-        assert_eq!(tab.panel, None);
+        // AiSummary → PrOverview (not None — PrOverview is next in cycle)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
     }
 
     #[test]
@@ -3563,16 +3971,17 @@ mod tests {
         assert_eq!(tab.panel_scroll, 0);
 
         tab.panel_scroll = 10;
-        tab.toggle_panel(); // FileDetail → None (no AI data)
+        tab.toggle_panel(); // FileDetail → PrOverview (no AI data)
         assert_eq!(tab.panel_scroll, 0);
     }
 
     #[test]
     fn toggle_panel_sets_panel_focus_false_when_closing() {
         let mut tab = make_test_tab(vec![]);
-        tab.panel = Some(crate::ai::PanelContent::FileDetail);
+        // PrOverview → None closes the panel and clears focus
+        tab.panel = Some(crate::ai::PanelContent::PrOverview);
         tab.panel_focus = true;
-        tab.toggle_panel(); // FileDetail → None (no AI data)
+        tab.toggle_panel();
         assert!(!tab.panel_focus);
     }
 

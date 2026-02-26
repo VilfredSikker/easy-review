@@ -7,7 +7,7 @@ use ratatui::{
 use std::time::SystemTime;
 
 use crate::ai::RiskLevel;
-use crate::app::App;
+use crate::app::{App, DiffMode};
 use crate::git::FileStatus;
 use super::styles;
 
@@ -26,6 +26,13 @@ fn format_relative_time(mtime: SystemTime) -> String {
 /// Render the file tree panel (left side)
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.tab();
+
+    // History mode: render commit list instead of file tree
+    if tab.mode == DiffMode::History {
+        render_commit_list(f, area, app);
+        return;
+    }
+
     let visible = tab.visible_files();
     let total = tab.files.len();
     let in_overlay = tab.layers.show_ai_findings;
@@ -303,6 +310,115 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let list = List::new(items).block(block);
     f.render_widget(list, area);
+}
+
+/// Render the commit list panel (left side, History mode)
+fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
+    let tab = app.tab();
+    let visible = tab.visible_commits();
+    let total = tab.history.as_ref().map(|h| h.commits.len()).unwrap_or(0);
+    let selected_commit = tab.history.as_ref().map(|h| h.selected_commit).unwrap_or(0);
+
+    let title = format!(" COMMITS ({}) ", total);
+
+    let max_subject_width = (area.width as usize).saturating_sub(16);
+
+    let items: Vec<ListItem> = visible
+        .iter()
+        .flat_map(|(idx, commit)| {
+            let is_selected = *idx == selected_commit;
+
+            let line_style = if is_selected {
+                styles::selected_style()
+            } else {
+                styles::surface_style()
+            };
+
+            // Line 1: indicator + short hash + subject + relative date
+            let indicator = if is_selected { "●" } else { "○" };
+            let merge_prefix = if commit.is_merge { "⊕ " } else { "" };
+
+            let subject = truncate_str(&commit.subject, max_subject_width);
+
+            let line1 = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", indicator),
+                    if is_selected {
+                        ratatui::style::Style::default().fg(styles::PURPLE)
+                    } else {
+                        ratatui::style::Style::default().fg(styles::DIM)
+                    },
+                ),
+                Span::styled(
+                    format!("{}{}", merge_prefix, commit.short_hash),
+                    if is_selected {
+                        ratatui::style::Style::default().fg(styles::CYAN)
+                    } else {
+                        ratatui::style::Style::default().fg(styles::DIM)
+                    },
+                ),
+                Span::styled(
+                    format!("  {}", subject),
+                    if is_selected {
+                        ratatui::style::Style::default().fg(styles::BRIGHT)
+                    } else {
+                        ratatui::style::Style::default().fg(styles::TEXT)
+                    },
+                ),
+            ]);
+
+            // Line 2: author + file count + stats + relative date
+            let stats = format!(
+                "+{} −{}",
+                commit.adds, commit.dels
+            );
+            let file_label = if commit.file_count == 1 { "file" } else { "files" };
+
+            let line2 = Line::from(vec![
+                Span::styled(
+                    format!("     {} · {} {} {} · {}",
+                        commit.author, commit.file_count, file_label, stats, commit.relative_date
+                    ),
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ),
+            ]);
+
+            // Separator line
+            let separator = Line::from(Span::styled(
+                "─".repeat(area.width.saturating_sub(2) as usize),
+                ratatui::style::Style::default().fg(styles::BORDER),
+            ));
+
+            vec![
+                ListItem::new(line1).style(line_style),
+                ListItem::new(line2).style(line_style),
+                ListItem::new(separator).style(styles::surface_style()),
+            ]
+        })
+        .collect();
+
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            ratatui::style::Style::default().fg(styles::MUTED),
+        ))
+        .borders(Borders::RIGHT)
+        .border_style(ratatui::style::Style::default().fg(styles::BORDER))
+        .style(ratatui::style::Style::default().bg(styles::SURFACE))
+        .padding(Padding::new(0, 0, 0, 0));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
+}
+
+/// Truncate a string with ellipsis if too long
+fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.chars().count() <= max_width {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_width.saturating_sub(1)).collect();
+        format!("{}…", truncated)
+    }
 }
 
 /// Shorten a file path to fit within max_width
