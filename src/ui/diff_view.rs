@@ -181,6 +181,53 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         }
         logical_line += 1;
 
+        // ── Hunk-level comments right after the @@ header ──
+        {
+            let hunk_comments = tab.ai.comments_for_hunk_only(&file.path, hunk_idx);
+            for comment in &hunk_comments {
+                let visible = match comment {
+                    CommentRef::Question(_) => tab.layers.show_questions,
+                    CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
+                };
+                if !visible {
+                    continue;
+                }
+                let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
+                let pre_len = lines.len();
+                render_comment_lines(
+                    &mut lines,
+                    comment,
+                    area.width,
+                    false,
+                    is_focused,
+                );
+                let comment_line_count = lines.len() - pre_len;
+                if logical_line < render_start || logical_line >= render_end {
+                    lines.truncate(pre_len);
+                }
+                logical_line += comment_line_count;
+
+                // Render replies to this hunk comment (GitHub comments only)
+                let replies = tab.ai.replies_to(comment.id());
+                for reply in &replies {
+                    let pre_len = lines.len();
+                    let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
+                    render_reply_lines(
+                        &mut lines,
+                        &reply,
+                        area.width,
+                        false,
+                        is_focused,
+                    );
+                    let reply_line_count = lines.len() - pre_len;
+                    if logical_line < render_start || logical_line >= render_end {
+                        lines.truncate(pre_len);
+                    }
+                    logical_line += reply_line_count;
+                }
+            }
+        }
+
         // Hunk lines
         for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
             if logical_line >= render_start && logical_line < render_end {
@@ -268,12 +315,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     let replies = tab.ai.replies_to(comment.id());
                     for reply in &replies {
                         let pre_len = lines.len();
+                        let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
                         render_reply_lines(
                             &mut lines,
                             &reply,
                             area.width,
                             true,
-                            false,
+                            is_focused,
                         );
                         let reply_line_count = lines.len() - pre_len;
                         if logical_line < render_start || logical_line >= render_end {
@@ -388,52 +436,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         lines.truncate(pre_len);
                     }
                     logical_line += fc_line_count;
-                }
-            }
-        }
-
-        // ── Hunk-level comments after the hunk ──
-        {
-            let hunk_comments = tab.ai.comments_for_hunk_only(&file.path, hunk_idx);
-            for comment in &hunk_comments {
-                let visible = match comment {
-                    CommentRef::Question(_) => tab.layers.show_questions,
-                    CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
-                };
-                if !visible {
-                    continue;
-                }
-                let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
-                let pre_len = lines.len();
-                render_comment_lines(
-                    &mut lines,
-                    comment,
-                    area.width,
-                    false,
-                    is_focused,
-                );
-                let comment_line_count = lines.len() - pre_len;
-                if logical_line < render_start || logical_line >= render_end {
-                    lines.truncate(pre_len);
-                }
-                logical_line += comment_line_count;
-
-                // Render replies to this hunk comment (GitHub comments only)
-                let replies = tab.ai.replies_to(comment.id());
-                for reply in &replies {
-                    let pre_len = lines.len();
-                    render_reply_lines(
-                        &mut lines,
-                        &reply,
-                        area.width,
-                        false,
-                        false,
-                    );
-                    let reply_line_count = lines.len() - pre_len;
-                    if logical_line < render_start || logical_line >= render_end {
-                        lines.truncate(pre_len);
-                    }
-                    logical_line += reply_line_count;
                 }
             }
         }
@@ -1005,9 +1007,16 @@ fn render_reply_lines(
         styles::COMMENT_BG
     };
 
+    let is_question = reply.comment_type() == CommentType::Question;
+    let accent = if is_question { styles::YELLOW } else { styles::CYAN };
+    let icon = if is_question { "❓" } else { "💬" };
     let author = reply.author();
 
-    let prefix = if inline { "       ↳ 💬 " } else { "    ↳ 💬 " };
+    let prefix = if inline {
+        format!("       ↳ {} ", icon)
+    } else {
+        format!("    ↳ {} ", icon)
+    };
     let mut header_spans = vec![
         Span::styled(
             prefix,
@@ -1016,7 +1025,7 @@ fn render_reply_lines(
         Span::styled(
             author.to_string(),
             ratatui::style::Style::default()
-                .fg(styles::CYAN)
+                .fg(accent)
                 .bg(bg)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),

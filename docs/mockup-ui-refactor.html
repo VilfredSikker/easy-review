@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>er — UI Refactor Mockups</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            'mono': ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
+          },
+          colors: {
+            'term-bg': '#0d1117',
+            'term-bg2': '#161b22',
+            'term-border': '#30363d',
+            'term-text': '#c9d1d9',
+            'term-muted': '#484f58',
+            'term-blue': '#58a6ff',
+            'term-green': '#3fb950',
+            'term-red': '#f85149',
+            'term-yellow': '#d29922',
+            'term-orange': '#d18616',
+            'term-cyan': '#39d2c0',
+            'term-purple': '#bc8cff',
+            'term-added-bg': '#0d2818',
+            'term-removed-bg': '#2d1117',
+            'term-comment-q': '#2d2200',
+            'term-comment-gh': '#0d2d2d',
+            'term-finding-bg': '#2d1800',
+            'term-selected': '#1f2937',
+            'term-panel-bg': '#0f1318',
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'JetBrains Mono', monospace; }
+    .glow-green { text-shadow: 0 0 6px rgba(63, 185, 80, 0.3); }
+    .glow-blue { text-shadow: 0 0 6px rgba(88, 166, 255, 0.3); }
+    .scenario-btn.active { background: #1f2937; border-color: #58a6ff; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-300 min-h-screen p-6">
+
+  <div class="max-w-7xl mx-auto">
+    <h1 class="text-2xl font-bold text-white mb-2 font-mono">er — UI Refactor Mockups</h1>
+    <p class="text-gray-500 mb-6 text-sm font-mono">Layers + Panels architecture. Click scenarios to see different configurations.</p>
+
+    <!-- Scenario selector -->
+    <div class="flex gap-2 mb-6 flex-wrap">
+      <button onclick="showScenario('default')" class="scenario-btn active px-3 py-1.5 rounded border border-term-border text-xs font-mono text-term-text hover:border-term-blue transition" data-scenario="default">
+        1. Default Review
+      </button>
+      <button onclick="showScenario('comments')" class="scenario-btn px-3 py-1.5 rounded border border-term-border text-xs font-mono text-term-text hover:border-term-blue transition" data-scenario="comments">
+        2. With Comments
+      </button>
+      <button onclick="showScenario('ai')" class="scenario-btn px-3 py-1.5 rounded border border-term-border text-xs font-mono text-term-text hover:border-term-blue transition" data-scenario="ai">
+        3. AI Layer On
+      </button>
+      <button onclick="showScenario('panel-pr')" class="scenario-btn px-3 py-1.5 rounded border border-term-border text-xs font-mono text-term-text hover:border-term-blue transition" data-scenario="panel-pr">
+        4. PR Panel
+      </button>
+      <button onclick="showScenario('panel-ai')" class="scenario-btn px-3 py-1.5 rounded border border-term-border text-xs font-mono text-term-text hover:border-term-blue transition" data-scenario="panel-ai">
+        5. AI Summary Panel
+      </button>
+      <button onclick="showScenario('full')" class="scenario-btn px-3 py-1.5 rounded border border-term-border text-xs font-mono text-term-text hover:border-term-blue transition" data-scenario="full">
+        6. Everything On
+      </button>
+      <button onclick="showScenario('old')" class="scenario-btn px-3 py-1.5 rounded border border-term-border text-xs font-mono text-term-text hover:border-term-blue transition" data-scenario="old">
+        ⚡ Old: ViewMode System
+      </button>
+    </div>
+
+    <!-- Description -->
+    <div id="description" class="mb-4 text-xs font-mono text-gray-500 h-8"></div>
+
+    <!-- Terminal mockup -->
+    <div class="rounded-lg border border-term-border overflow-hidden shadow-2xl">
+      <!-- Terminal title bar -->
+      <div class="bg-term-bg2 px-4 py-2 flex items-center gap-2 border-b border-term-border">
+        <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+        <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+        <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+        <span class="text-xs text-term-muted ml-2">er — easy-review</span>
+      </div>
+
+      <!-- Terminal content -->
+      <div class="bg-term-bg text-[11px] leading-[18px] font-mono">
+
+        <!-- Top bar -->
+        <div id="topbar" class="px-2 py-1 bg-term-bg2 border-b border-term-border flex justify-between"></div>
+
+        <!-- Main content area -->
+        <div class="flex" style="height: 480px;">
+
+          <!-- File tree (always present) -->
+          <div id="filetree" class="border-r border-term-border overflow-hidden flex-shrink-0" style="width: 260px;"></div>
+
+          <!-- Diff view (always present, flex-grows) -->
+          <div id="diffview" class="flex-1 overflow-hidden"></div>
+
+          <!-- Context panel (optional) -->
+          <div id="panel" class="border-l border-term-border overflow-hidden flex-shrink-0 hidden" style="width: 320px;"></div>
+
+        </div>
+
+        <!-- Bottom bar -->
+        <div id="bottombar" class="px-2 py-1 bg-term-bg2 border-t border-term-border text-term-muted"></div>
+
+      </div>
+    </div>
+
+    <!-- Architecture comparison -->
+    <div class="mt-8 grid grid-cols-2 gap-6">
+      <div class="rounded-lg border border-term-border p-4 bg-term-bg">
+        <h3 class="text-sm font-bold text-term-red mb-3">❌ Old: ViewMode System</h3>
+        <div class="text-[11px] leading-5 text-term-muted space-y-2">
+          <div><span class="text-term-text">Default</span> → 2-col, no comments, no findings</div>
+          <div><span class="text-term-text">Overlay</span> → 2-col + inline findings + comments <span class="text-term-red">(requires AI data)</span></div>
+          <div><span class="text-term-text">SidePanel</span> → 3-col + AI panel <span class="text-term-red">(requires AI data)</span></div>
+          <div><span class="text-term-text">AiReview</span> → full-screen AI dashboard <span class="text-term-red">(requires AI data)</span></div>
+          <div class="pt-2 text-term-yellow">⚠ Comments invisible in Default mode</div>
+          <div class="text-term-yellow">⚠ v/V cycles through modes as a unit</div>
+          <div class="text-term-yellow">⚠ Can't mix features independently</div>
+        </div>
+      </div>
+      <div class="rounded-lg border border-term-border p-4 bg-term-bg">
+        <h3 class="text-sm font-bold text-term-green mb-3">✓ New: Layers + Panels</h3>
+        <div class="text-[11px] leading-5 text-term-muted space-y-2">
+          <div><span class="text-term-text">Base</span> → 2-col, comments always inline</div>
+          <div><span class="text-term-text">+ AI layer (a)</span> → adds findings inline + risk indicators</div>
+          <div><span class="text-term-text">+ Panel (p)</span> → opens context panel (PR / AI / file / refs)</div>
+          <div><span class="text-term-text">Combine freely</span> → any combination works</div>
+          <div class="pt-2 text-term-green">✓ Comments visible in every state</div>
+          <div class="text-term-green">✓ Independent toggles, not a mode cycle</div>
+          <div class="text-term-green">✓ AI optional, GitHub essential</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Key mapping comparison -->
+    <div class="mt-6 rounded-lg border border-term-border p-4 bg-term-bg">
+      <h3 class="text-sm font-bold text-white mb-3">Keybinding Changes</h3>
+      <div class="grid grid-cols-3 gap-4 text-[11px]">
+        <div>
+          <div class="text-term-red font-bold mb-2">Removed</div>
+          <div class="text-term-muted"><span class="text-term-text">v/V</span> — cycle view modes</div>
+          <div class="text-term-muted"><span class="text-term-text">Tab</span> — toggle comment focus</div>
+        </div>
+        <div>
+          <div class="text-term-green font-bold mb-2">Added</div>
+          <div class="text-term-muted"><span class="text-term-text">a</span> — toggle AI findings layer</div>
+          <div class="text-term-muted"><span class="text-term-text">p</span> — toggle/cycle context panel</div>
+          <div class="text-term-muted"><span class="text-term-text">Tab</span> — cycle focus: diff → panel</div>
+        </div>
+        <div>
+          <div class="text-term-blue font-bold mb-2">Unchanged</div>
+          <div class="text-term-muted"><span class="text-term-text">c/C</span> — GitHub comment</div>
+          <div class="text-term-muted"><span class="text-term-text">q/Q</span> — question</div>
+          <div class="text-term-muted"><span class="text-term-text">j/k</span> — navigate files</div>
+          <div class="text-term-muted"><span class="text-term-text">↑/↓</span> — navigate lines</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Mockup data
+    const fileTree = {
+      default: `
+        <div class="p-1">
+          <div class="px-1 py-0.5 bg-term-selected text-term-blue">~ src/auth.rs              +12 −3</div>
+          <div class="px-1 py-0.5 text-term-text">+ src/middleware.rs         +45</div>
+          <div class="px-1 py-0.5 text-term-text">~ src/token.rs             +8  −2</div>
+          <div class="px-1 py-0.5 text-term-text">- src/legacy_auth.rs       −89</div>
+          <div class="px-1 py-0.5 text-term-text">~ tests/auth_test.rs       +23 −5</div>
+          <div class="px-1 py-0.5 text-term-text">~ Cargo.toml               +2  −1</div>
+          <div class="px-1 py-0.5 text-term-muted">─────── watched ────────</div>
+          <div class="px-1 py-0.5 text-term-muted">👁 .work/state.json       2m</div>
+        </div>`,
+      comments: `
+        <div class="p-1">
+          <div class="px-1 py-0.5 bg-term-selected text-term-blue">~ src/auth.rs              +12 −3  <span class="text-term-cyan">💬2</span></div>
+          <div class="px-1 py-0.5 text-term-text">+ src/middleware.rs         +45     <span class="text-term-yellow">💬1</span></div>
+          <div class="px-1 py-0.5 text-term-text">~ src/token.rs             +8  −2</div>
+          <div class="px-1 py-0.5 text-term-text">- src/legacy_auth.rs       −89</div>
+          <div class="px-1 py-0.5 text-term-text">~ tests/auth_test.rs       +23 −5  <span class="text-term-cyan">💬1</span></div>
+          <div class="px-1 py-0.5 text-term-text">~ Cargo.toml               +2  −1</div>
+          <div class="px-1 py-0.5 text-term-muted">─────── watched ────────</div>
+          <div class="px-1 py-0.5 text-term-muted">👁 .work/state.json       2m</div>
+        </div>`,
+      ai: `
+        <div class="p-1">
+          <div class="px-1 py-0.5 bg-term-selected text-term-blue"><span class="text-term-red">●</span> src/auth.rs            +12 −3  <span class="text-term-cyan">💬2</span> <span class="text-term-orange">⚠1</span></div>
+          <div class="px-1 py-0.5 text-term-text"><span class="text-term-yellow">●</span> src/middleware.rs       +45     <span class="text-term-yellow">💬1</span> <span class="text-term-orange">⚠2</span></div>
+          <div class="px-1 py-0.5 text-term-text"><span class="text-term-green">●</span> src/token.rs           +8  −2</div>
+          <div class="px-1 py-0.5 text-term-text"><span class="text-term-muted">·</span> src/legacy_auth.rs     −89</div>
+          <div class="px-1 py-0.5 text-term-text"><span class="text-term-green">●</span> tests/auth_test.rs     +23 −5  <span class="text-term-cyan">💬1</span></div>
+          <div class="px-1 py-0.5 text-term-text"><span class="text-term-muted">·</span> Cargo.toml             +2  −1</div>
+          <div class="px-1 py-0.5 text-term-muted">─────── watched ────────</div>
+          <div class="px-1 py-0.5 text-term-muted">👁 .work/state.json       2m</div>
+        </div>`,
+    };
+
+    const diffDefault = `
+      <div class="p-2">
+        <div class="text-term-muted mb-1">src/auth.rs — <span class="text-term-green">+12</span> <span class="text-term-red">−3</span></div>
+        <div class="text-term-muted">@@ -42,7 +42,9 @@ pub fn validate_token</div>
+        <div class="text-term-text">     let claims = decode_jwt(&token)?;</div>
+        <div class="text-term-text">     let now = SystemTime::now();</div>
+        <div class="bg-term-removed-bg text-term-red">-    if claims.exp < now {</div>
+        <div class="bg-term-added-bg text-term-green">+    let expiry = claims.exp.unwrap_or(0);</div>
+        <div class="bg-term-added-bg text-term-green">+    if expiry < now.duration_since(EPOCH)?.as_secs() {</div>
+        <div class="text-term-text">         return Err(AuthError::TokenExpired);</div>
+        <div class="text-term-text">     }</div>
+        <div class="text-term-text"> </div>
+        <div class="text-term-muted">@@ -58,4 +60,11 @@ pub fn refresh_token</div>
+        <div class="text-term-text">     let old_claims = decode_jwt(&old_token)?;</div>
+        <div class="bg-term-removed-bg text-term-red">-    let new_token = sign_jwt(old_claims)?;</div>
+        <div class="bg-term-added-bg text-term-green">+    // Validate old token before refresh</div>
+        <div class="bg-term-added-bg text-term-green">+    validate_token_expiry(&old_token)?;</div>
+        <div class="bg-term-added-bg text-term-green">+    let mut new_claims = old_claims.clone();</div>
+        <div class="bg-term-added-bg text-term-green">+    new_claims.iat = now_secs();</div>
+        <div class="bg-term-added-bg text-term-green">+    new_claims.exp = Some(now_secs() + TOKEN_LIFETIME);</div>
+        <div class="bg-term-added-bg text-term-green">+    let new_token = sign_jwt(new_claims)?;</div>
+        <div class="text-term-text">     Ok(new_token)</div>
+        <div class="text-term-text"> }</div>
+      </div>`;
+
+    const diffWithComments = `
+      <div class="p-2">
+        <div class="text-term-muted mb-1">src/auth.rs — <span class="text-term-green">+12</span> <span class="text-term-red">−3</span></div>
+        <div class="text-term-muted">@@ -42,7 +42,9 @@ pub fn validate_token</div>
+        <div class="text-term-text">     let claims = decode_jwt(&token)?;</div>
+        <div class="text-term-text">     let now = SystemTime::now();</div>
+        <div class="bg-term-removed-bg text-term-red">-    if claims.exp < now {</div>
+        <div class="bg-term-added-bg text-term-green">+    let expiry = claims.exp.unwrap_or(0);</div>
+        <div class="bg-term-added-bg text-term-green">+    if expiry < now.duration_since(EPOCH)?.as_secs() {</div>
+        <div class="border-l-2 border-term-cyan bg-term-comment-gh px-2 py-1 ml-4 my-0.5">
+          <span class="text-term-cyan">💬 alice</span> <span class="text-term-muted text-[10px]">2h ago</span><br>
+          <span class="text-term-text">Should we handle the case where claims.exp is missing differently than defaulting to 0?</span><br>
+          <span class="text-term-muted ml-3">↳ 💬 bob: Good point — 0 means "already expired" which might not be intended</span>
+        </div>
+        <div class="text-term-text">         return Err(AuthError::TokenExpired);</div>
+        <div class="text-term-text">     }</div>
+        <div class="text-term-text"> </div>
+        <div class="text-term-muted">@@ -58,4 +60,11 @@ pub fn refresh_token</div>
+        <div class="text-term-text">     let old_claims = decode_jwt(&old_token)?;</div>
+        <div class="bg-term-removed-bg text-term-red">-    let new_token = sign_jwt(old_claims)?;</div>
+        <div class="bg-term-added-bg text-term-green">+    // Validate old token before refresh</div>
+        <div class="bg-term-added-bg text-term-green">+    validate_token_expiry(&old_token)?;</div>
+        <div class="border-l-2 border-term-yellow bg-term-comment-q px-2 py-1 ml-4 my-0.5">
+          <span class="text-term-yellow">❓ me</span> <span class="text-term-muted text-[10px]">just now</span><br>
+          <span class="text-term-text">Should this validation happen before or after we clone the claims?</span>
+        </div>
+        <div class="bg-term-added-bg text-term-green">+    let mut new_claims = old_claims.clone();</div>
+        <div class="bg-term-added-bg text-term-green">+    new_claims.iat = now_secs();</div>
+        <div class="bg-term-added-bg text-term-green">+    new_claims.exp = Some(now_secs() + TOKEN_LIFETIME);</div>
+        <div class="bg-term-added-bg text-term-green">+    let new_token = sign_jwt(new_claims)?;</div>
+        <div class="text-term-text">     Ok(new_token)</div>
+        <div class="text-term-text"> }</div>
+      </div>`;
+
+    const diffWithAi = `
+      <div class="p-2">
+        <div class="text-term-muted mb-1">src/auth.rs — <span class="text-term-green">+12</span> <span class="text-term-red">−3</span> — <span class="text-term-red">risk: high</span></div>
+        <div class="text-term-muted">@@ -42,7 +42,9 @@ pub fn validate_token</div>
+        <div class="text-term-text">     let claims = decode_jwt(&token)?;</div>
+        <div class="text-term-text">     let now = SystemTime::now();</div>
+        <div class="bg-term-removed-bg text-term-red">-    if claims.exp < now {</div>
+        <div class="bg-term-added-bg text-term-green">+    let expiry = claims.exp.unwrap_or(0);</div>
+        <div class="bg-term-added-bg text-term-green">+    if expiry < now.duration_since(EPOCH)?.as_secs() {</div>
+        <div class="border-l-2 border-term-cyan bg-term-comment-gh px-2 py-1 ml-4 my-0.5">
+          <span class="text-term-cyan">💬 alice</span> <span class="text-term-muted text-[10px]">2h ago</span><br>
+          <span class="text-term-text">Should we handle the case where claims.exp is missing differently than defaulting to 0?</span><br>
+          <span class="text-term-muted ml-3">↳ 💬 bob: Good point — 0 means "already expired" which might not be intended</span>
+        </div>
+        <div class="border-l-2 border-term-orange bg-term-finding-bg px-2 py-1 ml-4 my-0.5">
+          <span class="text-term-orange">⚠ Security</span> <span class="text-term-muted text-[10px]">AI finding</span><br>
+          <span class="text-term-text">unwrap_or(0) silently treats missing expiry as epoch, bypassing expiry check. Consider returning an error for missing exp claims.</span>
+        </div>
+        <div class="text-term-text">         return Err(AuthError::TokenExpired);</div>
+        <div class="text-term-text">     }</div>
+        <div class="text-term-text"> </div>
+        <div class="text-term-muted">@@ -58,4 +60,11 @@ pub fn refresh_token</div>
+        <div class="text-term-text">     let old_claims = decode_jwt(&old_token)?;</div>
+        <div class="bg-term-removed-bg text-term-red">-    let new_token = sign_jwt(old_claims)?;</div>
+        <div class="bg-term-added-bg text-term-green">+    // Validate old token before refresh</div>
+        <div class="bg-term-added-bg text-term-green">+    validate_token_expiry(&old_token)?;</div>
+        <div class="border-l-2 border-term-yellow bg-term-comment-q px-2 py-1 ml-4 my-0.5">
+          <span class="text-term-yellow">❓ me</span> <span class="text-term-muted text-[10px]">just now</span><br>
+          <span class="text-term-text">Should this validation happen before or after we clone the claims?</span>
+        </div>
+        <div class="bg-term-added-bg text-term-green">+    let mut new_claims = old_claims.clone();</div>
+        <div class="bg-term-added-bg text-term-green">+    new_claims.iat = now_secs();</div>
+        <div class="bg-term-added-bg text-term-green">+    new_claims.exp = Some(now_secs() + TOKEN_LIFETIME);</div>
+        <div class="bg-term-added-bg text-term-green">+    let new_token = sign_jwt(new_claims)?;</div>
+        <div class="text-term-text">     Ok(new_token)</div>
+        <div class="text-term-text"> }</div>
+      </div>`;
+
+    const panelPr = `
+      <div class="p-2 text-term-text">
+        <div class="text-term-blue font-bold mb-2">PR #42 — Refactor token validation</div>
+        <div class="text-term-muted text-[10px] mb-3">alice → main · opened 3h ago · +67 −92</div>
+
+        <div class="text-term-text mb-1 font-bold text-[10px] uppercase tracking-wide text-term-muted">Description</div>
+        <div class="text-term-text mb-3 text-[10px] leading-4">
+          Refactors token validation to properly handle<br>
+          missing expiry claims. Previously, tokens<br>
+          without exp were silently accepted.<br><br>
+          Changes:<br>
+          • Extract validate_token_expiry()<br>
+          • Add refresh token validation<br>
+          • Remove legacy auth module
+        </div>
+
+        <div class="text-term-text mb-1 font-bold text-[10px] uppercase tracking-wide text-term-muted">CI Checks</div>
+        <div class="mb-3">
+          <div><span class="text-term-green">✓</span> tests (2m 14s)</div>
+          <div><span class="text-term-green">✓</span> lint (0m 32s)</div>
+          <div><span class="text-term-green">✓</span> build-linux (3m 01s)</div>
+          <div><span class="text-term-red">✗</span> build-windows (failed)</div>
+          <div><span class="text-term-yellow">◑</span> deploy-preview (running)</div>
+        </div>
+
+        <div class="text-term-text mb-1 font-bold text-[10px] uppercase tracking-wide text-term-muted">Reviews</div>
+        <div class="mb-3">
+          <div><span class="text-term-green">✓</span> alice — approved</div>
+          <div><span class="text-term-red">✗</span> bob — changes requested</div>
+          <div><span class="text-term-muted">·</span> carol — pending</div>
+        </div>
+
+        <div class="text-term-text mb-1 font-bold text-[10px] uppercase tracking-wide text-term-muted">Labels</div>
+        <div><span class="bg-term-red/20 text-term-red px-1 rounded text-[10px]">security</span> <span class="bg-term-blue/20 text-term-blue px-1 rounded text-[10px]">refactor</span></div>
+      </div>`;
+
+    const panelAi = `
+      <div class="p-2 text-term-text">
+        <div class="text-term-orange font-bold mb-2">AI Review Summary</div>
+        <div class="text-term-muted text-[10px] mb-3">Generated 15m ago · matches current diff</div>
+
+        <div class="text-term-text mb-1 font-bold text-[10px] uppercase tracking-wide text-term-muted">Risk Overview</div>
+        <div class="mb-3">
+          <div><span class="text-term-red">■</span> High: 1 file (src/auth.rs)</div>
+          <div><span class="text-term-yellow">■</span> Medium: 1 file (src/middleware.rs)</div>
+          <div><span class="text-term-green">■</span> Low: 4 files</div>
+        </div>
+
+        <div class="text-term-text mb-1 font-bold text-[10px] uppercase tracking-wide text-term-muted">Findings (3)</div>
+        <div class="mb-3 space-y-2">
+          <div class="border-l-2 border-term-red pl-2">
+            <div class="text-term-red text-[10px]">Security · src/auth.rs:44</div>
+            <div class="text-[10px]">Missing expiry silently bypasses auth</div>
+          </div>
+          <div class="border-l-2 border-term-yellow pl-2">
+            <div class="text-term-yellow text-[10px]">Logic · src/middleware.rs:35</div>
+            <div class="text-[10px]">Race condition in concurrent refresh</div>
+          </div>
+          <div class="border-l-2 border-term-yellow pl-2">
+            <div class="text-term-yellow text-[10px]">Logic · src/middleware.rs:72</div>
+            <div class="text-[10px]">Error not propagated to caller</div>
+          </div>
+        </div>
+
+        <div class="text-term-text mb-1 font-bold text-[10px] uppercase tracking-wide text-term-muted">Review Checklist</div>
+        <div>
+          <div><span class="text-term-green">☑</span> Error handling reviewed</div>
+          <div><span class="text-term-muted">☐</span> Security implications checked</div>
+          <div><span class="text-term-muted">☐</span> Edge cases tested</div>
+          <div><span class="text-term-green">☑</span> API compatibility verified</div>
+        </div>
+      </div>`;
+
+    const oldViewModeContent = `
+      <div class="p-3 space-y-3">
+        <div class="text-term-red font-bold text-sm">Old System: ViewMode Enum</div>
+        <div class="text-[10px] text-term-muted leading-5">
+
+          <div class="border border-term-border rounded p-2 mb-2">
+            <div class="text-term-text font-bold mb-1">ViewMode::Default</div>
+            <div>2-column: file tree | diff</div>
+            <div class="text-term-red">• No inline comments</div>
+            <div class="text-term-red">• No AI findings</div>
+            <div class="text-term-red">• No indicators in file tree</div>
+            <div>Just raw diffs. That's it.</div>
+          </div>
+
+          <div class="border border-term-border rounded p-2 mb-2">
+            <div class="text-term-text font-bold mb-1">ViewMode::Overlay</div>
+            <div>2-column: file tree | diff + findings</div>
+            <div class="text-term-yellow">⚠ Requires AI data loaded</div>
+            <div>Comments appear inline</div>
+            <div>AI findings appear as banners</div>
+            <div>Risk dots in file tree</div>
+          </div>
+
+          <div class="border border-term-border rounded p-2 mb-2">
+            <div class="text-term-text font-bold mb-1">ViewMode::SidePanel</div>
+            <div>3-column: file tree | diff | AI panel</div>
+            <div class="text-term-yellow">⚠ Requires AI data loaded</div>
+            <div>Dedicated panel for AI summary</div>
+            <div>Falls back to 2-col on narrow terms</div>
+          </div>
+
+          <div class="border border-term-border rounded p-2 mb-2">
+            <div class="text-term-text font-bold mb-1">ViewMode::AiReview</div>
+            <div>Full-screen AI dashboard</div>
+            <div class="text-term-yellow">⚠ Requires AI data loaded</div>
+            <div class="text-term-red">Replaces entire UI</div>
+            <div>Risk list + checklist only</div>
+          </div>
+
+          <div class="mt-3 text-term-yellow">
+            v/V cycles: Default → Overlay → SidePanel → AiReview<br>
+            But 3 of 4 modes need AI data to work!<br>
+            Comments are invisible in the default state.
+          </div>
+        </div>
+      </div>`;
+
+    const scenarios = {
+      'default': {
+        desc: 'Base review — no AI, no panel. Just the diff with file tree. This is the starting point.',
+        topbar: `<div class="flex items-center gap-3">
+          <span class="text-term-blue font-bold">er</span>
+          <span class="text-term-text">easy-review</span>
+          <span class="text-term-muted">│</span>
+          <span class="bg-term-blue/20 text-term-blue px-1 rounded">Branch</span>
+          <span class="text-term-muted">Unstaged</span>
+          <span class="text-term-muted">Staged</span>
+          <span class="text-term-muted">History</span>
+        </div>
+        <div class="text-term-muted">feat/auth-refactor</div>`,
+        filetree: fileTree.default,
+        diff: diffDefault,
+        panel: null,
+        bottombar: 'j/k files  n/N hunks  ↑↓ lines  c comment  q question  a AI  p panel  ? help',
+      },
+      'comments': {
+        desc: 'Comments visible inline — no AI needed. GitHub comments (cyan) and questions (yellow) appear naturally in the diff.',
+        topbar: `<div class="flex items-center gap-3">
+          <span class="text-term-blue font-bold">er</span>
+          <span class="text-term-text">easy-review</span>
+          <span class="text-term-muted">│</span>
+          <span class="bg-term-blue/20 text-term-blue px-1 rounded">Branch</span>
+          <span class="text-term-muted">Unstaged</span>
+          <span class="text-term-muted">Staged</span>
+          <span class="text-term-muted">History</span>
+          <span class="text-term-muted">│</span>
+          <span class="text-term-cyan">💬 4 comments</span>
+        </div>
+        <div class="text-term-muted">feat/auth-refactor</div>`,
+        filetree: fileTree.comments,
+        diff: diffWithComments,
+        panel: null,
+        bottombar: 'j/k files  n/N hunks  ↑↓ lines  c comment  q question  r reply  a AI  p panel  ? help',
+      },
+      'ai': {
+        desc: 'AI layer toggled ON with "a" key. Findings appear inline alongside comments. Risk dots in file tree. All independent.',
+        topbar: `<div class="flex items-center gap-3">
+          <span class="text-term-blue font-bold">er</span>
+          <span class="text-term-text">easy-review</span>
+          <span class="text-term-muted">│</span>
+          <span class="bg-term-blue/20 text-term-blue px-1 rounded">Branch</span>
+          <span class="text-term-muted">Unstaged</span>
+          <span class="text-term-muted">Staged</span>
+          <span class="text-term-muted">History</span>
+          <span class="text-term-muted">│</span>
+          <span class="text-term-cyan">💬 4</span>
+          <span class="text-term-muted">│</span>
+          <span class="text-term-orange">⚠ AI ON</span>
+        </div>
+        <div class="text-term-muted">feat/auth-refactor</div>`,
+        filetree: fileTree.ai,
+        diff: diffWithAi,
+        panel: null,
+        bottombar: 'j/k files  n/N hunks  ↑↓ lines  c comment  q question  r reply  a AI off  p panel  ? help',
+      },
+      'panel-pr': {
+        desc: 'Context panel showing PR overview. Panel opened with "p" key. Shows description, CI checks, reviews, labels.',
+        topbar: `<div class="flex items-center gap-3">
+          <span class="text-term-blue font-bold">er</span>
+          <span class="text-term-text">easy-review</span>
+          <span class="text-term-muted">│</span>
+          <span class="bg-term-blue/20 text-term-blue px-1 rounded">Branch</span>
+          <span class="text-term-muted">Unstaged</span>
+          <span class="text-term-muted">Staged</span>
+          <span class="text-term-muted">History</span>
+          <span class="text-term-muted">│</span>
+          <span class="text-term-blue">PR #42</span> <span class="text-term-green">✓3</span> <span class="text-term-red">✗1</span> <span class="text-term-yellow">◑1</span>
+        </div>
+        <div class="text-term-muted">feat/auth-refactor → main</div>`,
+        filetree: fileTree.comments,
+        diff: diffWithComments,
+        panel: panelPr,
+        bottombar: 'j/k files  n/N hunks  ↑↓ lines  c comment  p next panel  Tab focus panel  ? help',
+      },
+      'panel-ai': {
+        desc: 'Context panel showing AI summary. Cycled to with "p" key. Findings + checklist in the panel, inline annotations in diff.',
+        topbar: `<div class="flex items-center gap-3">
+          <span class="text-term-blue font-bold">er</span>
+          <span class="text-term-text">easy-review</span>
+          <span class="text-term-muted">│</span>
+          <span class="bg-term-blue/20 text-term-blue px-1 rounded">Branch</span>
+          <span class="text-term-muted">Unstaged</span>
+          <span class="text-term-muted">Staged</span>
+          <span class="text-term-muted">History</span>
+          <span class="text-term-muted">│</span>
+          <span class="text-term-cyan">💬 4</span>
+          <span class="text-term-muted">│</span>
+          <span class="text-term-orange">⚠ AI ON</span>
+        </div>
+        <div class="text-term-muted">feat/auth-refactor</div>`,
+        filetree: fileTree.ai,
+        diff: diffWithAi,
+        panel: panelAi,
+        bottombar: 'j/k files  n/N hunks  ↑↓ lines  a AI off  p next panel  Tab focus panel  ? help',
+      },
+      'full': {
+        desc: 'Everything on: comments inline, AI findings inline, PR panel open. All layers and panel active simultaneously.',
+        topbar: `<div class="flex items-center gap-3">
+          <span class="text-term-blue font-bold">er</span>
+          <span class="text-term-text">easy-review</span>
+          <span class="text-term-muted">│</span>
+          <span class="bg-term-blue/20 text-term-blue px-1 rounded">Branch</span>
+          <span class="text-term-muted">Unstaged</span>
+          <span class="text-term-muted">Staged</span>
+          <span class="text-term-muted">History</span>
+          <span class="text-term-muted">│</span>
+          <span class="text-term-blue">PR #42</span> <span class="text-term-green">✓3</span> <span class="text-term-red">✗1</span> <span class="text-term-yellow">◑1</span>
+          <span class="text-term-muted">│</span>
+          <span class="text-term-cyan">💬 4</span>
+          <span class="text-term-orange">⚠ 3</span>
+        </div>
+        <div class="text-term-muted">feat/auth-refactor → main</div>`,
+        filetree: fileTree.ai,
+        diff: diffWithAi,
+        panel: panelPr,
+        bottombar: 'j/k files  n/N hunks  ↑↓ lines  a AI off  p next panel  Tab focus panel  G pull  P push  ? help',
+      },
+      'old': {
+        desc: 'The OLD ViewMode system for comparison. Four discrete modes, cycled with v/V. AI data gates everything.',
+        topbar: `<div class="flex items-center gap-3">
+          <span class="text-term-red font-bold">OLD SYSTEM</span>
+          <span class="text-term-muted">│</span>
+          <span class="text-term-muted">v/V to cycle:</span>
+          <span class="text-term-text">Default</span>
+          <span class="text-term-muted">→</span>
+          <span class="text-term-text">Overlay</span>
+          <span class="text-term-muted">→</span>
+          <span class="text-term-text">SidePanel</span>
+          <span class="text-term-muted">→</span>
+          <span class="text-term-text">AiReview</span>
+        </div>
+        <div class="text-term-red text-[10px]">3 of 4 modes require AI data · Comments invisible in Default</div>`,
+        filetree: `<div class="p-1">
+          <div class="px-1 py-0.5 bg-term-selected text-term-blue">~ src/auth.rs              +12 −3</div>
+          <div class="px-1 py-0.5 text-term-text">+ src/middleware.rs         +45</div>
+          <div class="px-1 py-0.5 text-term-text">~ src/token.rs             +8  −2</div>
+          <div class="px-1 py-0.5 text-term-text">- src/legacy_auth.rs       −89</div>
+          <div class="px-1 py-0.5 text-term-text">~ tests/auth_test.rs       +23 −5</div>
+          <div class="px-1 py-0.5 text-term-text">~ Cargo.toml               +2  −1</div>
+          <div class="px-1 py-0.5 text-term-muted mt-2 text-[10px]">No comment indicators</div>
+          <div class="px-1 py-0.5 text-term-muted text-[10px]">No risk dots</div>
+          <div class="px-1 py-0.5 text-term-muted text-[10px]">(these only show in Overlay+)</div>
+        </div>`,
+        diff: oldViewModeContent,
+        panel: null,
+        bottombar: 'v/V cycle view mode (but most modes need AI loaded first)',
+      },
+    };
+
+    function showScenario(id) {
+      const s = scenarios[id];
+      document.getElementById('description').textContent = s.desc;
+      document.getElementById('topbar').innerHTML = s.topbar;
+      document.getElementById('filetree').innerHTML = s.filetree;
+      document.getElementById('diffview').innerHTML = s.diff;
+
+      const panel = document.getElementById('panel');
+      if (s.panel) {
+        panel.innerHTML = s.panel;
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.add('hidden');
+      }
+
+      document.getElementById('bottombar').textContent = s.bottombar;
+
+      // Update active button
+      document.querySelectorAll('.scenario-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.scenario === id) btn.classList.add('active');
+      });
+    }
+
+    // Show default on load
+    showScenario('default');
+  </script>
+</body>
+</html>

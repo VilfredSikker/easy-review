@@ -3027,7 +3027,7 @@ impl App {
             old_line_start: anchor.old_line_start,
             hunk_header: anchor.hunk_header,
             anchor_status: "original".to_string(),
-            relocated_at_hash: self.tab().diff_hash.clone(),
+            relocated_at_hash: self.tab().branch_diff_hash.clone(),
             in_reply_to: reply_to,
             author: "You".to_string(),
         });
@@ -3120,7 +3120,7 @@ impl App {
             old_line_start: anchor.old_line_start,
             hunk_header: anchor.hunk_header,
             anchor_status: "original".to_string(),
-            relocated_at_hash: self.tab().diff_hash.clone(),
+            relocated_at_hash: self.tab().branch_diff_hash.clone(),
             finding_ref,
         });
 
@@ -3145,7 +3145,8 @@ impl App {
             if let Some(hunk) = df.hunks.get(hunk_index) {
                 if let Some(ln) = comment_line_num {
                     // Find the target line index within the hunk
-                    let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(ln));
+                    let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(ln))
+                        .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln)));
                     let (line_content, old_line_start) = if let Some(idx) = target_idx {
                         let dl = &hunk.lines[idx];
                         (dl.content.clone(), dl.old_num)
@@ -5052,5 +5053,99 @@ mod tests {
         let counter: u16 = 1000;
         assert_eq!(counter, 1000);
         assert!(counter > 255);
+    }
+
+    // ── get_line_anchor ──
+
+    fn make_test_app(tab: TabState) -> App {
+        App {
+            tabs: vec![tab],
+            active_tab: 0,
+            input_mode: InputMode::Normal,
+            should_quit: false,
+            overlay: None,
+            watching: false,
+            watch_message: None,
+            watch_message_ticks: 0,
+            ai_poll_counter: 0,
+            config: ErConfig::default(),
+        }
+    }
+
+    #[test]
+    fn get_line_anchor_finds_line_by_new_num() {
+        let lines = vec![
+            DiffLine {
+                line_type: LineType::Context,
+                content: "before".to_string(),
+                old_num: Some(1),
+                new_num: Some(1),
+            },
+            DiffLine {
+                line_type: LineType::Add,
+                content: "target line".to_string(),
+                old_num: None,
+                new_num: Some(2),
+            },
+            DiffLine {
+                line_type: LineType::Context,
+                content: "after".to_string(),
+                old_num: Some(2),
+                new_num: Some(3),
+            },
+        ];
+        let tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
+        let app = make_test_app(tab);
+
+        let anchor = app.get_line_anchor(0, Some(2));
+
+        assert_eq!(anchor.line_content, "target line");
+        assert_eq!(anchor.line_start, Some(2));
+    }
+
+    #[test]
+    fn get_line_anchor_falls_back_to_old_num_for_deleted_line() {
+        let lines = vec![
+            DiffLine {
+                line_type: LineType::Context,
+                content: "context".to_string(),
+                old_num: Some(1),
+                new_num: Some(1),
+            },
+            DiffLine {
+                line_type: LineType::Delete,
+                content: "deleted line".to_string(),
+                old_num: Some(2),
+                new_num: None,
+            },
+        ];
+        let tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 0, 1)]);
+        let app = make_test_app(tab);
+
+        // comment_line_num carries old_num (2) for a delete-only line
+        let anchor = app.get_line_anchor(0, Some(2));
+
+        assert_eq!(anchor.line_content, "deleted line");
+        assert_eq!(anchor.line_start, Some(2));
+    }
+
+    #[test]
+    fn get_line_anchor_returns_empty_content_when_line_not_found() {
+        let lines = vec![
+            DiffLine {
+                line_type: LineType::Add,
+                content: "some line".to_string(),
+                old_num: None,
+                new_num: Some(1),
+            },
+        ];
+        let tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
+        let app = make_test_app(tab);
+
+        // line number 99 does not exist in the hunk
+        let anchor = app.get_line_anchor(0, Some(99));
+
+        assert_eq!(anchor.line_content, "");
+        assert_eq!(anchor.line_start, Some(99));
     }
 }

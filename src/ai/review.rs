@@ -680,6 +680,7 @@ impl AiState {
                 if q.file == path
                     && q.hunk_index == Some(hunk_idx)
                     && q.line_start == Some(line_num)
+                    && q.in_reply_to.is_none()
                 {
                     result.push(CommentRef::Question(q));
                 }
@@ -721,6 +722,7 @@ impl AiState {
                 if q.file == path
                     && q.hunk_index == Some(hunk_idx)
                     && q.line_start.is_none()
+                    && q.in_reply_to.is_none()
                 {
                     result.push(CommentRef::Question(q));
                 }
@@ -882,34 +884,42 @@ impl AiState {
 
     /// All navigable hints (comments + questions + findings) merged and sorted by file + line.
     /// Returns (file, hunk_index, line_start, id, hint_type) tuples.
+    /// Replies are included and sorted immediately after their parent.
     pub fn all_hints_ordered(&self) -> Vec<(String, Option<usize>, Option<usize>, String, HintType)> {
-        let mut result = Vec::new();
-        // Top-level questions
+        // Extended tuple: (file, hunk_index, line_start, is_reply, position, id, hint_type)
+        // is_reply=0 for parents, 1 for replies — ensures parents sort before their replies
+        // position preserves insertion order within each (is_reply) group for stable output
+        let mut extended: Vec<(String, Option<usize>, Option<usize>, u8, usize, String, HintType)> = Vec::new();
+        // Questions (both top-level and replies)
         if let Some(qs) = &self.questions {
-            for q in &qs.questions {
-                if q.in_reply_to.is_none() {
-                    result.push((q.file.clone(), q.hunk_index, q.line_start, q.id.clone(), HintType::Question));
-                }
+            for (i, q) in qs.questions.iter().enumerate() {
+                let is_reply = if q.in_reply_to.is_none() { 0 } else { 1 };
+                extended.push((q.file.clone(), q.hunk_index, q.line_start, is_reply, i, q.id.clone(), HintType::Question));
             }
         }
-        // Top-level GitHub comments
+        // GitHub comments (both top-level and replies)
         if let Some(gc) = &self.github_comments {
-            for c in &gc.comments {
-                if c.in_reply_to.is_none() {
-                    result.push((c.file.clone(), c.hunk_index, c.line_start, c.id.clone(), HintType::GitHubComment));
-                }
+            for (i, c) in gc.comments.iter().enumerate() {
+                let is_reply = if c.in_reply_to.is_none() { 0 } else { 1 };
+                extended.push((c.file.clone(), c.hunk_index, c.line_start, is_reply, i, c.id.clone(), HintType::GitHubComment));
             }
         }
-        // Findings
+        // Findings (never have replies)
         if let Some(review) = &self.review {
             for (file_path, file_review) in &review.files {
-                for finding in &file_review.findings {
-                    result.push((file_path.clone(), finding.hunk_index, finding.line_start, finding.id.clone(), HintType::Finding));
+                for (i, finding) in file_review.findings.iter().enumerate() {
+                    extended.push((file_path.clone(), finding.hunk_index, finding.line_start, 0, i, finding.id.clone(), HintType::Finding));
                 }
             }
         }
-        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-        result
+        extended.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+                .then(a.3.cmp(&b.3))
+                .then(a.4.cmp(&b.4))
+        });
+        extended.into_iter().map(|(file, hunk, line, _, _, id, hint_type)| (file, hunk, line, id, hint_type)).collect()
     }
 
     /// Find a comment by ID across all comment types
@@ -1902,6 +1912,93 @@ mod tests {
         assert_eq!(state.file_github_comment_count("a.rs"), 2);
         assert_eq!(state.file_github_comment_count("b.rs"), 1);
         assert_eq!(state.file_github_comment_count("c.rs"), 0);
+    }
+
+    // ── AiState::all_hints_ordered ──
+
+    #[test]
+    fn all_hints_ordered_includes_replies() {
+        let mut state = AiState::default();
+        let mut reply = make_question("q-reply", "a.rs", Some(0));
+        reply.in_reply_to = Some("q-parent".to_string());
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q-parent", "a.rs", Some(0)),
+                reply,
+            ],
+        });
+        let hints = state.all_hints_ordered();
+        let ids: Vec<&str> = hints.iter().map(|(_, _, _, id, _)| id.as_str()).collect();
+        assert!(ids.contains(&"q-parent"));
+        assert!(ids.contains(&"q-reply"));
+        assert_eq!(hints.len(), 2);
+    }
+
+    #[test]
+    fn all_hints_ordered_sorts_parent_before_reply() {
+        let mut state = AiState::default();
+        let parent = make_question("q-parent", "a.rs", Some(0));
+        let mut reply = make_question("q-reply", "a.rs", Some(0));
+        reply.in_reply_to = Some("q-parent".to_string());
+        // Insert reply first to verify sorting, not insertion order
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![reply, parent],
+        });
+        let hints = state.all_hints_ordered();
+        assert_eq!(hints.len(), 2);
+        assert_eq!(hints[0].3, "q-parent");
+        assert_eq!(hints[1].3, "q-reply");
+    }
+
+    #[test]
+    fn all_hints_ordered_multiple_replies_after_parent() {
+        let mut state = AiState::default();
+        let parent = make_question("q-parent", "a.rs", Some(0));
+        let mut reply1 = make_question("q-reply1", "a.rs", Some(0));
+        reply1.in_reply_to = Some("q-parent".to_string());
+        let mut reply2 = make_question("q-reply2", "a.rs", Some(0));
+        reply2.in_reply_to = Some("q-parent".to_string());
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![reply2, reply1, parent],
+        });
+        let hints = state.all_hints_ordered();
+        assert_eq!(hints.len(), 3);
+        // Parent must be first
+        assert_eq!(hints[0].3, "q-parent");
+        // Both replies must follow
+        let reply_ids: Vec<&str> = hints[1..].iter().map(|(_, _, _, id, _)| id.as_str()).collect();
+        assert!(reply_ids.contains(&"q-reply1"));
+        assert!(reply_ids.contains(&"q-reply2"));
+    }
+
+    #[test]
+    fn all_hints_ordered_mixed_locations_with_replies() {
+        let mut state = AiState::default();
+        let parent0 = make_github_comment("c-parent0", "a.rs", Some(0), None);
+        let reply0 = make_github_comment("c-reply0", "a.rs", Some(0), Some("c-parent0"));
+        let parent1 = make_github_comment("c-parent1", "a.rs", Some(1), None);
+        let reply1 = make_github_comment("c-reply1", "a.rs", Some(1), Some("c-parent1"));
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![reply1, parent1, reply0, parent0],
+        });
+        let hints = state.all_hints_ordered();
+        assert_eq!(hints.len(), 4);
+        let ids: Vec<&str> = hints.iter().map(|(_, _, _, id, _)| id.as_str()).collect();
+        // parent0 and reply0 both at hunk 0, parent1 and reply1 at hunk 1
+        // Expected order: parent0, reply0, parent1, reply1
+        assert_eq!(ids[0], "c-parent0");
+        assert_eq!(ids[1], "c-reply0");
+        assert_eq!(ids[2], "c-parent1");
+        assert_eq!(ids[3], "c-reply1");
     }
 
     // ── AiState::all_findings_ordered ──
