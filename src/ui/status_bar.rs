@@ -315,12 +315,13 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
         Hint::new("↑↓", " lines "),
         Hint::new("h/l", " scroll "),
         Hint::new("/", " search "),
-        Hint::new("q", " quit "),
+        Hint::new("m", " recent "),
+        Hint::new("q", " question "),
+        Hint::new("^q", " quit "),
     ];
 
     if app.tabs.len() > 1 {
-        hints.push(Hint::new("[/]", " tabs "));
-        hints.push(Hint::new("x", " close "));
+        hints.push(Hint::new("x", " close tab "));
     }
 
     // Show current file in commit if navigating
@@ -372,25 +373,26 @@ fn build_hints(app: &App) -> Vec<Hint> {
         Hint::new("y", " yank "),
         Hint::new("/", " search "),
         Hint::new("f", " filter "),
-        Hint::new("F", " history "),
+        Hint::new("F", " presets "),
         Hint::new("r", " reload "),
-        Hint::new("R", " recent "),
+        Hint::new("m", " recent "),
         Hint::new("w", " watch "),
         Hint::new("e", " edit "),
         Hint::new("t", " tree "),
         Hint::new("o", " open "),
+        Hint::new(",", " settings "),
         Hint::new("^q", " quit "),
     ];
 
     hints.push(Hint::new("A", " context "));
     hints.push(Hint::new("q", " question "));
-    hints.push(Hint::new("Q", " hunk Q "));
+    hints.push(Hint::new("Q", " toggle Q "));
 
     if tab.mode == DiffMode::Staged {
         hints.push(Hint::new("c", " commit "));
     } else {
         hints.push(Hint::new("c", " comment "));
-        hints.push(Hint::new("C", " hunk C "));
+        hints.push(Hint::new("C", " toggle C "));
     }
 
     if tab.comment_focus.is_some() {
@@ -416,9 +418,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
         hints.push(Hint::new("Tab", " focus "));
     }
 
+    hints.push(Hint::new("[/]", " comments "));
+
     if app.tabs.len() > 1 {
-        hints.push(Hint::new("[/]", " tabs "));
-        hints.push(Hint::new("x", " close "));
+        hints.push(Hint::new("x", " close tab "));
     }
 
     // Indicators (not really key+label, but reuse the structure)
