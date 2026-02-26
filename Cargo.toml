@@ -13,9 +13,6 @@ path = "src/main.rs"
 ratatui = "0.29"
 crossterm = "0.28"
 
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
 # File watching
 notify = "7"
 notify-debouncer-mini = "0.5"
@@ -33,7 +30,11 @@ serde_json = "1"
 # Hashing (diff staleness detection)
 sha2 = "0.10"
 
-# File glob matching (filter system)
+# Config file parsing
+toml = "0.8"
+dirs = "5"
+
+# File glob matching (filter system + watched files)
 glob = "0.3"
 
 # Error handling
@@ -42,12 +43,6 @@ anyhow = "1"
 # Logging
 log = "0.4"
 env_logger = "0.11"
-
-# Agent panel
-toml = "0.8"
-dirs = "5"
-chrono = "0.4"
-libc = "0.2"
 
 [profile.release]
 opt-level = 3

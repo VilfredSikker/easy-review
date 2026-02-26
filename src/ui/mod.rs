@@ -4,18 +4,19 @@ mod ai_panel;
 mod ai_review_view;
 pub mod highlight;
 mod overlay;
+mod settings;
 mod status_bar;
 mod styles;
 mod utils;
 
 use crate::ai::ViewMode;
-use crate::app::App;
+use crate::app::{App, OverlayData};
 use highlight::Highlighter;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 
 /// Render the entire UI
-pub fn draw(f: &mut Frame, app: &App, hl: &Highlighter) {
+pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
     let top_height = status_bar::top_bar_height(app, f.area().width);
 
     let bottom_height = status_bar::bottom_bar_height(app, f.area().width);
@@ -90,8 +91,15 @@ pub fn draw(f: &mut Frame, app: &App, hl: &Highlighter) {
         status_bar::render_watch_notification(f, f.area(), msg);
     }
 
-    // Popup overlay (worktree picker, directory browser)
+    // Popup overlay (worktree picker, directory browser, settings)
     if let Some(ref overlay_data) = app.overlay {
-        overlay::render_overlay(f, f.area(), overlay_data);
+        match overlay_data {
+            OverlayData::Settings { selected, .. } => {
+                settings::render_settings(f, f.area(), app, *selected);
+            }
+            _ => {
+                overlay::render_overlay(f, f.area(), overlay_data);
+            }
+        }
     }
 }

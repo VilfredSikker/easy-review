@@ -47,12 +47,15 @@ er --filter '*.rs'
 
 - **AI-powered review** — Run `/er-review` in Claude Code, get per-file risk levels, inline findings, and a review checklist
 - **Four view modes** — Default (clean diff), Overlay (inline AI banners), Side Panel (3-column with AI panel), AI Review (full-screen dashboard)
-- **Comment & feedback loop** — Press `c` to comment on findings, re-run `/er-review` for AI responses
+- **Comment & feedback loop** — Press `c` to comment on lines/hunks, reply to threads with `r`, delete with `d`. Comments render inline after their target line or after the hunk
+- **GitHub PR comment sync** — Pull existing PR review comments into `er` with `G`, push your comments back with `P`. Two-way sync via `gh` CLI
 - **GitHub PR integration** — Open PRs directly: `er --pr 42` or `er <github-url>`
 - **Three diff modes** — Branch diff, unstaged changes, staged changes (plus `Shift+R` to sort by recency in any mode)
 - **Line-level navigation** — Arrow keys move through individual diff lines within hunks
 - **Syntax highlighting** — Language-aware coloring via syntect
-- **Live watch mode** — On by default. Auto-refreshes on file edits, staging, and commits; AI data reloads automatically
+- **Large diff performance** — Auto-compacts lock files and generated code; lazy-parses diffs with 500+ files; viewport-based rendering only builds visible lines
+- **Live watch mode** — On by default. Auto-refreshes on file edits, staging, and commits; AI data reloads automatically; debounced to batch rapid changes
+- **Watched files** — Monitor git-ignored paths (like `.work/` folders) via `.er-config.toml`; view content or snapshot diffs inline
 - **Multi-repo tabs** — Open multiple repos or worktrees side-by-side
 - **Hunk staging** — Stage individual files or hunks without leaving the TUI
 - **Review tracking** — Mark files as reviewed, filter to unreviewed only. Status bar shows both filtered and total reviewed counts when a filter is active
@@ -63,6 +66,7 @@ er --filter '*.rs'
 - **Worktree picker** — Switch between worktrees via `t`
 - **Yank to clipboard** — Copy the current hunk with `y`
 - **Editor integration** — Jump to the current file in `$EDITOR` with `e`
+- **Configurable settings** — Per-repo or global `.er-config.toml`; in-app settings overlay (`S`) with live preview
 - **Responsive layout** — Top and bottom bars adapt to terminal width
 
 ## Keybindings
@@ -89,18 +93,39 @@ R (Shift+R)       Toggle sort by recency (works in any mode)
 ### Actions
 
 ```
-s                 Stage / unstage file
-S                 Stage current hunk
+s                 Stage / unstage file (or snapshot watched file)
+Ctrl-s            Stage current hunk
+S                 Open settings
 Space             Toggle file as reviewed
 u                 Filter to unreviewed files only
-c                 Comment on current hunk/line
+c                 Comment on current line
+C                 Comment on current hunk
 y                 Yank (copy) current hunk
 e                 Open file in $EDITOR
-r                 Refresh diff
+r                 Refresh diff (or reply when comment focused)
 w                 Toggle live watch mode (on by default)
+W                 Toggle watched files section
 /                 Search files by name
 f                 Filter files (glob, status, size expressions)
 F                 Filter presets & history
+Enter             Expand compacted file (lock files, generated code)
+```
+
+### Comments
+
+```
+Tab               Toggle comment focus mode
+↓ / ↑             Navigate between comments (when focused)
+r                 Reply to focused comment
+d                 Delete focused comment
+R                 Toggle resolved on focused comment
+```
+
+### GitHub Sync (requires `gh` CLI)
+
+```
+G                 Pull PR review comments from GitHub
+P                 Push local comments to GitHub PR
 ```
 
 ### AI Views
@@ -136,18 +161,47 @@ Esc               Clear search, then filter (innermost first)
 q                 Quit
 ```
 
+## Large Diff Performance
+
+`er` is designed to handle PRs touching 500+ files and 10,000+ changed lines without slowing down:
+
+- **Auto-compaction** — Lock files (`*.lock`, `package-lock.json`, etc.), generated code (`*.pb.go`, `*.generated.*`), minified assets (`*.min.js`), and any file with 500+ changed lines are automatically compacted. Compacted files show a summary with add/del counts — press `Enter` to expand on demand.
+- **Lazy parsing** — Diffs above 5,000 lines use a fast header-only scan for the file list, then parse individual files when you navigate to them.
+- **Viewport rendering** — Both the diff view and file tree only allocate objects for visible terminal rows. A 5,000-line file renders ~60 lines per frame instead of 5,000.
+- **Syntax highlight cache** — Highlighted line spans are cached by content hash, avoiding re-computation across frames.
+- **Debounced watch** — Rapid file changes (e.g., during `git checkout`) are batched into a single 200ms refresh.
+- **Debug mode** — Run `ER_DEBUG=1 er` to see memory budget in the status bar (parsed files, total lines, compacted count, lazy mode indicator).
+
+## Watched Files
+
+Monitor git-ignored paths (like `.work/` agent sync folders) directly in the `er` file tree. Configure via `.er-config.toml` in your repo root:
+
+```toml
+[watched]
+paths = [".work/**/*.md", ".work/**/*.txt", "notes/*.log"]
+diff_mode = "content"   # "content" (default) or "snapshot"
+```
+
+- **content** mode shows the full file contents with line numbers
+- **snapshot** mode saves a baseline on `s` and shows a unified diff against it
+
+Watched files appear below a `── watched ──` separator in the file tree. Files not in `.gitignore` show a warning icon. The list rescans automatically every ~5 seconds.
+
+Press `W` to toggle the watched section. Navigate into watched files with `j`/`k` as usual.
+
 ## Architecture
 
 ```
 src/
 ├── main.rs           Entry point, CLI parsing (clap), event loop, input routing
+├── config.rs         Configuration system (ErConfig, load/save, settings items)
 ├── app/
 │   ├── mod.rs        Module exports
-│   └── state.rs      App state, navigation, comments, AI state management
+│   └── state.rs      App state, navigation, comments, AI state, watched files config
 ├── git/
 │   ├── mod.rs        Module exports
-│   ├── diff.rs       Unified diff parser (raw text → structured data)
-│   └── status.rs     Base branch detection, staging, git commands
+│   ├── diff.rs       Unified diff parser, header-only scanner, compaction engine
+│   └── status.rs     Base branch detection, staging, git commands, watched file discovery
 ├── github.rs         GitHub PR integration (gh CLI wrapper)
 ├── ai/
 │   ├── mod.rs        Module exports
@@ -156,19 +210,53 @@ src/
 ├── ui/
 │   ├── mod.rs        Layout coordinator (ViewMode-based dispatch)
 │   ├── styles.rs     Color scheme (blue-undertone dark theme)
-│   ├── highlight.rs  Syntax highlighting (syntect)
-│   ├── file_tree.rs  Left panel — file list with risk indicators
-│   ├── diff_view.rs  Right panel — diff with AI finding/comment banners
+│   ├── highlight.rs  Syntax highlighting (syntect) with content-hash cache
+│   ├── file_tree.rs  Left panel — virtualized file list with risk indicators
+│   ├── diff_view.rs  Right panel — viewport-based diff with AI banners, compacted view
 │   ├── ai_panel.rs   Side panel — per-file AI findings column
 │   ├── ai_review_view.rs  Full-screen AI review dashboard
 │   ├── overlay.rs    Modal overlays (directory browser, worktree picker)
+│   ├── settings.rs   Settings overlay (feature toggles, display options)
 │   ├── status_bar.rs Top bar (tabs, AI badges), bottom bar (hints, comment input)
 │   └── utils.rs      Shared utilities (word wrapping)
 └── watch/
     └── mod.rs        Debounced file watcher (notify crate, 500ms)
 ```
 
-**Stack:** Rust, Ratatui, Crossterm, syntect, notify, serde/serde_json, sha2, clap. Shells out to `git` for diffs and `gh` for GitHub PRs. Single binary, no runtime dependencies beyond git (gh optional for PR features).
+**Stack:** Rust, Ratatui, Crossterm, syntect, notify, serde/serde_json, sha2, toml, dirs, glob, clap. Shells out to `git` for diffs and `gh` for GitHub PRs. Single binary, no runtime dependencies beyond git (gh optional for PR features).
+
+## Configuration
+
+`er` loads settings from TOML config files. Per-repo config takes priority over global:
+
+1. `{repo_root}/.er-config.toml` (per-repo)
+2. `~/.config/er/config.toml` (global)
+3. Built-in defaults
+
+Press `S` in the TUI to open the settings overlay. Changes apply immediately (live preview). Press `s` to save to disk, or `Esc` to revert.
+
+```toml
+# ~/.config/er/config.toml
+
+[features]
+split_diff = true         # side-by-side diff view
+exit_heatmap = true       # review coverage summary on quit
+blame_annotations = false # git blame on findings (slower startup)
+bookmarks = true          # hunk bookmarks with m/' keys
+view_branch = true        # enable branch diff mode (1 key)
+view_unstaged = true      # enable unstaged changes mode (2 key)
+view_staged = true        # enable staged changes mode (3 key)
+ai_overlays = true        # enable AI view cycling (v/V keys)
+
+[agent]
+command = "claude"
+args = ["--print", "-p", "{prompt}"]
+
+[display]
+tab_width = 4
+line_numbers = true       # show line numbers in diff
+wrap_lines = false        # soft-wrap long lines
+```
 
 ## AI Integration
 
@@ -180,7 +268,7 @@ src/
 | `.er-order.json` | Suggested review order with groupings |
 | `.er-summary.md` | Markdown summary of overall changes |
 | `.er-checklist.json` | Review checklist items |
-| `.er-feedback.json` | Your comments (the only file `er` writes) |
+| `.er-feedback.json` | Your comments and GitHub-synced comments (the only file `er` writes) |
 
 Claude Code skills: `/er-review` (full analysis), `/er-questions` (respond to comments), `/er-risk-sort`, `/er-summary`, `/er-checklist`. See `skills/README.md` for setup.
 

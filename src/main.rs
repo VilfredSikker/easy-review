@@ -1,14 +1,14 @@
 mod ai;
 mod app;
+mod config;
 mod git;
 mod github;
 mod ui;
 mod watch;
 
 use anyhow::Result;
-use app::{App, DiffMode, InputMode};
-use crate::ai::{PanelTab, ViewMode};
-use crate::ai::agent::{self, AgentMessage, MessageRole};
+use app::{App, ConfirmAction, DiffMode, InputMode};
+use crate::ai::ViewMode;
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -19,7 +19,7 @@ use ratatui::prelude::*;
 use std::io;
 use std::path::Path;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use watch::{FileWatcher, WatchEvent};
 
 /// Terminal UI for reviewing git diffs
@@ -86,7 +86,7 @@ fn main() -> Result<()> {
     };
 
     // Load syntax highlighting (once, reused for all files)
-    let highlighter = ui::highlight::Highlighter::new();
+    let mut highlighter = ui::highlight::Highlighter::new();
 
     // Terminal setup
     enable_raw_mode()?;
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run event loop
-    let result = run_app(&mut terminal, &mut app, &highlighter, hint_rx);
+    let result = run_app(&mut terminal, &mut app, &mut highlighter, hint_rx);
 
     // Cleanup
     disable_raw_mode()?;
@@ -119,12 +119,17 @@ fn main() -> Result<()> {
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-    hl: &ui::highlight::Highlighter,
+    hl: &mut ui::highlight::Highlighter,
     hint_rx: Option<mpsc::Receiver<String>>,
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
     let mut hint_rx = hint_rx;
+
+    // Debounce state for file watcher refreshes
+    let mut pending_refresh = false;
+    let mut refresh_deadline = Instant::now();
+    let mut pending_file_count = 0usize;
 
     // Start watching by default
     let root_str = app.tab().repo_root.clone();
@@ -148,10 +153,10 @@ fn run_app<B: Backend>(
                 if app.overlay.is_some() {
                     handle_overlay_input(app, key)?;
                 } else {
-                    match app.input_mode {
+                    match &app.input_mode {
                         InputMode::Search => handle_search_input(app, key),
                         InputMode::Comment => handle_comment_input(app, key)?,
-                        InputMode::AgentPrompt => handle_agent_input(app, key)?,
+                        InputMode::Confirm(_) => handle_confirm_input(app, key)?,
                         InputMode::Filter => handle_filter_input(app, key),
                         InputMode::Commit => handle_commit_input(app, key)?,
                         InputMode::Normal => {
@@ -162,9 +167,18 @@ fn run_app<B: Backend>(
             }
         }
 
-        // Check for file watch events (non-blocking)
+        // Check for file watch events (non-blocking) — debounced
         if let Ok(WatchEvent::FilesChanged(paths)) = watch_rx.try_recv() {
-            let count = paths.len();
+            pending_file_count += paths.len();
+            pending_refresh = true;
+            refresh_deadline = Instant::now() + Duration::from_millis(200);
+        }
+
+        // Execute debounced refresh when deadline passes
+        if pending_refresh && Instant::now() >= refresh_deadline {
+            pending_refresh = false;
+            let count = pending_file_count;
+            pending_file_count = 0;
             let _ = app.tab_mut().refresh_diff_quick();
             let ai_status = if app.tab().ai.has_data() {
                 if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
@@ -187,6 +201,11 @@ fn run_app<B: Backend>(
             }
         }
 
+        // Rescan watched files (every 50 ticks ≈ 5s)
+        if app.ai_poll_counter % 50 == 0 {
+            app.tab_mut().refresh_watched_files();
+        }
+
         // Check for PR base hint from background thread (fires once)
         if let Some(rx) = &hint_rx {
             if let Ok(msg) = rx.try_recv() {
@@ -194,9 +213,6 @@ fn run_app<B: Backend>(
                 hint_rx = None;
             }
         }
-
-        // Poll agent child process for streaming output
-        poll_agent(app);
 
         // Tick — used for auto-clearing notifications
         app.tick();
@@ -208,6 +224,25 @@ fn run_app<B: Backend>(
 }
 
 fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    // Settings overlay has additional keybindings
+    if matches!(app.overlay, Some(app::OverlayData::Settings { .. })) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                // Space and Enter both toggle the current item
+                app.settings_toggle();
+            }
+            KeyCode::Char('s') => {
+                // Save settings to disk
+                app.settings_save();
+            }
+            KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
         KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
@@ -228,22 +263,28 @@ fn handle_normal_input(
     // ── Global keys: work in all view modes including AiReview ──
 
     match key.code {
-        // Quit
-        KeyCode::Char('q') => {
+        // Quit (Ctrl+q)
+        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
             return Ok(());
         }
 
-        // Mode switching
-        KeyCode::Char('1') => {
+        // Personal question on current line (q)
+        KeyCode::Char('q') => {
+            app.start_comment(crate::ai::CommentType::Question);
+            return Ok(());
+        }
+
+        // Mode switching (gated by feature flags)
+        KeyCode::Char('1') if app.config.features.view_branch => {
             app.tab_mut().set_mode(DiffMode::Branch);
             return Ok(());
         }
-        KeyCode::Char('2') => {
+        KeyCode::Char('2') if app.config.features.view_unstaged => {
             app.tab_mut().set_mode(DiffMode::Unstaged);
             return Ok(());
         }
-        KeyCode::Char('3') => {
+        KeyCode::Char('3') if app.config.features.view_staged => {
             app.tab_mut().set_mode(DiffMode::Staged);
             return Ok(());
         }
@@ -257,15 +298,19 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Refresh
+        // Refresh / Reply (r = reply when comment focused, else refresh)
         KeyCode::Char('r') => {
-            app.tab_mut().refresh_diff()?;
-            let ai_status = if app.tab().ai.has_data() {
-                if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
+            if app.tab().comment_focus.is_some() {
+                app.start_reply();
             } else {
-                ""
-            };
-            app.notify(&format!("Refreshed{}", ai_status));
+                app.tab_mut().refresh_diff()?;
+                let ai_status = if app.tab().ai.has_data() {
+                    if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
+                } else {
+                    ""
+                };
+                app.notify(&format!("Refreshed{}", ai_status));
+            }
             return Ok(());
         }
 
@@ -322,6 +367,25 @@ fn handle_normal_input(
             return Ok(());
         }
 
+        // Toggle watched files section visibility
+        KeyCode::Char('W') => {
+            let tab = app.tab_mut();
+            if tab.watched_config.paths.is_empty() {
+                app.notify("No watched paths in .er-config.toml");
+            } else {
+                tab.show_watched = !tab.show_watched;
+                if tab.show_watched {
+                    tab.refresh_watched_files();
+                    app.notify("Watched files shown");
+                } else {
+                    tab.watched_files.clear();
+                    tab.selected_watched = None;
+                    app.notify("Watched files hidden");
+                }
+            }
+            return Ok(());
+        }
+
         _ => {}
     }
 
@@ -337,9 +401,57 @@ fn handle_normal_input(
         KeyCode::Char('j') => app.tab_mut().next_file(),
         KeyCode::Char('k') => app.tab_mut().prev_file(),
 
-        // Line navigation (arrow keys navigate within hunks)
-        KeyCode::Down => app.tab_mut().next_line(),
-        KeyCode::Up => app.tab_mut().prev_line(),
+        // Line/comment navigation (arrow keys: comments when focused, else lines)
+        // Shift+arrow extends selection, plain arrow clears it
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            let tab = app.tab_mut();
+            if tab.selection_anchor.is_none() {
+                tab.selection_anchor = tab.current_line.or(Some(0));
+            }
+            let total_lines = tab.current_hunk_line_count();
+            if total_lines > 0 {
+                match tab.current_line {
+                    None => {
+                        tab.current_line = Some(0);
+                        tab.scroll_to_current_hunk();
+                    }
+                    Some(line) => {
+                        if line + 1 < total_lines {
+                            tab.current_line = Some(line + 1);
+                            tab.scroll_to_current_hunk();
+                        }
+                    }
+                }
+            }
+        }
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            let tab = app.tab_mut();
+            if tab.selection_anchor.is_none() {
+                tab.selection_anchor = tab.current_line.or(Some(0));
+            }
+            match tab.current_line {
+                None => {}
+                Some(0) => {}
+                Some(line) => {
+                    tab.current_line = Some(line - 1);
+                    tab.scroll_to_current_hunk();
+                }
+            }
+        }
+        KeyCode::Down => {
+            if app.tab().comment_focus.is_some() {
+                app.next_comment();
+            } else {
+                app.tab_mut().next_line();
+            }
+        }
+        KeyCode::Up => {
+            if app.tab().comment_focus.is_some() {
+                app.prev_comment();
+            } else {
+                app.tab_mut().prev_line();
+            }
+        }
 
         // Hunk navigation
         KeyCode::Char('n') => app.tab_mut().next_hunk(),
@@ -368,6 +480,11 @@ fn handle_normal_input(
             app.tab_mut().search_query.clear();
         }
 
+        // Stage current hunk (Ctrl+s)
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.stage_current_hunk()?;
+        }
+
         // Filter
         KeyCode::Char('f') => {
             app.input_mode = InputMode::Filter;
@@ -380,14 +497,26 @@ fn handle_normal_input(
             app.open_filter_history();
         }
 
-        // Stage/unstage file
+        // Stage/unstage file (or update snapshot for watched files)
         KeyCode::Char('s') => {
-            app.toggle_stage_file()?;
+            if app.tab().selected_watched.is_some() {
+                // Update snapshot for watched file
+                if app.tab().watched_config.diff_mode == "snapshot" {
+                    match app.tab_mut().update_watched_snapshot() {
+                        Ok(()) => app.notify("Snapshot updated"),
+                        Err(e) => app.notify(&format!("Snapshot error: {}", e)),
+                    }
+                } else {
+                    app.notify("Snapshot mode not enabled (diff_mode = \"content\")");
+                }
+            } else {
+                app.toggle_stage_file()?;
+            }
         }
 
-        // Stage current hunk
+        // Open settings overlay
         KeyCode::Char('S') => {
-            app.stage_current_hunk()?;
+            app.open_settings();
         }
 
         // Toggle reviewed
@@ -400,29 +529,81 @@ fn handle_normal_input(
             app.toggle_unreviewed_filter();
         }
 
+        // Expand/compact toggle for compacted files
+        KeyCode::Enter => {
+            let is_compacted = app.tab().selected_diff_file().map_or(false, |f| f.compacted);
+            if is_compacted {
+                app.tab_mut().toggle_compacted()?;
+            }
+        }
+
         // Yank hunk to clipboard
         KeyCode::Char('y') => {
             app.yank_hunk()?;
         }
 
-        // Comment on current hunk
+        // Copy rich context to clipboard (for agent terminal)
+        KeyCode::Char('A') => {
+            app.copy_context()?;
+        }
+
+        // In Staged mode, c = commit; otherwise c = GitHub comment
         KeyCode::Char('c') => {
             if app.tab().mode == DiffMode::Staged {
                 app.start_commit();
             } else {
-                app.start_comment();
+                app.start_comment(crate::ai::CommentType::GitHubComment);
+            }
+        }
+        KeyCode::Char('C') => {
+            app.start_hunk_comment(crate::ai::CommentType::GitHubComment);
+        }
+
+        // Personal question on current line (q) or hunk (Q)
+        KeyCode::Char('Q') => {
+            app.start_hunk_comment(crate::ai::CommentType::Question);
+        }
+
+        // Tab: toggle comment focus within current hunk
+        KeyCode::Tab => {
+            app.toggle_comment_focus();
+        }
+
+        // Delete focused comment
+        KeyCode::Char('d') if app.tab().comment_focus.is_some() => {
+            app.start_delete_comment();
+        }
+
+        // Toggle resolved on focused comment
+        KeyCode::Char('R') => {
+            if let Some(focus) = app.tab().comment_focus.clone() {
+                toggle_comment_resolved(app, &focus.comment_id)?;
             }
         }
 
-        // Toggle AI view mode (v forward, V backward)
-        KeyCode::Char('v') => {
+        // GitHub comment sync (pull)
+        KeyCode::Char('G') => {
+            sync_github_comments(app)?;
+        }
+
+        // Push comment(s) to GitHub: P on focused comment pushes one, P with no focus pushes all
+        KeyCode::Char('P') => {
+            if app.tab().comment_focus.is_some() {
+                push_comment_to_github(app)?;
+            } else {
+                push_all_comments_to_github(app)?;
+            }
+        }
+
+        // Toggle AI view mode (v forward, V backward) — gated by ai_overlays flag
+        KeyCode::Char('v') if app.config.features.ai_overlays => {
             app.tab_mut().ai.cycle_view_mode();
             app.tab_mut().diff_scroll = 0;
             app.tab_mut().ai_panel_scroll = 0;
             let mode = app.tab().ai.view_mode.label();
             app.notify(&format!("View: {}", mode));
         }
-        KeyCode::Char('V') => {
+        KeyCode::Char('V') if app.config.features.ai_overlays => {
             app.tab_mut().ai.cycle_view_mode_prev();
             app.tab_mut().diff_scroll = 0;
             app.tab_mut().ai_panel_scroll = 0;
@@ -430,32 +611,9 @@ fn handle_normal_input(
             app.notify(&format!("View: {}", mode));
         }
 
-        // Open agent prompt
-        KeyCode::Char('a') => {
-            app.tab_mut().ai.view_mode = ViewMode::SidePanel;
-            app.tab_mut().ai.panel_tab = PanelTab::Agent;
-            app.tab_mut().update_agent_context();
-            app.input_mode = InputMode::AgentPrompt;
-        }
-
-        // Tab to toggle panel tabs (only in SidePanel mode)
-        KeyCode::Tab => {
-            if app.tab().ai.view_mode == ViewMode::SidePanel {
-                let tab = app.tab_mut();
-                tab.ai.panel_tab = match tab.ai.panel_tab {
-                    PanelTab::Review => PanelTab::Agent,
-                    PanelTab::Agent => PanelTab::Review,
-                };
-            }
-        }
-
         // Clear search first, then filter (innermost → outermost)
         KeyCode::Esc => {
-            if app.tab().ai.view_mode == ViewMode::SidePanel
-                && app.tab().ai.panel_tab == PanelTab::Agent
-            {
-                app.tab_mut().ai.view_mode = ViewMode::Default;
-            } else if !app.tab().search_query.is_empty() {
+            if !app.tab().search_query.is_empty() {
                 app.tab_mut().search_query.clear();
             } else if !app.tab().filter_expr.is_empty() {
                 app.tab_mut().clear_filter();
@@ -618,6 +776,15 @@ fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Esc => {
             app.cancel_comment();
         }
+        // Scroll the diff view while composing a comment
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().scroll_down(10);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().scroll_up(10);
+        }
+        KeyCode::PageDown => app.tab_mut().scroll_down(20),
+        KeyCode::PageUp => app.tab_mut().scroll_up(20),
         KeyCode::Char(c) => {
             app.tab_mut().comment_input.push(c);
         }
@@ -629,38 +796,18 @@ fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn handle_agent_input(app: &mut App, key: KeyEvent) -> Result<()> {
+fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
-        KeyCode::Enter => {
-            let config = agent::load_agent_config(&app.tab().repo_root);
-            app.tab_mut().spawn_agent(&config)?;
-        }
-        KeyCode::Esc => {
-            app.input_mode = InputMode::Normal;
-        }
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Some(ref mut child) = app.tab_mut().ai.agent.child {
-                let _ = child.kill();
+        KeyCode::Char('y') => {
+            let action = app.input_mode.clone();
+            if let InputMode::Confirm(ConfirmAction::DeleteComment { comment_id }) = action {
+                app.confirm_delete_comment(&comment_id)?;
             }
-            app.tab_mut().ai.agent.is_running = false;
-            app.tab_mut().ai.agent.child = None;
-            app.tab_mut().ai.agent.messages.push(AgentMessage {
-                role: MessageRole::System,
-                text: "cancelled".to_string(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-            });
         }
-        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.tab_mut().ai.agent.messages.clear();
-            app.tab_mut().ai.agent.scroll = 0;
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.cancel_confirm();
         }
-        KeyCode::Char(c) => {
-            app.tab_mut().ai.agent.input.push(c);
-        }
-        KeyCode::Backspace => {
-            app.tab_mut().ai.agent.input.pop();
-        }
-        _ => {}
+        _ => {} // Ignore all other keys in confirm mode
     }
     Ok(())
 }
@@ -684,67 +831,363 @@ fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn poll_agent(app: &mut App) {
-    use std::io::Read;
+/// Toggle the resolved flag on a comment and persist
+fn toggle_comment_resolved(app: &mut App, comment_id: &str) -> Result<()> {
+    let tab = app.tab();
+    let repo_root = tab.repo_root.clone();
+    let is_question = comment_id.starts_with("q-");
 
-    let agent = &mut app.tab_mut().ai.agent;
-    if !agent.is_running {
-        return;
-    }
-
-    let child = match agent.child.as_mut() {
-        Some(c) => c,
-        None => return,
-    };
-
-    // Try reading stdout
-    if let Some(ref mut stdout) = child.stdout {
-        let mut buf = [0u8; 4096];
-        loop {
-            match stdout.read(&mut buf) {
-                Ok(0) => {
-                    finalize_agent_response(agent);
-                    return;
+    if is_question {
+        let path = format!("{}/.er-questions.json", repo_root);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(mut qs) = serde_json::from_str::<crate::ai::ErQuestions>(&content) {
+                let mut toggled = false;
+                for q in &mut qs.questions {
+                    if q.id == comment_id {
+                        q.resolved = !q.resolved;
+                        toggled = true;
+                        break;
+                    }
                 }
-                Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]);
-                    agent.partial_response.push_str(&chunk);
+                if toggled {
+                    let json = serde_json::to_string_pretty(&qs)?;
+                    let tmp_path = format!("{}.tmp", path);
+                    std::fs::write(&tmp_path, &json)?;
+                    std::fs::rename(&tmp_path, &path)?;
+                    app.tab_mut().reload_ai_state();
+                    app.notify("Toggled resolved");
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    break;
+            }
+        }
+    } else {
+        let path = format!("{}/.er-github-comments.json", repo_root);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(mut gc) = serde_json::from_str::<crate::ai::ErGitHubComments>(&content) {
+                let mut toggled = false;
+                for c in &mut gc.comments {
+                    if c.id == comment_id {
+                        c.resolved = !c.resolved;
+                        toggled = true;
+                        break;
+                    }
                 }
-                Err(_) => {
-                    finalize_agent_response(agent);
-                    return;
+                if toggled {
+                    let json = serde_json::to_string_pretty(&gc)?;
+                    let tmp_path = format!("{}.tmp", path);
+                    std::fs::write(&tmp_path, &json)?;
+                    std::fs::rename(&tmp_path, &path)?;
+                    app.tab_mut().reload_ai_state();
+                    app.notify("Toggled resolved");
                 }
             }
         }
     }
-
-    // Check if process exited
-    if let Ok(Some(_status)) = child.try_wait() {
-        if let Some(ref mut stdout) = child.stdout {
-            let mut remaining = String::new();
-            let _ = stdout.read_to_string(&mut remaining);
-            agent.partial_response.push_str(&remaining);
-        }
-        finalize_agent_response(agent);
-    }
+    Ok(())
 }
 
-fn finalize_agent_response(agent: &mut crate::ai::agent::AgentState) {
-    let text = std::mem::take(&mut agent.partial_response)
-        .trim()
-        .to_string();
+/// Sync GitHub PR comments (pull)
+fn sync_github_comments(app: &mut App) -> Result<()> {
+    let tab = app.tab();
+    let repo_root = tab.repo_root.clone();
 
-    if !text.is_empty() {
-        agent.messages.push(AgentMessage {
-            role: MessageRole::Agent,
-            text,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-        });
+    let pr_info = github::get_pr_info(&repo_root);
+    let pr_info = match pr_info {
+        Ok(info) => info,
+        Err(_) => {
+            app.notify("No PR found for current branch");
+            return Ok(());
+        }
+    };
+
+    let (owner, repo_name, pr_number) = pr_info;
+
+    let gh_comments = match github::gh_pr_comments(&owner, &repo_name, pr_number) {
+        Ok(c) => c,
+        Err(e) => {
+            app.notify(&format!("GitHub sync error: {}", e));
+            return Ok(());
+        }
+    };
+
+    // Load existing .er-github-comments.json
+    let comments_path = format!("{}/.er-github-comments.json", repo_root);
+    let diff_hash = tab.branch_diff_hash.clone();
+    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| crate::ai::ErGitHubComments {
+            version: 1,
+            diff_hash: diff_hash.clone(),
+            github: None,
+            comments: Vec::new(),
+        }),
+        Err(_) => crate::ai::ErGitHubComments {
+            version: 1,
+            diff_hash: diff_hash.clone(),
+            github: None,
+            comments: Vec::new(),
+        },
+    };
+
+    gc.github = Some(crate::ai::GitHubSyncState {
+        pr_number: Some(pr_number),
+        owner: owner.clone(),
+        repo: repo_name.clone(),
+        last_synced: chrono_now(),
+    });
+
+    let known_github_ids: std::collections::HashSet<u64> = gc.comments.iter()
+        .filter_map(|c| c.github_id)
+        .collect();
+
+    let mut remote_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut added = 0u32;
+    let mut updated = 0u32;
+    let tab_files = &app.tab().files;
+
+    for gh in &gh_comments {
+        remote_ids.insert(gh.id);
+
+        if known_github_ids.contains(&gh.id) {
+            if let Some(c) = gc.comments.iter_mut().find(|c| c.github_id == Some(gh.id)) {
+                if c.comment != gh.body {
+                    c.comment = gh.body.clone();
+                    updated += 1;
+                }
+            }
+        } else {
+            let file_path = gh.path.clone().unwrap_or_default();
+            let hunk_index = gh.line.and_then(|line| {
+                tab_files.iter()
+                    .find(|f| f.path == file_path)
+                    .and_then(|f| {
+                        f.hunks.iter().enumerate().find(|(_, h)| {
+                            line >= h.new_start && line < h.new_start + h.new_count
+                        }).map(|(i, _)| i)
+                    })
+            });
+
+            let in_reply_to = gh.in_reply_to_id.and_then(|parent_gh_id| {
+                gc.comments.iter()
+                    .find(|c| c.github_id == Some(parent_gh_id))
+                    .map(|c| c.id.clone())
+            });
+
+            let comment = crate::ai::GitHubReviewComment {
+                id: format!("gh-{}", gh.id),
+                timestamp: gh.created_at.clone(),
+                file: file_path,
+                hunk_index,
+                line_start: gh.line,
+                line_end: None,
+                line_content: String::new(),
+                comment: gh.body.clone(),
+                in_reply_to,
+                resolved: false,
+                source: "github".to_string(),
+                github_id: Some(gh.id),
+                author: gh.user.login.clone(),
+                synced: true,
+                stale: false,
+            };
+
+            gc.comments.push(comment);
+            added += 1;
+        }
     }
 
-    agent.is_running = false;
-    agent.child = None;
+    let removed = gc.comments.iter()
+        .filter(|c| c.source == "github" && c.github_id.is_some() && !remote_ids.contains(&c.github_id.unwrap()))
+        .count() as u32;
+    gc.comments.retain(|c| {
+        if c.source == "github" {
+            c.github_id.map_or(true, |id| remote_ids.contains(&id))
+        } else {
+            true
+        }
+    });
+
+    let json = serde_json::to_string_pretty(&gc)?;
+    let tmp_path = format!("{}.tmp", comments_path);
+    std::fs::write(&tmp_path, &json)?;
+    std::fs::rename(&tmp_path, &comments_path)?;
+
+    app.tab_mut().reload_ai_state();
+    app.notify(&format!("GitHub sync: +{} ~{} -{}", added, updated, removed));
+    Ok(())
+}
+
+/// Push a single focused comment to GitHub
+fn push_comment_to_github(app: &mut App) -> Result<()> {
+    let tab = app.tab();
+    let focus = match &tab.comment_focus {
+        Some(f) => f.clone(),
+        None => return Ok(()),
+    };
+
+    // Questions can't be pushed to GitHub
+    if focus.comment_id.starts_with("q-") {
+        app.notify("Questions are private — use /er-publish for GitHub comments");
+        return Ok(());
+    }
+
+    let repo_root = tab.repo_root.clone();
+    let pr_info = match github::get_pr_info(&repo_root) {
+        Ok(info) => info,
+        Err(_) => {
+            app.notify("No PR found for current branch");
+            return Ok(());
+        }
+    };
+    let (owner, repo_name, pr_number) = pr_info;
+
+    let comments_path = format!("{}/.er-github-comments.json", repo_root);
+    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+        Ok(content) => match serde_json::from_str(&content) {
+            Ok(gc) => gc,
+            Err(_) => return Ok(()),
+        },
+        Err(_) => return Ok(()),
+    };
+
+    let comment = match gc.comments.iter().find(|c| c.id == focus.comment_id) {
+        Some(c) => c.clone(),
+        None => return Ok(()),
+    };
+
+    if comment.synced {
+        app.notify("Comment already synced");
+        return Ok(());
+    }
+
+    if comment.source != "local" {
+        app.notify("Only local comments can be pushed");
+        return Ok(());
+    }
+
+    let result = if let Some(reply_to_id) = comment.in_reply_to.as_ref()
+        .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
+        .and_then(|c| c.github_id)
+    {
+        github::gh_pr_reply_comment(&owner, &repo_name, pr_number, reply_to_id, &comment.comment)
+    } else {
+        let path = &comment.file;
+        let line = comment.line_start.unwrap_or(1);
+        github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment)
+    };
+
+    match result {
+        Ok(github_id) => {
+            if let Some(c) = gc.comments.iter_mut().find(|c| c.id == focus.comment_id) {
+                c.github_id = Some(github_id);
+                c.synced = true;
+            }
+            let json = serde_json::to_string_pretty(&gc)?;
+            let tmp_path = format!("{}.tmp", comments_path);
+            std::fs::write(&tmp_path, &json)?;
+            std::fs::rename(&tmp_path, &comments_path)?;
+            app.tab_mut().reload_ai_state();
+            app.notify("Comment pushed to GitHub");
+        }
+        Err(e) => {
+            app.notify(&format!("Push failed: {}", e));
+        }
+    }
+    Ok(())
+}
+
+/// Push all unpushed local comments to GitHub
+fn push_all_comments_to_github(app: &mut App) -> Result<()> {
+    let tab = app.tab();
+    let repo_root = tab.repo_root.clone();
+
+    let pr_info = match github::get_pr_info(&repo_root) {
+        Ok(info) => info,
+        Err(_) => {
+            app.notify("No PR found for current branch");
+            return Ok(());
+        }
+    };
+    let (owner, repo_name, pr_number) = pr_info;
+
+    let comments_path = format!("{}/.er-github-comments.json", repo_root);
+    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+        Ok(content) => match serde_json::from_str(&content) {
+            Ok(gc) => gc,
+            Err(_) => return Ok(()),
+        },
+        Err(_) => return Ok(()),
+    };
+
+    let mut pushed = 0u32;
+    let mut failed = 0u32;
+
+    // Push parents first
+    let comment_ids: Vec<String> = gc.comments.iter()
+        .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.is_none())
+        .map(|c| c.id.clone())
+        .collect();
+
+    for cid in &comment_ids {
+        let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
+        if let Some(comment) = comment {
+            let path = &comment.file;
+            let line = comment.line_start.unwrap_or(1);
+            match github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment) {
+                Ok(github_id) => {
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                        c.github_id = Some(github_id);
+                        c.synced = true;
+                    }
+                    pushed += 1;
+                }
+                Err(_) => { failed += 1; }
+            }
+        }
+    }
+
+    // Then push replies
+    let reply_ids: Vec<String> = gc.comments.iter()
+        .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.is_some())
+        .map(|c| c.id.clone())
+        .collect();
+
+    for cid in &reply_ids {
+        let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
+        if let Some(comment) = comment {
+            let parent_gh_id = comment.in_reply_to.as_ref()
+                .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
+                .and_then(|c| c.github_id);
+
+            if let Some(parent_gh_id) = parent_gh_id {
+                match github::gh_pr_reply_comment(&owner, &repo_name, pr_number, parent_gh_id, &comment.comment) {
+                    Ok(github_id) => {
+                        if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                            c.github_id = Some(github_id);
+                            c.synced = true;
+                        }
+                        pushed += 1;
+                    }
+                    Err(_) => { failed += 1; }
+                }
+            } else {
+                failed += 1;
+            }
+        }
+    }
+
+    let json = serde_json::to_string_pretty(&gc)?;
+    let tmp_path = format!("{}.tmp", comments_path);
+    std::fs::write(&tmp_path, &json)?;
+    std::fs::rename(&tmp_path, &comments_path)?;
+    app.tab_mut().reload_ai_state();
+
+    if failed > 0 {
+        app.notify(&format!("Pushed {} comments ({} failed)", pushed, failed));
+    } else {
+        app.notify(&format!("Pushed {} comments", pushed));
+    }
+    Ok(())
+}
+
+fn chrono_now() -> String {
+    app::chrono_now()
 }

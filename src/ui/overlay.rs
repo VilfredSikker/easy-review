@@ -9,6 +9,7 @@ use crate::app::{DirEntry, OverlayData, Worktree};
 use super::styles;
 
 /// Render the active overlay on top of the main UI
+/// Note: Settings overlay is rendered separately in ui/mod.rs since it needs App access.
 pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
     match overlay {
         OverlayData::WorktreePicker { worktrees, selected } => {
@@ -16,6 +17,9 @@ pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
         }
         OverlayData::DirectoryBrowser { current_path, entries, selected } => {
             render_directory_browser(f, area, current_path, entries, *selected);
+        }
+        OverlayData::Settings { .. } => {
+            // Handled in ui/mod.rs draw()
         }
         OverlayData::FilterHistory { history, selected, preset_count } => {
             render_filter_history(f, area, history, *selected, *preset_count);
