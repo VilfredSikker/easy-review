@@ -19,4 +19,5 @@ pub use status::{
     git_log_branch, git_diff_commit,
     discover_watched_files, verify_gitignored, save_snapshot,
     read_watched_file_content, diff_watched_file_snapshot,
+    is_merge_in_progress, git_diff_conflicts, unmerged_files,
 };

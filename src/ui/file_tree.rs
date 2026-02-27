@@ -34,6 +34,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // Conflicts mode uses the standard file tree (falls through below)
+
     let visible = tab.visible_files();
     let total = tab.files.len();
     let in_overlay = tab.layers.show_ai_findings;
@@ -90,12 +92,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             let is_selected = tab.selected_watched.is_none() && *idx == tab.selected_file;
 
             // Status symbol with color
-            let (symbol, symbol_style) = match &file.status {
-                FileStatus::Added => ("+", styles::status_added()),
-                FileStatus::Deleted => ("-", styles::status_deleted()),
-                FileStatus::Modified => ("~", styles::status_modified()),
-                FileStatus::Renamed(_) => ("R", styles::status_modified()),
-                FileStatus::Copied(_) => ("C", styles::status_modified()),
+            let is_conflicts_mode = tab.mode == DiffMode::Conflicts;
+            let (symbol, symbol_style) = if is_conflicts_mode {
+                match &file.status {
+                    FileStatus::Unmerged => ("\u{2717}", styles::status_unmerged()),
+                    _ => ("\u{2713}", styles::status_resolved()),
+                }
+            } else {
+                match &file.status {
+                    FileStatus::Added => ("+", styles::status_added()),
+                    FileStatus::Deleted => ("-", styles::status_deleted()),
+                    FileStatus::Modified => ("~", styles::status_modified()),
+                    FileStatus::Renamed(_) => ("R", styles::status_modified()),
+                    FileStatus::Copied(_) => ("C", styles::status_modified()),
+                    FileStatus::Unmerged => ("!", styles::status_unmerged()),
+                }
             };
 
             // Risk dot (only in overlay mode with AI data)

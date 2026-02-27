@@ -344,7 +344,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         hunk.new_count,
                     )
                 }
-                DiffMode::History => vec![], // AI findings not shown in History mode
+                DiffMode::History | DiffMode::Conflicts => vec![], // AI findings not shown in History/Conflicts mode
             };
             for finding in &findings {
                 let severity_style = if file_stale {

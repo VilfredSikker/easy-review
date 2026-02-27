@@ -75,6 +75,17 @@ pub fn status_modified() -> Style {
     Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)
 }
 
+/// Unmerged (conflict) file indicator color — warm orange
+pub const UNMERGED: Color = Color::Rgb(255, 140, 0);
+
+pub fn status_unmerged() -> Style {
+    Style::default().fg(UNMERGED).add_modifier(Modifier::BOLD)
+}
+
+pub fn status_resolved() -> Style {
+    Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+}
+
 // ── AI overlay colors ──
 
 pub const ORANGE: Color = Color::Rgb(251, 146, 60);

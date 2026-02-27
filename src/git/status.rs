@@ -40,6 +40,7 @@ pub enum FileStatus {
     Renamed(String), // old path
     #[allow(dead_code)]
     Copied(String),
+    Unmerged,
 }
 
 impl FileStatus {
@@ -50,6 +51,7 @@ impl FileStatus {
             FileStatus::Deleted => "-",
             FileStatus::Renamed(_) => "R",
             FileStatus::Copied(_) => "C",
+            FileStatus::Unmerged => "!",
         }
     }
 }
@@ -291,6 +293,87 @@ fn synthetic_new_file_diff(path: &str, content: &str) -> String {
         diff.push_str(&format!("+{line}\n"));
     }
     diff
+}
+
+// ── Conflicts ──
+
+/// List files with unresolved merge conflicts
+pub fn unmerged_files(repo_root: &str) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .args(["diff", "--name-only", "--diff-filter=U"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to list unmerged files")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+}
+
+/// Check if a merge is currently in progress (MERGE_HEAD exists)
+pub fn is_merge_in_progress(repo_root: &str) -> bool {
+    // Use git rev-parse --git-dir to find the correct .git directory (handles worktrees)
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(repo_root)
+        .output();
+    let git_dir = match output {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        _ => return false,
+    };
+
+    // git_dir may be relative to repo_root
+    let git_dir_path = if std::path::Path::new(&git_dir).is_absolute() {
+        std::path::PathBuf::from(&git_dir)
+    } else {
+        std::path::Path::new(repo_root).join(&git_dir)
+    };
+
+    git_dir_path.join("MERGE_HEAD").exists()
+}
+
+/// Get a combined unified diff representing the full merge changeset.
+///
+/// Combines:
+/// 1. Staged changes (resolved/auto-merged files) via `git diff --cached HEAD`
+/// 2. Working-tree changes for each unmerged file via `git diff HEAD -- <file>`
+///
+/// This ensures the Conflicts view shows the complete picture — not just files
+/// that still have conflict markers.
+pub fn git_diff_conflicts(repo_root: &str) -> Result<String> {
+    let mut combined = String::new();
+
+    // Part 1: staged changes (resolved and auto-merged files)
+    let staged_output = Command::new("git")
+        .args(["diff", "--cached", "HEAD", "--unified=3", "--no-color", "--no-ext-diff"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git diff --cached HEAD")?;
+
+    let staged_stderr = String::from_utf8_lossy(&staged_output.stderr);
+    if !staged_stderr.is_empty() && !staged_output.status.success() {
+        anyhow::bail!("git diff --cached HEAD failed: {}", staged_stderr.trim());
+    }
+    combined.push_str(&String::from_utf8_lossy(&staged_output.stdout));
+
+    // Part 2: working-tree diff for each unmerged (conflict) file
+    let unmerged = unmerged_files(repo_root)?;
+    for file in &unmerged {
+        let output = Command::new("git")
+            .args(["diff", "HEAD", "--unified=3", "--no-color", "--no-ext-diff", "--", file])
+            .current_dir(repo_root)
+            .output()
+            .with_context(|| format!("Failed to run git diff HEAD for conflict file: {}", file))?;
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.is_empty() && !output.status.success() {
+            anyhow::bail!("git diff HEAD failed for {}: {}", file, stderr.trim());
+        }
+        combined.push_str(&String::from_utf8_lossy(&output.stdout));
+    }
+
+    Ok(combined)
 }
 
 // ── Worktrees ──
@@ -770,6 +853,11 @@ mod tests {
     #[test]
     fn file_status_symbol_copied() {
         assert_eq!(FileStatus::Copied("old.rs".to_string()).symbol(), "C");
+    }
+
+    #[test]
+    fn file_status_symbol_unmerged() {
+        assert_eq!(FileStatus::Unmerged.symbol(), "!");
     }
 
     // ── reconstruct_hunk_patch ──

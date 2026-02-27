@@ -313,6 +313,10 @@ fn handle_normal_input(
             app.tab_mut().set_mode(DiffMode::History);
             return Ok(());
         }
+        KeyCode::Char('5') if app.config.features.view_conflicts => {
+            app.tab_mut().set_mode(DiffMode::Conflicts);
+            return Ok(());
+        }
         // Toggle mtime sort (works in any mode)
         KeyCode::Char('m') => {
             let tab = app.tab_mut();
@@ -1106,7 +1110,7 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
                 old_line_start: anchor_old_line,
                 hunk_header: anchor_hunk_header,
                 anchor_status: "original".to_string(),
-                relocated_at_hash: String::new(),
+                relocated_at_hash: app.tab().diff_hash.clone(),
                 finding_ref: None,
             };
 

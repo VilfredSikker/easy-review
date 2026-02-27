@@ -115,6 +115,12 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::DIM),
         ));
     }
+    if tab.mode == DiffMode::Conflicts {
+        info_spans.push(Span::styled(
+            " [merge in progress]",
+            ratatui::style::Style::default().fg(styles::ORANGE),
+        ));
+    }
     // In History mode, show selected commit info
     if tab.mode == DiffMode::History {
         if let Some(ref history) = tab.history {
@@ -150,6 +156,11 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     if app.config.features.view_history {
         modes.push(Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)));
         modes.push(Span::styled(" HISTORY ", mode_style(DiffMode::History, tab.mode)));
+    }
+    if app.config.features.view_conflicts {
+        modes.push(Span::raw(" "));
+        modes.push(Span::styled(" 5 ", mode_style(DiffMode::Conflicts, tab.mode)));
+        modes.push(Span::styled(" CONFLICTS ", mode_style(DiffMode::Conflicts, tab.mode)));
     }
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
@@ -212,6 +223,46 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(ratatui::style::Modifier::BOLD)
         };
         right.push(Span::styled(panel_label, panel_style));
+        right.push(Span::raw("  "));
+    }
+
+    // Show conflict status badge when in Conflicts mode
+    if tab.mode == DiffMode::Conflicts {
+        let total = tab.files.len();
+        let unresolved = tab.unresolved_count;
+        if unresolved > 0 {
+            // Unresolved conflicts: show unresolved count highlighted in orange
+            let unresolved_label = format!(" {} unresolved ", unresolved);
+            right.push(Span::styled(
+                unresolved_label,
+                ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::ORANGE)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            // Show total merge file count in dimmer style
+            if total > unresolved {
+                right.push(Span::styled(
+                    format!(" / {} ", total),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                ));
+            }
+        } else {
+            // All conflicts resolved: green MERGE badge
+            right.push(Span::styled(
+                " MERGE ",
+                ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::GREEN)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            if total > 0 {
+                right.push(Span::styled(
+                    format!(" {} files ", total),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                ));
+            }
+        }
         right.push(Span::raw("  "));
     }
 
@@ -379,6 +430,9 @@ fn build_hints(app: &App) -> Vec<Hint> {
         return build_history_hints(app);
     }
 
+    // Conflicts mode uses same hint structure as normal mode (staging not applicable)
+    // — fall through to normal hint building below
+
     let mut hints: Vec<Hint> = Vec::new();
 
     if tab.panel.is_some() {
@@ -412,6 +466,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
             if tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged {
                 hints.push(Hint::new("s", " stage "));
             }
+            // Staging not applicable in Conflicts mode
         }
 
         // Comment hints

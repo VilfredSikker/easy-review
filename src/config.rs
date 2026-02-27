@@ -40,6 +40,8 @@ pub struct FeatureFlags {
     pub view_staged: bool,
     #[serde(default = "default_true")]
     pub view_history: bool,
+    #[serde(default = "default_true")]
+    pub view_conflicts: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +133,7 @@ impl Default for FeatureFlags {
             view_unstaged: true,
             view_staged: true,
             view_history: true,
+            view_conflicts: true,
         }
     }
 }
@@ -264,6 +267,11 @@ pub fn settings_items() -> Vec<SettingsItem> {
             label: "History (4)".into(),
             get: |c| c.features.view_history,
             set: |c, v| c.features.view_history = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Conflicts (5)".into(),
+            get: |c| c.features.view_conflicts,
+            set: |c, v| c.features.view_conflicts = v,
         },
         SettingsItem::SectionHeader("Display".into()),
         SettingsItem::BoolToggle {

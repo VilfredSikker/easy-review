@@ -43,6 +43,7 @@ pub enum DiffMode {
     Unstaged,
     Staged,
     History,
+    Conflicts,
 }
 
 impl DiffMode {
@@ -53,6 +54,7 @@ impl DiffMode {
             DiffMode::Unstaged => "UNSTAGED",
             DiffMode::Staged => "STAGED",
             DiffMode::History => "HISTORY",
+            DiffMode::Conflicts => "CONFLICTS",
         }
     }
 
@@ -62,6 +64,7 @@ impl DiffMode {
             DiffMode::Unstaged => "unstaged",
             DiffMode::Staged => "staged",
             DiffMode::History => "history",
+            DiffMode::Conflicts => "conflicts",
         }
     }
 }
@@ -328,6 +331,14 @@ pub struct TabState {
     /// Text buffer for the commit message being typed
     pub commit_input: String,
 
+    // ── Merge conflict state ──
+
+    /// Whether a merge is currently in progress (MERGE_HEAD exists)
+    pub merge_active: bool,
+
+    /// Number of files with unresolved conflict markers (subset of total merge files)
+    pub unresolved_count: usize,
+
     // ── Performance ──
 
     /// Configuration for auto-compaction of low-value files
@@ -444,6 +455,7 @@ impl TabState {
         let er_config = config::load_config(&repo_root);
         let watched_config = er_config.watched.clone();
         let has_watched = !watched_config.paths.is_empty();
+        let merge_active = git::is_merge_in_progress(&repo_root);
 
         let mut tab = TabState {
             mode: DiffMode::Branch,
@@ -494,6 +506,8 @@ impl TabState {
             show_watched: has_watched,
             watched_not_ignored: Vec::new(),
             commit_input: String::new(),
+            merge_active,
+            unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,
@@ -566,6 +580,8 @@ impl TabState {
             show_watched: false,
             watched_not_ignored: Vec::new(),
             commit_input: String::new(),
+            merge_active: false,
+            unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,
@@ -598,11 +614,80 @@ impl TabState {
         self.refresh_diff_impl(false)
     }
 
+    /// Refresh conflict files for Conflicts mode.
+    ///
+    /// Parses the combined merge changeset (staged + unmerged working-tree diffs),
+    /// deduplicates by filename (keeping the last/unmerged occurrence for conflict
+    /// files), marks unresolved files as `FileStatus::Unmerged`, and sorts with
+    /// unresolved files first then alphabetically.
+    pub fn refresh_conflicts(&mut self) {
+        self.merge_active = git::is_merge_in_progress(&self.repo_root);
+
+        let raw = git::git_diff_conflicts(&self.repo_root).unwrap_or_default();
+        let parsed = git::parse_diff(&raw);
+
+        // Get the set of paths that still have conflict markers
+        let unmerged_paths: std::collections::HashSet<String> =
+            git::unmerged_files(&self.repo_root)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+
+        // Deduplicate by path — keep the last occurrence so that the unmerged
+        // working-tree diff wins over the staged diff for conflict files.
+        let mut seen: std::collections::HashMap<String, git::DiffFile> =
+            std::collections::HashMap::new();
+        for file in parsed {
+            seen.insert(file.path.clone(), file);
+        }
+
+        // Apply status: unmerged paths get FileStatus::Unmerged; others keep parsed status
+        let mut files: Vec<git::DiffFile> = seen
+            .into_values()
+            .map(|mut file| {
+                if unmerged_paths.contains(&file.path) {
+                    file.status = git::FileStatus::Unmerged;
+                }
+                file
+            })
+            .collect();
+
+        // Sort: unresolved (Unmerged) first, then alphabetically by path
+        files.sort_by(|a, b| {
+            let a_unmerged = a.status == git::FileStatus::Unmerged;
+            let b_unmerged = b.status == git::FileStatus::Unmerged;
+            match (a_unmerged, b_unmerged) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.path.cmp(&b.path),
+            }
+        });
+
+        self.unresolved_count = unmerged_paths.len();
+        self.files = files;
+        self.selected_file = 0;
+        self.current_hunk = 0;
+        self.current_line = None;
+        self.diff_scroll = 0;
+        self.h_scroll = 0;
+        self.rebuild_hunk_offsets();
+        self.file_tree_cache = None;
+    }
+
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool) -> Result<()> {
         // History mode doesn't use git_diff_raw — skip normal diff refresh
         if self.mode == DiffMode::History {
             return Ok(());
         }
+
+        // Conflicts mode refreshes via refresh_conflicts() only
+        if self.mode == DiffMode::Conflicts {
+            self.merge_active = git::is_merge_in_progress(&self.repo_root);
+            return Ok(());
+        }
+
+        // Update merge_active on every refresh
+        self.merge_active = git::is_merge_in_progress(&self.repo_root);
 
         // Remember current position to restore after re-parse
         let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
@@ -2083,6 +2168,12 @@ impl TabState {
                         diff_cache: cache,
                     });
                 }
+            } else if mode == DiffMode::Conflicts {
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selected_watched = None;
+                self.diff_scroll = 0;
+                self.refresh_conflicts();
             } else {
                 self.current_hunk = 0;
                 self.current_line = None;
@@ -2746,13 +2837,21 @@ impl App {
                 git::git_unstage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Unstaged: {}", file_path));
             }
+            DiffMode::Conflicts => {
+                git::git_stage_file(&repo_root, &file_path)?;
+                self.notify(&format!("Resolved: {}", file_path));
+            }
             DiffMode::History => {
-                self.notify("Staging not available in History mode");
+                self.notify("Staging not available in this mode");
                 return Ok(());
             }
         }
 
-        self.tab_mut().refresh_diff()?;
+        if mode == DiffMode::Conflicts {
+            self.tab_mut().refresh_conflicts();
+        } else {
+            self.tab_mut().refresh_diff()?;
+        }
         Ok(())
     }
 
@@ -2768,6 +2867,12 @@ impl App {
 
     /// Stage just the current hunk
     pub fn stage_current_hunk(&mut self) -> Result<()> {
+        let mode = self.tab().mode;
+        if mode == DiffMode::History || mode == DiffMode::Conflicts {
+            self.notify("Hunk staging not available in this mode");
+            return Ok(());
+        }
+
         let si = self.tab().selected_file;
         let hi = self.tab().current_hunk;
 
@@ -3994,6 +4099,8 @@ mod tests {
             show_watched: false,
             watched_not_ignored: Vec::new(),
             commit_input: String::new(),
+            merge_active: false,
+            unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,
@@ -4496,6 +4603,7 @@ mod tests {
         assert_eq!(DiffMode::Unstaged.label(), "UNSTAGED");
         assert_eq!(DiffMode::Staged.label(), "STAGED");
         assert_eq!(DiffMode::History.label(), "HISTORY");
+        assert_eq!(DiffMode::Conflicts.label(), "CONFLICTS");
     }
 
     #[test]
@@ -4504,6 +4612,7 @@ mod tests {
         assert_eq!(DiffMode::Unstaged.git_mode(), "unstaged");
         assert_eq!(DiffMode::Staged.git_mode(), "staged");
         assert_eq!(DiffMode::History.git_mode(), "history");
+        assert_eq!(DiffMode::Conflicts.git_mode(), "conflicts");
     }
 
     // ── clamp_hunk ──
