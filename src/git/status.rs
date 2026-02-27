@@ -155,7 +155,10 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
     if let Some(upstream) = run(&["rev-parse", "--abbrev-ref", "@{upstream}"]) {
         // Strip remote name prefix (first component) to get the branch name.
         // e.g. "origin/stack/foo" → "stack/foo", "origin/main" → "main"
-        let branch = upstream.find('/').map(|i| &upstream[i + 1..]).unwrap_or(&upstream);
+        let branch = upstream
+            .find('/')
+            .map(|i| &upstream[i + 1..])
+            .unwrap_or(&upstream);
         if branch != current && !branch.is_empty() {
             // Verify the short name is a valid revision
             if run(&["rev-parse", "--verify", branch]).is_some() {
@@ -170,10 +173,8 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
 
     // Common local branch names
     for candidate in &["main", "master", "develop", "dev"] {
-        if *candidate != current {
-            if run(&["rev-parse", "--verify", candidate]).is_some() {
-                return Ok(candidate.to_string());
-            }
+        if *candidate != current && run(&["rev-parse", "--verify", candidate]).is_some() {
+            return Ok(candidate.to_string());
         }
     }
 
@@ -200,9 +201,21 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
     // never pass it raw through untrusted channels (e.g., branch names from `gh api` output).
     let merge_base_ref = format!("{}...HEAD", base);
     let args: Vec<&str> = match mode {
-        "branch" => vec!["diff", &merge_base_ref, "--unified=3", "--no-color", "--no-ext-diff"],
+        "branch" => vec![
+            "diff",
+            &merge_base_ref,
+            "--unified=3",
+            "--no-color",
+            "--no-ext-diff",
+        ],
         "unstaged" => vec!["diff", "--unified=3", "--no-color", "--no-ext-diff"],
-        "staged" => vec!["diff", "--staged", "--unified=3", "--no-color", "--no-ext-diff"],
+        "staged" => vec![
+            "diff",
+            "--staged",
+            "--unified=3",
+            "--no-color",
+            "--no-ext-diff",
+        ],
         _ => anyhow::bail!("Unknown diff mode: {}", mode),
     };
 
@@ -238,9 +251,9 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
         if !untracked.is_empty() {
             let mut combined = stdout;
             for path in untracked {
-                if let Ok(content) = std::fs::read_to_string(
-                    std::path::Path::new(repo_root).join(&path),
-                ) {
+                if let Ok(content) =
+                    std::fs::read_to_string(std::path::Path::new(repo_root).join(&path))
+                {
                     combined.push_str(&synthetic_new_file_diff(&path, &content));
                 }
             }
@@ -255,9 +268,23 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
 pub fn git_diff_raw_file(mode: &str, base: &str, repo_root: &str, path: &str) -> Result<String> {
     let merge_base_ref = format!("{}...HEAD", base);
     let mut args: Vec<&str> = match mode {
-        "branch" => vec!["diff", &merge_base_ref, "--unified=3", "--no-color", "--no-ext-diff", "--"],
+        "branch" => vec![
+            "diff",
+            &merge_base_ref,
+            "--unified=3",
+            "--no-color",
+            "--no-ext-diff",
+            "--",
+        ],
         "unstaged" => vec!["diff", "--unified=3", "--no-color", "--no-ext-diff", "--"],
-        "staged" => vec!["diff", "--staged", "--unified=3", "--no-color", "--no-ext-diff", "--"],
+        "staged" => vec![
+            "diff",
+            "--staged",
+            "--unified=3",
+            "--no-color",
+            "--no-ext-diff",
+            "--",
+        ],
         _ => anyhow::bail!("Unknown diff mode: {}", mode),
     };
     // TODO(risk:medium): `path` comes from DiffFile.path which is parsed from git diff output
@@ -292,7 +319,11 @@ fn untracked_files(repo_root: &str) -> Result<Vec<String>> {
         .context("Failed to list untracked files")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+    Ok(stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
 }
 
 /// Build a unified diff for a new untracked file
@@ -331,7 +362,11 @@ pub fn unmerged_files(repo_root: &str) -> Result<Vec<String>> {
         .context("Failed to list unmerged files")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+    Ok(stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
 }
 
 /// Check if a merge is currently in progress (MERGE_HEAD exists)
@@ -342,9 +377,7 @@ pub fn is_merge_in_progress(repo_root: &str) -> bool {
         .current_dir(repo_root)
         .output();
     let git_dir = match output {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        }
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         _ => return false,
     };
 
@@ -371,7 +404,14 @@ pub fn git_diff_conflicts(repo_root: &str) -> Result<String> {
 
     // Part 1: staged changes (resolved and auto-merged files)
     let staged_output = Command::new("git")
-        .args(["diff", "--cached", "HEAD", "--unified=3", "--no-color", "--no-ext-diff"])
+        .args([
+            "diff",
+            "--cached",
+            "HEAD",
+            "--unified=3",
+            "--no-color",
+            "--no-ext-diff",
+        ])
         .current_dir(repo_root)
         .output()
         .context("Failed to run git diff --cached HEAD")?;
@@ -386,7 +426,15 @@ pub fn git_diff_conflicts(repo_root: &str) -> Result<String> {
     let unmerged = unmerged_files(repo_root)?;
     for file in &unmerged {
         let output = Command::new("git")
-            .args(["diff", "HEAD", "--unified=3", "--no-color", "--no-ext-diff", "--", file])
+            .args([
+                "diff",
+                "HEAD",
+                "--unified=3",
+                "--no-color",
+                "--no-ext-diff",
+                "--",
+                file,
+            ])
             .current_dir(repo_root)
             .output()
             .with_context(|| format!("Failed to run git diff HEAD for conflict file: {}", file))?;
@@ -533,7 +581,12 @@ pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
 // ── History (commit log + commit diffs) ──
 
 /// Get commit log for the branch (relative to base), skipping `skip` commits.
-pub fn git_log_branch(base: &str, repo_root: &str, limit: usize, skip: usize) -> Result<Vec<CommitInfo>> {
+pub fn git_log_branch(
+    base: &str,
+    repo_root: &str,
+    limit: usize,
+    skip: usize,
+) -> Result<Vec<CommitInfo>> {
     // TODO(risk:medium): if the first `git log` call fails (non-zero exit), the code silently
     // falls back to `git log` without the range — logging all commits in the repo rather than
     // just branch commits. The failure is swallowed and the caller receives a full repo history
@@ -544,7 +597,14 @@ pub fn git_log_branch(base: &str, repo_root: &str, limit: usize, skip: usize) ->
     let skip_str = format!("--skip={}", skip);
 
     let output = Command::new("git")
-        .args(["log", &range, &limit_str, &skip_str, format_str, "--shortstat"])
+        .args([
+            "log",
+            &range,
+            &limit_str,
+            &skip_str,
+            format_str,
+            "--shortstat",
+        ])
         .current_dir(repo_root)
         .output()
         .context("Failed to run git log")?;
@@ -808,7 +868,11 @@ pub fn diff_watched_file_snapshot(repo_root: &str, rel_path: &str) -> Result<Opt
 
     let output = Command::new("git")
         .args([
-            "diff", "--no-index", "--unified=3", "--no-color", "--no-ext-diff",
+            "diff",
+            "--no-index",
+            "--unified=3",
+            "--no-color",
+            "--no-ext-diff",
         ])
         .arg(&snapshot_path)
         .arg(&current_path)
@@ -866,7 +930,10 @@ mod tests {
     fn upstream_strip_simple_branch() {
         // "origin/main" → strip remote prefix → "main"
         let upstream = "origin/main";
-        let branch = upstream.find('/').map(|i| &upstream[i + 1..]).unwrap_or(upstream);
+        let branch = upstream
+            .find('/')
+            .map(|i| &upstream[i + 1..])
+            .unwrap_or(upstream);
         assert_eq!(branch, "main");
     }
 
@@ -875,14 +942,20 @@ mod tests {
         // "origin/stack/foo-bar" → strip remote prefix → "stack/foo-bar"
         // This must match current branch "stack/foo-bar" to skip upstream detection
         let upstream = "origin/stack/foo-bar";
-        let branch = upstream.find('/').map(|i| &upstream[i + 1..]).unwrap_or(upstream);
+        let branch = upstream
+            .find('/')
+            .map(|i| &upstream[i + 1..])
+            .unwrap_or(upstream);
         assert_eq!(branch, "stack/foo-bar");
     }
 
     #[test]
     fn upstream_strip_deeply_nested_branch() {
         let upstream = "origin/user/feature/sub-task";
-        let branch = upstream.find('/').map(|i| &upstream[i + 1..]).unwrap_or(upstream);
+        let branch = upstream
+            .find('/')
+            .map(|i| &upstream[i + 1..])
+            .unwrap_or(upstream);
         assert_eq!(branch, "user/feature/sub-task");
     }
 
@@ -899,8 +972,7 @@ mod tests {
 
     #[test]
     fn parse_shortstat_only_insertions() {
-        let (files, adds, dels) =
-            parse_shortstat(" 1 file changed, 10 insertions(+)");
+        let (files, adds, dels) = parse_shortstat(" 1 file changed, 10 insertions(+)");
         assert_eq!(files, 1);
         assert_eq!(adds, 10);
         assert_eq!(dels, 0);
@@ -908,8 +980,7 @@ mod tests {
 
     #[test]
     fn parse_shortstat_only_deletions() {
-        let (files, adds, dels) =
-            parse_shortstat(" 2 files changed, 5 deletions(-)");
+        let (files, adds, dels) = parse_shortstat(" 2 files changed, 5 deletions(-)");
         assert_eq!(files, 2);
         assert_eq!(adds, 0);
         assert_eq!(dels, 5);

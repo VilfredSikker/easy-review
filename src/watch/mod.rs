@@ -20,14 +20,13 @@ pub struct FileWatcher {
 impl FileWatcher {
     /// Start watching a directory. Changed file events are sent to the provided sender.
     /// Events are debounced by `debounce_ms` milliseconds.
-    pub fn new(
-        root: &Path,
-        debounce_ms: u64,
-        tx: mpsc::Sender<WatchEvent>,
-    ) -> Result<Self> {
+    pub fn new(root: &Path, debounce_ms: u64, tx: mpsc::Sender<WatchEvent>) -> Result<Self> {
         let mut debouncer = new_debouncer(
             Duration::from_millis(debounce_ms),
-            move |result: std::result::Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
+            move |result: std::result::Result<
+                Vec<notify_debouncer_mini::DebouncedEvent>,
+                notify::Error,
+            >| {
                 // TODO(risk:minor): Watcher errors (`Err` branch) are silently discarded.
                 // If the OS watch limit is hit (inotify: ENOSPC, kqueue: open file limit)
                 // the watcher will stop delivering events with no indication to the user —

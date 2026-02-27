@@ -36,7 +36,6 @@ pub(crate) fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
                 if !current.is_empty() {
                     result.push(current);
                     current = String::new();
-                    is_first_segment = false;
                 }
                 // Break the word into max_width chunks
                 let mut chars = word.chars().peekable();

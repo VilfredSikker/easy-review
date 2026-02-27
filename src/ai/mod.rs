@@ -1,7 +1,7 @@
-mod review;
 mod loader;
 mod relocate;
+mod review;
 
-pub use review::*;
 pub use loader::*;
 pub use relocate::*;
+pub use review::*;

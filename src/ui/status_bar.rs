@@ -5,9 +5,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DiffMode, InputMode, ConfirmAction};
-use crate::ai::PanelContent;
 use super::styles;
+use crate::ai::PanelContent;
+use crate::app::{App, ConfirmAction, DiffMode, InputMode};
 
 /// Compute the display width of a list of spans
 fn spans_width(spans: &[Span]) -> usize {
@@ -140,27 +140,48 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     let mut modes: Vec<Span> = vec![Span::raw(" ")];
     if app.config.features.view_branch {
         modes.push(Span::styled(" 1 ", mode_style(DiffMode::Branch, tab.mode)));
-        modes.push(Span::styled(" BRANCH ", mode_style(DiffMode::Branch, tab.mode)));
+        modes.push(Span::styled(
+            " BRANCH ",
+            mode_style(DiffMode::Branch, tab.mode),
+        ));
         modes.push(Span::raw(" "));
     }
     if app.config.features.view_unstaged {
-        modes.push(Span::styled(" 2 ", mode_style(DiffMode::Unstaged, tab.mode)));
-        modes.push(Span::styled(" UNSTAGED ", mode_style(DiffMode::Unstaged, tab.mode)));
+        modes.push(Span::styled(
+            " 2 ",
+            mode_style(DiffMode::Unstaged, tab.mode),
+        ));
+        modes.push(Span::styled(
+            " UNSTAGED ",
+            mode_style(DiffMode::Unstaged, tab.mode),
+        ));
         modes.push(Span::raw(" "));
     }
     if app.config.features.view_staged {
         modes.push(Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)));
-        modes.push(Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)));
+        modes.push(Span::styled(
+            " STAGED ",
+            mode_style(DiffMode::Staged, tab.mode),
+        ));
         modes.push(Span::raw(" "));
     }
     if app.config.features.view_history {
         modes.push(Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)));
-        modes.push(Span::styled(" HISTORY ", mode_style(DiffMode::History, tab.mode)));
+        modes.push(Span::styled(
+            " HISTORY ",
+            mode_style(DiffMode::History, tab.mode),
+        ));
     }
     if app.config.features.view_conflicts {
         modes.push(Span::raw(" "));
-        modes.push(Span::styled(" 5 ", mode_style(DiffMode::Conflicts, tab.mode)));
-        modes.push(Span::styled(" CONFLICTS ", mode_style(DiffMode::Conflicts, tab.mode)));
+        modes.push(Span::styled(
+            " 5 ",
+            mode_style(DiffMode::Conflicts, tab.mode),
+        ));
+        modes.push(Span::styled(
+            " CONFLICTS ",
+            mode_style(DiffMode::Conflicts, tab.mode),
+        ));
     }
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
@@ -180,7 +201,11 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         if tab.ai.is_stale {
             let stale_count = tab.ai.stale_files.len();
             let stale_label = if stale_count > 0 {
-                format!("⚠ {} file{} changed", stale_count, if stale_count == 1 { "" } else { "s" })
+                format!(
+                    "⚠ {} file{} changed",
+                    stale_count,
+                    if stale_count == 1 { "" } else { "s" }
+                )
             } else {
                 "⚠ AI stale".to_string()
             };
@@ -346,7 +371,10 @@ struct Hint {
 
 impl Hint {
     fn new(key: &str, label: &str) -> Self {
-        Self { key: key.to_string(), label: label.to_string() }
+        Self {
+            key: key.to_string(),
+            label: label.to_string(),
+        }
     }
     fn width(&self) -> usize {
         self.key.len() + self.label.len()
@@ -398,7 +426,9 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
     // Show current file in commit if navigating
     if let Some(ref history) = tab.history {
         if !history.commit_files.is_empty() {
-            let file_name = history.commit_files.get(history.selected_file)
+            let file_name = history
+                .commit_files
+                .get(history.selected_file)
                 .map(|f| f.path.rsplit('/').next().unwrap_or(&f.path))
                 .unwrap_or("");
             if !file_name.is_empty() {
@@ -467,12 +497,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
         }
 
         // Staging hints
-        if h.staging {
-            if tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged {
-                hints.push(Hint::new("s", " stage "));
-            }
-            // Staging not applicable in Conflicts mode
+        if h.staging && (tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged) {
+            hints.push(Hint::new("s", " stage "));
         }
+        // Staging not applicable in Conflicts mode
 
         // Comment hints
         if h.comments {
@@ -598,10 +626,7 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
             current_spans.push(Span::raw(" "));
         }
         if !hint.key.is_empty() {
-            current_spans.push(Span::styled(
-                hint.key.clone(),
-                styles::key_hint_style(),
-            ));
+            current_spans.push(Span::styled(hint.key.clone(), styles::key_hint_style()));
         }
         current_spans.push(Span::styled(
             hint.label.clone(),
@@ -633,7 +658,11 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
 /// Calculate how many rows the bottom bar needs
 pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
     match &app.input_mode {
-        InputMode::Search | InputMode::Comment | InputMode::Confirm(_) | InputMode::Filter | InputMode::Commit => 1,
+        InputMode::Search
+        | InputMode::Comment
+        | InputMode::Confirm(_)
+        | InputMode::Filter
+        | InputMode::Commit => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -653,10 +682,13 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 ConfirmAction::DeleteComment { .. } => "Delete comment? (y/n)",
             };
             let spans = vec![
-                Span::styled(" ⚠ ", ratatui::style::Style::default()
-                    .fg(styles::BG)
-                    .bg(styles::YELLOW)
-                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    " ⚠ ",
+                    ratatui::style::Style::default()
+                        .fg(styles::BG)
+                        .bg(styles::YELLOW)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
                 Span::styled(
                     format!(" {} ", prompt),
                     ratatui::style::Style::default().fg(styles::YELLOW),
@@ -670,7 +702,14 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             let is_reply = tab.comment_reply_to.is_some();
             let is_finding_reply = tab.comment_finding_ref.is_some();
             let (label, accent) = if is_reply {
-                ("reply", if is_question { styles::YELLOW } else { styles::CYAN })
+                (
+                    "reply",
+                    if is_question {
+                        styles::YELLOW
+                    } else {
+                        styles::CYAN
+                    },
+                )
             } else if is_finding_reply {
                 ("response", styles::CYAN)
             } else if is_question {
@@ -678,29 +717,33 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 ("comment", styles::CYAN)
             };
-            let file_short = tab.comment_file.rsplit('/').next().unwrap_or(&tab.comment_file);
+            let file_short = tab
+                .comment_file
+                .rsplit('/')
+                .next()
+                .unwrap_or(&tab.comment_file);
             let target_label = if let Some(ln) = tab.comment_line_num {
                 format!("{}:L{}", file_short, ln)
             } else {
                 format!("{}:h{}", file_short, tab.comment_hunk + 1)
             };
             let spans = vec![
-                Span::styled(format!(" {} ", label), ratatui::style::Style::default()
-                    .fg(styles::BG)
-                    .bg(accent)
-                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    format!(" {} ", label),
+                    ratatui::style::Style::default()
+                        .fg(styles::BG)
+                        .bg(accent)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
                 Span::styled(
                     format!(" {} ", target_label),
                     ratatui::style::Style::default().fg(styles::DIM),
                 ),
                 Span::styled(
-                    format!("{}", tab.comment_input),
+                    tab.comment_input.to_string(),
                     ratatui::style::Style::default().fg(styles::TEXT),
                 ),
-                Span::styled(
-                    "█",
-                    ratatui::style::Style::default().fg(accent),
-                ),
+                Span::styled("█", ratatui::style::Style::default().fg(accent)),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
                 Span::styled(" send  ", ratatui::style::Style::default().fg(styles::DIM)),
@@ -712,18 +755,18 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         InputMode::Filter => {
             let spans = vec![
-                Span::styled(" filter ", ratatui::style::Style::default()
-                    .fg(styles::BG)
-                    .bg(styles::YELLOW)
-                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    " filter ",
+                    ratatui::style::Style::default()
+                        .fg(styles::BG)
+                        .bg(styles::YELLOW)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
                 Span::styled(
                     format!(" {}", tab.filter_input),
                     ratatui::style::Style::default().fg(styles::TEXT),
                 ),
-                Span::styled(
-                    "█",
-                    ratatui::style::Style::default().fg(styles::YELLOW),
-                ),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::YELLOW)),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
                 Span::styled(" apply  ", ratatui::style::Style::default().fg(styles::DIM)),
@@ -740,13 +783,13 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                     format!(" {}", tab.search_query),
                     ratatui::style::Style::default().fg(styles::TEXT),
                 ),
-                Span::styled(
-                    "█",
-                    ratatui::style::Style::default().fg(styles::BLUE),
-                ),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::BLUE)),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
-                Span::styled(" confirm  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled(
+                    " confirm  ",
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ),
                 Span::styled("Esc", styles::key_hint_style()),
                 Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
             ];
@@ -755,21 +798,24 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         InputMode::Commit => {
             let spans = vec![
-                Span::styled(" commit ", ratatui::style::Style::default()
-                    .fg(styles::BG)
-                    .bg(styles::GREEN)
-                    .add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    " commit ",
+                    ratatui::style::Style::default()
+                        .fg(styles::BG)
+                        .bg(styles::GREEN)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
                 Span::styled(
                     format!(" {}", tab.commit_input),
                     ratatui::style::Style::default().fg(styles::TEXT),
                 ),
-                Span::styled(
-                    "█",
-                    ratatui::style::Style::default().fg(styles::GREEN),
-                ),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::GREEN)),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
-                Span::styled(" commit  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled(
+                    " commit  ",
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ),
                 Span::styled("Esc", styles::key_hint_style()),
                 Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
             ];
@@ -790,11 +836,11 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 .split(area);
 
             // TODO(risk:medium): rows is split from area with exactly `row_count` slots, one per
-    // hint line. If pack_hint_lines returns more lines than row_count (which can happen if
-    // bottom_bar_height and render_bottom_bar compute hint packing differently due to a
-    // race on terminal resize), rows[i] will panic with an out-of-bounds index. Clamp the
-    // enumeration to rows.len().
-    for (i, line) in lines.into_iter().enumerate() {
+            // hint line. If pack_hint_lines returns more lines than row_count (which can happen if
+            // bottom_bar_height and render_bottom_bar compute hint packing differently due to a
+            // race on terminal resize), rows[i] will panic with an out-of-bounds index. Clamp the
+            // enumeration to rows.len().
+            for (i, line) in lines.into_iter().enumerate() {
                 let bar = Paragraph::new(line).style(panel_bg);
                 f.render_widget(bar, rows[i]);
             }
@@ -822,14 +868,8 @@ pub fn render_watch_notification(f: &mut Frame, area: Rect, message: &str) {
     };
 
     let notif = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " ● ",
-            ratatui::style::Style::default().fg(styles::GREEN),
-        ),
-        Span::styled(
-            message,
-            ratatui::style::Style::default().fg(styles::TEXT),
-        ),
+        Span::styled(" ● ", ratatui::style::Style::default().fg(styles::GREEN)),
+        Span::styled(message, ratatui::style::Style::default().fg(styles::TEXT)),
         Span::raw(" "),
     ]))
     .style(

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ErConfig {
     #[serde(default)]
     pub features: FeatureFlags,
@@ -120,18 +120,6 @@ fn default_agent_args() -> Vec<String> {
     vec!["--print".into(), "-p".into(), "{prompt}".into()]
 }
 
-impl Default for ErConfig {
-    fn default() -> Self {
-        Self {
-            features: FeatureFlags::default(),
-            agent: AgentConfig::default(),
-            display: DisplayConfig::default(),
-            watched: WatchedConfig::default(),
-            hints: HintConfig::default(),
-        }
-    }
-}
-
 impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
@@ -169,8 +157,8 @@ impl Default for DisplayConfig {
 /// Merging is deep: individual fields within sections (e.g. `[features]`) override independently.
 pub fn load_config(repo_root: &str) -> ErConfig {
     let local_path = format!("{repo_root}/.er-config.toml");
-    let global_path = dirs::config_dir()
-        .map(|d| d.join("er/config.toml").to_string_lossy().to_string());
+    let global_path =
+        dirs::config_dir().map(|d| d.join("er/config.toml").to_string_lossy().to_string());
 
     let global_table = global_path
         .and_then(|p| std::fs::read_to_string(p).ok())

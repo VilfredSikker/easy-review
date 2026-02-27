@@ -311,10 +311,10 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
 
         // Diff content lines
         if let Some(ref mut hunk) = current_hunk {
-            if line.starts_with('+') {
+            if let Some(stripped) = line.strip_prefix('+') {
                 hunk.lines.push(DiffLine {
                     line_type: LineType::Add,
-                    content: line[1..].to_string(),
+                    content: stripped.to_string(),
                     old_num: None,
                     new_num: Some(new_line),
                 });
@@ -322,10 +322,10 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
                 if let Some(ref mut file) = current_file {
                     file.adds += 1;
                 }
-            } else if line.starts_with('-') {
+            } else if let Some(stripped) = line.strip_prefix('-') {
                 hunk.lines.push(DiffLine {
                     line_type: LineType::Delete,
-                    content: line[1..].to_string(),
+                    content: stripped.to_string(),
                     old_num: Some(old_line),
                     new_num: None,
                 });
@@ -388,7 +388,10 @@ fn parse_hunk_header(line: &str) -> Option<DiffHunk> {
     let (new_start, new_count) = parse_range(parts[1].trim_start_matches('+'))?;
 
     let header = if context.is_empty() {
-        format!("@@ -{},{} +{},{} @@", old_start, old_count, new_start, new_count)
+        format!(
+            "@@ -{},{} +{},{} @@",
+            old_start, old_count, new_start, new_count
+        )
     } else {
         format!(
             "@@ -{},{} +{},{} @@ {}",
@@ -491,16 +494,13 @@ fn glob_match(pattern: &str, path: &str) -> bool {
 
 /// Apply compaction to files based on pattern matching and size thresholds.
 /// Compacted files have their hunks cleared to save memory.
-pub fn compact_files(files: &mut Vec<DiffFile>, config: &CompactionConfig) {
+pub fn compact_files(files: &mut [DiffFile], config: &CompactionConfig) {
     if !config.enabled {
         return;
     }
     for file in files.iter_mut() {
         let total_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
-        let should_compact = config
-            .patterns
-            .iter()
-            .any(|p| glob_match(p, &file.path))
+        let should_compact = config.patterns.iter().any(|p| glob_match(p, &file.path))
             || total_lines > config.max_lines_before_compact;
 
         if should_compact {
@@ -534,8 +534,8 @@ pub fn expand_compacted_file(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::status::FileStatus;
+    use super::*;
 
     // === Existing tests ===
 
@@ -636,7 +636,10 @@ index abc1234..def5678 100644
         let files = parse_diff(raw);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "src/new_name.rs");
-        assert_eq!(files[0].status, FileStatus::Renamed("src/old_name.rs".to_string()));
+        assert_eq!(
+            files[0].status,
+            FileStatus::Renamed("src/old_name.rs".to_string())
+        );
     }
 
     #[test]
@@ -899,7 +902,7 @@ index aaa..bbb 100644
     fn test_parse_hunk_header_malformed_missing_closing_markers() {
         // Missing second "@@" — should return None
         let result = parse_hunk_header("@@ -1,3 +1,4");
-        assert_eq!(result.is_none(), true);
+        assert!(result.is_none());
     }
 
     #[test]
@@ -1024,14 +1027,23 @@ index aaa..bbb 100644
     #[test]
     fn glob_match_exact_filename() {
         assert!(super::glob_match("package-lock.json", "package-lock.json"));
-        assert!(super::glob_match("package-lock.json", "some/dir/package-lock.json"));
+        assert!(super::glob_match(
+            "package-lock.json",
+            "some/dir/package-lock.json"
+        ));
         assert!(!super::glob_match("package-lock.json", "other.json"));
     }
 
     #[test]
     fn glob_match_dir_glob() {
-        assert!(super::glob_match("__generated__/**", "__generated__/types.ts"));
-        assert!(super::glob_match("__generated__/**", "__generated__/sub/file.rs"));
+        assert!(super::glob_match(
+            "__generated__/**",
+            "__generated__/types.ts"
+        ));
+        assert!(super::glob_match(
+            "__generated__/**",
+            "__generated__/sub/file.rs"
+        ));
         assert!(!super::glob_match("__generated__/**", "src/generated.rs"));
     }
 
@@ -1059,19 +1071,30 @@ index aaa..bbb 100644
                 status: FileStatus::Modified,
                 hunks: vec![DiffHunk {
                     header: "@@ -1,1 +1,1 @@".to_string(),
-                    old_start: 1, old_count: 1, new_start: 1, new_count: 1,
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
                     lines: vec![DiffLine {
-                        line_type: LineType::Add, content: "x".to_string(),
-                        old_num: None, new_num: Some(1),
+                        line_type: LineType::Add,
+                        content: "x".to_string(),
+                        old_num: None,
+                        new_num: Some(1),
                     }],
                 }],
-                adds: 1, dels: 0, compacted: false, raw_hunk_count: 0,
+                adds: 1,
+                dels: 0,
+                compacted: false,
+                raw_hunk_count: 0,
             },
             DiffFile {
                 path: "src/main.rs".to_string(),
                 status: FileStatus::Modified,
                 hunks: vec![],
-                adds: 0, dels: 0, compacted: false, raw_hunk_count: 0,
+                adds: 0,
+                dels: 0,
+                compacted: false,
+                raw_hunk_count: 0,
             },
         ];
         let config = CompactionConfig::default();
@@ -1084,19 +1107,29 @@ index aaa..bbb 100644
 
     #[test]
     fn compact_files_by_size_threshold() {
-        let many_lines: Vec<DiffLine> = (0..1100).map(|i| DiffLine {
-            line_type: LineType::Add, content: format!("line {}", i),
-            old_num: None, new_num: Some(i),
-        }).collect();
+        let many_lines: Vec<DiffLine> = (0..1100)
+            .map(|i| DiffLine {
+                line_type: LineType::Add,
+                content: format!("line {}", i),
+                old_num: None,
+                new_num: Some(i),
+            })
+            .collect();
         let mut files = vec![DiffFile {
             path: "src/big_file.rs".to_string(),
             status: FileStatus::Modified,
             hunks: vec![DiffHunk {
                 header: "@@ -1,1 +1,1100 @@".to_string(),
-                old_start: 1, old_count: 1, new_start: 1, new_count: 1100,
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1100,
                 lines: many_lines,
             }],
-            adds: 1100, dels: 0, compacted: false, raw_hunk_count: 0,
+            adds: 1100,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
         }];
         let config = CompactionConfig::default();
         compact_files(&mut files, &config);
@@ -1111,15 +1144,26 @@ index aaa..bbb 100644
             status: FileStatus::Modified,
             hunks: vec![DiffHunk {
                 header: "@@ -1,1 +1,1 @@".to_string(),
-                old_start: 1, old_count: 1, new_start: 1, new_count: 1,
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
                 lines: vec![DiffLine {
-                    line_type: LineType::Add, content: "x".to_string(),
-                    old_num: None, new_num: Some(1),
+                    line_type: LineType::Add,
+                    content: "x".to_string(),
+                    old_num: None,
+                    new_num: Some(1),
                 }],
             }],
-            adds: 1, dels: 0, compacted: false, raw_hunk_count: 0,
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
         }];
-        let config = CompactionConfig { enabled: false, ..Default::default() };
+        let config = CompactionConfig {
+            enabled: false,
+            ..Default::default()
+        };
         compact_files(&mut files, &config);
         assert!(!files[0].compacted);
     }

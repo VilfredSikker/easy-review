@@ -5,9 +5,9 @@ use ratatui::{
     Frame,
 };
 
+use super::styles;
 use crate::app::App;
 use crate::config::{self, SettingsItem};
-use super::styles;
 
 /// Render the settings overlay
 pub fn render_settings(f: &mut Frame, area: Rect, app: &App, selected: usize) {
@@ -35,17 +35,14 @@ pub fn render_settings(f: &mut Frame, area: Rect, app: &App, selected: usize) {
 
         match item {
             SettingsItem::SectionHeader(title) => {
-                let line = Line::from(vec![
-                    Span::styled(
-                        format!("  {}", title),
-                        ratatui::style::Style::default()
-                            .fg(styles::CYAN)
-                            .add_modifier(ratatui::style::Modifier::BOLD),
-                    ),
-                ]);
+                let line = Line::from(vec![Span::styled(
+                    format!("  {}", title),
+                    ratatui::style::Style::default()
+                        .fg(styles::CYAN)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                )]);
                 list_items.push(
-                    ListItem::new(line)
-                        .style(ratatui::style::Style::default().bg(styles::PANEL)),
+                    ListItem::new(line).style(ratatui::style::Style::default().bg(styles::PANEL)),
                 );
             }
             SettingsItem::BoolToggle { label, get, .. } => {
@@ -54,10 +51,7 @@ pub fn render_settings(f: &mut Frame, area: Rect, app: &App, selected: usize) {
                 let checkbox = if value { "[x]" } else { "[ ]" };
 
                 let line = Line::from(vec![
-                    Span::styled(
-                        marker,
-                        ratatui::style::Style::default().fg(styles::CYAN),
-                    ),
+                    Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN)),
                     Span::styled(
                         format!("{} ", checkbox),
                         ratatui::style::Style::default().fg(if value {
@@ -89,10 +83,7 @@ pub fn render_settings(f: &mut Frame, area: Rect, app: &App, selected: usize) {
                 let marker = if is_sel { "▸ " } else { "  " };
 
                 let line = Line::from(vec![
-                    Span::styled(
-                        marker,
-                        ratatui::style::Style::default().fg(styles::CYAN),
-                    ),
+                    Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN)),
                     Span::styled(
                         label.as_str(),
                         if is_sel {
@@ -120,10 +111,7 @@ pub fn render_settings(f: &mut Frame, area: Rect, app: &App, selected: usize) {
                 let marker = if is_sel { "▸ " } else { "  " };
 
                 let line = Line::from(vec![
-                    Span::styled(
-                        marker,
-                        ratatui::style::Style::default().fg(styles::CYAN),
-                    ),
+                    Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN)),
                     Span::styled(
                         label.as_str(),
                         ratatui::style::Style::default().fg(styles::DIM),
@@ -153,10 +141,7 @@ pub fn render_settings(f: &mut Frame, area: Rect, app: &App, selected: usize) {
                 .fg(styles::TEXT)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
-        Span::styled(
-            " nav  ",
-            ratatui::style::Style::default().fg(styles::DIM),
-        ),
+        Span::styled(" nav  ", ratatui::style::Style::default().fg(styles::DIM)),
         Span::styled(
             "Space/Enter",
             ratatui::style::Style::default()
@@ -173,29 +158,20 @@ pub fn render_settings(f: &mut Frame, area: Rect, app: &App, selected: usize) {
                 .fg(styles::TEXT)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
-        Span::styled(
-            " save  ",
-            ratatui::style::Style::default().fg(styles::DIM),
-        ),
+        Span::styled(" save  ", ratatui::style::Style::default().fg(styles::DIM)),
         Span::styled(
             "Esc",
             ratatui::style::Style::default()
                 .fg(styles::TEXT)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
-        Span::styled(
-            " cancel",
-            ratatui::style::Style::default().fg(styles::DIM),
-        ),
+        Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
     ]);
     list_items.push(
-        ListItem::new(Line::from(""))
-            .style(ratatui::style::Style::default().bg(styles::PANEL)),
+        ListItem::new(Line::from("")).style(ratatui::style::Style::default().bg(styles::PANEL)),
     );
-    list_items.push(
-        ListItem::new(help_line)
-            .style(ratatui::style::Style::default().bg(styles::PANEL)),
-    );
+    list_items
+        .push(ListItem::new(help_line).style(ratatui::style::Style::default().bg(styles::PANEL)));
 
     let block = Block::default()
         .title(Span::styled(

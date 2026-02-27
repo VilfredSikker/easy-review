@@ -5,34 +5,40 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{DirEntry, OverlayData, Worktree};
 use super::styles;
+use crate::app::{DirEntry, OverlayData, Worktree};
 
 /// Render the active overlay on top of the main UI
 /// Note: Settings overlay is rendered separately in ui/mod.rs since it needs App access.
 pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
     match overlay {
-        OverlayData::WorktreePicker { worktrees, selected } => {
+        OverlayData::WorktreePicker {
+            worktrees,
+            selected,
+        } => {
             render_worktree_picker(f, area, worktrees, *selected);
         }
-        OverlayData::DirectoryBrowser { current_path, entries, selected } => {
+        OverlayData::DirectoryBrowser {
+            current_path,
+            entries,
+            selected,
+        } => {
             render_directory_browser(f, area, current_path, entries, *selected);
         }
         OverlayData::Settings { .. } => {
             // Handled in ui/mod.rs draw()
         }
-        OverlayData::FilterHistory { history, selected, preset_count } => {
+        OverlayData::FilterHistory {
+            history,
+            selected,
+            preset_count,
+        } => {
             render_filter_history(f, area, history, *selected, *preset_count);
         }
     }
 }
 
-fn render_worktree_picker(
-    f: &mut Frame,
-    area: Rect,
-    worktrees: &[Worktree],
-    selected: usize,
-) {
+fn render_worktree_picker(f: &mut Frame, area: Rect, worktrees: &[Worktree], selected: usize) {
     let popup_height = (worktrees.len() as u16 + 2).min(area.height.saturating_sub(6));
     let popup_width = 70u16.min(area.width.saturating_sub(6));
     let popup = centered_rect(popup_width, popup_height, area);
@@ -48,10 +54,7 @@ fn render_worktree_picker(
             let marker = if is_sel { "▶ " } else { "  " };
 
             let line = Line::from(vec![
-                Span::styled(
-                    marker,
-                    ratatui::style::Style::default().fg(styles::CYAN),
-                ),
+                Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN)),
                 Span::styled(
                     format!("{:<20}", wt.branch),
                     if is_sel {
@@ -60,10 +63,7 @@ fn render_worktree_picker(
                         ratatui::style::Style::default().fg(styles::TEXT)
                     },
                 ),
-                Span::styled(
-                    &wt.path,
-                    ratatui::style::Style::default().fg(styles::DIM),
-                ),
+                Span::styled(&wt.path, ratatui::style::Style::default().fg(styles::DIM)),
             ]);
 
             let style = if is_sel {
@@ -96,7 +96,9 @@ fn render_directory_browser(
     entries: &[DirEntry],
     selected: usize,
 ) {
-    let popup_height = (entries.len() as u16 + 2).min(area.height.saturating_sub(6)).max(5);
+    let popup_height = (entries.len() as u16 + 2)
+        .min(area.height.saturating_sub(6))
+        .max(5);
     let popup_width = 70u16.min(area.width.saturating_sub(6));
     let popup = centered_rect(popup_width, popup_height, area);
 
@@ -129,9 +131,7 @@ fn render_directory_browser(
             let is_sel = idx == selected;
             let marker = if is_sel { "▶ " } else { "  " };
 
-            let icon = if entry.is_git_repo {
-                " "
-            } else if entry.is_dir {
+            let icon = if entry.is_git_repo || entry.is_dir {
                 " "
             } else {
                 "  "
@@ -146,16 +146,16 @@ fn render_directory_browser(
             };
 
             let mut spans = vec![
-                Span::styled(
-                    marker,
-                    ratatui::style::Style::default().fg(styles::CYAN),
-                ),
+                Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN)),
                 Span::styled(icon, name_style),
-                Span::styled(&entry.name, if is_sel {
-                    ratatui::style::Style::default().fg(styles::BRIGHT)
-                } else {
-                    name_style
-                }),
+                Span::styled(
+                    &entry.name,
+                    if is_sel {
+                        ratatui::style::Style::default().fg(styles::BRIGHT)
+                    } else {
+                        name_style
+                    },
+                ),
             ];
 
             if entry.is_git_repo {
@@ -217,7 +217,9 @@ fn render_filter_history(
 
     let separator_lines = if !history.is_empty() { 1 } else { 0 };
     let total_rows = preset_count + separator_lines + history.len();
-    let popup_height = (total_rows as u16 + 2).min(area.height.saturating_sub(6)).max(4);
+    let popup_height = (total_rows as u16 + 2)
+        .min(area.height.saturating_sub(6))
+        .max(4);
     let popup_width = 60u16.min(area.width.saturating_sub(6));
     let popup = centered_rect(popup_width, popup_height, area);
 
@@ -231,16 +233,17 @@ fn render_filter_history(
         let marker = if is_sel { "▶ " } else { "  " };
 
         let line = Line::from(vec![
-            Span::styled(
-                marker,
-                ratatui::style::Style::default().fg(styles::CYAN),
-            ),
+            Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN)),
             Span::styled(
                 format!("{:<10}", preset.name),
                 if is_sel {
-                    ratatui::style::Style::default().fg(styles::BRIGHT).add_modifier(ratatui::style::Modifier::BOLD)
+                    ratatui::style::Style::default()
+                        .fg(styles::BRIGHT)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
                 } else {
-                    ratatui::style::Style::default().fg(styles::BLUE).add_modifier(ratatui::style::Modifier::BOLD)
+                    ratatui::style::Style::default()
+                        .fg(styles::BLUE)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
                 },
             ),
             Span::styled(
@@ -260,10 +263,13 @@ fn render_filter_history(
 
     // Separator + history section
     if !history.is_empty() {
-        items.push(ListItem::new(Line::from(Span::styled(
-            "── history ──",
-            ratatui::style::Style::default().fg(styles::MUTED),
-        ))).style(ratatui::style::Style::default().bg(styles::PANEL)));
+        items.push(
+            ListItem::new(Line::from(Span::styled(
+                "── history ──",
+                ratatui::style::Style::default().fg(styles::MUTED),
+            )))
+            .style(ratatui::style::Style::default().bg(styles::PANEL)),
+        );
 
         for (idx, expr) in history.iter().enumerate() {
             let abs_idx = preset_count + idx;
@@ -271,10 +277,7 @@ fn render_filter_history(
             let marker = if is_sel { "▶ " } else { "  " };
 
             let line = Line::from(vec![
-                Span::styled(
-                    marker,
-                    ratatui::style::Style::default().fg(styles::YELLOW),
-                ),
+                Span::styled(marker, ratatui::style::Style::default().fg(styles::YELLOW)),
                 Span::styled(
                     expr.as_str(),
                     if is_sel {
