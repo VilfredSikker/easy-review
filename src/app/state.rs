@@ -108,6 +108,8 @@ impl DiffCache {
     }
 
     pub fn get(&mut self, hash: &str) -> Option<&Vec<DiffFile>> {
+        // TODO(risk:minor): remove(pos).unwrap() is safe only because position() just confirmed the index exists,
+        // but if VecDeque ever changes contract this is a hidden panic. Consider using swap_remove_back or expect().
         if let Some(pos) = self.entries.iter().position(|(h, _)| h == hash) {
             let entry = self.entries.remove(pos).unwrap();
             self.entries.push_back(entry);
@@ -719,6 +721,8 @@ impl TabState {
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
 
         // Decide parsing strategy based on diff size
+        // TODO(risk:medium): counting newlines by iterating raw bytes on every refresh is O(n) over the full diff.
+        // For very large diffs (hundreds of MB) this adds measurable latency on every watch event.
         let line_count = raw.as_bytes().iter().filter(|&&b| b == b'\n').count();
         if line_count > git::LAZY_PARSE_THRESHOLD {
             // Lazy mode: header-only parse, files get hunks on demand
@@ -729,6 +733,8 @@ impl TabState {
             self.lazy_mode = true;
 
             // Apply compaction to the stub files (pattern-based only, since hunks are empty)
+            // TODO(risk:medium): zip() silently stops at the shorter iterator. If file_headers and files ever
+            // diverge in length (e.g. a parsing bug), some files will be skipped without any indication.
             for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
                 if self.user_expanded.contains(&file.path) {
                     continue;
@@ -864,6 +870,9 @@ impl TabState {
             ReviewFocus::Files => self.ai.review_file_count(),
             ReviewFocus::Checklist => self.ai.review_checklist_count(),
         };
+        // TODO(risk:minor): when item_count == 0, max_cursor is set to 0 and review_cursor is clamped to 0.
+        // Any code that then indexes into the list at review_cursor (e.g., checklist items) must
+        // separately guard against the empty-list case, or it will index position 0 of an empty Vec.
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
         self.review_cursor = self.review_cursor.min(max_cursor);
         self.last_ai_check = ai::latest_er_mtime(&self.repo_root);
@@ -910,6 +919,11 @@ impl TabState {
             let mut changed = false;
             for q in &mut qs.questions {
                 if q.relocated_at_hash == current_hash {
+                    continue;
+                }
+                // File-level questions have no anchor to relocate — skip
+                if q.hunk_index.is_none() && q.line_start.is_none() && q.hunk_header.is_empty() {
+                    q.relocated_at_hash = current_hash.clone();
                     continue;
                 }
                 let result = if let Some(idx) = find_file(&q.file) {
@@ -965,6 +979,11 @@ impl TabState {
                 if c.in_reply_to.is_some() {
                     continue;
                 }
+                // File-level comments have no anchor to relocate — skip
+                if c.hunk_index.is_none() && c.line_start.is_none() && c.hunk_header.is_empty() {
+                    c.relocated_at_hash = current_hash.clone();
+                    continue;
+                }
                 let result = if let Some(idx) = find_file(&c.file) {
                     let anchor = ai::CommentAnchor {
                         file: c.file.clone(),
@@ -1008,6 +1027,10 @@ impl TabState {
             false
         };
 
+        // TODO(risk:medium): write errors are silently discarded here (let _ = ...). If the disk is full
+        // or the directory is read-only, the relocation update is lost without any user notification.
+        // The next refresh will re-relocate the same comments, but any intermediate "relocated" state is
+        // dropped, and the user has no idea the write failed.
         // Write back to disk if anything changed
         if questions_changed {
             if let Some(ref qs) = self.ai.questions {
@@ -1181,6 +1204,9 @@ impl TabState {
                 } else {
                     // Approximate word_wrap: each ~70 chars = 1 line (rough estimate)
                     let chars = text_line.len();
+                    // TODO(risk:medium): (chars / 70 + 1) as u16 overflows if a single summary line
+                    // exceeds ~4.5 MB (u16::MAX * 70). The cast wraps silently, producing a small offset
+                    // and misaligning the scroll target. Use saturating arithmetic here.
                     line += ((chars / 70) + 1) as u16;
                 }
             }
@@ -1197,6 +1223,8 @@ impl TabState {
 
         // File entries
         if let Some(ref review) = self.ai.review {
+            // TODO(risk:minor): review.files.len() as u16 truncates silently if there are more than
+            // 65535 files in the review. Unlikely but adding .min(u16::MAX as usize) as u16 is safer.
             line += review.files.len() as u16;
             if self.ai.total_findings() > 0 {
                 line += 2; // total findings + blank
@@ -1638,7 +1666,10 @@ impl TabState {
         // Use precomputed hunk offsets if available (O(1) lookup)
         if let Some(ref offsets) = self.hunk_offsets {
             if let Some(&base) = offsets.offsets.get(self.current_hunk) {
-                let line_offset = base + self.current_line.unwrap_or(0);
+                // TODO(risk:medium): base + current_line can overflow usize on pathological inputs
+        // (e.g., a hunk with usize::MAX lines). saturating_sub then .min(u16::MAX) masks the overflow
+        // rather than preventing it. Add a bounds check on current_line before the addition.
+        let line_offset = base + self.current_line.unwrap_or(0);
                 self.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
                 return;
             }
@@ -1712,7 +1743,10 @@ impl TabState {
                 offset = content_end + 1; // blank line after hunk
             }
 
-            found.unwrap_or_else(|| {
+            // TODO(risk:high): file.hunks.len() - 1 panics if hunks is empty. The early return above (line ~1699)
+        // guards against this, but only for the case where hunks.is_empty() at the top of the function.
+        // If a refactor moves or removes that guard, this becomes an OOB panic. Use saturating_sub(1) here.
+        found.unwrap_or_else(|| {
                 // Past the end — clamp to last line of last hunk
                 let last = file.hunks.len() - 1;
                 (last, file.hunks[last].lines.len().saturating_sub(1))
@@ -1770,6 +1804,10 @@ impl TabState {
                 return;
             }
         }
+        // TODO(risk:medium): file_headers.get(selected_file) uses the raw file index, but selected_file
+        // is an index into self.files (which may be reordered by mtime sort). If sort_by_mtime is active,
+        // the file at self.files[selected_file] corresponds to a different header than
+        // self.file_headers[selected_file], so we'd parse the wrong file's diff.
         // Parse on demand from raw diff
         if let (Some(ref raw), Some(header)) = (&self.raw_diff, self.file_headers.get(self.selected_file)) {
             let parsed = git::parse_file_at_offset(raw, header);
@@ -1825,6 +1863,9 @@ impl TabState {
                 self.update_mem_budget();
             } else {
                 // Re-compact: only if it matched a pattern or was large
+                // TODO(risk:minor): any file can be re-compacted via Enter regardless of whether it originally
+                // matched a compaction pattern. A file that was never auto-compacted (user navigated to it
+                // in eager mode) still gets compacted on the second Enter press, which may be surprising.
                 let path = file.path.clone();
                 file.compacted = true;
                 file.raw_hunk_count = file.hunks.len();
@@ -1940,6 +1981,9 @@ impl TabState {
                 None => return,
             };
             // Check cache first (promotes to MRU on access)
+            // TODO(risk:medium): cached.clone() copies the entire Vec<DiffFile> including all hunk lines.
+            // For a commit with thousands of changed lines this is an expensive allocation on every
+            // back-navigation to a cached commit. Consider storing Arcs or indices instead of cloning.
             if let Some(cached) = history.diff_cache.get(&commit_hash) {
                 let files = cached.clone();
                 history.commit_files = files;
@@ -2129,6 +2173,9 @@ impl TabState {
             return;
         }
 
+        // TODO(risk:medium): git_log_branch is called synchronously on the event loop thread. Loading 50
+        // commits on a slow filesystem or network-mounted repo blocks the UI for the full duration of the
+        // git log call. This should be moved to a background thread like the PR hint check.
         let new_commits = git::git_log_branch(
             &self.base_branch,
             &self.repo_root,
@@ -2341,6 +2388,10 @@ impl TabState {
         use std::fs;
         use std::time::SystemTime;
 
+        // TODO(risk:medium): sort_by_mtime is applied after lazy parsing sets up file_headers with indices
+        // matching self.files positions. After sorting, self.files[i] no longer corresponds to
+        // self.file_headers[i], breaking ensure_file_parsed(). This is the same bug as noted above —
+        // lazy mode + mtime sort together produce wrong on-demand parses.
         let repo_root = self.repo_root.clone();
         self.files.sort_by(|a, b| {
             let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
@@ -2524,6 +2575,9 @@ impl App {
             tabs
         };
 
+            // TODO(risk:minor): config is loaded from the first tab's repo root but the App is shared across
+        // all tabs. If a second tab's .er-config.toml has different feature flags, those settings are
+        // ignored — the first tab's config wins for everything (display, features, agents).
         // Load config from the first tab's repo root
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
@@ -2545,6 +2599,10 @@ impl App {
     // ── Tab Accessors ──
 
     /// Get a reference to the active tab
+    // TODO(risk:high): tab() and tab_mut() index self.tabs[self.active_tab] directly. If active_tab
+    // ever exceeds tabs.len() (e.g., after close_tab() removes the last non-first tab and the index
+    // is not decremented correctly, or if tabs is somehow emptied), this panics. All callers assume
+    // tabs is non-empty; that invariant is enforced only by close_tab's guard but not at the type level.
     pub fn tab(&self) -> &TabState {
         &self.tabs[self.active_tab]
     }
@@ -3575,12 +3633,19 @@ impl App {
         let current_pos = tab.focused_finding_id.as_ref().and_then(|fid| {
             all.iter().position(|(_, _, _, id)| id == fid)
         }).or_else(|| {
-            let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+            let current_file = tab.files.get(tab.selected_file).map(|f| f.path.as_str());
+            let current_hunk = tab.current_hunk;
             current_file.and_then(|cf| {
                 if forward {
-                    all.iter().position(|(f, _, _, _)| f == cf)
+                    // Find first finding at or after current position
+                    all.iter().position(|(f, hi, _, _)| {
+                        f.as_str() > cf || (f == cf && hi.unwrap_or(0) >= current_hunk)
+                    })
                 } else {
-                    all.iter().rposition(|(f, _, _, _)| f == cf)
+                    // Find last finding at or before current position
+                    all.iter().rposition(|(f, hi, _, _)| {
+                        f.as_str() < cf || (f == cf && hi.unwrap_or(0) <= current_hunk)
+                    })
                 }
             })
         });
@@ -4039,6 +4104,9 @@ impl App {
 
     /// Tick called on every event loop iteration — used for notification auto-clear
     pub fn tick(&mut self) {
+        // TODO(risk:minor): watch_message_ticks is a u8 (max 255). If notify() is called without a
+        // subsequent tick draining it (e.g., during a long blocking git operation), ticks can overflow
+        // and wrap back to 0, causing the message to persist for another ~25 seconds unexpectedly.
         if self.watch_message.is_some() {
             self.watch_message_ticks += 1;
             if self.watch_message_ticks > 20 {

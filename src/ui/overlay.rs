@@ -182,6 +182,11 @@ fn render_directory_browser(
 
     // Shorten path for title if too long
     let max_title_width = popup_width.saturating_sub(20) as usize;
+    // TODO(risk:high): current_path[current_path.len() - max_title_width..] is a byte-index
+    // slice into a UTF-8 string. If the slice boundary falls inside a multi-byte character
+    // this panics with a byte-boundary panic. Use current_path.char_indices() to find a
+    // safe split point, or use the chars-based truncation pattern used elsewhere (e.g.
+    // chars().rev().take(max_title_width).collect::<String>() reversed).
     let title_path = if current_path.len() > max_title_width {
         format!("…{}", &current_path[current_path.len() - max_title_width..])
     } else {
@@ -304,6 +309,14 @@ fn render_filter_history(
 }
 
 /// Calculate a centered rectangle within an area
+// TODO(risk:medium): centered_rect assumes height <= r.height and width <= r.width because
+// the callers pass .min(area.height.saturating_sub(6)) and .min(area.width.saturating_sub(6)).
+// If the terminal is smaller than 6 rows/cols the saturating_sub(6) yields 0, so popup_height
+// and popup_width are both 0. Passing height=0 to Constraint::Length is valid in Ratatui
+// but the resulting Rect has height 0, and any widget rendered into it produces no output
+// without panicking. The .max(N) guards in the callers (e.g. .max(5)) prevent height=0
+// in most cases, but popup_width has no .max() guard, so a terminal narrower than 6 cols
+// produces a zero-width popup with invisible content.
 fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)

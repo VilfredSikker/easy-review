@@ -96,6 +96,10 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
     }
 
     lines.push(Line::from(tab_spans));
+    // TODO(risk:minor): area.width.saturating_sub(2) as usize allocates a string of up
+    // to ~65533 "─" (3 bytes each UTF-8) = ~192 KB per frame when the panel is very wide.
+    // Ratatui clips the widget to the allocated area so the extra characters are thrown
+    // away. Capping the repeat at area.width as usize avoids the wasted allocation.
     lines.push(Line::from(vec![Span::styled(
         "─".repeat(area.width.saturating_sub(2) as usize),
         Style::default().fg(styles::BORDER),
@@ -201,10 +205,16 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     }
 
     // Comments section — collect all top-level comments for this file across all hunks
+    // TODO(risk:minor): tab.files.get(tab.selected_file) is safe (uses get, not []).
+    // However hunk_count then drives a 0..hunk_count loop that calls
+    // tab.ai.comments_for_hunk(path, hi) — if the AI data was generated against a
+    // different version of the diff with more hunks, hi could exceed the current hunk
+    // count. The AI lookup itself should be bounds-safe, but it's worth noting that
+    // hunk_count comes from the diff model, not from the AI sidecar.
     let selected_file = tab.files.get(tab.selected_file);
     let hunk_count = selected_file.map(|f| f.hunks.len()).unwrap_or(0);
 
-    let mut file_comments: Vec<CommentRef> = Vec::new();
+    let mut file_comments: Vec<CommentRef> = tab.ai.comments_for_file_unanchored(path);
     for hi in 0..hunk_count {
         for cr in tab.ai.comments_for_hunk(path, hi) {
             if cr.in_reply_to().is_none() {
@@ -674,6 +684,10 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             } else {
                 check.status.clone()
             };
+            // TODO(risk:minor): max_w.saturating_sub(13) can reach 0 when max_w < 13
+            // (very narrow panel — area.width < 16). chars().take(0) produces an empty
+            // string yielding just "…". Enforce a minimum panel width at the layout level
+            // to make this branch unreachable.
             let check_name = if check.name.chars().count() > max_w.saturating_sub(12) {
                 format!("{}…", check.name.chars().take(max_w.saturating_sub(13)).collect::<String>())
             } else {

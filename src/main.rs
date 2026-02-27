@@ -110,6 +110,9 @@ fn main() -> Result<()> {
     let result = run_app(&mut terminal, &mut app, &mut highlighter, hint_rx, pr_data_rx);
 
     // Cleanup
+    // TODO(risk:high): if run_app panics rather than returning Err, these cleanup calls never
+    // run and the terminal is left in raw mode with no cursor — requires a `reset` or terminal
+    // restart to recover. Consider a panic hook that calls disable_raw_mode.
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -147,6 +150,9 @@ fn run_app<B: Backend>(
     // Start watching by default
     let root_str = app.tab().repo_root.clone();
     let root = std::path::Path::new(&root_str);
+    // TODO(risk:minor): FileWatcher::new failure is silently swallowed — the user gets no
+    // notification that watch mode failed to start. app.watching stays false, which is correct,
+    // but there is no visible indication of why. Log or surface the error.
     let mut _watcher: Option<FileWatcher> = match FileWatcher::new(root, 500, watch_tx.clone()) {
         Ok(w) => {
             app.watching = true;
@@ -181,6 +187,10 @@ fn run_app<B: Backend>(
         }
 
         // Check for file watch events (non-blocking) — debounced
+        // TODO(risk:medium): only one event is drained per loop tick. Under a burst of rapid
+        // changes the channel accumulates events faster than they are consumed, causing
+        // pending_file_count to undercount and the debounce deadline to reset on every tick,
+        // potentially delaying the refresh indefinitely. Drain all available events in a loop.
         if let Ok(WatchEvent::FilesChanged(paths)) = watch_rx.try_recv() {
             pending_file_count += paths.len();
             pending_refresh = true;
@@ -1024,6 +1034,8 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     };
 
     // Load existing .er-github-comments.json
+    // TODO(risk:minor): path is built by string concatenation; use Path::join to handle
+    // trailing slashes and avoid subtle path construction bugs.
     let comments_path = format!("{}/.er-github-comments.json", repo_root);
     let diff_hash = tab.branch_diff_hash.clone();
     let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
@@ -1048,117 +1060,97 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
         last_synced: chrono_now(),
     });
 
-    let known_github_ids: std::collections::HashSet<u64> = gc.comments.iter()
-        .filter_map(|c| c.github_id)
+    // Keep only truly local unpushed comments
+    let local_unpushed: Vec<_> = gc.comments.into_iter()
+        .filter(|c| c.source == "local" && !c.synced)
         .collect();
 
-    let mut remote_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    let mut added = 0u32;
-    let mut updated = 0u32;
+    // Build fresh GitHub entries from API response
     let tab_files = &app.tab().files;
+    let diff_hash_for_anchor = app.tab().diff_hash.clone();
+    let mut github_entries = Vec::new();
 
     for gh in &gh_comments {
-        remote_ids.insert(gh.id);
+        let file_path = gh.path.clone().unwrap_or_default();
 
-        if known_github_ids.contains(&gh.id) {
-            if let Some(c) = gc.comments.iter_mut().find(|c| c.github_id == Some(gh.id)) {
-                if c.comment != gh.body {
-                    c.comment = gh.body.clone();
-                    updated += 1;
-                }
-            }
-        } else {
-            let file_path = gh.path.clone().unwrap_or_default();
-            // Extract hunk_index and anchor data from the diff in one pass
-            let (hunk_index, anchor_line_content, anchor_ctx_before, anchor_ctx_after, anchor_old_line, anchor_hunk_header) =
-                if let Some(line) = gh.line {
-                    if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
-                        if let Some((i, hunk)) = f.hunks.iter().enumerate().find(|(_, h)| {
-                            line >= h.new_start && line < h.new_start + h.new_count
-                        }) {
-                            let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
-                            let (lc, old_ln) = if let Some(idx) = target_idx {
-                                (hunk.lines[idx].content.clone(), hunk.lines[idx].old_num)
-                            } else {
-                                (String::new(), None)
-                            };
-                            let ctx_before: Vec<String> = if let Some(idx) = target_idx {
-                                let start = idx.saturating_sub(3);
-                                hunk.lines[start..idx].iter().map(|l| l.content.clone()).collect()
-                            } else {
-                                Vec::new()
-                            };
-                            let ctx_after: Vec<String> = if let Some(idx) = target_idx {
-                                let end = (idx + 4).min(hunk.lines.len());
-                                hunk.lines[(idx + 1)..end].iter().map(|l| l.content.clone()).collect()
-                            } else {
-                                Vec::new()
-                            };
-                            (Some(i), lc, ctx_before, ctx_after, old_ln, hunk.header.clone())
+        let (hunk_index, anchor_line_content, anchor_ctx_before, anchor_ctx_after, anchor_old_line, anchor_hunk_header) =
+            if let Some(line) = gh.line {
+                if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
+                    if let Some((i, hunk)) = f.hunks.iter().enumerate().find(|(_, h)| {
+                        line >= h.new_start && line < h.new_start + h.new_count
+                    }) {
+                        let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
+                        let (lc, old_ln) = if let Some(idx) = target_idx {
+                            (hunk.lines[idx].content.clone(), hunk.lines[idx].old_num)
                         } else {
-                            (None, String::new(), Vec::new(), Vec::new(), None, String::new())
-                        }
+                            (String::new(), None)
+                        };
+                        let ctx_before: Vec<String> = if let Some(idx) = target_idx {
+                            let start = idx.saturating_sub(3);
+                            hunk.lines[start..idx].iter().map(|l| l.content.clone()).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        let ctx_after: Vec<String> = if let Some(idx) = target_idx {
+                            let end = (idx + 4).min(hunk.lines.len());
+                            hunk.lines[(idx + 1)..end].iter().map(|l| l.content.clone()).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        (Some(i), lc, ctx_before, ctx_after, old_ln, hunk.header.clone())
                     } else {
                         (None, String::new(), Vec::new(), Vec::new(), None, String::new())
                     }
                 } else {
                     (None, String::new(), Vec::new(), Vec::new(), None, String::new())
-                };
-
-            let in_reply_to = gh.in_reply_to_id.and_then(|parent_gh_id| {
-                gc.comments.iter()
-                    .find(|c| c.github_id == Some(parent_gh_id))
-                    .map(|c| c.id.clone())
-            });
-
-            let comment = crate::ai::GitHubReviewComment {
-                id: format!("gh-{}", gh.id),
-                timestamp: gh.created_at.clone(),
-                file: file_path,
-                hunk_index,
-                line_start: gh.line,
-                line_end: None,
-                line_content: anchor_line_content,
-                comment: gh.body.clone(),
-                in_reply_to,
-                resolved: false,
-                source: "github".to_string(),
-                github_id: Some(gh.id),
-                author: gh.user.login.clone(),
-                synced: true,
-                stale: false,
-                context_before: anchor_ctx_before,
-                context_after: anchor_ctx_after,
-                old_line_start: anchor_old_line,
-                hunk_header: anchor_hunk_header,
-                anchor_status: "original".to_string(),
-                relocated_at_hash: app.tab().diff_hash.clone(),
-                finding_ref: None,
+                }
+            } else {
+                (None, String::new(), Vec::new(), Vec::new(), None, String::new())
             };
 
-            gc.comments.push(comment);
-            added += 1;
-        }
+        let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
+
+        github_entries.push(crate::ai::GitHubReviewComment {
+            id: format!("gh-{}", gh.id),
+            timestamp: gh.created_at.clone(),
+            file: file_path,
+            hunk_index,
+            line_start: gh.line,
+            line_end: None,
+            line_content: anchor_line_content,
+            comment: gh.body.clone(),
+            in_reply_to,
+            resolved: false,
+            source: "github".to_string(),
+            github_id: Some(gh.id),
+            author: gh.user.login.clone(),
+            synced: true,
+            stale: false,
+            context_before: anchor_ctx_before,
+            context_after: anchor_ctx_after,
+            old_line_start: anchor_old_line,
+            hunk_header: anchor_hunk_header,
+            anchor_status: "original".to_string(),
+            relocated_at_hash: diff_hash_for_anchor.clone(),
+            finding_ref: None,
+        });
     }
 
-    let removed = gc.comments.iter()
-        .filter(|c| c.source == "github" && c.github_id.is_some() && !remote_ids.contains(&c.github_id.unwrap()))
-        .count() as u32;
-    gc.comments.retain(|c| {
-        if c.source == "github" {
-            c.github_id.map_or(true, |id| remote_ids.contains(&id))
-        } else {
-            true
-        }
-    });
+    let github_count = github_entries.len();
+    let local_count = local_unpushed.len();
+    gc.comments = local_unpushed;
+    gc.comments.extend(github_entries);
 
     let json = serde_json::to_string_pretty(&gc)?;
     let tmp_path = format!("{}.tmp", comments_path);
+    // TODO(risk:medium): if fs::write succeeds but fs::rename fails (e.g. permissions error),
+    // the .tmp file is left behind and the comments file is not updated. The orphaned .tmp
+    // will be picked up or confused on the next sync. Clean up the tmp file on rename failure.
     std::fs::write(&tmp_path, &json)?;
     std::fs::rename(&tmp_path, &comments_path)?;
 
     app.tab_mut().reload_ai_state();
-    app.notify(&format!("GitHub sync: +{} ~{} -{}", added, updated, removed));
+    app.notify(&format!("GitHub sync: {} from GitHub, {} local kept", github_count, local_count));
     Ok(())
 }
 
@@ -1198,7 +1190,14 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
         let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
         if let Some(comment) = comment {
             let path = &comment.file;
+            // TODO(risk:medium): a comment with no line_start (hunk-level comment) falls back
+            // to line 1, silently attributing the GitHub comment to the wrong location. GitHub
+            // will accept it but reviewers will see it anchored to the wrong line. Use the
+            // GitHub PR review API for hunk/file-level comments instead of line-level push.
             let line = comment.line_start.unwrap_or(1);
+            // TODO(risk:minor): push errors are counted but the error message is discarded.
+            // The user sees "N failed" with no indication of which comments failed or why
+            // (e.g. outdated commit SHA, deleted file, rate limit). Retain errors for display.
             match github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment, &repo_root) {
                 Ok(github_id) => {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {

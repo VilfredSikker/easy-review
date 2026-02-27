@@ -325,6 +325,11 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let modes_w = spans_width(&modes);
     let right_w = spans_width(&right);
+    // TODO(risk:minor): modes_w + right_w can exceed bar_width when the terminal is very
+    // narrow (< ~40 cols) or when many mode badges are enabled simultaneously. saturating_sub
+    // prevents underflow, so gap becomes 0 — correct. But the spans still overflow the
+    // terminal width, causing Ratatui to wrap or truncate text in an unpredictable order.
+    // Consider skipping lower-priority right spans when the combined width exceeds bar_width.
     let gap = bar_width.saturating_sub(modes_w + right_w);
     modes.push(Span::raw(" ".repeat(gap)));
     modes.extend(right);
@@ -784,7 +789,12 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 .constraints(constraints)
                 .split(area);
 
-            for (i, line) in lines.into_iter().enumerate() {
+            // TODO(risk:medium): rows is split from area with exactly `row_count` slots, one per
+    // hint line. If pack_hint_lines returns more lines than row_count (which can happen if
+    // bottom_bar_height and render_bottom_bar compute hint packing differently due to a
+    // race on terminal resize), rows[i] will panic with an out-of-bounds index. Clamp the
+    // enumeration to rows.len().
+    for (i, line) in lines.into_iter().enumerate() {
                 let bar = Paragraph::new(line).style(panel_bg);
                 f.render_widget(bar, rows[i]);
             }
@@ -794,6 +804,12 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
 
 /// Render watch notification overlay
 pub fn render_watch_notification(f: &mut Frame, area: Rect, message: &str) {
+    // TODO(risk:medium): message.len() counts bytes, not display columns. A message with
+    // multi-byte UTF-8 characters will produce a notif_width that is too large, causing
+    // the notification to be placed too far left or clipped. Use message.chars().count()
+    // (or a unicode-width crate) for the width calculation.
+    // TODO(risk:medium): if message is long enough that notif_width overflows u16 the
+    // addition wraps silently. Cap message length or use saturating arithmetic.
     let notif_width = message.len() as u16 + 4;
     let notif_x = area.x + area.width.saturating_sub(notif_width + 2);
     let notif_y = area.y + 2;

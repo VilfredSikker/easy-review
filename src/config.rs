@@ -113,6 +113,10 @@ fn default_agent_cmd() -> String {
 }
 
 fn default_agent_args() -> Vec<String> {
+    // TODO(risk:medium): the {prompt} placeholder must be present in args for the agent command
+    // to receive user input. If a user overrides `agent.args` in their config and omits
+    // {prompt}, the prompt is silently dropped and the agent runs with no meaningful input.
+    // Validate that {prompt} appears in args when loading config.
     vec!["--print".into(), "-p".into(), "{prompt}".into()]
 }
 
@@ -176,6 +180,9 @@ pub fn load_config(repo_root: &str) -> ErConfig {
             _ => None,
         });
 
+    // TODO(risk:medium): parse errors in the local .er-config.toml are silently ignored via
+    // .ok(). The user gets default config with no indication their file has a syntax error.
+    // At minimum, log the error to stderr so the user can diagnose misconfigured repos.
     let local_table = std::fs::read_to_string(&local_path)
         .ok()
         .and_then(|c| c.parse::<toml::Value>().ok())
@@ -194,6 +201,10 @@ pub fn load_config(repo_root: &str) -> ErConfig {
         (None, None) => return ErConfig::default(),
     };
 
+    // TODO(risk:medium): unwrap_or_default silently falls back to built-in defaults when the
+    // merged TOML fails to deserialize into ErConfig (e.g. wrong type for a field like
+    // tab_width = "four"). The user's entire config is dropped with no diagnostic. Log the
+    // deserialization error so the user knows their config was not applied.
     merged.try_into().unwrap_or_default()
 }
 
@@ -222,6 +233,10 @@ pub fn save_config(config: &ErConfig) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
     let content = toml::to_string_pretty(config)?;
+    // TODO(risk:high): write is non-atomic — if the process is killed mid-write (e.g. Ctrl+C
+    // during save) the config file is left with partial content and becomes unreadable on next
+    // launch (silently falls back to defaults, losing all user settings). Write to a .tmp file
+    // and rename atomically, the same pattern used for .er-github-comments.json.
     std::fs::write(path, content)?;
     Ok(())
 }

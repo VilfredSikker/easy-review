@@ -15,6 +15,11 @@ pub fn compute_diff_hash(raw_diff: &str) -> String {
 /// Compute a fast (non-cryptographic) hash for internal change detection.
 /// Much faster than SHA-256 — used for detecting if the diff has changed
 /// between ticks without the overhead of a full cryptographic hash.
+// TODO(risk:minor): `DefaultHasher` is explicitly documented by the Rust standard library
+// as having no stability guarantee — its output can change across Rust releases or even
+// between program runs (randomised on some platforms). It must never be persisted or
+// compared across processes; currently it isn't, but this is a sharp edge to keep in mind
+// if the fast hash is ever extended beyond in-process change detection.
 pub fn compute_diff_hash_fast(raw_diff: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     raw_diff.hash(&mut hasher);
@@ -36,6 +41,12 @@ pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
                 hashes.insert(file.clone(), hash);
             }
             // Parse file path from "diff --git a/path b/path"
+            // TODO(risk:medium): This parser assumes the `a/` and `b/` path components are
+            // identical, which is true for renames only when git uses the `--no-renames`
+            // flag. For a rename ("diff --git a/old.rs b/new.rs"), `split(" b/").next()`
+            // extracts "old.rs" and maps the hash under the old name. The resulting
+            // mismatch means the per-file staleness check will always fail to find the file
+            // and will never mark it as stale, silently hiding out-of-date review data.
             let path = line
                 .strip_prefix("diff --git a/")
                 .and_then(|rest| rest.split(" b/").next())
@@ -66,7 +77,14 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 
     // Load .er-review.json
     let review_path = Path::new(repo_root).join(".er-review.json");
+    // TODO(risk:medium): `read_to_string` loads the entire file into memory before
+    // deserialising. A very large or adversarially crafted `.er-review.json` (e.g. a
+    // findings array with millions of entries) will spike memory before serde can reject
+    // it. Consider capping the read with `take(MAX_BYTES)` on the file handle.
     if let Ok(content) = std::fs::read_to_string(&review_path) {
+        // TODO(risk:minor): Deserialization errors are silently swallowed (`Err(_) => {}`).
+        // A malformed sidecar will appear as if the file doesn't exist; there is no
+        // user-visible indication that a parse failure occurred.
         match serde_json::from_str::<ErReview>(&content) {
             Ok(review) => {
                 state.is_stale = review.diff_hash != current_diff_hash;
@@ -85,6 +103,10 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
                 if !state.is_stale && order.diff_hash != current_diff_hash {
                     state.is_stale = true;
                 }
+                // TODO(risk:medium): `ErOrder.order` is an unbounded Vec<OrderEntry> from
+                // untrusted JSON with no size cap. A crafted file could list tens of
+                // thousands of paths, consuming memory and making any O(n) scan over them
+                // (e.g. file-tree display ordering) noticeably slow.
                 state.order = Some(order);
             }
             Err(_) => {}
@@ -93,6 +115,9 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 
     // Load .er-summary.md
     let summary_path = Path::new(repo_root).join(".er-summary.md");
+    // TODO(risk:medium): No size limit on `.er-summary.md`. A multi-megabyte markdown
+    // file is read entirely into a heap-allocated String. The UI renders it inline, so
+    // the entire content stays in memory for the lifetime of the session.
     if let Ok(content) = std::fs::read_to_string(&summary_path) {
         if !content.trim().is_empty() {
             state.summary = Some(content);
@@ -148,6 +173,11 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     }
 
     // Load legacy .er-feedback.json (only if new files don't exist — migration support)
+    // TODO(risk:medium): TOCTOU window here: between the time `.er-questions.json` and
+    // `.er-github-comments.json` were found to not exist (earlier reads) and this check,
+    // another process could have written those files. The result is that the legacy file
+    // is loaded even though the new files are now present, potentially causing duplicate
+    // comments to be shown via the Legacy fallback path in the query methods.
     if state.questions.is_none() && state.github_comments.is_none() {
         let feedback_path = Path::new(repo_root).join(".er-feedback.json");
         if let Ok(content) = std::fs::read_to_string(&feedback_path) {
@@ -244,6 +274,12 @@ mod tests {
 }
 
 /// Get the mtime of the most recently modified .er-* file
+// TODO(risk:medium): TOCTOU race: mtime is read here, but the actual file read happens
+// later in `load_ai_state`. Between these two calls another process (e.g. a concurrent
+// AI skill run) can overwrite the file, so the mtime poll can indicate "no change" while
+// `load_ai_state` reads a newer version, or vice-versa (it shows "changed" but by the
+// time `load_ai_state` runs the file is already overwritten again with identical content).
+// The impact is a missed or spurious reload — incorrect data displayed until the next tick.
 pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
     let root = Path::new(repo_root);
     let files = [
@@ -260,6 +296,9 @@ pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
         .iter()
         .filter_map(|name| {
             let path = root.join(name);
+            // TODO(risk:minor): `metadata().modified()` can fail on filesystems that do not
+            // support mtime (e.g. FAT32, some network mounts). The `ok()?` silently drops
+            // these files from the max calculation, meaning their updates are never detected.
             std::fs::metadata(&path)
                 .ok()?
                 .modified()

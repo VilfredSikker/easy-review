@@ -24,6 +24,9 @@ fn cache_key(line: &str, filename: &str) -> u64 {
 /// Cached syntax highlighting state — loaded once, reused for all files.
 /// Includes a line-level cache to avoid re-highlighting identical content
 /// across frames (high hit rate since most lines don't change between renders).
+///
+/// Uses two-face's extended syntax set (Sublime Text 4 definitions) for
+/// broad language coverage including TypeScript, TSX, TOML, Svelte (via HTML), etc.
 pub struct Highlighter {
     syntax_set: SyntaxSet,
     theme_set: ThemeSet,
@@ -37,7 +40,7 @@ const MAX_CACHE_SIZE: usize = 10_000;
 impl Highlighter {
     pub fn new() -> Self {
         Highlighter {
-            syntax_set: SyntaxSet::load_defaults_newlines(),
+            syntax_set: two_face::syntax::extra_newlines(),
             theme_set: ThemeSet::load_defaults(),
             cache: HashMap::new(),
         }
@@ -66,11 +69,20 @@ impl Highlighter {
         }
 
         // Cache miss — perform highlighting
+        // two-face's syntax set covers TS, TSX, TOML, Svelte (via HTML), etc.
+        // Fall back to HTML for .svelte/.vue/.astro which aren't in the set directly.
         let syntax = self
             .syntax_set
             .find_syntax_for_file(filename)
             .ok()
             .flatten()
+            .or_else(|| {
+                let fallback = match filename.rsplit('.').next() {
+                    Some("svelte" | "vue" | "astro") => "HTML",
+                    _ => return None,
+                };
+                self.syntax_set.find_syntax_by_name(fallback)
+            })
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
 
         let theme = &self.theme_set.themes["base16-ocean.dark"];

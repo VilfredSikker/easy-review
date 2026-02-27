@@ -32,9 +32,14 @@ pub enum PanelContent {
 
 // ── .er-review.json ──
 
+// TODO(risk:medium): No maximum bounds on `files` or `file_hashes` HashMaps — a malformed
+// sidecar with millions of entries would cause unbounded memory growth before serde returns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErReview {
     pub version: u32,
+    // TODO(risk:medium): `diff_hash` is trusted as a String from untrusted JSON; a crafted
+    // file could supply a non-hex or absurdly long string that passes the equality check
+    // against the real hash, causing stale data to appear fresh.
     pub diff_hash: String,
     #[serde(default)]
     pub created_at: String,
@@ -49,6 +54,9 @@ pub struct ErReview {
     pub file_hashes: HashMap<String, String>,
 }
 
+// TODO(risk:medium): No upper bound on `findings` vec — an adversarial sidecar with
+// thousands of findings per file will make the UI O(n) for every hunk render, and
+// the `all_hints_ordered` sort becomes O(n log n) across the full set each frame.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErFileReview {
     pub risk: RiskLevel,
@@ -82,6 +90,9 @@ impl RiskLevel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
+    // TODO(risk:minor): `id` is an unsanitised String from external JSON; it is used as a
+    // lookup key and displayed verbatim. A crafted sidecar could inject control characters
+    // or ANSI escape sequences that corrupt terminal output.
     pub id: String,
     pub severity: RiskLevel,
     #[serde(default)]
@@ -97,6 +108,8 @@ pub struct Finding {
     pub suggestion: String,
     #[serde(default)]
     pub related_files: Vec<String>,
+    // TODO(risk:medium): No upper bound on `responses` — a crafted sidecar can embed an
+    // unbounded number of AiResponse entries per finding, growing memory indefinitely.
     #[serde(default)]
     pub responses: Vec<AiResponse>,
 }
@@ -326,6 +339,10 @@ impl<'a> CommentRef<'a> {
     pub fn can_delete(&self) -> bool {
         match self {
             CommentRef::Question(_) => true,
+            // TODO(risk:medium): Authorship check compares `c.author` (a display name from
+            // the JSON file) to the literal string "You". A GitHub comment whose author
+            // happens to be named "You", or a crafted sidecar that sets `author = "You"`,
+            // would allow the UI to offer deletion of a remote comment it does not own.
             CommentRef::GitHubComment(c) => c.source != "github" || c.author == "You",
             CommentRef::Legacy(c) => c.source != "github" || c.author == "You",
         }
@@ -352,6 +369,8 @@ impl<'a> CommentRef<'a> {
 
 // ── .er-questions.json — personal review notes ──
 
+// TODO(risk:medium): No upper bound on `questions` vec. If an external tool writes
+// thousands of questions, every hunk render scans the full list (O(n) per hunk per frame).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErQuestions {
     pub version: u32,
@@ -390,6 +409,9 @@ pub struct ReviewQuestion {
     pub hunk_header: String,
     /// "original" | "relocated" | "lost"
     #[serde(default = "default_anchor_status")]
+    // TODO(risk:minor): `anchor_status` is a free-form String from untrusted JSON, but code
+    // elsewhere pattern-matches on the string values "original"/"relocated"/"lost". An
+    // unexpected value silently falls through without warning.
     pub anchor_status: String,
     /// Diff hash when this comment was last relocated
     #[serde(default)]
@@ -417,6 +439,8 @@ pub struct GitHubSyncState {
     pub last_synced: String,
 }
 
+// TODO(risk:medium): No upper bound on `comments` vec. Repos with active review threads
+// can accumulate hundreds of entries; scanning all of them on every hunk render is O(n).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErGitHubComments {
     pub version: u32,
@@ -746,6 +770,46 @@ impl AiState {
                     if c.file == path
                         && c.hunk_index == Some(hunk_idx)
                         && c.line_start.is_none()
+                        && c.in_reply_to.is_none()
+                    {
+                        result.push(CommentRef::Legacy(c));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Comments for a file that have no valid anchor (hunk_index is None).
+    /// Returns top-level comments only (no replies).
+    pub fn comments_for_file_unanchored(&self, path: &str) -> Vec<CommentRef<'_>> {
+        let mut result = Vec::new();
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.file == path
+                    && q.hunk_index.is_none()
+                    && q.in_reply_to.is_none()
+                {
+                    result.push(CommentRef::Question(q));
+                }
+            }
+        }
+        if let Some(gc) = &self.github_comments {
+            for c in &gc.comments {
+                if c.file == path
+                    && c.hunk_index.is_none()
+                    && c.in_reply_to.is_none()
+                {
+                    result.push(CommentRef::GitHubComment(c));
+                }
+            }
+        }
+        // Legacy fallback
+        if result.is_empty() {
+            if let Some(fb) = &self.feedback {
+                for c in &fb.comments {
+                    if c.file == path
+                        && c.hunk_index.is_none()
                         && c.in_reply_to.is_none()
                     {
                         result.push(CommentRef::Legacy(c));

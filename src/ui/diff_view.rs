@@ -156,6 +156,53 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     }
     logical_line += 1;
 
+    // ── File-level (unanchored) comments ──
+    {
+        let unanchored = tab.ai.comments_for_file_unanchored(&file.path);
+        for comment in &unanchored {
+            let visible = match comment {
+                CommentRef::Question(_) => tab.layers.show_questions,
+                CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
+            };
+            if !visible {
+                continue;
+            }
+            let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
+            let pre_len = lines.len();
+            render_comment_lines(
+                &mut lines,
+                comment,
+                area.width,
+                false,
+                is_focused,
+            );
+            let comment_line_count = lines.len() - pre_len;
+            if logical_line < render_start || logical_line >= render_end {
+                lines.truncate(pre_len);
+            }
+            logical_line += comment_line_count;
+
+            // Render replies
+            let replies = tab.ai.replies_to(comment.id());
+            for reply in &replies {
+                let pre_len = lines.len();
+                let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
+                render_reply_lines(
+                    &mut lines,
+                    &reply,
+                    area.width,
+                    false,
+                    is_focused,
+                );
+                let reply_line_count = lines.len() - pre_len;
+                if logical_line < render_start || logical_line >= render_end {
+                    lines.truncate(pre_len);
+                }
+                logical_line += reply_line_count;
+            }
+        }
+    }
+
     // Unified gutter: "{old_num} {new_num} │" = 4+1+4+1+1=11 chars, plus prefix char = 12 total
     let unified_gutter_width: u16 = 12;
     let wrap_lines = app.config.display.wrap_lines;
@@ -552,6 +599,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     // Apply scroll: for virtualized rendering, adjust scroll to offset into the rendered window.
     // When wrap_lines is enabled, disable horizontal scroll (lines fit within the viewport).
     let effective_h_scroll = if app.config.display.wrap_lines { 0 } else { tab.h_scroll };
+    // TODO(risk:medium): scroll.saturating_sub(render_start) is a usize value cast
+    // directly to u16. For viewport-mode diffs with large scroll offsets (> 65535 lines
+    // rendered before the viewport window), this overflows silently. In practice diffs
+    // that large are auto-compacted, but the cast should use min(u16::MAX) or be
+    // validated to match the actual rendered buffer height.
     let visible_scroll = if use_viewport {
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
         (scroll_into_rendered, effective_h_scroll)
@@ -568,6 +620,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     // Render hunk indicator overlay in top-right corner
     if total_hunks > 0 {
         let indicator_text = format!("Hunk {}/{}", tab.active_current_hunk() + 1, total_hunks);
+        // TODO(risk:minor): indicator_width is usize cast to u16. If total_hunks is very
+        // large (> 9999) the formatted string can exceed u16::MAX chars — harmless in
+        // practice but the cast is silent. saturating_as or a length cap would be safer.
         let indicator_width = indicator_text.len() + 3;
         let indicator_area = Rect {
             x: area.x + area.width.saturating_sub(indicator_width as u16 + 1),
@@ -715,6 +770,40 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         lines.push(Line::from(""));
     }
     logical_line += 1;
+
+    // File-level (unanchored) comments — only on New side
+    if side == SplitSide::New {
+        let unanchored = tab.ai.comments_for_file_unanchored(&file.path);
+        for comment in &unanchored {
+            let visible = match comment {
+                CommentRef::Question(_) => tab.layers.show_questions,
+                CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
+            };
+            if !visible {
+                continue;
+            }
+            let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
+            let pre_len = lines.len();
+            render_comment_lines(&mut lines, comment, inner.width, false, is_focused);
+            let comment_line_count = lines.len() - pre_len;
+            if logical_line < render_start || logical_line >= render_end {
+                lines.truncate(pre_len);
+            }
+            logical_line += comment_line_count;
+
+            let replies = tab.ai.replies_to(comment.id());
+            for reply in &replies {
+                let pre_len = lines.len();
+                let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
+                render_reply_lines(&mut lines, &reply, inner.width, false, is_focused);
+                let reply_line_count = lines.len() - pre_len;
+                if logical_line < render_start || logical_line >= render_end {
+                    lines.truncate(pre_len);
+                }
+                logical_line += reply_line_count;
+            }
+        }
+    }
 
     // Split gutter: "{num} │" = 4+1+1=6 chars, plus prefix char = 7 total
     let split_gutter_width: u16 = 7;
@@ -1038,6 +1127,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     // Apply scroll: adjust into the rendered viewport window.
     // When wrap_lines is enabled, disable horizontal scroll (lines fit within the viewport).
     let effective_h_scroll = if app.config.display.wrap_lines { 0 } else { h_scroll };
+    // TODO(risk:medium): same silent usize→u16 truncation as in the unified render path.
+    // scroll.saturating_sub(render_start) can exceed u16::MAX on pathologically large diffs.
     let visible_scroll = if use_viewport {
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
         (scroll_into_rendered, effective_h_scroll)
@@ -1068,15 +1159,26 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
     }
 
     if history.commit_files.is_empty() {
+        // TODO(risk:high): history.selected_commit is not bounds-checked before indexing.
+        // If selected_commit >= history.commits.len() this panics. commits.is_empty() is
+        // checked above, but selected_commit could still be out of range if state is stale.
+        // Use .get() and fall back gracefully.
         let commit = &history.commits[history.selected_commit];
         render_history_empty(f, area, &format!("Empty commit: {}", commit.short_hash));
         return;
     }
 
+    // TODO(risk:high): same unchecked index — selected_commit must be validated against
+    // history.commits.len() before this point, not just after a commits.is_empty() guard.
     let commit = &history.commits[history.selected_commit];
     let title = format!(" {} · {} ", commit.short_hash, commit.subject);
     let total_files = history.commit_files.len();
 
+    // TODO(risk:medium): render_history_diff builds the entire multi-file diff as an
+    // unbounded Vec<Line> with no viewport culling. A commit touching hundreds of large
+    // files can produce tens of thousands of Line objects, all allocated every frame.
+    // This function bypasses the VIRTUALIZE_THRESHOLD guard used in the normal diff path.
+    // Apply the same viewport-based rendering used in render() and render_split_side().
     let mut lines: Vec<Line> = Vec::new();
     // Track the line index where each file header starts (for sticky header)
     let mut file_header_line_indices: Vec<usize> = Vec::new();
@@ -1238,6 +1340,13 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 
         // Only show the sticky header if the file's header has scrolled off-screen
         // (i.e., the scroll position is past the header line itself).
+        // TODO(risk:high): file_header_line_indices[topmost_file_idx] and
+        // history.commit_files[topmost_file_idx] are both unchecked index accesses.
+        // rposition() returns an index into file_header_line_indices which was built in
+        // the same loop as the files, so lengths should match — but if commit_files was
+        // mutated between the build and this read (concurrent watch refresh) they can
+        // diverge and both accesses panic. Take a snapshot of commit_files at the top of
+        // render_history_diff and use it throughout.
         let header_line = file_header_line_indices[topmost_file_idx];
         if scroll > header_line {
             let file = &history.commit_files[topmost_file_idx];

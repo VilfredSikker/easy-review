@@ -61,6 +61,10 @@ pub struct DiffFile {
     pub compacted: bool,
     /// Raw hunk count before compaction (for display)
     pub raw_hunk_count: usize,
+    // TODO(risk:minor): binary files appear in git diff output as "Binary files a/x and b/x differ"
+    // with no hunk section. The parser produces a DiffFile with hunks=[], adds=0, dels=0, and no
+    // way for the UI to distinguish "binary changed" from "mode-only change" or "compacted".
+    // A `is_binary: bool` flag would allow the UI to show a meaningful label instead of nothing.
 }
 
 /// Lightweight file header extracted from a fast scan of the raw diff.
@@ -90,6 +94,10 @@ pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
     let mut byte_pos: usize = 0;
 
     for line in raw.lines() {
+        // TODO(risk:medium): byte_pos advances by line.len() + 1 (assuming '\n'), but CRLF
+        // line endings add an extra byte that is stripped by .lines(). On Windows or in diffs
+        // containing CRLF, byte offsets will drift and parse_file_at_offset() will slice the
+        // raw string at the wrong position, producing garbled or panicking parses.
         let line_byte_end = byte_pos + line.len() + 1; // +1 for \n
 
         if line.starts_with("diff --git") {
@@ -108,6 +116,11 @@ pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
                 {
                     after_a[..path_len].to_string()
                 } else {
+                    // TODO(risk:medium): for renames where old and new paths differ and both
+                    // contain the substring " b/", split(" b/").last() returns the wrong
+                    // segment. A path like "src/a b/foo.rs" renamed to "src/b b/bar.rs"
+                    // produces an incorrect path. The full-parse variant below has the same
+                    // issue. Correct fix: read the "rename to" line instead.
                     after_a.split(" b/").last().unwrap_or("").to_string()
                 }
             } else {
@@ -157,6 +170,11 @@ pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
 /// Used for on-demand (lazy) parsing when a file is selected.
 pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
     let end = (header.byte_offset + header.byte_length).min(raw.len());
+    // TODO(risk:high): slicing a &str at arbitrary byte offsets panics if the offset falls
+    // inside a multi-byte UTF-8 character. header.byte_offset / byte_length are computed by
+    // parse_diff_headers() which iterates with .lines() + manual byte arithmetic. Any CRLF
+    // drift or non-ASCII character in a diff header line can produce a non-char-boundary
+    // offset, causing a panic in the event loop.
     let section = &raw[header.byte_offset..end];
     let mut files = parse_diff(section);
     if let Some(mut file) = files.pop() {
@@ -316,6 +334,11 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
                     file.dels += 1;
                 }
             } else if line.starts_with(' ') || line.is_empty() {
+                // TODO(risk:medium): treating a bare empty line as a context line (with both
+                // old_num and new_num advancing) is only correct for genuine empty context
+                // lines. Some git versions emit a truly empty line between hunk sections
+                // rather than inside them; misclassifying those shifts all subsequent line
+                // numbers by one, breaking comment-to-line-number mapping.
                 let content = if line.is_empty() {
                     String::new()
                 } else {

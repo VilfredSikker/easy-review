@@ -69,6 +69,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // Virtualized rendering: find which position the selected file is in the visible list,
     // then only render items in the viewport window
     let viewport_height = area.height.saturating_sub(1) as usize; // -1 for border/title
+    // TODO(risk:minor): unwrap_or(0) silently falls back to position 0 when the selected
+    // file index is not in the visible list (e.g. filter active and the selected file is
+    // filtered out). This causes the scroll calculation below to centre on the wrong item.
+    // The selection and the visible set should be kept in sync so this never produces a
+    // misleading position.
     let selected_pos = visible.iter().position(|(i, _)| *i == tab.selected_file).unwrap_or(0);
 
     // Calculate file_scroll to keep selection visible
@@ -145,6 +150,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             let has_gh_comments = gh_comment_count > 0;
 
             // Relative time when sorting by mtime
+            // TODO(risk:minor): std::fs::metadata is called for every visible file on every
+            // render frame (~10 fps). For a file tree with 50 visible items this is 500
+            // syscalls per second, wasting CPU and causing noticeable latency on slow
+            // filesystems (NFS, FUSE). Cache the mtime alongside the file list and refresh
+            // only on watch events.
             let time_str = if tab.sort_by_mtime {
                 let mtime = std::fs::metadata(format!("{}/{}", tab.repo_root, file.path))
                     .and_then(|m| m.modified())
@@ -368,6 +378,10 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
     let available_height = area.height.saturating_sub(2) as usize; // account for border/title
 
     // Determine scroll_start: the first commit index to render, so selection stays in view
+    // TODO(risk:medium): if selected_visual_idx == 0 this slice is empty so the sum is 0,
+    // which is correct. But if selected_visual_idx >= item_heights.len() (can happen when
+    // selected_commit is stale after the commit list shrinks) this will panic with an
+    // out-of-bounds slice. Clamp selected_visual_idx to item_heights.len().saturating_sub(1).
     let height_before_selected: usize = item_heights[..selected_visual_idx].iter().sum();
     let selected_height = item_heights.get(selected_visual_idx).copied().unwrap_or(3);
 
@@ -388,6 +402,11 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
         0
     };
 
+    // TODO(risk:medium): scroll_start is computed by iterating item_heights and stopping when
+    // accumulated height reaches the target. If the loop exhausts all items without reaching
+    // target (shouldn't happen normally, but possible if item_heights is empty), start ends up
+    // equal to item_heights.len(). Then visible[scroll_start..] is an empty slice, which is
+    // fine, but the intent may have been to show at least one item. Assert or clamp.
     let visible_from_scroll = &visible[scroll_start..];
 
     let items: Vec<ListItem> = visible_from_scroll

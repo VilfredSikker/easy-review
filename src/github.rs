@@ -306,6 +306,11 @@ pub fn get_pr_info(repo_root: &str) -> Result<(String, String, u64)> {
     let number = v["number"].as_u64()
         .context("Missing PR number")?;
 
+    // TODO(risk:minor): unwrap_or("") silently substitutes an empty string when headRepository
+    // fields are absent (e.g., forked PRs where the fork has been deleted). The code below
+    // detects the empty case and falls back to the git remote, which is correct. But if the
+    // remote parse also fails, get_pr_info() returns an error that loses the PR number that
+    // was already successfully parsed. Callers won't know which PR was involved.
     let owner = v["headRepository"]["owner"]["login"].as_str()
         .unwrap_or("");
     let repo_name = v["headRepository"]["name"].as_str()
@@ -370,6 +375,15 @@ pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64, repo_root: &str) -> Resu
         let mut results = Vec::new();
         let mut depth = 0i32;
         let mut start = 0;
+        // TODO(risk:medium): this manual bracket-depth parser assumes the paginated output is
+        // a flat concatenation of valid JSON arrays. If a comment body contains the string "]["
+        // (which is valid JSON string content), the outer `if stdout.contains("][")` branch is
+        // taken unnecessarily. Inside, the bracket counter correctly handles nesting, but
+        // `start` is advanced to `i + 1` after each top-level `]`. If the next character is
+        // whitespace before `[`, `start` will point at whitespace and serde_json::from_str
+        // will skip it fine. However, if pagination produces non-array top-level values
+        // (e.g., an error object `{}`), depth will never reach 0 from `[` tracking and the
+        // batch will be silently dropped. This would silently lose comments on error responses.
         for (i, ch) in stdout.char_indices() {
             match ch {
                 '[' => depth += 1,
@@ -399,6 +413,18 @@ pub fn gh_pr_push_comment(
     path: &str, line: usize, body: &str,
     repo_root: &str,
 ) -> Result<u64> {
+    // TODO(risk:medium): `body` is user-typed comment text passed directly to `gh api -f body=<body>`.
+    // The `-f` flag in gh CLI treats the value as a literal string (not shell-expanded), so shell
+    // injection is not possible. However, if `body` contains a newline character, the gh CLI may
+    // split the argument at the newline in some versions, truncating the comment silently.
+    // Validate or strip newlines from `body` before passing it here, or switch to writing a
+    // JSON payload to a temp file and passing `--input` to gh api.
+
+    // TODO(risk:medium): `path` is a file path from DiffFile.path (git diff output). It is
+    // passed as `-f path=<path>` to the GitHub API. A file path containing "=" could be
+    // misinterpreted by gh's -f flag as a key=value pair. The "--" separator is not used here.
+    // Paths with "=" are valid on all major filesystems, so this is a real (if rare) edge case.
+
     // Get the latest commit SHA for the PR (required for review comments)
     let sha_output = Command::new("gh")
         .args(["pr", "view", &pr.to_string(), "--json", "headRefOid", "--jq", ".headRefOid"])
@@ -416,6 +442,11 @@ pub fn gh_pr_push_comment(
         anyhow::bail!("Failed to get HEAD SHA from gh pr view: empty output");
     }
 
+    // TODO(risk:medium): `commit_id` is a SHA obtained from `gh pr view --jq .headRefOid`.
+    // Between fetching the SHA and posting the comment, a force-push could change the PR head.
+    // The comment would then be posted against a commit SHA that is no longer part of the PR,
+    // causing the GitHub API to return a 422 Unprocessable Entity. The current error path
+    // surfaces the stderr but doesn't give the user guidance on what went wrong.
     let output = Command::new("gh")
         .args([
             "api",
@@ -449,6 +480,8 @@ pub fn gh_pr_reply_comment(
     in_reply_to: u64, body: &str,
     repo_root: &str,
 ) -> Result<u64> {
+    // TODO(risk:medium): same `body` newline concern as gh_pr_push_comment — newlines in
+    // the body string may truncate the comment silently via gh's -f flag handling.
     let output = Command::new("gh")
         .args([
             "api",
