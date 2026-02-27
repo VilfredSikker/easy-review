@@ -106,13 +106,18 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Install panic hook to restore terminal on panic
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        default_hook(info);
+    }));
+
     // Run event loop
     let result = run_app(&mut terminal, &mut app, &mut highlighter, hint_rx, pr_data_rx);
 
     // Cleanup
-    // TODO(risk:high): if run_app panics rather than returning Err, these cleanup calls never
-    // run and the terminal is left in raw mode with no cursor — requires a `reset` or terminal
-    // restart to recover. Consider a panic hook that calls disable_raw_mode.
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;

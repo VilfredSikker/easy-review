@@ -1,5 +1,17 @@
 use super::status::FileStatus;
 
+/// Snap a byte offset to the nearest valid char boundary (searching forward).
+fn snap_to_char_boundary(s: &str, offset: usize) -> usize {
+    if offset >= s.len() {
+        return s.len();
+    }
+    let mut pos = offset;
+    while pos < s.len() && !s.is_char_boundary(pos) {
+        pos += 1;
+    }
+    pos
+}
+
 /// A single line in a diff hunk
 #[derive(Debug, Clone)]
 pub struct DiffLine {
@@ -170,12 +182,10 @@ pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
 /// Used for on-demand (lazy) parsing when a file is selected.
 pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
     let end = (header.byte_offset + header.byte_length).min(raw.len());
-    // TODO(risk:high): slicing a &str at arbitrary byte offsets panics if the offset falls
-    // inside a multi-byte UTF-8 character. header.byte_offset / byte_length are computed by
-    // parse_diff_headers() which iterates with .lines() + manual byte arithmetic. Any CRLF
-    // drift or non-ASCII character in a diff header line can produce a non-char-boundary
-    // offset, causing a panic in the event loop.
-    let section = &raw[header.byte_offset..end];
+    // Snap byte offsets to the nearest char boundary to avoid slice panics on non-ASCII diffs
+    let start = snap_to_char_boundary(raw, header.byte_offset);
+    let end = snap_to_char_boundary(raw, end);
+    let section = &raw[start..end];
     let mut files = parse_diff(section);
     if let Some(mut file) = files.pop() {
         // Ensure path matches (the section parse may produce a valid file)
