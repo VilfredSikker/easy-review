@@ -467,12 +467,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
         }
 
         // Staging hints
-        if h.staging {
-            if tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged {
+        if h.staging
+            && (tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged) {
                 hints.push(Hint::new("s", " stage "));
             }
             // Staging not applicable in Conflicts mode
-        }
 
         // Comment hints
         if h.comments {
@@ -694,7 +693,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::DIM),
                 ),
                 Span::styled(
-                    format!("{}", tab.comment_input),
+                    tab.comment_input.to_string(),
                     ratatui::style::Style::default().fg(styles::TEXT),
                 ),
                 Span::styled(

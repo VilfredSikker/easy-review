@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ErConfig {
     #[serde(default)]
     pub features: FeatureFlags,
@@ -120,17 +121,6 @@ fn default_agent_args() -> Vec<String> {
     vec!["--print".into(), "-p".into(), "{prompt}".into()]
 }
 
-impl Default for ErConfig {
-    fn default() -> Self {
-        Self {
-            features: FeatureFlags::default(),
-            agent: AgentConfig::default(),
-            display: DisplayConfig::default(),
-            watched: WatchedConfig::default(),
-            hints: HintConfig::default(),
-        }
-    }
-}
 
 impl Default for FeatureFlags {
     fn default() -> Self {

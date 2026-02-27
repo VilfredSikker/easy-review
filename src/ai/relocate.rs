@@ -105,21 +105,19 @@ fn pass2_scored(anchor: &CommentAnchor, diff_file: &DiffFile) -> Option<Relocati
 
             // Context before: up to 3 lines
             for (offset, ctx) in anchor.context_before.iter().rev().enumerate() {
-                if line_idx >= offset + 1 {
-                    if hunk.lines[line_idx - offset - 1].content == *ctx {
+                if line_idx > offset
+                    && hunk.lines[line_idx - offset - 1].content == *ctx {
                         score += 1;
                     }
-                }
             }
 
             // Context after: up to 3 lines
             for (offset, ctx) in anchor.context_after.iter().enumerate() {
                 let after_idx = line_idx + offset + 1;
-                if after_idx < hunk.lines.len() {
-                    if hunk.lines[after_idx].content == *ctx {
+                if after_idx < hunk.lines.len()
+                    && hunk.lines[after_idx].content == *ctx {
                         score += 1;
                     }
-                }
             }
 
             // old_line_start match
@@ -164,7 +162,7 @@ fn pass3_fuzzy(anchor: &CommentAnchor, diff_file: &DiffFile) -> Option<Relocatio
     // For 2 context lines: need > 1 (i.e. both)
     // For 3 context lines: need > 1 (i.e. >= 2)
     // For 6 context lines: need > 3 (i.e. >= 4)
-    let min_required = ((total_context * 2 + 2) / 3).max(1);
+    let min_required = (total_context * 2).div_ceil(3).max(1);
     let mut best_score = min_required.saturating_sub(1); // > this to qualify
     let mut best: Option<(usize, usize)> = None;
 
@@ -181,20 +179,18 @@ fn pass3_fuzzy(anchor: &CommentAnchor, diff_file: &DiffFile) -> Option<Relocatio
             let mut ctx_matches = 0usize;
 
             for (offset, ctx) in anchor.context_before.iter().rev().enumerate() {
-                if line_idx >= offset + 1 {
-                    if hunk.lines[line_idx - offset - 1].content == *ctx {
+                if line_idx > offset
+                    && hunk.lines[line_idx - offset - 1].content == *ctx {
                         ctx_matches += 1;
                     }
-                }
             }
 
             for (offset, ctx) in anchor.context_after.iter().enumerate() {
                 let after_idx = line_idx + offset + 1;
-                if after_idx < hunk.lines.len() {
-                    if hunk.lines[after_idx].content == *ctx {
+                if after_idx < hunk.lines.len()
+                    && hunk.lines[after_idx].content == *ctx {
                         ctx_matches += 1;
                     }
-                }
             }
 
             if ctx_matches > best_score {

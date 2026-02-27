@@ -223,14 +223,13 @@ fn run_app<B: Backend>(
 
         // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
         app.ai_poll_counter = app.ai_poll_counter.wrapping_add(1);
-        if app.ai_poll_counter % 10 == 0 {
-            if app.tab_mut().check_ai_files_changed() {
+        if app.ai_poll_counter.is_multiple_of(10)
+            && app.tab_mut().check_ai_files_changed() {
                 app.notify("✓ AI data refreshed");
             }
-        }
 
         // Rescan watched files (every 50 ticks ≈ 5s)
-        if app.ai_poll_counter % 50 == 0 {
+        if app.ai_poll_counter.is_multiple_of(50) {
             app.tab_mut().refresh_watched_files();
         }
 
@@ -672,7 +671,7 @@ fn handle_normal_input(
 
         // Expand/compact toggle for compacted files
         KeyCode::Enter => {
-            let is_compacted = app.tab().selected_diff_file().map_or(false, |f| f.compacted);
+            let is_compacted = app.tab().selected_diff_file().is_some_and(|f| f.compacted);
             if is_compacted {
                 app.tab_mut().toggle_compacted()?;
             }

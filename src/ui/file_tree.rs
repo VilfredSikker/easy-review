@@ -78,10 +78,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     // Calculate file_scroll to keep selection visible
     // We compute the scroll position based on the selected file's position in visible list
-    let file_scroll = if visible.len() <= viewport_height {
-        0 // Everything fits, no scroll needed
-    } else if selected_pos < viewport_height / 2 {
-        0 // Near the top
+    let file_scroll = if visible.len() <= viewport_height || selected_pos < viewport_height / 2 {
+        0 // Everything fits or near the top
     } else if selected_pos > visible.len().saturating_sub(viewport_height / 2) {
         visible.len().saturating_sub(viewport_height) // Near the bottom
     } else {
@@ -194,9 +192,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
             let line_style = if is_selected {
                 styles::selected_style()
-            } else if is_compacted {
-                ratatui::style::Style::default().fg(styles::DIM).bg(styles::SURFACE)
-            } else if is_reviewed {
+            } else if is_compacted || is_reviewed {
                 ratatui::style::Style::default().fg(styles::DIM).bg(styles::SURFACE)
             } else {
                 styles::surface_style()

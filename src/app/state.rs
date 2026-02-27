@@ -12,6 +12,7 @@ use std::time::Instant;
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Anchor data captured at comment creation time for later relocation
+#[derive(Default)]
 struct LineAnchor {
     line_start: Option<usize>,
     line_content: String,
@@ -21,18 +22,6 @@ struct LineAnchor {
     hunk_header: String,
 }
 
-impl Default for LineAnchor {
-    fn default() -> Self {
-        LineAnchor {
-            line_start: None,
-            line_content: String::new(),
-            context_before: Vec::new(),
-            context_after: Vec::new(),
-            old_line_start: None,
-            hunk_header: String::new(),
-        }
-    }
-}
 
 // ── Enums ──
 
@@ -1731,11 +1720,7 @@ impl TabState {
                 let content_end = offset + hunk.lines.len();
 
                 if target < content_end {
-                    let line_idx = if target >= content_start {
-                        target - content_start
-                    } else {
-                        0 // target is on/before hunk header — snap to first line
-                    };
+                    let line_idx = target.saturating_sub(content_start);
                     found = Some((i, line_idx));
                     break;
                 }
@@ -3086,13 +3071,11 @@ impl App {
                     (q.text.clone(), true)
                 } else { return; }
             } else { return; }
-        } else {
-            if let Some(gc) = &tab.ai.github_comments {
-                if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
-                    (c.comment.clone(), false)
-                } else { return; }
+        } else if let Some(gc) = &tab.ai.github_comments {
+            if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
+                (c.comment.clone(), false)
             } else { return; }
-        };
+        } else { return; };
 
         let tab = self.tab_mut();
         let file_path = match tab.selected_diff_file() {
@@ -3119,13 +3102,11 @@ impl App {
                     (q.file.clone(), q.hunk_index.unwrap_or(0), q.line_start, true)
                 } else { return; }
             } else { return; }
-        } else {
-            if let Some(gc) = &tab.ai.github_comments {
-                if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
-                    (c.file.clone(), c.hunk_index.unwrap_or(0), c.line_start, false)
-                } else { return; }
+        } else if let Some(gc) = &tab.ai.github_comments {
+            if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
+                (c.file.clone(), c.hunk_index.unwrap_or(0), c.line_start, false)
             } else { return; }
-        };
+        } else { return; };
 
         let tab = self.tab_mut();
         tab.comment_input.clear();
@@ -3569,9 +3550,7 @@ impl App {
             Some(pos) => {
                 if forward {
                     if pos + 1 < all.len() { pos + 1 } else { 0 }
-                } else {
-                    if pos > 0 { pos - 1 } else { all.len() - 1 }
-                }
+                } else if pos > 0 { pos - 1 } else { all.len() - 1 }
             }
             None => {
                 if forward { 0 } else { all.len() - 1 }
@@ -3584,7 +3563,7 @@ impl App {
         tab.focused_finding_id = None;
 
         let needs_file_change = tab.files.get(tab.selected_file)
-            .map_or(true, |f| f.path != *file);
+            .is_none_or(|f| f.path != *file);
 
         if needs_file_change {
             if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
@@ -3650,9 +3629,7 @@ impl App {
             Some(pos) => {
                 if forward {
                     if pos + 1 < all.len() { pos + 1 } else { 0 }
-                } else {
-                    if pos > 0 { pos - 1 } else { all.len() - 1 }
-                }
+                } else if pos > 0 { pos - 1 } else { all.len() - 1 }
             }
             None => {
                 if forward { 0 } else { all.len() - 1 }
@@ -3665,7 +3642,7 @@ impl App {
         tab.focused_comment_id = None;
 
         let needs_file_change = tab.files.get(tab.selected_file)
-            .map_or(true, |f| f.path != *file);
+            .is_none_or(|f| f.path != *file);
 
         if needs_file_change {
             if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
@@ -3727,9 +3704,7 @@ impl App {
             Some(pos) => {
                 if forward {
                     if pos + 1 < all.len() { pos + 1 } else { 0 }
-                } else {
-                    if pos > 0 { pos - 1 } else { all.len() - 1 }
-                }
+                } else if pos > 0 { pos - 1 } else { all.len() - 1 }
             }
             None => {
                 if forward { 0 } else { all.len() - 1 }
@@ -3751,7 +3726,7 @@ impl App {
         }
 
         let needs_file_change = tab.files.get(tab.selected_file)
-            .map_or(true, |f| f.path != *file);
+            .is_none_or(|f| f.path != *file);
 
         if needs_file_change {
             if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {

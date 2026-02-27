@@ -184,11 +184,10 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
 
     // Common local branch names
     for candidate in &["main", "master", "develop", "dev"] {
-        if *candidate != current {
-            if run(&["rev-parse", "--verify", candidate]).is_some() {
+        if *candidate != current
+            && run(&["rev-parse", "--verify", candidate]).is_some() {
                 return Ok(candidate.to_string());
             }
-        }
     }
 
     // Remote-tracking branches as last resort

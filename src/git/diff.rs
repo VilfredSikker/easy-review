@@ -321,10 +321,10 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
 
         // Diff content lines
         if let Some(ref mut hunk) = current_hunk {
-            if line.starts_with('+') {
+            if let Some(stripped) = line.strip_prefix('+') {
                 hunk.lines.push(DiffLine {
                     line_type: LineType::Add,
-                    content: line[1..].to_string(),
+                    content: stripped.to_string(),
                     old_num: None,
                     new_num: Some(new_line),
                 });
@@ -332,10 +332,10 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
                 if let Some(ref mut file) = current_file {
                     file.adds += 1;
                 }
-            } else if line.starts_with('-') {
+            } else if let Some(stripped) = line.strip_prefix('-') {
                 hunk.lines.push(DiffLine {
                     line_type: LineType::Delete,
-                    content: line[1..].to_string(),
+                    content: stripped.to_string(),
                     old_num: Some(old_line),
                     new_num: None,
                 });
@@ -501,7 +501,7 @@ fn glob_match(pattern: &str, path: &str) -> bool {
 
 /// Apply compaction to files based on pattern matching and size thresholds.
 /// Compacted files have their hunks cleared to save memory.
-pub fn compact_files(files: &mut Vec<DiffFile>, config: &CompactionConfig) {
+pub fn compact_files(files: &mut [DiffFile], config: &CompactionConfig) {
     if !config.enabled {
         return;
     }

@@ -180,13 +180,13 @@ fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
 }
 
 fn matches_status(kind: StatusKind, file_status: &FileStatus) -> bool {
-    match (kind, file_status) {
-        (StatusKind::Added, FileStatus::Added) => true,
-        (StatusKind::Modified, FileStatus::Modified) => true,
-        (StatusKind::Deleted, FileStatus::Deleted) => true,
-        (StatusKind::Renamed, FileStatus::Renamed(_)) => true,
-        _ => false,
-    }
+    matches!(
+        (kind, file_status),
+        (StatusKind::Added, FileStatus::Added)
+            | (StatusKind::Modified, FileStatus::Modified)
+            | (StatusKind::Deleted, FileStatus::Deleted)
+            | (StatusKind::Renamed, FileStatus::Renamed(_))
+    )
 }
 
 #[cfg(test)]

@@ -2,11 +2,13 @@ mod diff;
 mod status;
 
 pub use diff::{
-    DiffFile, DiffFileHeader, DiffHunk, DiffLine, LineType,
+    DiffFile, DiffFileHeader, DiffHunk, LineType,
     parse_diff, parse_diff_headers, parse_file_at_offset, header_to_stub,
     compact_files, compact_files_match, expand_compacted_file, CompactionConfig,
     LAZY_PARSE_THRESHOLD,
 };
+#[cfg(test)]
+pub use diff::DiffLine;
 pub use status::{
     FileStatus, Worktree, CommitInfo, WatchedFile,
     detect_base_branch_in,

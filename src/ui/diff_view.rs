@@ -189,7 +189,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
                 render_reply_lines(
                     &mut lines,
-                    &reply,
+                    reply,
                     area.width,
                     false,
                     is_focused,
@@ -268,7 +268,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
                     render_reply_lines(
                         &mut lines,
-                        &reply,
+                        reply,
                         area.width,
                         false,
                         is_focused,
@@ -404,7 +404,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
                         render_reply_lines(
                             &mut lines,
-                            &reply,
+                            reply,
                             area.width,
                             true,
                             is_focused,
@@ -541,24 +541,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             let mut v = Vec::new();
             if let Some(qs) = &tab.ai.questions {
                 for q in &qs.questions {
-                    if q.file == file.path && q.anchor_status == "lost" {
-                        if q.hunk_index.map_or(false, |hi| hi >= num_hunks) {
-                            if tab.layers.show_questions {
+                    if q.file == file.path && q.anchor_status == "lost"
+                        && q.hunk_index.is_some_and(|hi| hi >= num_hunks)
+                            && tab.layers.show_questions {
                                 v.push(CommentRef::Question(q));
                             }
-                        }
-                    }
                 }
             }
             if let Some(gc) = &tab.ai.github_comments {
                 for c in &gc.comments {
-                    if c.file == file.path && c.anchor_status == "lost" && c.in_reply_to.is_none() {
-                        if c.hunk_index.map_or(false, |hi| hi >= num_hunks) {
-                            if tab.layers.show_github_comments {
+                    if c.file == file.path && c.anchor_status == "lost" && c.in_reply_to.is_none()
+                        && c.hunk_index.is_some_and(|hi| hi >= num_hunks)
+                            && tab.layers.show_github_comments {
                                 v.push(CommentRef::GitHubComment(c));
                             }
-                        }
-                    }
                 }
             }
             v
@@ -758,10 +754,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             ];
             lines.push(Line::from(header_spans));
         }
-    } else {
-        if logical_line >= render_start && logical_line < render_end {
-            lines.push(Line::from(""));
-        }
+    } else if logical_line >= render_start && logical_line < render_end {
+        lines.push(Line::from(""));
     }
     logical_line += 1;
 
@@ -795,7 +789,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             for reply in &replies {
                 let pre_len = lines.len();
                 let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
-                render_reply_lines(&mut lines, &reply, inner.width, false, is_focused);
+                render_reply_lines(&mut lines, reply, inner.width, false, is_focused);
                 let reply_line_count = lines.len() - pre_len;
                 if logical_line < render_start || logical_line >= render_end {
                     lines.truncate(pre_len);
@@ -862,7 +856,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 for reply in &replies {
                     let pre_len = lines.len();
                     let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
-                    render_reply_lines(&mut lines, &reply, inner.width, false, is_focused);
+                    render_reply_lines(&mut lines, reply, inner.width, false, is_focused);
                     let reply_line_count = lines.len() - pre_len;
                     if logical_line < render_start || logical_line >= render_end {
                         lines.truncate(pre_len);
@@ -1042,7 +1036,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         for reply in &replies {
                             let pre_len = lines.len();
                             let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
-                            render_reply_lines(&mut lines, &reply, inner.width, true, is_focused);
+                            render_reply_lines(&mut lines, reply, inner.width, true, is_focused);
                             let reply_line_count = lines.len() - pre_len;
                             if logical_line < render_start || logical_line >= render_end {
                                 lines.truncate(pre_len);
@@ -1526,9 +1520,7 @@ fn render_comment_lines(
             if focused {
                 // Bright left marker when focused
                 if inline { format!("  ▸  {} ", icon) } else { format!("▸ {} ", icon) }
-            } else {
-                if inline { format!("     {} ", icon) } else { format!("  {} ", icon) }
-            },
+            } else if inline { format!("     {} ", icon) } else { format!("  {} ", icon) },
             ratatui::style::Style::default().fg(if focused { styles::PURPLE } else { accent }).bg(bg),
         ),
         Span::styled(

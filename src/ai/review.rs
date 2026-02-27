@@ -199,6 +199,9 @@ pub enum HintType {
     Finding,
 }
 
+/// (file, hunk_index, line_start, id, hint_type)
+pub type HintEntry = (String, Option<usize>, Option<usize>, String, HintType);
+
 /// Unified reference to either a question, GitHub comment, or legacy comment.
 /// Used by query methods and UI rendering to handle both types uniformly.
 #[derive(Debug, Clone)]
@@ -576,6 +579,7 @@ pub enum ReviewFocus {
 // ── Aggregate AI state for a tab ──
 
 /// All loaded AI data for a single repo tab
+#[derive(Default)]
 pub struct AiState {
     pub review: Option<ErReview>,
     pub order: Option<ErOrder>,
@@ -593,21 +597,6 @@ pub struct AiState {
     pub stale_files: HashSet<String>,
 }
 
-impl Default for AiState {
-    fn default() -> Self {
-        AiState {
-            review: None,
-            order: None,
-            summary: None,
-            checklist: None,
-            questions: None,
-            github_comments: None,
-            feedback: None,
-            is_stale: false,
-            stale_files: HashSet::new(),
-        }
-    }
-}
 
 impl AiState {
     /// Whether a specific file's findings are stale (its diff changed since the review)
@@ -949,11 +938,12 @@ impl AiState {
     /// All navigable hints (comments + questions + findings) merged and sorted by file + line.
     /// Returns (file, hunk_index, line_start, id, hint_type) tuples.
     /// Replies are included and sorted immediately after their parent.
-    pub fn all_hints_ordered(&self) -> Vec<(String, Option<usize>, Option<usize>, String, HintType)> {
-        // Extended tuple: (file, hunk_index, line_start, is_reply, position, id, hint_type)
+    pub fn all_hints_ordered(&self) -> Vec<HintEntry> {
+        // Extended: (file, hunk_index, line_start, is_reply, position, id, hint_type)
         // is_reply=0 for parents, 1 for replies — ensures parents sort before their replies
         // position preserves insertion order within each (is_reply) group for stable output
-        let mut extended: Vec<(String, Option<usize>, Option<usize>, u8, usize, String, HintType)> = Vec::new();
+        type ExtEntry = (String, Option<usize>, Option<usize>, u8, usize, String, HintType);
+        let mut extended: Vec<ExtEntry> = Vec::new();
         // Questions (both top-level and replies)
         if let Some(qs) = &self.questions {
             for (i, q) in qs.questions.iter().enumerate() {

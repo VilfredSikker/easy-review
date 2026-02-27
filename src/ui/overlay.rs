@@ -129,9 +129,7 @@ fn render_directory_browser(
             let is_sel = idx == selected;
             let marker = if is_sel { "▶ " } else { "  " };
 
-            let icon = if entry.is_git_repo {
-                " "
-            } else if entry.is_dir {
+            let icon = if entry.is_git_repo || entry.is_dir {
                 " "
             } else {
                 "  "
