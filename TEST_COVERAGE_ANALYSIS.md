@@ -212,49 +212,127 @@ not worth the effort unless bugs appear.
 
 ---
 
-## Summary: Recommended Test Additions by Effort
+## Checklist
 
-| Priority | Area | Est. Tests | Effort |
-|----------|------|-----------|--------|
-| **P1** | config.rs (deep_merge, defaults, serde) | ~20 | Low |
-| **P1** | app/state.rs comment lifecycle | ~15 | Medium |
-| **P1** | app/state.rs filter pipeline interactions | ~5 | Low |
-| **P1** | git/status.rs base branch detection | ~8 | Medium (needs git fixtures) |
-| **P2** | github.rs comment JSON parsing | ~10 | Medium (fixture-based) |
-| **P2** | ai/review.rs staleness detection | ~5 | Low |
-| **P2** | ai/loader.rs rename handling | ~3 | Low |
-| **P3** | ui/status_bar.rs hint packing | ~5 | Low |
-| **P3** | ui/diff_view.rs size formatting | ~3 | Low |
-| **P3** | ui/panel.rs helper functions | ~5 | Low |
-| **P3** | ui/overlay.rs centered_rect | ~3 | Low |
-| **Total** | | **~82** | |
+Track progress by checking items off as tests are added.
 
-The P1 items alone (~48 tests) would significantly improve confidence in the areas most
-likely to regress: configuration loading, the comment system, filter interactions, and
-base branch detection.
+### P1 — Critical Gaps
 
----
+#### config.rs (~20 tests)
+- [ ] `deep_merge()` — empty base overwritten by overlay
+- [ ] `deep_merge()` — empty overlay preserves base
+- [ ] `deep_merge()` — scalar values replaced, not merged
+- [ ] `deep_merge()` — nested tables merge recursively (3+ levels)
+- [ ] `deep_merge()` — array values replaced, not appended
+- [ ] `deep_merge()` — type mismatch (scalar overlaying table and vice versa)
+- [ ] `load_config()` — missing config files produce correct defaults
+- [ ] `load_config()` — partial TOML merges correctly with defaults
+- [ ] `load_config()` — local config overrides global at field level
+- [ ] `load_config()` — malformed TOML gracefully falls back to defaults
+- [ ] Default values — `FeatureFlags` fields all default to `true`
+- [ ] Default values — `tab_width` defaults to 4
+- [ ] Default values — agent command defaults to `"claude"`
+- [ ] Default values — serde round-trip preserves all fields
+- [ ] `settings_items()` — returns expected number of items
+- [ ] `settings_items()` — BoolToggle get/set closures read/write correct fields
+- [ ] `settings_items()` — section headers present in correct order
 
-## Structural Recommendations
+#### app/state.rs — Comment lifecycle (~15 tests)
+- [ ] `submit_comment()` — new question sets correct file/hunk/line fields
+- [ ] `submit_comment()` — new GitHub comment sets correct fields
+- [ ] `submit_comment()` — reply sets `in_reply_to` correctly
+- [ ] `submit_comment()` — editing preserves ID and updates text
+- [ ] `submit_comment()` — questions write to `.er-questions.json`
+- [ ] `submit_comment()` — GitHub comments write to `.er-github-comments.json`
+- [ ] `confirm_delete_comment()` — deleting parent cascades to replies
+- [ ] `confirm_delete_comment()` — deleting reply leaves parent intact
+- [ ] `confirm_delete_comment()` — focus moves to valid comment after deletion
+- [ ] `next_comment()` / `prev_comment()` — single comment stays in place
+- [ ] `next_comment()` / `prev_comment()` — crosses file boundaries
+- [ ] `next_comment()` / `prev_comment()` — empty list no crash
+- [ ] `start_comment()` — sets input mode correctly
+- [ ] `start_reply_comment()` — sets reply target correctly
+- [ ] `start_edit_comment()` — populates input buffer with existing text
 
-1. **Add integration tests** — Create a `tests/` directory with end-to-end tests that
-   set up a real git repo (via `tempdir` + `git init`), write files, and exercise the
-   full diff-parse-filter-display pipeline.
+#### app/state.rs — Filter pipeline (~5 tests)
+- [ ] Filter rules + search query + unreviewed toggle all active simultaneously
+- [ ] `snap_to_visible_selected_file()` when all files filtered out
+- [ ] `apply_filter_expr()` history deduplication
+- [ ] `apply_filter_expr()` history capped at 20 entries
+- [ ] Filter cleared restores full file list
 
-2. **Consider property-based testing** — The diff parser (`git/diff.rs`) and filter
-   system (`app/filter.rs`) are pure functions operating on structured text. Tools like
-   `proptest` or `quickcheck` could find edge cases the hand-written tests miss (e.g.,
-   CRLF handling, Unicode in paths).
+#### git/status.rs — Base branch detection (~8 tests)
+- [ ] Repo with upstream tracking branch uses upstream
+- [ ] Repo with only `main` detects main
+- [ ] Repo with only `master` falls back to master
+- [ ] Repo with `develop` branch detected in fallback chain
+- [ ] Empty repo with no commits handles gracefully
+- [ ] `strip_upstream_remote()` — no `/` in input
+- [ ] `strip_upstream_remote()` — multiple `/` separators
+- [ ] Branch on its own base (current == detected base) handled
 
-3. **Extract testable logic from rendering code** — Functions like `pack_hint_lines()`,
-   `centered_rect()`, `check_icon()`, and size formatting are pure logic embedded in
-   rendering modules. Extracting them to utility modules (or at minimum adding `#[cfg(test)]`
-   blocks) would make them testable without any rendering framework.
+### P2 — High Value Gaps
 
-4. **Address the duplicated `centered_rect()`** — This function appears identically in
-   both `ui/overlay.rs` and `ui/settings.rs`. Move it to `ui/utils.rs` and test once.
+#### github.rs — Comment sync (~10 tests)
+- [ ] `gh_pr_comments()` — parses valid GitHub API JSON fixture
+- [ ] `gh_pr_comments()` — handles empty response
+- [ ] `gh_pr_comments()` — paginated bracket-depth parser handles multi-page
+- [ ] Comment deduplication by `github_id` on pull
+- [ ] `verify_remote_matches()` — additional edge cases beyond existing tests
+- [ ] `gh_pr_push_comment()` — constructs correct CLI arguments
+- [ ] `gh_pr_reply_comment()` — sets correct thread ID
+- [ ] `gh_pr_delete_comment()` — targets correct comment ID
+- [ ] `gh_pr_overview()` — parses full PR metadata JSON
+- [ ] `gh_pr_overview()` — handles missing optional fields gracefully
 
-5. **Test the documented risk items** — There are 50+ `TODO(risk:*)` annotations in the
-   code. Many describe silent failure modes (config parse errors silently ignored, write
-   errors discarded, hash collisions). Tests that explicitly exercise these paths would
-   catch regressions if the "silent" behavior is ever accidentally removed or changed.
+#### ai/review.rs — Staleness detection (~5 tests)
+- [ ] Comment with matching `line_content` is not stale
+- [ ] Comment with mismatched `line_content` is marked stale
+- [ ] Staleness recalculated on diff refresh
+- [ ] File-level staleness via diff hash comparison
+- [ ] Mixed stale/fresh comments in same file
+
+#### ai/loader.rs — Rename handling (~3 tests)
+- [ ] `compute_per_file_hashes()` with renamed file produces correct path key
+- [ ] Renamed file detected as stale when content changes
+- [ ] `load_ai_state()` handles missing `.er-*` files gracefully
+
+### P3 — UI Pure Logic
+
+#### ui/status_bar.rs (~5 tests)
+- [ ] `pack_hint_lines()` — hints fit in one line
+- [ ] `pack_hint_lines()` — hints wrap to multiple lines
+- [ ] `bottom_bar_height()` matches actual packed line count
+- [ ] `spans_width()` — correct character counting
+- [ ] `top_bar_height()` — single tab vs multi-tab
+
+#### ui/diff_view.rs (~3 tests)
+- [ ] Size formatting — bytes range (0, 1023)
+- [ ] Size formatting — KB range (1024 → "1.0 KB")
+- [ ] Size formatting — MB range (1048576 → "1.0 MB")
+
+#### ui/panel.rs (~5 tests)
+- [ ] `check_icon()` — maps all conclusion states correctly
+- [ ] `review_state_style()` — maps all review states correctly
+- [ ] File risk sorting — High before Medium before Low
+- [ ] Comment target label formatting (hunk-only, hunk+line, file-level)
+- [ ] Reviewer deduplication and sort order
+
+#### ui/overlay.rs — centered_rect (~3 tests)
+- [ ] Centering popup in larger area
+- [ ] Popup larger than area (clamping)
+- [ ] Zero-size edge case
+- [ ] Deduplicate `centered_rect()` from `ui/settings.rs` to `ui/utils.rs`
+
+### P4 — Lower Priority
+
+#### main.rs (~3 tests)
+- [ ] CLI argument validation — `--pr` with URL
+- [ ] CLI argument validation — `--filter` flag
+- [ ] CLI argument validation — conflicting arguments
+
+#### Structural improvements
+- [ ] Create `tests/` directory with integration tests (tempdir + git init)
+- [ ] Consider `proptest`/`quickcheck` for diff parser and filter system
+- [ ] Extract pure logic from rendering code into testable utilities
+- [ ] Add tests for documented `TODO(risk:*)` silent failure modes
