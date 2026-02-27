@@ -1159,18 +1159,21 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
     }
 
     if history.commit_files.is_empty() {
-        // TODO(risk:high): history.selected_commit is not bounds-checked before indexing.
-        // If selected_commit >= history.commits.len() this panics. commits.is_empty() is
-        // checked above, but selected_commit could still be out of range if state is stale.
-        // Use .get() and fall back gracefully.
-        let commit = &history.commits[history.selected_commit];
-        render_history_empty(f, area, &format!("Empty commit: {}", commit.short_hash));
+        let msg = match history.commits.get(history.selected_commit) {
+            Some(commit) => format!("Empty commit: {}", commit.short_hash),
+            None => "Empty commit".to_string(),
+        };
+        render_history_empty(f, area, &msg);
         return;
     }
 
-    // TODO(risk:high): same unchecked index — selected_commit must be validated against
-    // history.commits.len() before this point, not just after a commits.is_empty() guard.
-    let commit = &history.commits[history.selected_commit];
+    let commit = match history.commits.get(history.selected_commit) {
+        Some(c) => c,
+        None => {
+            render_history_empty(f, area, "Invalid commit selection");
+            return;
+        }
+    };
     let title = format!(" {} · {} ", commit.short_hash, commit.subject);
     let total_files = history.commit_files.len();
 
@@ -1340,16 +1343,15 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 
         // Only show the sticky header if the file's header has scrolled off-screen
         // (i.e., the scroll position is past the header line itself).
-        // TODO(risk:high): file_header_line_indices[topmost_file_idx] and
-        // history.commit_files[topmost_file_idx] are both unchecked index accesses.
-        // rposition() returns an index into file_header_line_indices which was built in
-        // the same loop as the files, so lengths should match — but if commit_files was
-        // mutated between the build and this read (concurrent watch refresh) they can
-        // diverge and both accesses panic. Take a snapshot of commit_files at the top of
-        // render_history_diff and use it throughout.
-        let header_line = file_header_line_indices[topmost_file_idx];
+        let header_line = match file_header_line_indices.get(topmost_file_idx) {
+            Some(&l) => l,
+            None => return,
+        };
+        let file = match history.commit_files.get(topmost_file_idx) {
+            Some(f) => f,
+            None => return,
+        };
         if scroll > header_line {
-            let file = &history.commit_files[topmost_file_idx];
             let sticky_bg = styles::PANEL;
 
             let mut sticky_spans = vec![

@@ -1743,13 +1743,11 @@ impl TabState {
                 offset = content_end + 1; // blank line after hunk
             }
 
-            // TODO(risk:high): file.hunks.len() - 1 panics if hunks is empty. The early return above (line ~1699)
-        // guards against this, but only for the case where hunks.is_empty() at the top of the function.
-        // If a refactor moves or removes that guard, this becomes an OOB panic. Use saturating_sub(1) here.
-        found.unwrap_or_else(|| {
+            found.unwrap_or_else(|| {
                 // Past the end — clamp to last line of last hunk
-                let last = file.hunks.len() - 1;
-                (last, file.hunks[last].lines.len().saturating_sub(1))
+                let last = file.hunks.len().saturating_sub(1);
+                let line = file.hunks.get(last).map_or(0, |h| h.lines.len().saturating_sub(1));
+                (last, line)
             })
         };
 
@@ -2598,18 +2596,16 @@ impl App {
 
     // ── Tab Accessors ──
 
-    /// Get a reference to the active tab
-    // TODO(risk:high): tab() and tab_mut() index self.tabs[self.active_tab] directly. If active_tab
-    // ever exceeds tabs.len() (e.g., after close_tab() removes the last non-first tab and the index
-    // is not decremented correctly, or if tabs is somehow emptied), this panics. All callers assume
-    // tabs is non-empty; that invariant is enforced only by close_tab's guard but not at the type level.
+    /// Get a reference to the active tab (clamps index to valid range)
     pub fn tab(&self) -> &TabState {
-        &self.tabs[self.active_tab]
+        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        &self.tabs[idx]
     }
 
-    /// Get a mutable reference to the active tab
+    /// Get a mutable reference to the active tab (clamps index to valid range)
     pub fn tab_mut(&mut self) -> &mut TabState {
-        &mut self.tabs[self.active_tab]
+        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        &mut self.tabs[idx]
     }
 
     /// Returns true when split diff rendering should be active.

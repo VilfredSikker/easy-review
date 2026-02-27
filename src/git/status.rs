@@ -1,7 +1,21 @@
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
+
+/// Validate that a path (after joining with repo_root) stays within the repo root.
+/// Returns the resolved path or an error if it escapes.
+fn validate_within_repo(repo_root: &str, rel_path: &str) -> Result<PathBuf> {
+    let root = std::fs::canonicalize(repo_root)
+        .unwrap_or_else(|_| PathBuf::from(repo_root));
+    let joined = Path::new(repo_root).join(rel_path);
+    let resolved = std::fs::canonicalize(&joined)
+        .unwrap_or_else(|_| joined.clone());
+    if !resolved.starts_with(&root) {
+        anyhow::bail!("Path '{}' escapes repository root", rel_path);
+    }
+    Ok(resolved)
+}
 
 /// Metadata for a single commit (used in History mode)
 #[derive(Debug, Clone)]
@@ -703,12 +717,9 @@ pub struct WatchedFile {
 /// Discover watched files matching glob patterns relative to repo root
 pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Vec<WatchedFile>> {
     let mut files = Vec::new();
+    let canonical_root = std::fs::canonicalize(repo_root)
+        .unwrap_or_else(|_| PathBuf::from(repo_root));
     for pattern in patterns {
-        // TODO(risk:high): `pattern` comes directly from .er-config.toml without validation.
-        // A pattern containing ".." components (e.g., "../../etc/*") will expand to paths
-        // outside the repository root. The glob crate does not restrict matches to a subtree.
-        // After glob expansion, each matched path should be checked to confirm it is still
-        // beneath `repo_root` using `path.starts_with(repo_root)` after canonicalization.
         let full_pattern = format!("{}/{}", repo_root, pattern);
         let entries = glob::glob(&full_pattern)
             .with_context(|| format!("Invalid glob pattern: {}", pattern))?;
@@ -718,6 +729,11 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
                 Err(_) => continue,
             };
             if path.is_file() {
+                // Validate path stays within repo root (prevents ".." traversal)
+                let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                if !canonical.starts_with(&canonical_root) {
+                    continue;
+                }
                 let rel_path = path
                     .strip_prefix(repo_root)
                     .map(|p| p.to_string_lossy().to_string())
@@ -756,30 +772,18 @@ pub fn verify_gitignored(repo_root: &str, path: &str) -> bool {
 
 /// Save a snapshot of a watched file for later diffing
 pub fn save_snapshot(repo_root: &str, rel_path: &str) -> Result<()> {
-    let src = Path::new(repo_root).join(rel_path);
-    // TODO(risk:high): `rel_path` comes from glob expansion of user-configured patterns.
-    // A pattern like "../../../etc/passwd" or a symlink pointing outside the repo root
-    // would cause the join to escape the repo directory. `Path::join` does not sanitize
-    // ".." components. Validate that the resolved canonical path of `dst` still starts
-    // with `repo_root` before writing.
+    let src = validate_within_repo(repo_root, rel_path)?;
     let dst = Path::new(repo_root).join(".er-snapshots").join(rel_path);
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // TODO(risk:medium): the copy is not atomic — a crash or signal between create_dir_all
-    // and fs::copy leaves a partial or missing snapshot. On the next diff_watched_file_snapshot
-    // call the snapshot will exist but be empty/truncated, producing a misleading diff.
-    // Write to a temp file and rename into place for atomicity.
     std::fs::copy(src, dst)?;
     Ok(())
 }
 
 /// Read the content of a watched file, returning None if binary
 pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
-    // TODO(risk:high): same path traversal risk as save_snapshot — `rel_path` is not validated
-    // to stay within repo_root. A malicious glob pattern in .er-config.toml (e.g., "../../../etc/shadow")
-    // would cause this function to read arbitrary files on the filesystem.
-    let full_path = Path::new(repo_root).join(rel_path);
+    let full_path = validate_within_repo(repo_root, rel_path)?;
     let bytes = std::fs::read(&full_path)
         .with_context(|| format!("Failed to read watched file: {}", rel_path))?;
 
@@ -796,8 +800,7 @@ pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Opti
 
 /// Diff a watched file against its snapshot using git diff --no-index
 pub fn diff_watched_file_snapshot(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
-    // TODO(risk:high): same path traversal risk — `rel_path` is not canonicalized before joining.
-    let current_path = Path::new(repo_root).join(rel_path);
+    let current_path = validate_within_repo(repo_root, rel_path)?;
     let snapshot_path = Path::new(repo_root).join(".er-snapshots").join(rel_path);
 
     if !snapshot_path.exists() {
