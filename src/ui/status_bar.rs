@@ -115,7 +115,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::DIM),
         ));
     }
-    if tab.mode == DiffMode::Conflicts {
+    if tab.mode == DiffMode::Conflicts && tab.merge_active {
         info_spans.push(Span::styled(
             " [merge in progress]",
             ratatui::style::Style::default().fg(styles::ORANGE),
