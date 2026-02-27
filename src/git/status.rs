@@ -1,6 +1,4 @@
-use super::diff::{DiffHunk, LineType};
 use anyhow::{Context, Result};
-use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::time::SystemTime;
@@ -486,31 +484,6 @@ pub fn git_stage_all(repo_root: &str) -> Result<()> {
     Ok(())
 }
 
-/// Stage a specific hunk by reconstructing a patch and piping to `git apply --cached`
-pub fn git_stage_hunk(repo_root: &str, file_path: &str, hunk: &DiffHunk) -> Result<()> {
-    let patch = reconstruct_hunk_patch(file_path, hunk);
-
-    let mut child = Command::new("git")
-        .args(["apply", "--cached", "--unidiff-zero"])
-        .current_dir(repo_root)
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("Failed to spawn git apply")?;
-
-    if let Some(ref mut stdin) = child.stdin {
-        stdin.write_all(patch.as_bytes())?;
-    }
-
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to stage hunk: {}", stderr.trim());
-    }
-
-    Ok(())
-}
-
 /// Commit staged changes with the given message
 pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
     let output = Command::new("git")
@@ -524,41 +497,6 @@ pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
         anyhow::bail!("git commit failed: {}", stderr.trim());
     }
     Ok(())
-}
-
-/// Quote a git path for use in patch headers.
-/// Paths containing whitespace or double-quotes must be wrapped in double-quotes
-/// so that `git apply` parses them correctly.
-fn quote_git_path(path: &str) -> String {
-    if path.contains(|c: char| c.is_whitespace() || c == '"') {
-        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
-    } else {
-        path.to_string()
-    }
-}
-
-/// Reconstruct a minimal unified diff patch from a single DiffHunk
-fn reconstruct_hunk_patch(file_path: &str, hunk: &DiffHunk) -> String {
-    let quoted = quote_git_path(file_path);
-    let mut patch = String::new();
-    patch.push_str(&format!("diff --git a/{} b/{}\n", quoted, quoted));
-    patch.push_str(&format!("--- a/{}\n", quoted));
-    patch.push_str(&format!("+++ b/{}\n", quoted));
-    patch.push_str(&hunk.header);
-    patch.push('\n');
-
-    for line in &hunk.lines {
-        let prefix = match line.line_type {
-            LineType::Add => "+",
-            LineType::Delete => "-",
-            LineType::Context => " ",
-        };
-        patch.push_str(prefix);
-        patch.push_str(&line.content);
-        patch.push('\n');
-    }
-
-    patch
 }
 
 // ── History (commit log + commit diffs) ──
@@ -826,7 +764,6 @@ pub fn diff_watched_file_snapshot(repo_root: &str, rel_path: &str) -> Result<Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::diff::{DiffHunk, DiffLine, LineType};
 
     // ── FileStatus::symbol ──
 
@@ -858,178 +795,6 @@ mod tests {
     #[test]
     fn file_status_symbol_unmerged() {
         assert_eq!(FileStatus::Unmerged.symbol(), "!");
-    }
-
-    // ── reconstruct_hunk_patch ──
-
-    fn make_hunk(header: &str, lines: Vec<DiffLine>) -> DiffHunk {
-        DiffHunk {
-            header: header.to_string(),
-            old_start: 1,
-            old_count: 3,
-            new_start: 1,
-            new_count: 4,
-            lines,
-        }
-    }
-
-    #[test]
-    fn reconstruct_hunk_patch_simple_add() {
-        let hunk = make_hunk(
-            "@@ -1,1 +1,2 @@ fn main()",
-            vec![
-                DiffLine {
-                    line_type: LineType::Context,
-                    content: "fn main() {".to_string(),
-                    old_num: Some(1),
-                    new_num: Some(1),
-                },
-                DiffLine {
-                    line_type: LineType::Add,
-                    content: "    println!(\"hello\");".to_string(),
-                    old_num: None,
-                    new_num: Some(2),
-                },
-            ],
-        );
-
-        let patch = reconstruct_hunk_patch("main.rs", &hunk);
-
-        assert_eq!(
-            patch,
-            "diff --git a/main.rs b/main.rs\n\
-             --- a/main.rs\n\
-             +++ b/main.rs\n\
-             @@ -1,1 +1,2 @@ fn main()\n\
-             \x20fn main() {\n\
-             +    println!(\"hello\");\n"
-        );
-    }
-
-    #[test]
-    fn reconstruct_hunk_patch_mixed_add_delete_context() {
-        let hunk = make_hunk(
-            "@@ -1,3 +1,3 @@",
-            vec![
-                DiffLine {
-                    line_type: LineType::Context,
-                    content: "let x = 1;".to_string(),
-                    old_num: Some(1),
-                    new_num: Some(1),
-                },
-                DiffLine {
-                    line_type: LineType::Delete,
-                    content: "let y = 2;".to_string(),
-                    old_num: Some(2),
-                    new_num: None,
-                },
-                DiffLine {
-                    line_type: LineType::Add,
-                    content: "let y = 42;".to_string(),
-                    old_num: None,
-                    new_num: Some(2),
-                },
-                DiffLine {
-                    line_type: LineType::Context,
-                    content: "let z = 3;".to_string(),
-                    old_num: Some(3),
-                    new_num: Some(3),
-                },
-            ],
-        );
-
-        let patch = reconstruct_hunk_patch("lib.rs", &hunk);
-
-        let lines: Vec<&str> = patch.lines().collect();
-        assert_eq!(lines[4], " let x = 1;");
-        assert_eq!(lines[5], "-let y = 2;");
-        assert_eq!(lines[6], "+let y = 42;");
-        assert_eq!(lines[7], " let z = 3;");
-    }
-
-    #[test]
-    fn reconstruct_hunk_patch_only_deletions() {
-        let hunk = make_hunk(
-            "@@ -1,2 +1,0 @@",
-            vec![
-                DiffLine {
-                    line_type: LineType::Delete,
-                    content: "fn old() {}".to_string(),
-                    old_num: Some(1),
-                    new_num: None,
-                },
-                DiffLine {
-                    line_type: LineType::Delete,
-                    content: "fn also_old() {}".to_string(),
-                    old_num: Some(2),
-                    new_num: None,
-                },
-            ],
-        );
-
-        let patch = reconstruct_hunk_patch("old.rs", &hunk);
-
-        let lines: Vec<&str> = patch.lines().collect();
-        assert_eq!(lines[4], "-fn old() {}");
-        assert_eq!(lines[5], "-fn also_old() {}");
-        // Only content lines (after the 4-line header) should be checked — none should be additions
-        assert!(lines[4..].iter().all(|l| !l.starts_with('+')));
-    }
-
-    #[test]
-    fn reconstruct_hunk_patch_file_path_with_directory() {
-        let hunk = make_hunk(
-            "@@ -1,1 +1,1 @@",
-            vec![DiffLine {
-                line_type: LineType::Add,
-                content: "pub fn foo() {}".to_string(),
-                old_num: None,
-                new_num: Some(1),
-            }],
-        );
-
-        let patch = reconstruct_hunk_patch("src/lib/foo.rs", &hunk);
-
-        assert!(patch.contains("diff --git a/src/lib/foo.rs b/src/lib/foo.rs\n"));
-        assert!(patch.contains("--- a/src/lib/foo.rs\n"));
-        assert!(patch.contains("+++ b/src/lib/foo.rs\n"));
-    }
-
-    #[test]
-    fn reconstruct_hunk_patch_path_with_spaces() {
-        let hunk = make_hunk(
-            "@@ -1,1 +1,1 @@",
-            vec![DiffLine {
-                line_type: LineType::Add,
-                content: "fn hello() {}".to_string(),
-                old_num: None,
-                new_num: Some(1),
-            }],
-        );
-
-        let patch = reconstruct_hunk_patch("src/my file.rs", &hunk);
-
-        // Paths with spaces must be quoted so git apply parses them correctly.
-        assert!(patch.contains("diff --git a/\"src/my file.rs\" b/\"src/my file.rs\"\n"));
-        assert!(patch.contains("--- a/\"src/my file.rs\"\n"));
-        assert!(patch.contains("+++ b/\"src/my file.rs\"\n"));
-    }
-
-    // ── quote_git_path ──
-
-    #[test]
-    fn quote_git_path_plain_path_unchanged() {
-        assert_eq!(quote_git_path("src/lib.rs"), "src/lib.rs");
-    }
-
-    #[test]
-    fn quote_git_path_space_gets_quoted() {
-        assert_eq!(quote_git_path("my file.rs"), "\"my file.rs\"");
-    }
-
-    #[test]
-    fn quote_git_path_double_quote_in_name() {
-        assert_eq!(quote_git_path("say \"hi\".rs"), "\"say \\\"hi\\\".rs\"");
     }
 
     // ── upstream branch name extraction (detect_base_branch) ──

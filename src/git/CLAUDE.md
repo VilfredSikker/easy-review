@@ -35,7 +35,6 @@ Key functions:
 - `detect_base_branch_in(repo_root)` — fallback chain: upstream tracking → main → master → develop → dev → origin/*
 - `git_diff_raw(mode, base, repo_root)` — runs `git diff` with mode-specific args
 - `git_stage_file / git_unstage_file` — `git add` / `git reset HEAD`
-- `git_stage_hunk(path, hunk, repo_root)` — builds a minimal patch via `reconstruct_hunk_patch()` and pipes to `git apply --cached --unidiff-zero`
 - `list_worktrees(repo_root)` — parses `git worktree list --porcelain`
 - `discover_watched_files(repo_root, patterns)` — glob-matches patterns, returns `Vec<WatchedFile>` with path/mtime/size
 - `verify_gitignored(repo_root, path)` — checks `git check-ignore` for safety warnings
@@ -48,4 +47,3 @@ Debug logging: when `$ER_DEBUG` is set, `git_diff_raw` writes the raw command an
 ## Important Patterns
 
 - `detect_base_branch_impl` uses a closure for running git commands — avoids code duplication between `_in` and non-`_in` variants.
-- Hunk staging constructs a full patch (with `diff --git` header, `---/+++`, and hunk) then pipes via stdin — this is how `git add -p` works internally.

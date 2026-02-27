@@ -58,7 +58,6 @@ er --filter '*.rs'
 - **Live watch mode** — On by default. Auto-refreshes on file edits, staging, and commits; AI data reloads automatically; debounced to batch rapid changes
 - **Watched files** — Monitor git-ignored paths (like `.work/` folders) via `.er-config.toml`; view content or snapshot diffs inline
 - **Multi-repo tabs** — Open multiple repos or worktrees side-by-side
-- **Hunk staging** — Stage individual files or hunks without leaving the TUI
 - **Review tracking** — Mark files as reviewed, filter to unreviewed only. Status bar shows both filtered and total reviewed counts when a filter is active
 - **Composable filters** — Press `f` to filter files by glob, status, or size (`+*.rs,-*.lock,>50`). Press `F` for built-in presets (frontend, backend, config, docs) and filter history
 - **PR base hint** — When on a PR branch, `er` detects if the PR targets a different base than auto-detected and shows a hint (e.g. "PR #42 targets develop — run: er --pr 42")
@@ -96,7 +95,6 @@ R (Shift+R)       Toggle sort by recency (works in any mode)
 
 ```
 s                 Stage / unstage file (or snapshot watched file)
-Ctrl-s            Stage current hunk
 S                 Open settings
 Space             Toggle file as reviewed
 u                 Filter to unreviewed files only

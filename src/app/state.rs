@@ -2527,7 +2527,7 @@ impl App {
     }
 
     /// Returns true when split diff rendering should be active.
-    /// Requires the config flag, no open panel, and a non-History, non-Conflicts diff mode.
+    /// Requires the config flag and no open panel.
     pub fn split_diff_active(&self, config: &ErConfig) -> bool {
         if !config.display.split_diff {
             return false;
@@ -2536,7 +2536,7 @@ impl App {
         if tab.panel.is_some() {
             return false;
         }
-        !matches!(tab.mode, DiffMode::History | DiffMode::Conflicts)
+        true
     }
 
     // ── Tab Management ──
@@ -2924,34 +2924,6 @@ impl App {
         let repo_root = self.tab().repo_root.clone();
         git::git_stage_all(&repo_root)?;
         self.notify("Staged all files");
-        self.tab_mut().refresh_diff()?;
-        Ok(())
-    }
-
-    /// Stage just the current hunk
-    pub fn stage_current_hunk(&mut self) -> Result<()> {
-        let mode = self.tab().mode;
-        if mode == DiffMode::History || mode == DiffMode::Conflicts {
-            self.notify("Hunk staging not available in this mode");
-            return Ok(());
-        }
-
-        let si = self.tab().selected_file;
-        let hi = self.tab().current_hunk;
-
-        if si >= self.tab().files.len() {
-            return Ok(());
-        }
-        if hi >= self.tab().files[si].hunks.len() {
-            return Ok(());
-        }
-
-        let file_path = self.tab().files[si].path.clone();
-        let hunk_clone = self.tab().files[si].hunks[hi].clone();
-        let repo_root = self.tab().repo_root.clone();
-
-        git::git_stage_hunk(&repo_root, &file_path, &hunk_clone)?;
-        self.notify("Staged hunk");
         self.tab_mut().refresh_diff()?;
         Ok(())
     }
@@ -5366,23 +5338,23 @@ mod tests {
     }
 
     #[test]
-    fn split_diff_active_returns_false_in_history_mode() {
+    fn split_diff_active_returns_true_in_history_mode() {
         let mut tab = make_test_tab(vec![]);
         tab.mode = DiffMode::History;
         let app = make_test_app(tab);
         let mut config = ErConfig::default();
         config.display.split_diff = true;
-        assert!(!app.split_diff_active(&config));
+        assert!(app.split_diff_active(&config));
     }
 
     #[test]
-    fn split_diff_active_returns_false_in_conflicts_mode() {
+    fn split_diff_active_returns_true_in_conflicts_mode() {
         let mut tab = make_test_tab(vec![]);
         tab.mode = DiffMode::Conflicts;
         let app = make_test_app(tab);
         let mut config = ErConfig::default();
         config.display.split_diff = true;
-        assert!(!app.split_diff_active(&config));
+        assert!(app.split_diff_active(&config));
     }
 
     // ── scroll_right_split / scroll_left_split ──

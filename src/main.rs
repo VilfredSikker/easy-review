@@ -611,11 +611,6 @@ fn handle_normal_input(
             app.tab_mut().search_query.clear();
         }
 
-        // Stage current hunk (S)
-        KeyCode::Char('S') => {
-            app.stage_current_hunk()?;
-        }
-
         // Filter
         KeyCode::Char('f') => {
             app.input_mode = InputMode::Filter;
