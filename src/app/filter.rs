@@ -19,9 +19,19 @@ pub enum SizeOp {
 
 #[derive(Debug, Clone)]
 pub enum FilterRule {
-    Glob { include: bool, pattern: Pattern },
-    Status { include: bool, status: StatusKind },
-    Size { include: bool, op: SizeOp, threshold: usize },
+    Glob {
+        include: bool,
+        pattern: Pattern,
+    },
+    Status {
+        include: bool,
+        status: StatusKind,
+    },
+    Size {
+        include: bool,
+        op: SizeOp,
+        threshold: usize,
+    },
 }
 
 pub struct FilterPreset {
@@ -30,10 +40,22 @@ pub struct FilterPreset {
 }
 
 pub const FILTER_PRESETS: &[FilterPreset] = &[
-    FilterPreset { name: "frontend", expr: "*.ts,*.tsx,*.js,*.jsx,*.html,*.css,*.scss,*.svelte,*.vue" },
-    FilterPreset { name: "backend",  expr: "*.rs,*.py,*.go,*.java,*.sql,*.ts" }, // *.ts intentionally in both — TS is used on both sides
-    FilterPreset { name: "config",   expr: "*.toml,*.yaml,*.yml,*.json,*.env" },
-    FilterPreset { name: "docs",     expr: "*.md,*.txt,*.rst" },
+    FilterPreset {
+        name: "frontend",
+        expr: "*.ts,*.tsx,*.js,*.jsx,*.html,*.css,*.scss,*.svelte,*.vue",
+    },
+    FilterPreset {
+        name: "backend",
+        expr: "*.rs,*.py,*.go,*.java,*.sql,*.ts",
+    }, // *.ts intentionally in both — TS is used on both sides
+    FilterPreset {
+        name: "config",
+        expr: "*.toml,*.yaml,*.yml,*.json,*.env",
+    },
+    FilterPreset {
+        name: "docs",
+        expr: "*.md,*.txt,*.rst",
+    },
 ];
 
 impl FilterRule {
@@ -143,7 +165,9 @@ pub fn apply_filter(rules: &[FilterRule], file: &DiffFile) -> bool {
 
     // Phase 1: Check include rules (OR logic)
     let included = if has_includes {
-        rules.iter().any(|r| r.is_include() && matches_rule(r, file))
+        rules
+            .iter()
+            .any(|r| r.is_include() && matches_rule(r, file))
     } else {
         // No include rules → start with all files
         true
@@ -163,12 +187,8 @@ pub fn apply_filter(rules: &[FilterRule], file: &DiffFile) -> bool {
 
 fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
     match rule {
-        FilterRule::Glob { pattern, .. } => {
-            pattern.matches_with(&file.path, MATCH_OPTIONS)
-        }
-        FilterRule::Status { status, .. } => {
-            matches_status(*status, &file.status)
-        }
+        FilterRule::Glob { pattern, .. } => pattern.matches_with(&file.path, MATCH_OPTIONS),
+        FilterRule::Status { status, .. } => matches_status(*status, &file.status),
         FilterRule::Size { op, threshold, .. } => {
             let changed = file.adds + file.dels;
             match op {
@@ -180,13 +200,13 @@ fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
 }
 
 fn matches_status(kind: StatusKind, file_status: &FileStatus) -> bool {
-    match (kind, file_status) {
-        (StatusKind::Added, FileStatus::Added) => true,
-        (StatusKind::Modified, FileStatus::Modified) => true,
-        (StatusKind::Deleted, FileStatus::Deleted) => true,
-        (StatusKind::Renamed, FileStatus::Renamed(_)) => true,
-        _ => false,
-    }
+    matches!(
+        (kind, file_status),
+        (StatusKind::Added, FileStatus::Added)
+            | (StatusKind::Modified, FileStatus::Modified)
+            | (StatusKind::Deleted, FileStatus::Deleted)
+            | (StatusKind::Renamed, FileStatus::Renamed(_))
+    )
 }
 
 #[cfg(test)]
@@ -245,7 +265,10 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert!(matches!(
             &rules[0],
-            FilterRule::Status { include: true, status: StatusKind::Added }
+            FilterRule::Status {
+                include: true,
+                status: StatusKind::Added
+            }
         ));
     }
 
@@ -255,7 +278,10 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert!(matches!(
             &rules[0],
-            FilterRule::Status { include: true, status: StatusKind::Modified }
+            FilterRule::Status {
+                include: true,
+                status: StatusKind::Modified
+            }
         ));
     }
 
@@ -265,7 +291,10 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert!(matches!(
             &rules[0],
-            FilterRule::Status { include: false, status: StatusKind::Deleted }
+            FilterRule::Status {
+                include: false,
+                status: StatusKind::Deleted
+            }
         ));
     }
 
@@ -275,7 +304,10 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert!(matches!(
             &rules[0],
-            FilterRule::Status { include: true, status: StatusKind::Renamed }
+            FilterRule::Status {
+                include: true,
+                status: StatusKind::Renamed
+            }
         ));
     }
 
@@ -285,7 +317,11 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert!(matches!(
             &rules[0],
-            FilterRule::Size { include: true, op: SizeOp::GreaterThan, threshold: 10 }
+            FilterRule::Size {
+                include: true,
+                op: SizeOp::GreaterThan,
+                threshold: 10
+            }
         ));
     }
 
@@ -295,7 +331,11 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert!(matches!(
             &rules[0],
-            FilterRule::Size { include: false, op: SizeOp::LessThan, threshold: 3 }
+            FilterRule::Size {
+                include: false,
+                op: SizeOp::LessThan,
+                threshold: 3
+            }
         ));
     }
 
@@ -306,7 +346,10 @@ mod tests {
         assert!(matches!(&rules[0], FilterRule::Glob { include: true, .. }));
         assert!(matches!(&rules[1], FilterRule::Glob { include: false, .. }));
         assert!(matches!(&rules[2], FilterRule::Size { include: true, .. }));
-        assert!(matches!(&rules[3], FilterRule::Status { include: true, .. }));
+        assert!(matches!(
+            &rules[3],
+            FilterRule::Status { include: true, .. }
+        ));
     }
 
     #[test]
@@ -330,7 +373,11 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert!(matches!(
             &rules[0],
-            FilterRule::Size { include: true, op: SizeOp::GreaterThan, threshold: 10 }
+            FilterRule::Size {
+                include: true,
+                op: SizeOp::GreaterThan,
+                threshold: 10
+            }
         ));
     }
 
@@ -415,7 +462,12 @@ mod tests {
     #[test]
     fn status_renamed_matches_renamed_variant() {
         let rules = parse_filter_expr("+renamed");
-        let renamed = make_file("new_name.rs", FileStatus::Renamed("old_name.rs".to_string()), 2, 1);
+        let renamed = make_file(
+            "new_name.rs",
+            FileStatus::Renamed("old_name.rs".to_string()),
+            2,
+            1,
+        );
         let modified = make_file("other.rs", FileStatus::Modified, 1, 0);
         assert!(apply_filter(&rules, &renamed));
         assert!(!apply_filter(&rules, &modified));
@@ -477,7 +529,7 @@ mod tests {
     fn size_boundary_exactly_at_threshold() {
         let rules = parse_filter_expr("+>10");
         let exactly_10 = make_file("exact.rs", FileStatus::Modified, 5, 5); // 10 changes
-        // > 10 means strictly greater, 10 does NOT pass
+                                                                            // > 10 means strictly greater, 10 does NOT pass
         assert!(!apply_filter(&rules, &exactly_10));
     }
 }

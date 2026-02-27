@@ -6,21 +6,25 @@ use ratatui::{
 };
 use std::time::SystemTime;
 
+use super::styles;
+use super::utils::word_wrap;
 use crate::ai::RiskLevel;
 use crate::app::{App, DiffMode};
 use crate::git::FileStatus;
-use super::styles;
-use super::utils::word_wrap;
 
 /// Format a SystemTime as a relative time string (e.g. "2m ago", "1h ago")
 fn format_relative_time(mtime: SystemTime) -> String {
-    let elapsed = SystemTime::now()
-        .duration_since(mtime)
-        .unwrap_or_default();
+    let elapsed = SystemTime::now().duration_since(mtime).unwrap_or_default();
     let secs = elapsed.as_secs();
-    if secs < 60 { return format!("{}s ago", secs); }
-    if secs < 3600 { return format!("{}m ago", secs / 60); }
-    if secs < 86400 { return format!("{}h ago", secs / 3600); }
+    if secs < 60 {
+        return format!("{}s ago", secs);
+    }
+    if secs < 3600 {
+        return format!("{}m ago", secs / 60);
+    }
+    if secs < 86400 {
+        return format!("{}h ago", secs / 3600);
+    }
     format!("{}d ago", secs / 86400)
 }
 
@@ -45,7 +49,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let visible_watched = tab.visible_watched_files();
     let watched_count = visible_watched.len();
     let visible_count = visible.len();
-    let has_filter = !tab.filter_expr.is_empty() || !tab.search_query.is_empty() || tab.show_unreviewed_only;
+    let has_filter =
+        !tab.filter_expr.is_empty() || !tab.search_query.is_empty() || tab.show_unreviewed_only;
     let count_label = if has_filter {
         format!("{}/{}", visible_count, total)
     } else {
@@ -54,7 +59,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let title = if in_overlay && tab.ai.has_data() {
         let findings = tab.ai.total_findings();
         if ai_stale && stale_count > 0 {
-            format!(" FILES ({}) ⚠ {} findings · {} stale ", count_label, findings, stale_count)
+            format!(
+                " FILES ({}) ⚠ {} findings · {} stale ",
+                count_label, findings, stale_count
+            )
         } else if ai_stale {
             format!(" FILES ({}) ⚠ {} findings [stale] ", count_label, findings)
         } else {
@@ -69,19 +77,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // Virtualized rendering: find which position the selected file is in the visible list,
     // then only render items in the viewport window
     let viewport_height = area.height.saturating_sub(1) as usize; // -1 for border/title
-    // TODO(risk:minor): unwrap_or(0) silently falls back to position 0 when the selected
-    // file index is not in the visible list (e.g. filter active and the selected file is
-    // filtered out). This causes the scroll calculation below to centre on the wrong item.
-    // The selection and the visible set should be kept in sync so this never produces a
-    // misleading position.
-    let selected_pos = visible.iter().position(|(i, _)| *i == tab.selected_file).unwrap_or(0);
+                                                                  // TODO(risk:minor): unwrap_or(0) silently falls back to position 0 when the selected
+                                                                  // file index is not in the visible list (e.g. filter active and the selected file is
+                                                                  // filtered out). This causes the scroll calculation below to centre on the wrong item.
+                                                                  // The selection and the visible set should be kept in sync so this never produces a
+                                                                  // misleading position.
+    let selected_pos = visible
+        .iter()
+        .position(|(i, _)| *i == tab.selected_file)
+        .unwrap_or(0);
 
     // Calculate file_scroll to keep selection visible
     // We compute the scroll position based on the selected file's position in visible list
-    let file_scroll = if visible.len() <= viewport_height {
-        0 // Everything fits, no scroll needed
-    } else if selected_pos < viewport_height / 2 {
-        0 // Near the top
+    let file_scroll = if visible.len() <= viewport_height || selected_pos < viewport_height / 2 {
+        0 // Everything fits or near the top
     } else if selected_pos > visible.len().saturating_sub(viewport_height / 2) {
         visible.len().saturating_sub(viewport_height) // Near the bottom
     } else {
@@ -128,16 +137,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                             RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
                         }
                     };
-                    Some(Span::styled(
-                        format!("{} ", fr.risk.symbol()),
-                        dot_style,
-                    ))
+                    Some(Span::styled(format!("{} ", fr.risk.symbol()), dot_style))
                 } else {
                     // No AI data for this file — show empty dot
-                    Some(Span::styled(
-                        "  ",
-                        ratatui::style::Style::default(),
-                    ))
+                    Some(Span::styled("  ", ratatui::style::Style::default()))
                 }
             } else {
                 None
@@ -194,10 +197,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
             let line_style = if is_selected {
                 styles::selected_style()
-            } else if is_compacted {
-                ratatui::style::Style::default().fg(styles::DIM).bg(styles::SURFACE)
-            } else if is_reviewed {
-                ratatui::style::Style::default().fg(styles::DIM).bg(styles::SURFACE)
+            } else if is_compacted || is_reviewed {
+                ratatui::style::Style::default()
+                    .fg(styles::DIM)
+                    .bg(styles::SURFACE)
             } else {
                 styles::surface_style()
             };
@@ -209,11 +212,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 symbol_style
             };
 
-            let path_width = (area.width as usize).saturating_sub(14 + extra_width + comment_width + time_width).max(1);
+            let path_width = (area.width as usize)
+                .saturating_sub(14 + extra_width + comment_width + time_width)
+                .max(1);
 
-            let mut spans = vec![
-                Span::styled(format!(" {} ", symbol), effective_symbol_style),
-            ];
+            let mut spans = vec![Span::styled(
+                format!(" {} ", symbol),
+                effective_symbol_style,
+            )];
 
             // Insert risk dot after status symbol
             if let Some(dot) = risk_dot {
@@ -273,10 +279,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             sep_label,
             "\u{2500}".repeat(sep_width.saturating_sub(dash_count + sep_label.len()))
         );
-        items.push(ListItem::new(Line::from(Span::styled(
-            format!(" {}", sep_text),
-            ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
-        ))).style(styles::surface_style()));
+        items.push(
+            ListItem::new(Line::from(Span::styled(
+                format!(" {}", sep_text),
+                ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
+            )))
+            .style(styles::surface_style()),
+        );
 
         // Watched files
         for (idx, watched) in &visible_watched {
@@ -284,10 +293,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             let age = format_relative_time(watched.modified);
             let not_ignored = tab.watched_not_ignored.contains(&watched.path);
 
-            let path = shorten_path(
-                &watched.path,
-                (area.width as usize).saturating_sub(16),
-            );
+            let path = shorten_path(&watched.path, (area.width as usize).saturating_sub(16));
             let path_width = (area.width as usize).saturating_sub(14).max(1);
 
             let line_style = if is_selected {
@@ -303,9 +309,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 ratatui::style::Style::default().fg(styles::WATCHED_TEXT)
             };
 
-            let mut spans = vec![
-                Span::styled(format!(" {} ", icon), icon_style),
-            ];
+            let mut spans = vec![Span::styled(format!(" {} ", icon), icon_style)];
 
             spans.push(Span::styled(
                 format!("{:<width$}", path, width = path_width),
@@ -356,7 +360,9 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
 
     // " ● " = 3 chars for the indicator prefix; leave 1 char margin on the right
     let indicator_width: usize = 3;
-    let subject_width = (area.width as usize).saturating_sub(indicator_width + 1).max(1);
+    let subject_width = (area.width as usize)
+        .saturating_sub(indicator_width + 1)
+        .max(1);
 
     // Calculate the visual height of each commit item (subject lines + author + separator)
     let item_heights: Vec<usize> = visible
@@ -453,7 +459,10 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
                 .skip(1)
                 .map(|segment| {
                     let line = Line::from(vec![
-                        Span::styled(continuation_indent.clone(), ratatui::style::Style::default()),
+                        Span::styled(
+                            continuation_indent.clone(),
+                            ratatui::style::Style::default(),
+                        ),
                         Span::styled(segment.clone(), subject_style),
                     ]);
                     ListItem::new(line).style(line_style)
@@ -461,12 +470,10 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
                 .collect();
 
             // Author line: indented, dimmed
-            let author_line = Line::from(vec![
-                Span::styled(
-                    format!("   {}", commit.author),
-                    ratatui::style::Style::default().fg(styles::DIM),
-                ),
-            ]);
+            let author_line = Line::from(vec![Span::styled(
+                format!("   {}", commit.author),
+                ratatui::style::Style::default().fg(styles::DIM),
+            )]);
 
             // Separator line
             let separator = Line::from(Span::styled(
@@ -524,7 +531,6 @@ fn shorten_path(path: &str, max_width: usize) -> String {
     let truncated: String = path.chars().take(max_width.saturating_sub(1)).collect();
     format!("{}…", truncated)
 }
-
 
 #[cfg(test)]
 mod tests {

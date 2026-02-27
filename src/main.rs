@@ -6,9 +6,9 @@ mod github;
 mod ui;
 mod watch;
 
+use crate::ai::{PanelContent, ReviewFocus};
 use anyhow::Result;
 use app::{App, ConfirmAction, DiffMode, InputMode, SplitSide};
-use crate::ai::{PanelContent, ReviewFocus};
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -66,35 +66,36 @@ fn main() -> Result<()> {
     }
 
     // Hint + PR data: check for PR in background (avoids blocking startup on network)
-    let (hint_rx, pr_data_rx) = if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
-        let repo_root = app.tab().repo_root.clone();
-        let current_base = app.tab().base_branch.clone();
-        let (hint_tx, hint_rx) = mpsc::channel::<String>();
-        let (pr_tx, pr_rx) = mpsc::channel::<github::PrOverviewData>();
-        std::thread::spawn(move || {
-            if let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) {
-                if pr_base != current_base {
-                    let _ = hint_tx.send(format!(
-                        "PR #{} targets {} — run: er --pr {}",
-                        pr_num, pr_base, pr_num
-                    ));
+    let (hint_rx, pr_data_rx) =
+        if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
+            let repo_root = app.tab().repo_root.clone();
+            let current_base = app.tab().base_branch.clone();
+            let (hint_tx, hint_rx) = mpsc::channel::<String>();
+            let (pr_tx, pr_rx) = mpsc::channel::<github::PrOverviewData>();
+            std::thread::spawn(move || {
+                if let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) {
+                    if pr_base != current_base {
+                        let _ = hint_tx.send(format!(
+                            "PR #{} targets {} — run: er --pr {}",
+                            pr_num, pr_base, pr_num
+                        ));
+                    }
+                    // Fetch PR overview data regardless of base mismatch
+                    if let Some(data) = github::gh_pr_overview(&repo_root) {
+                        let _ = pr_tx.send(data);
+                    }
                 }
-                // Fetch PR overview data regardless of base mismatch
-                if let Some(data) = github::gh_pr_overview(&repo_root) {
-                    let _ = pr_tx.send(data);
-                }
+            });
+            (Some(hint_rx), Some(pr_rx))
+        } else {
+            // For --pr flag or PR URL, fetch PR data synchronously (already in the right state)
+            let repo_root = app.tab().repo_root.clone();
+            let pr_data = github::gh_pr_overview(&repo_root);
+            if let Some(data) = pr_data {
+                app.tab_mut().pr_data = Some(data);
             }
-        });
-        (Some(hint_rx), Some(pr_rx))
-    } else {
-        // For --pr flag or PR URL, fetch PR data synchronously (already in the right state)
-        let repo_root = app.tab().repo_root.clone();
-        let pr_data = github::gh_pr_overview(&repo_root);
-        if let Some(data) = pr_data {
-            app.tab_mut().pr_data = Some(data);
-        }
-        (None, None)
-    };
+            (None, None)
+        };
 
     // Load syntax highlighting (once, reused for all files)
     let mut highlighter = ui::highlight::Highlighter::new();
@@ -107,7 +108,13 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run event loop
-    let result = run_app(&mut terminal, &mut app, &mut highlighter, hint_rx, pr_data_rx);
+    let result = run_app(
+        &mut terminal,
+        &mut app,
+        &mut highlighter,
+        hint_rx,
+        pr_data_rx,
+    );
 
     // Cleanup
     // TODO(risk:high): if run_app panics rather than returning Err, these cleanup calls never
@@ -204,7 +211,11 @@ fn run_app<B: Backend>(
             pending_file_count = 0;
             let _ = app.tab_mut().refresh_diff_quick();
             let ai_status = if app.tab().ai.has_data() {
-                if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
+                if app.tab().ai.is_stale {
+                    " · AI stale"
+                } else {
+                    " · AI synced"
+                }
             } else {
                 ""
             };
@@ -218,14 +229,12 @@ fn run_app<B: Backend>(
 
         // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
         app.ai_poll_counter = app.ai_poll_counter.wrapping_add(1);
-        if app.ai_poll_counter % 10 == 0 {
-            if app.tab_mut().check_ai_files_changed() {
-                app.notify("✓ AI data refreshed");
-            }
+        if app.ai_poll_counter.is_multiple_of(10) && app.tab_mut().check_ai_files_changed() {
+            app.notify("✓ AI data refreshed");
         }
 
         // Rescan watched files (every 50 ticks ≈ 5s)
-        if app.ai_poll_counter % 50 == 0 {
+        if app.ai_poll_counter.is_multiple_of(50) {
             app.tab_mut().refresh_watched_files();
         }
 
@@ -332,7 +341,11 @@ fn handle_normal_input(
             let tab = app.tab_mut();
             tab.sort_by_mtime = !tab.sort_by_mtime;
             let _ = tab.refresh_diff();
-            let label = if app.tab().sort_by_mtime { "Sort: recent first" } else { "Sort: default" };
+            let label = if app.tab().sort_by_mtime {
+                "Sort: recent first"
+            } else {
+                "Sort: default"
+            };
             app.notify(label);
             return Ok(());
         }
@@ -341,7 +354,11 @@ fn handle_normal_input(
         KeyCode::Char('R') => {
             app.tab_mut().refresh_diff()?;
             let ai_status = if app.tab().ai.has_data() {
-                if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
+                if app.tab().ai.is_stale {
+                    " · AI stale"
+                } else {
+                    " · AI synced"
+                }
             } else {
                 ""
             };
@@ -667,7 +684,7 @@ fn handle_normal_input(
 
         // Expand/compact toggle for compacted files
         KeyCode::Enter => {
-            let is_compacted = app.tab().selected_diff_file().map_or(false, |f| f.compacted);
+            let is_compacted = app.tab().selected_diff_file().is_some_and(|f| f.compacted);
             if is_compacted {
                 app.tab_mut().toggle_compacted()?;
             }
@@ -694,14 +711,22 @@ fn handle_normal_input(
         KeyCode::Char('C') => {
             app.tab_mut().toggle_layer_comments();
             let on = app.tab().layers.show_github_comments;
-            app.notify(if on { "Comments: visible" } else { "Comments: hidden" });
+            app.notify(if on {
+                "Comments: visible"
+            } else {
+                "Comments: hidden"
+            });
         }
 
         // Toggle question layer visibility (Q)
         KeyCode::Char('Q') => {
             app.tab_mut().toggle_layer_questions();
             let on = app.tab().layers.show_questions;
-            app.notify(if on { "Questions: visible" } else { "Questions: hidden" });
+            app.notify(if on {
+                "Questions: visible"
+            } else {
+                "Questions: hidden"
+            });
         }
 
         // Tab: toggle split pane focus when split diff is active; otherwise toggle panel focus
@@ -734,7 +759,11 @@ fn handle_normal_input(
         KeyCode::Char('a') => {
             app.tab_mut().toggle_layer_ai();
             let on = app.tab().layers.show_ai_findings;
-            app.notify(if on { "AI findings: ON" } else { "AI findings: OFF" });
+            app.notify(if on {
+                "AI findings: ON"
+            } else {
+                "AI findings: OFF"
+            });
         }
         // Toggle context panel (p) — cycles through panel states
         KeyCode::Char('p') => {
@@ -767,8 +796,12 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         // Switch focus between left/right columns
-        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right
-        | KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+        KeyCode::Tab
+        | KeyCode::Char('l')
+        | KeyCode::Right
+        | KeyCode::BackTab
+        | KeyCode::Char('h')
+        | KeyCode::Left => {
             app.tab_mut().review_toggle_focus();
             let (files_offset, checklist_offset) = app.tab().ai_summary_section_offsets();
             app.tab_mut().panel_scroll = match app.tab().review_focus {
@@ -812,7 +845,10 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
         // Commit navigation (left panel)
         KeyCode::Char('k') => {
             // Check if at the end and need to load more
-            let at_end = app.tab().history.as_ref()
+            let at_end = app
+                .tab()
+                .history
+                .as_ref()
                 .map(|h| h.selected_commit + 1 >= h.commits.len())
                 .unwrap_or(false);
             if at_end {
@@ -868,7 +904,11 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('a') => {
             app.tab_mut().toggle_layer_ai();
             let on = app.tab().layers.show_ai_findings;
-            app.notify(if on { "AI findings: ON" } else { "AI findings: OFF" });
+            app.notify(if on {
+                "AI findings: ON"
+            } else {
+                "AI findings: OFF"
+            });
         }
         // Toggle context panel
         KeyCode::Char('p') => {
@@ -1039,12 +1079,14 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     let comments_path = format!("{}/.er-github-comments.json", repo_root);
     let diff_hash = tab.branch_diff_hash.clone();
     let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| crate::ai::ErGitHubComments {
-            version: 1,
-            diff_hash: diff_hash.clone(),
-            github: None,
-            comments: Vec::new(),
-        }),
+        Ok(content) => {
+            serde_json::from_str(&content).unwrap_or_else(|_| crate::ai::ErGitHubComments {
+                version: 1,
+                diff_hash: diff_hash.clone(),
+                github: None,
+                comments: Vec::new(),
+            })
+        }
         Err(_) => crate::ai::ErGitHubComments {
             version: 1,
             diff_hash: diff_hash.clone(),
@@ -1061,7 +1103,9 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     });
 
     // Keep only truly local unpushed comments
-    let local_unpushed: Vec<_> = gc.comments.into_iter()
+    let local_unpushed: Vec<_> = gc
+        .comments
+        .into_iter()
         .filter(|c| c.source == "local" && !c.synced)
         .collect();
 
@@ -1073,40 +1117,83 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     for gh in &gh_comments {
         let file_path = gh.path.clone().unwrap_or_default();
 
-        let (hunk_index, anchor_line_content, anchor_ctx_before, anchor_ctx_after, anchor_old_line, anchor_hunk_header) =
-            if let Some(line) = gh.line {
-                if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
-                    if let Some((i, hunk)) = f.hunks.iter().enumerate().find(|(_, h)| {
-                        line >= h.new_start && line < h.new_start + h.new_count
-                    }) {
-                        let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
-                        let (lc, old_ln) = if let Some(idx) = target_idx {
-                            (hunk.lines[idx].content.clone(), hunk.lines[idx].old_num)
-                        } else {
-                            (String::new(), None)
-                        };
-                        let ctx_before: Vec<String> = if let Some(idx) = target_idx {
-                            let start = idx.saturating_sub(3);
-                            hunk.lines[start..idx].iter().map(|l| l.content.clone()).collect()
-                        } else {
-                            Vec::new()
-                        };
-                        let ctx_after: Vec<String> = if let Some(idx) = target_idx {
-                            let end = (idx + 4).min(hunk.lines.len());
-                            hunk.lines[(idx + 1)..end].iter().map(|l| l.content.clone()).collect()
-                        } else {
-                            Vec::new()
-                        };
-                        (Some(i), lc, ctx_before, ctx_after, old_ln, hunk.header.clone())
+        let (
+            hunk_index,
+            anchor_line_content,
+            anchor_ctx_before,
+            anchor_ctx_after,
+            anchor_old_line,
+            anchor_hunk_header,
+        ) = if let Some(line) = gh.line {
+            if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
+                if let Some((i, hunk)) = f
+                    .hunks
+                    .iter()
+                    .enumerate()
+                    .find(|(_, h)| line >= h.new_start && line < h.new_start + h.new_count)
+                {
+                    let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
+                    let (lc, old_ln) = if let Some(idx) = target_idx {
+                        (hunk.lines[idx].content.clone(), hunk.lines[idx].old_num)
                     } else {
-                        (None, String::new(), Vec::new(), Vec::new(), None, String::new())
-                    }
+                        (String::new(), None)
+                    };
+                    let ctx_before: Vec<String> = if let Some(idx) = target_idx {
+                        let start = idx.saturating_sub(3);
+                        hunk.lines[start..idx]
+                            .iter()
+                            .map(|l| l.content.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let ctx_after: Vec<String> = if let Some(idx) = target_idx {
+                        let end = (idx + 4).min(hunk.lines.len());
+                        hunk.lines[(idx + 1)..end]
+                            .iter()
+                            .map(|l| l.content.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    (
+                        Some(i),
+                        lc,
+                        ctx_before,
+                        ctx_after,
+                        old_ln,
+                        hunk.header.clone(),
+                    )
                 } else {
-                    (None, String::new(), Vec::new(), Vec::new(), None, String::new())
+                    (
+                        None,
+                        String::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                        String::new(),
+                    )
                 }
             } else {
-                (None, String::new(), Vec::new(), Vec::new(), None, String::new())
-            };
+                (
+                    None,
+                    String::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    String::new(),
+                )
+            }
+        } else {
+            (
+                None,
+                String::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                String::new(),
+            )
+        };
 
         let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
 
@@ -1150,7 +1237,10 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     std::fs::rename(&tmp_path, &comments_path)?;
 
     app.tab_mut().reload_ai_state();
-    app.notify(&format!("GitHub sync: {} from GitHub, {} local kept", github_count, local_count));
+    app.notify(&format!(
+        "GitHub sync: {} from GitHub, {} local kept",
+        github_count, local_count
+    ));
     Ok(())
 }
 
@@ -1181,7 +1271,9 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     let mut failed = 0u32;
 
     // Push parents first
-    let comment_ids: Vec<String> = gc.comments.iter()
+    let comment_ids: Vec<String> = gc
+        .comments
+        .iter()
         .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.is_none())
         .map(|c| c.id.clone())
         .collect();
@@ -1198,7 +1290,15 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
             // TODO(risk:minor): push errors are counted but the error message is discarded.
             // The user sees "N failed" with no indication of which comments failed or why
             // (e.g. outdated commit SHA, deleted file, rate limit). Retain errors for display.
-            match github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment, &repo_root) {
+            match github::gh_pr_push_comment(
+                &owner,
+                &repo_name,
+                pr_number,
+                path,
+                line,
+                &comment.comment,
+                &repo_root,
+            ) {
                 Ok(github_id) => {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                         c.github_id = Some(github_id);
@@ -1206,13 +1306,17 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
                     }
                     pushed += 1;
                 }
-                Err(_) => { failed += 1; }
+                Err(_) => {
+                    failed += 1;
+                }
             }
         }
     }
 
     // Then push replies
-    let reply_ids: Vec<String> = gc.comments.iter()
+    let reply_ids: Vec<String> = gc
+        .comments
+        .iter()
         .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.is_some())
         .map(|c| c.id.clone())
         .collect();
@@ -1220,12 +1324,21 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     for cid in &reply_ids {
         let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
         if let Some(comment) = comment {
-            let parent_gh_id = comment.in_reply_to.as_ref()
+            let parent_gh_id = comment
+                .in_reply_to
+                .as_ref()
                 .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
                 .and_then(|c| c.github_id);
 
             if let Some(parent_gh_id) = parent_gh_id {
-                match github::gh_pr_reply_comment(&owner, &repo_name, pr_number, parent_gh_id, &comment.comment, &repo_root) {
+                match github::gh_pr_reply_comment(
+                    &owner,
+                    &repo_name,
+                    pr_number,
+                    parent_gh_id,
+                    &comment.comment,
+                    &repo_root,
+                ) {
                     Ok(github_id) => {
                         if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                             c.github_id = Some(github_id);
@@ -1233,7 +1346,9 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
                         }
                         pushed += 1;
                     }
-                    Err(_) => { failed += 1; }
+                    Err(_) => {
+                        failed += 1;
+                    }
                 }
             } else {
                 failed += 1;
@@ -1323,7 +1438,11 @@ mod tests {
         let mut app = make_app(vec![]);
         send_key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
         assert!(app.should_quit, "Ctrl+q must set should_quit = true");
-        assert_eq!(app.input_mode, InputMode::Normal, "Ctrl+q must not change input_mode");
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "Ctrl+q must not change input_mode"
+        );
     }
 
     #[test]
@@ -1487,11 +1606,7 @@ mod tests {
         app.tab_mut().panel_scroll = 5;
         send_key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
         // panel_scroll must be unchanged — Ctrl+j navigates findings, not panel
-        assert_eq!(
-            app.tab().panel_scroll,
-            5,
-            "Ctrl+j must not scroll panel"
-        );
+        assert_eq!(app.tab().panel_scroll, 5, "Ctrl+j must not scroll panel");
     }
 
     #[test]
@@ -1530,11 +1645,7 @@ mod tests {
         app.tab_mut().panel_focus = false;
         app.tab_mut().panel_scroll = 5;
         send_key(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
-        assert_eq!(
-            app.tab().panel_scroll,
-            5,
-            "Ctrl+k must not scroll panel"
-        );
+        assert_eq!(app.tab().panel_scroll, 5, "Ctrl+k must not scroll panel");
     }
 
     // ── KeyModifiers::NONE guard is exact ──

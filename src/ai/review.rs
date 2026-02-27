@@ -234,9 +234,27 @@ impl<'a> CommentRef<'a> {
 
     pub fn author(&self) -> &str {
         match self {
-            CommentRef::Question(q) => if q.author.is_empty() { "You" } else { &q.author },
-            CommentRef::GitHubComment(c) => if c.author.is_empty() { "You" } else { &c.author },
-            CommentRef::Legacy(c) => if c.author.is_empty() { "You" } else { &c.author },
+            CommentRef::Question(q) => {
+                if q.author.is_empty() {
+                    "You"
+                } else {
+                    &q.author
+                }
+            }
+            CommentRef::GitHubComment(c) => {
+                if c.author.is_empty() {
+                    "You"
+                } else {
+                    &c.author
+                }
+            }
+            CommentRef::Legacy(c) => {
+                if c.author.is_empty() {
+                    "You"
+                } else {
+                    &c.author
+                }
+            }
         }
     }
 
@@ -576,6 +594,7 @@ pub enum ReviewFocus {
 // ── Aggregate AI state for a tab ──
 
 /// All loaded AI data for a single repo tab
+#[derive(Default)]
 pub struct AiState {
     pub review: Option<ErReview>,
     pub order: Option<ErOrder>,
@@ -591,22 +610,6 @@ pub struct AiState {
     pub is_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
     pub stale_files: HashSet<String>,
-}
-
-impl Default for AiState {
-    fn default() -> Self {
-        AiState {
-            review: None,
-            order: None,
-            summary: None,
-            checklist: None,
-            questions: None,
-            github_comments: None,
-            feedback: None,
-            is_stale: false,
-            stale_files: HashSet::new(),
-        }
-    }
 }
 
 impl AiState {
@@ -697,7 +700,12 @@ impl AiState {
     }
 
     /// Comments targeting a specific line within a hunk (top-level only, no replies)
-    pub fn comments_for_line(&self, path: &str, hunk_idx: usize, line_num: usize) -> Vec<CommentRef<'_>> {
+    pub fn comments_for_line(
+        &self,
+        path: &str,
+        hunk_idx: usize,
+        line_num: usize,
+    ) -> Vec<CommentRef<'_>> {
         let mut result = Vec::new();
         if let Some(qs) = &self.questions {
             for q in &qs.questions {
@@ -786,20 +794,14 @@ impl AiState {
         let mut result = Vec::new();
         if let Some(qs) = &self.questions {
             for q in &qs.questions {
-                if q.file == path
-                    && q.hunk_index.is_none()
-                    && q.in_reply_to.is_none()
-                {
+                if q.file == path && q.hunk_index.is_none() && q.in_reply_to.is_none() {
                     result.push(CommentRef::Question(q));
                 }
             }
         }
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
-                if c.file == path
-                    && c.hunk_index.is_none()
-                    && c.in_reply_to.is_none()
-                {
+                if c.file == path && c.hunk_index.is_none() && c.in_reply_to.is_none() {
                     result.push(CommentRef::GitHubComment(c));
                 }
             }
@@ -808,10 +810,7 @@ impl AiState {
         if result.is_empty() {
             if let Some(fb) = &self.feedback {
                 for c in &fb.comments {
-                    if c.file == path
-                        && c.hunk_index.is_none()
-                        && c.in_reply_to.is_none()
-                    {
+                    if c.file == path && c.hunk_index.is_none() && c.in_reply_to.is_none() {
                         result.push(CommentRef::Legacy(c));
                     }
                 }
@@ -867,9 +866,9 @@ impl AiState {
     /// Whether a file has any questions (top-level, not replies)
     #[allow(dead_code)]
     pub fn file_has_questions(&self, path: &str) -> bool {
-        self.questions.as_ref().is_some_and(|qs| {
-            qs.questions.iter().any(|q| q.file == path)
-        })
+        self.questions
+            .as_ref()
+            .is_some_and(|qs| qs.questions.iter().any(|q| q.file == path))
     }
 
     /// Count of questions for a file (top-level only)
@@ -883,14 +882,19 @@ impl AiState {
     #[allow(dead_code)]
     pub fn file_has_github_comments(&self, path: &str) -> bool {
         self.github_comments.as_ref().is_some_and(|gc| {
-            gc.comments.iter().any(|c| c.file == path && c.in_reply_to.is_none())
+            gc.comments
+                .iter()
+                .any(|c| c.file == path && c.in_reply_to.is_none())
         })
     }
 
     /// Count of GitHub comments for a file (top-level only)
     pub fn file_github_comment_count(&self, path: &str) -> usize {
         self.github_comments.as_ref().map_or(0, |gc| {
-            gc.comments.iter().filter(|c| c.file == path && c.in_reply_to.is_none()).count()
+            gc.comments
+                .iter()
+                .filter(|c| c.file == path && c.in_reply_to.is_none())
+                .count()
         })
     }
 
@@ -938,7 +942,12 @@ impl AiState {
         if let Some(review) = &self.review {
             for (file_path, file_review) in &review.files {
                 for finding in &file_review.findings {
-                    result.push((file_path.clone(), finding.hunk_index, finding.line_start, finding.id.clone()));
+                    result.push((
+                        file_path.clone(),
+                        finding.hunk_index,
+                        finding.line_start,
+                        finding.id.clone(),
+                    ));
                 }
             }
         }
@@ -949,30 +958,66 @@ impl AiState {
     /// All navigable hints (comments + questions + findings) merged and sorted by file + line.
     /// Returns (file, hunk_index, line_start, id, hint_type) tuples.
     /// Replies are included and sorted immediately after their parent.
-    pub fn all_hints_ordered(&self) -> Vec<(String, Option<usize>, Option<usize>, String, HintType)> {
+    #[allow(clippy::type_complexity)]
+    pub fn all_hints_ordered(
+        &self,
+    ) -> Vec<(String, Option<usize>, Option<usize>, String, HintType)> {
         // Extended tuple: (file, hunk_index, line_start, is_reply, position, id, hint_type)
         // is_reply=0 for parents, 1 for replies — ensures parents sort before their replies
         // position preserves insertion order within each (is_reply) group for stable output
-        let mut extended: Vec<(String, Option<usize>, Option<usize>, u8, usize, String, HintType)> = Vec::new();
+        type ExtendedHint = (
+            String,
+            Option<usize>,
+            Option<usize>,
+            u8,
+            usize,
+            String,
+            HintType,
+        );
+        let mut extended: Vec<ExtendedHint> = Vec::new();
         // Questions (both top-level and replies)
         if let Some(qs) = &self.questions {
             for (i, q) in qs.questions.iter().enumerate() {
                 let is_reply = if q.in_reply_to.is_none() { 0 } else { 1 };
-                extended.push((q.file.clone(), q.hunk_index, q.line_start, is_reply, i, q.id.clone(), HintType::Question));
+                extended.push((
+                    q.file.clone(),
+                    q.hunk_index,
+                    q.line_start,
+                    is_reply,
+                    i,
+                    q.id.clone(),
+                    HintType::Question,
+                ));
             }
         }
         // GitHub comments (both top-level and replies)
         if let Some(gc) = &self.github_comments {
             for (i, c) in gc.comments.iter().enumerate() {
                 let is_reply = if c.in_reply_to.is_none() { 0 } else { 1 };
-                extended.push((c.file.clone(), c.hunk_index, c.line_start, is_reply, i, c.id.clone(), HintType::GitHubComment));
+                extended.push((
+                    c.file.clone(),
+                    c.hunk_index,
+                    c.line_start,
+                    is_reply,
+                    i,
+                    c.id.clone(),
+                    HintType::GitHubComment,
+                ));
             }
         }
         // Findings (never have replies)
         if let Some(review) = &self.review {
             for (file_path, file_review) in &review.files {
                 for (i, finding) in file_review.findings.iter().enumerate() {
-                    extended.push((file_path.clone(), finding.hunk_index, finding.line_start, 0, i, finding.id.clone(), HintType::Finding));
+                    extended.push((
+                        file_path.clone(),
+                        finding.hunk_index,
+                        finding.line_start,
+                        0,
+                        i,
+                        finding.id.clone(),
+                        HintType::Finding,
+                    ));
                 }
             }
         }
@@ -983,7 +1028,10 @@ impl AiState {
                 .then(a.3.cmp(&b.3))
                 .then(a.4.cmp(&b.4))
         });
-        extended.into_iter().map(|(file, hunk, line, _, _, id, hint_type)| (file, hunk, line, id, hint_type)).collect()
+        extended
+            .into_iter()
+            .map(|(file, hunk, line, _, _, id, hint_type)| (file, hunk, line, id, hint_type))
+            .collect()
     }
 
     /// Find a comment by ID across all comment types
@@ -1064,7 +1112,8 @@ impl AiState {
                 RiskLevel::Low => 2,
                 RiskLevel::Info => 3,
             };
-            risk_ord(&a.1.risk).cmp(&risk_ord(&b.1.risk))
+            risk_ord(&a.1.risk)
+                .cmp(&risk_ord(&b.1.risk))
                 .then_with(|| a.0.cmp(b.0))
         });
         entries.get(index).map(|(path, _)| (*path).clone())
@@ -1088,6 +1137,7 @@ impl AiState {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -1175,7 +1225,11 @@ mod tests {
         }
     }
 
-    fn make_feedback_comment_with_line(file: &str, hunk_index: Option<usize>, line_start: Option<usize>) -> FeedbackComment {
+    fn make_feedback_comment_with_line(
+        file: &str,
+        hunk_index: Option<usize>,
+        line_start: Option<usize>,
+    ) -> FeedbackComment {
         FeedbackComment {
             id: format!("{}-{:?}-{:?}", file, hunk_index, line_start),
             timestamp: String::new(),
@@ -1194,7 +1248,11 @@ mod tests {
         }
     }
 
-    fn make_feedback_reply(file: &str, hunk_index: Option<usize>, in_reply_to: &str) -> FeedbackComment {
+    fn make_feedback_reply(
+        file: &str,
+        hunk_index: Option<usize>,
+        in_reply_to: &str,
+    ) -> FeedbackComment {
         FeedbackComment {
             id: format!("reply-{}-{:?}", file, hunk_index),
             timestamp: String::new(),
@@ -1370,7 +1428,13 @@ mod tests {
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
-            vec![make_finding_with_lines("1", Some(0), Some(50), Some(55), RiskLevel::High)],
+            vec![make_finding_with_lines(
+                "1",
+                Some(0),
+                Some(50),
+                Some(55),
+                RiskLevel::High,
+            )],
         )]));
         // Hunk covers lines 10..20 → finding at line 50 does not match
         let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10);
@@ -1396,7 +1460,13 @@ mod tests {
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
-            vec![make_finding_with_lines("1", None, Some(10), None, RiskLevel::Low)],
+            vec![make_finding_with_lines(
+                "1",
+                None,
+                Some(10),
+                None,
+                RiskLevel::Low,
+            )],
         )]));
         // new_start=10, new_count=5 → range [10, 15). line_start=10 is included.
         let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5);
@@ -1409,7 +1479,13 @@ mod tests {
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
-            vec![make_finding_with_lines("1", None, Some(15), None, RiskLevel::Low)],
+            vec![make_finding_with_lines(
+                "1",
+                None,
+                Some(15),
+                None,
+                RiskLevel::Low,
+            )],
         )]));
         // new_start=10, new_count=5 → range [10, 15). line_start=15 is excluded.
         let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5);
@@ -1422,7 +1498,13 @@ mod tests {
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
-            vec![make_finding_with_lines("1", None, Some(10), None, RiskLevel::High)],
+            vec![make_finding_with_lines(
+                "1",
+                None,
+                Some(10),
+                None,
+                RiskLevel::High,
+            )],
         )]));
         let results = state.findings_for_hunk_by_line_range("unknown.rs", 10, 5);
         assert!(results.is_empty());
@@ -1520,7 +1602,7 @@ mod tests {
             diff_hash: "test".to_string(),
             github: None,
             comments: vec![
-                make_feedback_comment("a.rs", Some(0)),         // hunk-level
+                make_feedback_comment("a.rs", Some(0)), // hunk-level
                 make_feedback_comment_with_line("a.rs", Some(0), Some(10)), // line-level
             ],
         });
@@ -1594,7 +1676,11 @@ mod tests {
     #[test]
     fn review_file_at_out_of_bounds_returns_none() {
         let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![("a.rs", RiskLevel::High, vec![])]));
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![],
+        )]));
         assert_eq!(state.review_file_at(99), None);
     }
 
@@ -1672,10 +1758,7 @@ mod tests {
                 related_files: vec!["first.rs".to_string(), "second.rs".to_string()],
             }],
         });
-        assert_eq!(
-            state.checklist_file_at(0),
-            Some("first.rs".to_string())
-        );
+        assert_eq!(state.checklist_file_at(0), Some("first.rs".to_string()));
     }
 
     #[test]
@@ -1757,7 +1840,12 @@ mod tests {
         }
     }
 
-    fn make_github_comment(id: &str, file: &str, hunk_index: Option<usize>, in_reply_to: Option<&str>) -> GitHubReviewComment {
+    fn make_github_comment(
+        id: &str,
+        file: &str,
+        hunk_index: Option<usize>,
+        in_reply_to: Option<&str>,
+    ) -> GitHubReviewComment {
         GitHubReviewComment {
             id: id.to_string(),
             timestamp: String::new(),
@@ -1988,10 +2076,7 @@ mod tests {
         state.questions = Some(ErQuestions {
             version: 1,
             diff_hash: "test".to_string(),
-            questions: vec![
-                make_question("q-parent", "a.rs", Some(0)),
-                reply,
-            ],
+            questions: vec![make_question("q-parent", "a.rs", Some(0)), reply],
         });
         let hints = state.all_hints_ordered();
         let ids: Vec<&str> = hints.iter().map(|(_, _, _, id, _)| id.as_str()).collect();
@@ -2036,7 +2121,10 @@ mod tests {
         // Parent must be first
         assert_eq!(hints[0].3, "q-parent");
         // Both replies must follow
-        let reply_ids: Vec<&str> = hints[1..].iter().map(|(_, _, _, id, _)| id.as_str()).collect();
+        let reply_ids: Vec<&str> = hints[1..]
+            .iter()
+            .map(|(_, _, _, id, _)| id.as_str())
+            .collect();
         assert!(reply_ids.contains(&"q-reply1"));
         assert!(reply_ids.contains(&"q-reply2"));
     }

@@ -17,7 +17,10 @@ pub enum RelocationResult {
     /// Line found at same position with same content
     Unchanged,
     /// Line found at a new position
-    Relocated { new_hunk_index: usize, new_line_start: usize },
+    Relocated {
+        new_hunk_index: usize,
+        new_line_start: usize,
+    },
     /// Line was deleted or cannot be found
     Lost,
 }
@@ -105,20 +108,16 @@ fn pass2_scored(anchor: &CommentAnchor, diff_file: &DiffFile) -> Option<Relocati
 
             // Context before: up to 3 lines
             for (offset, ctx) in anchor.context_before.iter().rev().enumerate() {
-                if line_idx >= offset + 1 {
-                    if hunk.lines[line_idx - offset - 1].content == *ctx {
-                        score += 1;
-                    }
+                if line_idx > offset && hunk.lines[line_idx - offset - 1].content == *ctx {
+                    score += 1;
                 }
             }
 
             // Context after: up to 3 lines
             for (offset, ctx) in anchor.context_after.iter().enumerate() {
                 let after_idx = line_idx + offset + 1;
-                if after_idx < hunk.lines.len() {
-                    if hunk.lines[after_idx].content == *ctx {
-                        score += 1;
-                    }
+                if after_idx < hunk.lines.len() && hunk.lines[after_idx].content == *ctx {
+                    score += 1;
                 }
             }
 
@@ -164,7 +163,7 @@ fn pass3_fuzzy(anchor: &CommentAnchor, diff_file: &DiffFile) -> Option<Relocatio
     // For 2 context lines: need > 1 (i.e. both)
     // For 3 context lines: need > 1 (i.e. >= 2)
     // For 6 context lines: need > 3 (i.e. >= 4)
-    let min_required = ((total_context * 2 + 2) / 3).max(1);
+    let min_required = (total_context * 2).div_ceil(3).max(1);
     let mut best_score = min_required.saturating_sub(1); // > this to qualify
     let mut best: Option<(usize, usize)> = None;
 
@@ -181,19 +180,15 @@ fn pass3_fuzzy(anchor: &CommentAnchor, diff_file: &DiffFile) -> Option<Relocatio
             let mut ctx_matches = 0usize;
 
             for (offset, ctx) in anchor.context_before.iter().rev().enumerate() {
-                if line_idx >= offset + 1 {
-                    if hunk.lines[line_idx - offset - 1].content == *ctx {
-                        ctx_matches += 1;
-                    }
+                if line_idx > offset && hunk.lines[line_idx - offset - 1].content == *ctx {
+                    ctx_matches += 1;
                 }
             }
 
             for (offset, ctx) in anchor.context_after.iter().enumerate() {
                 let after_idx = line_idx + offset + 1;
-                if after_idx < hunk.lines.len() {
-                    if hunk.lines[after_idx].content == *ctx {
-                        ctx_matches += 1;
-                    }
+                if after_idx < hunk.lines.len() && hunk.lines[after_idx].content == *ctx {
+                    ctx_matches += 1;
                 }
             }
 
@@ -275,7 +270,7 @@ fn extract_hunk_context(header: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{DiffFile, DiffHunk, DiffLine, LineType, FileStatus};
+    use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
 
     fn make_file(hunks: Vec<DiffHunk>) -> DiffFile {
         DiffFile {
@@ -318,6 +313,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn del_line(content: &str, old: usize) -> DiffLine {
         DiffLine {
             line_type: LineType::Delete,
@@ -327,7 +323,12 @@ mod tests {
         }
     }
 
-    fn anchor(line_start: Option<usize>, content: &str, before: Vec<&str>, after: Vec<&str>) -> CommentAnchor {
+    fn anchor(
+        line_start: Option<usize>,
+        content: &str,
+        before: Vec<&str>,
+        after: Vec<&str>,
+    ) -> CommentAnchor {
         CommentAnchor {
             file: "test.rs".to_string(),
             hunk_index: Some(0),
@@ -342,11 +343,14 @@ mod tests {
 
     #[test]
     fn exact_match_same_position() {
-        let file = make_file(vec![make_hunk("@@ -1,3 +1,3 @@", vec![
-            ctx_line("fn foo() {", 1, 1),
-            ctx_line("    let x = 1;", 2, 2),
-            ctx_line("}", 3, 3),
-        ])]);
+        let file = make_file(vec![make_hunk(
+            "@@ -1,3 +1,3 @@",
+            vec![
+                ctx_line("fn foo() {", 1, 1),
+                ctx_line("    let x = 1;", 2, 2),
+                ctx_line("}", 3, 3),
+            ],
+        )]);
         let a = anchor(Some(2), "    let x = 1;", vec!["fn foo() {"], vec!["}"]);
         let result = relocate_comment(&a, &file);
         assert!(matches!(result, RelocationResult::Unchanged));
@@ -355,13 +359,16 @@ mod tests {
     #[test]
     fn exact_match_shifted() {
         // Target line shifted down by 2
-        let file = make_file(vec![make_hunk("@@ -1,5 +1,5 @@", vec![
-            add_line("// new comment", 1),
-            add_line("// another", 2),
-            ctx_line("fn foo() {", 3, 3),
-            ctx_line("    let x = 1;", 4, 4),
-            ctx_line("}", 5, 5),
-        ])]);
+        let file = make_file(vec![make_hunk(
+            "@@ -1,5 +1,5 @@",
+            vec![
+                add_line("// new comment", 1),
+                add_line("// another", 2),
+                ctx_line("fn foo() {", 3, 3),
+                ctx_line("    let x = 1;", 4, 4),
+                ctx_line("}", 5, 5),
+            ],
+        )]);
         let a = anchor(Some(2), "    let x = 1;", vec!["fn foo() {"], vec!["}"]);
         let result = relocate_comment(&a, &file);
         match result {
@@ -375,16 +382,19 @@ mod tests {
     #[test]
     fn content_match_with_context_disambiguation() {
         // Two lines with same content "}" — context should disambiguate
-        let file = make_file(vec![make_hunk("@@ -1,8 +1,8 @@", vec![
-            ctx_line("fn bar() {", 1, 1),
-            ctx_line("    x()", 2, 2),
-            ctx_line("}", 3, 3),  // wrong one
-            ctx_line("fn foo() {", 4, 4),
-            ctx_line("    let x = 1;", 5, 5),
-            ctx_line("}", 6, 6),  // right one (context_before = "    let x = 1;")
-            ctx_line("fn baz() {", 7, 7),
-            ctx_line("}", 8, 8),
-        ])]);
+        let file = make_file(vec![make_hunk(
+            "@@ -1,8 +1,8 @@",
+            vec![
+                ctx_line("fn bar() {", 1, 1),
+                ctx_line("    x()", 2, 2),
+                ctx_line("}", 3, 3), // wrong one
+                ctx_line("fn foo() {", 4, 4),
+                ctx_line("    let x = 1;", 5, 5),
+                ctx_line("}", 6, 6), // right one (context_before = "    let x = 1;")
+                ctx_line("fn baz() {", 7, 7),
+                ctx_line("}", 8, 8),
+            ],
+        )]);
         // Comment was on '}' at line 6, with context "    let x = 1;" before and "fn baz() {" after
         let a = anchor(Some(6), "}", vec!["    let x = 1;"], vec!["fn baz() {"]);
         let result = relocate_comment(&a, &file);
@@ -400,10 +410,10 @@ mod tests {
     #[test]
     fn line_deleted() {
         // Target line removed entirely
-        let file = make_file(vec![make_hunk("@@ -1,2 +1,2 @@", vec![
-            ctx_line("fn foo() {", 1, 1),
-            ctx_line("}", 2, 2),
-        ])]);
+        let file = make_file(vec![make_hunk(
+            "@@ -1,2 +1,2 @@",
+            vec![ctx_line("fn foo() {", 1, 1), ctx_line("}", 2, 2)],
+        )]);
         let a = anchor(Some(3), "    let x = 1;", vec!["fn foo() {"], vec!["}"]);
         let result = relocate_comment(&a, &file);
         assert!(matches!(result, RelocationResult::Lost));
@@ -412,11 +422,14 @@ mod tests {
     #[test]
     fn fuzzy_context_match() {
         // Target line was edited ("let x = 1;" → "let x = 2;") but context still matches
-        let file = make_file(vec![make_hunk("@@ -1,3 +1,3 @@", vec![
-            ctx_line("fn foo() {", 1, 1),
-            ctx_line("    let x = 2;", 2, 2),  // edited line
-            ctx_line("}", 3, 3),
-        ])]);
+        let file = make_file(vec![make_hunk(
+            "@@ -1,3 +1,3 @@",
+            vec![
+                ctx_line("fn foo() {", 1, 1),
+                ctx_line("    let x = 2;", 2, 2), // edited line
+                ctx_line("}", 3, 3),
+            ],
+        )]);
         // Anchor had the old content
         let a = anchor(Some(2), "    let x = 1;", vec!["fn foo() {"], vec!["}"]);
         let result = relocate_comment(&a, &file);
@@ -433,14 +446,14 @@ mod tests {
     #[test]
     fn hunk_level_relocated() {
         let file = make_file(vec![
-            make_hunk("@@ -1,3 +1,3 @@ fn first()", vec![
-                ctx_line("fn first() {", 1, 1),
-                ctx_line("}", 2, 2),
-            ]),
-            make_hunk("@@ -10,3 +10,3 @@ fn target()", vec![
-                ctx_line("fn target() {", 10, 10),
-                ctx_line("}", 11, 11),
-            ]),
+            make_hunk(
+                "@@ -1,3 +1,3 @@ fn first()",
+                vec![ctx_line("fn first() {", 1, 1), ctx_line("}", 2, 2)],
+            ),
+            make_hunk(
+                "@@ -10,3 +10,3 @@ fn target()",
+                vec![ctx_line("fn target() {", 10, 10), ctx_line("}", 11, 11)],
+            ),
         ]);
 
         let a = CommentAnchor {
@@ -465,11 +478,14 @@ mod tests {
     #[test]
     fn no_context_fallback() {
         // Old comments without context should still work via content match
-        let file = make_file(vec![make_hunk("@@ -1,3 +3,3 @@", vec![
-            ctx_line("fn foo() {", 3, 3),
-            ctx_line("    let x = 1;", 4, 4),
-            ctx_line("}", 5, 5),
-        ])]);
+        let file = make_file(vec![make_hunk(
+            "@@ -1,3 +3,3 @@",
+            vec![
+                ctx_line("fn foo() {", 3, 3),
+                ctx_line("    let x = 1;", 4, 4),
+                ctx_line("}", 5, 5),
+            ],
+        )]);
         // No context provided (empty vecs)
         let a = anchor(Some(4), "    let x = 1;", vec![], vec![]);
         let result = relocate_comment(&a, &file);
@@ -481,11 +497,14 @@ mod tests {
     fn already_relocated_skipped() {
         // Test the anchor itself correctly identifies a match
         // (The hash check skip logic lives in state.rs, not here)
-        let file = make_file(vec![make_hunk("@@ -1,3 +1,3 @@", vec![
-            ctx_line("fn foo() {", 1, 1),
-            ctx_line("    let x = 1;", 2, 2),
-            ctx_line("}", 3, 3),
-        ])]);
+        let file = make_file(vec![make_hunk(
+            "@@ -1,3 +1,3 @@",
+            vec![
+                ctx_line("fn foo() {", 1, 1),
+                ctx_line("    let x = 1;", 2, 2),
+                ctx_line("}", 3, 3),
+            ],
+        )]);
         let a = anchor(Some(2), "    let x = 1;", vec!["fn foo() {"], vec!["}"]);
         // Run relocate twice — both should give consistent results
         let r1 = relocate_comment(&a, &file);

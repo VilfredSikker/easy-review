@@ -1,5 +1,5 @@
 use super::review::*;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -85,31 +85,25 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         // TODO(risk:minor): Deserialization errors are silently swallowed (`Err(_) => {}`).
         // A malformed sidecar will appear as if the file doesn't exist; there is no
         // user-visible indication that a parse failure occurred.
-        match serde_json::from_str::<ErReview>(&content) {
-            Ok(review) => {
-                state.is_stale = review.diff_hash != current_diff_hash;
-                state.review = Some(review);
-            }
-            Err(_) => {}
+        if let Ok(review) = serde_json::from_str::<ErReview>(&content) {
+            state.is_stale = review.diff_hash != current_diff_hash;
+            state.review = Some(review);
         }
     }
 
     // Load .er-order.json
     let order_path = Path::new(repo_root).join(".er-order.json");
     if let Ok(content) = std::fs::read_to_string(&order_path) {
-        match serde_json::from_str::<ErOrder>(&content) {
-            Ok(order) => {
-                // Check staleness against review hash or independently
-                if !state.is_stale && order.diff_hash != current_diff_hash {
-                    state.is_stale = true;
-                }
-                // TODO(risk:medium): `ErOrder.order` is an unbounded Vec<OrderEntry> from
-                // untrusted JSON with no size cap. A crafted file could list tens of
-                // thousands of paths, consuming memory and making any O(n) scan over them
-                // (e.g. file-tree display ordering) noticeably slow.
-                state.order = Some(order);
+        if let Ok(order) = serde_json::from_str::<ErOrder>(&content) {
+            // Check staleness against review hash or independently
+            if !state.is_stale && order.diff_hash != current_diff_hash {
+                state.is_stale = true;
             }
-            Err(_) => {}
+            // TODO(risk:medium): `ErOrder.order` is an unbounded Vec<OrderEntry> from
+            // untrusted JSON with no size cap. A crafted file could list tens of
+            // thousands of paths, consuming memory and making any O(n) scan over them
+            // (e.g. file-tree display ordering) noticeably slow.
+            state.order = Some(order);
         }
     }
 
@@ -127,48 +121,39 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     // Load .er-checklist.json
     let checklist_path = Path::new(repo_root).join(".er-checklist.json");
     if let Ok(content) = std::fs::read_to_string(&checklist_path) {
-        match serde_json::from_str::<ErChecklist>(&content) {
-            Ok(checklist) => {
-                if !state.is_stale && checklist.diff_hash != current_diff_hash {
-                    state.is_stale = true;
-                }
-                state.checklist = Some(checklist);
+        if let Ok(checklist) = serde_json::from_str::<ErChecklist>(&content) {
+            if !state.is_stale && checklist.diff_hash != current_diff_hash {
+                state.is_stale = true;
             }
-            Err(_) => {}
+            state.checklist = Some(checklist);
         }
     }
 
     // Load .er-questions.json (personal review questions)
     let questions_path = Path::new(repo_root).join(".er-questions.json");
     if let Ok(content) = std::fs::read_to_string(&questions_path) {
-        match serde_json::from_str::<ErQuestions>(&content) {
-            Ok(mut questions) => {
-                // Per-comment staleness: mark all stale if diff changed
-                if questions.diff_hash != current_diff_hash {
-                    for q in &mut questions.questions {
-                        q.stale = true;
-                    }
+        if let Ok(mut questions) = serde_json::from_str::<ErQuestions>(&content) {
+            // Per-comment staleness: mark all stale if diff changed
+            if questions.diff_hash != current_diff_hash {
+                for q in &mut questions.questions {
+                    q.stale = true;
                 }
-                state.questions = Some(questions);
             }
-            Err(_) => {}
+            state.questions = Some(questions);
         }
     }
 
     // Load .er-github-comments.json (GitHub PR comments)
     let gh_comments_path = Path::new(repo_root).join(".er-github-comments.json");
     if let Ok(content) = std::fs::read_to_string(&gh_comments_path) {
-        match serde_json::from_str::<ErGitHubComments>(&content) {
-            Ok(mut gh_comments) => {
-                // Per-comment staleness
-                if gh_comments.diff_hash != current_diff_hash {
-                    for c in &mut gh_comments.comments {
-                        c.stale = true;
-                    }
+        if let Ok(mut gh_comments) = serde_json::from_str::<ErGitHubComments>(&content) {
+            // Per-comment staleness
+            if gh_comments.diff_hash != current_diff_hash {
+                for c in &mut gh_comments.comments {
+                    c.stale = true;
                 }
-                state.github_comments = Some(gh_comments);
             }
-            Err(_) => {}
+            state.github_comments = Some(gh_comments);
         }
     }
 
@@ -181,16 +166,44 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     if state.questions.is_none() && state.github_comments.is_none() {
         let feedback_path = Path::new(repo_root).join(".er-feedback.json");
         if let Ok(content) = std::fs::read_to_string(&feedback_path) {
-            match serde_json::from_str::<ErFeedback>(&content) {
-                Ok(feedback) => {
-                    state.feedback = Some(feedback);
-                }
-                Err(_) => {}
+            if let Ok(feedback) = serde_json::from_str::<ErFeedback>(&content) {
+                state.feedback = Some(feedback);
             }
         }
     }
 
     state
+}
+
+/// Get the mtime of the most recently modified .er-* file
+// TODO(risk:medium): TOCTOU race: mtime is read here, but the actual file read happens
+// later in `load_ai_state`. Between these two calls another process (e.g. a concurrent
+// AI skill run) can overwrite the file, so the mtime poll can indicate "no change" while
+// `load_ai_state` reads a newer version, or vice-versa (it shows "changed" but by the
+// time `load_ai_state` runs the file is already overwritten again with identical content).
+// The impact is a missed or spurious reload — incorrect data displayed until the next tick.
+pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
+    let root = Path::new(repo_root);
+    let files = [
+        ".er-review.json",
+        ".er-order.json",
+        ".er-summary.md",
+        ".er-checklist.json",
+        ".er-feedback.json",
+        ".er-questions.json",
+        ".er-github-comments.json",
+    ];
+
+    files
+        .iter()
+        .filter_map(|name| {
+            let path = root.join(name);
+            // TODO(risk:minor): `metadata().modified()` can fail on filesystems that do not
+            // support mtime (e.g. FAT32, some network mounts). The `ok()?` silently drops
+            // these files from the max calculation, meaning their updates are never detected.
+            std::fs::metadata(&path).ok()?.modified().ok()
+        })
+        .max()
 }
 
 #[cfg(test)]
@@ -271,38 +284,4 @@ mod tests {
         let h2 = compute_per_file_hashes(diff_v2);
         assert_ne!(h1["x.rs"], h2["x.rs"]);
     }
-}
-
-/// Get the mtime of the most recently modified .er-* file
-// TODO(risk:medium): TOCTOU race: mtime is read here, but the actual file read happens
-// later in `load_ai_state`. Between these two calls another process (e.g. a concurrent
-// AI skill run) can overwrite the file, so the mtime poll can indicate "no change" while
-// `load_ai_state` reads a newer version, or vice-versa (it shows "changed" but by the
-// time `load_ai_state` runs the file is already overwritten again with identical content).
-// The impact is a missed or spurious reload — incorrect data displayed until the next tick.
-pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
-    let root = Path::new(repo_root);
-    let files = [
-        ".er-review.json",
-        ".er-order.json",
-        ".er-summary.md",
-        ".er-checklist.json",
-        ".er-feedback.json",
-        ".er-questions.json",
-        ".er-github-comments.json",
-    ];
-
-    files
-        .iter()
-        .filter_map(|name| {
-            let path = root.join(name);
-            // TODO(risk:minor): `metadata().modified()` can fail on filesystems that do not
-            // support mtime (e.g. FAT32, some network mounts). The `ok()?` silently drops
-            // these files from the max calculation, meaning their updates are never detected.
-            std::fs::metadata(&path)
-                .ok()?
-                .modified()
-                .ok()
-        })
-        .max()
 }

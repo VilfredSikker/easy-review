@@ -97,7 +97,11 @@ pub fn parse_github_pr_url(url: &str) -> Option<PrRef> {
         return None;
     }
 
-    Some(PrRef { owner, repo, number })
+    Some(PrRef {
+        owner,
+        repo,
+        number,
+    })
 }
 
 /// Check if `gh` CLI is installed and authenticated
@@ -257,9 +261,12 @@ pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
     // Use --jq to extract "number<tab>baseRefName" — robust against JSON formatting
     let output = Command::new("gh")
         .args([
-            "pr", "view",
-            "--json", "number,baseRefName",
-            "--jq", r#"[.number, .baseRefName] | @tsv"#,
+            "pr",
+            "view",
+            "--json",
+            "number,baseRefName",
+            "--jq",
+            r#"[.number, .baseRefName] | @tsv"#,
         ])
         .current_dir(repo_root)
         .output()
@@ -300,21 +307,18 @@ pub fn get_pr_info(repo_root: &str) -> Result<(String, String, u64)> {
     }
 
     let json_str = String::from_utf8_lossy(&output.stdout);
-    let v: serde_json::Value = serde_json::from_str(&json_str)
-        .context("Failed to parse PR info JSON")?;
+    let v: serde_json::Value =
+        serde_json::from_str(&json_str).context("Failed to parse PR info JSON")?;
 
-    let number = v["number"].as_u64()
-        .context("Missing PR number")?;
+    let number = v["number"].as_u64().context("Missing PR number")?;
 
     // TODO(risk:minor): unwrap_or("") silently substitutes an empty string when headRepository
     // fields are absent (e.g., forked PRs where the fork has been deleted). The code below
     // detects the empty case and falls back to the git remote, which is correct. But if the
     // remote parse also fails, get_pr_info() returns an error that loses the PR number that
     // was already successfully parsed. Callers won't know which PR was involved.
-    let owner = v["headRepository"]["owner"]["login"].as_str()
-        .unwrap_or("");
-    let repo_name = v["headRepository"]["name"].as_str()
-        .unwrap_or("");
+    let owner = v["headRepository"]["owner"]["login"].as_str().unwrap_or("");
+    let repo_name = v["headRepository"]["name"].as_str().unwrap_or("");
 
     // If headRepository is missing, try to get owner/repo from remote
     if owner.is_empty() || repo_name.is_empty() {
@@ -322,7 +326,9 @@ pub fn get_pr_info(repo_root: &str) -> Result<(String, String, u64)> {
             .args(["remote", "get-url", "origin"])
             .current_dir(repo_root)
             .output()?;
-        let remote = String::from_utf8_lossy(&remote_output.stdout).trim().to_string();
+        let remote = String::from_utf8_lossy(&remote_output.stdout)
+            .trim()
+            .to_string();
         // Parse owner/repo from remote URL
         let (o, r) = parse_owner_repo_from_remote(&remote)?;
         return Ok((o, r, number));
@@ -351,7 +357,12 @@ fn parse_owner_repo_from_remote(remote: &str) -> Result<(String, String)> {
 }
 
 /// Fetch all review comments for a PR
-pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64, repo_root: &str) -> Result<Vec<GitHubComment>> {
+pub fn gh_pr_comments(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    repo_root: &str,
+) -> Result<Vec<GitHubComment>> {
     let output = Command::new("gh")
         .args([
             "api",
@@ -390,7 +401,9 @@ pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64, repo_root: &str) -> Resu
                 ']' => {
                     depth -= 1;
                     if depth == 0 {
-                        if let Ok(mut batch) = serde_json::from_str::<Vec<GitHubComment>>(&stdout[start..=i]) {
+                        if let Ok(mut batch) =
+                            serde_json::from_str::<Vec<GitHubComment>>(&stdout[start..=i])
+                        {
                             results.append(&mut batch);
                         }
                         start = i + 1;
@@ -409,8 +422,12 @@ pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64, repo_root: &str) -> Resu
 
 /// Push a new review comment to a PR
 pub fn gh_pr_push_comment(
-    owner: &str, repo: &str, pr: u64,
-    path: &str, line: usize, body: &str,
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    path: &str,
+    line: usize,
+    body: &str,
     repo_root: &str,
 ) -> Result<u64> {
     // TODO(risk:medium): `body` is user-typed comment text passed directly to `gh api -f body=<body>`.
@@ -427,7 +444,15 @@ pub fn gh_pr_push_comment(
 
     // Get the latest commit SHA for the PR (required for review comments)
     let sha_output = Command::new("gh")
-        .args(["pr", "view", &pr.to_string(), "--json", "headRefOid", "--jq", ".headRefOid"])
+        .args([
+            "pr",
+            "view",
+            &pr.to_string(),
+            "--json",
+            "headRefOid",
+            "--jq",
+            ".headRefOid",
+        ])
         .current_dir(repo_root)
         .output()
         .context("Failed to get PR head SHA")?;
@@ -437,7 +462,9 @@ pub fn gh_pr_push_comment(
         anyhow::bail!("Failed to get HEAD SHA from gh pr view: {}", stderr.trim());
     }
 
-    let commit_id = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+    let commit_id = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
     if commit_id.is_empty() {
         anyhow::bail!("Failed to get HEAD SHA from gh pr view: empty output");
     }
@@ -450,13 +477,19 @@ pub fn gh_pr_push_comment(
     let output = Command::new("gh")
         .args([
             "api",
-            "-X", "POST",
+            "-X",
+            "POST",
             &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-            "-f", &format!("body={}", body),
-            "-f", &format!("path={}", path),
-            "-F", &format!("line={}", line),
-            "-f", "side=RIGHT",
-            "-f", &format!("commit_id={}", commit_id),
+            "-f",
+            &format!("body={}", body),
+            "-f",
+            &format!("path={}", path),
+            "-F",
+            &format!("line={}", line),
+            "-f",
+            "side=RIGHT",
+            "-f",
+            &format!("commit_id={}", commit_id),
         ])
         .current_dir(repo_root)
         .output()
@@ -468,16 +501,19 @@ pub fn gh_pr_push_comment(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let resp: CreateCommentResponse = serde_json::from_str(&stdout)
-        .context("Failed to parse create comment response")?;
+    let resp: CreateCommentResponse =
+        serde_json::from_str(&stdout).context("Failed to parse create comment response")?;
 
     Ok(resp.id)
 }
 
 /// Push a reply to an existing review comment
 pub fn gh_pr_reply_comment(
-    owner: &str, repo: &str, pr: u64,
-    in_reply_to: u64, body: &str,
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    in_reply_to: u64,
+    body: &str,
     repo_root: &str,
 ) -> Result<u64> {
     // TODO(risk:medium): same `body` newline concern as gh_pr_push_comment — newlines in
@@ -485,10 +521,13 @@ pub fn gh_pr_reply_comment(
     let output = Command::new("gh")
         .args([
             "api",
-            "-X", "POST",
+            "-X",
+            "POST",
             &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-            "-f", &format!("body={}", body),
-            "-F", &format!("in_reply_to={}", in_reply_to),
+            "-f",
+            &format!("body={}", body),
+            "-F",
+            &format!("in_reply_to={}", in_reply_to),
         ])
         .current_dir(repo_root)
         .output()
@@ -500,18 +539,24 @@ pub fn gh_pr_reply_comment(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let resp: CreateCommentResponse = serde_json::from_str(&stdout)
-        .context("Failed to parse reply response")?;
+    let resp: CreateCommentResponse =
+        serde_json::from_str(&stdout).context("Failed to parse reply response")?;
 
     Ok(resp.id)
 }
 
 /// Delete a review comment from a PR
-pub fn gh_pr_delete_comment(owner: &str, repo: &str, comment_id: u64, repo_root: &str) -> Result<()> {
+pub fn gh_pr_delete_comment(
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    repo_root: &str,
+) -> Result<()> {
     let output = Command::new("gh")
         .args([
             "api",
-            "-X", "DELETE",
+            "-X",
+            "DELETE",
             &format!("repos/{}/{}/pulls/comments/{}", owner, repo, comment_id),
         ])
         .current_dir(repo_root)
@@ -534,8 +579,10 @@ pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
     // Fetch core PR fields
     let view_output = Command::new("gh")
         .args([
-            "pr", "view",
-            "--json", "number,title,body,state,author,baseRefName,headRefName,reviews",
+            "pr",
+            "view",
+            "--json",
+            "number,title,body,state,author,baseRefName,headRefName,reviews",
         ])
         .current_dir(repo_root)
         .output()
@@ -565,7 +612,8 @@ pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
                 reviewer_map.insert(login.to_string(), state);
             }
         }
-        reviewer_map.into_iter()
+        reviewer_map
+            .into_iter()
             .map(|(login, state)| ReviewerStatus { login, state })
             .collect()
     } else {

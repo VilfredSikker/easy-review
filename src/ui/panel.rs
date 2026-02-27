@@ -6,10 +6,10 @@ use ratatui::{
     Frame,
 };
 
-use crate::ai::{CommentRef, CommentType, PanelContent, ReviewFocus, RiskLevel};
-use crate::app::App;
 use super::styles;
 use super::utils::word_wrap;
+use crate::ai::{CommentRef, CommentType, PanelContent, ReviewFocus, RiskLevel};
+use crate::app::App;
 
 // PR check conclusion display helpers
 fn check_icon(conclusion: Option<&str>) -> (&'static str, ratatui::style::Color) {
@@ -51,7 +51,9 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
     let has_pr = tab.pr_data.is_some();
 
     let file_style = if content == PanelContent::FileDetail {
-        Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(styles::PURPLE)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(styles::DIM)
     };
@@ -64,7 +66,9 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
 
     if has_ai {
         let ai_style = if content == PanelContent::AiSummary {
-            Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(styles::PURPLE)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(styles::DIM)
         };
@@ -75,7 +79,9 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
 
     if has_pr {
         let pr_style = if content == PanelContent::PrOverview {
-            Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(styles::PURPLE)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(styles::DIM)
         };
@@ -86,7 +92,9 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
 
     if tab.symbol_refs.is_some() {
         let refs_style = if content == PanelContent::SymbolRefs {
-            Style::default().fg(styles::PURPLE).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(styles::PURPLE)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(styles::DIM)
         };
@@ -153,7 +161,9 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     // File path header
     lines.push(Line::from(vec![Span::styled(
         format!(" {}", path),
-        Style::default().fg(styles::TEXT).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(styles::TEXT)
+            .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(""));
 
@@ -282,18 +292,12 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         let author = comment.author();
 
         let mut header_spans = vec![
-            Span::styled(
-                format!(" {} ", bullet),
-                Style::default().fg(accent),
-            ),
+            Span::styled(format!(" {} ", bullet), Style::default().fg(accent)),
             Span::styled(
                 author.to_string(),
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!("  {}", target),
-                Style::default().fg(styles::DIM),
-            ),
+            Span::styled(format!("  {}", target), Style::default().fg(styles::DIM)),
         ];
 
         if comment.is_stale() {
@@ -309,10 +313,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 Style::default().fg(styles::GREEN),
             ));
         } else if comment.comment_type() == CommentType::GitHubComment {
-            header_spans.push(Span::styled(
-                "  ↑ local",
-                Style::default().fg(styles::DIM),
-            ));
+            header_spans.push(Span::styled("  ↑ local", Style::default().fg(styles::DIM)));
         }
 
         // Reply indicator
@@ -472,7 +473,11 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("{}{} ", prefix, fr.risk.symbol()),
-                    if is_selected { risk_style.bg(bg) } else { risk_style },
+                    if is_selected {
+                        risk_style.bg(bg)
+                    } else {
+                        risk_style
+                    },
                 ),
                 Span::styled(*path, path_style),
             ]));
@@ -502,7 +507,9 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
             .fg(styles::CYAN)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
-        Style::default().fg(styles::CYAN).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(styles::CYAN)
+            .add_modifier(Modifier::BOLD)
     };
     lines.push(Line::from(vec![Span::styled(
         " ─── Review Checklist ───",
@@ -607,11 +614,15 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     lines.push(Line::from(vec![
         Span::styled(
             format!(" #{} ", pr.number),
-            Style::default().fg(styles::CYAN).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(styles::CYAN)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             pr.state.to_lowercase(),
-            Style::default().fg(state_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(state_color)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  @{}", pr.author),
@@ -625,7 +636,9 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     for wrapped in word_wrap(&pr.title, max_w) {
         lines.push(Line::from(vec![Span::styled(
             format!(" {}", wrapped),
-            Style::default().fg(styles::BRIGHT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(styles::BRIGHT)
+                .add_modifier(Modifier::BOLD),
         )]));
     }
     lines.push(Line::from(""));
@@ -689,19 +702,20 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             // string yielding just "…". Enforce a minimum panel width at the layout level
             // to make this branch unreachable.
             let check_name = if check.name.chars().count() > max_w.saturating_sub(12) {
-                format!("{}…", check.name.chars().take(max_w.saturating_sub(13)).collect::<String>())
+                format!(
+                    "{}…",
+                    check
+                        .name
+                        .chars()
+                        .take(max_w.saturating_sub(13))
+                        .collect::<String>()
+                )
             } else {
                 check.name.clone()
             };
             lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" {} ", icon),
-                    Style::default().fg(color),
-                ),
-                Span::styled(
-                    check_name,
-                    Style::default().fg(styles::TEXT),
-                ),
+                Span::styled(format!(" {} ", icon), Style::default().fg(color)),
+                Span::styled(check_name, Style::default().fg(styles::TEXT)),
                 Span::styled(
                     format!("  {}", status_text),
                     Style::default().fg(styles::MUTED),
@@ -719,18 +733,22 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         )]));
         lines.push(Line::from(""));
         // Deduplicate: keep latest review state per reviewer
-        let mut seen: std::collections::HashMap<&str, &crate::github::ReviewerStatus> = std::collections::HashMap::new();
+        let mut seen: std::collections::HashMap<&str, &crate::github::ReviewerStatus> =
+            std::collections::HashMap::new();
         for r in &pr.reviewers {
             seen.insert(&r.login, r);
         }
-        let mut sorted_reviewers: Vec<&crate::github::ReviewerStatus> = seen.values().copied().collect();
+        let mut sorted_reviewers: Vec<&crate::github::ReviewerStatus> =
+            seen.values().copied().collect();
         sorted_reviewers.sort_by(|a, b| a.login.cmp(&b.login));
         for reviewer in sorted_reviewers {
             let (label, color) = review_state_style(&reviewer.state);
             lines.push(Line::from(vec![
                 Span::styled(
                     format!(" @{}  ", reviewer.login),
-                    Style::default().fg(styles::TEXT).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(styles::TEXT)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(label, Style::default().fg(color)),
             ]));
@@ -758,7 +776,9 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         Span::styled(" Symbol: ", Style::default().fg(styles::DIM)),
         Span::styled(
             &*state.symbol,
-            Style::default().fg(styles::BLUE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(styles::BLUE)
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
     lines.push(Line::from(""));
@@ -770,7 +790,9 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     if !state.in_diff.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             format!(" In this diff ({})", state.in_diff.len()),
-            Style::default().fg(styles::CYAN).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(styles::CYAN)
+                .add_modifier(Modifier::BOLD),
         )]));
 
         for entry in &state.in_diff {
@@ -778,7 +800,13 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             let loc = format!(" {}:{}", entry.file, entry.line_num);
             let content = entry.line_content.trim();
             let truncated = if content.chars().count() > max_w {
-                format!("{}…", content.chars().take(max_w.saturating_sub(1)).collect::<String>())
+                format!(
+                    "{}…",
+                    content
+                        .chars()
+                        .take(max_w.saturating_sub(1))
+                        .collect::<String>()
+                )
             } else {
                 content.to_string()
             };
@@ -789,7 +817,10 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 Style::default().fg(styles::TEXT)
             };
             let loc_style = if is_selected {
-                Style::default().fg(styles::BLUE).bg(styles::PANEL).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(styles::BLUE)
+                    .bg(styles::PANEL)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(styles::BLUE)
             };
@@ -809,7 +840,9 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     if !state.external.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             format!(" Other files ({})", state.external.len()),
-            Style::default().fg(styles::DIM).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(styles::DIM)
+                .add_modifier(Modifier::BOLD),
         )]));
 
         for entry in &state.external {
@@ -817,7 +850,13 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             let loc = format!(" {}:{}", entry.file, entry.line_num);
             let content = entry.line_content.trim();
             let truncated = if content.chars().count() > max_w {
-                format!("{}…", content.chars().take(max_w.saturating_sub(1)).collect::<String>())
+                format!(
+                    "{}…",
+                    content
+                        .chars()
+                        .take(max_w.saturating_sub(1))
+                        .collect::<String>()
+                )
             } else {
                 content.to_string()
             };
@@ -828,7 +867,10 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 Style::default().fg(styles::DIM)
             };
             let loc_style = if is_selected {
-                Style::default().fg(styles::MUTED).bg(styles::PANEL).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(styles::MUTED)
+                    .bg(styles::PANEL)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(styles::MUTED)
             };

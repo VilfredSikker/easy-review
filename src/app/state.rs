@@ -1,6 +1,8 @@
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, WatchedConfig};
-use crate::git::{self, CommitInfo, DiffFile, DiffFileHeader, CompactionConfig, WatchedFile, Worktree};
+use crate::git::{
+    self, CommitInfo, CompactionConfig, DiffFile, DiffFileHeader, WatchedFile, Worktree,
+};
 use crate::github::PrOverviewData;
 use anyhow::{Context, Result};
 use std::collections::{HashSet, VecDeque};
@@ -12,6 +14,7 @@ use std::time::Instant;
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Anchor data captured at comment creation time for later relocation
+#[derive(Default)]
 struct LineAnchor {
     line_start: Option<usize>,
     line_content: String,
@@ -19,19 +22,6 @@ struct LineAnchor {
     context_after: Vec<String>,
     old_line_start: Option<usize>,
     hunk_header: String,
-}
-
-impl Default for LineAnchor {
-    fn default() -> Self {
-        LineAnchor {
-            line_start: None,
-            line_content: String::new(),
-            context_before: Vec::new(),
-            context_after: Vec::new(),
-            old_line_start: None,
-            hunk_header: String::new(),
-        }
-    }
 }
 
 // ── Enums ──
@@ -282,7 +272,6 @@ pub struct TabState {
     pub last_ai_check: Option<std::time::SystemTime>,
 
     // ── Filter state ──
-
     /// Active filter expression (user-visible string)
     pub filter_expr: String,
 
@@ -296,7 +285,6 @@ pub struct TabState {
     pub filter_history: Vec<String>,
 
     // ── Comment input state ──
-
     /// Text buffer for the comment being typed
     pub comment_input: String,
 
@@ -325,7 +313,6 @@ pub struct TabState {
     pub history: Option<HistoryState>,
 
     // ── Watched files state ──
-
     /// Configuration for watched files
     pub watched_config: WatchedConfig,
 
@@ -345,12 +332,10 @@ pub struct TabState {
     pub pr_data: Option<PrOverviewData>,
 
     // ── Commit input state ──
-
     /// Text buffer for the commit message being typed
     pub commit_input: String,
 
     // ── Merge conflict state ──
-
     /// Whether a merge is currently in progress (MERGE_HEAD exists)
     pub merge_active: bool,
 
@@ -358,7 +343,6 @@ pub struct TabState {
     pub unresolved_count: usize,
 
     // ── Performance ──
-
     /// Configuration for auto-compaction of low-value files
     pub compaction_config: CompactionConfig,
 
@@ -372,7 +356,6 @@ pub struct TabState {
     pub mem_budget: MemoryBudget,
 
     // ── Lazy parsing state ──
-
     /// Whether we're using lazy (two-phase) parsing for this diff
     pub lazy_mode: bool,
 
@@ -383,7 +366,6 @@ pub struct TabState {
     raw_diff: Option<String>,
 
     // ── Symbol references ──
-
     /// Symbol reference lookup state (populated via panel action)
     pub symbol_refs: Option<SymbolRefsState>,
 }
@@ -741,7 +723,11 @@ impl TabState {
                 }
                 let total_lines = header.adds + header.dels;
                 let should_compact = self.compaction_config.enabled
-                    && (self.compaction_config.patterns.iter().any(|p| git::compact_files_match(p, &file.path))
+                    && (self
+                        .compaction_config
+                        .patterns
+                        .iter()
+                        .any(|p| git::compact_files_match(p, &file.path))
                         || total_lines > self.compaction_config.max_lines_before_compact);
                 if should_compact {
                     file.compacted = true;
@@ -759,7 +745,9 @@ impl TabState {
             git::compact_files(&mut self.files, &self.compaction_config);
 
             // Re-expand any files the user explicitly opened (fresh parse means hunks are available)
-            let to_expand: Vec<String> = self.files.iter()
+            let to_expand: Vec<String> = self
+                .files
+                .iter()
                 .filter(|f| f.compacted && self.user_expanded.contains(&f.path))
                 .map(|f| f.path.clone())
                 .collect();
@@ -884,7 +872,9 @@ impl TabState {
         let repo_root = self.repo_root.clone();
 
         // Build rename map: old path → new path
-        let rename_map: std::collections::HashMap<String, String> = self.files.iter()
+        let rename_map: std::collections::HashMap<String, String> = self
+            .files
+            .iter()
             .filter_map(|f| {
                 if let git::FileStatus::Renamed(ref old_path) = f.status {
                     Some((old_path.clone(), f.path.clone()))
@@ -899,11 +889,10 @@ impl TabState {
         // Helper: find DiffFile by path, respecting renames.
         // Returns None for lazy stubs (hunks not yet parsed) to avoid false Lost results.
         let find_file = |path: &str| -> Option<usize> {
-            let find_idx = |p: &str| -> Option<usize> {
-                self.files.iter().position(|f| f.path == p)
-            };
-            let idx = find_idx(path)
-                .or_else(|| rename_map.get(path).and_then(|np| find_idx(np)))?;
+            let find_idx =
+                |p: &str| -> Option<usize> { self.files.iter().position(|f| f.path == p) };
+            let idx =
+                find_idx(path).or_else(|| rename_map.get(path).and_then(|np| find_idx(np)))?;
             // Skip unparsed lazy stubs — hunks empty and not compacted
             if is_lazy {
                 let f = &self.files[idx];
@@ -948,7 +937,10 @@ impl TabState {
                         q.stale = false;
                         changed = true;
                     }
-                    ai::RelocationResult::Relocated { new_hunk_index, new_line_start } => {
+                    ai::RelocationResult::Relocated {
+                        new_hunk_index,
+                        new_line_start,
+                    } => {
                         q.hunk_index = Some(new_hunk_index);
                         q.line_start = Some(new_line_start);
                         q.anchor_status = "relocated".to_string();
@@ -1006,7 +998,10 @@ impl TabState {
                         c.stale = false;
                         changed = true;
                     }
-                    ai::RelocationResult::Relocated { new_hunk_index, new_line_start } => {
+                    ai::RelocationResult::Relocated {
+                        new_hunk_index,
+                        new_line_start,
+                    } => {
                         c.hunk_index = Some(new_hunk_index);
                         c.line_start = Some(new_line_start);
                         c.anchor_status = "relocated".to_string();
@@ -1287,7 +1282,9 @@ impl TabState {
             return None;
         }
         if self.mode == DiffMode::History {
-            return self.history.as_ref()
+            return self
+                .history
+                .as_ref()
                 .and_then(|h| h.commit_files.get(h.selected_file));
         }
         self.files.get(self.selected_file)
@@ -1667,9 +1664,9 @@ impl TabState {
         if let Some(ref offsets) = self.hunk_offsets {
             if let Some(&base) = offsets.offsets.get(self.current_hunk) {
                 // TODO(risk:medium): base + current_line can overflow usize on pathological inputs
-        // (e.g., a hunk with usize::MAX lines). saturating_sub then .min(u16::MAX) masks the overflow
-        // rather than preventing it. Add a bounds check on current_line before the addition.
-        let line_offset = base + self.current_line.unwrap_or(0);
+                // (e.g., a hunk with usize::MAX lines). saturating_sub then .min(u16::MAX) masks the overflow
+                // rather than preventing it. Add a bounds check on current_line before the addition.
+                let line_offset = base + self.current_line.unwrap_or(0);
                 self.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
                 return;
             }
@@ -1731,11 +1728,7 @@ impl TabState {
                 let content_end = offset + hunk.lines.len();
 
                 if target < content_end {
-                    let line_idx = if target >= content_start {
-                        target - content_start
-                    } else {
-                        0 // target is on/before hunk header — snap to first line
-                    };
+                    let line_idx = target.saturating_sub(content_start);
                     found = Some((i, line_idx));
                     break;
                 }
@@ -1744,9 +1737,9 @@ impl TabState {
             }
 
             // TODO(risk:high): file.hunks.len() - 1 panics if hunks is empty. The early return above (line ~1699)
-        // guards against this, but only for the case where hunks.is_empty() at the top of the function.
-        // If a refactor moves or removes that guard, this becomes an OOB panic. Use saturating_sub(1) here.
-        found.unwrap_or_else(|| {
+            // guards against this, but only for the case where hunks.is_empty() at the top of the function.
+            // If a refactor moves or removes that guard, this becomes an OOB panic. Use saturating_sub(1) here.
+            found.unwrap_or_else(|| {
                 // Past the end — clamp to last line of last hunk
                 let last = file.hunks.len() - 1;
                 (last, file.hunks[last].lines.len().saturating_sub(1))
@@ -1769,7 +1762,9 @@ impl TabState {
 
     /// Rebuild hunk offsets for the currently selected file
     fn rebuild_hunk_offsets(&mut self) {
-        self.hunk_offsets = self.selected_diff_file().map(|f| HunkOffsets::build(&f.hunks));
+        self.hunk_offsets = self
+            .selected_diff_file()
+            .map(|f| HunkOffsets::build(&f.hunks));
     }
 
     /// Update memory budget counters
@@ -1809,7 +1804,9 @@ impl TabState {
         // the file at self.files[selected_file] corresponds to a different header than
         // self.file_headers[selected_file], so we'd parse the wrong file's diff.
         // Parse on demand from raw diff
-        if let (Some(ref raw), Some(header)) = (&self.raw_diff, self.file_headers.get(self.selected_file)) {
+        if let (Some(ref raw), Some(header)) =
+            (&self.raw_diff, self.file_headers.get(self.selected_file))
+        {
             let parsed = git::parse_file_at_offset(raw, header);
             if !parsed.hunks.is_empty() {
                 if let Some(file) = self.files.get_mut(self.selected_file) {
@@ -1897,7 +1894,11 @@ impl TabState {
         };
 
         if needs_rebuild {
-            let visible = self.visible_files().iter().map(|(i, _)| *i).collect::<Vec<_>>();
+            let visible = self
+                .visible_files()
+                .iter()
+                .map(|(i, _)| *i)
+                .collect::<Vec<_>>();
             self.file_tree_cache = Some(FileTreeCache {
                 visible: visible.clone(),
                 search_query: self.search_query.clone(),
@@ -2054,7 +2055,11 @@ impl TabState {
             None => return,
         };
         let hunk_count = file.hunks.len();
-        let line_count = file.hunks.get(history.current_hunk).map(|h| h.lines.len()).unwrap_or(0);
+        let line_count = file
+            .hunks
+            .get(history.current_hunk)
+            .map(|h| h.lines.len())
+            .unwrap_or(0);
 
         match history.current_line {
             None => {
@@ -2096,7 +2101,11 @@ impl TabState {
 
         match history.current_line {
             None => {
-                let count = file.hunks.get(history.current_hunk).map(|h| h.lines.len()).unwrap_or(0);
+                let count = file
+                    .hunks
+                    .get(history.current_hunk)
+                    .map(|h| h.lines.len())
+                    .unwrap_or(0);
                 if count > 0 {
                     history.current_line = Some(count - 1);
                     Self::history_scroll_to_current(history);
@@ -2105,7 +2114,11 @@ impl TabState {
             Some(0) => {
                 if history.current_hunk > 0 {
                     history.current_hunk -= 1;
-                    let count = file.hunks.get(history.current_hunk).map(|h| h.lines.len()).unwrap_or(0);
+                    let count = file
+                        .hunks
+                        .get(history.current_hunk)
+                        .map(|h| h.lines.len())
+                        .unwrap_or(0);
                     history.current_line = if count > 0 { Some(count - 1) } else { None };
                     Self::history_scroll_to_current(history);
                 } else if history.selected_file > 0 {
@@ -2114,7 +2127,11 @@ impl TabState {
                     let prev_file = &history.commit_files[history.selected_file];
                     if let Some(last_hunk) = prev_file.hunks.last() {
                         history.current_hunk = prev_file.hunks.len() - 1;
-                        history.current_line = if last_hunk.lines.is_empty() { None } else { Some(last_hunk.lines.len() - 1) };
+                        history.current_line = if last_hunk.lines.is_empty() {
+                            None
+                        } else {
+                            Some(last_hunk.lines.len() - 1)
+                        };
                     } else {
                         history.current_hunk = 0;
                         history.current_line = None;
@@ -2155,7 +2172,8 @@ impl TabState {
             for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
                 if file_idx == history.selected_file && hunk_idx == history.current_hunk {
                     line_offset += history.current_line.unwrap_or(0);
-                    history.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
+                    history.diff_scroll =
+                        line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
                     return;
                 }
                 line_offset += 1 + hunk.lines.len() + 1;
@@ -2176,13 +2194,8 @@ impl TabState {
         // TODO(risk:medium): git_log_branch is called synchronously on the event loop thread. Loading 50
         // commits on a slow filesystem or network-mounted repo blocks the UI for the full duration of the
         // git log call. This should be moved to a background thread like the PR hint check.
-        let new_commits = git::git_log_branch(
-            &self.base_branch,
-            &self.repo_root,
-            50,
-            skip,
-        )
-        .unwrap_or_default();
+        let new_commits =
+            git::git_log_branch(&self.base_branch, &self.repo_root, 50, skip).unwrap_or_default();
 
         let history = self.history.as_mut().unwrap();
         if new_commits.is_empty() {
@@ -2249,9 +2262,7 @@ impl TabState {
     pub fn set_mode(&mut self, mode: DiffMode) {
         if self.mode != mode {
             // Remember current position to restore after mode switch
-            let prev_path = self.files
-                .get(self.selected_file)
-                .map(|f| f.path.clone());
+            let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
             let prev_hunk = self.current_hunk;
             let prev_line = self.current_line;
 
@@ -2259,17 +2270,12 @@ impl TabState {
             if mode == DiffMode::History {
                 // Initialize history state if first time
                 if self.history.is_none() {
-                    let commits = git::git_log_branch(
-                        &self.base_branch,
-                        &self.repo_root,
-                        50,
-                        0,
-                    )
-                    .unwrap_or_default();
+                    let commits = git::git_log_branch(&self.base_branch, &self.repo_root, 50, 0)
+                        .unwrap_or_default();
 
                     let first_diff = if let Some(c) = commits.first() {
-                        let raw = git::git_diff_commit(&c.hash, &self.repo_root)
-                            .unwrap_or_default();
+                        let raw =
+                            git::git_diff_commit(&c.hash, &self.repo_root).unwrap_or_default();
                         git::parse_diff(&raw)
                     } else {
                         vec![]
@@ -2449,7 +2455,11 @@ impl TabState {
     /// Count of reviewed files vs total (all files, ignoring filters)
     pub fn reviewed_count(&self) -> (usize, usize) {
         let total = self.files.len();
-        let reviewed = self.files.iter().filter(|f| self.reviewed.contains(&f.path)).count();
+        let reviewed = self
+            .files
+            .iter()
+            .filter(|f| self.reviewed.contains(&f.path))
+            .count();
         (reviewed, total)
     }
 
@@ -2492,11 +2502,14 @@ impl TabState {
         }
         let mut lines: Vec<&String> = self.reviewed.iter().collect();
         lines.sort();
-        let content = lines.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
+        let content = lines
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         std::fs::write(&path, format!("{}\n", content))?;
         Ok(())
     }
-
 }
 
 // ── Main App State ──
@@ -2550,8 +2563,9 @@ impl App {
                     crate::github::ensure_gh_installed()?;
 
                     // We need to be in the repo to checkout. Use cwd.
-                    let repo_root = git::get_repo_root()
-                        .context("Cannot open PR URL: not in a git repository. Clone the repo first.")?;
+                    let repo_root = git::get_repo_root().context(
+                        "Cannot open PR URL: not in a git repository. Clone the repo first.",
+                    )?;
 
                     // Verify the local repo matches the PR's repo
                     crate::github::verify_remote_matches(&repo_root, &pr_ref)?;
@@ -2575,7 +2589,7 @@ impl App {
             tabs
         };
 
-            // TODO(risk:minor): config is loaded from the first tab's repo root but the App is shared across
+        // TODO(risk:minor): config is loaded from the first tab's repo root but the App is shared across
         // all tabs. If a second tab's .er-config.toml has different feature flags, those settings are
         // ignored — the first tab's config wins for everything (display, features, agents).
         // Load config from the first tab's repo root
@@ -2681,7 +2695,6 @@ impl App {
         self.notify(&format!("Closed: {}", name));
     }
 
-
     // ── Overlay: Worktree Picker ──
 
     /// Open the worktree picker overlay
@@ -2728,9 +2741,10 @@ impl App {
     pub fn open_settings(&mut self) {
         let items = config::settings_items();
         // Find the first selectable (non-header) item
-        let first_selectable = items.iter().position(|item| {
-            !matches!(item, config::SettingsItem::SectionHeader(_))
-        }).unwrap_or(0);
+        let first_selectable = items
+            .iter()
+            .position(|item| !matches!(item, config::SettingsItem::SectionHeader(_)))
+            .unwrap_or(0);
 
         self.overlay = Some(OverlayData::Settings {
             selected: first_selectable,
@@ -2771,12 +2785,17 @@ impl App {
 
     pub fn overlay_next(&mut self) {
         match &mut self.overlay {
-            Some(OverlayData::WorktreePicker { worktrees, selected }) => {
+            Some(OverlayData::WorktreePicker {
+                worktrees,
+                selected,
+            }) => {
                 if *selected + 1 < worktrees.len() {
                     *selected += 1;
                 }
             }
-            Some(OverlayData::DirectoryBrowser { entries, selected, .. }) => {
+            Some(OverlayData::DirectoryBrowser {
+                entries, selected, ..
+            }) => {
                 if *selected + 1 < entries.len() {
                     *selected += 1;
                 }
@@ -2797,7 +2816,11 @@ impl App {
             }
             // `selected` indexes presets (0..preset_count) then history (preset_count..);
             // the visual separator in the overlay is render-only and not selectable
-            Some(OverlayData::FilterHistory { history, selected, preset_count }) => {
+            Some(OverlayData::FilterHistory {
+                history,
+                selected,
+                preset_count,
+            }) => {
                 if *selected + 1 < *preset_count + history.len() {
                     *selected += 1;
                 }
@@ -2820,7 +2843,8 @@ impl App {
                 // Skip section headers when navigating up
                 if *selected > 0 {
                     let mut prev = *selected - 1;
-                    while prev > 0 && matches!(items[prev], config::SettingsItem::SectionHeader(_)) {
+                    while prev > 0 && matches!(items[prev], config::SettingsItem::SectionHeader(_))
+                    {
                         prev -= 1;
                     }
                     if !matches!(items[prev], config::SettingsItem::SectionHeader(_)) {
@@ -2859,13 +2883,20 @@ impl App {
         };
 
         match overlay {
-            OverlayData::WorktreePicker { worktrees, selected } => {
+            OverlayData::WorktreePicker {
+                worktrees,
+                selected,
+            } => {
                 if let Some(wt) = worktrees.get(selected) {
                     let path = wt.path.clone();
                     self.open_in_new_tab(path)?;
                 }
             }
-            OverlayData::FilterHistory { history, selected, preset_count } => {
+            OverlayData::FilterHistory {
+                history,
+                selected,
+                preset_count,
+            } => {
                 use crate::app::filter::FILTER_PRESETS;
                 let expr = if selected < preset_count {
                     FILTER_PRESETS.get(selected).map(|p| p.expr.to_string())
@@ -2877,7 +2908,11 @@ impl App {
                     self.notify(&format!("Filter: {}", expr));
                 }
             }
-            OverlayData::DirectoryBrowser { current_path, entries, selected } => {
+            OverlayData::DirectoryBrowser {
+                current_path,
+                entries,
+                selected,
+            } => {
                 if let Some(entry) = entries.get(selected) {
                     let full_path = format!("{}/{}", current_path, entry.name);
                     if entry.is_dir {
@@ -2913,7 +2948,12 @@ impl App {
 
     /// Go up one directory in the directory browser
     pub fn overlay_go_up(&mut self) {
-        if let Some(OverlayData::DirectoryBrowser { ref mut current_path, ref mut entries, ref mut selected }) = self.overlay {
+        if let Some(OverlayData::DirectoryBrowser {
+            ref mut current_path,
+            ref mut entries,
+            ref mut selected,
+        }) = self.overlay
+        {
             if let Some(parent) = std::path::Path::new(current_path.as_str()).parent() {
                 let parent_str = parent.to_string_lossy().to_string();
                 if !parent_str.is_empty() {
@@ -2951,16 +2991,18 @@ impl App {
                     } else {
                         false
                     };
-                    entries.push(DirEntry { name, is_dir, is_git_repo });
+                    entries.push(DirEntry {
+                        name,
+                        is_dir,
+                        is_git_repo,
+                    });
                 }
             }
         }
-        entries.sort_by(|a, b| {
-            match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.cmp(&b.name),
-            }
+        entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
         });
         entries
     }
@@ -3088,14 +3130,20 @@ impl App {
             if let Some(qs) = &tab.ai.questions {
                 if let Some(q) = qs.questions.iter().find(|q| q.id == comment_id) {
                     (q.text.clone(), true)
-                } else { return; }
-            } else { return; }
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        } else if let Some(gc) = &tab.ai.github_comments {
+            if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
+                (c.comment.clone(), false)
+            } else {
+                return;
+            }
         } else {
-            if let Some(gc) = &tab.ai.github_comments {
-                if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
-                    (c.comment.clone(), false)
-                } else { return; }
-            } else { return; }
+            return;
         };
 
         let tab = self.tab_mut();
@@ -3108,7 +3156,11 @@ impl App {
         tab.comment_hunk = tab.current_hunk;
         tab.comment_line_num = tab.current_line_number();
         tab.comment_reply_to = None;
-        tab.comment_type = if is_question { CommentType::Question } else { CommentType::GitHubComment };
+        tab.comment_type = if is_question {
+            CommentType::Question
+        } else {
+            CommentType::GitHubComment
+        };
         tab.comment_edit_id = Some(comment_id.to_string());
         self.input_mode = InputMode::Comment;
     }
@@ -3120,15 +3172,31 @@ impl App {
         let (file, hunk_index, line_start, is_question) = if comment_id.starts_with("q-") {
             if let Some(qs) = &tab.ai.questions {
                 if let Some(q) = qs.questions.iter().find(|q| q.id == comment_id) {
-                    (q.file.clone(), q.hunk_index.unwrap_or(0), q.line_start, true)
-                } else { return; }
-            } else { return; }
+                    (
+                        q.file.clone(),
+                        q.hunk_index.unwrap_or(0),
+                        q.line_start,
+                        true,
+                    )
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        } else if let Some(gc) = &tab.ai.github_comments {
+            if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
+                (
+                    c.file.clone(),
+                    c.hunk_index.unwrap_or(0),
+                    c.line_start,
+                    false,
+                )
+            } else {
+                return;
+            }
         } else {
-            if let Some(gc) = &tab.ai.github_comments {
-                if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
-                    (c.file.clone(), c.hunk_index.unwrap_or(0), c.line_start, false)
-                } else { return; }
-            } else { return; }
+            return;
         };
 
         let tab = self.tab_mut();
@@ -3138,7 +3206,11 @@ impl App {
         tab.comment_line_num = line_start;
         tab.comment_reply_to = Some(comment_id.to_string());
         tab.comment_finding_ref = None;
-        tab.comment_type = if is_question { CommentType::Question } else { CommentType::GitHubComment };
+        tab.comment_type = if is_question {
+            CommentType::Question
+        } else {
+            CommentType::GitHubComment
+        };
         tab.comment_edit_id = None;
         self.input_mode = InputMode::Comment;
     }
@@ -3152,17 +3224,25 @@ impl App {
             for (file_path, file_review) in &review.files {
                 for finding in &file_review.findings {
                     if finding.id == finding_id {
-                        found = Some((file_path.clone(), finding.hunk_index.unwrap_or(0), finding.line_start));
+                        found = Some((
+                            file_path.clone(),
+                            finding.hunk_index.unwrap_or(0),
+                            finding.line_start,
+                        ));
                         break;
                     }
                 }
-                if found.is_some() { break; }
+                if found.is_some() {
+                    break;
+                }
             }
             match found {
                 Some(f) => f,
                 None => return,
             }
-        } else { return; };
+        } else {
+            return;
+        };
 
         let tab = self.tab_mut();
         tab.comment_input.clear();
@@ -3300,7 +3380,9 @@ impl App {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(gc) => gc,
                 Err(_) => {
-                    self.notify("Warning: .er-github-comments.json is invalid JSON — starting fresh");
+                    self.notify(
+                        "Warning: .er-github-comments.json is invalid JSON — starting fresh",
+                    );
                     ai::ErGitHubComments {
                         version: 1,
                         diff_hash: diff_hash.clone(),
@@ -3380,7 +3462,10 @@ impl App {
             if let Some(hunk) = df.hunks.get(hunk_index) {
                 if let Some(ln) = comment_line_num {
                     // Find the target line index within the hunk
-                    let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(ln))
+                    let target_idx = hunk
+                        .lines
+                        .iter()
+                        .position(|l| l.new_num == Some(ln))
                         .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln)));
                     let (line_content, old_line_start) = if let Some(idx) = target_idx {
                         let dl = &hunk.lines[idx];
@@ -3537,14 +3622,15 @@ impl App {
         self.jump_comment(false, true);
     }
 
-
     /// Core jump logic: navigate forward/backward through comments or questions across all files.
     /// Uses focused_comment_id for exact position tracking instead of file+hunk guessing.
     fn jump_comment(&mut self, forward: bool, questions_only: bool) {
         let tab = self.tab_mut();
         let all = if questions_only {
             // Convert 3-tuple to 4-tuple for uniform handling
-            tab.ai.all_questions_ordered().into_iter()
+            tab.ai
+                .all_questions_ordered()
+                .into_iter()
                 .map(|(f, h, id)| (f, h, None::<usize>, id))
                 .collect::<Vec<_>>()
         } else {
@@ -3556,29 +3642,41 @@ impl App {
         }
 
         // Find current position by exact ID match first, then fallback to file position
-        let current_pos = tab.focused_comment_id.as_ref().and_then(|fid| {
-            all.iter().position(|(_, _, _, id)| id == fid)
-        }).or_else(|| {
-            let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
-            current_file.and_then(|cf| {
-                if forward {
-                    all.iter().position(|(f, _, _, _)| f == cf)
-                } else {
-                    all.iter().rposition(|(f, _, _, _)| f == cf)
-                }
-            })
-        });
+        let current_pos = tab
+            .focused_comment_id
+            .as_ref()
+            .and_then(|fid| all.iter().position(|(_, _, _, id)| id == fid))
+            .or_else(|| {
+                let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+                current_file.and_then(|cf| {
+                    if forward {
+                        all.iter().position(|(f, _, _, _)| f == cf)
+                    } else {
+                        all.iter().rposition(|(f, _, _, _)| f == cf)
+                    }
+                })
+            });
 
         let next_idx = match current_pos {
             Some(pos) => {
                 if forward {
-                    if pos + 1 < all.len() { pos + 1 } else { 0 }
+                    if pos + 1 < all.len() {
+                        pos + 1
+                    } else {
+                        0
+                    }
+                } else if pos > 0 {
+                    pos - 1
                 } else {
-                    if pos > 0 { pos - 1 } else { all.len() - 1 }
+                    all.len() - 1
                 }
             }
             None => {
-                if forward { 0 } else { all.len() - 1 }
+                if forward {
+                    0
+                } else {
+                    all.len() - 1
+                }
             }
         };
 
@@ -3587,8 +3685,10 @@ impl App {
         tab.focused_comment_id = Some(comment_id.clone());
         tab.focused_finding_id = None;
 
-        let needs_file_change = tab.files.get(tab.selected_file)
-            .map_or(true, |f| f.path != *file);
+        let needs_file_change = tab
+            .files
+            .get(tab.selected_file)
+            .is_none_or(|f| f.path != *file);
 
         if needs_file_change {
             if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
@@ -3630,36 +3730,48 @@ impl App {
         }
 
         // Find current position by exact ID match first, then fallback to file position
-        let current_pos = tab.focused_finding_id.as_ref().and_then(|fid| {
-            all.iter().position(|(_, _, _, id)| id == fid)
-        }).or_else(|| {
-            let current_file = tab.files.get(tab.selected_file).map(|f| f.path.as_str());
-            let current_hunk = tab.current_hunk;
-            current_file.and_then(|cf| {
-                if forward {
-                    // Find first finding at or after current position
-                    all.iter().position(|(f, hi, _, _)| {
-                        f.as_str() > cf || (f == cf && hi.unwrap_or(0) >= current_hunk)
-                    })
-                } else {
-                    // Find last finding at or before current position
-                    all.iter().rposition(|(f, hi, _, _)| {
-                        f.as_str() < cf || (f == cf && hi.unwrap_or(0) <= current_hunk)
-                    })
-                }
-            })
-        });
+        let current_pos = tab
+            .focused_finding_id
+            .as_ref()
+            .and_then(|fid| all.iter().position(|(_, _, _, id)| id == fid))
+            .or_else(|| {
+                let current_file = tab.files.get(tab.selected_file).map(|f| f.path.as_str());
+                let current_hunk = tab.current_hunk;
+                current_file.and_then(|cf| {
+                    if forward {
+                        // Find first finding at or after current position
+                        all.iter().position(|(f, hi, _, _)| {
+                            f.as_str() > cf || (f == cf && hi.unwrap_or(0) >= current_hunk)
+                        })
+                    } else {
+                        // Find last finding at or before current position
+                        all.iter().rposition(|(f, hi, _, _)| {
+                            f.as_str() < cf || (f == cf && hi.unwrap_or(0) <= current_hunk)
+                        })
+                    }
+                })
+            });
 
         let next_idx = match current_pos {
             Some(pos) => {
                 if forward {
-                    if pos + 1 < all.len() { pos + 1 } else { 0 }
+                    if pos + 1 < all.len() {
+                        pos + 1
+                    } else {
+                        0
+                    }
+                } else if pos > 0 {
+                    pos - 1
                 } else {
-                    if pos > 0 { pos - 1 } else { all.len() - 1 }
+                    all.len() - 1
                 }
             }
             None => {
-                if forward { 0 } else { all.len() - 1 }
+                if forward {
+                    0
+                } else {
+                    all.len() - 1
+                }
             }
         };
 
@@ -3668,8 +3780,10 @@ impl App {
         tab.focused_finding_id = Some(finding_id.clone());
         tab.focused_comment_id = None;
 
-        let needs_file_change = tab.files.get(tab.selected_file)
-            .map_or(true, |f| f.path != *file);
+        let needs_file_change = tab
+            .files
+            .get(tab.selected_file)
+            .is_none_or(|f| f.path != *file);
 
         if needs_file_change {
             if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
@@ -3712,31 +3826,43 @@ impl App {
         }
 
         // Find current position by matching the currently focused ID
-        let current_id = tab.focused_comment_id.as_ref()
+        let current_id = tab
+            .focused_comment_id
+            .as_ref()
             .or(tab.focused_finding_id.as_ref());
-        let current_pos = current_id.and_then(|fid| {
-            all.iter().position(|(_, _, _, id, _)| id == fid)
-        }).or_else(|| {
-            let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
-            current_file.and_then(|cf| {
-                if forward {
-                    all.iter().position(|(f, _, _, _, _)| f == cf)
-                } else {
-                    all.iter().rposition(|(f, _, _, _, _)| f == cf)
-                }
-            })
-        });
+        let current_pos = current_id
+            .and_then(|fid| all.iter().position(|(_, _, _, id, _)| id == fid))
+            .or_else(|| {
+                let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+                current_file.and_then(|cf| {
+                    if forward {
+                        all.iter().position(|(f, _, _, _, _)| f == cf)
+                    } else {
+                        all.iter().rposition(|(f, _, _, _, _)| f == cf)
+                    }
+                })
+            });
 
         let next_idx = match current_pos {
             Some(pos) => {
                 if forward {
-                    if pos + 1 < all.len() { pos + 1 } else { 0 }
+                    if pos + 1 < all.len() {
+                        pos + 1
+                    } else {
+                        0
+                    }
+                } else if pos > 0 {
+                    pos - 1
                 } else {
-                    if pos > 0 { pos - 1 } else { all.len() - 1 }
+                    all.len() - 1
                 }
             }
             None => {
-                if forward { 0 } else { all.len() - 1 }
+                if forward {
+                    0
+                } else {
+                    all.len() - 1
+                }
             }
         };
 
@@ -3754,8 +3880,10 @@ impl App {
             }
         }
 
-        let needs_file_change = tab.files.get(tab.selected_file)
-            .map_or(true, |f| f.path != *file);
+        let needs_file_change = tab
+            .files
+            .get(tab.selected_file)
+            .is_none_or(|f| f.path != *file);
 
         if needs_file_change {
             if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
@@ -3802,21 +3930,31 @@ impl App {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
                     // Check if the comment has a github_id for API deletion
-                    let github_id = gc.comments.iter()
+                    let github_id = gc
+                        .comments
+                        .iter()
                         .find(|c| c.id == comment_id)
                         .and_then(|c| c.github_id);
 
-                    let reply_github_ids: Vec<u64> = gc.comments.iter()
-                        .filter(|c| c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some())
+                    let reply_github_ids: Vec<u64> = gc
+                        .comments
+                        .iter()
+                        .filter(|c| {
+                            c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some()
+                        })
                         .filter_map(|c| c.github_id)
                         .collect();
 
                     // Delete from GitHub if applicable
                     if let Some(gh_id) = github_id {
                         if let Some(ref gh) = gc.github {
-                            let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, gh_id, &repo_root);
+                            let _ = crate::github::gh_pr_delete_comment(
+                                &gh.owner, &gh.repo, gh_id, &repo_root,
+                            );
                             for reply_id in &reply_github_ids {
-                                let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, *reply_id, &repo_root);
+                                let _ = crate::github::gh_pr_delete_comment(
+                                    &gh.owner, &gh.repo, *reply_id, &repo_root,
+                                );
                             }
                         }
                     }
@@ -3931,7 +4069,10 @@ impl App {
             std::fs::rename(&tmp_path, &checklist_path)?;
         }
 
-        let checked = tab.ai.checklist.as_ref()
+        let checked = tab
+            .ai
+            .checklist
+            .as_ref()
             .and_then(|c| c.items.get(cursor))
             .map(|i| i.checked)
             .unwrap_or(false);
@@ -3993,12 +4134,18 @@ impl App {
 
         // Header
         text.push_str(&format!("File: {}\n", file.path));
-        text.push_str(&format!("Branch: {} (vs {})\n", tab.current_branch, tab.base_branch));
+        text.push_str(&format!(
+            "Branch: {} (vs {})\n",
+            tab.current_branch, tab.base_branch
+        ));
 
         // Determine what to copy based on navigation state
         let (lines_to_copy, line_label) = if let Some(range) = tab.selected_range() {
             // Shift+arrow selection: copy selected lines
-            let selected: Vec<_> = hunk.lines.iter().enumerate()
+            let selected: Vec<_> = hunk
+                .lines
+                .iter()
+                .enumerate()
                 .filter(|(i, _)| range.contains(i))
                 .map(|(_, l)| l)
                 .collect();
@@ -4043,7 +4190,10 @@ impl App {
         // AI finding if present
         let findings = tab.ai.findings_for_hunk(&file.path, tab.current_hunk);
         if let Some(finding) = findings.first() {
-            text.push_str(&format!("\nFinding: [{:?}] {}\n", finding.severity, finding.title));
+            text.push_str(&format!(
+                "\nFinding: [{:?}] {}\n",
+                finding.severity, finding.title
+            ));
             if !finding.suggestion.is_empty() {
                 text.push_str(&format!("Suggestion: {}\n", finding.suggestion));
             }
@@ -4138,7 +4288,11 @@ pub(crate) fn chrono_now() -> String {
     let mut y = 1970i64;
     let mut d = i64::try_from(days).unwrap_or(i64::MAX);
     loop {
-        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
         if d < days_in_year {
             break;
         }
@@ -4148,7 +4302,20 @@ pub(crate) fn chrono_now() -> String {
 
     // Walk months within the year (m is 0-indexed, d ends as 0-indexed day-of-month)
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days: [i64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut m = 0usize;
     for md in &month_days {
         if d < *md {
@@ -4165,7 +4332,12 @@ pub(crate) fn chrono_now() -> String {
 
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        y, m + 1, d + 1, hours, minutes, seconds
+        y,
+        m + 1,
+        d + 1,
+        hours,
+        minutes,
+        seconds
     )
 }
 
@@ -4343,9 +4515,7 @@ mod tests {
 
     #[test]
     fn visible_files_search_query_no_match_returns_empty() {
-        let files = vec![
-            make_file("src/main.rs", vec![], 1, 0),
-        ];
+        let files = vec![make_file("src/main.rs", vec![], 1, 0)];
         let mut tab = make_test_tab(files);
         tab.search_query = "zzz".to_string();
         let visible = tab.visible_files();
@@ -4497,9 +4667,7 @@ mod tests {
 
     #[test]
     fn next_file_with_no_visible_files_no_crash() {
-        let files = vec![
-            make_file("a.rs", vec![], 1, 0),
-        ];
+        let files = vec![make_file("a.rs", vec![], 1, 0)];
         let mut tab = make_test_tab(files);
         tab.search_query = "zzz".to_string();
         // Should not panic
@@ -4511,9 +4679,12 @@ mod tests {
 
     #[test]
     fn next_hunk_increments_current_hunk() {
-        let files = vec![
-            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![])], 1, 0),
-        ];
+        let files = vec![make_file(
+            "a.rs",
+            vec![make_hunk(vec![]), make_hunk(vec![])],
+            1,
+            0,
+        )];
         let mut tab = make_test_tab(files);
         tab.current_hunk = 0;
         tab.next_hunk();
@@ -4522,9 +4693,12 @@ mod tests {
 
     #[test]
     fn next_hunk_at_last_hunk_stays() {
-        let files = vec![
-            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![])], 1, 0),
-        ];
+        let files = vec![make_file(
+            "a.rs",
+            vec![make_hunk(vec![]), make_hunk(vec![])],
+            1,
+            0,
+        )];
         let mut tab = make_test_tab(files);
         tab.current_hunk = 1;
         tab.next_hunk();
@@ -4533,9 +4707,12 @@ mod tests {
 
     #[test]
     fn prev_hunk_decrements_current_hunk() {
-        let files = vec![
-            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![])], 1, 0),
-        ];
+        let files = vec![make_file(
+            "a.rs",
+            vec![make_hunk(vec![]), make_hunk(vec![])],
+            1,
+            0,
+        )];
         let mut tab = make_test_tab(files);
         tab.current_hunk = 1;
         tab.prev_hunk();
@@ -4544,9 +4721,7 @@ mod tests {
 
     #[test]
     fn prev_hunk_at_zero_stays() {
-        let files = vec![
-            make_file("a.rs", vec![make_hunk(vec![])], 1, 0),
-        ];
+        let files = vec![make_file("a.rs", vec![make_hunk(vec![])], 1, 0)];
         let mut tab = make_test_tab(files);
         tab.current_hunk = 0;
         tab.prev_hunk();
@@ -4585,7 +4760,12 @@ mod tests {
     fn next_line_at_last_line_of_hunk_moves_to_next_hunk() {
         let lines1 = vec![make_line(LineType::Add, "x", Some(1))];
         let lines2 = vec![make_line(LineType::Add, "y", Some(2))];
-        let files = vec![make_file("a.rs", vec![make_hunk(lines1), make_hunk(lines2)], 2, 0)];
+        let files = vec![make_file(
+            "a.rs",
+            vec![make_hunk(lines1), make_hunk(lines2)],
+            2,
+            0,
+        )];
         let mut tab = make_test_tab(files);
         tab.current_hunk = 0;
         tab.current_line = Some(0); // last line of hunk 0
@@ -4636,7 +4816,12 @@ mod tests {
             make_line(LineType::Add, "b", Some(2)),
         ];
         let lines2 = vec![make_line(LineType::Add, "c", Some(3))];
-        let files = vec![make_file("a.rs", vec![make_hunk(lines1), make_hunk(lines2)], 3, 0)];
+        let files = vec![make_file(
+            "a.rs",
+            vec![make_hunk(lines1), make_hunk(lines2)],
+            3,
+            0,
+        )];
         let mut tab = make_test_tab(files);
         tab.current_hunk = 1;
         tab.current_line = Some(0);
@@ -4668,9 +4853,12 @@ mod tests {
 
     #[test]
     fn total_hunks_file_with_three_hunks_returns_three() {
-        let files = vec![
-            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![]), make_hunk(vec![])], 3, 0),
-        ];
+        let files = vec![make_file(
+            "a.rs",
+            vec![make_hunk(vec![]), make_hunk(vec![]), make_hunk(vec![])],
+            3,
+            0,
+        )];
         let tab = make_test_tab(files);
         assert_eq!(tab.total_hunks(), 3);
     }
@@ -4679,9 +4867,7 @@ mod tests {
 
     #[test]
     fn current_line_number_with_new_num_returns_some() {
-        let lines = vec![
-            make_line(LineType::Add, "x", Some(42)),
-        ];
+        let lines = vec![make_line(LineType::Add, "x", Some(42))];
         let files = vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)];
         let mut tab = make_test_tab(files);
         tab.current_line = Some(0);
@@ -4699,9 +4885,7 @@ mod tests {
 
     #[test]
     fn current_line_number_delete_line_with_no_new_num_returns_none() {
-        let lines = vec![
-            make_line(LineType::Delete, "deleted", None),
-        ];
+        let lines = vec![make_line(LineType::Delete, "deleted", None)];
         let files = vec![make_file("a.rs", vec![make_hunk(lines)], 0, 1)];
         let mut tab = make_test_tab(files);
         tab.current_line = Some(0);
@@ -4759,9 +4943,12 @@ mod tests {
 
     #[test]
     fn clamp_hunk_beyond_total_clamped_to_last() {
-        let files = vec![
-            make_file("a.rs", vec![make_hunk(vec![]), make_hunk(vec![])], 1, 0),
-        ];
+        let files = vec![make_file(
+            "a.rs",
+            vec![make_hunk(vec![]), make_hunk(vec![])],
+            1,
+            0,
+        )];
         let mut tab = make_test_tab(files);
         tab.current_hunk = 99;
         tab.clamp_hunk();
@@ -4770,9 +4957,7 @@ mod tests {
 
     #[test]
     fn clamp_hunk_no_hunks_resets_to_zero_and_clears_line() {
-        let files = vec![
-            make_file("a.rs", vec![], 0, 0),
-        ];
+        let files = vec![make_file("a.rs", vec![], 0, 0)];
         let mut tab = make_test_tab(files);
         tab.current_hunk = 5;
         tab.current_line = Some(2);
@@ -5087,7 +5272,7 @@ mod tests {
         let mut tab = make_test_tab(vec![]);
         tab.panel_focus = false;
         tab.toggle_panel(); // None → FileDetail
-        // panel_focus stays as-is when panel is opened
+                            // panel_focus stays as-is when panel is opened
         assert!(!tab.panel_focus);
     }
 
@@ -5173,10 +5358,19 @@ mod tests {
     #[test]
     fn diff_cache_evicts_oldest_when_full() {
         let mut cache = DiffCache::new(2);
-        cache.insert("first".to_string(), vec![make_file("first.rs", vec![], 1, 0)]);
-        cache.insert("second".to_string(), vec![make_file("second.rs", vec![], 1, 0)]);
+        cache.insert(
+            "first".to_string(),
+            vec![make_file("first.rs", vec![], 1, 0)],
+        );
+        cache.insert(
+            "second".to_string(),
+            vec![make_file("second.rs", vec![], 1, 0)],
+        );
         // Cache is full (max_size=2). Insert a third entry.
-        cache.insert("third".to_string(), vec![make_file("third.rs", vec![], 1, 0)]);
+        cache.insert(
+            "third".to_string(),
+            vec![make_file("third.rs", vec![], 1, 0)],
+        );
         // Oldest ("first") should be evicted
         assert!(cache.get("first").is_none());
         assert!(cache.get("second").is_some());
@@ -5231,10 +5425,13 @@ mod tests {
     fn diff_cache_insert_existing_key_replaces() {
         let mut cache = DiffCache::new(2);
         cache.insert("a".to_string(), vec![make_file("test.rs", vec![], 1, 0)]);
-        cache.insert("a".to_string(), vec![
-            make_file("test.rs", vec![], 1, 0),
-            make_file("other.rs", vec![], 2, 0),
-        ]);
+        cache.insert(
+            "a".to_string(),
+            vec![
+                make_file("test.rs", vec![], 1, 0),
+                make_file("other.rs", vec![], 2, 0),
+            ],
+        );
         let result = cache.get("a").unwrap();
         assert_eq!(result.len(), 2); // updated, not original
     }
@@ -5244,13 +5441,25 @@ mod tests {
     #[test]
     fn diff_cache_get_promotes_entry_so_it_survives_eviction() {
         let mut cache = DiffCache::new(3);
-        cache.insert("first".to_string(), vec![make_file("first.rs", vec![], 1, 0)]);
-        cache.insert("second".to_string(), vec![make_file("second.rs", vec![], 1, 0)]);
-        cache.insert("third".to_string(), vec![make_file("third.rs", vec![], 1, 0)]);
+        cache.insert(
+            "first".to_string(),
+            vec![make_file("first.rs", vec![], 1, 0)],
+        );
+        cache.insert(
+            "second".to_string(),
+            vec![make_file("second.rs", vec![], 1, 0)],
+        );
+        cache.insert(
+            "third".to_string(),
+            vec![make_file("third.rs", vec![], 1, 0)],
+        );
         // Cache is full (max_size=3). Access "first" — promotes it to MRU position.
         let _ = cache.get("first");
         // Insert a 4th entry — should evict "second" (now LRU), not "first"
-        cache.insert("fourth".to_string(), vec![make_file("fourth.rs", vec![], 1, 0)]);
+        cache.insert(
+            "fourth".to_string(),
+            vec![make_file("fourth.rs", vec![], 1, 0)],
+        );
         assert!(cache.get("first").is_some());
         assert!(cache.get("second").is_none()); // evicted — was LRU after "first" was promoted
         assert!(cache.get("third").is_some());
@@ -5385,14 +5594,12 @@ mod tests {
 
     #[test]
     fn get_line_anchor_returns_empty_content_when_line_not_found() {
-        let lines = vec![
-            DiffLine {
-                line_type: LineType::Add,
-                content: "some line".to_string(),
-                old_num: None,
-                new_num: Some(1),
-            },
-        ];
+        let lines = vec![DiffLine {
+            line_type: LineType::Add,
+            content: "some line".to_string(),
+            old_num: None,
+            new_num: Some(1),
+        }];
         let tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
         let app = make_test_app(tab);
 

@@ -1,5 +1,5 @@
-mod file_tree;
 mod diff_view;
+mod file_tree;
 pub mod highlight;
 mod overlay;
 pub mod panel;
@@ -10,8 +10,8 @@ mod utils;
 
 use crate::app::{App, OverlayData};
 use highlight::Highlighter;
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::Frame;
 
 /// Render the entire UI
 pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
@@ -26,8 +26,8 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(top_height),   // top bar (dynamic rows)
-            Constraint::Min(1),              // main content
+            Constraint::Length(top_height),    // top bar (dynamic rows)
+            Constraint::Min(1),                // main content
             Constraint::Length(bottom_height), // bottom bar (dynamic rows)
         ])
         .split(f.area());
@@ -54,10 +54,7 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
         // 2-col layout: file_tree + diff
         let main_area = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(32),
-                Constraint::Min(1),
-            ])
+            .constraints([Constraint::Length(32), Constraint::Min(1)])
             .split(outer[1]);
         file_tree::render(f, main_area[0], app);
         if app.split_diff_active(&app.config) {
