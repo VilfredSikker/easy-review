@@ -5737,4 +5737,199 @@ mod tests {
         assert_eq!(tab.current_line_number_for_split(SplitSide::New), None);
         assert_eq!(tab.current_line_number_for_split(SplitSide::Old), None);
     }
+
+    // ── Filter pipeline ──
+
+    #[test]
+    fn filter_rules_search_and_unreviewed_all_active() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 10, 0),
+            make_file("src/lib.rs", vec![], 5, 0),
+            make_file("tests/test.rs", vec![], 3, 0),
+            make_file("src/utils.rs", vec![], 2, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        // Phase 1: Filter to "src/" files only
+        tab.filter_rules = crate::app::filter::parse_filter_expr("src/*");
+        // Phase 2: Search query narrows further
+        tab.search_query = "main".to_string();
+        // Phase 3: Mark main.rs as reviewed, toggle unreviewed only
+        tab.reviewed.insert("src/main.rs".to_string());
+        tab.show_unreviewed_only = true;
+
+        let visible = tab.visible_files();
+        // src/main.rs matches filter+search but is reviewed → excluded
+        // src/lib.rs matches filter but not search → excluded
+        // tests/test.rs doesn't match filter → excluded
+        assert_eq!(visible.len(), 0);
+    }
+
+    #[test]
+    fn filter_rules_plus_search_narrows_correctly() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 10, 0),
+            make_file("src/lib.rs", vec![], 5, 0),
+            make_file("tests/test.rs", vec![], 3, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.filter_rules = crate::app::filter::parse_filter_expr("src/*");
+        tab.search_query = "lib".to_string();
+
+        let visible = tab.visible_files();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].1.path, "src/lib.rs");
+    }
+
+    #[test]
+    fn snap_to_visible_when_all_files_filtered_out() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.selected_file = 0;
+        // Filter out all files
+        tab.search_query = "nonexistent".to_string();
+        tab.snap_to_visible();
+        // visible_files is empty, snap_to_visible returns early without changing
+        let visible = tab.visible_files();
+        assert!(visible.is_empty());
+    }
+
+    #[test]
+    fn apply_filter_expr_history_deduplication() {
+        let files = vec![make_file("src/main.rs", vec![], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.apply_filter_expr("*.rs");
+        tab.apply_filter_expr("*.ts");
+        tab.apply_filter_expr("*.rs"); // duplicate
+                                       // "*.rs" should appear only once (at front)
+        assert_eq!(tab.filter_history.len(), 2);
+        assert_eq!(tab.filter_history[0], "*.rs");
+        assert_eq!(tab.filter_history[1], "*.ts");
+    }
+
+    #[test]
+    fn apply_filter_expr_history_capped_at_20() {
+        let files = vec![make_file("src/main.rs", vec![], 1, 0)];
+        let mut tab = make_test_tab(files);
+        for i in 0..25 {
+            tab.apply_filter_expr(&format!("filter_{}", i));
+        }
+        assert_eq!(tab.filter_history.len(), 20);
+        // Most recent should be first
+        assert_eq!(tab.filter_history[0], "filter_24");
+    }
+
+    #[test]
+    fn clear_filter_restores_full_file_list() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("tests/test.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.apply_filter_expr("src/*");
+        assert_eq!(tab.visible_files().len(), 1);
+        tab.clear_filter();
+        assert_eq!(tab.visible_files().len(), 2);
+    }
+
+    // ── Comment lifecycle ──
+
+    #[test]
+    fn start_comment_sets_input_mode() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::Question);
+        assert!(matches!(app.input_mode, InputMode::Comment));
+        assert_eq!(app.tab().comment_type, CommentType::Question);
+        assert_eq!(app.tab().comment_file, "src/main.rs");
+    }
+
+    #[test]
+    fn start_comment_github_type() {
+        let files = vec![make_file(
+            "src/lib.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "code", Some(5))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::GitHubComment);
+        assert!(matches!(app.input_mode, InputMode::Comment));
+        assert_eq!(app.tab().comment_type, CommentType::GitHubComment);
+    }
+
+    #[test]
+    fn submit_comment_empty_text_returns_to_normal() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::Question);
+        // Comment input is empty
+        assert!(app.submit_comment().is_ok());
+        assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn next_comment_empty_list_no_crash() {
+        let files = vec![make_file("src/main.rs", vec![], 0, 0)];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        // Should not crash even with no comments
+        app.next_comment();
+        app.prev_comment();
+    }
+
+    #[test]
+    fn start_edit_comment_populates_input_buffer() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let mut tab = make_test_tab(files);
+        // Manually add a question to the AI state
+        tab.ai.questions = Some(crate::ai::ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![crate::ai::ReviewQuestion {
+                id: "q-123-0".to_string(),
+                timestamp: String::new(),
+                file: "src/main.rs".to_string(),
+                hunk_index: Some(0),
+                line_start: Some(1),
+                line_content: "line".to_string(),
+                text: "Why is this here?".to_string(),
+                resolved: false,
+                stale: false,
+                context_before: Vec::new(),
+                context_after: Vec::new(),
+                old_line_start: None,
+                hunk_header: String::new(),
+                anchor_status: "original".to_string(),
+                relocated_at_hash: String::new(),
+                in_reply_to: None,
+                author: "You".to_string(),
+            }],
+        });
+        let mut app = make_test_app(tab);
+        app.start_edit_comment("q-123-0");
+        assert!(matches!(app.input_mode, InputMode::Comment));
+        assert_eq!(app.tab().comment_input, "Why is this here?");
+        assert_eq!(app.tab().comment_edit_id, Some("q-123-0".to_string()));
+    }
 }

@@ -892,3 +892,97 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         )]));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_icon_success() {
+        let (icon, color) = check_icon(Some("success"));
+        assert_eq!(icon, "✓");
+        assert_eq!(color, styles::GREEN);
+    }
+
+    #[test]
+    fn check_icon_failure() {
+        let (icon, color) = check_icon(Some("failure"));
+        assert_eq!(icon, "✗");
+        assert_eq!(color, styles::RED_TEXT);
+    }
+
+    #[test]
+    fn check_icon_cancelled() {
+        let (icon, _) = check_icon(Some("cancelled"));
+        assert_eq!(icon, "✗");
+    }
+
+    #[test]
+    fn check_icon_timed_out() {
+        let (icon, _) = check_icon(Some("timed_out"));
+        assert_eq!(icon, "✗");
+    }
+
+    #[test]
+    fn check_icon_skipped() {
+        let (icon, color) = check_icon(Some("skipped"));
+        assert_eq!(icon, "–");
+        assert_eq!(color, styles::MUTED);
+    }
+
+    #[test]
+    fn check_icon_unknown() {
+        let (icon, color) = check_icon(Some("unknown"));
+        assert_eq!(icon, "○");
+        assert_eq!(color, styles::DIM);
+    }
+
+    #[test]
+    fn check_icon_none() {
+        let (icon, color) = check_icon(None);
+        assert_eq!(icon, "○");
+        assert_eq!(color, styles::DIM);
+    }
+
+    #[test]
+    fn review_state_style_approved() {
+        let (label, color) = review_state_style("APPROVED");
+        assert_eq!(label, "✓ approved");
+        assert_eq!(color, styles::GREEN);
+    }
+
+    #[test]
+    fn review_state_style_changes_requested() {
+        let (label, color) = review_state_style("CHANGES_REQUESTED");
+        assert_eq!(label, "✗ changes requested");
+        assert_eq!(color, styles::RED_TEXT);
+    }
+
+    #[test]
+    fn review_state_style_commented() {
+        let (label, color) = review_state_style("COMMENTED");
+        assert_eq!(label, "◆ commented");
+        assert_eq!(color, styles::CYAN);
+    }
+
+    #[test]
+    fn review_state_style_unknown_falls_to_default() {
+        let (label, color) = review_state_style("UNKNOWN");
+        assert_eq!(label, "○ pending");
+        assert_eq!(color, styles::DIM);
+    }
+
+    #[test]
+    fn review_state_style_dismissed_exact() {
+        let (label, color) = review_state_style("DISMISSED");
+        assert_eq!(label, "– dismissed");
+        assert_eq!(color, styles::MUTED);
+    }
+
+    #[test]
+    fn review_state_style_pending_unknown() {
+        let (label, color) = review_state_style("PENDING");
+        assert_eq!(label, "○ pending");
+        assert_eq!(color, styles::DIM);
+    }
+}

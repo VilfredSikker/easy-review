@@ -1040,6 +1040,124 @@ mod tests {
         assert_eq!(commits[1].short_hash, "bbbb123");
     }
 
+    // ── strip upstream remote logic (used in detect_base_branch) ──
+
+    /// Helper to replicate the upstream branch name extraction logic from detect_base_branch_impl
+    fn strip_upstream(upstream: &str) -> &str {
+        upstream
+            .find('/')
+            .map(|i| &upstream[i + 1..])
+            .unwrap_or(upstream)
+    }
+
+    #[test]
+    fn strip_upstream_no_slash() {
+        assert_eq!(strip_upstream("main"), "main");
+    }
+
+    #[test]
+    fn strip_upstream_multiple_slashes() {
+        assert_eq!(
+            strip_upstream("origin/feature/sub/task"),
+            "feature/sub/task"
+        );
+    }
+
+    #[test]
+    fn strip_upstream_empty_after_slash() {
+        // Edge case: "origin/" → empty string after slash
+        assert_eq!(strip_upstream("origin/"), "");
+    }
+
+    // ── detect_base_branch_impl integration tests (require temp git repo) ──
+
+    /// Helper: create a temp git repo, returning its path.
+    /// Disables commit signing to work in CI / sandboxed environments.
+    fn init_temp_repo() -> (tempfile::TempDir, String) {
+        init_temp_repo_with_branch("main")
+    }
+
+    fn init_temp_repo_with_branch(branch: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap().to_string();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&path)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("HOME", dir.path())
+                .output()
+                .unwrap();
+        };
+        run(&["init", "-b", branch]);
+        // Disable signing in this repo
+        run(&[
+            "-c",
+            "commit.gpgsign=false",
+            "config",
+            "commit.gpgsign",
+            "false",
+        ]);
+        // Create an initial commit so HEAD exists
+        std::fs::write(dir.path().join("README"), "init").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "--no-gpg-sign", "-m", "init"]);
+        (dir, path)
+    }
+
+    fn git_in(path: &str, args: &[&str]) {
+        let parent = std::path::Path::new(path).parent().unwrap();
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("HOME", parent)
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn detect_base_branch_with_only_main() {
+        let (_dir, path) = init_temp_repo();
+        git_in(&path, &["checkout", "-b", "feature"]);
+        let result = detect_base_branch_in(&path).unwrap();
+        assert_eq!(result, "main");
+    }
+
+    #[test]
+    fn detect_base_branch_with_only_master() {
+        let (_dir, path) = init_temp_repo_with_branch("master");
+        git_in(&path, &["checkout", "-b", "feature"]);
+        let result = detect_base_branch_in(&path).unwrap();
+        assert_eq!(result, "master");
+    }
+
+    #[test]
+    fn detect_base_branch_with_develop() {
+        let (_dir, path) = init_temp_repo();
+        git_in(&path, &["branch", "-m", "main", "develop"]);
+        git_in(&path, &["checkout", "-b", "feature"]);
+        let result = detect_base_branch_in(&path).unwrap();
+        assert_eq!(result, "develop");
+    }
+
+    #[test]
+    fn detect_base_branch_on_main_itself_falls_through() {
+        let (_dir, path) = init_temp_repo();
+        // We are on main, which skips "main" as candidate (current == candidate)
+        // No other branches exist, so it falls back to the hard-coded "main"
+        let result = detect_base_branch_in(&path).unwrap();
+        assert_eq!(result, "main");
+    }
+
     #[test]
     fn parse_git_log_subject_with_special_chars() {
         // With \x1e delimiters, subjects containing characters that would previously

@@ -70,6 +70,30 @@ pub(crate) fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     result
 }
 
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+
+/// Calculate a centered rectangle within an area.
+/// Shared utility used by overlay and settings popups.
+pub(crate) fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(r.height.saturating_sub(height) / 2),
+            Constraint::Length(height),
+            Constraint::Min(0),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(r.width.saturating_sub(width) / 2),
+            Constraint::Length(width),
+            Constraint::Min(0),
+        ])
+        .split(vertical[1])[1]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,5 +127,37 @@ mod tests {
     fn empty_line_preserved() {
         let result = word_wrap("", 40);
         assert_eq!(result, vec![""]);
+    }
+
+    // ── centered_rect ──
+
+    #[test]
+    fn centered_rect_in_larger_area() {
+        let area = Rect::new(0, 0, 100, 40);
+        let result = centered_rect(50, 10, area);
+        assert_eq!(result.width, 50);
+        assert_eq!(result.height, 10);
+        assert_eq!(result.x, 25); // (100 - 50) / 2
+        assert_eq!(result.y, 15); // (40 - 10) / 2
+    }
+
+    #[test]
+    fn centered_rect_popup_larger_than_area_clamps() {
+        let area = Rect::new(0, 0, 20, 10);
+        let result = centered_rect(40, 20, area);
+        // saturating_sub returns 0, so offset is 0 — starts at top-left
+        assert_eq!(result.x, 0);
+        assert_eq!(result.y, 0);
+    }
+
+    #[test]
+    fn centered_rect_zero_size_popup() {
+        let area = Rect::new(0, 0, 100, 40);
+        let result = centered_rect(0, 0, area);
+        assert_eq!(result.width, 0);
+        assert_eq!(result.height, 0);
+        // Should be centered at (50, 20)
+        assert_eq!(result.x, 50);
+        assert_eq!(result.y, 20);
     }
 }

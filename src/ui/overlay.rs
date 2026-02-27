@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
@@ -311,31 +311,5 @@ fn render_filter_history(
     f.render_widget(list, popup);
 }
 
-/// Calculate a centered rectangle within an area
-// TODO(risk:medium): centered_rect assumes height <= r.height and width <= r.width because
-// the callers pass .min(area.height.saturating_sub(6)) and .min(area.width.saturating_sub(6)).
-// If the terminal is smaller than 6 rows/cols the saturating_sub(6) yields 0, so popup_height
-// and popup_width are both 0. Passing height=0 to Constraint::Length is valid in Ratatui
-// but the resulting Rect has height 0, and any widget rendered into it produces no output
-// without panicking. The .max(N) guards in the callers (e.g. .max(5)) prevent height=0
-// in most cases, but popup_width has no .max() guard, so a terminal narrower than 6 cols
-// produces a zero-width popup with invisible content.
-fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(r.height.saturating_sub(height) / 2),
-            Constraint::Length(height),
-            Constraint::Min(0),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(r.width.saturating_sub(width) / 2),
-            Constraint::Length(width),
-            Constraint::Min(0),
-        ])
-        .split(vertical[1])[1]
-}
+// Use the shared centered_rect from utils (deduplicated from overlay + settings)
+use super::utils::centered_rect;

@@ -880,3 +880,61 @@ pub fn render_watch_notification(f: &mut Frame, area: Rect, message: &str) {
 
     f.render_widget(notif, notif_area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── spans_width ──
+
+    #[test]
+    fn spans_width_correct_counting() {
+        let spans = vec![Span::raw("hello"), Span::raw(" "), Span::raw("world")];
+        assert_eq!(spans_width(&spans), 11);
+    }
+
+    #[test]
+    fn spans_width_empty() {
+        let spans: Vec<Span> = vec![];
+        assert_eq!(spans_width(&spans), 0);
+    }
+
+    // ── pack_hint_lines ──
+
+    #[test]
+    fn pack_hint_lines_fits_in_one_line() {
+        let hints = vec![Hint::new("j/k", " nav "), Hint::new("n/N", " hunks ")];
+        let lines = pack_hint_lines(&hints, 80);
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn pack_hint_lines_wraps_to_multiple_lines() {
+        let hints = vec![
+            Hint::new("j/k", " navigate "),
+            Hint::new("n/N", " hunks "),
+            Hint::new("^q", " quit "),
+            Hint::new("f", " filter "),
+            Hint::new("u", " unreviewed "),
+            Hint::new(",", " settings "),
+        ];
+        // Total width of all hints > 20 chars, so they should wrap
+        let lines = pack_hint_lines(&hints, 20);
+        assert!(lines.len() > 1);
+    }
+
+    #[test]
+    fn pack_hint_lines_empty_returns_one_line() {
+        let hints: Vec<Hint> = vec![];
+        let lines = pack_hint_lines(&hints, 80);
+        assert_eq!(lines.len(), 1);
+    }
+
+    // ── Hint::width ──
+
+    #[test]
+    fn hint_width_includes_key_and_label() {
+        let hint = Hint::new("j/k", " nav ");
+        assert_eq!(hint.width(), 8); // "j/k" (3) + " nav " (5)
+    }
+}

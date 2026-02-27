@@ -1881,13 +1881,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
     ]));
 
     // Size info
-    let size_str = if size < 1024 {
-        format!("{} B", size)
-    } else if size < 1024 * 1024 {
-        format!("{:.1} KB", size as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
-    };
+    let size_str = format_size(size);
     lines.push(Line::from(Span::styled(
         format!("  Size: {}", size_str),
         ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
@@ -2071,5 +2065,41 @@ fn render_watched_content_lines(lines: &mut Vec<Line>, repo_root: &str, path: &s
                 ratatui::style::Style::default().fg(styles::RED),
             )));
         }
+    }
+}
+
+/// Format a file size in human-readable form (B, KB, MB)
+fn format_size(size: u64) -> String {
+    if size < 1024 {
+        format!("{} B", size)
+    } else if size < 1024 * 1024 {
+        format!("{:.1} KB", size as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_size_bytes_range() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_kb_range() {
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(2048), "2.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_size_mb_range() {
+        assert_eq!(format_size(1048576), "1.0 MB");
+        assert_eq!(format_size(2 * 1024 * 1024), "2.0 MB");
     }
 }
