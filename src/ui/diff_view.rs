@@ -67,7 +67,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     // Viewport window parameters
     let viewport_height = area.height as usize;
     let buffer_lines = if use_viewport { 20 } else { 0 };
-    let scroll = tab.diff_scroll as usize;
+    let scroll = tab.active_diff_scroll() as usize;
     let render_start = if use_viewport { scroll.saturating_sub(buffer_lines) } else { 0 };
     let render_end = if use_viewport { scroll + viewport_height + buffer_lines } else { usize::MAX };
 
@@ -156,9 +156,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     }
     logical_line += 1;
 
+    // Unified gutter: "{old_num} {new_num} │" = 4+1+4+1+1=11 chars, plus prefix char = 12 total
+    let unified_gutter_width: u16 = 12;
+    let wrap_lines = app.config.display.wrap_lines;
+    // Content width for wrapping: area width minus right padding (1) minus gutter
+    let unified_wrap_width = (area.width.saturating_sub(1).saturating_sub(unified_gutter_width)) as usize;
+
     // Render hunks
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-        let is_current = hunk_idx == tab.current_hunk;
+        let is_current = hunk_idx == tab.active_current_hunk();
 
         // Early exit — past viewport, no need to process remaining hunks
         if use_viewport && logical_line > render_end + buffer_lines {
@@ -231,60 +237,92 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
         // Hunk lines
         for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
-            if logical_line >= render_start && logical_line < render_end {
-                let is_selected_line = is_current
-                    && tab.current_line == Some(line_idx);
+            let is_selected_line = is_current
+                && tab.active_current_line() == Some(line_idx);
 
-                let old_num = diff_line
-                    .old_num
-                    .map(|n| format!("{:>4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
-                let new_num = diff_line
-                    .new_num
-                    .map(|n| format!("{:>4}", n))
-                    .unwrap_or_else(|| "    ".to_string());
+            let old_num = diff_line
+                .old_num
+                .map(|n| format!("{:>4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+            let new_num = diff_line
+                .new_num
+                .map(|n| format!("{:>4}", n))
+                .unwrap_or_else(|| "    ".to_string());
 
-                let (prefix, base_style) = if is_selected_line {
-                    match diff_line.line_type {
-                        LineType::Add => ("+", styles::line_cursor_add()),
-                        LineType::Delete => ("-", styles::line_cursor_del()),
-                        LineType::Context => (" ", styles::line_cursor()),
-                    }
-                } else {
-                    match diff_line.line_type {
-                        LineType::Add => ("+", styles::add_style()),
-                        LineType::Delete => ("-", styles::del_style()),
-                        LineType::Context => (" ", styles::default_style()),
-                    }
-                };
-
-                let gutter_style = if is_selected_line {
-                    ratatui::style::Style::default().fg(styles::BRIGHT).bg(styles::LINE_CURSOR_BG)
-                } else {
-                    match diff_line.line_type {
-                        LineType::Add => ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG),
-                        LineType::Delete => ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG),
-                        LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
-                    }
-                };
-
-                // Build the line: gutter + prefix + syntax-highlighted content
-                let mut spans = vec![
-                    Span::styled(format!("{} {} \u{2502}", old_num, new_num), gutter_style),
-                    Span::styled(prefix, base_style),
-                ];
-
-                // Syntax highlight the code content
-                if diff_line.content.is_empty() {
-                    spans.push(Span::styled("", base_style));
-                } else {
-                    let highlighted = hl.highlight_line(&diff_line.content, &file.path, base_style);
-                    spans.extend(highlighted);
+            let (prefix, base_style) = if is_selected_line {
+                match diff_line.line_type {
+                    LineType::Add => ("+", styles::line_cursor_add()),
+                    LineType::Delete => ("-", styles::line_cursor_del()),
+                    LineType::Context => (" ", styles::line_cursor()),
                 }
+            } else {
+                match diff_line.line_type {
+                    LineType::Add => ("+", styles::add_style()),
+                    LineType::Delete => ("-", styles::del_style()),
+                    LineType::Context => (" ", styles::default_style()),
+                }
+            };
 
-                lines.push(Line::from(spans).style(base_style));
+            let gutter_style = if is_selected_line {
+                ratatui::style::Style::default().fg(styles::BRIGHT).bg(styles::LINE_CURSOR_BG)
+            } else {
+                match diff_line.line_type {
+                    LineType::Add => ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG),
+                    LineType::Delete => ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG),
+                    LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                }
+            };
+
+            if wrap_lines && !diff_line.content.is_empty() {
+                // Wrap the content and emit multiple logical lines.
+                // Segments are owned Strings; highlight them and convert to Span<'static>
+                // so they can safely outlive the local `segments` Vec.
+                let segments = word_wrap(&diff_line.content, unified_wrap_width.max(1));
+                let blank_gutter = format!("{} {} \u{2502}", "    ", "    ");
+                for (seg_idx, segment) in segments.iter().enumerate() {
+                    if logical_line >= render_start && logical_line < render_end {
+                        let mut spans: Vec<Span<'static>> = if seg_idx == 0 {
+                            vec![
+                                Span::styled(format!("{} {} \u{2502}", old_num, new_num), gutter_style),
+                                Span::styled(prefix, base_style),
+                            ]
+                        } else {
+                            vec![
+                                Span::styled(blank_gutter.clone(), gutter_style),
+                                Span::styled(" ", base_style),
+                            ]
+                        };
+                        // highlight_line borrows `segment`, so we eagerly clone span text to 'static
+                        let highlighted: Vec<Span<'static>> = hl
+                            .highlight_line(segment, &file.path, base_style)
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style))
+                            .collect();
+                        spans.extend(highlighted);
+                        lines.push(Line::from(spans).style(base_style));
+                    }
+                    logical_line += 1;
+                }
+            } else {
+                if logical_line >= render_start && logical_line < render_end {
+                    // Build the line: gutter + prefix + syntax-highlighted content
+                    let mut spans = vec![
+                        Span::styled(format!("{} {} \u{2502}", old_num, new_num), gutter_style),
+                        Span::styled(prefix, base_style),
+                    ];
+
+                    // Syntax highlight the code content
+                    if diff_line.content.is_empty() {
+                        spans.push(Span::styled("", base_style));
+                    } else {
+                        let highlighted = hl.highlight_line(&diff_line.content, &file.path, base_style);
+                        spans.extend(highlighted);
+                    }
+
+                    lines.push(Line::from(spans).style(base_style));
+                }
+                logical_line += 1;
             }
-            logical_line += 1;
 
             // ── Inline line comments (rendered directly after the target line) ──
             if let Some(new_line_num) = diff_line.new_num {
@@ -511,12 +549,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         .style(ratatui::style::Style::default().bg(styles::BG))
         .padding(Padding::new(0, 1, 0, 0));
 
-    // Apply scroll: for virtualized rendering, adjust scroll to offset into the rendered window
+    // Apply scroll: for virtualized rendering, adjust scroll to offset into the rendered window.
+    // When wrap_lines is enabled, disable horizontal scroll (lines fit within the viewport).
+    let effective_h_scroll = if app.config.display.wrap_lines { 0 } else { tab.h_scroll };
     let visible_scroll = if use_viewport {
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
-        (scroll_into_rendered, tab.h_scroll)
+        (scroll_into_rendered, effective_h_scroll)
     } else {
-        (tab.diff_scroll, tab.h_scroll)
+        (tab.active_diff_scroll(), effective_h_scroll)
     };
 
     let paragraph = Paragraph::new(lines)
@@ -527,7 +567,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
     // Render hunk indicator overlay in top-right corner
     if total_hunks > 0 {
-        let indicator_text = format!("Hunk {}/{}", tab.current_hunk + 1, total_hunks);
+        let indicator_text = format!("Hunk {}/{}", tab.active_current_hunk() + 1, total_hunks);
         let indicator_width = indicator_text.len() + 3;
         let indicator_area = Rect {
             x: area.x + area.width.saturating_sub(indicator_width as u16 + 1),
@@ -621,13 +661,18 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     let use_viewport = total_diff_lines > VIRTUALIZE_THRESHOLD;
     let viewport_height = inner.height as usize;
     let buffer_lines = if use_viewport { 20 } else { 0 };
-    let scroll = tab.diff_scroll as usize;
+    let scroll = tab.active_diff_scroll() as usize;
     let render_start = if use_viewport { scroll.saturating_sub(buffer_lines) } else { 0 };
     let render_end = if use_viewport { scroll + viewport_height + buffer_lines } else { usize::MAX };
 
-    let h_scroll = match side {
-        SplitSide::Old => tab.h_scroll_old,
-        SplitSide::New => tab.h_scroll_new,
+    // In History mode there is a single h_scroll shared across both sides
+    let h_scroll = if tab.mode == crate::app::DiffMode::History {
+        tab.history.as_ref().map_or(0, |h| h.h_scroll)
+    } else {
+        match side {
+            SplitSide::Old => tab.h_scroll_old,
+            SplitSide::New => tab.h_scroll_new,
+        }
     };
 
     let mut lines: Vec<Line> = Vec::with_capacity(
@@ -671,9 +716,15 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     }
     logical_line += 1;
 
+    // Split gutter: "{num} │" = 4+1+1=6 chars, plus prefix char = 7 total
+    let split_gutter_width: u16 = 7;
+    let wrap_lines = app.config.display.wrap_lines;
+    // Content width for wrapping: inner width minus gutter
+    let split_wrap_width = (inner.width.saturating_sub(split_gutter_width)) as usize;
+
     // Render hunks
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-        let is_current = hunk_idx == tab.current_hunk;
+        let is_current = hunk_idx == tab.active_current_hunk();
 
         // Early exit past viewport
         if use_viewport && logical_line > render_end + buffer_lines {
@@ -741,69 +792,135 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 LineType::Delete => side == SplitSide::Old,
             };
 
-            if logical_line >= render_start && logical_line < render_end {
-                if show_content {
-                    let is_selected_line = is_current && tab.current_line == Some(line_idx);
+            if show_content && wrap_lines && !diff_line.content.is_empty() {
+                // Wrap the content and emit multiple logical lines
+                let is_selected_line = is_current && tab.active_current_line() == Some(line_idx);
 
-                    // Line number: Old side shows old_num, New side shows new_num
-                    let line_num = match side {
-                        SplitSide::Old => diff_line.old_num,
-                        SplitSide::New => diff_line.new_num,
-                    };
-                    let num_str = line_num
-                        .map(|n| format!("{:>4}", n))
-                        .unwrap_or_else(|| "    ".to_string());
+                let line_num = match side {
+                    SplitSide::Old => diff_line.old_num,
+                    SplitSide::New => diff_line.new_num,
+                };
+                let num_str = line_num
+                    .map(|n| format!("{:>4}", n))
+                    .unwrap_or_else(|| "    ".to_string());
 
-                    let (prefix, base_style) = if is_selected_line {
-                        match diff_line.line_type {
-                            LineType::Add => ("+", styles::line_cursor_add()),
-                            LineType::Delete => ("-", styles::line_cursor_del()),
-                            LineType::Context => (" ", styles::line_cursor()),
-                        }
-                    } else {
-                        match diff_line.line_type {
-                            LineType::Add => ("+", styles::add_style()),
-                            LineType::Delete => ("-", styles::del_style()),
-                            LineType::Context => (" ", styles::default_style()),
-                        }
-                    };
-
-                    let gutter_style = if is_selected_line {
-                        ratatui::style::Style::default().fg(styles::BRIGHT).bg(styles::LINE_CURSOR_BG)
-                    } else {
-                        match diff_line.line_type {
-                            LineType::Add => ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG),
-                            LineType::Delete => ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG),
-                            LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
-                        }
-                    };
-
-                    let mut spans = vec![
-                        Span::styled(format!("{} \u{2502}", num_str), gutter_style),
-                        Span::styled(prefix, base_style),
-                    ];
-
-                    if diff_line.content.is_empty() {
-                        spans.push(Span::styled("", base_style));
-                    } else {
-                        let highlighted = hl.highlight_line(&diff_line.content, &file.path, base_style);
-                        spans.extend(highlighted);
+                let (prefix, base_style) = if is_selected_line {
+                    match diff_line.line_type {
+                        LineType::Add => ("+", styles::line_cursor_add()),
+                        LineType::Delete => ("-", styles::line_cursor_del()),
+                        LineType::Context => (" ", styles::line_cursor()),
                     }
-
-                    lines.push(Line::from(spans).style(base_style));
                 } else {
-                    // Blank padding line for the side that doesn't show this change
-                    let pad_bg = match diff_line.line_type {
-                        LineType::Add => styles::ADD_BG,
-                        LineType::Delete => styles::DEL_BG,
-                        LineType::Context => styles::BG,
-                    };
-                    lines.push(Line::from(
-                        Span::styled("", ratatui::style::Style::default().bg(pad_bg))
-                    ).style(ratatui::style::Style::default().bg(pad_bg)));
+                    match diff_line.line_type {
+                        LineType::Add => ("+", styles::add_style()),
+                        LineType::Delete => ("-", styles::del_style()),
+                        LineType::Context => (" ", styles::default_style()),
+                    }
+                };
+
+                let gutter_style = if is_selected_line {
+                    ratatui::style::Style::default().fg(styles::BRIGHT).bg(styles::LINE_CURSOR_BG)
+                } else {
+                    match diff_line.line_type {
+                        LineType::Add => ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG),
+                        LineType::Delete => ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG),
+                        LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                    }
+                };
+
+                // Segments are owned Strings; highlight them and convert to Span<'static>
+                // so they can safely outlive the local `segments` Vec.
+                let segments = word_wrap(&diff_line.content, split_wrap_width.max(1));
+                let blank_gutter = format!("{} \u{2502}", "    ");
+                for (seg_idx, segment) in segments.iter().enumerate() {
+                    if logical_line >= render_start && logical_line < render_end {
+                        let mut spans: Vec<Span<'static>> = if seg_idx == 0 {
+                            vec![
+                                Span::styled(format!("{} \u{2502}", num_str), gutter_style),
+                                Span::styled(prefix, base_style),
+                            ]
+                        } else {
+                            vec![
+                                Span::styled(blank_gutter.clone(), gutter_style),
+                                Span::styled(" ", base_style),
+                            ]
+                        };
+                        // highlight_line borrows `segment`, so we eagerly clone span text to 'static
+                        let highlighted: Vec<Span<'static>> = hl
+                            .highlight_line(segment, &file.path, base_style)
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style))
+                            .collect();
+                        spans.extend(highlighted);
+                        lines.push(Line::from(spans).style(base_style));
+                    }
+                    logical_line += 1;
                 }
+            } else {
+                if logical_line >= render_start && logical_line < render_end {
+                    if show_content {
+                        let is_selected_line = is_current && tab.active_current_line() == Some(line_idx);
+
+                        // Line number: Old side shows old_num, New side shows new_num
+                        let line_num = match side {
+                            SplitSide::Old => diff_line.old_num,
+                            SplitSide::New => diff_line.new_num,
+                        };
+                        let num_str = line_num
+                            .map(|n| format!("{:>4}", n))
+                            .unwrap_or_else(|| "    ".to_string());
+
+                        let (prefix, base_style) = if is_selected_line {
+                            match diff_line.line_type {
+                                LineType::Add => ("+", styles::line_cursor_add()),
+                                LineType::Delete => ("-", styles::line_cursor_del()),
+                                LineType::Context => (" ", styles::line_cursor()),
+                            }
+                        } else {
+                            match diff_line.line_type {
+                                LineType::Add => ("+", styles::add_style()),
+                                LineType::Delete => ("-", styles::del_style()),
+                                LineType::Context => (" ", styles::default_style()),
+                            }
+                        };
+
+                        let gutter_style = if is_selected_line {
+                            ratatui::style::Style::default().fg(styles::BRIGHT).bg(styles::LINE_CURSOR_BG)
+                        } else {
+                            match diff_line.line_type {
+                                LineType::Add => ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG),
+                                LineType::Delete => ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG),
+                                LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                            }
+                        };
+
+                        let mut spans = vec![
+                            Span::styled(format!("{} \u{2502}", num_str), gutter_style),
+                            Span::styled(prefix, base_style),
+                        ];
+
+                        if diff_line.content.is_empty() {
+                            spans.push(Span::styled("", base_style));
+                        } else {
+                            let highlighted = hl.highlight_line(&diff_line.content, &file.path, base_style);
+                            spans.extend(highlighted);
+                        }
+
+                        lines.push(Line::from(spans).style(base_style));
+                    } else {
+                        // Blank padding line for the side that doesn't show this change
+                        let pad_bg = match diff_line.line_type {
+                            LineType::Add => styles::ADD_BG,
+                            LineType::Delete => styles::DEL_BG,
+                            LineType::Context => styles::BG,
+                        };
+                        lines.push(Line::from(
+                            Span::styled("", ratatui::style::Style::default().bg(pad_bg))
+                        ).style(ratatui::style::Style::default().bg(pad_bg)));
+                    }
+                }
+                logical_line += 1;
             }
-            logical_line += 1;
 
             // Inline line comments — on their natural side
             // Add lines → New side; Delete lines → Old side; Context → New side
@@ -918,12 +1035,14 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         logical_line += 1;
     }
 
-    // Apply scroll: adjust into the rendered viewport window
+    // Apply scroll: adjust into the rendered viewport window.
+    // When wrap_lines is enabled, disable horizontal scroll (lines fit within the viewport).
+    let effective_h_scroll = if app.config.display.wrap_lines { 0 } else { h_scroll };
     let visible_scroll = if use_viewport {
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
-        (scroll_into_rendered, h_scroll)
+        (scroll_into_rendered, effective_h_scroll)
     } else {
-        (tab.diff_scroll, h_scroll)
+        (tab.active_diff_scroll(), effective_h_scroll)
     };
 
     let paragraph = Paragraph::new(lines)

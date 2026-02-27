@@ -1253,12 +1253,40 @@ impl TabState {
         }
     }
 
-    /// Get the currently selected file
+    /// Get the currently selected file (mode-aware: History uses HistoryState)
     pub fn selected_diff_file(&self) -> Option<&DiffFile> {
         if self.selected_watched.is_some() {
             return None;
         }
+        if self.mode == DiffMode::History {
+            return self.history.as_ref()
+                .and_then(|h| h.commit_files.get(h.selected_file));
+        }
         self.files.get(self.selected_file)
+    }
+
+    /// Active vertical diff scroll (mode-aware)
+    pub fn active_diff_scroll(&self) -> u16 {
+        if self.mode == DiffMode::History {
+            return self.history.as_ref().map_or(0, |h| h.diff_scroll);
+        }
+        self.diff_scroll
+    }
+
+    /// Active current hunk index (mode-aware)
+    pub fn active_current_hunk(&self) -> usize {
+        if self.mode == DiffMode::History {
+            return self.history.as_ref().map_or(0, |h| h.current_hunk);
+        }
+        self.current_hunk
+    }
+
+    /// Active current line index (mode-aware)
+    pub fn active_current_line(&self) -> Option<usize> {
+        if self.mode == DiffMode::History {
+            return self.history.as_ref().and_then(|h| h.current_line);
+        }
+        self.current_line
     }
 
     /// Get the currently selected watched file
