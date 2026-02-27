@@ -2,22 +2,22 @@ mod diff;
 mod status;
 
 pub use diff::{
-    DiffFile, DiffFileHeader, DiffHunk, LineType,
+    DiffFile, DiffFileHeader, DiffHunk, DiffLine, LineType,
     parse_diff, parse_diff_headers, parse_file_at_offset, header_to_stub,
     compact_files, compact_files_match, expand_compacted_file, CompactionConfig,
     LAZY_PARSE_THRESHOLD,
 };
-#[cfg(test)]
-pub(crate) use diff::DiffLine;
 pub use status::{
-    FileStatus, Worktree, WatchedFile,
+    FileStatus, Worktree, CommitInfo, WatchedFile,
     detect_base_branch_in,
     get_repo_root,
     get_repo_root_in,
     get_current_branch_in,
-    git_diff_raw,
+    git_diff_raw, git_diff_raw_file,
     list_worktrees,
-    git_stage_file, git_unstage_file, git_stage_all, git_stage_hunk, git_commit,
+    git_stage_file, git_unstage_file, git_stage_all, git_commit,
+    git_log_branch, git_diff_commit,
     discover_watched_files, verify_gitignored, save_snapshot,
     read_watched_file_content, diff_watched_file_snapshot,
+    is_merge_in_progress, git_diff_conflicts, unmerged_files,
 };

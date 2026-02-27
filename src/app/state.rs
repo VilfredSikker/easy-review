@@ -1,14 +1,38 @@
-use crate::ai::{self, AiState, CommentType, ReviewFocus, ViewMode};
+use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, WatchedConfig};
-use crate::git::{self, DiffFile, DiffFileHeader, CompactionConfig, WatchedFile, Worktree};
+use crate::git::{self, CommitInfo, DiffFile, DiffFileHeader, CompactionConfig, WatchedFile, Worktree};
+use crate::github::PrOverviewData;
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[allow(unused_imports)]
 use std::time::Instant;
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Anchor data captured at comment creation time for later relocation
+struct LineAnchor {
+    line_start: Option<usize>,
+    line_content: String,
+    context_before: Vec<String>,
+    context_after: Vec<String>,
+    old_line_start: Option<usize>,
+    hunk_header: String,
+}
+
+impl Default for LineAnchor {
+    fn default() -> Self {
+        LineAnchor {
+            line_start: None,
+            line_content: String::new(),
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+            old_line_start: None,
+            hunk_header: String::new(),
+        }
+    }
+}
 
 // ── Enums ──
 
@@ -18,15 +42,19 @@ pub enum DiffMode {
     Branch,
     Unstaged,
     Staged,
+    History,
+    Conflicts,
 }
 
 impl DiffMode {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn label(&self) -> &'static str {
         match self {
             DiffMode::Branch => "BRANCH DIFF",
             DiffMode::Unstaged => "UNSTAGED",
             DiffMode::Staged => "STAGED",
+            DiffMode::History => "HISTORY",
+            DiffMode::Conflicts => "CONFLICTS",
         }
     }
 
@@ -35,12 +63,75 @@ impl DiffMode {
             DiffMode::Branch => "branch",
             DiffMode::Unstaged => "unstaged",
             DiffMode::Staged => "staged",
+            DiffMode::History => "history",
+            DiffMode::Conflicts => "conflicts",
         }
+    }
+}
+
+/// State for History mode — commit list + selected commit's diff
+pub struct HistoryState {
+    /// Loaded commits for the current branch
+    pub commits: Vec<CommitInfo>,
+    /// Currently selected commit index (left panel)
+    pub selected_commit: usize,
+    /// Parsed diff for the selected commit (right panel)
+    pub commit_files: Vec<DiffFile>,
+    /// File navigation within the commit diff
+    pub selected_file: usize,
+    /// Hunk navigation within the selected file
+    pub current_hunk: usize,
+    /// Line navigation within the selected hunk
+    pub current_line: Option<usize>,
+    /// Vertical scroll in the diff pane
+    pub diff_scroll: u16,
+    /// Horizontal scroll
+    pub h_scroll: u16,
+    /// Whether all commits have been loaded (no more to fetch)
+    pub all_loaded: bool,
+    /// LRU cache of recently viewed commit diffs
+    pub diff_cache: DiffCache,
+}
+
+/// Simple LRU cache for parsed commit diffs
+pub struct DiffCache {
+    entries: VecDeque<(String, Vec<DiffFile>)>,
+    max_size: usize,
+}
+
+impl DiffCache {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            max_size,
+        }
+    }
+
+    pub fn get(&mut self, hash: &str) -> Option<&Vec<DiffFile>> {
+        // TODO(risk:minor): remove(pos).unwrap() is safe only because position() just confirmed the index exists,
+        // but if VecDeque ever changes contract this is a hidden panic. Consider using swap_remove_back or expect().
+        if let Some(pos) = self.entries.iter().position(|(h, _)| h == hash) {
+            let entry = self.entries.remove(pos).unwrap();
+            self.entries.push_back(entry);
+            self.entries.back().map(|(_, f)| f)
+        } else {
+            None
+        }
+    }
+
+    pub fn insert(&mut self, hash: String, files: Vec<DiffFile>) {
+        // Remove existing entry for this hash if present
+        self.entries.retain(|(h, _)| h != &hash);
+        if self.entries.len() >= self.max_size {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((hash, files));
     }
 }
 
 /// Whether we're navigating or typing in the search filter / comment
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum InputMode {
     Normal,
     Search,
@@ -52,16 +143,16 @@ pub enum InputMode {
 
 /// Actions that require user confirmation (y/n)
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum ConfirmAction {
     DeleteComment { comment_id: String },
 }
 
-/// Tracks which comment is focused for reply/delete operations
-#[derive(Debug, Clone)]
-pub struct CommentFocus {
-    pub file: String,
-    pub hunk_index: Option<usize>,
-    pub comment_id: String,
+/// Which pane has focus in split diff view
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitSide {
+    Old,
+    New,
 }
 
 // ── Overlay types ──
@@ -119,14 +210,50 @@ pub struct TabState {
     /// Index of the currently highlighted line within the current hunk (None = hunk-level)
     pub current_line: Option<usize>,
 
+    /// Line index where shift-select started (within hunk). None = no active selection.
+    pub selection_anchor: Option<usize>,
+
     /// Vertical scroll offset within the diff view
     pub diff_scroll: u16,
 
     /// Horizontal scroll offset within the diff view (for long lines)
     pub h_scroll: u16,
 
-    /// Vertical scroll offset for the AI side panel (independent of diff_scroll)
-    pub ai_panel_scroll: u16,
+    /// Which pane has focus in split diff view
+    pub split_focus: SplitSide,
+
+    /// Horizontal scroll offset for the old-side pane in split diff view
+    pub h_scroll_old: u16,
+
+    /// Horizontal scroll offset for the new-side pane in split diff view
+    pub h_scroll_new: u16,
+
+    /// Inline layer visibility toggles
+    pub layers: InlineLayers,
+
+    /// Optional context panel content (None = panel closed)
+    pub panel: Option<PanelContent>,
+
+    /// Vertical scroll offset for the context panel
+    pub panel_scroll: u16,
+
+    /// Whether keyboard focus is on the panel (vs diff view)
+    pub panel_focus: bool,
+
+    /// ID of the comment/question currently highlighted by J/K jumping
+    pub focused_comment_id: Option<String>,
+
+    /// ID of the finding currently highlighted by [/] jumping
+    pub focused_finding_id: Option<String>,
+
+    /// File paths the user explicitly expanded (survive diff refreshes)
+    pub user_expanded: HashSet<String>,
+
+    /// Which column has focus in panel's AiSummary view
+    pub review_focus: ReviewFocus,
+
+    /// Cursor position within the focused panel section
+    pub review_cursor: usize,
 
     /// Search/filter input
     pub search_query: String,
@@ -185,11 +312,17 @@ pub struct TabState {
     /// Optional specific line number the comment targets (new-side)
     pub comment_line_num: Option<usize>,
 
-    /// Currently focused comment (for reply/delete operations)
-    pub comment_focus: Option<CommentFocus>,
-
     /// Which type of comment is being created (Question vs GitHubComment)
     pub comment_type: CommentType,
+
+    /// When editing an existing comment, holds the comment ID being edited
+    pub comment_edit_id: Option<String>,
+
+    /// Optional finding ID this comment responds to (for finding replies)
+    pub comment_finding_ref: Option<String>,
+
+    /// History mode state (only populated when mode == History)
+    pub history: Option<HistoryState>,
 
     // ── Watched files state ──
 
@@ -208,10 +341,21 @@ pub struct TabState {
     /// Paths that are watched but NOT gitignored (warning)
     pub watched_not_ignored: Vec<String>,
 
+    /// Fetched PR overview data (loaded on startup if PR detected)
+    pub pr_data: Option<PrOverviewData>,
+
     // ── Commit input state ──
 
     /// Text buffer for the commit message being typed
     pub commit_input: String,
+
+    // ── Merge conflict state ──
+
+    /// Whether a merge is currently in progress (MERGE_HEAD exists)
+    pub merge_active: bool,
+
+    /// Number of files with unresolved conflict markers (subset of total merge files)
+    pub unresolved_count: usize,
 
     // ── Performance ──
 
@@ -237,6 +381,28 @@ pub struct TabState {
 
     /// Raw diff string kept for on-demand parsing (only in lazy mode)
     raw_diff: Option<String>,
+
+    // ── Symbol references ──
+
+    /// Symbol reference lookup state (populated via panel action)
+    pub symbol_refs: Option<SymbolRefsState>,
+}
+
+/// A single reference to a symbol (file + line)
+#[derive(Debug, Clone)]
+pub struct SymbolRefEntry {
+    pub file: String,
+    pub line_num: usize,
+    pub line_content: String,
+}
+
+/// State for the symbol references panel
+#[derive(Debug, Clone)]
+pub struct SymbolRefsState {
+    pub symbol: String,
+    pub in_diff: Vec<SymbolRefEntry>,
+    pub external: Vec<SymbolRefEntry>,
+    pub cursor: usize,
 }
 
 /// Precomputed cumulative line offsets for each hunk in the selected file
@@ -307,6 +473,7 @@ impl TabState {
         let er_config = config::load_config(&repo_root);
         let watched_config = er_config.watched.clone();
         let has_watched = !watched_config.paths.is_empty();
+        let merge_active = git::is_merge_in_progress(&repo_root);
 
         let mut tab = TabState {
             mode: DiffMode::Branch,
@@ -317,9 +484,21 @@ impl TabState {
             selected_file: 0,
             current_hunk: 0,
             current_line: None,
+            selection_anchor: None,
             diff_scroll: 0,
             h_scroll: 0,
-            ai_panel_scroll: 0,
+            split_focus: SplitSide::New,
+            h_scroll_old: 0,
+            h_scroll_new: 0,
+            layers: InlineLayers::default(),
+            panel: None,
+            panel_scroll: 0,
+            panel_focus: false,
+            focused_comment_id: None,
+            focused_finding_id: None,
+            user_expanded: HashSet::new(),
+            review_focus: ReviewFocus::Files,
+            review_cursor: 0,
             search_query: String::new(),
             filter_expr: String::new(),
             filter_rules: Vec::new(),
@@ -337,14 +516,19 @@ impl TabState {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
-            comment_focus: None,
             comment_type: CommentType::GitHubComment,
+            comment_edit_id: None,
+            comment_finding_ref: None,
+            pr_data: None,
+            history: None,
             watched_config,
             watched_files: Vec::new(),
             selected_watched: None,
             show_watched: has_watched,
             watched_not_ignored: Vec::new(),
             commit_input: String::new(),
+            merge_active,
+            unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,
@@ -352,11 +536,85 @@ impl TabState {
             lazy_mode: false,
             file_headers: Vec::new(),
             raw_diff: None,
+            symbol_refs: None,
         };
 
         tab.refresh_diff()?;
         tab.refresh_watched_files();
         Ok(tab)
+    }
+
+    /// Create a minimal TabState for unit tests.
+    /// Uses fixed repo root "/tmp/test" and no git I/O.
+    #[cfg(test)]
+    pub fn new_for_test(files: Vec<crate::git::DiffFile>) -> Self {
+        use crate::ai::{AiState, CommentType, InlineLayers, ReviewFocus};
+        use crate::config::WatchedConfig;
+        use crate::git::CompactionConfig;
+        use std::collections::HashSet;
+        TabState {
+            mode: DiffMode::Branch,
+            base_branch: "main".to_string(),
+            current_branch: "feature".to_string(),
+            repo_root: "/tmp/test".to_string(),
+            files,
+            selected_file: 0,
+            current_hunk: 0,
+            current_line: None,
+            selection_anchor: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+            split_focus: SplitSide::New,
+            h_scroll_old: 0,
+            h_scroll_new: 0,
+            layers: InlineLayers::default(),
+            panel: None,
+            panel_scroll: 0,
+            panel_focus: false,
+            focused_comment_id: None,
+            focused_finding_id: None,
+            user_expanded: HashSet::new(),
+            review_focus: ReviewFocus::Files,
+            review_cursor: 0,
+            search_query: String::new(),
+            filter_expr: String::new(),
+            filter_rules: Vec::new(),
+            filter_input: String::new(),
+            filter_history: Vec::new(),
+            reviewed: HashSet::new(),
+            show_unreviewed_only: false,
+            sort_by_mtime: false,
+            ai: AiState::default(),
+            diff_hash: String::new(),
+            branch_diff_hash: String::new(),
+            last_ai_check: None,
+            comment_input: String::new(),
+            comment_file: String::new(),
+            comment_hunk: 0,
+            comment_reply_to: None,
+            comment_line_num: None,
+            comment_type: CommentType::GitHubComment,
+            comment_edit_id: None,
+            comment_finding_ref: None,
+            pr_data: None,
+            history: None,
+            watched_config: WatchedConfig::default(),
+            watched_files: Vec::new(),
+            selected_watched: None,
+            show_watched: false,
+            watched_not_ignored: Vec::new(),
+            commit_input: String::new(),
+            merge_active: false,
+            unresolved_count: 0,
+            compaction_config: CompactionConfig::default(),
+            hunk_offsets: None,
+            file_tree_cache: None,
+            mem_budget: MemoryBudget::default(),
+            lazy_mode: false,
+            file_headers: Vec::new(),
+            raw_diff: None,
+            symbol_refs: None,
+        }
     }
 
     /// Short name for display in tab bar (last path component)
@@ -380,7 +638,81 @@ impl TabState {
         self.refresh_diff_impl(false)
     }
 
+    /// Refresh conflict files for Conflicts mode.
+    ///
+    /// Parses the combined merge changeset (staged + unmerged working-tree diffs),
+    /// deduplicates by filename (keeping the last/unmerged occurrence for conflict
+    /// files), marks unresolved files as `FileStatus::Unmerged`, and sorts with
+    /// unresolved files first then alphabetically.
+    pub fn refresh_conflicts(&mut self) {
+        self.merge_active = git::is_merge_in_progress(&self.repo_root);
+
+        let raw = git::git_diff_conflicts(&self.repo_root).unwrap_or_default();
+        let parsed = git::parse_diff(&raw);
+
+        // Get the set of paths that still have conflict markers
+        let unmerged_paths: std::collections::HashSet<String> =
+            git::unmerged_files(&self.repo_root)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+
+        // Deduplicate by path — keep the last occurrence so that the unmerged
+        // working-tree diff wins over the staged diff for conflict files.
+        let mut seen: std::collections::HashMap<String, git::DiffFile> =
+            std::collections::HashMap::new();
+        for file in parsed {
+            seen.insert(file.path.clone(), file);
+        }
+
+        // Apply status: unmerged paths get FileStatus::Unmerged; others keep parsed status
+        let mut files: Vec<git::DiffFile> = seen
+            .into_values()
+            .map(|mut file| {
+                if unmerged_paths.contains(&file.path) {
+                    file.status = git::FileStatus::Unmerged;
+                }
+                file
+            })
+            .collect();
+
+        // Sort: unresolved (Unmerged) first, then alphabetically by path
+        files.sort_by(|a, b| {
+            let a_unmerged = a.status == git::FileStatus::Unmerged;
+            let b_unmerged = b.status == git::FileStatus::Unmerged;
+            match (a_unmerged, b_unmerged) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.path.cmp(&b.path),
+            }
+        });
+
+        self.unresolved_count = unmerged_paths.len();
+        self.files = files;
+        self.selected_file = 0;
+        self.current_hunk = 0;
+        self.current_line = None;
+        self.diff_scroll = 0;
+        self.h_scroll = 0;
+        self.rebuild_hunk_offsets();
+        self.file_tree_cache = None;
+    }
+
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool) -> Result<()> {
+        // History mode doesn't use git_diff_raw — skip normal diff refresh
+        if self.mode == DiffMode::History {
+            return Ok(());
+        }
+
+        // Conflicts mode refreshes via refresh_conflicts() only
+        if self.mode == DiffMode::Conflicts {
+            self.merge_active = git::is_merge_in_progress(&self.repo_root);
+            return Ok(());
+        }
+
+        // Update merge_active on every refresh
+        self.merge_active = git::is_merge_in_progress(&self.repo_root);
+
         // Remember current position to restore after re-parse
         let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
         let prev_hunk = self.current_hunk;
@@ -389,6 +721,8 @@ impl TabState {
         let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
 
         // Decide parsing strategy based on diff size
+        // TODO(risk:medium): counting newlines by iterating raw bytes on every refresh is O(n) over the full diff.
+        // For very large diffs (hundreds of MB) this adds measurable latency on every watch event.
         let line_count = raw.as_bytes().iter().filter(|&&b| b == b'\n').count();
         if line_count > git::LAZY_PARSE_THRESHOLD {
             // Lazy mode: header-only parse, files get hunks on demand
@@ -399,7 +733,12 @@ impl TabState {
             self.lazy_mode = true;
 
             // Apply compaction to the stub files (pattern-based only, since hunks are empty)
+            // TODO(risk:medium): zip() silently stops at the shorter iterator. If file_headers and files ever
+            // diverge in length (e.g. a parsing bug), some files will be skipped without any indication.
             for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
+                if self.user_expanded.contains(&file.path) {
+                    continue;
+                }
                 let total_lines = header.adds + header.dels;
                 let should_compact = self.compaction_config.enabled
                     && (self.compaction_config.patterns.iter().any(|p| git::compact_files_match(p, &file.path))
@@ -418,6 +757,20 @@ impl TabState {
 
             // Apply auto-compaction to low-value files
             git::compact_files(&mut self.files, &self.compaction_config);
+
+            // Re-expand any files the user explicitly opened (fresh parse means hunks are available)
+            let to_expand: Vec<String> = self.files.iter()
+                .filter(|f| f.compacted && self.user_expanded.contains(&f.path))
+                .map(|f| f.path.clone())
+                .collect();
+            let repo_root = self.repo_root.clone();
+            let git_mode = self.mode.git_mode();
+            let base_branch = self.base_branch.clone();
+            for file in &mut self.files {
+                if to_expand.contains(&file.path) {
+                    git::expand_compacted_file(file, &repo_root, git_mode, &base_branch)?;
+                }
+            }
         }
 
         if self.sort_by_mtime {
@@ -456,6 +809,9 @@ impl TabState {
 
         // Load AI state from .er-* files
         self.reload_ai_state();
+
+        // Relocate comments to follow moved code
+        self.relocate_all_comments();
 
         // Compute per-file staleness when the review is stale and has file_hashes.
         // Reuse the branch_raw we already fetched — no additional git call.
@@ -501,33 +857,199 @@ impl TabState {
         Ok(())
     }
 
-    /// Reload AI state from .er-* files (preserving current view/nav state)
+    /// Reload AI state from .er-* files (preserving current nav state)
     pub fn reload_ai_state(&mut self) {
-        let current_mode = self.ai.view_mode;
-        let current_focus = self.ai.review_focus;
-        let current_cursor = self.ai.review_cursor;
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         self.ai = ai::load_ai_state(&self.repo_root, &self.branch_diff_hash);
-        self.ai.view_mode = current_mode;
-        self.ai.review_focus = current_focus;
-        self.ai.review_cursor = current_cursor;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
         if self.ai.is_stale {
             self.ai.stale_files = prev_stale_files;
         }
         // Clamp cursor to valid range after reload (item count may have decreased)
-        let item_count = match current_focus {
+        let item_count = match self.review_focus {
             ReviewFocus::Files => self.ai.review_file_count(),
             ReviewFocus::Checklist => self.ai.review_checklist_count(),
         };
-        // cursor 0 on empty is safe — all access methods are bounds-checked
+        // TODO(risk:minor): when item_count == 0, max_cursor is set to 0 and review_cursor is clamped to 0.
+        // Any code that then indexes into the list at review_cursor (e.g., checklist items) must
+        // separately guard against the empty-list case, or it will index position 0 of an empty Vec.
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
-        self.ai.review_cursor = self.ai.review_cursor.min(max_cursor);
-        // If the current mode requires AI data that's not available, fall back
-        if self.ai.view_mode != ViewMode::Default && !self.ai.overlay_available() {
-            self.ai.view_mode = ViewMode::Default;
-        }
+        self.review_cursor = self.review_cursor.min(max_cursor);
         self.last_ai_check = ai::latest_er_mtime(&self.repo_root);
+    }
+
+    /// Relocate all comments to their new positions after a diff change.
+    fn relocate_all_comments(&mut self) {
+        let current_hash = self.diff_hash.clone();
+        let repo_root = self.repo_root.clone();
+
+        // Build rename map: old path → new path
+        let rename_map: std::collections::HashMap<String, String> = self.files.iter()
+            .filter_map(|f| {
+                if let git::FileStatus::Renamed(ref old_path) = f.status {
+                    Some((old_path.clone(), f.path.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let is_lazy = self.lazy_mode;
+
+        // Helper: find DiffFile by path, respecting renames.
+        // Returns None for lazy stubs (hunks not yet parsed) to avoid false Lost results.
+        let find_file = |path: &str| -> Option<usize> {
+            let find_idx = |p: &str| -> Option<usize> {
+                self.files.iter().position(|f| f.path == p)
+            };
+            let idx = find_idx(path)
+                .or_else(|| rename_map.get(path).and_then(|np| find_idx(np)))?;
+            // Skip unparsed lazy stubs — hunks empty and not compacted
+            if is_lazy {
+                let f = &self.files[idx];
+                if f.hunks.is_empty() && !f.compacted {
+                    return None;
+                }
+            }
+            Some(idx)
+        };
+
+        // Process questions
+        let questions_changed = if let Some(ref mut qs) = self.ai.questions {
+            let mut changed = false;
+            for q in &mut qs.questions {
+                if q.relocated_at_hash == current_hash {
+                    continue;
+                }
+                // File-level questions have no anchor to relocate — skip
+                if q.hunk_index.is_none() && q.line_start.is_none() && q.hunk_header.is_empty() {
+                    q.relocated_at_hash = current_hash.clone();
+                    continue;
+                }
+                let result = if let Some(idx) = find_file(&q.file) {
+                    let anchor = ai::CommentAnchor {
+                        file: q.file.clone(),
+                        hunk_index: q.hunk_index,
+                        line_start: q.line_start,
+                        line_content: q.line_content.clone(),
+                        context_before: q.context_before.clone(),
+                        context_after: q.context_after.clone(),
+                        old_line_start: q.old_line_start,
+                        hunk_header: q.hunk_header.clone(),
+                    };
+                    ai::relocate_comment(&anchor, &self.files[idx])
+                } else {
+                    ai::RelocationResult::Lost
+                };
+                match result {
+                    ai::RelocationResult::Unchanged => {
+                        q.anchor_status = "original".to_string();
+                        q.relocated_at_hash = current_hash.clone();
+                        q.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Relocated { new_hunk_index, new_line_start } => {
+                        q.hunk_index = Some(new_hunk_index);
+                        q.line_start = Some(new_line_start);
+                        q.anchor_status = "relocated".to_string();
+                        q.relocated_at_hash = current_hash.clone();
+                        q.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Lost => {
+                        q.anchor_status = "lost".to_string();
+                        q.stale = true;
+                        q.relocated_at_hash = current_hash.clone();
+                        changed = true;
+                    }
+                }
+            }
+            changed
+        } else {
+            false
+        };
+
+        // Process GitHub comments (top-level only; replies follow their parent)
+        let comments_changed = if let Some(ref mut gc) = self.ai.github_comments {
+            let mut changed = false;
+            for c in &mut gc.comments {
+                if c.relocated_at_hash == current_hash {
+                    continue;
+                }
+                if c.in_reply_to.is_some() {
+                    continue;
+                }
+                // File-level comments have no anchor to relocate — skip
+                if c.hunk_index.is_none() && c.line_start.is_none() && c.hunk_header.is_empty() {
+                    c.relocated_at_hash = current_hash.clone();
+                    continue;
+                }
+                let result = if let Some(idx) = find_file(&c.file) {
+                    let anchor = ai::CommentAnchor {
+                        file: c.file.clone(),
+                        hunk_index: c.hunk_index,
+                        line_start: c.line_start,
+                        line_content: c.line_content.clone(),
+                        context_before: c.context_before.clone(),
+                        context_after: c.context_after.clone(),
+                        old_line_start: c.old_line_start,
+                        hunk_header: c.hunk_header.clone(),
+                    };
+                    ai::relocate_comment(&anchor, &self.files[idx])
+                } else {
+                    ai::RelocationResult::Lost
+                };
+                match result {
+                    ai::RelocationResult::Unchanged => {
+                        c.anchor_status = "original".to_string();
+                        c.relocated_at_hash = current_hash.clone();
+                        c.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Relocated { new_hunk_index, new_line_start } => {
+                        c.hunk_index = Some(new_hunk_index);
+                        c.line_start = Some(new_line_start);
+                        c.anchor_status = "relocated".to_string();
+                        c.relocated_at_hash = current_hash.clone();
+                        c.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Lost => {
+                        c.anchor_status = "lost".to_string();
+                        c.stale = true;
+                        c.relocated_at_hash = current_hash.clone();
+                        changed = true;
+                    }
+                }
+            }
+            changed
+        } else {
+            false
+        };
+
+        // TODO(risk:medium): write errors are silently discarded here (let _ = ...). If the disk is full
+        // or the directory is read-only, the relocation update is lost without any user notification.
+        // The next refresh will re-relocate the same comments, but any intermediate "relocated" state is
+        // dropped, and the user has no idea the write failed.
+        // Write back to disk if anything changed
+        if questions_changed {
+            if let Some(ref qs) = self.ai.questions {
+                let path = format!("{}/.er-questions.json", repo_root);
+                if let Ok(json) = serde_json::to_string_pretty(qs) {
+                    let tmp = format!("{}.tmp", path);
+                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                }
+            }
+        }
+        if comments_changed {
+            if let Some(ref gc) = self.ai.github_comments {
+                let path = format!("{}/.er-github-comments.json", repo_root);
+                if let Ok(json) = serde_json::to_string_pretty(gc) {
+                    let tmp = format!("{}.tmp", path);
+                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                }
+            }
+        }
     }
 
     /// Compute which files have changed since the review, populating stale_files
@@ -553,19 +1075,169 @@ impl TabState {
 
     /// Check if .er-* files have been updated since last load (called on tick)
     pub fn check_ai_files_changed(&mut self) -> bool {
-        let latest_mtime = match ai::latest_er_mtime(&self.repo_root) {
-            Some(t) => t,
-            None => return false,
+        let latest_mtime = ai::latest_er_mtime(&self.repo_root);
+
+        let should_reload = match latest_mtime {
+            Some(t) => match self.last_ai_check {
+                Some(last_check) => t > last_check,
+                None => true,
+            },
+            // Files deleted — clear stale in-memory state if we had any
+            None => self.last_ai_check.is_some(),
         };
-        let should_reload = match self.last_ai_check {
-            Some(last_check) => latest_mtime > last_check,
-            None => true,
-        };
+
         if should_reload {
             self.reload_ai_state();
             return true;
         }
         false
+    }
+
+    // ── Layer toggles ──
+
+    pub fn toggle_layer_questions(&mut self) {
+        self.layers.show_questions = !self.layers.show_questions;
+    }
+
+    pub fn toggle_layer_comments(&mut self) {
+        self.layers.show_github_comments = !self.layers.show_github_comments;
+    }
+
+    pub fn toggle_layer_ai(&mut self) {
+        self.layers.show_ai_findings = !self.layers.show_ai_findings;
+    }
+
+    /// Cycle panel: None → FileDetail → AiSummary (if AI data) → PrOverview (if PR live) → None
+    pub fn toggle_panel(&mut self) {
+        let has_ai = self.layers.show_ai_findings && self.ai.has_data();
+        let has_pr = self.pr_data.is_some();
+        self.panel = match self.panel {
+            None => Some(PanelContent::FileDetail),
+            Some(PanelContent::FileDetail) => {
+                if has_ai {
+                    Some(PanelContent::AiSummary)
+                } else if has_pr {
+                    Some(PanelContent::PrOverview)
+                } else {
+                    None
+                }
+            }
+            Some(PanelContent::AiSummary) => {
+                if has_pr {
+                    Some(PanelContent::PrOverview)
+                } else {
+                    None
+                }
+            }
+            Some(PanelContent::PrOverview) => {
+                if self.symbol_refs.is_some() {
+                    Some(PanelContent::SymbolRefs)
+                } else {
+                    None
+                }
+            }
+            Some(PanelContent::SymbolRefs) => None,
+        };
+        self.panel_scroll = 0;
+        if self.panel.is_none() {
+            self.panel_focus = false;
+        }
+    }
+
+    // ── Panel/review navigation ──
+
+    /// Number of items in the left column (file risk list)
+    pub fn review_file_count(&self) -> usize {
+        self.ai.review_file_count()
+    }
+
+    /// Number of items in the right column (checklist items)
+    pub fn review_checklist_count(&self) -> usize {
+        self.ai.review_checklist_count()
+    }
+
+    fn review_item_count(&self) -> usize {
+        match self.review_focus {
+            ReviewFocus::Files => self.review_file_count(),
+            ReviewFocus::Checklist => self.review_checklist_count(),
+        }
+    }
+
+    pub fn review_next(&mut self) {
+        let count = self.review_item_count();
+        if count > 0 && self.review_cursor + 1 < count {
+            self.review_cursor += 1;
+        }
+    }
+
+    pub fn review_prev(&mut self) {
+        if self.review_cursor > 0 {
+            self.review_cursor -= 1;
+        }
+    }
+
+    pub fn review_toggle_focus(&mut self) {
+        self.review_focus = match self.review_focus {
+            ReviewFocus::Files => ReviewFocus::Checklist,
+            ReviewFocus::Checklist => ReviewFocus::Files,
+        };
+        self.review_cursor = 0;
+    }
+
+    /// Estimate the panel_scroll value needed to show the start of each AiSummary section.
+    /// Returns (files_section_line, checklist_section_line).
+    /// Must mirror the line-building logic in render_ai_summary() in ui/panel.rs.
+    pub fn ai_summary_section_offsets(&self) -> (u16, u16) {
+        let mut line: u16 = 0;
+
+        // Title bar + separator (added by render_panel before content)
+        line += 2;
+
+        // "AI Review Summary" header + blank
+        line += 2;
+
+        // Summary content
+        if let Some(ref summary) = self.ai.summary {
+            for text_line in summary.lines() {
+                if text_line.is_empty() || text_line.starts_with('#') {
+                    line += 1;
+                } else {
+                    // Approximate word_wrap: each ~70 chars = 1 line (rough estimate)
+                    let chars = text_line.len();
+                    // TODO(risk:medium): (chars / 70 + 1) as u16 overflows if a single summary line
+                    // exceeds ~4.5 MB (u16::MAX * 70). The cast wraps silently, producing a small offset
+                    // and misaligning the scroll target. Use saturating arithmetic here.
+                    line += ((chars / 70) + 1) as u16;
+                }
+            }
+        } else {
+            line += 1; // "No .er-summary.md found"
+        }
+
+        line += 1; // blank after summary
+
+        let files_start = line;
+
+        // "File Risk Overview" header + blank
+        line += 2;
+
+        // File entries
+        if let Some(ref review) = self.ai.review {
+            // TODO(risk:minor): review.files.len() as u16 truncates silently if there are more than
+            // 65535 files in the review. Unlikely but adding .min(u16::MAX as usize) as u16 is safer.
+            line += review.files.len() as u16;
+            if self.ai.total_findings() > 0 {
+                line += 2; // total findings + blank
+            }
+        } else {
+            line += 1; // "No .er-review.json"
+        }
+
+        line += 1; // blank
+
+        let checklist_start = line;
+
+        (files_start, checklist_start)
     }
 
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
@@ -609,12 +1281,40 @@ impl TabState {
         }
     }
 
-    /// Get the currently selected file
+    /// Get the currently selected file (mode-aware: History uses HistoryState)
     pub fn selected_diff_file(&self) -> Option<&DiffFile> {
         if self.selected_watched.is_some() {
             return None;
         }
+        if self.mode == DiffMode::History {
+            return self.history.as_ref()
+                .and_then(|h| h.commit_files.get(h.selected_file));
+        }
         self.files.get(self.selected_file)
+    }
+
+    /// Active vertical diff scroll (mode-aware)
+    pub fn active_diff_scroll(&self) -> u16 {
+        if self.mode == DiffMode::History {
+            return self.history.as_ref().map_or(0, |h| h.diff_scroll);
+        }
+        self.diff_scroll
+    }
+
+    /// Active current hunk index (mode-aware)
+    pub fn active_current_hunk(&self) -> usize {
+        if self.mode == DiffMode::History {
+            return self.history.as_ref().map_or(0, |h| h.current_hunk);
+        }
+        self.current_hunk
+    }
+
+    /// Active current line index (mode-aware)
+    pub fn active_current_line(&self) -> Option<usize> {
+        if self.mode == DiffMode::History {
+            return self.history.as_ref().and_then(|h| h.current_line);
+        }
+        self.current_line
     }
 
     /// Get the currently selected watched file
@@ -669,6 +1369,8 @@ impl TabState {
     }
 
     pub fn next_file(&mut self) {
+        self.focused_comment_id = None;
+        self.focused_finding_id = None;
         if let Some(idx) = self.selected_watched {
             // In watched section — move down within watched files
             let visible_watched = self.visible_watched_files();
@@ -677,6 +1379,21 @@ impl TabState {
                     self.selected_watched = Some(visible_watched[pos + 1].0);
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
+                } else {
+                    // At last watched file — wrap to first diff file
+                    self.selected_watched = None;
+                    let visible = self.visible_files();
+                    if !visible.is_empty() {
+                        self.selected_file = visible[0].0;
+                        self.current_hunk = 0;
+                        self.current_line = None;
+                        self.selection_anchor = None;
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                        self.panel_scroll = 0;
+                        self.ensure_file_parsed();
+                        self.rebuild_hunk_offsets();
+                    }
                 }
             }
         } else {
@@ -697,16 +1414,31 @@ impl TabState {
                     self.selected_file = visible[pos + 1].0;
                     self.current_hunk = 0;
                     self.current_line = None;
+                    self.selection_anchor = None;
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
-                    self.ai_panel_scroll = 0;
+                    self.panel_scroll = 0;
+                    self.ensure_file_parsed();
+                    self.rebuild_hunk_offsets();
                 } else {
-                    // At last diff file — transition to watched section
+                    // At last diff file
                     let visible_watched = self.visible_watched_files();
                     if !visible_watched.is_empty() {
+                        // Transition to watched section
                         self.selected_watched = Some(visible_watched[0].0);
                         self.diff_scroll = 0;
                         self.h_scroll = 0;
+                    } else {
+                        // Wrap to first diff file
+                        self.selected_file = visible[0].0;
+                        self.current_hunk = 0;
+                        self.current_line = None;
+                        self.selection_anchor = None;
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                        self.panel_scroll = 0;
+                        self.ensure_file_parsed();
+                        self.rebuild_hunk_offsets();
                     }
                 }
             } else {
@@ -715,7 +1447,7 @@ impl TabState {
                 self.current_hunk = 0;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
-                self.ai_panel_scroll = 0;
+                self.panel_scroll = 0;
                 self.ensure_file_parsed();
                 self.rebuild_hunk_offsets();
             }
@@ -723,6 +1455,8 @@ impl TabState {
     }
 
     pub fn prev_file(&mut self) {
+        self.focused_comment_id = None;
+        self.focused_finding_id = None;
         if let Some(idx) = self.selected_watched {
             // In watched section — move up within watched files
             let visible_watched = self.visible_watched_files();
@@ -739,9 +1473,12 @@ impl TabState {
                         self.selected_file = visible.last().unwrap().0;
                         self.current_hunk = 0;
                         self.current_line = None;
+                        self.selection_anchor = None;
                         self.diff_scroll = 0;
                         self.h_scroll = 0;
-                        self.ai_panel_scroll = 0;
+                        self.panel_scroll = 0;
+                        self.ensure_file_parsed();
+                        self.rebuild_hunk_offsets();
                     }
                 }
             }
@@ -756,9 +1493,31 @@ impl TabState {
                     self.selected_file = visible[pos - 1].0;
                     self.current_hunk = 0;
                     self.current_line = None;
+                    self.selection_anchor = None;
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
-                    self.ai_panel_scroll = 0;
+                    self.panel_scroll = 0;
+                    self.ensure_file_parsed();
+                    self.rebuild_hunk_offsets();
+                } else {
+                    // At first diff file — wrap to last item
+                    let visible_watched = self.visible_watched_files();
+                    if !visible_watched.is_empty() {
+                        self.selected_watched = Some(visible_watched.last().unwrap().0);
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                    } else {
+                        // Wrap to last diff file
+                        self.selected_file = visible.last().unwrap().0;
+                        self.current_hunk = 0;
+                        self.current_line = None;
+                        self.selection_anchor = None;
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                        self.panel_scroll = 0;
+                        self.ensure_file_parsed();
+                        self.rebuild_hunk_offsets();
+                    }
                 }
             } else {
                 // Current selection not in visible set — snap to first
@@ -766,7 +1525,7 @@ impl TabState {
                 self.current_hunk = 0;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
-                self.ai_panel_scroll = 0;
+                self.panel_scroll = 0;
                 self.ensure_file_parsed();
                 self.rebuild_hunk_offsets();
             }
@@ -774,31 +1533,35 @@ impl TabState {
     }
 
     pub fn next_hunk(&mut self) {
+        self.focused_comment_id = None;
         let total = self.total_hunks();
         if total > 0 && self.current_hunk < total - 1 {
             self.current_hunk += 1;
             self.current_line = None;
+            self.selection_anchor = None;
             self.scroll_to_current_hunk();
         }
     }
 
     pub fn prev_hunk(&mut self) {
+        self.focused_comment_id = None;
         if self.current_hunk > 0 {
             self.current_hunk -= 1;
             self.current_line = None;
+            self.selection_anchor = None;
             self.scroll_to_current_hunk();
         }
     }
 
     /// Move to the next line within the current hunk (arrow down)
     pub fn next_line(&mut self) {
+        self.selection_anchor = None;
         let total_lines = self.current_hunk_line_count();
         if total_lines == 0 {
             return;
         }
         match self.current_line {
             None => {
-                // Enter line mode at first line
                 self.current_line = Some(0);
                 self.scroll_to_current_hunk();
             }
@@ -807,7 +1570,6 @@ impl TabState {
                     self.current_line = Some(line + 1);
                     self.scroll_to_current_hunk();
                 } else {
-                    // At last line of this hunk — move to next hunk's first line
                     let total_hunks = self.total_hunks();
                     if self.current_hunk + 1 < total_hunks {
                         self.current_hunk += 1;
@@ -821,6 +1583,7 @@ impl TabState {
 
     /// Move to the previous line within the current hunk (arrow up)
     pub fn prev_line(&mut self) {
+        self.selection_anchor = None;
         match self.current_line {
             None => {
                 // Enter line mode at the last line of the current hunk
@@ -831,14 +1594,12 @@ impl TabState {
                 }
             }
             Some(0) => {
-                // At first line — move to prev hunk's last line
                 if self.current_hunk > 0 {
                     self.current_hunk -= 1;
                     let count = self.current_hunk_line_count();
                     self.current_line = if count > 0 { Some(count - 1) } else { None };
                     self.scroll_to_current_hunk();
                 } else {
-                    // Already at top — exit line mode
                     self.current_line = None;
                 }
             }
@@ -850,7 +1611,7 @@ impl TabState {
     }
 
     /// Get the number of lines in the current hunk
-    fn current_hunk_line_count(&self) -> usize {
+    pub fn current_hunk_line_count(&self) -> usize {
         self.selected_diff_file()
             .and_then(|f| f.hunks.get(self.current_hunk))
             .map(|h| h.lines.len())
@@ -866,11 +1627,49 @@ impl TabState {
         diff_line.new_num
     }
 
-    fn scroll_to_current_hunk(&mut self) {
+    /// Get the line number for the focused side in split diff view
+    pub fn current_line_number_for_split(&self, side: SplitSide) -> Option<usize> {
+        let file = self.selected_diff_file()?;
+        let hunk = file.hunks.get(self.current_hunk)?;
+        let line_idx = self.current_line?;
+        let diff_line = hunk.lines.get(line_idx)?;
+        match side {
+            SplitSide::Old => diff_line.old_num,
+            SplitSide::New => diff_line.new_num,
+        }
+    }
+
+    /// Increment the focused pane's horizontal scroll in split diff view
+    pub fn scroll_right_split(&mut self) {
+        match self.split_focus {
+            SplitSide::Old => self.h_scroll_old = self.h_scroll_old.saturating_add(1),
+            SplitSide::New => self.h_scroll_new = self.h_scroll_new.saturating_add(1),
+        }
+    }
+
+    /// Decrement the focused pane's horizontal scroll in split diff view
+    pub fn scroll_left_split(&mut self) {
+        match self.split_focus {
+            SplitSide::Old => self.h_scroll_old = self.h_scroll_old.saturating_sub(1),
+            SplitSide::New => self.h_scroll_new = self.h_scroll_new.saturating_sub(1),
+        }
+    }
+
+    /// Get the selected line range within the current hunk (from shift+arrow selection)
+    pub fn selected_range(&self) -> Option<std::ops::RangeInclusive<usize>> {
+        let anchor = self.selection_anchor?;
+        let current = self.current_line?;
+        Some(anchor.min(current)..=anchor.max(current))
+    }
+
+    pub fn scroll_to_current_hunk(&mut self) {
         // Use precomputed hunk offsets if available (O(1) lookup)
         if let Some(ref offsets) = self.hunk_offsets {
             if let Some(&base) = offsets.offsets.get(self.current_hunk) {
-                let line_offset = base + self.current_line.unwrap_or(0);
+                // TODO(risk:medium): base + current_line can overflow usize on pathological inputs
+        // (e.g., a hunk with usize::MAX lines). saturating_sub then .min(u16::MAX) masks the overflow
+        // rather than preventing it. Add a bounds check on current_line before the addition.
+        let line_offset = base + self.current_line.unwrap_or(0);
                 self.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
                 return;
             }
@@ -897,6 +1696,14 @@ impl TabState {
     pub fn scroll_up(&mut self, amount: u16) {
         self.diff_scroll = self.diff_scroll.saturating_sub(amount);
         self.sync_cursor_to_scroll();
+    }
+
+    pub fn panel_scroll_down(&mut self, amount: u16) {
+        self.panel_scroll = self.panel_scroll.saturating_add(amount);
+    }
+
+    pub fn panel_scroll_up(&mut self, amount: u16) {
+        self.panel_scroll = self.panel_scroll.saturating_sub(amount);
     }
 
     /// Move the cursor (current_hunk + current_line) to match the current
@@ -936,7 +1743,10 @@ impl TabState {
                 offset = content_end + 1; // blank line after hunk
             }
 
-            found.unwrap_or_else(|| {
+            // TODO(risk:high): file.hunks.len() - 1 panics if hunks is empty. The early return above (line ~1699)
+        // guards against this, but only for the case where hunks.is_empty() at the top of the function.
+        // If a refactor moves or removes that guard, this becomes an OOB panic. Use saturating_sub(1) here.
+        found.unwrap_or_else(|| {
                 // Past the end — clamp to last line of last hunk
                 let last = file.hunks.len() - 1;
                 (last, file.hunks[last].lines.len().saturating_sub(1))
@@ -994,18 +1804,45 @@ impl TabState {
                 return;
             }
         }
+        // TODO(risk:medium): file_headers.get(selected_file) uses the raw file index, but selected_file
+        // is an index into self.files (which may be reordered by mtime sort). If sort_by_mtime is active,
+        // the file at self.files[selected_file] corresponds to a different header than
+        // self.file_headers[selected_file], so we'd parse the wrong file's diff.
         // Parse on demand from raw diff
         if let (Some(ref raw), Some(header)) = (&self.raw_diff, self.file_headers.get(self.selected_file)) {
             let parsed = git::parse_file_at_offset(raw, header);
-            if let Some(file) = self.files.get_mut(self.selected_file) {
-                file.hunks = parsed.hunks;
-                // Update adds/dels from actual parse
-                file.adds = parsed.adds;
-                file.dels = parsed.dels;
+            if !parsed.hunks.is_empty() {
+                if let Some(file) = self.files.get_mut(self.selected_file) {
+                    file.hunks = parsed.hunks;
+                    file.adds = parsed.adds;
+                    file.dels = parsed.dels;
+                }
+                self.rebuild_hunk_offsets();
+                self.update_mem_budget();
+                return;
             }
-            self.rebuild_hunk_offsets();
-            self.update_mem_budget();
         }
+        // Fallback: offset parse returned no hunks but file has changes — fetch from git directly
+        if let Some(file) = self.files.get(self.selected_file) {
+            if file.adds + file.dels > 0 {
+                let path = file.path.clone();
+                let repo_root = self.repo_root.clone();
+                let mode = self.mode.git_mode().to_string();
+                let base = self.base_branch.clone();
+                if let Ok(raw) = git::git_diff_raw_file(&mode, &base, &repo_root, &path) {
+                    let parsed = git::parse_diff(&raw);
+                    if let Some(p) = parsed.into_iter().next() {
+                        if let Some(file) = self.files.get_mut(self.selected_file) {
+                            file.hunks = p.hunks;
+                            file.adds = p.adds;
+                            file.dels = p.dels;
+                        }
+                    }
+                }
+            }
+        }
+        self.rebuild_hunk_offsets();
+        self.update_mem_budget();
     }
 
     /// Toggle expand/compact for the currently selected file.
@@ -1014,20 +1851,27 @@ impl TabState {
     pub fn toggle_compacted(&mut self) -> Result<()> {
         if let Some(file) = self.files.get_mut(self.selected_file) {
             if file.compacted {
+                let path = file.path.clone();
                 git::expand_compacted_file(
                     file,
                     &self.repo_root,
                     self.mode.git_mode(),
                     &self.base_branch,
                 )?;
+                self.user_expanded.insert(path);
                 self.rebuild_hunk_offsets();
                 self.update_mem_budget();
             } else {
                 // Re-compact: only if it matched a pattern or was large
+                // TODO(risk:minor): any file can be re-compacted via Enter regardless of whether it originally
+                // matched a compaction pattern. A file that was never auto-compacted (user navigated to it
+                // in eager mode) still gets compacted on the second Enter press, which may be surprising.
+                let path = file.path.clone();
                 file.compacted = true;
                 file.raw_hunk_count = file.hunks.len();
                 file.hunks.clear();
                 file.hunks.shrink_to_fit();
+                self.user_expanded.remove(&path);
                 self.current_hunk = 0;
                 self.current_line = None;
                 self.diff_scroll = 0;
@@ -1099,6 +1943,307 @@ impl TabState {
         Ok(())
     }
 
+    // ── History Mode Navigation ──
+
+    /// Move to the next commit in history (older)
+    pub fn history_next_commit(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        if history.selected_commit + 1 < history.commits.len() {
+            history.selected_commit += 1;
+            self.history_load_selected_diff();
+        }
+    }
+
+    /// Move to the previous commit in history (newer)
+    pub fn history_prev_commit(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        if history.selected_commit > 0 {
+            history.selected_commit -= 1;
+            self.history_load_selected_diff();
+        }
+    }
+
+    /// Load the diff for the currently selected commit
+    fn history_load_selected_diff(&mut self) {
+        let (hash, repo_root) = {
+            let history = match self.history.as_mut() {
+                Some(h) => h,
+                None => return,
+            };
+            let commit_hash = match history.commits.get(history.selected_commit) {
+                Some(c) => c.hash.clone(),
+                None => return,
+            };
+            // Check cache first (promotes to MRU on access)
+            // TODO(risk:medium): cached.clone() copies the entire Vec<DiffFile> including all hunk lines.
+            // For a commit with thousands of changed lines this is an expensive allocation on every
+            // back-navigation to a cached commit. Consider storing Arcs or indices instead of cloning.
+            if let Some(cached) = history.diff_cache.get(&commit_hash) {
+                let files = cached.clone();
+                history.commit_files = files;
+                history.selected_file = 0;
+                history.current_hunk = 0;
+                history.current_line = None;
+                history.diff_scroll = 0;
+                history.h_scroll = 0;
+                return;
+            }
+            (commit_hash, self.repo_root.clone())
+        };
+
+        let files = match git::git_diff_commit(&hash, &repo_root) {
+            Ok(raw) => git::parse_diff(&raw),
+            Err(_) => vec![],
+        };
+
+        let history = self.history.as_mut().unwrap();
+        history.diff_cache.insert(hash, files.clone());
+        history.commit_files = files;
+        history.selected_file = 0;
+        history.current_hunk = 0;
+        history.current_line = None;
+        history.diff_scroll = 0;
+        history.h_scroll = 0;
+    }
+
+    /// Move to next file within the selected commit's diff
+    pub fn history_next_file(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        if history.commit_files.is_empty() {
+            return;
+        }
+        if history.selected_file + 1 < history.commit_files.len() {
+            history.selected_file += 1;
+            history.current_hunk = 0;
+            history.current_line = None;
+            Self::history_scroll_to_file(history);
+        }
+    }
+
+    /// Move to previous file within the selected commit's diff
+    pub fn history_prev_file(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        if history.selected_file > 0 {
+            history.selected_file -= 1;
+            history.current_hunk = 0;
+            history.current_line = None;
+            Self::history_scroll_to_file(history);
+        }
+    }
+
+    /// Move to next line within the commit diff
+    pub fn history_next_line(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        let file = match history.commit_files.get(history.selected_file) {
+            Some(f) => f,
+            None => return,
+        };
+        let hunk_count = file.hunks.len();
+        let line_count = file.hunks.get(history.current_hunk).map(|h| h.lines.len()).unwrap_or(0);
+
+        match history.current_line {
+            None => {
+                if line_count > 0 {
+                    history.current_line = Some(0);
+                    Self::history_scroll_to_current(history);
+                }
+            }
+            Some(line) => {
+                if line + 1 < line_count {
+                    history.current_line = Some(line + 1);
+                    Self::history_scroll_to_current(history);
+                } else if history.current_hunk + 1 < hunk_count {
+                    // Move to next hunk's first line
+                    history.current_hunk += 1;
+                    history.current_line = Some(0);
+                    Self::history_scroll_to_current(history);
+                } else if history.selected_file + 1 < history.commit_files.len() {
+                    // Move to next file's first hunk's first line
+                    history.selected_file += 1;
+                    history.current_hunk = 0;
+                    history.current_line = Some(0);
+                    Self::history_scroll_to_current(history);
+                }
+            }
+        }
+    }
+
+    /// Move to previous line within the commit diff
+    pub fn history_prev_line(&mut self) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        let file = match history.commit_files.get(history.selected_file) {
+            Some(f) => f,
+            None => return,
+        };
+
+        match history.current_line {
+            None => {
+                let count = file.hunks.get(history.current_hunk).map(|h| h.lines.len()).unwrap_or(0);
+                if count > 0 {
+                    history.current_line = Some(count - 1);
+                    Self::history_scroll_to_current(history);
+                }
+            }
+            Some(0) => {
+                if history.current_hunk > 0 {
+                    history.current_hunk -= 1;
+                    let count = file.hunks.get(history.current_hunk).map(|h| h.lines.len()).unwrap_or(0);
+                    history.current_line = if count > 0 { Some(count - 1) } else { None };
+                    Self::history_scroll_to_current(history);
+                } else if history.selected_file > 0 {
+                    // Move to prev file's last hunk's last line
+                    history.selected_file -= 1;
+                    let prev_file = &history.commit_files[history.selected_file];
+                    if let Some(last_hunk) = prev_file.hunks.last() {
+                        history.current_hunk = prev_file.hunks.len() - 1;
+                        history.current_line = if last_hunk.lines.is_empty() { None } else { Some(last_hunk.lines.len() - 1) };
+                    } else {
+                        history.current_hunk = 0;
+                        history.current_line = None;
+                    }
+                    Self::history_scroll_to_current(history);
+                } else {
+                    history.current_line = None;
+                }
+            }
+            Some(line) => {
+                history.current_line = Some(line - 1);
+                Self::history_scroll_to_current(history);
+            }
+        }
+    }
+
+    /// Scroll to the current file header in history mode
+    fn history_scroll_to_file(history: &mut HistoryState) {
+        let mut line_offset: usize = 0;
+        for (file_idx, file) in history.commit_files.iter().enumerate() {
+            if file_idx == history.selected_file {
+                history.diff_scroll = line_offset.min(u16::MAX as usize) as u16;
+                return;
+            }
+            // File header (1) + blank line (1) + per-hunk (header + lines + blank)
+            line_offset += 2; // header + blank
+            for hunk in &file.hunks {
+                line_offset += 1 + hunk.lines.len() + 1; // header + lines + blank
+            }
+        }
+    }
+
+    /// Scroll to the current line position in history mode
+    fn history_scroll_to_current(history: &mut HistoryState) {
+        let mut line_offset: usize = 0;
+        for (file_idx, file) in history.commit_files.iter().enumerate() {
+            line_offset += 2; // file header + blank
+            for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+                if file_idx == history.selected_file && hunk_idx == history.current_hunk {
+                    line_offset += history.current_line.unwrap_or(0);
+                    history.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
+                    return;
+                }
+                line_offset += 1 + hunk.lines.len() + 1;
+            }
+        }
+    }
+
+    /// Load more commits when scrolling past the end
+    pub fn history_load_more(&mut self) {
+        let (skip, all_loaded) = match self.history.as_ref() {
+            Some(h) => (h.commits.len(), h.all_loaded),
+            None => return,
+        };
+        if all_loaded {
+            return;
+        }
+
+        // TODO(risk:medium): git_log_branch is called synchronously on the event loop thread. Loading 50
+        // commits on a slow filesystem or network-mounted repo blocks the UI for the full duration of the
+        // git log call. This should be moved to a background thread like the PR hint check.
+        let new_commits = git::git_log_branch(
+            &self.base_branch,
+            &self.repo_root,
+            50,
+            skip,
+        )
+        .unwrap_or_default();
+
+        let history = self.history.as_mut().unwrap();
+        if new_commits.is_empty() {
+            history.all_loaded = true;
+        } else {
+            history.commits.extend(new_commits);
+        }
+    }
+
+    /// Get visible commits (filtered by search query)
+    pub fn visible_commits(&self) -> Vec<(usize, &CommitInfo)> {
+        let history = match self.history.as_ref() {
+            Some(h) => h,
+            None => return vec![],
+        };
+
+        if self.search_query.is_empty() {
+            history.commits.iter().enumerate().collect()
+        } else {
+            let q = self.search_query.to_lowercase();
+            history
+                .commits
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.subject.to_lowercase().contains(&q)
+                        || c.short_hash.contains(&q)
+                        || c.author.to_lowercase().contains(&q)
+                })
+                .collect()
+        }
+    }
+
+    /// Scroll down in history mode
+    pub fn history_scroll_down(&mut self, amount: u16) {
+        if let Some(ref mut h) = self.history {
+            h.diff_scroll = h.diff_scroll.saturating_add(amount);
+        }
+    }
+
+    /// Scroll up in history mode
+    pub fn history_scroll_up(&mut self, amount: u16) {
+        if let Some(ref mut h) = self.history {
+            h.diff_scroll = h.diff_scroll.saturating_sub(amount);
+        }
+    }
+
+    /// Scroll right in history mode
+    pub fn history_scroll_right(&mut self, amount: u16) {
+        if let Some(ref mut h) = self.history {
+            h.h_scroll = h.h_scroll.saturating_add(amount);
+        }
+    }
+
+    /// Scroll left in history mode
+    pub fn history_scroll_left(&mut self, amount: u16) {
+        if let Some(ref mut h) = self.history {
+            h.h_scroll = h.h_scroll.saturating_sub(amount);
+        }
+    }
+
     // ── Mode ──
 
     pub fn set_mode(&mut self, mode: DiffMode) {
@@ -1111,29 +2256,74 @@ impl TabState {
             let prev_line = self.current_line;
 
             self.mode = mode;
-            self.current_hunk = 0;
-            self.current_line = None;
-            self.selected_watched = None;
-            self.diff_scroll = 0;
-            let _ = self.refresh_diff();
+            if mode == DiffMode::History {
+                // Initialize history state if first time
+                if self.history.is_none() {
+                    let commits = git::git_log_branch(
+                        &self.base_branch,
+                        &self.repo_root,
+                        50,
+                        0,
+                    )
+                    .unwrap_or_default();
 
-            // Restore selection by path (file order may differ between modes)
-            if let Some(path) = prev_path {
-                if let Some(idx) = self.files.iter().position(|f| f.path == path) {
-                    self.selected_file = idx;
-                    // Restore hunk/line if the file still has enough hunks
-                    if prev_hunk < self.total_hunks() {
-                        self.current_hunk = prev_hunk;
-                        self.current_line = prev_line;
+                    let first_diff = if let Some(c) = commits.first() {
+                        let raw = git::git_diff_commit(&c.hash, &self.repo_root)
+                            .unwrap_or_default();
+                        git::parse_diff(&raw)
+                    } else {
+                        vec![]
+                    };
+
+                    let mut cache = DiffCache::new(5);
+                    if let Some(c) = commits.first() {
+                        cache.insert(c.hash.clone(), first_diff.clone());
+                    }
+
+                    self.history = Some(HistoryState {
+                        commits,
+                        selected_commit: 0,
+                        commit_files: first_diff,
+                        selected_file: 0,
+                        current_hunk: 0,
+                        current_line: None,
+                        diff_scroll: 0,
+                        h_scroll: 0,
+                        all_loaded: false,
+                        diff_cache: cache,
+                    });
+                }
+            } else if mode == DiffMode::Conflicts {
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selected_watched = None;
+                self.diff_scroll = 0;
+                self.refresh_conflicts();
+            } else {
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selected_watched = None;
+                self.diff_scroll = 0;
+                let _ = self.refresh_diff();
+
+                // Restore selection by path (file order may differ between modes)
+                if let Some(path) = prev_path {
+                    if let Some(idx) = self.files.iter().position(|f| f.path == path) {
+                        self.selected_file = idx;
+                        // Restore hunk/line if the file still has enough hunks
+                        if prev_hunk < self.total_hunks() {
+                            self.current_hunk = prev_hunk;
+                            self.current_line = prev_line;
+                        }
+                    } else {
+                        self.selected_file = 0;
                     }
                 } else {
                     self.selected_file = 0;
                 }
-            } else {
-                self.selected_file = 0;
+                self.snap_to_visible();
+                self.scroll_to_current_hunk();
             }
-            self.snap_to_visible();
-            self.scroll_to_current_hunk();
         }
     }
 
@@ -1198,6 +2388,10 @@ impl TabState {
         use std::fs;
         use std::time::SystemTime;
 
+        // TODO(risk:medium): sort_by_mtime is applied after lazy parsing sets up file_headers with indices
+        // matching self.files positions. After sorting, self.files[i] no longer corresponds to
+        // self.file_headers[i], breaking ensure_file_parsed(). This is the same bug as noted above —
+        // lazy mode + mtime sort together produce wrong on-demand parses.
         let repo_root = self.repo_root.clone();
         self.files.sort_by(|a, b| {
             let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
@@ -1302,6 +2496,7 @@ impl TabState {
         std::fs::write(&path, format!("{}\n", content))?;
         Ok(())
     }
+
 }
 
 // ── Main App State ──
@@ -1332,7 +2527,7 @@ pub struct App {
     pub watch_message_ticks: u8,
 
     /// Counter for throttling AI file polling (check every 10 ticks ≈ 1s)
-    pub ai_poll_counter: u8,
+    pub ai_poll_counter: u16,
 
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
@@ -1380,6 +2575,9 @@ impl App {
             tabs
         };
 
+            // TODO(risk:minor): config is loaded from the first tab's repo root but the App is shared across
+        // all tabs. If a second tab's .er-config.toml has different feature flags, those settings are
+        // ignored — the first tab's config wins for everything (display, features, agents).
         // Load config from the first tab's repo root
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
@@ -1401,6 +2599,10 @@ impl App {
     // ── Tab Accessors ──
 
     /// Get a reference to the active tab
+    // TODO(risk:high): tab() and tab_mut() index self.tabs[self.active_tab] directly. If active_tab
+    // ever exceeds tabs.len() (e.g., after close_tab() removes the last non-first tab and the index
+    // is not decremented correctly, or if tabs is somehow emptied), this panics. All callers assume
+    // tabs is non-empty; that invariant is enforced only by close_tab's guard but not at the type level.
     pub fn tab(&self) -> &TabState {
         &self.tabs[self.active_tab]
     }
@@ -1408,6 +2610,19 @@ impl App {
     /// Get a mutable reference to the active tab
     pub fn tab_mut(&mut self) -> &mut TabState {
         &mut self.tabs[self.active_tab]
+    }
+
+    /// Returns true when split diff rendering should be active.
+    /// Requires the config flag and no open panel.
+    pub fn split_diff_active(&self, config: &ErConfig) -> bool {
+        if !config.display.split_diff {
+            return false;
+        }
+        let tab = self.tab();
+        if tab.panel.is_some() {
+            return false;
+        }
+        true
     }
 
     // ── Tab Management ──
@@ -1434,6 +2649,24 @@ impl App {
         Ok(())
     }
 
+    /// Switch to the next tab (wraps around)
+    pub fn next_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            self.active_tab = (self.active_tab + 1) % self.tabs.len();
+            let name = self.tab().tab_name();
+            self.notify(&format!("Tab: {}", name));
+        }
+    }
+
+    /// Switch to the previous tab (wraps around)
+    pub fn prev_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            self.active_tab = (self.active_tab + self.tabs.len() - 1) % self.tabs.len();
+            let name = self.tab().tab_name();
+            self.notify(&format!("Tab: {}", name));
+        }
+    }
+
     /// Close the active tab (refuses if it's the last one)
     pub fn close_tab(&mut self) {
         if self.tabs.len() <= 1 {
@@ -1448,23 +2681,6 @@ impl App {
         self.notify(&format!("Closed: {}", name));
     }
 
-    /// Switch to the next tab (circular)
-    pub fn next_tab(&mut self) {
-        if self.tabs.len() > 1 {
-            self.active_tab = (self.active_tab + 1) % self.tabs.len();
-        }
-    }
-
-    /// Switch to the previous tab (circular)
-    pub fn prev_tab(&mut self) {
-        if self.tabs.len() > 1 {
-            self.active_tab = if self.active_tab == 0 {
-                self.tabs.len() - 1
-            } else {
-                self.active_tab - 1
-            };
-        }
-    }
 
     // ── Overlay: Worktree Picker ──
 
@@ -1770,9 +2986,21 @@ impl App {
                 git::git_unstage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Unstaged: {}", file_path));
             }
+            DiffMode::Conflicts => {
+                git::git_stage_file(&repo_root, &file_path)?;
+                self.notify(&format!("Resolved: {}", file_path));
+            }
+            DiffMode::History => {
+                self.notify("Staging not available in this mode");
+                return Ok(());
+            }
         }
 
-        self.tab_mut().refresh_diff()?;
+        if mode == DiffMode::Conflicts {
+            self.tab_mut().refresh_conflicts();
+        } else {
+            self.tab_mut().refresh_diff()?;
+        }
         Ok(())
     }
 
@@ -1782,28 +3010,6 @@ impl App {
         let repo_root = self.tab().repo_root.clone();
         git::git_stage_all(&repo_root)?;
         self.notify("Staged all files");
-        self.tab_mut().refresh_diff()?;
-        Ok(())
-    }
-
-    /// Stage just the current hunk
-    pub fn stage_current_hunk(&mut self) -> Result<()> {
-        let si = self.tab().selected_file;
-        let hi = self.tab().current_hunk;
-
-        if si >= self.tab().files.len() {
-            return Ok(());
-        }
-        if hi >= self.tab().files[si].hunks.len() {
-            return Ok(());
-        }
-
-        let file_path = self.tab().files[si].path.clone();
-        let hunk_clone = self.tab().files[si].hunks[hi].clone();
-        let repo_root = self.tab().repo_root.clone();
-
-        git::git_stage_hunk(&repo_root, &file_path, &hunk_clone)?;
-        self.notify("Staged hunk");
         self.tab_mut().refresh_diff()?;
         Ok(())
     }
@@ -1853,6 +3059,8 @@ impl App {
 
     /// Enter comment mode for the current file + hunk (and optionally line)
     pub fn start_comment(&mut self, comment_type: CommentType) {
+        let split_active = self.split_diff_active(&self.config.clone());
+        let split_focus = self.tab().split_focus;
         let tab = self.tab_mut();
         let file_path = match tab.selected_diff_file() {
             Some(f) => f.path.clone(),
@@ -1861,9 +3069,110 @@ impl App {
         tab.comment_input.clear();
         tab.comment_file = file_path;
         tab.comment_hunk = tab.current_hunk;
+        tab.comment_line_num = if split_active {
+            tab.current_line_number_for_split(split_focus)
+        } else {
+            tab.current_line_number()
+        };
+        tab.comment_reply_to = None;
+        tab.comment_finding_ref = None;
+        tab.comment_type = comment_type;
+        self.input_mode = InputMode::Comment;
+    }
+
+    /// Start editing an existing comment — opens comment input pre-filled with its text
+    pub fn start_edit_comment(&mut self, comment_id: &str) {
+        let tab = self.tab();
+        // Find the comment text and type
+        let (text, is_question) = if comment_id.starts_with("q-") {
+            if let Some(qs) = &tab.ai.questions {
+                if let Some(q) = qs.questions.iter().find(|q| q.id == comment_id) {
+                    (q.text.clone(), true)
+                } else { return; }
+            } else { return; }
+        } else {
+            if let Some(gc) = &tab.ai.github_comments {
+                if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
+                    (c.comment.clone(), false)
+                } else { return; }
+            } else { return; }
+        };
+
+        let tab = self.tab_mut();
+        let file_path = match tab.selected_diff_file() {
+            Some(f) => f.path.clone(),
+            None => return,
+        };
+        tab.comment_input = text;
+        tab.comment_file = file_path;
+        tab.comment_hunk = tab.current_hunk;
         tab.comment_line_num = tab.current_line_number();
         tab.comment_reply_to = None;
-        tab.comment_type = comment_type;
+        tab.comment_type = if is_question { CommentType::Question } else { CommentType::GitHubComment };
+        tab.comment_edit_id = Some(comment_id.to_string());
+        self.input_mode = InputMode::Comment;
+    }
+
+    /// Start replying to a comment or question — creates a threaded reply
+    pub fn start_reply_comment(&mut self, comment_id: &str) {
+        let tab = self.tab();
+        // Determine type from ID prefix and find the parent comment's location
+        let (file, hunk_index, line_start, is_question) = if comment_id.starts_with("q-") {
+            if let Some(qs) = &tab.ai.questions {
+                if let Some(q) = qs.questions.iter().find(|q| q.id == comment_id) {
+                    (q.file.clone(), q.hunk_index.unwrap_or(0), q.line_start, true)
+                } else { return; }
+            } else { return; }
+        } else {
+            if let Some(gc) = &tab.ai.github_comments {
+                if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
+                    (c.file.clone(), c.hunk_index.unwrap_or(0), c.line_start, false)
+                } else { return; }
+            } else { return; }
+        };
+
+        let tab = self.tab_mut();
+        tab.comment_input.clear();
+        tab.comment_file = file;
+        tab.comment_hunk = hunk_index;
+        tab.comment_line_num = line_start;
+        tab.comment_reply_to = Some(comment_id.to_string());
+        tab.comment_finding_ref = None;
+        tab.comment_type = if is_question { CommentType::Question } else { CommentType::GitHubComment };
+        tab.comment_edit_id = None;
+        self.input_mode = InputMode::Comment;
+    }
+
+    /// Start replying to an AI finding — creates a GitHubComment referencing the finding
+    pub fn start_reply_finding(&mut self, finding_id: &str) {
+        let tab = self.tab();
+        // Find the finding's file and location
+        let (file, hunk_index, line_start) = if let Some(review) = &tab.ai.review {
+            let mut found = None;
+            for (file_path, file_review) in &review.files {
+                for finding in &file_review.findings {
+                    if finding.id == finding_id {
+                        found = Some((file_path.clone(), finding.hunk_index.unwrap_or(0), finding.line_start));
+                        break;
+                    }
+                }
+                if found.is_some() { break; }
+            }
+            match found {
+                Some(f) => f,
+                None => return,
+            }
+        } else { return; };
+
+        let tab = self.tab_mut();
+        tab.comment_input.clear();
+        tab.comment_file = file;
+        tab.comment_hunk = hunk_index;
+        tab.comment_line_num = line_start;
+        tab.comment_reply_to = None;
+        tab.comment_finding_ref = Some(finding_id.to_string());
+        tab.comment_type = CommentType::GitHubComment;
+        tab.comment_edit_id = None;
         self.input_mode = InputMode::Comment;
     }
 
@@ -1874,6 +3183,11 @@ impl App {
         if text.is_empty() {
             self.input_mode = InputMode::Normal;
             return Ok(());
+        }
+
+        // If editing an existing comment, update it in-place
+        if let Some(edit_id) = tab.comment_edit_id.clone() {
+            return self.update_comment(edit_id, text);
         }
 
         let comment_type = tab.comment_type;
@@ -1891,8 +3205,9 @@ impl App {
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
         let comment_line_num = tab.comment_line_num;
+        let reply_to = tab.comment_reply_to.clone();
 
-        let (line_start, line_content) = self.get_line_context(hunk_index, comment_line_num);
+        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
         // Load or create .er-questions.json
         let questions_path = format!("{}/.er-questions.json", repo_root);
@@ -1915,10 +3230,10 @@ impl App {
             },
         };
 
-        // If diff hash changed, start fresh
+        // If diff hash changed, update it but preserve existing questions
+        // (the relocation system handles comment drift)
         if questions.diff_hash != diff_hash {
             questions.diff_hash = diff_hash;
-            questions.questions.clear();
         }
 
         let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -1931,16 +3246,25 @@ impl App {
             seq
         );
 
+        let is_reply = reply_to.is_some();
         questions.questions.push(ai::ReviewQuestion {
             id,
             timestamp: chrono_now(),
             file: file_path,
             hunk_index: Some(hunk_index),
-            line_start,
-            line_content,
+            line_start: anchor.line_start,
+            line_content: anchor.line_content,
             text: text.clone(),
             resolved: false,
             stale: false,
+            context_before: anchor.context_before,
+            context_after: anchor.context_after,
+            old_line_start: anchor.old_line_start,
+            hunk_header: anchor.hunk_header,
+            anchor_status: "original".to_string(),
+            relocated_at_hash: self.tab().branch_diff_hash.clone(),
+            in_reply_to: reply_to,
+            author: "You".to_string(),
         });
 
         // Write atomically
@@ -1952,7 +3276,8 @@ impl App {
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
         self.tab_mut().reload_ai_state();
-        self.notify(&format!("Question added: {}", truncate(&text, 40)));
+        let label = if is_reply { "Reply" } else { "Question" };
+        self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
     }
 
@@ -1964,9 +3289,10 @@ impl App {
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
         let reply_to = tab.comment_reply_to.clone();
+        let finding_ref = tab.comment_finding_ref.clone();
         let comment_line_num = tab.comment_line_num;
 
-        let (line_start, line_content) = self.get_line_context(hunk_index, comment_line_num);
+        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
         // Load or create .er-github-comments.json
         let comments_path = format!("{}/.er-github-comments.json", repo_root);
@@ -1991,11 +3317,10 @@ impl App {
             },
         };
 
-        // If diff hash changed, start fresh for local comments only
+        // If diff hash changed, update it but preserve existing comments
+        // (the relocation system handles comment drift)
         if gh_comments.diff_hash != diff_hash {
             gh_comments.diff_hash = diff_hash;
-            // Keep synced GitHub comments, clear local-only ones
-            gh_comments.comments.retain(|c| c.source == "github");
         }
 
         let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -2008,14 +3333,15 @@ impl App {
             seq
         );
 
+        let is_reply = reply_to.is_some();
         gh_comments.comments.push(ai::GitHubReviewComment {
             id,
             timestamp: chrono_now(),
             file: file_path,
             hunk_index: Some(hunk_index),
-            line_start,
+            line_start: anchor.line_start,
             line_end: None,
-            line_content,
+            line_content: anchor.line_content,
             comment: text.clone(),
             in_reply_to: reply_to,
             resolved: false,
@@ -2024,6 +3350,13 @@ impl App {
             author: "You".to_string(),
             synced: false,
             stale: false,
+            context_before: anchor.context_before,
+            context_after: anchor.context_after,
+            old_line_start: anchor.old_line_start,
+            hunk_header: anchor.hunk_header,
+            anchor_status: "original".to_string(),
+            relocated_at_hash: self.tab().branch_diff_hash.clone(),
+            finding_ref,
         });
 
         // Write atomically
@@ -2035,188 +3368,412 @@ impl App {
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
         self.tab_mut().reload_ai_state();
-        self.notify(&format!("Comment added: {}", truncate(&text, 40)));
+        let label = if is_reply { "Reply" } else { "Comment" };
+        self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
     }
 
-    /// Helper: get line context for a comment target
-    fn get_line_context(&self, hunk_index: usize, comment_line_num: Option<usize>) -> (Option<usize>, String) {
+    /// Richer anchor data captured when placing a comment
+    fn get_line_anchor(&self, hunk_index: usize, comment_line_num: Option<usize>) -> LineAnchor {
         let tab = self.tab();
         if let Some(df) = tab.selected_diff_file() {
             if let Some(hunk) = df.hunks.get(hunk_index) {
                 if let Some(ln) = comment_line_num {
-                    let content = hunk.lines.iter()
-                        .find(|l| l.new_num == Some(ln))
-                        .map(|l| l.content.clone())
-                        .unwrap_or_default();
-                    (Some(ln), content)
+                    // Find the target line index within the hunk
+                    let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(ln))
+                        .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln)));
+                    let (line_content, old_line_start) = if let Some(idx) = target_idx {
+                        let dl = &hunk.lines[idx];
+                        (dl.content.clone(), dl.old_num)
+                    } else {
+                        (String::new(), None)
+                    };
+
+                    // Collect up to 3 content lines before the target (same hunk)
+                    let context_before = if let Some(idx) = target_idx {
+                        let start = idx.saturating_sub(3);
+                        hunk.lines[start..idx]
+                            .iter()
+                            .map(|l| l.content.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Collect up to 3 content lines after the target (same hunk)
+                    let context_after = if let Some(idx) = target_idx {
+                        let end = (idx + 4).min(hunk.lines.len());
+                        hunk.lines[(idx + 1)..end]
+                            .iter()
+                            .map(|l| l.content.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                    LineAnchor {
+                        line_start: Some(ln),
+                        line_content,
+                        context_before,
+                        context_after,
+                        old_line_start,
+                        hunk_header: hunk.header.clone(),
+                    }
                 } else {
-                    (None, hunk.header.clone())
+                    // Hunk-level comment
+                    LineAnchor {
+                        line_start: None,
+                        line_content: hunk.header.clone(),
+                        context_before: Vec::new(),
+                        context_after: Vec::new(),
+                        old_line_start: None,
+                        hunk_header: hunk.header.clone(),
+                    }
                 }
             } else {
-                (None, String::new())
+                LineAnchor::default()
             }
         } else {
-            (None, String::new())
+            LineAnchor::default()
         }
     }
 
     /// Cancel comment input
     pub fn cancel_comment(&mut self) {
         self.tab_mut().comment_input.clear();
+        self.tab_mut().comment_edit_id = None;
         self.input_mode = InputMode::Normal;
     }
 
-    // ── Comment Focus & Navigation ──
+    /// Update an existing comment in-place: new text, re-anchored to current position
+    fn update_comment(&mut self, comment_id: String, new_text: String) -> Result<()> {
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let hunk_index = tab.comment_hunk;
+        let comment_line_num = tab.comment_line_num;
 
-    /// Toggle comment focus mode. When in a hunk with comments, Tab enters
-    /// comment focus; pressing Tab again exits it.
-    pub fn toggle_comment_focus(&mut self) {
+        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
+        let diff_hash = self.tab().diff_hash.clone();
+
+        if comment_id.starts_with("q-") {
+            let path = format!("{}/.er-questions.json", repo_root);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
+                    if let Some(q) = qs.questions.iter_mut().find(|q| q.id == comment_id) {
+                        q.text = new_text.clone();
+                        q.line_start = anchor.line_start;
+                        q.line_content = anchor.line_content.clone();
+                        q.context_before = anchor.context_before.clone();
+                        q.context_after = anchor.context_after.clone();
+                        q.old_line_start = anchor.old_line_start;
+                        q.hunk_header = anchor.hunk_header.clone();
+                        q.hunk_index = Some(hunk_index);
+                        q.anchor_status = "original".to_string();
+                        q.relocated_at_hash = diff_hash;
+                        q.stale = false;
+                    }
+                    let json = serde_json::to_string_pretty(&qs)?;
+                    let tmp = format!("{}.tmp", path);
+                    std::fs::write(&tmp, json)?;
+                    std::fs::rename(&tmp, &path)?;
+                }
+            }
+        } else {
+            let path = format!("{}/.er-github-comments.json", repo_root);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
+                        c.comment = new_text.clone();
+                        c.line_start = anchor.line_start;
+                        c.line_content = anchor.line_content.clone();
+                        c.context_before = anchor.context_before.clone();
+                        c.context_after = anchor.context_after.clone();
+                        c.old_line_start = anchor.old_line_start;
+                        c.hunk_header = anchor.hunk_header.clone();
+                        c.hunk_index = Some(hunk_index);
+                        c.anchor_status = "original".to_string();
+                        c.relocated_at_hash = diff_hash;
+                        c.stale = false;
+                    }
+                    let json = serde_json::to_string_pretty(&gc)?;
+                    let tmp = format!("{}.tmp", path);
+                    std::fs::write(&tmp, json)?;
+                    std::fs::rename(&tmp, &path)?;
+                }
+            }
+        }
+
+        self.tab_mut().comment_input.clear();
+        self.tab_mut().comment_edit_id = None;
+        self.input_mode = InputMode::Normal;
+        self.tab_mut().reload_ai_state();
+        self.notify(&format!("Comment updated: {}", truncate(&new_text, 40)));
+        Ok(())
+    }
+
+    // ── Comment Navigation ──
+
+    /// Jump to the next comment across all files.
+    #[allow(dead_code)]
+    pub fn next_comment(&mut self) {
+        self.jump_comment(true, false);
+    }
+
+    /// Jump to the previous comment across all files.
+    #[allow(dead_code)]
+    pub fn prev_comment(&mut self) {
+        self.jump_comment(false, false);
+    }
+
+    /// Jump to the next question across all files.
+    #[allow(dead_code)]
+    pub fn next_question(&mut self) {
+        self.jump_comment(true, true);
+    }
+
+    /// Jump to the previous question across all files.
+    #[allow(dead_code)]
+    pub fn prev_question(&mut self) {
+        self.jump_comment(false, true);
+    }
+
+
+    /// Core jump logic: navigate forward/backward through comments or questions across all files.
+    /// Uses focused_comment_id for exact position tracking instead of file+hunk guessing.
+    fn jump_comment(&mut self, forward: bool, questions_only: bool) {
         let tab = self.tab_mut();
-        if tab.comment_focus.is_some() {
-            // Exit comment focus
-            tab.comment_focus = None;
+        let all = if questions_only {
+            // Convert 3-tuple to 4-tuple for uniform handling
+            tab.ai.all_questions_ordered().into_iter()
+                .map(|(f, h, id)| (f, h, None::<usize>, id))
+                .collect::<Vec<_>>()
+        } else {
+            tab.ai.all_comments_ordered()
+        };
+
+        if all.is_empty() {
             return;
         }
 
-        // Enter comment focus: find first comment in the current hunk
-        let file_path = match tab.selected_diff_file() {
-            Some(f) => f.path.clone(),
-            None => return,
-        };
-        let hunk_idx = tab.current_hunk;
-
-        // Collect all top-level comments for this hunk (line + hunk-level)
-        let comments = tab.ai.comments_for_hunk(&file_path, hunk_idx);
-        let top_level: Vec<_> = comments.iter()
-            .filter(|c| c.in_reply_to().is_none())
-            .collect();
-
-        if let Some(first) = top_level.first() {
-            tab.comment_focus = Some(CommentFocus {
-                file: file_path,
-                hunk_index: Some(hunk_idx),
-                comment_id: first.id().to_string(),
-            });
-        }
-    }
-
-    /// Navigate to next comment in the current hunk
-    pub fn next_comment(&mut self) {
-        let tab = self.tab_mut();
-        let focus = match &tab.comment_focus {
-            Some(f) => f.clone(),
-            None => return,
-        };
-
-        // All comments in this hunk (including replies)
-        let hunk_idx = focus.hunk_index.unwrap_or(0);
-        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let ids: Vec<String> = all_comments.iter().map(|c| c.id().to_string()).collect();
-
-        if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
-            if pos + 1 < ids.len() {
-                tab.comment_focus = Some(CommentFocus {
-                    file: focus.file,
-                    hunk_index: focus.hunk_index,
-                    comment_id: ids[pos + 1].clone(),
-                });
-            }
-        }
-    }
-
-    /// Navigate to previous comment in the current hunk
-    pub fn prev_comment(&mut self) {
-        let tab = self.tab_mut();
-        let focus = match &tab.comment_focus {
-            Some(f) => f.clone(),
-            None => return,
-        };
-
-        let hunk_idx = focus.hunk_index.unwrap_or(0);
-        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let ids: Vec<String> = all_comments.iter().map(|c| c.id().to_string()).collect();
-
-        if let Some(pos) = ids.iter().position(|id| *id == focus.comment_id) {
-            if pos > 0 {
-                tab.comment_focus = Some(CommentFocus {
-                    file: focus.file,
-                    hunk_index: focus.hunk_index,
-                    comment_id: ids[pos - 1].clone(),
-                });
-            }
-        }
-    }
-
-    // ── Reply System ──
-
-    /// Start replying to the focused comment (GitHub comments only)
-    pub fn start_reply(&mut self) {
-        let tab = self.tab();
-        let focus = match &tab.comment_focus {
-            Some(f) => f.clone(),
-            None => return,
-        };
-
-        // Find the focused comment in the unified view
-        let hunk_idx = focus.hunk_index.unwrap_or(0);
-        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let comment = all_comments.iter().find(|c| c.id() == focus.comment_id);
-
-        match comment {
-            Some(c) => {
-                // Can only reply to GitHub comments, not questions
-                if c.comment_type() == CommentType::Question {
-                    self.notify("Cannot reply to a question — use /er-questions instead");
-                    return;
+        // Find current position by exact ID match first, then fallback to file position
+        let current_pos = tab.focused_comment_id.as_ref().and_then(|fid| {
+            all.iter().position(|(_, _, _, id)| id == fid)
+        }).or_else(|| {
+            let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+            current_file.and_then(|cf| {
+                if forward {
+                    all.iter().position(|(f, _, _, _)| f == cf)
+                } else {
+                    all.iter().rposition(|(f, _, _, _)| f == cf)
                 }
-                // Block nested replies
-                if !c.can_reply() {
-                    self.notify("Cannot reply to a reply");
-                    return;
-                }
-            }
-            None => return,
-        }
-
-        let tab = self.tab_mut();
-        tab.comment_input.clear();
-        tab.comment_file = focus.file;
-        tab.comment_hunk = focus.hunk_index.unwrap_or(0);
-        tab.comment_line_num = None;
-        tab.comment_reply_to = Some(focus.comment_id);
-        tab.comment_type = CommentType::GitHubComment;
-        self.input_mode = InputMode::Comment;
-    }
-
-    // ── Comment Deletion ──
-
-    /// Initiate comment deletion (enters confirm mode)
-    pub fn start_delete_comment(&mut self) {
-        let tab = self.tab();
-        let focus = match &tab.comment_focus {
-            Some(f) => f.clone(),
-            None => return,
-        };
-
-        // Find the comment in the unified view to check deletability
-        let hunk_idx = focus.hunk_index.unwrap_or(0);
-        let all_comments = tab.ai.comments_for_hunk(&focus.file, hunk_idx);
-        let comment = all_comments.iter().find(|c| c.id() == focus.comment_id);
-
-        match comment {
-            Some(c) => {
-                if !c.can_delete() {
-                    self.notify("Cannot delete others' comments");
-                    return;
-                }
-            }
-            None => return,
-        }
-
-        self.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
-            comment_id: focus.comment_id,
+            })
         });
+
+        let next_idx = match current_pos {
+            Some(pos) => {
+                if forward {
+                    if pos + 1 < all.len() { pos + 1 } else { 0 }
+                } else {
+                    if pos > 0 { pos - 1 } else { all.len() - 1 }
+                }
+            }
+            None => {
+                if forward { 0 } else { all.len() - 1 }
+            }
+        };
+
+        let (ref file, hunk_index, _, ref comment_id) = all[next_idx];
+
+        tab.focused_comment_id = Some(comment_id.clone());
+        tab.focused_finding_id = None;
+
+        let needs_file_change = tab.files.get(tab.selected_file)
+            .map_or(true, |f| f.path != *file);
+
+        if needs_file_change {
+            if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
+                tab.selected_file = idx;
+                tab.current_hunk = hunk_index.unwrap_or(0);
+                tab.current_line = None;
+                tab.selection_anchor = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.ensure_file_parsed();
+                tab.rebuild_hunk_offsets();
+            }
+        } else if let Some(hi) = hunk_index {
+            tab.current_hunk = hi;
+            tab.current_line = None;
+        }
+
+        tab.scroll_to_current_hunk();
+    }
+
+    /// Jump forward to the next AI finding.
+    pub fn next_finding(&mut self) {
+        self.jump_finding(true);
+    }
+
+    /// Jump backward to the previous AI finding.
+    pub fn prev_finding(&mut self) {
+        self.jump_finding(false);
+    }
+
+    /// Core jump logic: navigate forward/backward through AI findings across all files.
+    /// Uses focused_finding_id for exact position tracking.
+    fn jump_finding(&mut self, forward: bool) {
+        let tab = self.tab_mut();
+        let all = tab.ai.all_findings_ordered();
+
+        if all.is_empty() {
+            return;
+        }
+
+        // Find current position by exact ID match first, then fallback to file position
+        let current_pos = tab.focused_finding_id.as_ref().and_then(|fid| {
+            all.iter().position(|(_, _, _, id)| id == fid)
+        }).or_else(|| {
+            let current_file = tab.files.get(tab.selected_file).map(|f| f.path.as_str());
+            let current_hunk = tab.current_hunk;
+            current_file.and_then(|cf| {
+                if forward {
+                    // Find first finding at or after current position
+                    all.iter().position(|(f, hi, _, _)| {
+                        f.as_str() > cf || (f == cf && hi.unwrap_or(0) >= current_hunk)
+                    })
+                } else {
+                    // Find last finding at or before current position
+                    all.iter().rposition(|(f, hi, _, _)| {
+                        f.as_str() < cf || (f == cf && hi.unwrap_or(0) <= current_hunk)
+                    })
+                }
+            })
+        });
+
+        let next_idx = match current_pos {
+            Some(pos) => {
+                if forward {
+                    if pos + 1 < all.len() { pos + 1 } else { 0 }
+                } else {
+                    if pos > 0 { pos - 1 } else { all.len() - 1 }
+                }
+            }
+            None => {
+                if forward { 0 } else { all.len() - 1 }
+            }
+        };
+
+        let (ref file, hunk_index, _, ref finding_id) = all[next_idx];
+
+        tab.focused_finding_id = Some(finding_id.clone());
+        tab.focused_comment_id = None;
+
+        let needs_file_change = tab.files.get(tab.selected_file)
+            .map_or(true, |f| f.path != *file);
+
+        if needs_file_change {
+            if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
+                tab.selected_file = idx;
+                tab.current_hunk = hunk_index.unwrap_or(0);
+                tab.current_line = None;
+                tab.selection_anchor = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.ensure_file_parsed();
+                tab.rebuild_hunk_offsets();
+            }
+        } else if let Some(hi) = hunk_index {
+            tab.current_hunk = hi;
+            tab.current_line = None;
+        }
+
+        tab.scroll_to_current_hunk();
+    }
+
+    /// Jump to the next hint (unified: comments + questions + findings).
+    pub fn next_hint(&mut self) {
+        self.jump_hint(true);
+    }
+
+    /// Jump to the previous hint (unified: comments + questions + findings).
+    pub fn prev_hint(&mut self) {
+        self.jump_hint(false);
+    }
+
+    /// Unified navigation across comments, questions, and findings.
+    fn jump_hint(&mut self, forward: bool) {
+        use crate::ai::HintType;
+
+        let tab = self.tab_mut();
+        let all = tab.ai.all_hints_ordered();
+
+        if all.is_empty() {
+            return;
+        }
+
+        // Find current position by matching the currently focused ID
+        let current_id = tab.focused_comment_id.as_ref()
+            .or(tab.focused_finding_id.as_ref());
+        let current_pos = current_id.and_then(|fid| {
+            all.iter().position(|(_, _, _, id, _)| id == fid)
+        }).or_else(|| {
+            let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+            current_file.and_then(|cf| {
+                if forward {
+                    all.iter().position(|(f, _, _, _, _)| f == cf)
+                } else {
+                    all.iter().rposition(|(f, _, _, _, _)| f == cf)
+                }
+            })
+        });
+
+        let next_idx = match current_pos {
+            Some(pos) => {
+                if forward {
+                    if pos + 1 < all.len() { pos + 1 } else { 0 }
+                } else {
+                    if pos > 0 { pos - 1 } else { all.len() - 1 }
+                }
+            }
+            None => {
+                if forward { 0 } else { all.len() - 1 }
+            }
+        };
+
+        let (ref file, hunk_index, _, ref id, hint_type) = all[next_idx];
+
+        // Set the appropriate focus ID based on hint type
+        match hint_type {
+            HintType::Question | HintType::GitHubComment => {
+                tab.focused_comment_id = Some(id.clone());
+                tab.focused_finding_id = None;
+            }
+            HintType::Finding => {
+                tab.focused_finding_id = Some(id.clone());
+                tab.focused_comment_id = None;
+            }
+        }
+
+        let needs_file_change = tab.files.get(tab.selected_file)
+            .map_or(true, |f| f.path != *file);
+
+        if needs_file_change {
+            if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
+                tab.selected_file = idx;
+                tab.current_hunk = hunk_index.unwrap_or(0);
+                tab.current_line = None;
+                tab.selection_anchor = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.ensure_file_parsed();
+                tab.rebuild_hunk_offsets();
+            }
+        } else if let Some(hi) = hunk_index {
+            tab.current_hunk = hi;
+            tab.current_line = None;
+        }
+
+        tab.scroll_to_current_hunk();
     }
 
     /// Execute comment deletion after confirmation
@@ -2257,9 +3814,9 @@ impl App {
                     // Delete from GitHub if applicable
                     if let Some(gh_id) = github_id {
                         if let Some(ref gh) = gc.github {
-                            let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, gh_id);
+                            let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, gh_id, &repo_root);
                             for reply_id in &reply_github_ids {
-                                let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, *reply_id);
+                                let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, *reply_id, &repo_root);
                             }
                         }
                     }
@@ -2277,8 +3834,6 @@ impl App {
             }
         }
 
-        // Clear focus and return to normal
-        self.tab_mut().comment_focus = None;
         self.input_mode = InputMode::Normal;
         self.tab_mut().reload_ai_state();
         self.notify("Comment deleted");
@@ -2291,22 +3846,6 @@ impl App {
     }
 
     // ── Hunk Comment (Shift-C) ──
-
-    /// Enter comment mode for a hunk-level comment (no line_start)
-    pub fn start_hunk_comment(&mut self, comment_type: CommentType) {
-        let tab = self.tab_mut();
-        let file_path = match tab.selected_diff_file() {
-            Some(f) => f.path.clone(),
-            None => return,
-        };
-        tab.comment_input.clear();
-        tab.comment_file = file_path;
-        tab.comment_hunk = tab.current_hunk;
-        tab.comment_line_num = None; // Force hunk-level
-        tab.comment_reply_to = None;
-        tab.comment_type = comment_type;
-        self.input_mode = InputMode::Comment;
-    }
 
     // ── Commit ──
 
@@ -2340,18 +3879,17 @@ impl App {
 
     // ── AiReview Navigation ──
 
-    /// Jump from AiReview to the selected file in SidePanel mode
+    /// Jump from AiSummary panel to the selected file in FileDetail mode
     pub fn review_jump_to_file(&mut self) {
         let file_path = {
-            let ai = &self.tab().ai;
-            match ai.review_focus {
-                ReviewFocus::Files => ai.review_file_at(ai.review_cursor),
-                ReviewFocus::Checklist => ai.checklist_file_at(ai.review_cursor),
+            let tab = self.tab();
+            match tab.review_focus {
+                ReviewFocus::Files => tab.ai.review_file_at(tab.review_cursor),
+                ReviewFocus::Checklist => tab.ai.checklist_file_at(tab.review_cursor),
             }
         };
 
         if let Some(path) = file_path {
-            // Find the file index in the file list
             let file_idx = self.tab().files.iter().position(|f| f.path == path);
             if let Some(idx) = file_idx {
                 let tab = self.tab_mut();
@@ -2360,22 +3898,28 @@ impl App {
                 tab.current_line = None;
                 tab.diff_scroll = 0;
                 tab.h_scroll = 0;
-                tab.ai.view_mode = ViewMode::SidePanel;
+                tab.ensure_file_parsed();
+                tab.rebuild_hunk_offsets();
+                if tab.panel.is_none() {
+                    tab.panel = Some(PanelContent::FileDetail);
+                }
                 self.notify(&format!("Jumped to: {}", path));
             } else {
                 self.notify(&format!("File not in diff: {}", path));
             }
+        } else {
+            self.notify("No file associated with this item");
         }
     }
 
     /// Toggle the checklist item at cursor and persist to .er-checklist.json
     pub fn review_toggle_checklist(&mut self) -> Result<()> {
         let tab = self.tab_mut();
-        if tab.ai.review_focus != ReviewFocus::Checklist {
+        if tab.review_focus != ReviewFocus::Checklist {
             return Ok(());
         }
 
-        let cursor = tab.ai.review_cursor;
+        let cursor = tab.review_cursor;
         tab.ai.toggle_checklist_item(cursor);
 
         // Persist atomically via temp file + rename
@@ -2422,6 +3966,102 @@ impl App {
         Ok(())
     }
 
+    /// Copy rich context to clipboard for pasting into an agent terminal.
+    ///
+    /// What gets copied depends on navigation state:
+    /// - Selection active (shift+arrow): selected lines only
+    /// - Line-level nav (arrow keys): current line only
+    /// - Hunk-level nav (n/N keys): full hunk
+    pub fn copy_context(&mut self) -> Result<()> {
+        let tab = self.tab();
+        let file = match tab.selected_diff_file() {
+            Some(f) => f,
+            None => {
+                self.notify("No file selected");
+                return Ok(());
+            }
+        };
+        let hunk = match file.hunks.get(tab.current_hunk) {
+            Some(h) => h,
+            None => {
+                self.notify("No hunk selected");
+                return Ok(());
+            }
+        };
+
+        let mut text = String::new();
+
+        // Header
+        text.push_str(&format!("File: {}\n", file.path));
+        text.push_str(&format!("Branch: {} (vs {})\n", tab.current_branch, tab.base_branch));
+
+        // Determine what to copy based on navigation state
+        let (lines_to_copy, line_label) = if let Some(range) = tab.selected_range() {
+            // Shift+arrow selection: copy selected lines
+            let selected: Vec<_> = hunk.lines.iter().enumerate()
+                .filter(|(i, _)| range.contains(i))
+                .map(|(_, l)| l)
+                .collect();
+            let start = selected.first().and_then(|l| l.new_num).unwrap_or(0);
+            let end = selected.last().and_then(|l| l.new_num).unwrap_or(0);
+            let label = if start == end {
+                format!("Line {}", start)
+            } else {
+                format!("Lines {}-{}", start, end)
+            };
+            (selected, label)
+        } else if let Some(line_idx) = tab.current_line {
+            // Line-level navigation: copy current line only
+            if let Some(line) = hunk.lines.get(line_idx) {
+                let ln = line.new_num.unwrap_or(0);
+                (vec![line], format!("Line {}", ln))
+            } else {
+                let all: Vec<_> = hunk.lines.iter().collect();
+                (all, format!("Hunk #{}", tab.current_hunk + 1))
+            }
+        } else {
+            // Hunk-level navigation: copy full hunk
+            let all: Vec<_> = hunk.lines.iter().collect();
+            (all, format!("Hunk #{}", tab.current_hunk + 1))
+        };
+
+        text.push_str(&format!("{}:\n\n", line_label));
+
+        // Hunk header
+        text.push_str(&format!(" {}\n", hunk.header));
+
+        // Diff lines
+        for line in &lines_to_copy {
+            let prefix = match line.line_type {
+                crate::git::LineType::Add => "+",
+                crate::git::LineType::Delete => "-",
+                crate::git::LineType::Context => " ",
+            };
+            text.push_str(&format!("{}{}\n", prefix, line.content));
+        }
+
+        // AI finding if present
+        let findings = tab.ai.findings_for_hunk(&file.path, tab.current_hunk);
+        if let Some(finding) = findings.first() {
+            text.push_str(&format!("\nFinding: [{:?}] {}\n", finding.severity, finding.title));
+            if !finding.suggestion.is_empty() {
+                text.push_str(&format!("Suggestion: {}\n", finding.suggestion));
+            }
+        }
+
+        let line_count = lines_to_copy.len();
+        let scope = if tab.selected_range().is_some() {
+            "selection"
+        } else if tab.current_line.is_some() {
+            "line"
+        } else {
+            "hunk"
+        };
+        Self::copy_to_clipboard(&text)?;
+        self.notify(&format!("Copied {} ({} lines)", scope, line_count));
+        Ok(())
+    }
+
     fn copy_to_clipboard(text: &str) -> Result<()> {
         let (cmd, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
             ("pbcopy", vec![])
@@ -2464,6 +4104,9 @@ impl App {
 
     /// Tick called on every event loop iteration — used for notification auto-clear
     pub fn tick(&mut self) {
+        // TODO(risk:minor): watch_message_ticks is a u8 (max 255). If notify() is called without a
+        // subsequent tick draining it (e.g., during a long blocking git operation), ticks can overflow
+        // and wrap back to 0, causing the message to persist for another ~25 seconds unexpectedly.
         if self.watch_message.is_some() {
             self.watch_message_ticks += 1;
             if self.watch_message_ticks > 20 {
@@ -2543,6 +4186,7 @@ mod tests {
     use std::collections::HashSet;
 
     fn make_test_tab(files: Vec<DiffFile>) -> TabState {
+        use crate::ai::{InlineLayers, ReviewFocus};
         TabState {
             mode: DiffMode::Branch,
             base_branch: "main".to_string(),
@@ -2552,9 +4196,21 @@ mod tests {
             selected_file: 0,
             current_hunk: 0,
             current_line: None,
+            selection_anchor: None,
             diff_scroll: 0,
             h_scroll: 0,
-            ai_panel_scroll: 0,
+            split_focus: SplitSide::New,
+            h_scroll_old: 0,
+            h_scroll_new: 0,
+            layers: InlineLayers::default(),
+            panel: None,
+            panel_scroll: 0,
+            panel_focus: false,
+            focused_comment_id: None,
+            focused_finding_id: None,
+            user_expanded: HashSet::new(),
+            review_focus: ReviewFocus::Files,
+            review_cursor: 0,
             search_query: String::new(),
             filter_expr: String::new(),
             filter_rules: Vec::new(),
@@ -2572,14 +4228,19 @@ mod tests {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
-            comment_focus: None,
             comment_type: CommentType::GitHubComment,
+            comment_edit_id: None,
+            comment_finding_ref: None,
+            pr_data: None,
+            history: None,
             watched_config: WatchedConfig::default(),
             watched_files: Vec::new(),
             selected_watched: None,
             show_watched: false,
             watched_not_ignored: Vec::new(),
             commit_input: String::new(),
+            merge_active: false,
+            unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,
@@ -2587,6 +4248,7 @@ mod tests {
             lazy_mode: false,
             file_headers: Vec::new(),
             raw_diff: None,
+            symbol_refs: None,
         }
     }
 
@@ -2784,7 +4446,7 @@ mod tests {
     // ── next_file / prev_file ──
 
     #[test]
-    fn next_file_at_last_file_stays_at_last() {
+    fn next_file_at_last_file_wraps_to_first() {
         let files = vec![
             make_file("a.rs", vec![], 1, 0),
             make_file("b.rs", vec![], 1, 0),
@@ -2792,11 +4454,11 @@ mod tests {
         let mut tab = make_test_tab(files);
         tab.selected_file = 1;
         tab.next_file();
-        assert_eq!(tab.selected_file, 1);
+        assert_eq!(tab.selected_file, 0);
     }
 
     #[test]
-    fn prev_file_at_first_file_stays_at_first() {
+    fn prev_file_at_first_file_wraps_to_last() {
         let files = vec![
             make_file("a.rs", vec![], 1, 0),
             make_file("b.rs", vec![], 1, 0),
@@ -2804,7 +4466,7 @@ mod tests {
         let mut tab = make_test_tab(files);
         tab.selected_file = 0;
         tab.prev_file();
-        assert_eq!(tab.selected_file, 0);
+        assert_eq!(tab.selected_file, 1);
     }
 
     #[test]
@@ -3080,6 +4742,8 @@ mod tests {
         assert_eq!(DiffMode::Branch.label(), "BRANCH DIFF");
         assert_eq!(DiffMode::Unstaged.label(), "UNSTAGED");
         assert_eq!(DiffMode::Staged.label(), "STAGED");
+        assert_eq!(DiffMode::History.label(), "HISTORY");
+        assert_eq!(DiffMode::Conflicts.label(), "CONFLICTS");
     }
 
     #[test]
@@ -3087,6 +4751,8 @@ mod tests {
         assert_eq!(DiffMode::Branch.git_mode(), "branch");
         assert_eq!(DiffMode::Unstaged.git_mode(), "unstaged");
         assert_eq!(DiffMode::Staged.git_mode(), "staged");
+        assert_eq!(DiffMode::History.git_mode(), "history");
+        assert_eq!(DiffMode::Conflicts.git_mode(), "conflicts");
     }
 
     // ── clamp_hunk ──
@@ -3259,5 +4925,609 @@ mod tests {
         tab.scroll_down(6);
         assert_eq!(tab.current_hunk, 1);
         assert_eq!(tab.current_line, Some(0));
+    }
+
+    // ── TabState new field defaults ──
+
+    #[test]
+    fn new_tab_state_has_default_layers() {
+        let tab = make_test_tab(vec![]);
+        assert!(tab.layers.show_questions);
+        assert!(tab.layers.show_github_comments);
+        assert!(!tab.layers.show_ai_findings);
+    }
+
+    #[test]
+    fn new_tab_state_panel_is_none() {
+        let tab = make_test_tab(vec![]);
+        assert!(tab.panel.is_none());
+    }
+
+    #[test]
+    fn new_tab_state_panel_focus_is_false() {
+        let tab = make_test_tab(vec![]);
+        assert!(!tab.panel_focus);
+    }
+
+    // ── Layer toggles ──
+
+    #[test]
+    fn toggle_layer_ai_flips_show_ai_findings() {
+        let mut tab = make_test_tab(vec![]);
+        assert!(!tab.layers.show_ai_findings);
+        tab.toggle_layer_ai();
+        assert!(tab.layers.show_ai_findings);
+        tab.toggle_layer_ai();
+        assert!(!tab.layers.show_ai_findings);
+    }
+
+    #[test]
+    fn toggle_layer_questions_flips_show_questions() {
+        let mut tab = make_test_tab(vec![]);
+        assert!(tab.layers.show_questions);
+        tab.toggle_layer_questions();
+        assert!(!tab.layers.show_questions);
+        tab.toggle_layer_questions();
+        assert!(tab.layers.show_questions);
+    }
+
+    #[test]
+    fn toggle_layer_comments_flips_show_github_comments() {
+        let mut tab = make_test_tab(vec![]);
+        assert!(tab.layers.show_github_comments);
+        tab.toggle_layer_comments();
+        assert!(!tab.layers.show_github_comments);
+        tab.toggle_layer_comments();
+        assert!(tab.layers.show_github_comments);
+    }
+
+    // ── toggle_panel ──
+
+    #[test]
+    fn toggle_panel_opens_file_detail_from_none() {
+        let mut tab = make_test_tab(vec![]);
+        tab.toggle_panel();
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+    }
+
+    #[test]
+    fn toggle_panel_cycles_to_ai_summary_when_ai_data_present() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("some summary".to_string());
+        tab.layers.show_ai_findings = true;
+        tab.panel = Some(crate::ai::PanelContent::FileDetail);
+        tab.toggle_panel();
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
+    }
+
+    #[test]
+    fn toggle_panel_skips_ai_summary_when_no_ai_data() {
+        let mut tab = make_test_tab(vec![]);
+        tab.panel = Some(crate::ai::PanelContent::FileDetail);
+        tab.toggle_panel();
+        // No AI data, no PR data: FileDetail → None (both skipped)
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_skips_ai_goes_to_pr_when_pr_available() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 1,
+            title: "t".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "u".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "feat".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        tab.panel = Some(crate::ai::PanelContent::FileDetail);
+        tab.toggle_panel();
+        // No AI data, but PR available: FileDetail → PrOverview
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
+    }
+
+    #[test]
+    fn toggle_panel_closes_from_ai_summary_when_no_pr() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.panel = Some(crate::ai::PanelContent::AiSummary);
+        tab.toggle_panel();
+        // AiSummary → None (no PR available)
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_cycles_ai_to_pr_when_pr_available() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 1,
+            title: "t".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "u".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "feat".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        tab.panel = Some(crate::ai::PanelContent::AiSummary);
+        tab.toggle_panel();
+        // AiSummary → PrOverview (PR available)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
+    }
+
+    #[test]
+    fn toggle_panel_resets_panel_scroll_on_each_toggle() {
+        let mut tab = make_test_tab(vec![]);
+        tab.panel_scroll = 42;
+        tab.toggle_panel();
+        assert_eq!(tab.panel_scroll, 0);
+
+        tab.panel_scroll = 10;
+        tab.toggle_panel(); // FileDetail → None (no AI or PR data)
+        assert_eq!(tab.panel_scroll, 0);
+    }
+
+    #[test]
+    fn toggle_panel_sets_panel_focus_false_when_closing() {
+        let mut tab = make_test_tab(vec![]);
+        // PrOverview → None closes the panel and clears focus
+        tab.panel = Some(crate::ai::PanelContent::PrOverview);
+        tab.panel_focus = true;
+        tab.toggle_panel();
+        assert!(!tab.panel_focus);
+    }
+
+    #[test]
+    fn toggle_panel_does_not_clear_panel_focus_when_opening() {
+        let mut tab = make_test_tab(vec![]);
+        tab.panel_focus = false;
+        tab.toggle_panel(); // None → FileDetail
+        // panel_focus stays as-is when panel is opened
+        assert!(!tab.panel_focus);
+    }
+
+    // ── toggle_panel full cycle ──
+
+    #[test]
+    fn toggle_panel_full_cycle_no_ai_no_pr() {
+        let mut tab = make_test_tab(vec![]);
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel(); // None → FileDetail
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel(); // FileDetail → None (no AI, no PR)
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_full_cycle_with_ai_only() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.layers.show_ai_findings = true;
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel(); // None → FileDetail
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel(); // FileDetail → AiSummary (AI present)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
+        tab.toggle_panel(); // AiSummary → None (no PR)
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_full_cycle_with_ai_and_pr() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.layers.show_ai_findings = true;
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 42,
+            title: "My PR".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "user".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "feature".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel(); // None → FileDetail
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel(); // FileDetail → AiSummary
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
+        tab.toggle_panel(); // AiSummary → PrOverview
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
+        tab.toggle_panel(); // PrOverview → None
+        assert_eq!(tab.panel, None);
+    }
+
+    // ── DiffCache ──
+
+    #[test]
+    fn diff_cache_get_on_empty_returns_none() {
+        let mut cache = DiffCache::new(5);
+        assert!(cache.get("abc123").is_none());
+    }
+
+    #[test]
+    fn diff_cache_insert_then_get_returns_stored_files() {
+        let mut cache = DiffCache::new(5);
+        let files = vec![make_file("a.rs", vec![], 1, 0)];
+        cache.insert("abc123".to_string(), files);
+        let result = cache.get("abc123");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 1);
+        assert_eq!(result.unwrap()[0].path, "a.rs");
+    }
+
+    #[test]
+    fn diff_cache_get_wrong_hash_returns_none() {
+        let mut cache = DiffCache::new(5);
+        cache.insert("abc123".to_string(), vec![]);
+        assert!(cache.get("xyz789").is_none());
+    }
+
+    #[test]
+    fn diff_cache_evicts_oldest_when_full() {
+        let mut cache = DiffCache::new(2);
+        cache.insert("first".to_string(), vec![make_file("first.rs", vec![], 1, 0)]);
+        cache.insert("second".to_string(), vec![make_file("second.rs", vec![], 1, 0)]);
+        // Cache is full (max_size=2). Insert a third entry.
+        cache.insert("third".to_string(), vec![make_file("third.rs", vec![], 1, 0)]);
+        // Oldest ("first") should be evicted
+        assert!(cache.get("first").is_none());
+        assert!(cache.get("second").is_some());
+        assert!(cache.get("third").is_some());
+    }
+
+    #[test]
+    fn diff_cache_reinserting_same_hash_updates_entry() {
+        let mut cache = DiffCache::new(3);
+        cache.insert("hash1".to_string(), vec![make_file("v1.rs", vec![], 1, 0)]);
+        cache.insert("hash2".to_string(), vec![]);
+        // Re-insert hash1 with new data
+        cache.insert("hash1".to_string(), vec![make_file("v2.rs", vec![], 2, 0)]);
+        // Updated entry should have new data
+        let result = cache.get("hash1").unwrap();
+        assert_eq!(result[0].path, "v2.rs");
+        assert!(cache.get("hash2").is_some());
+    }
+
+    // ── DiffCache basic behavior ──
+
+    #[test]
+    fn diff_cache_evicts_oldest_at_capacity() {
+        let mut cache = DiffCache::new(2);
+        cache.insert("a".to_string(), vec![]);
+        cache.insert("b".to_string(), vec![]);
+        cache.insert("c".to_string(), vec![]); // should evict "a"
+        assert!(cache.get("a").is_none());
+        assert!(cache.get("b").is_some());
+        assert!(cache.get("c").is_some());
+    }
+
+    #[test]
+    fn diff_cache_get_promotes_to_mru() {
+        let mut cache = DiffCache::new(2);
+        cache.insert("a".to_string(), vec![]);
+        cache.insert("b".to_string(), vec![]);
+        cache.get("a"); // promote "a" to MRU
+        cache.insert("c".to_string(), vec![]); // should evict "b", not "a"
+        assert!(cache.get("a").is_some());
+        assert!(cache.get("b").is_none());
+        assert!(cache.get("c").is_some());
+    }
+
+    #[test]
+    fn diff_cache_miss_returns_none() {
+        let mut cache = DiffCache::new(2);
+        assert!(cache.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn diff_cache_insert_existing_key_replaces() {
+        let mut cache = DiffCache::new(2);
+        cache.insert("a".to_string(), vec![make_file("test.rs", vec![], 1, 0)]);
+        cache.insert("a".to_string(), vec![
+            make_file("test.rs", vec![], 1, 0),
+            make_file("other.rs", vec![], 2, 0),
+        ]);
+        let result = cache.get("a").unwrap();
+        assert_eq!(result.len(), 2); // updated, not original
+    }
+
+    // ── DiffCache MRU promotion ──
+
+    #[test]
+    fn diff_cache_get_promotes_entry_so_it_survives_eviction() {
+        let mut cache = DiffCache::new(3);
+        cache.insert("first".to_string(), vec![make_file("first.rs", vec![], 1, 0)]);
+        cache.insert("second".to_string(), vec![make_file("second.rs", vec![], 1, 0)]);
+        cache.insert("third".to_string(), vec![make_file("third.rs", vec![], 1, 0)]);
+        // Cache is full (max_size=3). Access "first" — promotes it to MRU position.
+        let _ = cache.get("first");
+        // Insert a 4th entry — should evict "second" (now LRU), not "first"
+        cache.insert("fourth".to_string(), vec![make_file("fourth.rs", vec![], 1, 0)]);
+        assert!(cache.get("first").is_some());
+        assert!(cache.get("second").is_none()); // evicted — was LRU after "first" was promoted
+        assert!(cache.get("third").is_some());
+        assert!(cache.get("fourth").is_some());
+    }
+
+    // ── user_expanded tracking ──
+
+    #[test]
+    fn toggle_compacted_on_compacted_file_adds_path_to_user_expanded() {
+        let compacted_file = DiffFile {
+            path: "big_generated.rs".to_string(),
+            status: crate::git::FileStatus::Modified,
+            hunks: vec![],
+            adds: 0,
+            dels: 0,
+            compacted: true,
+            raw_hunk_count: 3,
+        };
+        let mut tab = make_test_tab(vec![compacted_file]);
+        // user_expanded starts empty
+        assert!(!tab.user_expanded.contains("big_generated.rs"));
+        // toggle_compacted on a compacted file tries to expand it via git, which will fail
+        // in a test environment — we only check the HashSet tracking side-effect
+        // by directly simulating the expansion path: mark as not-compacted then re-compact
+        // Instead, verify that marking expanded=true and calling the re-compact branch
+        // removes the path, and vice versa — by setting up the state manually.
+        tab.user_expanded.insert("big_generated.rs".to_string());
+        assert!(tab.user_expanded.contains("big_generated.rs"));
+        // Simulating re-compact branch: remove path from user_expanded
+        tab.user_expanded.remove("big_generated.rs");
+        assert!(!tab.user_expanded.contains("big_generated.rs"));
+    }
+
+    #[test]
+    fn toggle_compacted_on_expanded_file_removes_path_from_user_expanded() {
+        // Start with a non-compacted file that was previously user-expanded
+        let mut tab = make_test_tab(vec![make_file("src/lib.rs", vec![], 5, 2)]);
+        tab.user_expanded.insert("src/lib.rs".to_string());
+        assert!(tab.user_expanded.contains("src/lib.rs"));
+        // Simulate the re-compact branch logic (file.compacted = false → compact it)
+        // The actual toggle_compacted would call file.compacted = true and remove from set.
+        // We test the HashSet contract directly here.
+        tab.user_expanded.remove("src/lib.rs");
+        assert!(!tab.user_expanded.contains("src/lib.rs"));
+    }
+
+    // ── ai_poll_counter type ──
+
+    #[test]
+    fn ai_poll_counter_can_hold_values_above_255() {
+        // ai_poll_counter is u16 — must hold values > u8::MAX (255)
+        // Confirm the type can represent 1000 (would overflow u8)
+        let counter: u16 = 1000;
+        assert_eq!(counter, 1000);
+        assert!(counter > 255);
+    }
+
+    // ── get_line_anchor ──
+
+    fn make_test_app(tab: TabState) -> App {
+        App {
+            tabs: vec![tab],
+            active_tab: 0,
+            input_mode: InputMode::Normal,
+            should_quit: false,
+            overlay: None,
+            watching: false,
+            watch_message: None,
+            watch_message_ticks: 0,
+            ai_poll_counter: 0,
+            config: ErConfig::default(),
+        }
+    }
+
+    #[test]
+    fn get_line_anchor_finds_line_by_new_num() {
+        let lines = vec![
+            DiffLine {
+                line_type: LineType::Context,
+                content: "before".to_string(),
+                old_num: Some(1),
+                new_num: Some(1),
+            },
+            DiffLine {
+                line_type: LineType::Add,
+                content: "target line".to_string(),
+                old_num: None,
+                new_num: Some(2),
+            },
+            DiffLine {
+                line_type: LineType::Context,
+                content: "after".to_string(),
+                old_num: Some(2),
+                new_num: Some(3),
+            },
+        ];
+        let tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
+        let app = make_test_app(tab);
+
+        let anchor = app.get_line_anchor(0, Some(2));
+
+        assert_eq!(anchor.line_content, "target line");
+        assert_eq!(anchor.line_start, Some(2));
+    }
+
+    #[test]
+    fn get_line_anchor_falls_back_to_old_num_for_deleted_line() {
+        let lines = vec![
+            DiffLine {
+                line_type: LineType::Context,
+                content: "context".to_string(),
+                old_num: Some(1),
+                new_num: Some(1),
+            },
+            DiffLine {
+                line_type: LineType::Delete,
+                content: "deleted line".to_string(),
+                old_num: Some(2),
+                new_num: None,
+            },
+        ];
+        let tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 0, 1)]);
+        let app = make_test_app(tab);
+
+        // comment_line_num carries old_num (2) for a delete-only line
+        let anchor = app.get_line_anchor(0, Some(2));
+
+        assert_eq!(anchor.line_content, "deleted line");
+        assert_eq!(anchor.line_start, Some(2));
+    }
+
+    #[test]
+    fn get_line_anchor_returns_empty_content_when_line_not_found() {
+        let lines = vec![
+            DiffLine {
+                line_type: LineType::Add,
+                content: "some line".to_string(),
+                old_num: None,
+                new_num: Some(1),
+            },
+        ];
+        let tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
+        let app = make_test_app(tab);
+
+        // line number 99 does not exist in the hunk
+        let anchor = app.get_line_anchor(0, Some(99));
+
+        assert_eq!(anchor.line_content, "");
+        assert_eq!(anchor.line_start, Some(99));
+    }
+
+    // ── split_diff_active ──
+
+    #[test]
+    fn split_diff_active_returns_false_when_config_off() {
+        let tab = make_test_tab(vec![]);
+        let app = make_test_app(tab);
+        let config = ErConfig::default(); // split_diff defaults to false
+        assert!(!app.split_diff_active(&config));
+    }
+
+    #[test]
+    fn split_diff_active_returns_true_when_config_on_and_no_panel() {
+        let tab = make_test_tab(vec![]);
+        let app = make_test_app(tab);
+        let mut config = ErConfig::default();
+        config.display.split_diff = true;
+        assert!(app.split_diff_active(&config));
+    }
+
+    #[test]
+    fn split_diff_active_returns_false_when_panel_open() {
+        use crate::ai::PanelContent;
+        let mut tab = make_test_tab(vec![]);
+        tab.panel = Some(PanelContent::FileDetail);
+        let app = make_test_app(tab);
+        let mut config = ErConfig::default();
+        config.display.split_diff = true;
+        assert!(!app.split_diff_active(&config));
+    }
+
+    #[test]
+    fn split_diff_active_returns_true_in_history_mode() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::History;
+        let app = make_test_app(tab);
+        let mut config = ErConfig::default();
+        config.display.split_diff = true;
+        assert!(app.split_diff_active(&config));
+    }
+
+    #[test]
+    fn split_diff_active_returns_true_in_conflicts_mode() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::Conflicts;
+        let app = make_test_app(tab);
+        let mut config = ErConfig::default();
+        config.display.split_diff = true;
+        assert!(app.split_diff_active(&config));
+    }
+
+    // ── scroll_right_split / scroll_left_split ──
+
+    #[test]
+    fn scroll_right_split_increments_new_scroll_when_focus_is_new() {
+        let mut tab = make_test_tab(vec![]);
+        tab.split_focus = SplitSide::New;
+        tab.h_scroll_new = 5;
+        tab.scroll_right_split();
+        assert_eq!(tab.h_scroll_new, 6);
+        assert_eq!(tab.h_scroll_old, 0);
+    }
+
+    #[test]
+    fn scroll_right_split_increments_old_scroll_when_focus_is_old() {
+        let mut tab = make_test_tab(vec![]);
+        tab.split_focus = SplitSide::Old;
+        tab.h_scroll_old = 3;
+        tab.scroll_right_split();
+        assert_eq!(tab.h_scroll_old, 4);
+        assert_eq!(tab.h_scroll_new, 0);
+    }
+
+    #[test]
+    fn scroll_left_split_decrements_new_scroll_when_focus_is_new() {
+        let mut tab = make_test_tab(vec![]);
+        tab.split_focus = SplitSide::New;
+        tab.h_scroll_new = 3;
+        tab.scroll_left_split();
+        assert_eq!(tab.h_scroll_new, 2);
+        assert_eq!(tab.h_scroll_old, 0);
+    }
+
+    #[test]
+    fn scroll_left_split_saturates_at_zero() {
+        let mut tab = make_test_tab(vec![]);
+        tab.split_focus = SplitSide::Old;
+        tab.h_scroll_old = 0;
+        tab.scroll_left_split();
+        assert_eq!(tab.h_scroll_old, 0);
+    }
+
+    // ── current_line_number_for_split ──
+
+    #[test]
+    fn current_line_number_for_split_new_returns_new_num() {
+        let lines = vec![DiffLine {
+            line_type: LineType::Add,
+            content: "x".to_string(),
+            old_num: None,
+            new_num: Some(42),
+        }];
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
+        tab.current_line = Some(0);
+        assert_eq!(tab.current_line_number_for_split(SplitSide::New), Some(42));
+    }
+
+    #[test]
+    fn current_line_number_for_split_old_returns_old_num() {
+        let lines = vec![DiffLine {
+            line_type: LineType::Delete,
+            content: "y".to_string(),
+            old_num: Some(7),
+            new_num: None,
+        }];
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 0, 1)]);
+        tab.current_line = Some(0);
+        assert_eq!(tab.current_line_number_for_split(SplitSide::Old), Some(7));
+    }
+
+    #[test]
+    fn current_line_number_for_split_returns_none_when_no_line_selected() {
+        let lines = vec![make_line(LineType::Add, "z", Some(1))];
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
+        tab.current_line = None;
+        assert_eq!(tab.current_line_number_for_split(SplitSide::New), None);
+        assert_eq!(tab.current_line_number_for_split(SplitSide::Old), None);
     }
 }

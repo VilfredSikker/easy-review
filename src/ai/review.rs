@@ -1,57 +1,45 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-// ── View Modes ──
+// ── Inline layer visibility ──
 
-/// Which AI view mode is active
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ViewMode {
-    /// No AI data shown
-    Default,
-    /// AI findings rendered inline in the diff
-    Overlay,
-    /// Dedicated right panel showing findings for the current file
-    SidePanel,
-    /// Full-screen AI review summary (summary, checklist, review order)
-    AiReview,
+/// Inline annotation layer visibility (replaces ViewMode)
+#[derive(Debug, Clone)]
+pub struct InlineLayers {
+    pub show_questions: bool,
+    pub show_github_comments: bool,
+    pub show_ai_findings: bool,
 }
 
-impl ViewMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            ViewMode::Default => "DEFAULT",
-            ViewMode::Overlay => "AI OVERLAY",
-            ViewMode::SidePanel => "SIDE PANEL",
-            ViewMode::AiReview => "AI REVIEW",
+impl Default for InlineLayers {
+    fn default() -> Self {
+        InlineLayers {
+            show_questions: true,
+            show_github_comments: true,
+            show_ai_findings: false,
         }
     }
+}
 
-    /// Cycle to the next available mode
-    pub fn next(&self) -> ViewMode {
-        match self {
-            ViewMode::Default => ViewMode::Overlay,
-            ViewMode::Overlay => ViewMode::SidePanel,
-            ViewMode::SidePanel => ViewMode::AiReview,
-            ViewMode::AiReview => ViewMode::Default,
-        }
-    }
-
-    /// Cycle to the previous available mode
-    pub fn prev(&self) -> ViewMode {
-        match self {
-            ViewMode::Default => ViewMode::AiReview,
-            ViewMode::Overlay => ViewMode::Default,
-            ViewMode::SidePanel => ViewMode::Overlay,
-            ViewMode::AiReview => ViewMode::SidePanel,
-        }
-    }
+/// What the right context panel shows (replaces ViewMode::SidePanel/AiReview)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PanelContent {
+    PrOverview,
+    AiSummary,
+    FileDetail,
+    SymbolRefs,
 }
 
 // ── .er-review.json ──
 
+// TODO(risk:medium): No maximum bounds on `files` or `file_hashes` HashMaps — a malformed
+// sidecar with millions of entries would cause unbounded memory growth before serde returns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErReview {
     pub version: u32,
+    // TODO(risk:medium): `diff_hash` is trusted as a String from untrusted JSON; a crafted
+    // file could supply a non-hex or absurdly long string that passes the equality check
+    // against the real hash, causing stale data to appear fresh.
     pub diff_hash: String,
     #[serde(default)]
     pub created_at: String,
@@ -66,6 +54,9 @@ pub struct ErReview {
     pub file_hashes: HashMap<String, String>,
 }
 
+// TODO(risk:medium): No upper bound on `findings` vec — an adversarial sidecar with
+// thousands of findings per file will make the UI O(n) for every hunk render, and
+// the `all_hints_ordered` sort becomes O(n log n) across the full set each frame.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErFileReview {
     pub risk: RiskLevel,
@@ -99,6 +90,9 @@ impl RiskLevel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
+    // TODO(risk:minor): `id` is an unsanitised String from external JSON; it is used as a
+    // lookup key and displayed verbatim. A crafted sidecar could inject control characters
+    // or ANSI escape sequences that corrupt terminal output.
     pub id: String,
     pub severity: RiskLevel,
     #[serde(default)]
@@ -114,6 +108,8 @@ pub struct Finding {
     pub suggestion: String,
     #[serde(default)]
     pub related_files: Vec<String>,
+    // TODO(risk:medium): No upper bound on `responses` — a crafted sidecar can embed an
+    // unbounded number of AiResponse entries per finding, growing memory indefinitely.
     #[serde(default)]
     pub responses: Vec<AiResponse>,
 }
@@ -195,6 +191,14 @@ pub enum CommentType {
     GitHubComment,
 }
 
+/// Type of navigable hint for unified J/K navigation
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HintType {
+    Question,
+    GitHubComment,
+    Finding,
+}
+
 /// Unified reference to either a question, GitHub comment, or legacy comment.
 /// Used by query methods and UI rendering to handle both types uniformly.
 #[derive(Debug, Clone)]
@@ -230,7 +234,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn author(&self) -> &str {
         match self {
-            CommentRef::Question(_) => "You",
+            CommentRef::Question(q) => if q.author.is_empty() { "You" } else { &q.author },
             CommentRef::GitHubComment(c) => if c.author.is_empty() { "You" } else { &c.author },
             CommentRef::Legacy(c) => if c.author.is_empty() { "You" } else { &c.author },
         }
@@ -271,9 +275,19 @@ impl<'a> CommentRef<'a> {
 
     pub fn in_reply_to(&self) -> Option<&str> {
         match self {
-            CommentRef::Question(_) => None,
+            CommentRef::Question(q) => q.in_reply_to.as_deref(),
             CommentRef::GitHubComment(c) => c.in_reply_to.as_deref(),
             CommentRef::Legacy(c) => c.in_reply_to.as_deref(),
+        }
+    }
+
+    /// Reference to an AI finding this comment responds to
+    #[allow(dead_code)]
+    pub fn finding_ref(&self) -> Option<&str> {
+        match self {
+            CommentRef::Question(_) => None,
+            CommentRef::GitHubComment(c) => c.finding_ref.as_deref(),
+            CommentRef::Legacy(_) => None,
         }
     }
 
@@ -302,19 +316,33 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    /// Whether this comment can be replied to (only GitHub comments, not replies themselves)
+    #[allow(dead_code)]
+    pub fn anchor_status(&self) -> &str {
+        match self {
+            CommentRef::Question(q) => &q.anchor_status,
+            CommentRef::GitHubComment(c) => &c.anchor_status,
+            CommentRef::Legacy(_) => "original",
+        }
+    }
+
+    /// Whether this comment can be replied to (top-level comments/questions, not replies themselves)
     pub fn can_reply(&self) -> bool {
         match self {
-            CommentRef::Question(_) => false,
+            CommentRef::Question(q) => q.in_reply_to.is_none(),
             CommentRef::GitHubComment(c) => c.in_reply_to.is_none(),
             CommentRef::Legacy(c) => c.in_reply_to.is_none(),
         }
     }
 
     /// Whether this comment can be deleted by the user
+    #[allow(dead_code)]
     pub fn can_delete(&self) -> bool {
         match self {
             CommentRef::Question(_) => true,
+            // TODO(risk:medium): Authorship check compares `c.author` (a display name from
+            // the JSON file) to the literal string "You". A GitHub comment whose author
+            // happens to be named "You", or a crafted sidecar that sets `author = "You"`,
+            // would allow the UI to offer deletion of a remote comment it does not own.
             CommentRef::GitHubComment(c) => c.source != "github" || c.author == "You",
             CommentRef::Legacy(c) => c.source != "github" || c.author == "You",
         }
@@ -341,6 +369,8 @@ impl<'a> CommentRef<'a> {
 
 // ── .er-questions.json — personal review notes ──
 
+// TODO(risk:medium): No upper bound on `questions` vec. If an external tool writes
+// thousands of questions, every hunk render scans the full list (O(n) per hunk per frame).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErQuestions {
     pub version: u32,
@@ -365,6 +395,34 @@ pub struct ReviewQuestion {
     /// Runtime-only staleness flag (not persisted)
     #[serde(skip)]
     pub stale: bool,
+    /// Up to 3 content lines before the target line in the same hunk
+    #[serde(default)]
+    pub context_before: Vec<String>,
+    /// Up to 3 content lines after the target line in the same hunk
+    #[serde(default)]
+    pub context_after: Vec<String>,
+    /// Old-side line number from diff at creation time
+    #[serde(default)]
+    pub old_line_start: Option<usize>,
+    /// Hunk header string at creation time
+    #[serde(default)]
+    pub hunk_header: String,
+    /// "original" | "relocated" | "lost"
+    #[serde(default = "default_anchor_status")]
+    // TODO(risk:minor): `anchor_status` is a free-form String from untrusted JSON, but code
+    // elsewhere pattern-matches on the string values "original"/"relocated"/"lost". An
+    // unexpected value silently falls through without warning.
+    pub anchor_status: String,
+    /// Diff hash when this comment was last relocated
+    #[serde(default)]
+    pub relocated_at_hash: String,
+    /// ID of the question this is a reply to (None = top-level question)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+    /// Author display name (defaults to "You")
+    #[serde(default = "default_author")]
+    pub author: String,
 }
 
 // ── .er-github-comments.json — GitHub PR comments ──
@@ -381,6 +439,8 @@ pub struct GitHubSyncState {
     pub last_synced: String,
 }
 
+// TODO(risk:medium): No upper bound on `comments` vec. Repos with active review threads
+// can accumulate hundreds of entries; scanning all of them on every hunk render is O(n).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErGitHubComments {
     pub version: u32,
@@ -423,10 +483,36 @@ pub struct GitHubReviewComment {
     /// Runtime-only staleness flag (not persisted)
     #[serde(skip)]
     pub stale: bool,
+    /// Up to 3 content lines before the target line in the same hunk
+    #[serde(default)]
+    pub context_before: Vec<String>,
+    /// Up to 3 content lines after the target line in the same hunk
+    #[serde(default)]
+    pub context_after: Vec<String>,
+    /// Old-side line number from diff at creation time
+    #[serde(default)]
+    pub old_line_start: Option<usize>,
+    /// Hunk header string at creation time
+    #[serde(default)]
+    pub hunk_header: String,
+    /// "original" | "relocated" | "lost"
+    #[serde(default = "default_anchor_status")]
+    pub anchor_status: String,
+    /// Diff hash when this comment was last relocated
+    #[serde(default)]
+    pub relocated_at_hash: String,
+    /// Optional reference to an AI finding this comment responds to
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub finding_ref: Option<String>,
 }
 
 fn default_source() -> String {
     "local".to_string()
+}
+
+fn default_anchor_status() -> String {
+    "original".to_string()
 }
 
 fn default_author() -> String {
@@ -490,7 +576,6 @@ pub enum ReviewFocus {
 // ── Aggregate AI state for a tab ──
 
 /// All loaded AI data for a single repo tab
-#[derive(Debug, Clone)]
 pub struct AiState {
     pub review: Option<ErReview>,
     pub order: Option<ErOrder>,
@@ -506,12 +591,6 @@ pub struct AiState {
     pub is_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
     pub stale_files: HashSet<String>,
-    /// Current view mode
-    pub view_mode: ViewMode,
-    /// Which column has focus in AiReview mode
-    pub review_focus: ReviewFocus,
-    /// Cursor position within the focused section in AiReview mode
-    pub review_cursor: usize,
 }
 
 impl Default for AiState {
@@ -526,9 +605,6 @@ impl Default for AiState {
             feedback: None,
             is_stale: false,
             stale_files: HashSet::new(),
-            view_mode: ViewMode::Default,
-            review_focus: ReviewFocus::Files,
-            review_cursor: 0,
         }
     }
 }
@@ -545,11 +621,6 @@ impl AiState {
             || self.order.is_some()
             || self.summary.is_some()
             || self.checklist.is_some()
-    }
-
-    /// Whether overlay mode is available (requires review data)
-    pub fn overlay_available(&self) -> bool {
-        self.review.is_some()
     }
 
     /// Get file review for a given path
@@ -633,6 +704,7 @@ impl AiState {
                 if q.file == path
                     && q.hunk_index == Some(hunk_idx)
                     && q.line_start == Some(line_num)
+                    && q.in_reply_to.is_none()
                 {
                     result.push(CommentRef::Question(q));
                 }
@@ -674,6 +746,7 @@ impl AiState {
                 if q.file == path
                     && q.hunk_index == Some(hunk_idx)
                     && q.line_start.is_none()
+                    && q.in_reply_to.is_none()
                 {
                     result.push(CommentRef::Question(q));
                 }
@@ -707,9 +780,58 @@ impl AiState {
         result
     }
 
-    /// Replies to a specific comment (GitHub comments only — questions don't have replies)
+    /// Comments for a file that have no valid anchor (hunk_index is None).
+    /// Returns top-level comments only (no replies).
+    pub fn comments_for_file_unanchored(&self, path: &str) -> Vec<CommentRef<'_>> {
+        let mut result = Vec::new();
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.file == path
+                    && q.hunk_index.is_none()
+                    && q.in_reply_to.is_none()
+                {
+                    result.push(CommentRef::Question(q));
+                }
+            }
+        }
+        if let Some(gc) = &self.github_comments {
+            for c in &gc.comments {
+                if c.file == path
+                    && c.hunk_index.is_none()
+                    && c.in_reply_to.is_none()
+                {
+                    result.push(CommentRef::GitHubComment(c));
+                }
+            }
+        }
+        // Legacy fallback
+        if result.is_empty() {
+            if let Some(fb) = &self.feedback {
+                for c in &fb.comments {
+                    if c.file == path
+                        && c.hunk_index.is_none()
+                        && c.in_reply_to.is_none()
+                    {
+                        result.push(CommentRef::Legacy(c));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Replies to a specific comment (questions or GitHub comments)
     pub fn replies_to(&self, comment_id: &str) -> Vec<CommentRef<'_>> {
         let mut result = Vec::new();
+        // Question replies
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.in_reply_to.as_deref() == Some(comment_id) {
+                    result.push(CommentRef::Question(q));
+                }
+            }
+        }
+        // GitHub comment replies
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.in_reply_to.as_deref() == Some(comment_id) {
@@ -742,35 +864,180 @@ impl AiState {
         self.questions.as_ref()
     }
 
+    /// Whether a file has any questions (top-level, not replies)
+    #[allow(dead_code)]
+    pub fn file_has_questions(&self, path: &str) -> bool {
+        self.questions.as_ref().is_some_and(|qs| {
+            qs.questions.iter().any(|q| q.file == path)
+        })
+    }
+
+    /// Count of questions for a file (top-level only)
+    pub fn file_question_count(&self, path: &str) -> usize {
+        self.questions.as_ref().map_or(0, |qs| {
+            qs.questions.iter().filter(|q| q.file == path).count()
+        })
+    }
+
+    /// Whether a file has any GitHub comments (top-level, not replies)
+    #[allow(dead_code)]
+    pub fn file_has_github_comments(&self, path: &str) -> bool {
+        self.github_comments.as_ref().is_some_and(|gc| {
+            gc.comments.iter().any(|c| c.file == path && c.in_reply_to.is_none())
+        })
+    }
+
+    /// Count of GitHub comments for a file (top-level only)
+    pub fn file_github_comment_count(&self, path: &str) -> usize {
+        self.github_comments.as_ref().map_or(0, |gc| {
+            gc.comments.iter().filter(|c| c.file == path && c.in_reply_to.is_none()).count()
+        })
+    }
+
+    /// All top-level comments (questions + GitHub, excluding replies) across all files,
+    /// ordered by file path, then hunk index, then line_start.
+    /// Returns (file, hunk_index, line_start, comment_id) tuples for navigation.
+    pub fn all_comments_ordered(&self) -> Vec<(String, Option<usize>, Option<usize>, String)> {
+        let mut result = Vec::new();
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.in_reply_to.is_none() {
+                    result.push((q.file.clone(), q.hunk_index, q.line_start, q.id.clone()));
+                }
+            }
+        }
+        if let Some(gc) = &self.github_comments {
+            for c in &gc.comments {
+                if c.in_reply_to.is_none() {
+                    result.push((c.file.clone(), c.hunk_index, c.line_start, c.id.clone()));
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        result
+    }
+
+    /// All questions across all files, ordered by file path then hunk index.
+    pub fn all_questions_ordered(&self) -> Vec<(String, Option<usize>, String)> {
+        let mut result = Vec::new();
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.in_reply_to.is_none() {
+                    result.push((q.file.clone(), q.hunk_index, q.id.clone()));
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        result
+    }
+
+    /// All findings across all files, ordered by file path then hunk index then line_start.
+    /// Returns (file, hunk_index, line_start, finding_id) tuples for navigation.
+    pub fn all_findings_ordered(&self) -> Vec<(String, Option<usize>, Option<usize>, String)> {
+        let mut result = Vec::new();
+        if let Some(review) = &self.review {
+            for (file_path, file_review) in &review.files {
+                for finding in &file_review.findings {
+                    result.push((file_path.clone(), finding.hunk_index, finding.line_start, finding.id.clone()));
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        result
+    }
+
+    /// All navigable hints (comments + questions + findings) merged and sorted by file + line.
+    /// Returns (file, hunk_index, line_start, id, hint_type) tuples.
+    /// Replies are included and sorted immediately after their parent.
+    pub fn all_hints_ordered(&self) -> Vec<(String, Option<usize>, Option<usize>, String, HintType)> {
+        // Extended tuple: (file, hunk_index, line_start, is_reply, position, id, hint_type)
+        // is_reply=0 for parents, 1 for replies — ensures parents sort before their replies
+        // position preserves insertion order within each (is_reply) group for stable output
+        let mut extended: Vec<(String, Option<usize>, Option<usize>, u8, usize, String, HintType)> = Vec::new();
+        // Questions (both top-level and replies)
+        if let Some(qs) = &self.questions {
+            for (i, q) in qs.questions.iter().enumerate() {
+                let is_reply = if q.in_reply_to.is_none() { 0 } else { 1 };
+                extended.push((q.file.clone(), q.hunk_index, q.line_start, is_reply, i, q.id.clone(), HintType::Question));
+            }
+        }
+        // GitHub comments (both top-level and replies)
+        if let Some(gc) = &self.github_comments {
+            for (i, c) in gc.comments.iter().enumerate() {
+                let is_reply = if c.in_reply_to.is_none() { 0 } else { 1 };
+                extended.push((c.file.clone(), c.hunk_index, c.line_start, is_reply, i, c.id.clone(), HintType::GitHubComment));
+            }
+        }
+        // Findings (never have replies)
+        if let Some(review) = &self.review {
+            for (file_path, file_review) in &review.files {
+                for (i, finding) in file_review.findings.iter().enumerate() {
+                    extended.push((file_path.clone(), finding.hunk_index, finding.line_start, 0, i, finding.id.clone(), HintType::Finding));
+                }
+            }
+        }
+        extended.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+                .then(a.3.cmp(&b.3))
+                .then(a.4.cmp(&b.4))
+        });
+        extended.into_iter().map(|(file, hunk, line, _, _, id, hint_type)| (file, hunk, line, id, hint_type)).collect()
+    }
+
+    /// Find a comment by ID across all comment types
+    pub fn find_comment(&self, id: &str) -> Option<CommentRef<'_>> {
+        if let Some(qs) = &self.questions {
+            if let Some(q) = qs.questions.iter().find(|q| q.id == id) {
+                return Some(CommentRef::Question(q));
+            }
+        }
+        if let Some(gc) = &self.github_comments {
+            if let Some(c) = gc.comments.iter().find(|c| c.id == id) {
+                return Some(CommentRef::GitHubComment(c));
+            }
+        }
+        if let Some(fb) = &self.feedback {
+            if let Some(c) = fb.comments.iter().find(|c| c.id == id) {
+                return Some(CommentRef::Legacy(c));
+            }
+        }
+        None
+    }
+
+    /// Replies to a question (question replies stored in .er-questions.json)
+    #[allow(dead_code)]
+    pub fn replies_for_question(&self, question_id: &str) -> Vec<CommentRef<'_>> {
+        let mut result = Vec::new();
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.in_reply_to.as_deref() == Some(question_id) {
+                    result.push(CommentRef::Question(q));
+                }
+            }
+        }
+        result
+    }
+
+    /// GitHub comments that reference a specific AI finding
+    pub fn comments_for_finding(&self, finding_id: &str) -> Vec<CommentRef<'_>> {
+        let mut result = Vec::new();
+        if let Some(gc) = &self.github_comments {
+            for c in &gc.comments {
+                if c.finding_ref.as_deref() == Some(finding_id) {
+                    result.push(CommentRef::GitHubComment(c));
+                }
+            }
+        }
+        result
+    }
+
     /// Total number of findings across all files
     pub fn total_findings(&self) -> usize {
         match &self.review {
             Some(r) => r.files.values().map(|f| f.findings.len()).sum(),
             None => 0,
-        }
-    }
-
-    /// Cycle to next available view mode
-    // Invariant: view_mode != ViewMode::Default requires overlay_available().
-    // When overlay data is lost (e.g. stale .er-review.json deleted), reload_ai_state
-    // collapses view_mode back to Default via the same guard.
-    pub fn cycle_view_mode(&mut self) {
-        let next = self.view_mode.next();
-        // Skip modes that need review data when it's not present
-        if !self.overlay_available() && next != ViewMode::Default {
-            self.view_mode = ViewMode::Default;
-        } else {
-            self.view_mode = next;
-        }
-    }
-
-    /// Cycle to previous available view mode
-    pub fn cycle_view_mode_prev(&mut self) {
-        let prev = self.view_mode.prev();
-        if !self.overlay_available() && prev != ViewMode::Default {
-            self.view_mode = ViewMode::Default;
-        } else {
-            self.view_mode = prev;
         }
     }
 
@@ -784,38 +1051,6 @@ impl AiState {
     /// Number of items in the right column (checklist items)
     pub fn review_checklist_count(&self) -> usize {
         self.checklist.as_ref().map(|c| c.items.len()).unwrap_or(0)
-    }
-
-    /// Max cursor value for the current focus
-    fn review_item_count(&self) -> usize {
-        match self.review_focus {
-            ReviewFocus::Files => self.review_file_count(),
-            ReviewFocus::Checklist => self.review_checklist_count(),
-        }
-    }
-
-    /// Move cursor down in AiReview
-    pub fn review_next(&mut self) {
-        let count = self.review_item_count();
-        if count > 0 && self.review_cursor + 1 < count {
-            self.review_cursor += 1;
-        }
-    }
-
-    /// Move cursor up in AiReview
-    pub fn review_prev(&mut self) {
-        if self.review_cursor > 0 {
-            self.review_cursor -= 1;
-        }
-    }
-
-    /// Switch focus between columns, resetting cursor to 0
-    pub fn review_toggle_focus(&mut self) {
-        self.review_focus = match self.review_focus {
-            ReviewFocus::Files => ReviewFocus::Checklist,
-            ReviewFocus::Checklist => ReviewFocus::Files,
-        };
-        self.review_cursor = 0;
     }
 
     /// Get the file path at the given cursor index in the risk list (sorted high→low)
@@ -978,32 +1213,6 @@ mod tests {
         }
     }
 
-    // ── ViewMode ──
-
-    #[test]
-    fn view_mode_next_cycles_forward() {
-        assert_eq!(ViewMode::Default.next(), ViewMode::Overlay);
-        assert_eq!(ViewMode::Overlay.next(), ViewMode::SidePanel);
-        assert_eq!(ViewMode::SidePanel.next(), ViewMode::AiReview);
-        assert_eq!(ViewMode::AiReview.next(), ViewMode::Default);
-    }
-
-    #[test]
-    fn view_mode_prev_cycles_backward() {
-        assert_eq!(ViewMode::Default.prev(), ViewMode::AiReview);
-        assert_eq!(ViewMode::AiReview.prev(), ViewMode::SidePanel);
-        assert_eq!(ViewMode::SidePanel.prev(), ViewMode::Overlay);
-        assert_eq!(ViewMode::Overlay.prev(), ViewMode::Default);
-    }
-
-    #[test]
-    fn view_mode_label_returns_correct_string() {
-        assert_eq!(ViewMode::Default.label(), "DEFAULT");
-        assert_eq!(ViewMode::Overlay.label(), "AI OVERLAY");
-        assert_eq!(ViewMode::SidePanel.label(), "SIDE PANEL");
-        assert_eq!(ViewMode::AiReview.label(), "AI REVIEW");
-    }
-
     // ── RiskLevel ──
 
     #[test]
@@ -1045,21 +1254,6 @@ mod tests {
             items: vec![],
         });
         assert!(state.has_data());
-    }
-
-    // ── AiState::overlay_available ──
-
-    #[test]
-    fn overlay_available_no_review_is_false() {
-        let state = AiState::default();
-        assert!(!state.overlay_available());
-    }
-
-    #[test]
-    fn overlay_available_with_review_is_true() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![]));
-        assert!(state.overlay_available());
     }
 
     // ── AiState::total_findings ──
@@ -1382,119 +1576,6 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    // ── AiState::cycle_view_mode ──
-
-    #[test]
-    fn cycle_view_mode_with_overlay_available_cycles_all_modes() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![]));
-        assert_eq!(state.view_mode, ViewMode::Default);
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::Overlay);
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::SidePanel);
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::AiReview);
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::Default);
-    }
-
-    #[test]
-    fn cycle_view_mode_without_overlay_stays_at_default() {
-        let mut state = AiState::default();
-        state.cycle_view_mode();
-        assert_eq!(state.view_mode, ViewMode::Default);
-    }
-
-    // ── AiState::cycle_view_mode_prev ──
-
-    #[test]
-    fn cycle_view_mode_prev_with_overlay_available_cycles_backward() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![]));
-        assert_eq!(state.view_mode, ViewMode::Default);
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::AiReview);
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::SidePanel);
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::Overlay);
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::Default);
-    }
-
-    #[test]
-    fn cycle_view_mode_prev_without_overlay_stays_at_default() {
-        let mut state = AiState::default();
-        state.cycle_view_mode_prev();
-        assert_eq!(state.view_mode, ViewMode::Default);
-    }
-
-    // ── AiState::review_next / review_prev ──
-
-    #[test]
-    fn review_next_increments_cursor() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![
-            ("a.rs", RiskLevel::High, vec![]),
-            ("b.rs", RiskLevel::Low, vec![]),
-        ]));
-        assert_eq!(state.review_cursor, 0);
-        state.review_next();
-        assert_eq!(state.review_cursor, 1);
-    }
-
-    #[test]
-    fn review_next_at_last_item_stays() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![("a.rs", RiskLevel::High, vec![])]));
-        state.review_cursor = 0;
-        state.review_next();
-        assert_eq!(state.review_cursor, 0);
-    }
-
-    #[test]
-    fn review_prev_decrements_cursor() {
-        let mut state = AiState::default();
-        state.review = Some(make_review_with_files(vec![
-            ("a.rs", RiskLevel::High, vec![]),
-            ("b.rs", RiskLevel::Low, vec![]),
-        ]));
-        state.review_cursor = 1;
-        state.review_prev();
-        assert_eq!(state.review_cursor, 0);
-    }
-
-    #[test]
-    fn review_prev_at_zero_stays() {
-        let mut state = AiState::default();
-        state.review_cursor = 0;
-        state.review_prev();
-        assert_eq!(state.review_cursor, 0);
-    }
-
-    // ── AiState::review_toggle_focus ──
-
-    #[test]
-    fn review_toggle_focus_files_to_checklist_resets_cursor() {
-        let mut state = AiState::default();
-        state.review_cursor = 3;
-        assert_eq!(state.review_focus, ReviewFocus::Files);
-        state.review_toggle_focus();
-        assert_eq!(state.review_focus, ReviewFocus::Checklist);
-        assert_eq!(state.review_cursor, 0);
-    }
-
-    #[test]
-    fn review_toggle_focus_checklist_to_files_resets_cursor() {
-        let mut state = AiState::default();
-        state.review_focus = ReviewFocus::Checklist;
-        state.review_cursor = 5;
-        state.review_toggle_focus();
-        assert_eq!(state.review_focus, ReviewFocus::Files);
-        assert_eq!(state.review_cursor, 0);
-    }
-
     // ── AiState::review_file_at ──
 
     #[test]
@@ -1619,5 +1700,454 @@ mod tests {
     fn checklist_file_at_no_checklist_returns_none() {
         let state = AiState::default();
         assert_eq!(state.checklist_file_at(0), None);
+    }
+
+    // ── InlineLayers ──
+
+    #[test]
+    fn inline_layers_default_questions_true() {
+        let layers = InlineLayers::default();
+        assert!(layers.show_questions);
+    }
+
+    #[test]
+    fn inline_layers_default_github_comments_true() {
+        let layers = InlineLayers::default();
+        assert!(layers.show_github_comments);
+    }
+
+    #[test]
+    fn inline_layers_default_ai_findings_false() {
+        let layers = InlineLayers::default();
+        assert!(!layers.show_ai_findings);
+    }
+
+    // ── PanelContent ──
+
+    #[test]
+    fn panel_content_variants_are_comparable() {
+        assert_eq!(PanelContent::FileDetail, PanelContent::FileDetail);
+        assert_eq!(PanelContent::AiSummary, PanelContent::AiSummary);
+        assert_eq!(PanelContent::PrOverview, PanelContent::PrOverview);
+        assert_ne!(PanelContent::FileDetail, PanelContent::AiSummary);
+        assert_ne!(PanelContent::AiSummary, PanelContent::PrOverview);
+    }
+
+    // ── Helpers for question / github comment tests ──
+
+    fn make_question(id: &str, file: &str, hunk_index: Option<usize>) -> ReviewQuestion {
+        ReviewQuestion {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index,
+            line_start: None,
+            line_content: String::new(),
+            text: "question text".to_string(),
+            resolved: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            in_reply_to: None,
+            author: "You".to_string(),
+        }
+    }
+
+    fn make_github_comment(id: &str, file: &str, hunk_index: Option<usize>, in_reply_to: Option<&str>) -> GitHubReviewComment {
+        GitHubReviewComment {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index,
+            line_start: None,
+            line_end: None,
+            line_content: String::new(),
+            comment: "comment text".to_string(),
+            in_reply_to: in_reply_to.map(|s| s.to_string()),
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+        }
+    }
+
+    // ── AiState::all_comments_ordered ──
+
+    #[test]
+    fn all_comments_ordered_empty_returns_empty() {
+        let state = AiState::default();
+        assert!(state.all_comments_ordered().is_empty());
+    }
+
+    #[test]
+    fn all_comments_ordered_sorts_by_file_then_hunk() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "b.rs", Some(0)),
+                make_question("q2", "a.rs", Some(1)),
+                make_question("q3", "a.rs", Some(0)),
+            ],
+        });
+        let ordered = state.all_comments_ordered();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].0, "a.rs");
+        assert_eq!(ordered[0].1, Some(0));
+        assert_eq!(ordered[1].0, "a.rs");
+        assert_eq!(ordered[1].1, Some(1));
+        assert_eq!(ordered[2].0, "b.rs");
+        assert_eq!(ordered[2].1, Some(0));
+    }
+
+    #[test]
+    fn all_comments_ordered_excludes_replies() {
+        let mut state = AiState::default();
+        let parent = make_github_comment("c1", "a.rs", Some(0), None);
+        let reply = make_github_comment("c2", "a.rs", Some(0), Some("c1"));
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![parent, reply],
+        });
+        let ordered = state.all_comments_ordered();
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0].3, "c1");
+    }
+
+    #[test]
+    fn all_comments_ordered_merges_questions_and_github_comments() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q1", "a.rs", Some(0))],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_github_comment("c1", "a.rs", Some(1), None)],
+        });
+        let ordered = state.all_comments_ordered();
+        assert_eq!(ordered.len(), 2);
+        let ids: Vec<&str> = ordered.iter().map(|(_, _, _, id)| id.as_str()).collect();
+        assert!(ids.contains(&"q1"));
+        assert!(ids.contains(&"c1"));
+    }
+
+    // ── AiState::all_questions_ordered ──
+
+    #[test]
+    fn all_questions_ordered_empty_returns_empty() {
+        let state = AiState::default();
+        assert!(state.all_questions_ordered().is_empty());
+    }
+
+    #[test]
+    fn all_questions_ordered_sorts_by_file_then_hunk() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "z.rs", Some(0)),
+                make_question("q2", "a.rs", Some(2)),
+                make_question("q3", "a.rs", Some(0)),
+            ],
+        });
+        let ordered = state.all_questions_ordered();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].2, "q3"); // a.rs hunk 0
+        assert_eq!(ordered[1].2, "q2"); // a.rs hunk 2
+        assert_eq!(ordered[2].2, "q1"); // z.rs hunk 0
+    }
+
+    #[test]
+    fn all_questions_ordered_none_hunk_sorts_before_some() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "a.rs", Some(0)),
+                make_question("q2", "a.rs", None),
+            ],
+        });
+        let ordered = state.all_questions_ordered();
+        assert_eq!(ordered.len(), 2);
+        // None < Some(0) in Rust Ord for Option<usize>
+        assert_eq!(ordered[0].2, "q2"); // None hunk
+        assert_eq!(ordered[1].2, "q1"); // Some(0) hunk
+    }
+
+    // ── AiState::file_question_count ──
+
+    #[test]
+    fn file_question_count_no_questions_returns_zero() {
+        let state = AiState::default();
+        assert_eq!(state.file_question_count("a.rs"), 0);
+    }
+
+    #[test]
+    fn file_question_count_returns_count_for_file() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "a.rs", Some(0)),
+                make_question("q2", "a.rs", Some(1)),
+                make_question("q3", "b.rs", Some(0)),
+            ],
+        });
+        assert_eq!(state.file_question_count("a.rs"), 2);
+        assert_eq!(state.file_question_count("b.rs"), 1);
+        assert_eq!(state.file_question_count("c.rs"), 0);
+    }
+
+    #[test]
+    fn file_question_count_counts_all_hunks_for_file() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "a.rs", Some(0)),
+                make_question("q2", "a.rs", Some(0)), // same hunk, different question
+                make_question("q3", "a.rs", None),
+            ],
+        });
+        assert_eq!(state.file_question_count("a.rs"), 3);
+    }
+
+    // ── AiState::file_github_comment_count ──
+
+    #[test]
+    fn file_github_comment_count_no_comments_returns_zero() {
+        let state = AiState::default();
+        assert_eq!(state.file_github_comment_count("a.rs"), 0);
+    }
+
+    #[test]
+    fn file_github_comment_count_returns_top_level_only() {
+        let mut state = AiState::default();
+        let parent = make_github_comment("c1", "a.rs", Some(0), None);
+        let reply = make_github_comment("c2", "a.rs", Some(0), Some("c1"));
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![parent, reply],
+        });
+        // Reply should not be counted
+        assert_eq!(state.file_github_comment_count("a.rs"), 1);
+    }
+
+    #[test]
+    fn file_github_comment_count_correct_per_file() {
+        let mut state = AiState::default();
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                make_github_comment("c1", "a.rs", Some(0), None),
+                make_github_comment("c2", "a.rs", Some(1), None),
+                make_github_comment("c3", "b.rs", Some(0), None),
+                make_github_comment("c4", "a.rs", Some(0), Some("c1")), // reply, not counted
+            ],
+        });
+        assert_eq!(state.file_github_comment_count("a.rs"), 2);
+        assert_eq!(state.file_github_comment_count("b.rs"), 1);
+        assert_eq!(state.file_github_comment_count("c.rs"), 0);
+    }
+
+    // ── AiState::all_hints_ordered ──
+
+    #[test]
+    fn all_hints_ordered_includes_replies() {
+        let mut state = AiState::default();
+        let mut reply = make_question("q-reply", "a.rs", Some(0));
+        reply.in_reply_to = Some("q-parent".to_string());
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q-parent", "a.rs", Some(0)),
+                reply,
+            ],
+        });
+        let hints = state.all_hints_ordered();
+        let ids: Vec<&str> = hints.iter().map(|(_, _, _, id, _)| id.as_str()).collect();
+        assert!(ids.contains(&"q-parent"));
+        assert!(ids.contains(&"q-reply"));
+        assert_eq!(hints.len(), 2);
+    }
+
+    #[test]
+    fn all_hints_ordered_sorts_parent_before_reply() {
+        let mut state = AiState::default();
+        let parent = make_question("q-parent", "a.rs", Some(0));
+        let mut reply = make_question("q-reply", "a.rs", Some(0));
+        reply.in_reply_to = Some("q-parent".to_string());
+        // Insert reply first to verify sorting, not insertion order
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![reply, parent],
+        });
+        let hints = state.all_hints_ordered();
+        assert_eq!(hints.len(), 2);
+        assert_eq!(hints[0].3, "q-parent");
+        assert_eq!(hints[1].3, "q-reply");
+    }
+
+    #[test]
+    fn all_hints_ordered_multiple_replies_after_parent() {
+        let mut state = AiState::default();
+        let parent = make_question("q-parent", "a.rs", Some(0));
+        let mut reply1 = make_question("q-reply1", "a.rs", Some(0));
+        reply1.in_reply_to = Some("q-parent".to_string());
+        let mut reply2 = make_question("q-reply2", "a.rs", Some(0));
+        reply2.in_reply_to = Some("q-parent".to_string());
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![reply2, reply1, parent],
+        });
+        let hints = state.all_hints_ordered();
+        assert_eq!(hints.len(), 3);
+        // Parent must be first
+        assert_eq!(hints[0].3, "q-parent");
+        // Both replies must follow
+        let reply_ids: Vec<&str> = hints[1..].iter().map(|(_, _, _, id, _)| id.as_str()).collect();
+        assert!(reply_ids.contains(&"q-reply1"));
+        assert!(reply_ids.contains(&"q-reply2"));
+    }
+
+    #[test]
+    fn all_hints_ordered_mixed_locations_with_replies() {
+        let mut state = AiState::default();
+        let parent0 = make_github_comment("c-parent0", "a.rs", Some(0), None);
+        let reply0 = make_github_comment("c-reply0", "a.rs", Some(0), Some("c-parent0"));
+        let parent1 = make_github_comment("c-parent1", "a.rs", Some(1), None);
+        let reply1 = make_github_comment("c-reply1", "a.rs", Some(1), Some("c-parent1"));
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![reply1, parent1, reply0, parent0],
+        });
+        let hints = state.all_hints_ordered();
+        assert_eq!(hints.len(), 4);
+        let ids: Vec<&str> = hints.iter().map(|(_, _, _, id, _)| id.as_str()).collect();
+        // parent0 and reply0 both at hunk 0, parent1 and reply1 at hunk 1
+        // Expected order: parent0, reply0, parent1, reply1
+        assert_eq!(ids[0], "c-parent0");
+        assert_eq!(ids[1], "c-reply0");
+        assert_eq!(ids[2], "c-parent1");
+        assert_eq!(ids[3], "c-reply1");
+    }
+
+    // ── AiState::all_findings_ordered ──
+
+    #[test]
+    fn all_findings_ordered_empty_state_returns_empty() {
+        let state = AiState::default();
+        assert!(state.all_findings_ordered().is_empty());
+    }
+
+    #[test]
+    fn all_findings_ordered_no_review_returns_empty() {
+        let mut state = AiState::default();
+        state.summary = Some("some summary".to_string());
+        assert!(state.all_findings_ordered().is_empty());
+    }
+
+    #[test]
+    fn all_findings_ordered_single_file_sorted_by_hunk_index() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![
+                make_finding("f2", Some(2), RiskLevel::Medium),
+                make_finding("f0", Some(0), RiskLevel::High),
+                make_finding("f1", Some(1), RiskLevel::Low),
+            ],
+        )]));
+        let ordered = state.all_findings_ordered();
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].1, Some(0));
+        assert_eq!(ordered[0].3, "f0");
+        assert_eq!(ordered[1].1, Some(1));
+        assert_eq!(ordered[1].3, "f1");
+        assert_eq!(ordered[2].1, Some(2));
+        assert_eq!(ordered[2].3, "f2");
+    }
+
+    #[test]
+    fn all_findings_ordered_multiple_files_sorted_by_file_then_hunk() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![
+            (
+                "z.rs",
+                RiskLevel::Low,
+                vec![make_finding("fz0", Some(0), RiskLevel::Low)],
+            ),
+            (
+                "a.rs",
+                RiskLevel::High,
+                vec![
+                    make_finding("fa1", Some(1), RiskLevel::High),
+                    make_finding("fa0", Some(0), RiskLevel::Medium),
+                ],
+            ),
+        ]));
+        let ordered = state.all_findings_ordered();
+        assert_eq!(ordered.len(), 3);
+        // sorted by file path first: a.rs < z.rs
+        assert_eq!(ordered[0].0, "a.rs");
+        assert_eq!(ordered[0].3, "fa0");
+        assert_eq!(ordered[1].0, "a.rs");
+        assert_eq!(ordered[1].3, "fa1");
+        assert_eq!(ordered[2].0, "z.rs");
+        assert_eq!(ordered[2].3, "fz0");
+    }
+
+    #[test]
+    fn all_findings_ordered_none_hunk_sorts_before_some() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![
+                make_finding("f_some", Some(0), RiskLevel::High),
+                make_finding("f_none", None, RiskLevel::Medium),
+            ],
+        )]));
+        let ordered = state.all_findings_ordered();
+        assert_eq!(ordered.len(), 2);
+        // None < Some(0) in Rust Ord for Option<usize>
+        assert_eq!(ordered[0].1, None);
+        assert_eq!(ordered[0].3, "f_none");
+        assert_eq!(ordered[1].1, Some(0));
+        assert_eq!(ordered[1].3, "f_some");
     }
 }

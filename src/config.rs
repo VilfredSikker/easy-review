@@ -11,6 +11,8 @@ pub struct ErConfig {
     pub display: DisplayConfig,
     #[serde(default)]
     pub watched: WatchedConfig,
+    #[serde(default)]
+    pub hints: HintConfig,
 }
 
 /// [watched] section configuration
@@ -31,21 +33,15 @@ fn default_diff_mode() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureFlags {
     #[serde(default = "default_true")]
-    pub split_diff: bool,
-    #[serde(default = "default_true")]
-    pub exit_heatmap: bool,
-    #[serde(default)]
-    pub blame_annotations: bool,
-    #[serde(default = "default_true")]
-    pub bookmarks: bool,
-    #[serde(default = "default_true")]
     pub view_branch: bool,
     #[serde(default = "default_true")]
     pub view_unstaged: bool,
     #[serde(default = "default_true")]
     pub view_staged: bool,
     #[serde(default = "default_true")]
-    pub ai_overlays: bool,
+    pub view_history: bool,
+    #[serde(default = "default_true")]
+    pub view_conflicts: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +60,44 @@ pub struct DisplayConfig {
     pub line_numbers: bool,
     #[serde(default)]
     pub wrap_lines: bool,
+    #[serde(default)]
+    pub split_diff: bool,
+}
+
+/// [hints] section — toggle visibility of key hint groups in the bottom bar
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HintConfig {
+    #[serde(default = "default_true")]
+    pub navigation: bool,
+    #[serde(default = "default_true")]
+    pub comments: bool,
+    #[serde(default = "default_true")]
+    pub github: bool,
+    #[serde(default = "default_true")]
+    pub staging: bool,
+    #[serde(default = "default_true")]
+    pub ai: bool,
+    #[serde(default = "default_true")]
+    pub filter: bool,
+    #[serde(default = "default_true")]
+    pub sort: bool,
+    #[serde(default = "default_true")]
+    pub settings: bool,
+}
+
+impl Default for HintConfig {
+    fn default() -> Self {
+        Self {
+            navigation: true,
+            comments: true,
+            github: true,
+            staging: true,
+            ai: true,
+            filter: true,
+            sort: true,
+            settings: true,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -79,6 +113,10 @@ fn default_agent_cmd() -> String {
 }
 
 fn default_agent_args() -> Vec<String> {
+    // TODO(risk:medium): the {prompt} placeholder must be present in args for the agent command
+    // to receive user input. If a user overrides `agent.args` in their config and omits
+    // {prompt}, the prompt is silently dropped and the agent runs with no meaningful input.
+    // Validate that {prompt} appears in args when loading config.
     vec!["--print".into(), "-p".into(), "{prompt}".into()]
 }
 
@@ -89,6 +127,7 @@ impl Default for ErConfig {
             agent: AgentConfig::default(),
             display: DisplayConfig::default(),
             watched: WatchedConfig::default(),
+            hints: HintConfig::default(),
         }
     }
 }
@@ -96,14 +135,11 @@ impl Default for ErConfig {
 impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
-            split_diff: true,
-            exit_heatmap: true,
-            blame_annotations: false,
-            bookmarks: true,
             view_branch: true,
             view_unstaged: true,
             view_staged: true,
-            ai_overlays: true,
+            view_history: true,
+            view_conflicts: true,
         }
     }
 }
@@ -123,25 +159,70 @@ impl Default for DisplayConfig {
             tab_width: default_tab_width(),
             line_numbers: true,
             wrap_lines: false,
+            split_diff: false,
         }
     }
 }
 
-/// Load config from per-repo or global config file, falling back to defaults.
+/// Load config by merging global defaults with per-repo overrides.
+/// Priority: per-repo `.er-config.toml` > global `~/.config/er/config.toml` > built-in defaults.
+/// Merging is deep: individual fields within sections (e.g. `[features]`) override independently.
 pub fn load_config(repo_root: &str) -> ErConfig {
-    let local = format!("{repo_root}/.er-config.toml");
-    let global = dirs::config_dir()
+    let local_path = format!("{repo_root}/.er-config.toml");
+    let global_path = dirs::config_dir()
         .map(|d| d.join("er/config.toml").to_string_lossy().to_string());
 
-    for path in [Some(local), global].into_iter().flatten() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(config) = toml::from_str::<ErConfig>(&content) {
-                return config;
+    let global_table = global_path
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|c| c.parse::<toml::Value>().ok())
+        .and_then(|v| match v {
+            toml::Value::Table(t) => Some(t),
+            _ => None,
+        });
+
+    // TODO(risk:medium): parse errors in the local .er-config.toml are silently ignored via
+    // .ok(). The user gets default config with no indication their file has a syntax error.
+    // At minimum, log the error to stderr so the user can diagnose misconfigured repos.
+    let local_table = std::fs::read_to_string(&local_path)
+        .ok()
+        .and_then(|c| c.parse::<toml::Value>().ok())
+        .and_then(|v| match v {
+            toml::Value::Table(t) => Some(t),
+            _ => None,
+        });
+
+    let merged = match (global_table, local_table) {
+        (Some(mut global), Some(local)) => {
+            deep_merge(&mut global, local);
+            toml::Value::Table(global)
+        }
+        (Some(global), None) => toml::Value::Table(global),
+        (None, Some(local)) => toml::Value::Table(local),
+        (None, None) => return ErConfig::default(),
+    };
+
+    // TODO(risk:medium): unwrap_or_default silently falls back to built-in defaults when the
+    // merged TOML fails to deserialize into ErConfig (e.g. wrong type for a field like
+    // tab_width = "four"). The user's entire config is dropped with no diagnostic. Log the
+    // deserialization error so the user knows their config was not applied.
+    merged.try_into().unwrap_or_default()
+}
+
+/// Recursively merge `overlay` into `base`. Overlay values win; nested tables are merged recursively.
+fn deep_merge(
+    base: &mut toml::map::Map<String, toml::Value>,
+    overlay: toml::map::Map<String, toml::Value>,
+) {
+    for (key, value) in overlay {
+        match (base.get_mut(&key), &value) {
+            (Some(toml::Value::Table(base_table)), toml::Value::Table(overlay_table)) => {
+                deep_merge(base_table, overlay_table.clone());
+            }
+            _ => {
+                base.insert(key, value);
             }
         }
     }
-
-    ErConfig::default()
 }
 
 /// Save config to the global config dir (~/.config/er/config.toml).
@@ -152,6 +233,10 @@ pub fn save_config(config: &ErConfig) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
     let content = toml::to_string_pretty(config)?;
+    // TODO(risk:high): write is non-atomic — if the process is killed mid-write (e.g. Ctrl+C
+    // during save) the config file is left with partial content and becomes unreadable on next
+    // launch (silently falls back to defaults, losing all user settings). Write to a .tmp file
+    // and rename atomically, the same pattern used for .er-github-comments.json.
     std::fs::write(path, content)?;
     Ok(())
 }
@@ -180,27 +265,6 @@ pub enum SettingsItem {
 /// Build the list of settings items for the settings overlay.
 pub fn settings_items() -> Vec<SettingsItem> {
     vec![
-        SettingsItem::SectionHeader("Features".into()),
-        SettingsItem::BoolToggle {
-            label: "Split diff (side-by-side)".into(),
-            get: |c| c.features.split_diff,
-            set: |c, v| c.features.split_diff = v,
-        },
-        SettingsItem::BoolToggle {
-            label: "Exit heatmap".into(),
-            get: |c| c.features.exit_heatmap,
-            set: |c, v| c.features.exit_heatmap = v,
-        },
-        SettingsItem::BoolToggle {
-            label: "Blame annotations".into(),
-            get: |c| c.features.blame_annotations,
-            set: |c, v| c.features.blame_annotations = v,
-        },
-        SettingsItem::BoolToggle {
-            label: "Bookmarks".into(),
-            get: |c| c.features.bookmarks,
-            set: |c, v| c.features.bookmarks = v,
-        },
         SettingsItem::SectionHeader("Views".into()),
         SettingsItem::BoolToggle {
             label: "Branch diff (1)".into(),
@@ -218,9 +282,14 @@ pub fn settings_items() -> Vec<SettingsItem> {
             set: |c, v| c.features.view_staged = v,
         },
         SettingsItem::BoolToggle {
-            label: "AI overlays (v/V)".into(),
-            get: |c| c.features.ai_overlays,
-            set: |c, v| c.features.ai_overlays = v,
+            label: "History (4)".into(),
+            get: |c| c.features.view_history,
+            set: |c, v| c.features.view_history = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Conflicts (5)".into(),
+            get: |c| c.features.view_conflicts,
+            set: |c, v| c.features.view_conflicts = v,
         },
         SettingsItem::SectionHeader("Display".into()),
         SettingsItem::BoolToggle {
@@ -233,10 +302,51 @@ pub fn settings_items() -> Vec<SettingsItem> {
             get: |c| c.display.wrap_lines,
             set: |c, v| c.display.wrap_lines = v,
         },
+        SettingsItem::BoolToggle {
+            label: "Split diff".into(),
+            get: |c| c.display.split_diff,
+            set: |c, v| c.display.split_diff = v,
+        },
         SettingsItem::NumberEdit {
             label: "Tab width".into(),
             get: |c| c.display.tab_width,
             set: |c, v| c.display.tab_width = v,
+        },
+        SettingsItem::SectionHeader("Key Hints".into()),
+        SettingsItem::BoolToggle {
+            label: "Navigation (j/k, n/N, ↑↓)".into(),
+            get: |c| c.hints.navigation,
+            set: |c, v| c.hints.navigation = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Comments (q, c, J/K, d/r)".into(),
+            get: |c| c.hints.comments,
+            set: |c, v| c.hints.comments = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "GitHub sync (G, P)".into(),
+            get: |c| c.hints.github,
+            set: |c, v| c.hints.github = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Staging (s, S, c commit)".into(),
+            get: |c| c.hints.staging,
+            set: |c, v| c.hints.staging = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "AI (a, ^j/^k)".into(),
+            get: |c| c.hints.ai,
+            set: |c, v| c.hints.ai = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Filter & sort (f, u, m)".into(),
+            get: |c| c.hints.filter,
+            set: |c, v| c.hints.filter = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Settings (,)".into(),
+            get: |c| c.hints.settings,
+            set: |c, v| c.hints.settings = v,
         },
         SettingsItem::SectionHeader("Agent".into()),
         SettingsItem::StringDisplay {

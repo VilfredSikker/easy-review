@@ -18,6 +18,7 @@ pub const CYAN: Color = Color::Rgb(34, 211, 238);
 pub const GREEN: Color = Color::Rgb(74, 222, 128);
 pub const YELLOW: Color = Color::Rgb(250, 204, 21);
 pub const RED: Color = Color::Rgb(248, 113, 113);
+pub const RED_TEXT: Color = RED;
 pub const PURPLE: Color = Color::Rgb(167, 139, 250);
 
 // ── Diff colors (subtle tinted backgrounds, vivid text) ──
@@ -72,6 +73,17 @@ pub fn status_deleted() -> Style {
 
 pub fn status_modified() -> Style {
     Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)
+}
+
+/// Unmerged (conflict) file indicator color — warm orange
+pub const UNMERGED: Color = Color::Rgb(255, 140, 0);
+
+pub fn status_unmerged() -> Style {
+    Style::default().fg(UNMERGED).add_modifier(Modifier::BOLD)
+}
+
+pub fn status_resolved() -> Style {
+    Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
 }
 
 // ── AI overlay colors ──
@@ -129,8 +141,8 @@ pub const COMMENT_BG: Color = Color::Rgb(18, 28, 38);
 /// Inline line-comment background (slightly lighter for visual distinction)
 pub const INLINE_COMMENT_BG: Color = Color::Rgb(22, 32, 42);
 
-/// Focused comment background (highlighted border/bg for selected comment)
-pub const COMMENT_FOCUS_BG: Color = Color::Rgb(28, 38, 52);
+/// Focused comment background (brighter to clearly show selection)
+pub const COMMENT_FOCUS_BG: Color = Color::Rgb(35, 50, 70);
 
 /// Human comment style
 #[allow(dead_code)]
@@ -155,6 +167,12 @@ pub fn stale_style() -> Style {
     Style::default().fg(STALE)
 }
 
+/// Relocated comment indicator color (soft green)
+pub const RELOCATED_INDICATOR: Color = Color::Rgb(100, 200, 150);
+
+/// Lost comment indicator color (dimmed red)
+pub const LOST_INDICATOR: Color = Color::Rgb(180, 100, 100);
+
 // ── Watched file colors ──
 
 /// Watched file text color (cool blue to distinguish from diff files)
@@ -174,4 +192,16 @@ pub fn watched_line_style() -> Style {
 /// Watched file gutter style
 pub fn watched_gutter_style() -> Style {
     Style::default().fg(DIM).bg(WATCHED_BG)
+}
+
+// ── Split diff view styles ──
+
+/// Focused pane border in split diff view
+pub fn split_border_focused() -> Style {
+    Style::default().fg(BLUE)
+}
+
+/// Inactive pane border in split diff view
+pub fn split_border_inactive() -> Style {
+    Style::default().fg(BORDER)
 }

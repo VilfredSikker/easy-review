@@ -6,10 +6,11 @@ use ratatui::{
 };
 use std::time::SystemTime;
 
-use crate::ai::{RiskLevel, ViewMode};
-use crate::app::App;
+use crate::ai::RiskLevel;
+use crate::app::{App, DiffMode};
 use crate::git::FileStatus;
 use super::styles;
+use super::utils::word_wrap;
 
 /// Format a SystemTime as a relative time string (e.g. "2m ago", "1h ago")
 fn format_relative_time(mtime: SystemTime) -> String {
@@ -26,9 +27,18 @@ fn format_relative_time(mtime: SystemTime) -> String {
 /// Render the file tree panel (left side)
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.tab();
+
+    // History mode: render commit list instead of file tree
+    if tab.mode == DiffMode::History {
+        render_commit_list(f, area, app);
+        return;
+    }
+
+    // Conflicts mode uses the standard file tree (falls through below)
+
     let visible = tab.visible_files();
     let total = tab.files.len();
-    let in_overlay = matches!(tab.ai.view_mode, ViewMode::Overlay | ViewMode::SidePanel);
+    let in_overlay = tab.layers.show_ai_findings;
     let ai_stale = tab.ai.is_stale;
 
     let stale_count = tab.ai.stale_files.len();
@@ -59,6 +69,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     // Virtualized rendering: find which position the selected file is in the visible list,
     // then only render items in the viewport window
     let viewport_height = area.height.saturating_sub(1) as usize; // -1 for border/title
+    // TODO(risk:minor): unwrap_or(0) silently falls back to position 0 when the selected
+    // file index is not in the visible list (e.g. filter active and the selected file is
+    // filtered out). This causes the scroll calculation below to centre on the wrong item.
+    // The selection and the visible set should be kept in sync so this never produces a
+    // misleading position.
     let selected_pos = visible.iter().position(|(i, _)| *i == tab.selected_file).unwrap_or(0);
 
     // Calculate file_scroll to keep selection visible
@@ -82,12 +97,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             let is_selected = tab.selected_watched.is_none() && *idx == tab.selected_file;
 
             // Status symbol with color
-            let (symbol, symbol_style) = match &file.status {
-                FileStatus::Added => ("+", styles::status_added()),
-                FileStatus::Deleted => ("-", styles::status_deleted()),
-                FileStatus::Modified => ("~", styles::status_modified()),
-                FileStatus::Renamed(_) => ("R", styles::status_modified()),
-                FileStatus::Copied(_) => ("C", styles::status_modified()),
+            let is_conflicts_mode = tab.mode == DiffMode::Conflicts;
+            let (symbol, symbol_style) = if is_conflicts_mode {
+                match &file.status {
+                    FileStatus::Unmerged => ("\u{2717}", styles::status_unmerged()),
+                    _ => ("\u{2713}", styles::status_resolved()),
+                }
+            } else {
+                match &file.status {
+                    FileStatus::Added => ("+", styles::status_added()),
+                    FileStatus::Deleted => ("-", styles::status_deleted()),
+                    FileStatus::Modified => ("~", styles::status_modified()),
+                    FileStatus::Renamed(_) => ("R", styles::status_modified()),
+                    FileStatus::Copied(_) => ("C", styles::status_modified()),
+                    FileStatus::Unmerged => ("!", styles::status_unmerged()),
+                }
             };
 
             // Risk dot (only in overlay mode with AI data)
@@ -119,7 +143,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 None
             };
 
+            // Comment indicators (questions = yellow ◆N, github = cyan ◆N)
+            let question_count = tab.ai.file_question_count(&file.path);
+            let gh_comment_count = tab.ai.file_github_comment_count(&file.path);
+            let has_questions = question_count > 0;
+            let has_gh_comments = gh_comment_count > 0;
+
             // Relative time when sorting by mtime
+            // TODO(risk:minor): std::fs::metadata is called for every visible file on every
+            // render frame (~10 fps). For a file tree with 50 visible items this is 500
+            // syscalls per second, wasting CPU and causing noticeable latency on slow
+            // filesystems (NFS, FUSE). Cache the mtime alongside the file list and refresh
+            // only on watch events.
             let time_str = if tab.sort_by_mtime {
                 let mtime = std::fs::metadata(format!("{}/{}", tab.repo_root, file.path))
                     .and_then(|m| m.modified())
@@ -131,11 +166,24 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             // Time column takes up to 8 chars (e.g. "15m ago " or "3h ago  ")
             let time_width: usize = if time_str.is_some() { 8 } else { 0 };
 
-            // Adjust path width to account for risk dot and time column
+            // Comment indicator width: "◆N " where N is 1-2 digits (3-4 chars each)
+            let q_indicator = if has_questions {
+                format!("\u{25c6}{} ", question_count)
+            } else {
+                String::new()
+            };
+            let gh_indicator = if has_gh_comments {
+                format!("\u{25c6}{} ", gh_comment_count)
+            } else {
+                String::new()
+            };
+            let comment_width: usize = q_indicator.chars().count() + gh_indicator.chars().count();
+
+            // Adjust path width to account for risk dot, comment indicators, and time column
             let extra_width = if risk_dot.is_some() { 2 } else { 0 };
             let path = shorten_path(
                 &file.path,
-                (area.width as usize).saturating_sub(16 + extra_width + time_width),
+                (area.width as usize).saturating_sub(16 + extra_width + comment_width + time_width),
             );
 
             // Stats: +adds -dels
@@ -161,7 +209,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 symbol_style
             };
 
-            let path_width = (area.width as usize).saturating_sub(14 + extra_width + time_width).max(1);
+            let path_width = (area.width as usize).saturating_sub(14 + extra_width + comment_width + time_width).max(1);
 
             let mut spans = vec![
                 Span::styled(format!(" {} ", symbol), effective_symbol_style),
@@ -182,6 +230,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::TEXT)
                 },
             ));
+            // Comment indicators after path (with counts)
+            if has_questions {
+                spans.push(Span::styled(
+                    q_indicator,
+                    ratatui::style::Style::default().fg(styles::YELLOW),
+                ));
+            }
+            if has_gh_comments {
+                spans.push(Span::styled(
+                    gh_indicator,
+                    ratatui::style::Style::default().fg(styles::CYAN),
+                ));
+            }
             // Show relative time when sorting by mtime
             if let Some(ref ts) = time_str {
                 spans.push(Span::styled(
@@ -275,6 +336,157 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let block = Block::default()
         .title(Span::styled(title, title_style))
+        .borders(Borders::RIGHT)
+        .border_style(ratatui::style::Style::default().fg(styles::BORDER))
+        .style(ratatui::style::Style::default().bg(styles::SURFACE))
+        .padding(Padding::new(0, 0, 0, 0));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
+}
+
+/// Render the commit list panel (left side, History mode)
+fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
+    let tab = app.tab();
+    let visible = tab.visible_commits();
+    let total = tab.history.as_ref().map(|h| h.commits.len()).unwrap_or(0);
+    let selected_commit = tab.history.as_ref().map(|h| h.selected_commit).unwrap_or(0);
+
+    let title = format!(" COMMITS ({}) ", total);
+
+    // " ● " = 3 chars for the indicator prefix; leave 1 char margin on the right
+    let indicator_width: usize = 3;
+    let subject_width = (area.width as usize).saturating_sub(indicator_width + 1).max(1);
+
+    // Calculate the visual height of each commit item (subject lines + author + separator)
+    let item_heights: Vec<usize> = visible
+        .iter()
+        .map(|(_, commit)| {
+            let merge_prefix = if commit.is_merge { "⊕ " } else { "" };
+            let full_subject = format!("{}{}", merge_prefix, commit.subject);
+            let subject_lines = word_wrap(&full_subject, subject_width).len().max(1);
+            subject_lines + 2 // author line + separator
+        })
+        .collect();
+
+    // Find which visual index corresponds to the selected commit
+    let selected_visual_idx = visible
+        .iter()
+        .position(|(i, _)| *i == selected_commit)
+        .unwrap_or(0);
+
+    let available_height = area.height.saturating_sub(2) as usize; // account for border/title
+
+    // Determine scroll_start: the first commit index to render, so selection stays in view
+    // TODO(risk:medium): if selected_visual_idx == 0 this slice is empty so the sum is 0,
+    // which is correct. But if selected_visual_idx >= item_heights.len() (can happen when
+    // selected_commit is stale after the commit list shrinks) this will panic with an
+    // out-of-bounds slice. Clamp selected_visual_idx to item_heights.len().saturating_sub(1).
+    let height_before_selected: usize = item_heights[..selected_visual_idx].iter().sum();
+    let selected_height = item_heights.get(selected_visual_idx).copied().unwrap_or(3);
+
+    let scroll_start = if height_before_selected + selected_height > available_height {
+        // Selection would fall below the viewport — scroll down
+        let target = height_before_selected + selected_height - available_height;
+        let mut accumulated = 0;
+        let mut start = 0;
+        for (i, h) in item_heights.iter().enumerate() {
+            if accumulated >= target {
+                break;
+            }
+            accumulated += h;
+            start = i + 1;
+        }
+        start
+    } else {
+        0
+    };
+
+    // TODO(risk:medium): scroll_start is computed by iterating item_heights and stopping when
+    // accumulated height reaches the target. If the loop exhausts all items without reaching
+    // target (shouldn't happen normally, but possible if item_heights is empty), start ends up
+    // equal to item_heights.len(). Then visible[scroll_start..] is an empty slice, which is
+    // fine, but the intent may have been to show at least one item. Assert or clamp.
+    let visible_from_scroll = &visible[scroll_start..];
+
+    let items: Vec<ListItem> = visible_from_scroll
+        .iter()
+        .flat_map(|(idx, commit)| {
+            let is_selected = *idx == selected_commit;
+
+            let line_style = if is_selected {
+                styles::selected_style()
+            } else {
+                styles::surface_style()
+            };
+
+            let indicator = if is_selected { "●" } else { "○" };
+            let merge_prefix = if commit.is_merge { "⊕ " } else { "" };
+            let full_subject = format!("{}{}", merge_prefix, commit.subject);
+
+            let wrapped_lines = word_wrap(&full_subject, subject_width);
+
+            let indicator_style = if is_selected {
+                ratatui::style::Style::default().fg(styles::PURPLE)
+            } else {
+                ratatui::style::Style::default().fg(styles::DIM)
+            };
+            let subject_style = if is_selected {
+                ratatui::style::Style::default().fg(styles::BRIGHT)
+            } else {
+                ratatui::style::Style::default().fg(styles::TEXT)
+            };
+            let continuation_indent = " ".repeat(indicator_width);
+
+            // First wrapped line: indicator + subject text
+            let first_line = Line::from(vec![
+                Span::styled(format!(" {} ", indicator), indicator_style),
+                Span::styled(
+                    wrapped_lines.first().cloned().unwrap_or_default(),
+                    subject_style,
+                ),
+            ]);
+
+            // Additional wrapped lines (indented to align with subject)
+            let continuation_lines: Vec<ListItem> = wrapped_lines
+                .iter()
+                .skip(1)
+                .map(|segment| {
+                    let line = Line::from(vec![
+                        Span::styled(continuation_indent.clone(), ratatui::style::Style::default()),
+                        Span::styled(segment.clone(), subject_style),
+                    ]);
+                    ListItem::new(line).style(line_style)
+                })
+                .collect();
+
+            // Author line: indented, dimmed
+            let author_line = Line::from(vec![
+                Span::styled(
+                    format!("   {}", commit.author),
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ),
+            ]);
+
+            // Separator line
+            let separator = Line::from(Span::styled(
+                "─".repeat(area.width.saturating_sub(2) as usize),
+                ratatui::style::Style::default().fg(styles::BORDER),
+            ));
+
+            let mut result = vec![ListItem::new(first_line).style(line_style)];
+            result.extend(continuation_lines);
+            result.push(ListItem::new(author_line).style(line_style));
+            result.push(ListItem::new(separator).style(styles::surface_style()));
+            result
+        })
+        .collect();
+
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            ratatui::style::Style::default().fg(styles::MUTED),
+        ))
         .borders(Borders::RIGHT)
         .border_style(ratatui::style::Style::default().fg(styles::BORDER))
         .style(ratatui::style::Style::default().bg(styles::SURFACE))

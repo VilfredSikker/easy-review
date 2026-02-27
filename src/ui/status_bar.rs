@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::{App, DiffMode, InputMode, ConfirmAction};
-use crate::ai::ViewMode;
+use crate::ai::PanelContent;
 use super::styles;
 
 /// Compute the display width of a list of spans
@@ -109,32 +109,63 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::GREEN),
         ),
     ];
-    if tab.mode == DiffMode::Branch {
+    if tab.mode == DiffMode::Branch || tab.mode == DiffMode::History {
         info_spans.push(Span::styled(
             format!(" (vs {})", tab.base_branch),
             ratatui::style::Style::default().fg(styles::DIM),
         ));
+    }
+    if tab.mode == DiffMode::Conflicts && tab.merge_active {
+        info_spans.push(Span::styled(
+            " [merge in progress]",
+            ratatui::style::Style::default().fg(styles::ORANGE),
+        ));
+    }
+    // In History mode, show selected commit info
+    if tab.mode == DiffMode::History {
+        if let Some(ref history) = tab.history {
+            if let Some(commit) = history.commits.get(history.selected_commit) {
+                info_spans.push(Span::styled(
+                    format!(" · {} · {}", commit.short_hash, commit.relative_date),
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ));
+            }
+        }
     }
     let info_bar = Paragraph::new(Line::from(info_spans)).style(panel_bg);
     f.render_widget(info_bar, rows[row_idx]);
     row_idx += 1;
 
     // ── Modes row: modes (left) + reviewed (right) ──
-    let mut modes: Vec<Span> = vec![
-        Span::raw(" "),
-        Span::styled(" 1 ", mode_style(DiffMode::Branch, tab.mode)),
-        Span::styled(" BRANCH ", mode_style(DiffMode::Branch, tab.mode)),
-        Span::raw(" "),
-        Span::styled(" 2 ", mode_style(DiffMode::Unstaged, tab.mode)),
-        Span::styled(" UNSTAGED ", mode_style(DiffMode::Unstaged, tab.mode)),
-        Span::raw(" "),
-        Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)),
-        Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)),
-    ];
+    let mut modes: Vec<Span> = vec![Span::raw(" ")];
+    if app.config.features.view_branch {
+        modes.push(Span::styled(" 1 ", mode_style(DiffMode::Branch, tab.mode)));
+        modes.push(Span::styled(" BRANCH ", mode_style(DiffMode::Branch, tab.mode)));
+        modes.push(Span::raw(" "));
+    }
+    if app.config.features.view_unstaged {
+        modes.push(Span::styled(" 2 ", mode_style(DiffMode::Unstaged, tab.mode)));
+        modes.push(Span::styled(" UNSTAGED ", mode_style(DiffMode::Unstaged, tab.mode)));
+        modes.push(Span::raw(" "));
+    }
+    if app.config.features.view_staged {
+        modes.push(Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)));
+        modes.push(Span::styled(" STAGED ", mode_style(DiffMode::Staged, tab.mode)));
+        modes.push(Span::raw(" "));
+    }
+    if app.config.features.view_history {
+        modes.push(Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)));
+        modes.push(Span::styled(" HISTORY ", mode_style(DiffMode::History, tab.mode)));
+    }
+    if app.config.features.view_conflicts {
+        modes.push(Span::raw(" "));
+        modes.push(Span::styled(" 5 ", mode_style(DiffMode::Conflicts, tab.mode)));
+        modes.push(Span::styled(" CONFLICTS ", mode_style(DiffMode::Conflicts, tab.mode)));
+    }
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(
-            " R RECENT ",
+            " m RECENT ",
             ratatui::style::Style::default()
                 .fg(styles::BG)
                 .bg(styles::YELLOW)
@@ -144,7 +175,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let mut right: Vec<Span> = Vec::new();
 
-    // AI view mode + staleness indicator
+    // AI badge + panel label
     if tab.ai.has_data() {
         if tab.ai.is_stale {
             let stale_count = tab.ai.stale_files.len();
@@ -156,15 +187,83 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             right.push(Span::styled(stale_label, styles::stale_style()));
             right.push(Span::raw("  "));
         }
-        if tab.ai.view_mode != ViewMode::Default {
+        if tab.layers.show_ai_findings {
             right.push(Span::styled(
-                format!("⬡ {}", tab.ai.view_mode.label()),
+                " AI ON ",
                 ratatui::style::Style::default()
-                    .fg(styles::PURPLE)
+                    .fg(styles::BG)
+                    .bg(styles::ORANGE)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ));
-            right.push(Span::raw("  "));
+        } else {
+            right.push(Span::styled(
+                " AI OFF ",
+                ratatui::style::Style::default()
+                    .fg(styles::MUTED)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
         }
+        right.push(Span::raw("  "));
+    }
+    if let Some(panel) = tab.panel {
+        let panel_label = match panel {
+            PanelContent::FileDetail => " File Detail ",
+            PanelContent::AiSummary => " AI Summary ",
+            PanelContent::PrOverview => " PR Overview ",
+            PanelContent::SymbolRefs => " Symbol Refs ",
+        };
+        let panel_style = if tab.panel_focus {
+            ratatui::style::Style::default()
+                .fg(styles::BG)
+                .bg(styles::BLUE)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            ratatui::style::Style::default()
+                .fg(styles::BLUE)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        };
+        right.push(Span::styled(panel_label, panel_style));
+        right.push(Span::raw("  "));
+    }
+
+    // Show conflict status badge when in Conflicts mode
+    if tab.mode == DiffMode::Conflicts {
+        let total = tab.files.len();
+        let unresolved = tab.unresolved_count;
+        if unresolved > 0 {
+            // Unresolved conflicts: show unresolved count highlighted in orange
+            let unresolved_label = format!(" {} unresolved ", unresolved);
+            right.push(Span::styled(
+                unresolved_label,
+                ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::ORANGE)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            // Show total merge file count in dimmer style
+            if total > unresolved {
+                right.push(Span::styled(
+                    format!(" / {} ", total),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                ));
+            }
+        } else {
+            // All conflicts resolved: green MERGE badge
+            right.push(Span::styled(
+                " MERGE ",
+                ratatui::style::Style::default()
+                    .fg(styles::BG)
+                    .bg(styles::GREEN)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            if total > 0 {
+                right.push(Span::styled(
+                    format!(" {} files ", total),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                ));
+            }
+        }
+        right.push(Span::raw("  "));
     }
 
     // Show filtered reviewed count (yellow) then total reviewed count (blue)
@@ -226,6 +325,11 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let modes_w = spans_width(&modes);
     let right_w = spans_width(&right);
+    // TODO(risk:minor): modes_w + right_w can exceed bar_width when the terminal is very
+    // narrow (< ~40 cols) or when many mode badges are enabled simultaneously. saturating_sub
+    // prevents underflow, so gap becomes 0 — correct. But the spans still overflow the
+    // terminal width, causing Ratatui to wrap or truncate text in an unpredictable order.
+    // Consider skipping lower-priority right spans when the combined width exceeds bar_width.
     let gap = bar_width.saturating_sub(modes_w + right_w);
     modes.push(Span::raw(" ".repeat(gap)));
     modes.extend(right);
@@ -249,21 +353,18 @@ impl Hint {
     }
 }
 
-/// Build the hint list for AiReview mode
-fn build_ai_review_hints(app: &App) -> Vec<Hint> {
+/// Build the hint list for when the AI Summary panel is focused
+fn build_ai_panel_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
     let mut hints = vec![
-        Hint::new("j/k", " nav "),
-        Hint::new("Tab", " switch column "),
-        Hint::new("␣", " toggle check "),
-        Hint::new("Enter", " jump to file "),
-        Hint::new("v/V", " view "),
-        Hint::new("Esc", " default view "),
-        Hint::new("q", " quit "),
+        Hint::new("j/k", " navigate "),
+        Hint::new("Tab", " focus "),
+        Hint::new("␣", " toggle "),
+        Hint::new("Enter", " jump "),
     ];
 
     // Show which column is focused
-    let focus_label = match tab.ai.review_focus {
+    let focus_label = match tab.review_focus {
         crate::ai::ReviewFocus::Files => " [Files] ",
         crate::ai::ReviewFocus::Checklist => " [Checklist] ",
     };
@@ -275,68 +376,182 @@ fn build_ai_review_hints(app: &App) -> Vec<Hint> {
     hints
 }
 
-/// Build the normal-mode hint list
-fn build_hints(app: &App) -> Vec<Hint> {
+/// Build hints for History mode
+fn build_history_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
-
-    // Delegate to AiReview-specific hints when in that mode
-    if tab.ai.view_mode == ViewMode::AiReview {
-        return build_ai_review_hints(app);
-    }
-
     let mut hints = vec![
-        Hint::new("j/k", " nav "),
-        Hint::new("n/N", " hunks "),
-        Hint::new("s", " stage "),
-        Hint::new("S", " hunk "),
-        Hint::new("␣", " review "),
-        Hint::new("u", " unreviewed "),
-        Hint::new("y", " yank "),
+        Hint::new("j/k", " commits "),
+        Hint::new("n/N", " files "),
+        Hint::new("↑↓", " lines "),
+        Hint::new("h/l", " scroll "),
         Hint::new("/", " search "),
-        Hint::new("f", " filter "),
-        Hint::new("F", " history "),
-        Hint::new("r", " reload "),
-        Hint::new("R", " recent "),
-        Hint::new("w", " watch "),
-        Hint::new("e", " edit "),
-        Hint::new("t", " tree "),
-        Hint::new("o", " open "),
+        Hint::new("m", " recent "),
+        Hint::new("q", " question "),
         Hint::new("^q", " quit "),
     ];
 
-    hints.push(Hint::new("q", " question "));
-    hints.push(Hint::new("Q", " hunk Q "));
-
-    if tab.mode == DiffMode::Staged {
-        hints.push(Hint::new("c", " commit "));
-    } else {
-        hints.push(Hint::new("c", " comment "));
-        hints.push(Hint::new("C", " hunk C "));
-    }
-
-    if tab.comment_focus.is_some() {
-        hints.push(Hint::new("r", " reply "));
-        hints.push(Hint::new("d", " delete "));
-        hints.push(Hint::new("R", " resolve "));
-    }
-
-    hints.push(Hint::new("G", " gh sync "));
-    hints.push(Hint::new("P", " push "));
-
-    if !tab.watched_config.paths.is_empty() {
-        hints.push(Hint::new("W", " watched "));
-    }
-
-    if tab.ai.has_data() {
-        hints.push(Hint::new("v/V", " AI view "));
-    }
-
     if app.tabs.len() > 1 {
         hints.push(Hint::new("[/]", " tabs "));
-        hints.push(Hint::new("x", " close "));
+        hints.push(Hint::new("x", " close tab "));
     }
 
-    // Indicators (not really key+label, but reuse the structure)
+    // Show current file in commit if navigating
+    if let Some(ref history) = tab.history {
+        if !history.commit_files.is_empty() {
+            let file_name = history.commit_files.get(history.selected_file)
+                .map(|f| f.path.rsplit('/').next().unwrap_or(&f.path))
+                .unwrap_or("");
+            if !file_name.is_empty() {
+                hints.push(Hint {
+                    key: String::new(),
+                    label: format!(" {} ", file_name),
+                });
+            }
+        }
+    }
+
+    if !tab.search_query.is_empty() {
+        hints.push(Hint {
+            key: String::new(),
+            label: format!(" filter: \"{}\" ", tab.search_query),
+        });
+    }
+
+    hints
+}
+
+/// Build the normal-mode hint list
+fn build_hints(app: &App) -> Vec<Hint> {
+    let tab = app.tab();
+    let h = &app.config.hints;
+
+    // Delegate to AI panel hints when focus is on the AI Summary panel
+    if tab.panel_focus && tab.panel == Some(PanelContent::AiSummary) {
+        return build_ai_panel_hints(app);
+    }
+
+    // History mode has different hints
+    if tab.mode == DiffMode::History {
+        return build_history_hints(app);
+    }
+
+    // Conflicts mode uses same hint structure as normal mode (staging not applicable)
+    // — fall through to normal hint building below
+
+    let mut hints: Vec<Hint> = Vec::new();
+
+    if tab.panel.is_some() {
+        // Context: panel open — show panel + core nav
+        if h.navigation {
+            hints.push(Hint::new("j/k", " nav "));
+            hints.push(Hint::new("n/N", " hunks "));
+            hints.push(Hint::new("␣", " review "));
+        }
+        if tab.panel_focus {
+            hints.push(Hint::new("Esc", " unfocus "));
+        } else {
+            hints.push(Hint::new("Tab", " focus panel "));
+        }
+        hints.push(Hint::new("p", " close panel "));
+        if app.tabs.len() > 1 {
+            hints.push(Hint::new("[/]", " tabs "));
+        }
+        hints.push(Hint::new("^q", " quit "));
+    } else {
+        // Default normal mode
+        if h.navigation {
+            hints.push(Hint::new("j/k", " nav "));
+            hints.push(Hint::new("n/N", " hunks "));
+            hints.push(Hint::new("␣", " review "));
+            hints.push(Hint::new("/", " search "));
+        }
+
+        // Staging hints
+        if h.staging {
+            if tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged {
+                hints.push(Hint::new("s", " stage "));
+            }
+            // Staging not applicable in Conflicts mode
+        }
+
+        // Comment hints
+        if h.comments {
+            if tab.mode == DiffMode::Staged {
+                if h.staging {
+                    hints.push(Hint::new("c", " commit "));
+                }
+            } else {
+                hints.push(Hint::new("q", " question "));
+                hints.push(Hint::new("c", " comment "));
+            }
+
+            if let Some(ref fid) = tab.focused_comment_id {
+                if let Some(comment) = tab.ai.find_comment(fid) {
+                    if comment.can_reply() {
+                        hints.push(Hint::new("r", " reply "));
+                    }
+                    if comment.author() == "You" && comment.in_reply_to().is_none() {
+                        hints.push(Hint::new("e", " edit "));
+                    }
+                    if comment.can_delete() {
+                        hints.push(Hint::new("d", " delete "));
+                    }
+                }
+            } else if tab.focused_finding_id.is_some() {
+                hints.push(Hint::new("r", " reply "));
+            }
+
+            // Comment/finding jump hints — only when targets exist
+            if !tab.ai.all_hints_ordered().is_empty() {
+                hints.push(Hint::new("J/K", " hints "));
+            }
+        }
+
+        // AI hints
+        if h.ai {
+            if tab.layers.show_ai_findings && tab.ai.total_findings() > 0 {
+                hints.push(Hint::new("^j/^k", " findings "));
+            }
+            if tab.ai.has_data() {
+                hints.push(Hint::new("a", " AI "));
+            }
+        }
+
+        // GitHub sync — only when PR data is available
+        if h.github && tab.pr_data.is_some() {
+            hints.push(Hint::new("G", " gh pull "));
+            hints.push(Hint::new("P", " gh push "));
+        }
+
+        // Filter & sort
+        if h.filter {
+            hints.push(Hint::new("m", " recent "));
+            hints.push(Hint::new("u", " unreviewed "));
+            hints.push(Hint::new("f", " filter "));
+        }
+
+        if h.navigation {
+            hints.push(Hint::new("e", " edit "));
+            hints.push(Hint::new("p", " panel "));
+            if app.split_diff_active(&app.config) {
+                hints.push(Hint::new("Tab", " pane "));
+            }
+        }
+
+        // Tab switching — only when multiple tabs open
+        if app.tabs.len() > 1 {
+            hints.push(Hint::new("[/]", " tabs "));
+        }
+
+        // Settings
+        if h.settings {
+            hints.push(Hint::new(",", " settings "));
+        }
+
+        hints.push(Hint::new("^q", " quit "));
+    }
+
+    // Status indicators always shown
     if !tab.filter_expr.is_empty() {
         hints.push(Hint {
             key: "F:".to_string(),
@@ -452,10 +667,16 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         InputMode::Comment => {
             let is_question = tab.comment_type == crate::ai::CommentType::Question;
-            let (label, icon, accent) = if is_question {
-                ("question", "❓", styles::YELLOW)
+            let is_reply = tab.comment_reply_to.is_some();
+            let is_finding_reply = tab.comment_finding_ref.is_some();
+            let (label, accent) = if is_reply {
+                ("reply", if is_question { styles::YELLOW } else { styles::CYAN })
+            } else if is_finding_reply {
+                ("response", styles::CYAN)
+            } else if is_question {
+                ("question", styles::YELLOW)
             } else {
-                ("comment", "💬", styles::CYAN)
+                ("comment", styles::CYAN)
             };
             let file_short = tab.comment_file.rsplit('/').next().unwrap_or(&tab.comment_file);
             let target_label = if let Some(ln) = tab.comment_line_num {
@@ -463,7 +684,6 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 format!("{}:h{}", file_short, tab.comment_hunk + 1)
             };
-            let _icon = icon; // icon shown via label badge
             let spans = vec![
                 Span::styled(format!(" {} ", label), ratatui::style::Style::default()
                     .fg(styles::BG)
@@ -560,7 +780,6 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, area.width as usize);
 
-            // Split area into rows
             let row_count = lines.len() as u16;
             let constraints: Vec<ratatui::layout::Constraint> = (0..row_count)
                 .map(|_| ratatui::layout::Constraint::Length(1))
@@ -570,7 +789,12 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 .constraints(constraints)
                 .split(area);
 
-            for (i, line) in lines.into_iter().enumerate() {
+            // TODO(risk:medium): rows is split from area with exactly `row_count` slots, one per
+    // hint line. If pack_hint_lines returns more lines than row_count (which can happen if
+    // bottom_bar_height and render_bottom_bar compute hint packing differently due to a
+    // race on terminal resize), rows[i] will panic with an out-of-bounds index. Clamp the
+    // enumeration to rows.len().
+    for (i, line) in lines.into_iter().enumerate() {
                 let bar = Paragraph::new(line).style(panel_bg);
                 f.render_widget(bar, rows[i]);
             }
@@ -580,6 +804,12 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
 
 /// Render watch notification overlay
 pub fn render_watch_notification(f: &mut Frame, area: Rect, message: &str) {
+    // TODO(risk:medium): message.len() counts bytes, not display columns. A message with
+    // multi-byte UTF-8 characters will produce a notif_width that is too large, causing
+    // the notification to be placed too far left or clipped. Use message.chars().count()
+    // (or a unicode-width crate) for the width calculation.
+    // TODO(risk:medium): if message is long enough that notif_width overflows u16 the
+    // addition wraps silently. Cap message length or use saturating arithmetic.
     let notif_width = message.len() as u16 + 4;
     let notif_x = area.x + area.width.saturating_sub(notif_width + 2);
     let notif_y = area.y + 2;

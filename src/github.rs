@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::process::Command;
 
 /// Parsed reference to a GitHub PR
@@ -8,6 +9,33 @@ pub struct PrRef {
     pub owner: String,
     pub repo: String,
     pub number: u64,
+}
+
+/// Fetched PR overview data for the PrOverview panel
+#[derive(Debug, Clone)]
+pub struct PrOverviewData {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub state: String,
+    pub author: String,
+    pub base_branch: String,
+    pub head_branch: String,
+    pub checks: Vec<CiCheck>,
+    pub reviewers: Vec<ReviewerStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CiCheck {
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewerStatus {
+    pub login: String,
+    pub state: String,
 }
 
 /// GitHub review comment from the API
@@ -278,6 +306,11 @@ pub fn get_pr_info(repo_root: &str) -> Result<(String, String, u64)> {
     let number = v["number"].as_u64()
         .context("Missing PR number")?;
 
+    // TODO(risk:minor): unwrap_or("") silently substitutes an empty string when headRepository
+    // fields are absent (e.g., forked PRs where the fork has been deleted). The code below
+    // detects the empty case and falls back to the git remote, which is correct. But if the
+    // remote parse also fails, get_pr_info() returns an error that loses the PR number that
+    // was already successfully parsed. Callers won't know which PR was involved.
     let owner = v["headRepository"]["owner"]["login"].as_str()
         .unwrap_or("");
     let repo_name = v["headRepository"]["name"].as_str()
@@ -318,13 +351,14 @@ fn parse_owner_repo_from_remote(remote: &str) -> Result<(String, String)> {
 }
 
 /// Fetch all review comments for a PR
-pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComment>> {
+pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64, repo_root: &str) -> Result<Vec<GitHubComment>> {
     let output = Command::new("gh")
         .args([
             "api",
             &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
             "--paginate",
         ])
+        .current_dir(repo_root)
         .output()
         .context("Failed to fetch PR comments")?;
 
@@ -334,25 +368,85 @@ pub fn gh_pr_comments(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComm
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let comments: Vec<GitHubComment> = serde_json::from_str(&stdout)
-        .context("Failed to parse PR comments JSON")?;
+    // gh api --paginate concatenates JSON arrays: [...][...]
+    // Parse each chunk separately and merge
+    let all_comments: Vec<GitHubComment> = if stdout.contains("][") {
+        // Split paginated response into individual arrays
+        let mut results = Vec::new();
+        let mut depth = 0i32;
+        let mut start = 0;
+        // TODO(risk:medium): this manual bracket-depth parser assumes the paginated output is
+        // a flat concatenation of valid JSON arrays. If a comment body contains the string "]["
+        // (which is valid JSON string content), the outer `if stdout.contains("][")` branch is
+        // taken unnecessarily. Inside, the bracket counter correctly handles nesting, but
+        // `start` is advanced to `i + 1` after each top-level `]`. If the next character is
+        // whitespace before `[`, `start` will point at whitespace and serde_json::from_str
+        // will skip it fine. However, if pagination produces non-array top-level values
+        // (e.g., an error object `{}`), depth will never reach 0 from `[` tracking and the
+        // batch will be silently dropped. This would silently lose comments on error responses.
+        for (i, ch) in stdout.char_indices() {
+            match ch {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Ok(mut batch) = serde_json::from_str::<Vec<GitHubComment>>(&stdout[start..=i]) {
+                            results.append(&mut batch);
+                        }
+                        start = i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        results
+    } else {
+        serde_json::from_str(&stdout)?
+    };
 
-    Ok(comments)
+    Ok(all_comments)
 }
 
 /// Push a new review comment to a PR
 pub fn gh_pr_push_comment(
     owner: &str, repo: &str, pr: u64,
     path: &str, line: usize, body: &str,
+    repo_root: &str,
 ) -> Result<u64> {
+    // TODO(risk:medium): `body` is user-typed comment text passed directly to `gh api -f body=<body>`.
+    // The `-f` flag in gh CLI treats the value as a literal string (not shell-expanded), so shell
+    // injection is not possible. However, if `body` contains a newline character, the gh CLI may
+    // split the argument at the newline in some versions, truncating the comment silently.
+    // Validate or strip newlines from `body` before passing it here, or switch to writing a
+    // JSON payload to a temp file and passing `--input` to gh api.
+
+    // TODO(risk:medium): `path` is a file path from DiffFile.path (git diff output). It is
+    // passed as `-f path=<path>` to the GitHub API. A file path containing "=" could be
+    // misinterpreted by gh's -f flag as a key=value pair. The "--" separator is not used here.
+    // Paths with "=" are valid on all major filesystems, so this is a real (if rare) edge case.
+
     // Get the latest commit SHA for the PR (required for review comments)
     let sha_output = Command::new("gh")
         .args(["pr", "view", &pr.to_string(), "--json", "headRefOid", "--jq", ".headRefOid"])
+        .current_dir(repo_root)
         .output()
         .context("Failed to get PR head SHA")?;
 
-    let commit_id = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+    if !sha_output.status.success() {
+        let stderr = String::from_utf8_lossy(&sha_output.stderr);
+        anyhow::bail!("Failed to get HEAD SHA from gh pr view: {}", stderr.trim());
+    }
 
+    let commit_id = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+    if commit_id.is_empty() {
+        anyhow::bail!("Failed to get HEAD SHA from gh pr view: empty output");
+    }
+
+    // TODO(risk:medium): `commit_id` is a SHA obtained from `gh pr view --jq .headRefOid`.
+    // Between fetching the SHA and posting the comment, a force-push could change the PR head.
+    // The comment would then be posted against a commit SHA that is no longer part of the PR,
+    // causing the GitHub API to return a 422 Unprocessable Entity. The current error path
+    // surfaces the stderr but doesn't give the user guidance on what went wrong.
     let output = Command::new("gh")
         .args([
             "api",
@@ -364,6 +458,7 @@ pub fn gh_pr_push_comment(
             "-f", "side=RIGHT",
             "-f", &format!("commit_id={}", commit_id),
         ])
+        .current_dir(repo_root)
         .output()
         .context("Failed to push comment to GitHub")?;
 
@@ -383,7 +478,10 @@ pub fn gh_pr_push_comment(
 pub fn gh_pr_reply_comment(
     owner: &str, repo: &str, pr: u64,
     in_reply_to: u64, body: &str,
+    repo_root: &str,
 ) -> Result<u64> {
+    // TODO(risk:medium): same `body` newline concern as gh_pr_push_comment — newlines in
+    // the body string may truncate the comment silently via gh's -f flag handling.
     let output = Command::new("gh")
         .args([
             "api",
@@ -392,6 +490,7 @@ pub fn gh_pr_reply_comment(
             "-f", &format!("body={}", body),
             "-F", &format!("in_reply_to={}", in_reply_to),
         ])
+        .current_dir(repo_root)
         .output()
         .context("Failed to push reply to GitHub")?;
 
@@ -408,13 +507,14 @@ pub fn gh_pr_reply_comment(
 }
 
 /// Delete a review comment from a PR
-pub fn gh_pr_delete_comment(owner: &str, repo: &str, comment_id: u64) -> Result<()> {
+pub fn gh_pr_delete_comment(owner: &str, repo: &str, comment_id: u64, repo_root: &str) -> Result<()> {
     let output = Command::new("gh")
         .args([
             "api",
             "-X", "DELETE",
             &format!("repos/{}/{}/pulls/comments/{}", owner, repo, comment_id),
         ])
+        .current_dir(repo_root)
         .output()
         .context("Failed to delete comment from GitHub")?;
 
@@ -427,6 +527,97 @@ pub fn gh_pr_delete_comment(owner: &str, repo: &str, comment_id: u64) -> Result<
     }
 
     Ok(())
+}
+
+/// Fetch PR overview data: title, body, state, author, branches, reviewers
+pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
+    // Fetch core PR fields
+    let view_output = Command::new("gh")
+        .args([
+            "pr", "view",
+            "--json", "number,title,body,state,author,baseRefName,headRefName,reviews",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+
+    if !view_output.status.success() {
+        return None;
+    }
+
+    let json_str = String::from_utf8_lossy(&view_output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+
+    let number = v["number"].as_u64().unwrap_or(0);
+    let title = v["title"].as_str().unwrap_or("").to_string();
+    let body = v["body"].as_str().unwrap_or("").to_string();
+    let state = v["state"].as_str().unwrap_or("").to_string();
+    let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+    let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
+    let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
+
+    // Deduplicate reviewers by login, keeping the latest state
+    let reviewers: Vec<ReviewerStatus> = if let Some(reviews_arr) = v["reviews"].as_array() {
+        let mut reviewer_map: HashMap<String, String> = HashMap::new();
+        for r in reviews_arr {
+            if let Some(login) = r["author"]["login"].as_str() {
+                let state = r["state"].as_str().unwrap_or("PENDING").to_string();
+                reviewer_map.insert(login.to_string(), state);
+            }
+        }
+        reviewer_map.into_iter()
+            .map(|(login, state)| ReviewerStatus { login, state })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Fetch CI checks (separate call — may fail if no checks configured)
+    let checks = gh_pr_checks_data(repo_root).unwrap_or_default();
+
+    Some(PrOverviewData {
+        number,
+        title,
+        body,
+        state,
+        author,
+        base_branch,
+        head_branch,
+        checks,
+        reviewers,
+    })
+}
+
+/// Fetch CI check runs for the current PR
+fn gh_pr_checks_data(repo_root: &str) -> Result<Vec<CiCheck>> {
+    let output = Command::new("gh")
+        .args(["pr", "checks", "--json", "name,status,conclusion"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run gh pr checks")?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+
+    let checks = arr
+        .iter()
+        .filter_map(|c| {
+            let name = c["name"].as_str()?;
+            let status = c["status"].as_str().unwrap_or("unknown");
+            let conclusion = c["conclusion"].as_str().map(|s| s.to_string());
+            Some(CiCheck {
+                name: name.to_string(),
+                status: status.to_string(),
+                conclusion,
+            })
+        })
+        .collect();
+
+    Ok(checks)
 }
 
 /// Test whether a remote URL belongs to the given owner/repo.
@@ -566,5 +757,175 @@ mod tests {
             "owner",
             "repo"
         ));
+    }
+
+    // ── PrOverviewData struct ──
+
+    #[test]
+    fn pr_overview_data_fields_accessible() {
+        let data = PrOverviewData {
+            number: 42,
+            title: "Fix the bug".to_string(),
+            body: "Detailed description".to_string(),
+            state: "OPEN".to_string(),
+            author: "contributor".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "fix/the-bug".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        };
+        assert_eq!(data.number, 42);
+        assert_eq!(data.title, "Fix the bug");
+        assert_eq!(data.state, "OPEN");
+        assert_eq!(data.author, "contributor");
+        assert_eq!(data.base_branch, "main");
+        assert_eq!(data.head_branch, "fix/the-bug");
+        assert!(data.checks.is_empty());
+        assert!(data.reviewers.is_empty());
+    }
+
+    #[test]
+    fn ci_check_fields_accessible() {
+        let check = CiCheck {
+            name: "CI / test".to_string(),
+            status: "completed".to_string(),
+            conclusion: Some("success".to_string()),
+        };
+        assert_eq!(check.name, "CI / test");
+        assert_eq!(check.status, "completed");
+        assert_eq!(check.conclusion, Some("success".to_string()));
+    }
+
+    #[test]
+    fn ci_check_conclusion_can_be_none() {
+        let check = CiCheck {
+            name: "CI / test".to_string(),
+            status: "in_progress".to_string(),
+            conclusion: None,
+        };
+        assert!(check.conclusion.is_none());
+    }
+
+    #[test]
+    fn reviewer_status_fields_accessible() {
+        let reviewer = ReviewerStatus {
+            login: "octocat".to_string(),
+            state: "APPROVED".to_string(),
+        };
+        assert_eq!(reviewer.login, "octocat");
+        assert_eq!(reviewer.state, "APPROVED");
+    }
+
+    // ── gh pr view JSON parsing (unit tests using serde_json directly) ──
+
+    #[test]
+    fn pr_overview_parsed_from_gh_json() {
+        // Simulate the JSON output of `gh pr view --json number,title,body,state,author,...`
+        let json = r#"{
+            "number": 123,
+            "title": "Add feature X",
+            "body": "This PR adds feature X",
+            "state": "OPEN",
+            "author": {"login": "developer"},
+            "baseRefName": "main",
+            "headRefName": "feature/x",
+            "reviews": [
+                {"author": {"login": "reviewer1"}, "state": "APPROVED"},
+                {"author": {"login": "reviewer2"}, "state": "CHANGES_REQUESTED"}
+            ]
+        }"#;
+
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        let number = v["number"].as_u64().unwrap_or(0);
+        let title = v["title"].as_str().unwrap_or("").to_string();
+        let state = v["state"].as_str().unwrap_or("").to_string();
+        let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+        let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
+        let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
+        let reviewers: Vec<ReviewerStatus> = v["reviews"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| {
+                        let login = r["author"]["login"].as_str()?;
+                        let state = r["state"].as_str().unwrap_or("PENDING");
+                        Some(ReviewerStatus {
+                            login: login.to_string(),
+                            state: state.to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(number, 123);
+        assert_eq!(title, "Add feature X");
+        assert_eq!(state, "OPEN");
+        assert_eq!(author, "developer");
+        assert_eq!(base_branch, "main");
+        assert_eq!(head_branch, "feature/x");
+        assert_eq!(reviewers.len(), 2);
+        assert_eq!(reviewers[0].login, "reviewer1");
+        assert_eq!(reviewers[0].state, "APPROVED");
+        assert_eq!(reviewers[1].login, "reviewer2");
+        assert_eq!(reviewers[1].state, "CHANGES_REQUESTED");
+    }
+
+    #[test]
+    fn pr_overview_handles_missing_optional_fields() {
+        // Minimal JSON with only required fields
+        let json = r#"{"number": 1, "title": "T", "state": "OPEN"}"#;
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        let number = v["number"].as_u64().unwrap_or(0);
+        let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+        let reviews: Vec<ReviewerStatus> = v["reviews"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|r| {
+                        let login = r["author"]["login"].as_str()?;
+                        let state = r["state"].as_str().unwrap_or("PENDING");
+                        Some(ReviewerStatus {
+                            login: login.to_string(),
+                            state: state.to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(number, 1);
+        assert_eq!(author, ""); // missing → empty string default
+        assert!(reviews.is_empty()); // missing → empty vec
+    }
+
+    #[test]
+    fn ci_checks_parsed_from_gh_json() {
+        // Simulate `gh pr checks --json name,status,conclusion` output
+        let json = r#"[
+            {"name": "test", "status": "completed", "conclusion": "success"},
+            {"name": "lint", "status": "completed", "conclusion": "failure"},
+            {"name": "build", "status": "in_progress"}
+        ]"#;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
+        let checks: Vec<CiCheck> = arr
+            .iter()
+            .filter_map(|c| {
+                let name = c["name"].as_str()?;
+                let status = c["status"].as_str().unwrap_or("unknown");
+                let conclusion = c["conclusion"].as_str().map(|s| s.to_string());
+                Some(CiCheck {
+                    name: name.to_string(),
+                    status: status.to_string(),
+                    conclusion,
+                })
+            })
+            .collect();
+
+        assert_eq!(checks.len(), 3);
+        assert_eq!(checks[0].name, "test");
+        assert_eq!(checks[0].conclusion, Some("success".to_string()));
+        assert_eq!(checks[1].conclusion, Some("failure".to_string()));
+        assert!(checks[2].conclusion.is_none()); // in_progress — no conclusion yet
     }
 }

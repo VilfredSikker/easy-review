@@ -50,14 +50,14 @@ er --filter '*.rs'
 - **Comment & feedback loop** — Press `c` to comment on lines/hunks, reply to threads with `r`, delete with `d`. Comments render inline after their target line or after the hunk
 - **GitHub PR comment sync** — Pull existing PR review comments into `er` with `G`, push your comments back with `P`. Two-way sync via `gh` CLI
 - **GitHub PR integration** — Open PRs directly: `er --pr 42` or `er <github-url>`
-- **Three diff modes** — Branch diff, unstaged changes, staged changes (plus `Shift+R` to sort by recency in any mode)
+- **Four diff modes** — Branch diff, unstaged changes, staged changes, commit history (plus `Shift+R` to sort by recency in any mode)
+- **Commit history** — Browse individual commits on the branch; left panel shows commit list, right panel shows the full diff with file-sectioned navigation
 - **Line-level navigation** — Arrow keys move through individual diff lines within hunks
 - **Syntax highlighting** — Language-aware coloring via syntect
 - **Large diff performance** — Auto-compacts lock files and generated code; lazy-parses diffs with 500+ files; viewport-based rendering only builds visible lines
 - **Live watch mode** — On by default. Auto-refreshes on file edits, staging, and commits; AI data reloads automatically; debounced to batch rapid changes
 - **Watched files** — Monitor git-ignored paths (like `.work/` folders) via `.er-config.toml`; view content or snapshot diffs inline
 - **Multi-repo tabs** — Open multiple repos or worktrees side-by-side
-- **Hunk staging** — Stage individual files or hunks without leaving the TUI
 - **Review tracking** — Mark files as reviewed, filter to unreviewed only. Status bar shows both filtered and total reviewed counts when a filter is active
 - **Composable filters** — Press `f` to filter files by glob, status, or size (`+*.rs,-*.lock,>50`). Press `F` for built-in presets (frontend, backend, config, docs) and filter history
 - **PR base hint** — When on a PR branch, `er` detects if the PR targets a different base than auto-detected and shows a hint (e.g. "PR #42 targets develop — run: er --pr 42")
@@ -87,6 +87,7 @@ Ctrl-d / Ctrl-u   Scroll half page down / up
 1                 Branch diff (vs base branch)
 2                 Unstaged changes
 3                 Staged changes
+4                 Commit history
 R (Shift+R)       Toggle sort by recency (works in any mode)
 ```
 
@@ -94,7 +95,6 @@ R (Shift+R)       Toggle sort by recency (works in any mode)
 
 ```
 s                 Stage / unstage file (or snapshot watched file)
-Ctrl-s            Stage current hunk
 S                 Open settings
 Space             Toggle file as reviewed
 u                 Filter to unreviewed files only
@@ -144,6 +144,18 @@ Space             Toggle checklist item
 Enter             Jump to file in diff view
 Esc               Return to default view
 ```
+
+### Commit History (mode 4)
+
+```
+j / k             Next / prev commit
+n / N             Next / prev file within commit
+↓ / ↑             Next / prev line (crosses hunk and file boundaries)
+h / l             Scroll left / right
+/                 Search commits by subject, hash, or author
+```
+
+Commits load lazily (50 at a time) and diffs are cached. AI review, staging, and commenting are disabled in History mode — switch to Branch mode for those features.
 
 ### Tabs & Repos
 
@@ -201,7 +213,7 @@ src/
 ├── git/
 │   ├── mod.rs        Module exports
 │   ├── diff.rs       Unified diff parser, header-only scanner, compaction engine
-│   └── status.rs     Base branch detection, staging, git commands, watched file discovery
+│   └── status.rs     Base branch detection, staging, commit log, git commands, watched file discovery
 ├── github.rs         GitHub PR integration (gh CLI wrapper)
 ├── ai/
 │   ├── mod.rs        Module exports

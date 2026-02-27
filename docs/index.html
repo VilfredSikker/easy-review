@@ -32,6 +32,7 @@
             'cyan': '#22d3ee',
             'accent': '#a78bfa',
             'accent-dim': '#7c5cbf',
+            'orange': '#d18616',
           },
         }
       }
@@ -91,6 +92,10 @@
     .diff-add { background: rgba(74, 222, 128, 0.08); }
     .diff-del { background: rgba(248, 113, 113, 0.08); }
 
+    /* Inline comment blocks */
+    .comment-gh { background: rgba(34, 211, 238, 0.05); border-left: 2px solid #22d3ee; }
+    .comment-ai { background: rgba(209, 134, 22, 0.07); border-left: 2px solid #d18616; }
+
     /* Keycap style */
     .keycap {
       display: inline-flex;
@@ -138,7 +143,7 @@
     <div class="max-w-4xl mx-auto text-center relative">
       <div class="fade-up fade-up-1 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-border text-xs text-text-dim font-mono mb-8">
         <span class="w-1.5 h-1.5 rounded-full bg-green animate-pulse"></span>
-        v0.1.0 — now open source
+        v1.3 — now open source
       </div>
 
       <h1 class="fade-up fade-up-2 text-4xl sm:text-5xl md:text-6xl font-body font-600 tracking-tight leading-[1.1] mb-6">
@@ -147,7 +152,7 @@
       </h1>
 
       <p class="fade-up fade-up-3 text-lg sm:text-xl text-text-dim max-w-2xl mx-auto mb-10 font-light leading-relaxed">
-        A keyboard-driven terminal UI for reviewing git diffs with AI-powered analysis. Built for developers who use AI coding assistants and need to review faster than they can code.
+        A keyboard-driven terminal UI for reviewing git diffs — leave comments, sync with GitHub, and get AI-powered risk analysis. Built for developers who use AI coding assistants and need to review faster than they can code.
       </p>
 
       <!-- Install command -->
@@ -165,7 +170,7 @@
 
   <!-- ===== TERMINAL DEMO ===== -->
   <section id="demo" class="pb-24 px-6">
-    <div class="max-w-5xl mx-auto reveal">
+    <div class="max-w-6xl mx-auto reveal">
       <div class="bg-surface border border-border rounded-xl overflow-hidden glow-box">
         <!-- Window chrome -->
         <div class="flex items-center gap-2 px-4 py-3 border-b border-border bg-surface-2">
@@ -176,148 +181,206 @@
         </div>
 
         <!-- Terminal content -->
-        <div class="font-mono text-xs sm:text-sm leading-relaxed">
+        <div class="font-mono text-xs leading-relaxed">
           <!-- Top bar -->
-          <div class="px-4 py-2 border-b border-border flex items-center justify-between bg-surface-2/50">
-            <div class="flex items-center gap-4">
-              <span class="text-accent font-bold">easy-review</span>
+          <div class="px-3 py-1.5 border-b border-border flex items-center justify-between bg-surface-2/50">
+            <div class="flex items-center gap-3">
+              <span class="text-accent font-bold">er</span>
               <span class="text-text-muted">·</span>
-              <span class="text-cyan">feature/auth</span>
-              <span class="text-text-muted">vs</span>
-              <span class="text-text-dim">main</span>
+              <span class="px-1.5 py-0.5 rounded bg-accent/15 text-accent border border-accent/20">Branch</span>
+              <span class="text-text-muted">Unstaged</span>
+              <span class="text-text-muted">Staged</span>
+              <span class="text-text-muted">History</span>
+              <span class="text-text-muted">·</span>
+              <span class="text-blue">PR #42</span> <span class="text-green ml-1">✓3</span> <span class="text-red ml-0.5">✗1</span>
             </div>
             <div class="flex items-center gap-3">
-              <span class="px-2 py-0.5 rounded text-xs bg-accent/15 text-accent border border-accent/20">Branch</span>
-              <span class="px-2 py-0.5 rounded text-xs bg-surface text-text-dim border border-border">Unstaged</span>
-              <span class="px-2 py-0.5 rounded text-xs bg-surface text-text-dim border border-border">Staged</span>
-              <span class="text-green text-xs ml-2">● WATCH</span>
+              <span class="text-cyan">💬 4</span>
+              <span class="text-orange">⚠ 3</span>
+              <span class="text-green text-xs ml-1">● WATCH</span>
             </div>
           </div>
 
-          <!-- Split pane -->
-          <div class="flex min-h-[380px]">
-            <!-- File tree -->
-            <div class="w-56 sm:w-64 border-r border-border p-3 flex-shrink-0">
-              <div class="text-text-muted text-xs uppercase tracking-wider mb-3">Files <span class="text-text-dim">· 7 changed</span></div>
+          <!-- Three-column pane -->
+          <div class="flex" style="min-height: 400px;">
+
+            <!-- File tree (left column) -->
+            <div class="w-52 border-r border-border p-2 flex-shrink-0">
+              <div class="text-text-muted text-xs uppercase tracking-wider mb-2">Files <span class="text-text-dim">· 7</span></div>
               <div class="space-y-0.5">
-                <div class="flex items-center gap-2 px-2 py-1 rounded bg-accent/10 text-accent">
-                  <span class="text-yellow">M</span>
-                  <span>src/auth/login.rs</span>
-                  <span class="ml-auto text-green text-xs">✓</span>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded bg-accent/10 text-accent">
+                  <span class="text-red text-xs">●</span>
+                  <span class="truncate">src/auth/login.rs</span>
+                  <span class="ml-auto text-orange shrink-0">⚠1</span>
+                  <span class="text-cyan shrink-0">💬2</span>
                 </div>
-                <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
-                  <span class="text-yellow">M</span>
-                  <span>src/auth/session.rs</span>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-surface-2 text-text-dim">
+                  <span class="text-yellow text-xs">●</span>
+                  <span class="truncate">src/api/handler.rs</span>
+                  <span class="ml-auto text-orange shrink-0">⚠1</span>
                 </div>
-                <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
-                  <span class="text-green">A</span>
-                  <span>src/auth/oauth.rs</span>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-surface-2 text-text-dim">
+                  <span class="text-green text-xs">●</span>
+                  <span class="truncate">src/ui/panel.rs</span>
                 </div>
-                <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
-                  <span class="text-yellow">M</span>
-                  <span>src/middleware.rs</span>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-surface-2 text-text-dim">
+                  <span class="text-green text-xs">●</span>
+                  <span class="truncate">src/config.rs</span>
+                  <span class="ml-auto text-cyan shrink-0">💬1</span>
                 </div>
-                <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
-                  <span class="text-green">A</span>
-                  <span>src/auth/token.rs</span>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-surface-2 text-text-dim">
+                  <span class="text-green text-xs">●</span>
+                  <span class="truncate">src/github.rs</span>
                 </div>
-                <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
-                  <span class="text-yellow">M</span>
-                  <span>Cargo.toml</span>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-surface-2 text-text-dim">
+                  <span class="text-text-muted text-xs">·</span>
+                  <span class="truncate">Cargo.toml</span>
                 </div>
-                <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-surface-2 text-text-dim">
-                  <span class="text-red">D</span>
-                  <span>src/auth/legacy.rs</span>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-surface-2 text-text-dim">
+                  <span class="text-text-muted text-xs">·</span>
+                  <span class="truncate">src/auth/legacy.rs</span>
                 </div>
               </div>
-              <div class="mt-6 pt-4 border-t border-border">
+              <div class="mt-4 pt-3 border-t border-border">
                 <div class="text-text-muted text-xs">Reviewed: <span class="text-green">1</span><span class="text-text-muted">/7</span></div>
               </div>
             </div>
 
-            <!-- Diff view -->
-            <div class="flex-1 p-0 overflow-hidden">
-              <div class="px-4 py-2 border-b border-border text-text-muted text-xs flex justify-between">
+            <!-- Diff view (center column) -->
+            <div class="flex-1 overflow-hidden flex flex-col">
+              <div class="px-3 py-1.5 border-b border-border text-text-muted flex justify-between shrink-0">
                 <span>src/auth/login.rs</span>
                 <span class="text-yellow">+42 −8</span>
               </div>
-              <div class="text-xs sm:text-sm">
-                <div class="flex px-4 py-0.5 text-text-muted">
-                  <span class="w-8 text-right mr-4 select-none text-text-muted/50">18</span>
-                  <span class="w-8 text-right mr-4 select-none text-text-muted/50">18</span>
-                  <span class="text-blue">use</span> <span class="text-text ml-1">crate::config::AuthConfig;</span>
+              <div class="flex-1 overflow-hidden">
+                <div class="flex px-3 py-0.5 text-text-muted">
+                  <span class="w-7 text-right mr-3 select-none text-text-muted/50">18</span>
+                  <span class="w-7 text-right mr-3 select-none text-text-muted/50">18</span>
+                  <span class="text-blue">use</span><span class="text-text ml-1">crate::config::AuthConfig;</span>
                 </div>
-                <div class="flex px-4 py-0.5 text-text-muted">
-                  <span class="w-8 text-right mr-4 select-none text-text-muted/50">19</span>
-                  <span class="w-8 text-right mr-4 select-none text-text-muted/50">19</span>
-                  <span></span>
-                </div>
-                <div class="flex px-4 py-0.5 bg-blue/5 text-blue font-bold">
-                  <span class="w-8 text-right mr-4 select-none">@@</span>
-                  <span class="w-8 text-right mr-4 select-none"></span>
+                <div class="flex px-3 py-0.5 bg-blue/5 text-blue font-bold">
+                  <span class="w-7 text-right mr-3 select-none">@@</span>
+                  <span class="w-7 text-right mr-3 select-none"></span>
                   <span>@@ -20,6 +20,18 @@ impl AuthService {</span>
                 </div>
-                <div class="flex px-4 py-0.5 diff-del">
-                  <span class="w-8 text-right mr-4 select-none text-red/50">20</span>
-                  <span class="w-8 text-right mr-4 select-none"></span>
-                  <span class="text-red">−   pub fn login(&self, user: &str) -> bool {</span>
+                <div class="flex px-3 py-0.5 diff-del">
+                  <span class="w-7 text-right mr-3 select-none text-red/50">20</span>
+                  <span class="w-7 text-right mr-3 select-none"></span>
+                  <span class="text-red">−   pub fn login(&self, user: &str) -&gt; bool {</span>
                 </div>
-                <div class="flex px-4 py-0.5 diff-del">
-                  <span class="w-8 text-right mr-4 select-none text-red/50">21</span>
-                  <span class="w-8 text-right mr-4 select-none"></span>
+                <div class="flex px-3 py-0.5 diff-del">
+                  <span class="w-7 text-right mr-3 select-none text-red/50">21</span>
+                  <span class="w-7 text-right mr-3 select-none"></span>
                   <span class="text-red">−       self.check_password(user)</span>
                 </div>
-                <div class="flex px-4 py-0.5 diff-add">
-                  <span class="w-8 text-right mr-4 select-none"></span>
-                  <span class="w-8 text-right mr-4 select-none text-green/50">20</span>
-                  <span class="text-green">+   pub async fn login(&self, creds: Credentials) -> Result&lt;Session&gt; {</span>
+                <div class="flex px-3 py-0.5 diff-add">
+                  <span class="w-7 text-right mr-3 select-none"></span>
+                  <span class="w-7 text-right mr-3 select-none text-green/50">20</span>
+                  <span class="text-green">+   pub async fn login(&self, creds: Credentials) -&gt; Result&lt;Session&gt; {</span>
                 </div>
-                <div class="flex px-4 py-0.5 diff-add">
-                  <span class="w-8 text-right mr-4 select-none"></span>
-                  <span class="w-8 text-right mr-4 select-none text-green/50">21</span>
+                <div class="flex px-3 py-0.5 diff-add">
+                  <span class="w-7 text-right mr-3 select-none"></span>
+                  <span class="w-7 text-right mr-3 select-none text-green/50">21</span>
                   <span class="text-green">+       let user = self.validate(&creds).await?;</span>
                 </div>
-                <div class="flex px-4 py-0.5 diff-add">
-                  <span class="w-8 text-right mr-4 select-none"></span>
-                  <span class="w-8 text-right mr-4 select-none text-green/50">22</span>
+                <div class="flex px-3 py-0.5 diff-add">
+                  <span class="w-7 text-right mr-3 select-none"></span>
+                  <span class="w-7 text-right mr-3 select-none text-green/50">22</span>
                   <span class="text-green">+       let token = self.issue_token(&user)?;</span>
                 </div>
-                <div class="flex px-4 py-0.5 diff-add">
-                  <span class="w-8 text-right mr-4 select-none"></span>
-                  <span class="w-8 text-right mr-4 select-none text-green/50">23</span>
+                <!-- Inline GitHub comment -->
+                <div class="comment-gh mx-3 my-0.5 px-2 py-1.5">
+                  <div class="flex items-center gap-1.5 mb-0.5">
+                    <span class="text-cyan">💬 @reviewer</span>
+                    <span class="text-text-muted text-xs">2h ago</span>
+                  </div>
+                  <div class="text-text-dim">Should this validate the token format before issuing?</div>
+                  <div class="text-text-muted text-xs mt-0.5">↳ 💬 @author: Good point — added format check in next commit</div>
+                </div>
+                <div class="flex px-3 py-0.5 diff-add">
+                  <span class="w-7 text-right mr-3 select-none"></span>
+                  <span class="w-7 text-right mr-3 select-none text-green/50">23</span>
                   <span class="text-green">+       let session = Session::new(user, token);</span>
                 </div>
-                <div class="flex px-4 py-0.5 diff-add">
-                  <span class="w-8 text-right mr-4 select-none"></span>
-                  <span class="w-8 text-right mr-4 select-none text-green/50">24</span>
+                <div class="flex px-3 py-0.5 diff-add">
+                  <span class="w-7 text-right mr-3 select-none"></span>
+                  <span class="w-7 text-right mr-3 select-none text-green/50">24</span>
                   <span class="text-green">+       self.store.save(&session).await?;</span>
                 </div>
-                <div class="flex px-4 py-0.5 diff-add">
-                  <span class="w-8 text-right mr-4 select-none"></span>
-                  <span class="w-8 text-right mr-4 select-none text-green/50">25</span>
+                <!-- Inline AI finding -->
+                <div class="comment-ai mx-3 my-0.5 px-2 py-1.5">
+                  <div class="flex items-center gap-1.5 mb-0.5">
+                    <span class="text-orange">⚠ Security</span>
+                    <span class="text-text-muted text-xs">AI finding</span>
+                  </div>
+                  <div class="text-text-dim">Missing null check on user.session — could panic on expired tokens</div>
+                </div>
+                <div class="flex px-3 py-0.5 diff-add">
+                  <span class="w-7 text-right mr-3 select-none"></span>
+                  <span class="w-7 text-right mr-3 select-none text-green/50">25</span>
                   <span class="text-green">+       Ok(session)</span>
                 </div>
-                <div class="flex px-4 py-0.5 text-text-muted">
-                  <span class="w-8 text-right mr-4 select-none text-text-muted/50">22</span>
-                  <span class="w-8 text-right mr-4 select-none text-text-muted/50">26</span>
+                <div class="flex px-3 py-0.5 text-text-muted">
+                  <span class="w-7 text-right mr-3 select-none text-text-muted/50">22</span>
+                  <span class="w-7 text-right mr-3 select-none text-text-muted/50">26</span>
                   <span>    }</span>
-                </div>
-                <div class="flex px-4 py-0.5 text-text-muted">
-                  <span class="w-8 text-right mr-4 select-none text-text-muted/50">23</span>
-                  <span class="w-8 text-right mr-4 select-none text-text-muted/50">27</span>
-                  <span></span>
                 </div>
               </div>
               <!-- Bottom bar -->
-              <div class="absolute bottom-0 left-56 sm:left-64 right-0 px-4 py-2 border-t border-border bg-surface-2/80 flex items-center gap-4 text-xs text-text-muted font-mono">
-                <span><span class="text-text">j</span><span class="text-text-muted">/</span><span class="text-text">k</span> navigate</span>
-                <span><span class="text-text">n</span><span class="text-text-muted">/</span><span class="text-text">N</span> hunks</span>
-                <span><span class="text-text">s</span> stage</span>
-                <span><span class="text-text">f</span> filter</span>
-                <span><span class="text-text">Space</span> reviewed</span>
-                <span><span class="text-text">w</span> watch</span>
+              <div class="px-3 py-1.5 border-t border-border bg-surface-2/80 flex items-center gap-3 flex-wrap shrink-0">
+                <span class="text-text-dim"><span class="text-text">j/k</span> files</span>
+                <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">n/N</span> hunks</span>
+                <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">c</span> comment</span>
+                <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">q</span> question</span>
+                <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">a</span> AI</span>
+                <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">p</span> panel</span>
+                <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">Tab</span> focus</span>
+                <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">G</span> pull</span>
+                <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">P</span> push</span>
               </div>
             </div>
+
+            <!-- Context panel (right column) — hidden on small screens -->
+            <div class="hidden lg:block w-64 border-l border-border flex-shrink-0 overflow-hidden">
+              <div class="px-3 py-1.5 border-b border-border text-text-muted">
+                <span class="text-blue font-bold">PR #42</span>
+                <span class="text-text-muted ml-2 text-xs">Refactor auth login</span>
+              </div>
+              <div class="p-3 text-xs space-y-3">
+                <div>
+                  <div class="text-text-muted uppercase tracking-wider text-xs mb-1">CI Checks</div>
+                  <div class="space-y-0.5">
+                    <div><span class="text-green">✓</span> <span class="text-text-dim">Build (2m 14s)</span></div>
+                    <div><span class="text-green">✓</span> <span class="text-text-dim">Tests (1m 32s)</span></div>
+                    <div><span class="text-yellow">⟳</span> <span class="text-text-dim">Deploy (running)</span></div>
+                  </div>
+                </div>
+                <div>
+                  <div class="text-text-muted uppercase tracking-wider text-xs mb-1">Reviewers</div>
+                  <div class="space-y-0.5">
+                    <div><span class="text-green">✓</span> <span class="text-text-dim">alice approved</span></div>
+                    <div><span class="text-red">✗</span> <span class="text-text-dim">bob changes requested</span></div>
+                    <div><span class="text-text-muted">○</span> <span class="text-text-dim">carol pending</span></div>
+                  </div>
+                </div>
+                <div>
+                  <div class="text-text-muted uppercase tracking-wider text-xs mb-1">Labels</div>
+                  <div class="flex gap-1.5 flex-wrap">
+                    <span class="px-1.5 py-0.5 rounded bg-red/15 text-red border border-red/20">bug</span>
+                    <span class="px-1.5 py-0.5 rounded bg-blue/15 text-blue border border-blue/20">auth</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
@@ -328,7 +391,7 @@
   <section class="py-16 px-6 border-y border-border/50">
     <div class="max-w-3xl mx-auto text-center reveal">
       <p class="text-2xl sm:text-3xl font-light leading-relaxed text-text-dim">
-        AI writes code in seconds. You shouldn't spend minutes figuring out what changed. <span class="text-text font-normal">Open <span class="font-mono text-accent">er</span>, get AI risk analysis, leave comments, and close the loop.</span>
+        AI writes code in seconds. You shouldn't spend minutes figuring out what changed. <span class="text-text font-normal">Open <span class="font-mono text-accent">er</span>, leave comments, sync with GitHub, get AI risk analysis — and close the loop.</span>
       </p>
     </div>
   </section>
@@ -347,22 +410,22 @@
           <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(167,139,250,0.06)_0%,transparent_70%)] pointer-events-none"></div>
           <div class="w-9 h-9 rounded-md bg-accent/15 border border-accent/25 flex items-center justify-center mb-4 font-mono text-accent text-sm">⬡</div>
           <h3 class="font-body font-500 text-base mb-2">AI-powered review</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-xs">/er-review</span> from Claude Code to get per-file risk ratings, hunk-level findings, and a suggested review order — all rendered inline in the diff.</p>
+          <p class="text-sm text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-xs">/er-review</span> from Claude Code to get per-file risk ratings and hunk-level findings rendered inline. Press <span class="keycap">a</span> to toggle the AI findings layer — independent of comments and panel.</p>
         </div>
 
-        <!-- Feature 2: Feedback Loop -->
+        <!-- Feature 2: Two comment types -->
         <div class="reveal bg-surface border border-cyan/30 rounded-lg p-6 hover:border-cyan/50 transition group relative overflow-hidden">
           <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.06)_0%,transparent_70%)] pointer-events-none"></div>
           <div class="w-9 h-9 rounded-md bg-cyan/15 border border-cyan/25 flex items-center justify-center mb-4 font-mono text-cyan text-sm">💬</div>
-          <h3 class="font-body font-500 text-base mb-2">Comment & feedback loop</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">c</span> to leave comments on hunks or specific lines. Re-run AI review and it reads your feedback, updating findings accordingly.</p>
+          <h3 class="font-body font-500 text-base mb-2">Two comment types</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">c</span> to leave GitHub comments (cyan) that sync with your PR. Press <span class="keycap">q</span> to leave private questions (yellow) for AI review. Reply to threads with <span class="keycap">r</span>.</p>
         </div>
 
         <!-- Feature 3 -->
         <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
           <div class="w-9 h-9 rounded-md bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 font-mono text-accent text-sm">1</div>
-          <h3 class="font-body font-500 text-base mb-2">Three diff modes</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Branch diff, unstaged, and staged. Switch with <span class="keycap">1</span> <span class="keycap">2</span> <span class="keycap">3</span> — see exactly what matters.</p>
+          <h3 class="font-body font-500 text-base mb-2">Five diff modes</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Branch diff, unstaged, staged, commit history, and merge conflicts. Switch with <span class="keycap">1</span> <span class="keycap">2</span> <span class="keycap">3</span> <span class="keycap">4</span> <span class="keycap">5</span> — see exactly what matters.</p>
         </div>
 
         <!-- Feature 4 -->
@@ -377,13 +440,6 @@
           <div class="w-9 h-9 rounded-md bg-cyan/10 border border-cyan/20 flex items-center justify-center mb-4 font-mono text-cyan text-sm">⇥</div>
           <h3 class="font-body font-500 text-base mb-2">Multi-repo tabs</h3>
           <p class="text-sm text-text-dim leading-relaxed">Open multiple repos or worktrees side-by-side. Navigate between them with <span class="keycap">[</span> <span class="keycap">]</span>.</p>
-        </div>
-
-        <!-- Feature 6 -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-yellow/10 border border-yellow/20 flex items-center justify-center mb-4 font-mono text-yellow text-sm">s</div>
-          <h3 class="font-body font-500 text-base mb-2">Hunk staging</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Stage entire files or individual hunks without leaving the TUI. <span class="keycap">s</span> for files, <span class="keycap">S</span> for hunks.</p>
         </div>
 
         <!-- Feature 7 -->
@@ -415,11 +471,54 @@
           <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">f</span> to filter by glob, status, or size (<span class="font-mono text-xs text-cyan">+*.rs,-*.lock,>50</span>). Press <span class="keycap">F</span> for built-in presets and filter history. Reviewed counter tracks both filtered and total progress.</p>
         </div>
 
-        <!-- Feature 11: PR base hint -->
+        <!-- Feature 11: Smart PR integration -->
         <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
           <div class="w-9 h-9 rounded-md bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 font-mono text-accent text-sm">PR</div>
-          <h3 class="font-body font-500 text-base mb-2">Smart PR detection</h3>
-          <p class="text-sm text-text-dim leading-relaxed">On a PR branch targeting a different base? <span class="font-mono text-accent text-xs">er</span> detects it and suggests <span class="font-mono text-xs text-text">er --pr 42</span> so you always see the right diff.</p>
+          <h3 class="font-body font-500 text-base mb-2">Smart PR integration</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Full PR panel with CI checks, reviewer status, and labels. Auto-detects the right base branch and shows a hint when your diff target differs from the PR target.</p>
+        </div>
+
+        <!-- Feature 12: Context panel -->
+        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
+          <div class="w-9 h-9 rounded-md bg-blue/10 border border-blue/20 flex items-center justify-center mb-4 font-mono text-blue text-sm">p</div>
+          <h3 class="font-body font-500 text-base mb-2">Context panel</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">p</span> to open the side panel with PR overview, AI summary, file detail, or symbol references. Press <span class="keycap">Tab</span> to focus the panel and navigate its content.</p>
+        </div>
+
+        <!-- Feature 13: Two-way GitHub sync -->
+        <div class="reveal bg-surface border border-cyan/30 rounded-lg p-6 hover:border-cyan/50 transition group relative overflow-hidden">
+          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.06)_0%,transparent_70%)] pointer-events-none"></div>
+          <div class="w-9 h-9 rounded-md bg-cyan/15 border border-cyan/25 flex items-center justify-center mb-4 font-mono text-cyan text-sm">⇅</div>
+          <h3 class="font-body font-500 text-base mb-2">Two-way GitHub sync</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">G</span> to pull review comments from GitHub. Press <span class="keycap">P</span> to push your local comments back. Reply threads included. Powered by the <span class="font-mono text-xs text-cyan">gh</span> CLI — no API token needed.</p>
+        </div>
+
+        <!-- Feature 14: Conflicts mode -->
+        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
+          <div class="w-9 h-9 rounded-md bg-red/10 border border-red/20 flex items-center justify-center mb-4 font-mono text-red text-sm">5</div>
+          <h3 class="font-body font-500 text-base mb-2">Conflicts mode</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">5</span> to enter Conflicts mode. Shows merge conflicts with resolved/unresolved indicators, staging support, and a merge status badge in the top bar.</p>
+        </div>
+
+        <!-- Feature 15: Comment relocation -->
+        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
+          <div class="w-9 h-9 rounded-md bg-yellow/10 border border-yellow/20 flex items-center justify-center mb-4 font-mono text-yellow text-sm">⚓</div>
+          <h3 class="font-body font-500 text-base mb-2">Comment relocation</h3>
+          <p class="text-sm text-text-dim leading-relaxed">A 3-pass algorithm keeps comments anchored to the right line as code changes underneath them. Comments dim with a warning when their target line disappears entirely.</p>
+        </div>
+
+        <!-- Feature 16: Symbol references -->
+        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
+          <div class="w-9 h-9 rounded-md bg-green/10 border border-green/20 flex items-center justify-center mb-4 font-mono text-green text-sm">g</div>
+          <h3 class="font-body font-500 text-base mb-2">Symbol references</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">g</span> to run git grep for the word at cursor. Results appear in the context panel so you can see all usages without leaving the diff.</p>
+        </div>
+
+        <!-- Feature 17: Live settings -->
+        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
+          <div class="w-9 h-9 rounded-md bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 font-mono text-accent text-sm">S</div>
+          <h3 class="font-body font-500 text-base mb-2">Live settings</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">S</span> to open the settings overlay. Toggle feature flags, adjust display options, and set agent config. Changes apply live and persist to <span class="font-mono text-xs text-accent">.er-config.toml</span>.</p>
         </div>
       </div>
     </div>
@@ -454,7 +553,7 @@
           <div class="flex-shrink-0 w-10 h-10 rounded-full bg-accent/20 border border-accent/30 flex items-center justify-center font-mono text-accent text-sm">3</div>
           <div>
             <h3 class="font-body font-500 text-lg mb-1">Get AI review</h3>
-            <p class="text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code. Risk ratings, findings, and a review checklist appear inline in your diff view. Press <span class="keycap">v</span> to toggle the AI overlay.</p>
+            <p class="text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code. Risk ratings, findings, and a review checklist appear inline in your diff view. Press <span class="keycap">a</span> to toggle the AI findings layer — independent of comments and panel.</p>
           </div>
         </div>
 
@@ -462,7 +561,7 @@
           <div class="flex-shrink-0 w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center font-mono text-accent text-sm">4</div>
           <div>
             <h3 class="font-body font-500 text-lg mb-1">Comment and iterate</h3>
-            <p class="text-text-dim leading-relaxed">Press <span class="keycap">c</span> to leave comments on hunks or lines. Re-run <span class="font-mono text-accent text-sm">/er-review</span> — the AI reads your feedback and updates its analysis. A true human-AI review loop.</p>
+            <p class="text-text-dim leading-relaxed">Press <span class="keycap">c</span> for GitHub comments or <span class="keycap">q</span> for private questions on hunks and lines. Open the context panel with <span class="keycap">p</span> for a PR overview alongside your diff. Re-run <span class="font-mono text-accent text-sm">/er-review</span> — the AI reads your feedback and updates its analysis.</p>
           </div>
         </div>
 
@@ -471,6 +570,14 @@
           <div>
             <h3 class="font-body font-500 text-lg mb-1">Review, stage, commit</h3>
             <p class="text-text-dim leading-relaxed">Navigate files with <span class="keycap">j</span><span class="keycap">k</span>, lines with <span class="keycap">↑</span><span class="keycap">↓</span>, hunks with <span class="keycap">n</span><span class="keycap">N</span>. Stage what looks good with <span class="keycap">s</span>, mark reviewed with <span class="keycap">Space</span>.</p>
+          </div>
+        </div>
+
+        <div class="reveal flex gap-6 items-start">
+          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-cyan/20 border border-cyan/30 flex items-center justify-center font-mono text-cyan text-sm">6</div>
+          <div>
+            <h3 class="font-body font-500 text-lg mb-1">Sync with GitHub</h3>
+            <p class="text-text-dim leading-relaxed">Press <span class="keycap">G</span> to pull review comments from the PR into your diff view. Press <span class="keycap">P</span> to push your local comments back to GitHub. The full review loop, without leaving the terminal.</p>
           </div>
         </div>
       </div>

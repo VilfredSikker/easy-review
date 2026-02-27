@@ -7,8 +7,8 @@ mod ui;
 mod watch;
 
 use anyhow::Result;
-use app::{App, ConfirmAction, DiffMode, InputMode};
-use crate::ai::ViewMode;
+use app::{App, ConfirmAction, DiffMode, InputMode, SplitSide};
+use crate::ai::{PanelContent, ReviewFocus};
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -65,24 +65,35 @@ fn main() -> Result<()> {
         app.tab_mut().apply_filter_expr(filter_expr);
     }
 
-    // Hint: check for PR base mismatch in background (avoids blocking startup on network)
-    let hint_rx = if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
+    // Hint + PR data: check for PR in background (avoids blocking startup on network)
+    let (hint_rx, pr_data_rx) = if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
         let repo_root = app.tab().repo_root.clone();
         let current_base = app.tab().base_branch.clone();
-        let (tx, rx) = mpsc::channel::<String>();
+        let (hint_tx, hint_rx) = mpsc::channel::<String>();
+        let (pr_tx, pr_rx) = mpsc::channel::<github::PrOverviewData>();
         std::thread::spawn(move || {
             if let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) {
                 if pr_base != current_base {
-                    let _ = tx.send(format!(
+                    let _ = hint_tx.send(format!(
                         "PR #{} targets {} — run: er --pr {}",
                         pr_num, pr_base, pr_num
                     ));
                 }
+                // Fetch PR overview data regardless of base mismatch
+                if let Some(data) = github::gh_pr_overview(&repo_root) {
+                    let _ = pr_tx.send(data);
+                }
             }
         });
-        Some(rx)
+        (Some(hint_rx), Some(pr_rx))
     } else {
-        None
+        // For --pr flag or PR URL, fetch PR data synchronously (already in the right state)
+        let repo_root = app.tab().repo_root.clone();
+        let pr_data = github::gh_pr_overview(&repo_root);
+        if let Some(data) = pr_data {
+            app.tab_mut().pr_data = Some(data);
+        }
+        (None, None)
     };
 
     // Load syntax highlighting (once, reused for all files)
@@ -96,9 +107,12 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run event loop
-    let result = run_app(&mut terminal, &mut app, &mut highlighter, hint_rx);
+    let result = run_app(&mut terminal, &mut app, &mut highlighter, hint_rx, pr_data_rx);
 
     // Cleanup
+    // TODO(risk:high): if run_app panics rather than returning Err, these cleanup calls never
+    // run and the terminal is left in raw mode with no cursor — requires a `reset` or terminal
+    // restart to recover. Consider a panic hook that calls disable_raw_mode.
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -121,10 +135,12 @@ fn run_app<B: Backend>(
     app: &mut App,
     hl: &mut ui::highlight::Highlighter,
     hint_rx: Option<mpsc::Receiver<String>>,
+    pr_data_rx: Option<mpsc::Receiver<github::PrOverviewData>>,
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
     let mut hint_rx = hint_rx;
+    let mut pr_data_rx = pr_data_rx;
 
     // Debounce state for file watcher refreshes
     let mut pending_refresh = false;
@@ -134,6 +150,9 @@ fn run_app<B: Backend>(
     // Start watching by default
     let root_str = app.tab().repo_root.clone();
     let root = std::path::Path::new(&root_str);
+    // TODO(risk:minor): FileWatcher::new failure is silently swallowed — the user gets no
+    // notification that watch mode failed to start. app.watching stays false, which is correct,
+    // but there is no visible indication of why. Log or surface the error.
     let mut _watcher: Option<FileWatcher> = match FileWatcher::new(root, 500, watch_tx.clone()) {
         Ok(w) => {
             app.watching = true;
@@ -168,6 +187,10 @@ fn run_app<B: Backend>(
         }
 
         // Check for file watch events (non-blocking) — debounced
+        // TODO(risk:medium): only one event is drained per loop tick. Under a burst of rapid
+        // changes the channel accumulates events faster than they are consumed, causing
+        // pending_file_count to undercount and the debounce deadline to reset on every tick,
+        // potentially delaying the refresh indefinitely. Drain all available events in a loop.
         if let Ok(WatchEvent::FilesChanged(paths)) = watch_rx.try_recv() {
             pending_file_count += paths.len();
             pending_refresh = true;
@@ -214,6 +237,14 @@ fn run_app<B: Backend>(
             }
         }
 
+        // Check for PR overview data from background thread (fires once)
+        if let Some(rx) = &pr_data_rx {
+            if let Ok(data) = rx.try_recv() {
+                app.tab_mut().pr_data = Some(data);
+                pr_data_rx = None;
+            }
+        }
+
         // Tick — used for auto-clearing notifications
         app.tick();
 
@@ -227,8 +258,8 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     // Settings overlay has additional keybindings
     if matches!(app.overlay, Some(app::OverlayData::Settings { .. })) {
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+            KeyCode::Char('k') | KeyCode::Down => app.overlay_next(),
+            KeyCode::Char('j') | KeyCode::Up => app.overlay_prev(),
             KeyCode::Char(' ') | KeyCode::Enter => {
                 // Space and Enter both toggle the current item
                 app.settings_toggle();
@@ -244,8 +275,8 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-        KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+        KeyCode::Char('k') | KeyCode::Down => app.overlay_next(),
+        KeyCode::Char('j') | KeyCode::Up => app.overlay_prev(),
         KeyCode::Enter => app.overlay_select()?,
         KeyCode::Backspace => app.overlay_go_up(),
         KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
@@ -288,8 +319,16 @@ fn handle_normal_input(
             app.tab_mut().set_mode(DiffMode::Staged);
             return Ok(());
         }
+        KeyCode::Char('4') if app.config.features.view_history => {
+            app.tab_mut().set_mode(DiffMode::History);
+            return Ok(());
+        }
+        KeyCode::Char('5') if app.config.features.view_conflicts => {
+            app.tab_mut().set_mode(DiffMode::Conflicts);
+            return Ok(());
+        }
         // Toggle mtime sort (works in any mode)
-        KeyCode::Char('R') => {
+        KeyCode::Char('m') => {
             let tab = app.tab_mut();
             tab.sort_by_mtime = !tab.sort_by_mtime;
             let _ = tab.refresh_diff();
@@ -298,19 +337,15 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Refresh / Reply (r = reply when comment focused, else refresh)
-        KeyCode::Char('r') => {
-            if app.tab().comment_focus.is_some() {
-                app.start_reply();
+        // Reload/refresh diff
+        KeyCode::Char('R') => {
+            app.tab_mut().refresh_diff()?;
+            let ai_status = if app.tab().ai.has_data() {
+                if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
             } else {
-                app.tab_mut().refresh_diff()?;
-                let ai_status = if app.tab().ai.has_data() {
-                    if app.tab().ai.is_stale { " · AI stale" } else { " · AI synced" }
-                } else {
-                    ""
-                };
-                app.notify(&format!("Refreshed{}", ai_status));
-            }
+                ""
+            };
+            app.notify(&format!("Refreshed{}", ai_status));
             return Ok(());
         }
 
@@ -337,23 +372,75 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Open in editor
+        // Open in editor (or edit focused comment if own top-level)
         KeyCode::Char('e') => {
+            if let Some(id) = app.tab().focused_comment_id.clone() {
+                if let Some(comment) = app.tab().ai.find_comment(&id) {
+                    if comment.author() == "You" && comment.in_reply_to().is_none() {
+                        app.start_edit_comment(&id);
+                        return Ok(());
+                    }
+                }
+            }
             app.tab().open_in_editor()?;
             return Ok(());
         }
 
-        // Tab navigation
+        // Unified hint jumping across files (Shift+J / Shift+K)
+        KeyCode::Char('J') => {
+            app.prev_hint();
+            return Ok(());
+        }
+        KeyCode::Char('K') => {
+            app.next_hint();
+            return Ok(());
+        }
+        // AI finding jumping across files (Ctrl+j / Ctrl+k)
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.next_finding();
+            return Ok(());
+        }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.prev_finding();
+            return Ok(());
+        }
+        // Delete focused comment (after J/K jump) — only if deletable
+        KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => {
+            if let Some(ref id) = app.tab().focused_comment_id.clone() {
+                if let Some(comment) = app.tab().ai.find_comment(id) {
+                    if comment.can_delete() {
+                        app.input_mode = InputMode::Confirm(ConfirmAction::DeleteComment {
+                            comment_id: id.clone(),
+                        });
+                    }
+                }
+            }
+            return Ok(());
+        }
+        // Reply to focused comment/question or finding
+        KeyCode::Char('r') => {
+            if let Some(id) = app.tab().focused_comment_id.clone() {
+                if let Some(comment) = app.tab().ai.find_comment(&id) {
+                    if comment.can_reply() {
+                        app.start_reply_comment(&id);
+                    }
+                }
+            } else if let Some(id) = app.tab().focused_finding_id.clone() {
+                app.start_reply_finding(&id);
+            }
+            return Ok(());
+        }
+        KeyCode::Char('x') => {
+            app.close_tab();
+            return Ok(());
+        }
+        // Tab switching ([ / ])
         KeyCode::Char(']') => {
             app.next_tab();
             return Ok(());
         }
         KeyCode::Char('[') => {
             app.prev_tab();
-            return Ok(());
-        }
-        KeyCode::Char('x') => {
-            app.close_tab();
             return Ok(());
         }
 
@@ -389,32 +476,83 @@ fn handle_normal_input(
         _ => {}
     }
 
-    // ── AiReview mode: route remaining keys to dedicated handler ──
-    if app.tab().ai.view_mode == ViewMode::AiReview {
-        return handle_ai_review_input(app, key);
+    // ── Panel focused: route navigation keys to the appropriate panel handler ──
+    if app.tab().panel_focus && app.tab().panel.is_some() {
+        if app.tab().panel == Some(PanelContent::AiSummary) {
+            return handle_ai_review_input(app, key);
+        }
+        // FileDetail / PrOverview panels: route j/k and arrow keys to panel scrolling
+        match key.code {
+            KeyCode::Char('k') | KeyCode::Down => {
+                app.tab_mut().panel_scroll_down(1);
+                return Ok(());
+            }
+            KeyCode::Char('j') | KeyCode::Up => {
+                app.tab_mut().panel_scroll_up(1);
+                return Ok(());
+            }
+            KeyCode::Esc => {
+                app.tab_mut().panel_focus = false;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    // ── History mode: route to dedicated handler ──
+    if app.tab().mode == DiffMode::History {
+        return handle_history_input(app, key);
     }
 
     // ── Normal mode keys ──
 
     match key.code {
         // File navigation
-        KeyCode::Char('j') => app.tab_mut().next_file(),
-        KeyCode::Char('k') => app.tab_mut().prev_file(),
+        KeyCode::Char('j') => app.tab_mut().prev_file(),
+        KeyCode::Char('k') => app.tab_mut().next_file(),
 
         // Line/comment navigation (arrow keys: comments when focused, else lines)
-        KeyCode::Down => {
-            if app.tab().comment_focus.is_some() {
-                app.next_comment();
-            } else {
-                app.tab_mut().next_line();
+        // Shift+arrow extends selection, plain arrow clears it
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            let tab = app.tab_mut();
+            if tab.selection_anchor.is_none() {
+                tab.selection_anchor = tab.current_line.or(Some(0));
+            }
+            let total_lines = tab.current_hunk_line_count();
+            if total_lines > 0 {
+                match tab.current_line {
+                    None => {
+                        tab.current_line = Some(0);
+                        tab.scroll_to_current_hunk();
+                    }
+                    Some(line) => {
+                        if line + 1 < total_lines {
+                            tab.current_line = Some(line + 1);
+                            tab.scroll_to_current_hunk();
+                        }
+                    }
+                }
             }
         }
-        KeyCode::Up => {
-            if app.tab().comment_focus.is_some() {
-                app.prev_comment();
-            } else {
-                app.tab_mut().prev_line();
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            let tab = app.tab_mut();
+            if tab.selection_anchor.is_none() {
+                tab.selection_anchor = tab.current_line.or(Some(0));
             }
+            match tab.current_line {
+                None => {}
+                Some(0) => {}
+                Some(line) => {
+                    tab.current_line = Some(line - 1);
+                    tab.scroll_to_current_hunk();
+                }
+            }
+        }
+        KeyCode::Down => {
+            app.tab_mut().next_line();
+        }
+        KeyCode::Up => {
+            app.tab_mut().prev_line();
         }
 
         // Hunk navigation
@@ -422,31 +560,65 @@ fn handle_normal_input(
         KeyCode::Char('N') => app.tab_mut().prev_hunk(),
 
         // Horizontal scroll (for long lines)
-        KeyCode::Char('l') | KeyCode::Right => app.tab_mut().scroll_right(8),
-        KeyCode::Char('h') | KeyCode::Left => app.tab_mut().scroll_left(8),
+        KeyCode::Char('l') | KeyCode::Right => {
+            if app.split_diff_active(&app.config.clone()) {
+                app.tab_mut().scroll_right_split();
+            } else {
+                app.tab_mut().scroll_right(8);
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            if app.split_diff_active(&app.config.clone()) {
+                app.tab_mut().scroll_left_split();
+            } else {
+                app.tab_mut().scroll_left(8);
+            }
+        }
         KeyCode::Home => {
+            if app.split_diff_active(&app.config.clone()) {
+                let tab = app.tab_mut();
+                match tab.split_focus {
+                    SplitSide::Old => tab.h_scroll_old = 0,
+                    SplitSide::New => tab.h_scroll_new = 0,
+                }
+            }
             app.tab_mut().h_scroll = 0;
         }
 
-        // Scroll
+        // Scroll — routes to panel when panel is focused
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.tab_mut().scroll_down(10);
+            if app.tab().panel_focus && app.tab().panel.is_some() {
+                app.tab_mut().panel_scroll_down(10);
+            } else {
+                app.tab_mut().scroll_down(10);
+            }
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.tab_mut().scroll_up(10);
+            if app.tab().panel_focus && app.tab().panel.is_some() {
+                app.tab_mut().panel_scroll_up(10);
+            } else {
+                app.tab_mut().scroll_up(10);
+            }
         }
-        KeyCode::PageDown => app.tab_mut().scroll_down(20),
-        KeyCode::PageUp => app.tab_mut().scroll_up(20),
+        KeyCode::PageDown => {
+            if app.tab().panel_focus && app.tab().panel.is_some() {
+                app.tab_mut().panel_scroll_down(20);
+            } else {
+                app.tab_mut().scroll_down(20);
+            }
+        }
+        KeyCode::PageUp => {
+            if app.tab().panel_focus && app.tab().panel.is_some() {
+                app.tab_mut().panel_scroll_up(20);
+            } else {
+                app.tab_mut().scroll_up(20);
+            }
+        }
 
         // Search
         KeyCode::Char('/') => {
             app.input_mode = InputMode::Search;
             app.tab_mut().search_query.clear();
-        }
-
-        // Stage current hunk (Ctrl+s)
-        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.stage_current_hunk()?;
         }
 
         // Filter
@@ -479,7 +651,7 @@ fn handle_normal_input(
         }
 
         // Open settings overlay
-        KeyCode::Char('S') => {
+        KeyCode::Char(',') => {
             app.open_settings();
         }
 
@@ -506,6 +678,11 @@ fn handle_normal_input(
             app.yank_hunk()?;
         }
 
+        // Copy rich context to clipboard (for agent terminal)
+        KeyCode::Char('A') => {
+            app.copy_context()?;
+        }
+
         // In Staged mode, c = commit; otherwise c = GitHub comment
         KeyCode::Char('c') => {
             if app.tab().mode == DiffMode::Staged {
@@ -515,28 +692,31 @@ fn handle_normal_input(
             }
         }
         KeyCode::Char('C') => {
-            app.start_hunk_comment(crate::ai::CommentType::GitHubComment);
+            app.tab_mut().toggle_layer_comments();
+            let on = app.tab().layers.show_github_comments;
+            app.notify(if on { "Comments: visible" } else { "Comments: hidden" });
         }
 
-        // Personal question on current line (q) or hunk (Q)
+        // Toggle question layer visibility (Q)
         KeyCode::Char('Q') => {
-            app.start_hunk_comment(crate::ai::CommentType::Question);
+            app.tab_mut().toggle_layer_questions();
+            let on = app.tab().layers.show_questions;
+            app.notify(if on { "Questions: visible" } else { "Questions: hidden" });
         }
 
-        // Tab: toggle comment focus within current hunk
+        // Tab: toggle split pane focus when split diff is active; otherwise toggle panel focus
         KeyCode::Tab => {
-            app.toggle_comment_focus();
-        }
-
-        // Delete focused comment
-        KeyCode::Char('d') if app.tab().comment_focus.is_some() => {
-            app.start_delete_comment();
-        }
-
-        // Toggle resolved on focused comment
-        KeyCode::Char('R') => {
-            if let Some(focus) = app.tab().comment_focus.clone() {
-                toggle_comment_resolved(app, &focus.comment_id)?;
+            if app.split_diff_active(&app.config.clone()) {
+                let tab = app.tab_mut();
+                tab.split_focus = match tab.split_focus {
+                    SplitSide::Old => SplitSide::New,
+                    SplitSide::New => SplitSide::Old,
+                };
+            } else {
+                let tab = app.tab_mut();
+                if tab.panel.is_some() {
+                    tab.panel_focus = !tab.panel_focus;
+                }
             }
         }
 
@@ -545,29 +725,20 @@ fn handle_normal_input(
             sync_github_comments(app)?;
         }
 
-        // Push comment(s) to GitHub: P on focused comment pushes one, P with no focus pushes all
+        // Push all comments to GitHub
         KeyCode::Char('P') => {
-            if app.tab().comment_focus.is_some() {
-                push_comment_to_github(app)?;
-            } else {
-                push_all_comments_to_github(app)?;
-            }
+            push_all_comments_to_github(app)?;
         }
 
-        // Toggle AI view mode (v forward, V backward) — gated by ai_overlays flag
-        KeyCode::Char('v') if app.config.features.ai_overlays => {
-            app.tab_mut().ai.cycle_view_mode();
-            app.tab_mut().diff_scroll = 0;
-            app.tab_mut().ai_panel_scroll = 0;
-            let mode = app.tab().ai.view_mode.label();
-            app.notify(&format!("View: {}", mode));
+        // Toggle AI findings layer (a)
+        KeyCode::Char('a') => {
+            app.tab_mut().toggle_layer_ai();
+            let on = app.tab().layers.show_ai_findings;
+            app.notify(if on { "AI findings: ON" } else { "AI findings: OFF" });
         }
-        KeyCode::Char('V') if app.config.features.ai_overlays => {
-            app.tab_mut().ai.cycle_view_mode_prev();
-            app.tab_mut().diff_scroll = 0;
-            app.tab_mut().ai_panel_scroll = 0;
-            let mode = app.tab().ai.view_mode.label();
-            app.notify(&format!("View: {}", mode));
+        // Toggle context panel (p) — cycles through panel states
+        KeyCode::Char('p') => {
+            app.tab_mut().toggle_panel();
         }
 
         // Clear search first, then filter (innermost → outermost)
@@ -588,21 +759,22 @@ fn handle_normal_input(
 fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         // Navigation within focused column
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.tab_mut().ai.review_next();
+        KeyCode::Char('k') | KeyCode::Down => {
+            app.tab_mut().review_next();
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.tab_mut().ai.review_prev();
+        KeyCode::Char('j') | KeyCode::Up => {
+            app.tab_mut().review_prev();
         }
 
         // Switch focus between left/right columns
-        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
-            ai_review_reset_outgoing_scroll(app);
-            app.tab_mut().ai.review_toggle_focus();
-        }
-        KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
-            ai_review_reset_outgoing_scroll(app);
-            app.tab_mut().ai.review_toggle_focus();
+        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right
+        | KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+            app.tab_mut().review_toggle_focus();
+            let (files_offset, checklist_offset) = app.tab().ai_summary_section_offsets();
+            app.tab_mut().panel_scroll = match app.tab().review_focus {
+                ReviewFocus::Files => files_offset,
+                ReviewFocus::Checklist => checklist_offset,
+            };
         }
 
         // Toggle checklist item
@@ -625,27 +797,9 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::PageDown => ai_review_scroll(app, 20, true),
         KeyCode::PageUp => ai_review_scroll(app, 20, false),
 
-        // Cycle view mode (v forward, V backward)
-        KeyCode::Char('v') => {
-            app.tab_mut().ai.cycle_view_mode();
-            app.tab_mut().diff_scroll = 0;
-            app.tab_mut().ai_panel_scroll = 0;
-            let mode = app.tab().ai.view_mode.label();
-            app.notify(&format!("View: {}", mode));
-        }
-        KeyCode::Char('V') => {
-            app.tab_mut().ai.cycle_view_mode_prev();
-            app.tab_mut().diff_scroll = 0;
-            app.tab_mut().ai_panel_scroll = 0;
-            let mode = app.tab().ai.view_mode.label();
-            app.notify(&format!("View: {}", mode));
-        }
-
-        // Esc goes back to default view
+        // Esc closes panel focus
         KeyCode::Esc => {
-            app.tab_mut().ai.view_mode = ViewMode::Default;
-            app.tab_mut().diff_scroll = 0;
-            app.notify("View: DEFAULT");
+            app.tab_mut().panel_focus = false;
         }
 
         _ => {}
@@ -653,28 +807,93 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Reset the outgoing column's scroll when switching focus in AiReview
-fn ai_review_reset_outgoing_scroll(app: &mut App) {
-    use crate::ai::ReviewFocus;
-    let tab = app.tab_mut();
-    match tab.ai.review_focus {
-        ReviewFocus::Files => tab.diff_scroll = 0,
-        ReviewFocus::Checklist => tab.ai_panel_scroll = 0,
+fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        // Commit navigation (left panel)
+        KeyCode::Char('k') => {
+            // Check if at the end and need to load more
+            let at_end = app.tab().history.as_ref()
+                .map(|h| h.selected_commit + 1 >= h.commits.len())
+                .unwrap_or(false);
+            if at_end {
+                app.tab_mut().history_load_more();
+            }
+            app.tab_mut().history_next_commit();
+        }
+        KeyCode::Char('j') => {
+            app.tab_mut().history_prev_commit();
+        }
+
+        // File navigation within commit diff (n/N)
+        KeyCode::Char('n') => app.tab_mut().history_next_file(),
+        KeyCode::Char('N') => app.tab_mut().history_prev_file(),
+
+        // Line navigation (arrows)
+        KeyCode::Down => app.tab_mut().history_next_line(),
+        KeyCode::Up => app.tab_mut().history_prev_line(),
+
+        // Horizontal scroll
+        KeyCode::Char('l') | KeyCode::Right => app.tab_mut().history_scroll_right(8),
+        KeyCode::Char('h') | KeyCode::Left => app.tab_mut().history_scroll_left(8),
+        KeyCode::Home => {
+            if let Some(ref mut h) = app.tab_mut().history {
+                h.h_scroll = 0;
+            }
+        }
+
+        // Scroll
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().history_scroll_down(10);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().history_scroll_up(10);
+        }
+        KeyCode::PageDown => app.tab_mut().history_scroll_down(20),
+        KeyCode::PageUp => app.tab_mut().history_scroll_up(20),
+
+        // Search (filter commits)
+        KeyCode::Char('/') => {
+            app.input_mode = InputMode::Search;
+            app.tab_mut().search_query.clear();
+        }
+
+        // Clear search filter
+        KeyCode::Esc => {
+            if !app.tab().search_query.is_empty() {
+                app.tab_mut().search_query.clear();
+            }
+        }
+
+        // Toggle AI findings layer
+        KeyCode::Char('a') => {
+            app.tab_mut().toggle_layer_ai();
+            let on = app.tab().layers.show_ai_findings;
+            app.notify(if on { "AI findings: ON" } else { "AI findings: OFF" });
+        }
+        // Toggle context panel
+        KeyCode::Char('p') => {
+            app.tab_mut().toggle_panel();
+        }
+        // Toggle panel focus
+        KeyCode::Tab => {
+            let tab = app.tab_mut();
+            if tab.panel.is_some() {
+                tab.panel_focus = !tab.panel_focus;
+            }
+        }
+
+        _ => {}
     }
+    Ok(())
 }
 
-/// Scroll the focused column in AiReview mode
+/// Scroll the focused column in AiSummary panel
 fn ai_review_scroll(app: &mut App, amount: u16, down: bool) {
-    use crate::ai::ReviewFocus;
     let tab = app.tab_mut();
-    let scroll = match tab.ai.review_focus {
-        ReviewFocus::Files => &mut tab.diff_scroll,
-        ReviewFocus::Checklist => &mut tab.ai_panel_scroll,
-    };
     if down {
-        *scroll = scroll.saturating_add(amount);
+        tab.panel_scroll = tab.panel_scroll.saturating_add(amount);
     } else {
-        *scroll = scroll.saturating_sub(amount);
+        tab.panel_scroll = tab.panel_scroll.saturating_sub(amount);
     }
 }
 
@@ -790,60 +1009,6 @@ fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Toggle the resolved flag on a comment and persist
-fn toggle_comment_resolved(app: &mut App, comment_id: &str) -> Result<()> {
-    let tab = app.tab();
-    let repo_root = tab.repo_root.clone();
-    let is_question = comment_id.starts_with("q-");
-
-    if is_question {
-        let path = format!("{}/.er-questions.json", repo_root);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(mut qs) = serde_json::from_str::<crate::ai::ErQuestions>(&content) {
-                let mut toggled = false;
-                for q in &mut qs.questions {
-                    if q.id == comment_id {
-                        q.resolved = !q.resolved;
-                        toggled = true;
-                        break;
-                    }
-                }
-                if toggled {
-                    let json = serde_json::to_string_pretty(&qs)?;
-                    let tmp_path = format!("{}.tmp", path);
-                    std::fs::write(&tmp_path, &json)?;
-                    std::fs::rename(&tmp_path, &path)?;
-                    app.tab_mut().reload_ai_state();
-                    app.notify("Toggled resolved");
-                }
-            }
-        }
-    } else {
-        let path = format!("{}/.er-github-comments.json", repo_root);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(mut gc) = serde_json::from_str::<crate::ai::ErGitHubComments>(&content) {
-                let mut toggled = false;
-                for c in &mut gc.comments {
-                    if c.id == comment_id {
-                        c.resolved = !c.resolved;
-                        toggled = true;
-                        break;
-                    }
-                }
-                if toggled {
-                    let json = serde_json::to_string_pretty(&gc)?;
-                    let tmp_path = format!("{}.tmp", path);
-                    std::fs::write(&tmp_path, &json)?;
-                    std::fs::rename(&tmp_path, &path)?;
-                    app.tab_mut().reload_ai_state();
-                    app.notify("Toggled resolved");
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Sync GitHub PR comments (pull)
 fn sync_github_comments(app: &mut App) -> Result<()> {
     let tab = app.tab();
@@ -860,7 +1025,7 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
 
     let (owner, repo_name, pr_number) = pr_info;
 
-    let gh_comments = match github::gh_pr_comments(&owner, &repo_name, pr_number) {
+    let gh_comments = match github::gh_pr_comments(&owner, &repo_name, pr_number, &repo_root) {
         Ok(c) => c,
         Err(e) => {
             app.notify(&format!("GitHub sync error: {}", e));
@@ -869,6 +1034,8 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     };
 
     // Load existing .er-github-comments.json
+    // TODO(risk:minor): path is built by string concatenation; use Path::join to handle
+    // trailing slashes and avoid subtle path construction bugs.
     let comments_path = format!("{}/.er-github-comments.json", repo_root);
     let diff_hash = tab.branch_diff_hash.clone();
     let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
@@ -893,163 +1060,97 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
         last_synced: chrono_now(),
     });
 
-    let known_github_ids: std::collections::HashSet<u64> = gc.comments.iter()
-        .filter_map(|c| c.github_id)
+    // Keep only truly local unpushed comments
+    let local_unpushed: Vec<_> = gc.comments.into_iter()
+        .filter(|c| c.source == "local" && !c.synced)
         .collect();
 
-    let mut remote_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    let mut added = 0u32;
-    let mut updated = 0u32;
+    // Build fresh GitHub entries from API response
     let tab_files = &app.tab().files;
+    let diff_hash_for_anchor = app.tab().diff_hash.clone();
+    let mut github_entries = Vec::new();
 
     for gh in &gh_comments {
-        remote_ids.insert(gh.id);
+        let file_path = gh.path.clone().unwrap_or_default();
 
-        if known_github_ids.contains(&gh.id) {
-            if let Some(c) = gc.comments.iter_mut().find(|c| c.github_id == Some(gh.id)) {
-                if c.comment != gh.body {
-                    c.comment = gh.body.clone();
-                    updated += 1;
+        let (hunk_index, anchor_line_content, anchor_ctx_before, anchor_ctx_after, anchor_old_line, anchor_hunk_header) =
+            if let Some(line) = gh.line {
+                if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
+                    if let Some((i, hunk)) = f.hunks.iter().enumerate().find(|(_, h)| {
+                        line >= h.new_start && line < h.new_start + h.new_count
+                    }) {
+                        let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
+                        let (lc, old_ln) = if let Some(idx) = target_idx {
+                            (hunk.lines[idx].content.clone(), hunk.lines[idx].old_num)
+                        } else {
+                            (String::new(), None)
+                        };
+                        let ctx_before: Vec<String> = if let Some(idx) = target_idx {
+                            let start = idx.saturating_sub(3);
+                            hunk.lines[start..idx].iter().map(|l| l.content.clone()).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        let ctx_after: Vec<String> = if let Some(idx) = target_idx {
+                            let end = (idx + 4).min(hunk.lines.len());
+                            hunk.lines[(idx + 1)..end].iter().map(|l| l.content.clone()).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        (Some(i), lc, ctx_before, ctx_after, old_ln, hunk.header.clone())
+                    } else {
+                        (None, String::new(), Vec::new(), Vec::new(), None, String::new())
+                    }
+                } else {
+                    (None, String::new(), Vec::new(), Vec::new(), None, String::new())
                 }
-            }
-        } else {
-            let file_path = gh.path.clone().unwrap_or_default();
-            let hunk_index = gh.line.and_then(|line| {
-                tab_files.iter()
-                    .find(|f| f.path == file_path)
-                    .and_then(|f| {
-                        f.hunks.iter().enumerate().find(|(_, h)| {
-                            line >= h.new_start && line < h.new_start + h.new_count
-                        }).map(|(i, _)| i)
-                    })
-            });
-
-            let in_reply_to = gh.in_reply_to_id.and_then(|parent_gh_id| {
-                gc.comments.iter()
-                    .find(|c| c.github_id == Some(parent_gh_id))
-                    .map(|c| c.id.clone())
-            });
-
-            let comment = crate::ai::GitHubReviewComment {
-                id: format!("gh-{}", gh.id),
-                timestamp: gh.created_at.clone(),
-                file: file_path,
-                hunk_index,
-                line_start: gh.line,
-                line_end: None,
-                line_content: String::new(),
-                comment: gh.body.clone(),
-                in_reply_to,
-                resolved: false,
-                source: "github".to_string(),
-                github_id: Some(gh.id),
-                author: gh.user.login.clone(),
-                synced: true,
-                stale: false,
+            } else {
+                (None, String::new(), Vec::new(), Vec::new(), None, String::new())
             };
 
-            gc.comments.push(comment);
-            added += 1;
-        }
+        let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
+
+        github_entries.push(crate::ai::GitHubReviewComment {
+            id: format!("gh-{}", gh.id),
+            timestamp: gh.created_at.clone(),
+            file: file_path,
+            hunk_index,
+            line_start: gh.line,
+            line_end: None,
+            line_content: anchor_line_content,
+            comment: gh.body.clone(),
+            in_reply_to,
+            resolved: false,
+            source: "github".to_string(),
+            github_id: Some(gh.id),
+            author: gh.user.login.clone(),
+            synced: true,
+            stale: false,
+            context_before: anchor_ctx_before,
+            context_after: anchor_ctx_after,
+            old_line_start: anchor_old_line,
+            hunk_header: anchor_hunk_header,
+            anchor_status: "original".to_string(),
+            relocated_at_hash: diff_hash_for_anchor.clone(),
+            finding_ref: None,
+        });
     }
 
-    let removed = gc.comments.iter()
-        .filter(|c| c.source == "github" && c.github_id.is_some() && !remote_ids.contains(&c.github_id.unwrap()))
-        .count() as u32;
-    gc.comments.retain(|c| {
-        if c.source == "github" {
-            c.github_id.map_or(true, |id| remote_ids.contains(&id))
-        } else {
-            true
-        }
-    });
+    let github_count = github_entries.len();
+    let local_count = local_unpushed.len();
+    gc.comments = local_unpushed;
+    gc.comments.extend(github_entries);
 
     let json = serde_json::to_string_pretty(&gc)?;
     let tmp_path = format!("{}.tmp", comments_path);
+    // TODO(risk:medium): if fs::write succeeds but fs::rename fails (e.g. permissions error),
+    // the .tmp file is left behind and the comments file is not updated. The orphaned .tmp
+    // will be picked up or confused on the next sync. Clean up the tmp file on rename failure.
     std::fs::write(&tmp_path, &json)?;
     std::fs::rename(&tmp_path, &comments_path)?;
 
     app.tab_mut().reload_ai_state();
-    app.notify(&format!("GitHub sync: +{} ~{} -{}", added, updated, removed));
-    Ok(())
-}
-
-/// Push a single focused comment to GitHub
-fn push_comment_to_github(app: &mut App) -> Result<()> {
-    let tab = app.tab();
-    let focus = match &tab.comment_focus {
-        Some(f) => f.clone(),
-        None => return Ok(()),
-    };
-
-    // Questions can't be pushed to GitHub
-    if focus.comment_id.starts_with("q-") {
-        app.notify("Questions are private — use /er-publish for GitHub comments");
-        return Ok(());
-    }
-
-    let repo_root = tab.repo_root.clone();
-    let pr_info = match github::get_pr_info(&repo_root) {
-        Ok(info) => info,
-        Err(_) => {
-            app.notify("No PR found for current branch");
-            return Ok(());
-        }
-    };
-    let (owner, repo_name, pr_number) = pr_info;
-
-    let comments_path = format!("{}/.er-github-comments.json", repo_root);
-    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
-        Ok(content) => match serde_json::from_str(&content) {
-            Ok(gc) => gc,
-            Err(_) => return Ok(()),
-        },
-        Err(_) => return Ok(()),
-    };
-
-    let comment = match gc.comments.iter().find(|c| c.id == focus.comment_id) {
-        Some(c) => c.clone(),
-        None => return Ok(()),
-    };
-
-    if comment.synced {
-        app.notify("Comment already synced");
-        return Ok(());
-    }
-
-    if comment.source != "local" {
-        app.notify("Only local comments can be pushed");
-        return Ok(());
-    }
-
-    let result = if let Some(reply_to_id) = comment.in_reply_to.as_ref()
-        .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
-        .and_then(|c| c.github_id)
-    {
-        github::gh_pr_reply_comment(&owner, &repo_name, pr_number, reply_to_id, &comment.comment)
-    } else {
-        let path = &comment.file;
-        let line = comment.line_start.unwrap_or(1);
-        github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment)
-    };
-
-    match result {
-        Ok(github_id) => {
-            if let Some(c) = gc.comments.iter_mut().find(|c| c.id == focus.comment_id) {
-                c.github_id = Some(github_id);
-                c.synced = true;
-            }
-            let json = serde_json::to_string_pretty(&gc)?;
-            let tmp_path = format!("{}.tmp", comments_path);
-            std::fs::write(&tmp_path, &json)?;
-            std::fs::rename(&tmp_path, &comments_path)?;
-            app.tab_mut().reload_ai_state();
-            app.notify("Comment pushed to GitHub");
-        }
-        Err(e) => {
-            app.notify(&format!("Push failed: {}", e));
-        }
-    }
+    app.notify(&format!("GitHub sync: {} from GitHub, {} local kept", github_count, local_count));
     Ok(())
 }
 
@@ -1089,8 +1190,15 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
         let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
         if let Some(comment) = comment {
             let path = &comment.file;
+            // TODO(risk:medium): a comment with no line_start (hunk-level comment) falls back
+            // to line 1, silently attributing the GitHub comment to the wrong location. GitHub
+            // will accept it but reviewers will see it anchored to the wrong line. Use the
+            // GitHub PR review API for hunk/file-level comments instead of line-level push.
             let line = comment.line_start.unwrap_or(1);
-            match github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment) {
+            // TODO(risk:minor): push errors are counted but the error message is discarded.
+            // The user sees "N failed" with no indication of which comments failed or why
+            // (e.g. outdated commit SHA, deleted file, rate limit). Retain errors for display.
+            match github::gh_pr_push_comment(&owner, &repo_name, pr_number, path, line, &comment.comment, &repo_root) {
                 Ok(github_id) => {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                         c.github_id = Some(github_id);
@@ -1117,7 +1225,7 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
                 .and_then(|c| c.github_id);
 
             if let Some(parent_gh_id) = parent_gh_id {
-                match github::gh_pr_reply_comment(&owner, &repo_name, pr_number, parent_gh_id, &comment.comment) {
+                match github::gh_pr_reply_comment(&owner, &repo_name, pr_number, parent_gh_id, &comment.comment, &repo_root) {
                     Ok(github_id) => {
                         if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                             c.github_id = Some(github_id);
@@ -1149,4 +1257,297 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
 
 fn chrono_now() -> String {
     app::chrono_now()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{ConfirmAction, InputMode, TabState};
+    use crate::config::ErConfig;
+    use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::sync::mpsc;
+
+    // ── Test helpers ──
+
+    fn make_app(files: Vec<DiffFile>) -> App {
+        App {
+            tabs: vec![TabState::new_for_test(files)],
+            active_tab: 0,
+            input_mode: InputMode::Normal,
+            should_quit: false,
+            overlay: None,
+            watching: false,
+            watch_message: None,
+            watch_message_ticks: 0,
+            ai_poll_counter: 0,
+            config: ErConfig::default(),
+        }
+    }
+
+    fn make_file_with_hunk() -> DiffFile {
+        DiffFile {
+            path: "src/main.rs".to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                header: "@@ -1,3 +1,4 @@".to_string(),
+                old_start: 1,
+                old_count: 3,
+                new_start: 1,
+                new_count: 4,
+                lines: vec![DiffLine {
+                    line_type: LineType::Add,
+                    content: "let x = 1;".to_string(),
+                    old_num: None,
+                    new_num: Some(1),
+                }],
+            }],
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+        }
+    }
+
+    fn send_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        let (tx, _rx) = mpsc::channel::<watch::WatchEvent>();
+        let mut watcher: Option<watch::FileWatcher> = None;
+        let key = KeyEvent::new(code, modifiers);
+        handle_normal_input(app, key, &tx, &mut watcher).unwrap();
+    }
+
+    // ── Ctrl+q vs bare q ──
+
+    #[test]
+    fn ctrl_q_sets_should_quit() {
+        let mut app = make_app(vec![]);
+        send_key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert!(app.should_quit, "Ctrl+q must set should_quit = true");
+        assert_eq!(app.input_mode, InputMode::Normal, "Ctrl+q must not change input_mode");
+    }
+
+    #[test]
+    fn bare_q_starts_comment_mode_when_file_selected() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        send_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(
+            app.input_mode,
+            InputMode::Comment,
+            "bare q must enter Comment mode"
+        );
+        assert!(!app.should_quit, "bare q must not set should_quit");
+    }
+
+    #[test]
+    fn bare_q_does_not_quit() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        send_key(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(!app.should_quit);
+    }
+
+    // ── Ctrl+d vs bare d ──
+
+    #[test]
+    fn ctrl_d_scrolls_diff_when_no_focused_comment() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        assert_eq!(app.tab().diff_scroll, 0);
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.tab().diff_scroll,
+            10,
+            "Ctrl+d must scroll diff down by 10"
+        );
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "Ctrl+d must not change input_mode"
+        );
+    }
+
+    #[test]
+    fn ctrl_d_does_not_trigger_delete_confirm_even_when_comment_focused() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().focused_comment_id = Some("q-123".to_string());
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        // Ctrl+d should scroll, not enter Confirm mode
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "Ctrl+d must not enter Confirm mode — it scrolls"
+        );
+    }
+
+    #[test]
+    fn bare_d_triggers_delete_confirm_when_comment_focused() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        // Add a question to AI state so find_comment + can_delete succeeds
+        app.tab_mut().ai.questions = Some(crate::ai::ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![crate::ai::ReviewQuestion {
+                id: "q-abc".to_string(),
+                timestamp: String::new(),
+                file: "test.rs".to_string(),
+                hunk_index: Some(0),
+                line_start: None,
+                line_content: String::new(),
+                text: "test".to_string(),
+                resolved: false,
+                stale: false,
+                context_before: vec![],
+                context_after: vec![],
+                old_line_start: None,
+                hunk_header: String::new(),
+                anchor_status: "original".to_string(),
+                relocated_at_hash: String::new(),
+                in_reply_to: None,
+                author: "You".to_string(),
+            }],
+        });
+        app.tab_mut().focused_comment_id = Some("q-abc".to_string());
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert_eq!(
+            app.input_mode,
+            InputMode::Confirm(ConfirmAction::DeleteComment {
+                comment_id: "q-abc".to_string()
+            }),
+            "bare d with focused comment must enter Confirm(DeleteComment)"
+        );
+    }
+
+    #[test]
+    fn bare_d_does_nothing_when_no_comment_focused() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        // focused_comment_id is None by default
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "bare d with no focused comment must stay in Normal mode"
+        );
+    }
+
+    // ── Ctrl+u vs bare u ──
+
+    #[test]
+    fn ctrl_u_scrolls_diff_up() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().diff_scroll = 20;
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.tab().diff_scroll,
+            10,
+            "Ctrl+u must scroll diff up by 10"
+        );
+    }
+
+    #[test]
+    fn ctrl_u_does_not_toggle_unreviewed_filter() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        assert!(!app.tab().show_unreviewed_only);
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert!(
+            !app.tab().show_unreviewed_only,
+            "Ctrl+u must not toggle show_unreviewed_only"
+        );
+    }
+
+    #[test]
+    fn bare_u_toggles_unreviewed_filter_on() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        assert!(!app.tab().show_unreviewed_only);
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert!(
+            app.tab().show_unreviewed_only,
+            "bare u must toggle show_unreviewed_only to true"
+        );
+    }
+
+    #[test]
+    fn bare_u_does_not_scroll_diff() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().diff_scroll = 20;
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(
+            app.tab().diff_scroll,
+            20,
+            "bare u must not change diff_scroll"
+        );
+    }
+
+    // ── Ctrl+j vs bare j (panel not focused) ──
+
+    #[test]
+    fn ctrl_j_calls_prev_finding_not_panel_scroll() {
+        // Without any AI findings loaded, prev_finding is a no-op on selection
+        // but it must NOT change panel_scroll (which bare j would do in panel mode).
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().panel = Some(PanelContent::FileDetail);
+        app.tab_mut().panel_focus = false; // panel not focused
+        app.tab_mut().panel_scroll = 5;
+        send_key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        // panel_scroll must be unchanged — Ctrl+j navigates findings, not panel
+        assert_eq!(
+            app.tab().panel_scroll,
+            5,
+            "Ctrl+j must not scroll panel"
+        );
+    }
+
+    #[test]
+    fn bare_j_navigates_files_not_panel() {
+        // bare j calls prev_file when panel is NOT focused
+        let files = vec![
+            make_file_with_hunk(),
+            DiffFile {
+                path: "src/lib.rs".to_string(),
+                status: FileStatus::Modified,
+                hunks: vec![],
+                adds: 0,
+                dels: 0,
+                compacted: false,
+                raw_hunk_count: 0,
+            },
+        ];
+        let mut app = make_app(files);
+        app.tab_mut().selected_file = 1; // start at second file
+        app.tab_mut().panel_focus = false;
+        send_key(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+        // prev_file moves selected_file from 1 → 0
+        assert_eq!(
+            app.tab().selected_file,
+            0,
+            "bare j must navigate to previous file"
+        );
+    }
+
+    // ── Modifier isolation: Ctrl+k vs bare k ──
+
+    #[test]
+    fn ctrl_k_calls_next_finding_not_panel_scroll() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().panel = Some(PanelContent::FileDetail);
+        app.tab_mut().panel_focus = false;
+        app.tab_mut().panel_scroll = 5;
+        send_key(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.tab().panel_scroll,
+            5,
+            "Ctrl+k must not scroll panel"
+        );
+    }
+
+    // ── KeyModifiers::NONE guard is exact ──
+
+    #[test]
+    fn d_with_shift_does_not_trigger_delete_or_scroll() {
+        // Shift+d has no handler in the current map, so nothing should change
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().focused_comment_id = Some("q-abc".to_string());
+        let before_scroll = app.tab().diff_scroll;
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::SHIFT);
+        // Shift+d is not handled — state unchanged
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tab().diff_scroll, before_scroll);
+    }
 }

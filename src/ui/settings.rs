@@ -14,6 +14,13 @@ pub fn render_settings(f: &mut Frame, area: Rect, app: &App, selected: usize) {
     let items = config::settings_items();
 
     // Calculate popup size
+    // TODO(risk:minor): items.len() as u16 can silently truncate if settings_items()
+    // ever returns more than ~65500 entries (not realistic today, but the cast is
+    // unchecked). Use u16::try_from(items.len()).unwrap_or(u16::MAX) to be explicit.
+    // TODO(risk:minor): selected is not validated against items.len() before the loop
+    // uses it for `idx == selected`. If the state machine passes selected >= items.len()
+    // (e.g. after settings_items() is regenerated with fewer items), all items render as
+    // unselected — benign but subtle. Assert or clamp selected at the call site.
     let content_height = items.len() as u16 + 4; // items + save/cancel + help line + padding
     let popup_height = content_height.min(area.height.saturating_sub(6)).max(10);
     let popup_width = 50u16.min(area.width.saturating_sub(6));
