@@ -146,6 +146,13 @@ pub enum ConfirmAction {
     DeleteComment { comment_id: String },
 }
 
+/// Which pane has focus in split diff view
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitSide {
+    Old,
+    New,
+}
+
 // ── Overlay types ──
 
 /// A directory entry for the filesystem browser
@@ -209,6 +216,15 @@ pub struct TabState {
 
     /// Horizontal scroll offset within the diff view (for long lines)
     pub h_scroll: u16,
+
+    /// Which pane has focus in split diff view
+    pub split_focus: SplitSide,
+
+    /// Horizontal scroll offset for the old-side pane in split diff view
+    pub h_scroll_old: u16,
+
+    /// Horizontal scroll offset for the new-side pane in split diff view
+    pub h_scroll_new: u16,
 
     /// Inline layer visibility toggles
     pub layers: InlineLayers,
@@ -469,6 +485,9 @@ impl TabState {
             selection_anchor: None,
             diff_scroll: 0,
             h_scroll: 0,
+            split_focus: SplitSide::New,
+            h_scroll_old: 0,
+            h_scroll_new: 0,
             layers: InlineLayers::default(),
             panel: None,
             panel_scroll: 0,
@@ -543,6 +562,9 @@ impl TabState {
             selection_anchor: None,
             diff_scroll: 0,
             h_scroll: 0,
+            split_focus: SplitSide::New,
+            h_scroll_old: 0,
+            h_scroll_new: 0,
             layers: InlineLayers::default(),
             panel: None,
             panel_scroll: 0,
@@ -1549,6 +1571,34 @@ impl TabState {
         diff_line.new_num
     }
 
+    /// Get the line number for the focused side in split diff view
+    pub fn current_line_number_for_split(&self, side: SplitSide) -> Option<usize> {
+        let file = self.selected_diff_file()?;
+        let hunk = file.hunks.get(self.current_hunk)?;
+        let line_idx = self.current_line?;
+        let diff_line = hunk.lines.get(line_idx)?;
+        match side {
+            SplitSide::Old => diff_line.old_num,
+            SplitSide::New => diff_line.new_num,
+        }
+    }
+
+    /// Increment the focused pane's horizontal scroll in split diff view
+    pub fn scroll_right_split(&mut self) {
+        match self.split_focus {
+            SplitSide::Old => self.h_scroll_old = self.h_scroll_old.saturating_add(1),
+            SplitSide::New => self.h_scroll_new = self.h_scroll_new.saturating_add(1),
+        }
+    }
+
+    /// Decrement the focused pane's horizontal scroll in split diff view
+    pub fn scroll_left_split(&mut self) {
+        match self.split_focus {
+            SplitSide::Old => self.h_scroll_old = self.h_scroll_old.saturating_sub(1),
+            SplitSide::New => self.h_scroll_new = self.h_scroll_new.saturating_sub(1),
+        }
+    }
+
     /// Get the selected line range within the current hunk (from shift+arrow selection)
     pub fn selected_range(&self) -> Option<std::ops::RangeInclusive<usize>> {
         let anchor = self.selection_anchor?;
@@ -2476,6 +2526,19 @@ impl App {
         &mut self.tabs[self.active_tab]
     }
 
+    /// Returns true when split diff rendering should be active.
+    /// Requires the config flag, no open panel, and a non-History, non-Conflicts diff mode.
+    pub fn split_diff_active(&self, config: &ErConfig) -> bool {
+        if !config.display.split_diff {
+            return false;
+        }
+        let tab = self.tab();
+        if tab.panel.is_some() {
+            return false;
+        }
+        !matches!(tab.mode, DiffMode::History | DiffMode::Conflicts)
+    }
+
     // ── Tab Management ──
 
     /// Open a repo in a new tab (or switch to existing tab if already open)
@@ -2938,6 +3001,8 @@ impl App {
 
     /// Enter comment mode for the current file + hunk (and optionally line)
     pub fn start_comment(&mut self, comment_type: CommentType) {
+        let split_active = self.split_diff_active(&self.config.clone());
+        let split_focus = self.tab().split_focus;
         let tab = self.tab_mut();
         let file_path = match tab.selected_diff_file() {
             Some(f) => f.path.clone(),
@@ -2946,7 +3011,11 @@ impl App {
         tab.comment_input.clear();
         tab.comment_file = file_path;
         tab.comment_hunk = tab.current_hunk;
-        tab.comment_line_num = tab.current_line_number();
+        tab.comment_line_num = if split_active {
+            tab.current_line_number_for_split(split_focus)
+        } else {
+            tab.current_line_number()
+        };
         tab.comment_reply_to = None;
         tab.comment_finding_ref = None;
         tab.comment_type = comment_type;
@@ -4062,6 +4131,9 @@ mod tests {
             selection_anchor: None,
             diff_scroll: 0,
             h_scroll: 0,
+            split_focus: SplitSide::New,
+            h_scroll_old: 0,
+            h_scroll_new: 0,
             layers: InlineLayers::default(),
             panel: None,
             panel_scroll: 0,
@@ -5261,5 +5333,133 @@ mod tests {
 
         assert_eq!(anchor.line_content, "");
         assert_eq!(anchor.line_start, Some(99));
+    }
+
+    // ── split_diff_active ──
+
+    #[test]
+    fn split_diff_active_returns_false_when_config_off() {
+        let tab = make_test_tab(vec![]);
+        let app = make_test_app(tab);
+        let config = ErConfig::default(); // split_diff defaults to false
+        assert!(!app.split_diff_active(&config));
+    }
+
+    #[test]
+    fn split_diff_active_returns_true_when_config_on_and_no_panel() {
+        let tab = make_test_tab(vec![]);
+        let app = make_test_app(tab);
+        let mut config = ErConfig::default();
+        config.display.split_diff = true;
+        assert!(app.split_diff_active(&config));
+    }
+
+    #[test]
+    fn split_diff_active_returns_false_when_panel_open() {
+        use crate::ai::PanelContent;
+        let mut tab = make_test_tab(vec![]);
+        tab.panel = Some(PanelContent::FileDetail);
+        let app = make_test_app(tab);
+        let mut config = ErConfig::default();
+        config.display.split_diff = true;
+        assert!(!app.split_diff_active(&config));
+    }
+
+    #[test]
+    fn split_diff_active_returns_false_in_history_mode() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::History;
+        let app = make_test_app(tab);
+        let mut config = ErConfig::default();
+        config.display.split_diff = true;
+        assert!(!app.split_diff_active(&config));
+    }
+
+    #[test]
+    fn split_diff_active_returns_false_in_conflicts_mode() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::Conflicts;
+        let app = make_test_app(tab);
+        let mut config = ErConfig::default();
+        config.display.split_diff = true;
+        assert!(!app.split_diff_active(&config));
+    }
+
+    // ── scroll_right_split / scroll_left_split ──
+
+    #[test]
+    fn scroll_right_split_increments_new_scroll_when_focus_is_new() {
+        let mut tab = make_test_tab(vec![]);
+        tab.split_focus = SplitSide::New;
+        tab.h_scroll_new = 5;
+        tab.scroll_right_split();
+        assert_eq!(tab.h_scroll_new, 6);
+        assert_eq!(tab.h_scroll_old, 0);
+    }
+
+    #[test]
+    fn scroll_right_split_increments_old_scroll_when_focus_is_old() {
+        let mut tab = make_test_tab(vec![]);
+        tab.split_focus = SplitSide::Old;
+        tab.h_scroll_old = 3;
+        tab.scroll_right_split();
+        assert_eq!(tab.h_scroll_old, 4);
+        assert_eq!(tab.h_scroll_new, 0);
+    }
+
+    #[test]
+    fn scroll_left_split_decrements_new_scroll_when_focus_is_new() {
+        let mut tab = make_test_tab(vec![]);
+        tab.split_focus = SplitSide::New;
+        tab.h_scroll_new = 3;
+        tab.scroll_left_split();
+        assert_eq!(tab.h_scroll_new, 2);
+        assert_eq!(tab.h_scroll_old, 0);
+    }
+
+    #[test]
+    fn scroll_left_split_saturates_at_zero() {
+        let mut tab = make_test_tab(vec![]);
+        tab.split_focus = SplitSide::Old;
+        tab.h_scroll_old = 0;
+        tab.scroll_left_split();
+        assert_eq!(tab.h_scroll_old, 0);
+    }
+
+    // ── current_line_number_for_split ──
+
+    #[test]
+    fn current_line_number_for_split_new_returns_new_num() {
+        let lines = vec![DiffLine {
+            line_type: LineType::Add,
+            content: "x".to_string(),
+            old_num: None,
+            new_num: Some(42),
+        }];
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
+        tab.current_line = Some(0);
+        assert_eq!(tab.current_line_number_for_split(SplitSide::New), Some(42));
+    }
+
+    #[test]
+    fn current_line_number_for_split_old_returns_old_num() {
+        let lines = vec![DiffLine {
+            line_type: LineType::Delete,
+            content: "y".to_string(),
+            old_num: Some(7),
+            new_num: None,
+        }];
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 0, 1)]);
+        tab.current_line = Some(0);
+        assert_eq!(tab.current_line_number_for_split(SplitSide::Old), Some(7));
+    }
+
+    #[test]
+    fn current_line_number_for_split_returns_none_when_no_line_selected() {
+        let lines = vec![make_line(LineType::Add, "z", Some(1))];
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![make_hunk(lines)], 1, 0)]);
+        tab.current_line = None;
+        assert_eq!(tab.current_line_number_for_split(SplitSide::New), None);
+        assert_eq!(tab.current_line_number_for_split(SplitSide::Old), None);
     }
 }

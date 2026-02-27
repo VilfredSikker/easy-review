@@ -528,6 +528,9 @@ fn build_hints(app: &App) -> Vec<Hint> {
         if h.navigation {
             hints.push(Hint::new("e", " edit "));
             hints.push(Hint::new("p", " panel "));
+            if app.split_diff_active(&app.config) {
+                hints.push(Hint::new("Tab", " pane "));
+            }
         }
 
         // Tab switching — only when multiple tabs open

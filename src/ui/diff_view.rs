@@ -1,12 +1,13 @@
 use ratatui::{
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Padding},
     Frame,
 };
 
 use crate::ai::{CommentRef, CommentType, RiskLevel};
-use crate::app::{App, DiffMode};
+use crate::app::{App, DiffMode, SplitSide};
+use crate::config::ErConfig;
 use crate::git::LineType;
 use super::highlight::Highlighter;
 use super::styles;
@@ -540,6 +541,395 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         )));
         f.render_widget(indicator, indicator_area);
     }
+}
+
+/// Render the diff view in split (side-by-side) mode.
+/// Falls back to `render()` when the area is too narrow or when conditions
+/// (compacted file, watched file, empty, etc.) make split inapplicable.
+pub fn render_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter, config: &ErConfig) {
+    let tab = app.tab();
+
+    // Width guard — fall back to unified view when too narrow for split
+    if area.width < 60 {
+        render(f, area, app, hl);
+        return;
+    }
+
+    // Delegate to unified for special states
+    if tab.selected_watched_file().is_some() {
+        render(f, area, app, hl);
+        return;
+    }
+    let file = match tab.selected_diff_file() {
+        Some(f) => f,
+        None => {
+            render(f, area, app, hl);
+            return;
+        }
+    };
+    if file.compacted {
+        render(f, area, app, hl);
+        return;
+    }
+    let _ = config; // used by caller for guard; flag already checked before calling
+
+    // Split area 50/50
+    let halves = Layout::horizontal([
+        Constraint::Percentage(50),
+        Constraint::Percentage(50),
+    ])
+    .split(area);
+
+    // Render Old side first (borrows hl mutably), then New side
+    render_split_side(f, halves[0], app, hl, SplitSide::Old);
+    render_split_side(f, halves[1], app, hl, SplitSide::New);
+}
+
+/// Render one pane of the split diff view.
+fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter, side: SplitSide) {
+    let tab = app.tab();
+
+    // Border with focus indicator
+    let border_style = if tab.split_focus == side {
+        styles::split_border_focused()
+    } else {
+        styles::split_border_inactive()
+    };
+    let title = match side {
+        SplitSide::Old => " Old ",
+        SplitSide::New => " New ",
+    };
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            border_style,
+        ))
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .style(ratatui::style::Style::default().bg(styles::BG));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let file = match tab.selected_diff_file() {
+        Some(f) => f,
+        None => return,
+    };
+
+    // Viewport parameters — shared vertical scroll between both sides
+    let total_diff_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+    let use_viewport = total_diff_lines > VIRTUALIZE_THRESHOLD;
+    let viewport_height = inner.height as usize;
+    let buffer_lines = if use_viewport { 20 } else { 0 };
+    let scroll = tab.diff_scroll as usize;
+    let render_start = if use_viewport { scroll.saturating_sub(buffer_lines) } else { 0 };
+    let render_end = if use_viewport { scroll + viewport_height + buffer_lines } else { usize::MAX };
+
+    let h_scroll = match side {
+        SplitSide::Old => tab.h_scroll_old,
+        SplitSide::New => tab.h_scroll_new,
+    };
+
+    let mut lines: Vec<Line> = Vec::with_capacity(
+        if use_viewport { viewport_height + buffer_lines * 2 } else { total_diff_lines + file.hunks.len() + 4 }
+    );
+    let mut logical_line: usize = 0;
+
+    // File header (only on New side to avoid duplication; Old side gets a blank line instead)
+    if side == SplitSide::New {
+        if logical_line >= render_start && logical_line < render_end {
+            let header_spans = vec![
+                Span::styled(
+                    format!("  {} ", file.status.symbol()),
+                    match &file.status {
+                        crate::git::FileStatus::Added => styles::status_added(),
+                        crate::git::FileStatus::Deleted => styles::status_deleted(),
+                        _ => styles::status_modified(),
+                    },
+                ),
+                Span::styled(
+                    &file.path,
+                    ratatui::style::Style::default().fg(styles::BRIGHT),
+                ),
+                Span::styled(
+                    format!("  +{} -{}", file.adds, file.dels),
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ),
+            ];
+            lines.push(Line::from(header_spans));
+        }
+    } else {
+        if logical_line >= render_start && logical_line < render_end {
+            lines.push(Line::from(""));
+        }
+    }
+    logical_line += 1;
+
+    // Blank separator after header
+    if logical_line >= render_start && logical_line < render_end {
+        lines.push(Line::from(""));
+    }
+    logical_line += 1;
+
+    // Render hunks
+    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        let is_current = hunk_idx == tab.current_hunk;
+
+        // Early exit past viewport
+        if use_viewport && logical_line > render_end + buffer_lines {
+            break;
+        }
+
+        // Hunk header — shown on both sides
+        if logical_line >= render_start && logical_line < render_end {
+            let marker = if is_current { "\u{25b6}" } else { " " };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", marker),
+                    if is_current {
+                        ratatui::style::Style::default().fg(styles::CYAN).bg(styles::HUNK_BG)
+                    } else {
+                        ratatui::style::Style::default().fg(styles::DIM).bg(styles::HUNK_BG)
+                    },
+                ),
+                Span::styled(&hunk.header, styles::hunk_header_style()),
+            ]).style(styles::hunk_header_style()));
+        }
+        logical_line += 1;
+
+        // Hunk-level comments — only on New side for simplicity
+        // TODO: split view — render hunk comments on both sides aligned
+        if side == SplitSide::New {
+            let hunk_comments = tab.ai.comments_for_hunk_only(&file.path, hunk_idx);
+            for comment in &hunk_comments {
+                let visible = match comment {
+                    CommentRef::Question(_) => tab.layers.show_questions,
+                    CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
+                };
+                if !visible {
+                    continue;
+                }
+                let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
+                let pre_len = lines.len();
+                render_comment_lines(&mut lines, comment, inner.width, false, is_focused);
+                let comment_line_count = lines.len() - pre_len;
+                if logical_line < render_start || logical_line >= render_end {
+                    lines.truncate(pre_len);
+                }
+                logical_line += comment_line_count;
+
+                let replies = tab.ai.replies_to(comment.id());
+                for reply in &replies {
+                    let pre_len = lines.len();
+                    let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
+                    render_reply_lines(&mut lines, &reply, inner.width, false, is_focused);
+                    let reply_line_count = lines.len() - pre_len;
+                    if logical_line < render_start || logical_line >= render_end {
+                        lines.truncate(pre_len);
+                    }
+                    logical_line += reply_line_count;
+                }
+            }
+        }
+
+        // Hunk lines
+        for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+            // Determine if this side should show content or a blank padding line
+            let show_content = match diff_line.line_type {
+                LineType::Context => true,
+                LineType::Add => side == SplitSide::New,
+                LineType::Delete => side == SplitSide::Old,
+            };
+
+            if logical_line >= render_start && logical_line < render_end {
+                if show_content {
+                    let is_selected_line = is_current && tab.current_line == Some(line_idx);
+
+                    // Line number: Old side shows old_num, New side shows new_num
+                    let line_num = match side {
+                        SplitSide::Old => diff_line.old_num,
+                        SplitSide::New => diff_line.new_num,
+                    };
+                    let num_str = line_num
+                        .map(|n| format!("{:>4}", n))
+                        .unwrap_or_else(|| "    ".to_string());
+
+                    let (prefix, base_style) = if is_selected_line {
+                        match diff_line.line_type {
+                            LineType::Add => ("+", styles::line_cursor_add()),
+                            LineType::Delete => ("-", styles::line_cursor_del()),
+                            LineType::Context => (" ", styles::line_cursor()),
+                        }
+                    } else {
+                        match diff_line.line_type {
+                            LineType::Add => ("+", styles::add_style()),
+                            LineType::Delete => ("-", styles::del_style()),
+                            LineType::Context => (" ", styles::default_style()),
+                        }
+                    };
+
+                    let gutter_style = if is_selected_line {
+                        ratatui::style::Style::default().fg(styles::BRIGHT).bg(styles::LINE_CURSOR_BG)
+                    } else {
+                        match diff_line.line_type {
+                            LineType::Add => ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG),
+                            LineType::Delete => ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG),
+                            LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                        }
+                    };
+
+                    let mut spans = vec![
+                        Span::styled(format!("{} \u{2502}", num_str), gutter_style),
+                        Span::styled(prefix, base_style),
+                    ];
+
+                    if diff_line.content.is_empty() {
+                        spans.push(Span::styled("", base_style));
+                    } else {
+                        let highlighted = hl.highlight_line(&diff_line.content, &file.path, base_style);
+                        spans.extend(highlighted);
+                    }
+
+                    lines.push(Line::from(spans).style(base_style));
+                } else {
+                    // Blank padding line for the side that doesn't show this change
+                    let pad_bg = match diff_line.line_type {
+                        LineType::Add => styles::ADD_BG,
+                        LineType::Delete => styles::DEL_BG,
+                        LineType::Context => styles::BG,
+                    };
+                    lines.push(Line::from(
+                        Span::styled("", ratatui::style::Style::default().bg(pad_bg))
+                    ).style(ratatui::style::Style::default().bg(pad_bg)));
+                }
+            }
+            logical_line += 1;
+
+            // Inline line comments — on their natural side
+            // Add lines → New side; Delete lines → Old side; Context → New side
+            let comment_side = match diff_line.line_type {
+                LineType::Add => SplitSide::New,
+                LineType::Delete => SplitSide::Old,
+                LineType::Context => SplitSide::New,
+            };
+            if side == comment_side {
+                if let Some(new_line_num) = diff_line.new_num {
+                    let line_comments = tab.ai.comments_for_line(&file.path, hunk_idx, new_line_num);
+                    for comment in &line_comments {
+                        let visible = match comment {
+                            CommentRef::Question(_) => tab.layers.show_questions,
+                            CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
+                        };
+                        if !visible {
+                            continue;
+                        }
+                        let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
+                        let pre_len = lines.len();
+                        render_comment_lines(&mut lines, comment, inner.width, true, is_focused);
+                        let comment_line_count = lines.len() - pre_len;
+                        if logical_line < render_start || logical_line >= render_end {
+                            lines.truncate(pre_len);
+                        }
+                        logical_line += comment_line_count;
+
+                        let replies = tab.ai.replies_to(comment.id());
+                        for reply in &replies {
+                            let pre_len = lines.len();
+                            let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
+                            render_reply_lines(&mut lines, &reply, inner.width, true, is_focused);
+                            let reply_line_count = lines.len() - pre_len;
+                            if logical_line < render_start || logical_line >= render_end {
+                                lines.truncate(pre_len);
+                            }
+                            logical_line += reply_line_count;
+                        }
+                    }
+                }
+            } else {
+                // For the opposite side, advance logical_line by however many comment
+                // lines the other side has — so both panes stay vertically aligned.
+                // TODO: split view — implement aligned comment padding across panes
+            }
+        }
+
+        // AI finding banners — only on New side (same as unified view)
+        if side == SplitSide::New && tab.layers.show_ai_findings {
+            let file_stale = tab.ai.is_file_stale(&file.path);
+            let findings = match tab.mode {
+                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx),
+                DiffMode::Unstaged | DiffMode::Staged => {
+                    tab.ai.findings_for_hunk_by_line_range(&file.path, hunk.new_start, hunk.new_count)
+                }
+                DiffMode::History | DiffMode::Conflicts => vec![],
+            };
+            for finding in &findings {
+                let severity_style = if file_stale {
+                    styles::stale_style()
+                } else {
+                    match finding.severity {
+                        RiskLevel::High => styles::risk_high(),
+                        RiskLevel::Medium => styles::risk_medium(),
+                        RiskLevel::Low => styles::risk_low(),
+                        RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
+                    }
+                };
+                let stale_tag = if file_stale { " [stale]" } else { "" };
+
+                if logical_line >= render_start && logical_line < render_end {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {} ", finding.severity.symbol()), severity_style),
+                        Span::styled(
+                            format!("[{}]", finding.category),
+                            ratatui::style::Style::default().fg(styles::DIM).bg(styles::FINDING_BG),
+                        ),
+                        Span::styled(
+                            format!(" {}{}", finding.title, stale_tag),
+                            ratatui::style::Style::default().fg(styles::ORANGE).bg(styles::FINDING_BG),
+                        ),
+                    ]).style(styles::finding_style()));
+                }
+                logical_line += 1;
+
+                if !finding.description.is_empty() {
+                    if logical_line >= render_start && logical_line < render_end {
+                        let desc = finding.description.lines().next().unwrap_or("");
+                        let max_len = inner.width.saturating_sub(6) as usize;
+                        let truncated = if desc.chars().count() > max_len {
+                            format!("{}\u{2026}", desc.chars().take(max_len.saturating_sub(1)).collect::<String>())
+                        } else {
+                            desc.to_string()
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("    {}", truncated),
+                                ratatui::style::Style::default().fg(styles::MUTED).bg(styles::FINDING_BG),
+                            ),
+                        ]).style(ratatui::style::Style::default().bg(styles::FINDING_BG)));
+                    }
+                    logical_line += 1;
+                }
+            }
+        }
+
+        // Blank line between hunks
+        if logical_line >= render_start && logical_line < render_end {
+            lines.push(Line::from(""));
+        }
+        logical_line += 1;
+    }
+
+    // Apply scroll: adjust into the rendered viewport window
+    let visible_scroll = if use_viewport {
+        let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
+        (scroll_into_rendered, h_scroll)
+    } else {
+        (tab.diff_scroll, h_scroll)
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .scroll(visible_scroll);
+
+    f.render_widget(paragraph, inner);
 }
 
 /// Render multi-file commit diff (History mode)

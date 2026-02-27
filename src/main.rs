@@ -7,7 +7,7 @@ mod ui;
 mod watch;
 
 use anyhow::Result;
-use app::{App, ConfirmAction, DiffMode, InputMode};
+use app::{App, ConfirmAction, DiffMode, InputMode, SplitSide};
 use crate::ai::{PanelContent, ReviewFocus};
 use clap::Parser;
 use crossterm::{
@@ -550,9 +550,28 @@ fn handle_normal_input(
         KeyCode::Char('N') => app.tab_mut().prev_hunk(),
 
         // Horizontal scroll (for long lines)
-        KeyCode::Char('l') | KeyCode::Right => app.tab_mut().scroll_right(8),
-        KeyCode::Char('h') | KeyCode::Left => app.tab_mut().scroll_left(8),
+        KeyCode::Char('l') | KeyCode::Right => {
+            if app.split_diff_active(&app.config.clone()) {
+                app.tab_mut().scroll_right_split();
+            } else {
+                app.tab_mut().scroll_right(8);
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            if app.split_diff_active(&app.config.clone()) {
+                app.tab_mut().scroll_left_split();
+            } else {
+                app.tab_mut().scroll_left(8);
+            }
+        }
         KeyCode::Home => {
+            if app.split_diff_active(&app.config.clone()) {
+                let tab = app.tab_mut();
+                match tab.split_focus {
+                    SplitSide::Old => tab.h_scroll_old = 0,
+                    SplitSide::New => tab.h_scroll_new = 0,
+                }
+            }
             app.tab_mut().h_scroll = 0;
         }
 
@@ -680,11 +699,19 @@ fn handle_normal_input(
             app.notify(if on { "Questions: visible" } else { "Questions: hidden" });
         }
 
-        // Tab: toggle panel focus (only when panel is open)
+        // Tab: toggle split pane focus when split diff is active; otherwise toggle panel focus
         KeyCode::Tab => {
-            let tab = app.tab_mut();
-            if tab.panel.is_some() {
-                tab.panel_focus = !tab.panel_focus;
+            if app.split_diff_active(&app.config.clone()) {
+                let tab = app.tab_mut();
+                tab.split_focus = match tab.split_focus {
+                    SplitSide::Old => SplitSide::New,
+                    SplitSide::New => SplitSide::Old,
+                };
+            } else {
+                let tab = app.tab_mut();
+                if tab.panel.is_some() {
+                    tab.panel_focus = !tab.panel_focus;
+                }
             }
         }
 

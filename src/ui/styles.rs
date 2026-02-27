@@ -193,3 +193,15 @@ pub fn watched_line_style() -> Style {
 pub fn watched_gutter_style() -> Style {
     Style::default().fg(DIM).bg(WATCHED_BG)
 }
+
+// ── Split diff view styles ──
+
+/// Focused pane border in split diff view
+pub fn split_border_focused() -> Style {
+    Style::default().fg(BLUE)
+}
+
+/// Inactive pane border in split diff view
+pub fn split_border_inactive() -> Style {
+    Style::default().fg(BORDER)
+}

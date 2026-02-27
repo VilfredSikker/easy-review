@@ -60,6 +60,8 @@ pub struct DisplayConfig {
     pub line_numbers: bool,
     #[serde(default)]
     pub wrap_lines: bool,
+    #[serde(default)]
+    pub split_diff: bool,
 }
 
 /// [hints] section — toggle visibility of key hint groups in the bottom bar
@@ -153,6 +155,7 @@ impl Default for DisplayConfig {
             tab_width: default_tab_width(),
             line_numbers: true,
             wrap_lines: false,
+            split_diff: false,
         }
     }
 }
@@ -283,6 +286,11 @@ pub fn settings_items() -> Vec<SettingsItem> {
             label: "Wrap lines".into(),
             get: |c| c.display.wrap_lines,
             set: |c, v| c.display.wrap_lines = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Split diff".into(),
+            get: |c| c.display.split_diff,
+            set: |c, v| c.display.split_diff = v,
         },
         SettingsItem::NumberEdit {
             label: "Tab width".into(),

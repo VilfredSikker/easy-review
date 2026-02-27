@@ -56,7 +56,11 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
             ])
             .split(outer[1]);
         file_tree::render(f, main_area[0], app);
-        diff_view::render(f, main_area[1], app, hl);
+        if app.split_diff_active(&app.config) {
+            diff_view::render_split(f, main_area[1], app, hl, &app.config);
+        } else {
+            diff_view::render(f, main_area[1], app, hl);
+        }
     }
 
     // Bottom status bar
