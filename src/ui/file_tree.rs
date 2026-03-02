@@ -38,6 +38,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // Hidden mode: render watched-only file list
+    if tab.mode == DiffMode::Hidden {
+        render_hidden_list(f, area, app);
+        return;
+    }
+
     // Conflicts mode uses the standard file tree (falls through below)
 
     let visible = tab.visible_files();
@@ -267,8 +273,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    // ── Watched files section ──
-    if !visible_watched.is_empty() {
+    // ── Watched files section (only in non-Hidden modes when setting is on) ──
+    if !visible_watched.is_empty() && app.config.features.watched_in_all_tabs {
         // Separator
         let sep_width = area.width.saturating_sub(2) as usize;
         let sep_label = " watched ";
@@ -340,6 +346,92 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let block = Block::default()
         .title(Span::styled(title, title_style))
+        .borders(Borders::RIGHT)
+        .border_style(ratatui::style::Style::default().fg(styles::BORDER))
+        .style(ratatui::style::Style::default().bg(styles::SURFACE))
+        .padding(Padding::new(0, 0, 0, 0));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
+}
+
+/// Render the hidden-files-only list panel (left side, Hidden mode)
+fn render_hidden_list(f: &mut Frame, area: Rect, app: &App) {
+    let tab = app.tab();
+    let visible_watched = tab.visible_watched_files();
+    let count = visible_watched.len();
+
+    let title = format!(" HIDDEN ({}) ", count);
+
+    // Calculate viewport scroll to keep selection visible
+    let viewport_height = area.height.saturating_sub(1) as usize;
+    let selected_pos = tab
+        .selected_watched
+        .and_then(|sel| visible_watched.iter().position(|(i, _)| *i == sel))
+        .unwrap_or(0);
+
+    let file_scroll = if visible_watched.len() <= viewport_height
+        || selected_pos < viewport_height / 2
+    {
+        0
+    } else if selected_pos > visible_watched.len().saturating_sub(viewport_height / 2) {
+        visible_watched.len().saturating_sub(viewport_height)
+    } else {
+        selected_pos.saturating_sub(viewport_height / 2)
+    };
+
+    let viewport_end = (file_scroll + viewport_height).min(visible_watched.len());
+    let viewport_slice = &visible_watched[file_scroll..viewport_end];
+
+    let items: Vec<ListItem> = viewport_slice
+        .iter()
+        .map(|(idx, watched)| {
+            let is_selected = tab.selected_watched == Some(*idx);
+            let age = format_relative_time(watched.modified);
+            let not_ignored = tab.watched_not_ignored.contains(&watched.path);
+
+            let path = shorten_path(&watched.path, (area.width as usize).saturating_sub(16));
+            let path_width = (area.width as usize).saturating_sub(14).max(1);
+
+            let line_style = if is_selected {
+                styles::selected_style()
+            } else {
+                styles::surface_style()
+            };
+
+            let icon = if not_ignored { "\u{26a0}" } else { "\u{25c9}" };
+            let icon_style = if not_ignored {
+                ratatui::style::Style::default().fg(styles::YELLOW)
+            } else {
+                ratatui::style::Style::default().fg(styles::WATCHED_TEXT)
+            };
+
+            let mut spans = vec![Span::styled(format!(" {} ", icon), icon_style)];
+
+            spans.push(Span::styled(
+                format!("{:<width$}", path, width = path_width),
+                if is_selected {
+                    styles::selected_style()
+                } else {
+                    ratatui::style::Style::default().fg(styles::WATCHED_TEXT)
+                },
+            ));
+            if area.width > 24 {
+                spans.push(Span::styled(
+                    format!("{:>8} ", age),
+                    ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
+                ));
+            }
+
+            ListItem::new(Line::from(spans)).style(line_style)
+        })
+        .collect();
+
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            ratatui::style::Style::default().fg(styles::MUTED),
+        ))
         .borders(Borders::RIGHT)
         .border_style(ratatui::style::Style::default().fg(styles::BORDER))
         .style(ratatui::style::Style::default().bg(styles::SURFACE))

@@ -42,6 +42,10 @@ pub struct FeatureFlags {
     pub view_history: bool,
     #[serde(default = "default_true")]
     pub view_conflicts: bool,
+    #[serde(default = "default_true")]
+    pub view_hidden: bool,
+    #[serde(default = "default_true")]
+    pub watched_in_all_tabs: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +132,8 @@ impl Default for FeatureFlags {
             view_staged: true,
             view_history: true,
             view_conflicts: true,
+            view_hidden: true,
+            watched_in_all_tabs: true,
         }
     }
 }
@@ -158,7 +164,7 @@ impl Default for DisplayConfig {
 pub fn load_config(repo_root: &str) -> ErConfig {
     let local_path = format!("{repo_root}/.er-config.toml");
     let global_path =
-        dirs::config_dir().map(|d| d.join("er/config.toml").to_string_lossy().to_string());
+        dirs::home_dir().map(|d| d.join(".config/er/config.toml").to_string_lossy().to_string());
 
     let global_table = global_path
         .and_then(|p| std::fs::read_to_string(p).ok())
@@ -215,9 +221,9 @@ fn deep_merge(
 
 /// Save config to the global config dir (~/.config/er/config.toml).
 pub fn save_config(config: &ErConfig) -> Result<()> {
-    let dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
-        .join("er");
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
+        .join(".config/er");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
     let content = toml::to_string_pretty(config)?;
@@ -278,6 +284,16 @@ pub fn settings_items() -> Vec<SettingsItem> {
             label: "Conflicts (5)".into(),
             get: |c| c.features.view_conflicts,
             set: |c, v| c.features.view_conflicts = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Hidden files (6)".into(),
+            get: |c| c.features.view_hidden,
+            set: |c, v| c.features.view_hidden = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Watched in all tabs".into(),
+            get: |c| c.features.watched_in_all_tabs,
+            set: |c, v| c.features.watched_in_all_tabs = v,
         },
         SettingsItem::SectionHeader("Display".into()),
         SettingsItem::BoolToggle {

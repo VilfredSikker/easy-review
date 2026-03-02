@@ -38,7 +38,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let file = match tab.selected_diff_file() {
         Some(f) => f,
         None => {
-            render_empty(f, area);
+            let visible_count = tab.visible_modes(&app.config).len();
+            render_empty(f, area, &tab.mode, &tab.base_branch, visible_count);
             return;
         }
     };
@@ -427,7 +428,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     hunk.new_start,
                     hunk.new_count,
                 ),
-                DiffMode::History | DiffMode::Conflicts => vec![], // AI findings not shown in History/Conflicts mode
+                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![], // AI findings not shown in these modes
             };
             for finding in &findings {
                 let severity_style = if file_stale {
@@ -669,6 +670,10 @@ pub fn render_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter, 
 
     // Delegate to unified for special states
     if tab.selected_watched_file().is_some() {
+        render(f, area, app, hl);
+        return;
+    }
+    if tab.mode == DiffMode::History {
         render(f, area, app, hl);
         return;
     }
@@ -1121,7 +1126,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     hunk.new_start,
                     hunk.new_count,
                 ),
-                DiffMode::History | DiffMode::Conflicts => vec![],
+                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
             };
             for finding in &findings {
                 let severity_style = if file_stale {
@@ -1221,16 +1226,17 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 /// Render multi-file commit diff (History mode)
 fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let tab = app.tab();
+    let visible_count = tab.visible_modes(&app.config).len();
     let history = match tab.history.as_ref() {
         Some(h) => h,
         None => {
-            render_history_empty(f, area, "No history available");
+            render_history_empty(f, area, "No history available", visible_count);
             return;
         }
     };
 
     if history.commits.is_empty() {
-        render_history_empty(f, area, "No commits ahead of base branch");
+        render_history_empty(f, area, "No commits ahead of base branch", visible_count);
         return;
     }
 
@@ -1240,7 +1246,12 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
         // checked above, but selected_commit could still be out of range if state is stale.
         // Use .get() and fall back gracefully.
         let commit = &history.commits[history.selected_commit];
-        render_history_empty(f, area, &format!("Empty commit: {}", commit.short_hash));
+        render_history_empty(
+            f,
+            area,
+            &format!("Empty commit: {}", commit.short_hash),
+            visible_count,
+        );
         return;
     }
 
@@ -1522,11 +1533,12 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 }
 
 /// Render empty state for history mode
-fn render_history_empty(f: &mut Frame, area: Rect, message: &str) {
+fn render_history_empty(f: &mut Frame, area: Rect, message: &str, visible_count: usize) {
     let block = Block::default()
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG));
 
+    let switch_hint = mode_switch_hint(visible_count);
     let text = Paragraph::new(vec![
         Line::from(""),
         Line::from(""),
@@ -1536,7 +1548,7 @@ fn render_history_empty(f: &mut Frame, area: Rect, message: &str) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  Switch modes with [1] [2] [3]",
+            switch_hint,
             ratatui::style::Style::default().fg(styles::DIM),
         )),
     ])
@@ -1830,22 +1842,51 @@ fn render_reply_lines(
     }
 }
 
+/// Build a "Switch modes with [1] [2] ... [N]" hint string
+fn mode_switch_hint(visible_count: usize) -> String {
+    if visible_count == 0 {
+        return "  Switch modes with [1]".to_string();
+    }
+    let keys: Vec<String> = (1..=visible_count).map(|n| format!("[{}]", n)).collect();
+    format!("  Switch modes with {}", keys.join(" "))
+}
+
 /// Render an empty state when no file is selected
-fn render_empty(f: &mut Frame, area: Rect) {
+fn render_empty(f: &mut Frame, area: Rect, mode: &DiffMode, base_branch: &str, visible_count: usize) {
     let block = Block::default()
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG));
+
+    let switch_hint = mode_switch_hint(visible_count);
+    let (title, hint) = match mode {
+        DiffMode::Branch => (
+            format!("  No committed changes vs {}", base_branch),
+            "  Press [2] for unstaged working tree changes".to_string(),
+        ),
+        DiffMode::Unstaged => (
+            "  No unstaged changes".to_string(),
+            format!("  Stage files with git add, or {}", switch_hint.trim_start()),
+        ),
+        DiffMode::Staged => (
+            "  No staged changes".to_string(),
+            format!("  Stage files with git add, or {}", switch_hint.trim_start()),
+        ),
+        _ => (
+            "  No files changed".to_string(),
+            switch_hint.clone(),
+        ),
+    };
 
     let text = Paragraph::new(vec![
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled(
-            "  No files changed",
+            title,
             ratatui::style::Style::default().fg(styles::MUTED),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  Switch modes with [1] [2] [3]",
+            hint,
             ratatui::style::Style::default().fg(styles::DIM),
         )),
     ])

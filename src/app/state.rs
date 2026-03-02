@@ -34,6 +34,7 @@ pub enum DiffMode {
     Staged,
     History,
     Conflicts,
+    Hidden,
 }
 
 impl DiffMode {
@@ -45,6 +46,7 @@ impl DiffMode {
             DiffMode::Staged => "STAGED",
             DiffMode::History => "HISTORY",
             DiffMode::Conflicts => "CONFLICTS",
+            DiffMode::Hidden => "HIDDEN",
         }
     }
 
@@ -55,6 +57,7 @@ impl DiffMode {
             DiffMode::Staged => "staged",
             DiffMode::History => "history",
             DiffMode::Conflicts => "conflicts",
+            DiffMode::Hidden => "hidden",
         }
     }
 }
@@ -342,6 +345,9 @@ pub struct TabState {
     /// Number of files with unresolved conflict markers (subset of total merge files)
     pub unresolved_count: usize,
 
+    pub has_unstaged: bool,
+    pub has_staged: bool,
+
     // ── Performance ──
     /// Configuration for auto-compaction of low-value files
     pub compaction_config: CompactionConfig,
@@ -511,6 +517,8 @@ impl TabState {
             commit_input: String::new(),
             merge_active,
             unresolved_count: 0,
+            has_unstaged: false,
+            has_staged: false,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,
@@ -588,6 +596,8 @@ impl TabState {
             commit_input: String::new(),
             merge_active: false,
             unresolved_count: 0,
+            has_unstaged: false,
+            has_staged: false,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,
@@ -605,6 +615,34 @@ impl TabState {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| self.repo_root.clone())
+    }
+
+    /// Whether a mode tab should be visible in the status bar.
+    /// Branch and History are always visible. Others depend on content.
+    pub fn mode_has_content(&self, mode: DiffMode) -> bool {
+        match mode {
+            DiffMode::Branch | DiffMode::History => true,
+            DiffMode::Unstaged => self.has_unstaged,
+            DiffMode::Staged => self.has_staged,
+            DiffMode::Conflicts => self.merge_active,
+            DiffMode::Hidden => !self.watched_files.is_empty(),
+        }
+    }
+
+    /// Returns the ordered list of currently visible mode tabs.
+    pub fn visible_modes(&self, config: &crate::config::ErConfig) -> Vec<DiffMode> {
+        let all = [
+            (DiffMode::Branch, config.features.view_branch),
+            (DiffMode::Unstaged, config.features.view_unstaged),
+            (DiffMode::Staged, config.features.view_staged),
+            (DiffMode::History, config.features.view_history),
+            (DiffMode::Conflicts, config.features.view_conflicts),
+            (DiffMode::Hidden, config.features.view_hidden),
+        ];
+        all.iter()
+            .filter(|(mode, feature_enabled)| *feature_enabled && self.mode_has_content(*mode))
+            .map(|(mode, _)| *mode)
+            .collect()
     }
 
     // ── Diff ──
@@ -692,8 +730,15 @@ impl TabState {
             return Ok(());
         }
 
+        // Hidden mode: watched files are the content — no git diff needed
+        if self.mode == DiffMode::Hidden {
+            return Ok(());
+        }
+
         // Update merge_active on every refresh
         self.merge_active = git::is_merge_in_progress(&self.repo_root);
+        self.has_unstaged = git::has_unstaged_changes(&self.repo_root);
+        self.has_staged = git::has_staged_changes(&self.repo_root);
 
         // Remember current position to restore after re-parse
         let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
@@ -1376,6 +1421,13 @@ impl TabState {
                     self.selected_watched = Some(visible_watched[pos + 1].0);
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
+                } else if self.mode == DiffMode::Hidden {
+                    // Hidden mode: no diff files — wrap within watched files only
+                    if !visible_watched.is_empty() {
+                        self.selected_watched = Some(visible_watched[0].0);
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                    }
                 } else {
                     // At last watched file — wrap to first diff file
                     self.selected_watched = None;
@@ -1462,6 +1514,13 @@ impl TabState {
                     self.selected_watched = Some(visible_watched[pos - 1].0);
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
+                } else if self.mode == DiffMode::Hidden {
+                    // Hidden mode: no diff files — wrap within watched files only
+                    if !visible_watched.is_empty() {
+                        self.selected_watched = Some(visible_watched.last().unwrap().0);
+                        self.diff_scroll = 0;
+                        self.h_scroll = 0;
+                    }
                 } else {
                     // At first watched file — transition back to diff section
                     self.selected_watched = None;
@@ -2299,6 +2358,20 @@ impl TabState {
                         diff_cache: cache,
                     });
                 }
+            } else if mode == DiffMode::Hidden {
+                // Hidden mode: clear diff files, show only watched files
+                self.files.clear();
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.diff_scroll = 0;
+                self.show_watched = true;
+                self.refresh_watched_files();
+                // Auto-select first watched file if any
+                if !self.watched_files.is_empty() {
+                    self.selected_watched = Some(0);
+                } else {
+                    self.selected_watched = None;
+                }
             } else if mode == DiffMode::Conflicts {
                 self.current_hunk = 0;
                 self.current_line = None;
@@ -3032,7 +3105,7 @@ impl App {
                 git::git_stage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Resolved: {}", file_path));
             }
-            DiffMode::History => {
+            DiffMode::History | DiffMode::Hidden => {
                 self.notify("Staging not available in this mode");
                 return Ok(());
             }
@@ -4413,6 +4486,8 @@ mod tests {
             commit_input: String::new(),
             merge_active: false,
             unresolved_count: 0,
+            has_unstaged: false,
+            has_staged: false,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
             file_tree_cache: None,
@@ -4928,6 +5003,7 @@ mod tests {
         assert_eq!(DiffMode::Staged.label(), "STAGED");
         assert_eq!(DiffMode::History.label(), "HISTORY");
         assert_eq!(DiffMode::Conflicts.label(), "CONFLICTS");
+        assert_eq!(DiffMode::Hidden.label(), "HIDDEN");
     }
 
     #[test]
@@ -4937,6 +5013,7 @@ mod tests {
         assert_eq!(DiffMode::Staged.git_mode(), "staged");
         assert_eq!(DiffMode::History.git_mode(), "history");
         assert_eq!(DiffMode::Conflicts.git_mode(), "conflicts");
+        assert_eq!(DiffMode::Hidden.git_mode(), "hidden");
     }
 
     // ── clamp_hunk ──

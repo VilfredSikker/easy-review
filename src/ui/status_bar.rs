@@ -132,56 +132,40 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             }
         }
     }
+    // In Hidden mode, show watched file count
+    if tab.mode == DiffMode::Hidden {
+        let count = tab.watched_files.len();
+        info_spans.push(Span::styled(
+            format!(" [{} watched]", count),
+            ratatui::style::Style::default().fg(styles::DIM),
+        ));
+    }
     let info_bar = Paragraph::new(Line::from(info_spans)).style(panel_bg);
     f.render_widget(info_bar, rows[row_idx]);
     row_idx += 1;
 
     // ── Modes row: modes (left) + reviewed (right) ──
     let mut modes: Vec<Span> = vec![Span::raw(" ")];
-    if app.config.features.view_branch {
-        modes.push(Span::styled(" 1 ", mode_style(DiffMode::Branch, tab.mode)));
+    let visible = tab.visible_modes(&app.config);
+    for (i, &mode) in visible.iter().enumerate() {
+        let num = i + 1;
+        let label = match mode {
+            DiffMode::Branch => "BRANCH",
+            DiffMode::Unstaged => "UNSTAGED",
+            DiffMode::Staged => "STAGED",
+            DiffMode::History => "HISTORY",
+            DiffMode::Conflicts => "CONFLICTS",
+            DiffMode::Hidden => "HIDDEN",
+        };
         modes.push(Span::styled(
-            " BRANCH ",
-            mode_style(DiffMode::Branch, tab.mode),
+            format!(" {} ", num),
+            mode_style(mode, tab.mode),
+        ));
+        modes.push(Span::styled(
+            format!(" {} ", label),
+            mode_style(mode, tab.mode),
         ));
         modes.push(Span::raw(" "));
-    }
-    if app.config.features.view_unstaged {
-        modes.push(Span::styled(
-            " 2 ",
-            mode_style(DiffMode::Unstaged, tab.mode),
-        ));
-        modes.push(Span::styled(
-            " UNSTAGED ",
-            mode_style(DiffMode::Unstaged, tab.mode),
-        ));
-        modes.push(Span::raw(" "));
-    }
-    if app.config.features.view_staged {
-        modes.push(Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)));
-        modes.push(Span::styled(
-            " STAGED ",
-            mode_style(DiffMode::Staged, tab.mode),
-        ));
-        modes.push(Span::raw(" "));
-    }
-    if app.config.features.view_history {
-        modes.push(Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)));
-        modes.push(Span::styled(
-            " HISTORY ",
-            mode_style(DiffMode::History, tab.mode),
-        ));
-    }
-    if app.config.features.view_conflicts {
-        modes.push(Span::raw(" "));
-        modes.push(Span::styled(
-            " 5 ",
-            mode_style(DiffMode::Conflicts, tab.mode),
-        ));
-        modes.push(Span::styled(
-            " CONFLICTS ",
-            mode_style(DiffMode::Conflicts, tab.mode),
-        ));
     }
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
@@ -404,6 +388,29 @@ fn build_ai_panel_hints(app: &App) -> Vec<Hint> {
     hints
 }
 
+/// Build hints for Hidden mode
+fn build_hidden_hints(app: &App) -> Vec<Hint> {
+    let tab = app.tab();
+    let mut hints = vec![
+        Hint::new("j/k", " nav "),
+        Hint::new("/", " search "),
+        Hint::new("^q", " quit "),
+    ];
+
+    if app.tabs.len() > 1 {
+        hints.push(Hint::new("[/]", " tabs "));
+    }
+
+    if !tab.search_query.is_empty() {
+        hints.push(Hint {
+            key: String::new(),
+            label: format!(" search: \"{}\" ", tab.search_query),
+        });
+    }
+
+    hints
+}
+
 /// Build hints for History mode
 fn build_history_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
@@ -463,6 +470,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
     // History mode has different hints
     if tab.mode == DiffMode::History {
         return build_history_hints(app);
+    }
+
+    // Hidden mode has its own minimal hints
+    if tab.mode == DiffMode::Hidden {
+        return build_hidden_hints(app);
     }
 
     // Conflicts mode uses same hint structure as normal mode (staging not applicable)

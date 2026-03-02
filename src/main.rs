@@ -315,25 +315,13 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Mode switching (gated by feature flags)
-        KeyCode::Char('1') if app.config.features.view_branch => {
-            app.tab_mut().set_mode(DiffMode::Branch);
-            return Ok(());
-        }
-        KeyCode::Char('2') if app.config.features.view_unstaged => {
-            app.tab_mut().set_mode(DiffMode::Unstaged);
-            return Ok(());
-        }
-        KeyCode::Char('3') if app.config.features.view_staged => {
-            app.tab_mut().set_mode(DiffMode::Staged);
-            return Ok(());
-        }
-        KeyCode::Char('4') if app.config.features.view_history => {
-            app.tab_mut().set_mode(DiffMode::History);
-            return Ok(());
-        }
-        KeyCode::Char('5') if app.config.features.view_conflicts => {
-            app.tab_mut().set_mode(DiffMode::Conflicts);
+        // Mode switching — number keys map to the Nth visible tab
+        KeyCode::Char(c @ '1'..='9') => {
+            let idx = (c as usize) - ('1' as usize);
+            let visible = app.tab().visible_modes(&app.config);
+            if let Some(&mode) = visible.get(idx) {
+                app.tab_mut().set_mode(mode);
+            }
             return Ok(());
         }
         // Toggle mtime sort (works in any mode)
@@ -473,18 +461,22 @@ fn handle_normal_input(
 
         // Toggle watched files section visibility
         KeyCode::Char('W') => {
-            let tab = app.tab_mut();
-            if tab.watched_config.paths.is_empty() {
-                app.notify("No watched paths in .er-config.toml");
+            if app.tab().mode == DiffMode::Hidden {
+                app.notify("Use tab keys (1-5) to exit HIDDEN mode");
             } else {
-                tab.show_watched = !tab.show_watched;
-                if tab.show_watched {
-                    tab.refresh_watched_files();
-                    app.notify("Watched files shown");
+                let tab = app.tab_mut();
+                if tab.watched_config.paths.is_empty() {
+                    app.notify("No watched paths in .er-config.toml");
                 } else {
-                    tab.watched_files.clear();
-                    tab.selected_watched = None;
-                    app.notify("Watched files hidden");
+                    tab.show_watched = !tab.show_watched;
+                    if tab.show_watched {
+                        tab.refresh_watched_files();
+                        app.notify("Watched files shown");
+                    } else {
+                        tab.watched_files.clear();
+                        tab.selected_watched = None;
+                        app.notify("Watched files hidden");
+                    }
                 }
             }
             return Ok(());
@@ -519,6 +511,20 @@ fn handle_normal_input(
     // ── History mode: route to dedicated handler ──
     if app.tab().mode == DiffMode::History {
         return handle_history_input(app, key);
+    }
+
+    // ── Hidden mode: file navigation only (no diff files — j/k move within watched) ──
+    if app.tab().mode == DiffMode::Hidden {
+        match key.code {
+            KeyCode::Char('j') => app.tab_mut().prev_file(),
+            KeyCode::Char('k') => app.tab_mut().next_file(),
+            KeyCode::Char('/') => {
+                app.input_mode = InputMode::Search;
+                app.tab_mut().search_query.clear();
+            }
+            _ => {}
+        }
+        return Ok(());
     }
 
     // ── Normal mode keys ──

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
 /// Metadata for a single commit (used in History mode)
@@ -367,6 +367,28 @@ pub fn unmerged_files(repo_root: &str) -> Result<Vec<String>> {
         .filter(|l| !l.is_empty())
         .map(String::from)
         .collect())
+}
+
+pub fn has_unstaged_changes(repo_root: &str) -> bool {
+    Command::new("git")
+        .args(["diff", "--quiet"])
+        .current_dir(repo_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| !s.success())
+        .unwrap_or(false)
+}
+
+pub fn has_staged_changes(repo_root: &str) -> bool {
+    Command::new("git")
+        .args(["diff", "--staged", "--quiet"])
+        .current_dir(repo_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| !s.success())
+        .unwrap_or(false)
 }
 
 /// Check if a merge is currently in progress (MERGE_HEAD exists)
