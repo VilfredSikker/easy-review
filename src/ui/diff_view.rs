@@ -674,7 +674,7 @@ pub fn render_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter, 
         return;
     }
     if tab.mode == DiffMode::History {
-        render(f, area, app, hl);
+        render_history_split(f, area, app, hl);
         return;
     }
     let file = match tab.selected_diff_file() {
@@ -1221,6 +1221,403 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     let paragraph = Paragraph::new(lines).scroll(visible_scroll);
 
     f.render_widget(paragraph, inner);
+}
+
+/// Render multi-file commit diff in split (side-by-side) view for History mode.
+/// Old lines (deletions) on the left pane, new lines (additions) on the right pane.
+/// Falls back to `render_history_diff` when the terminal is too narrow.
+fn render_history_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
+    let tab = app.tab();
+    let visible_count = tab.visible_modes(&app.config).len();
+
+    // Narrow terminal fallback
+    if area.width < 60 {
+        render_history_diff(f, area, app, hl);
+        return;
+    }
+
+    let history = match tab.history.as_ref() {
+        Some(h) => h,
+        None => {
+            render_history_empty(f, area, "No history available", visible_count);
+            return;
+        }
+    };
+
+    if history.commits.is_empty() {
+        render_history_empty(f, area, "No commits ahead of base branch", visible_count);
+        return;
+    }
+
+    if history.commit_files.is_empty() {
+        let commit = &history.commits[history.selected_commit];
+        render_history_empty(
+            f,
+            area,
+            &format!("Empty commit: {}", commit.short_hash),
+            visible_count,
+        );
+        return;
+    }
+
+    let total_files = history.commit_files.len();
+
+    // Split area 50/50 horizontally
+    let halves =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+
+    // Border and block for Old (left) pane
+    let old_border_style = if tab.split_focus == SplitSide::Old {
+        styles::split_border_focused()
+    } else {
+        styles::split_border_inactive()
+    };
+    let old_block = Block::default()
+        .title(Span::styled(" Old ", old_border_style))
+        .borders(Borders::ALL)
+        .border_style(old_border_style)
+        .style(ratatui::style::Style::default().bg(styles::BG));
+
+    // Border and block for New (right) pane
+    let new_border_style = if tab.split_focus == SplitSide::New {
+        styles::split_border_focused()
+    } else {
+        styles::split_border_inactive()
+    };
+    let new_block = Block::default()
+        .title(Span::styled(" New ", new_border_style))
+        .borders(Borders::ALL)
+        .border_style(new_border_style)
+        .style(ratatui::style::Style::default().bg(styles::BG));
+
+    let old_inner = old_block.inner(halves[0]);
+    let new_inner = new_block.inner(halves[1]);
+
+    f.render_widget(old_block, halves[0]);
+    f.render_widget(new_block, halves[1]);
+
+    // Viewport parameters — single shared scroll for both panes
+    let scroll = history.diff_scroll as usize;
+    let viewport_height = old_inner.height as usize;
+    let buffer_lines = 20;
+    let render_start = scroll.saturating_sub(buffer_lines);
+    let render_end = scroll + viewport_height + buffer_lines;
+
+    let mut old_lines: Vec<Line> = Vec::with_capacity(viewport_height + buffer_lines * 2);
+    let mut new_lines: Vec<Line> = Vec::with_capacity(viewport_height + buffer_lines * 2);
+    let mut logical_line: usize = 0;
+
+    // Track file header positions for sticky header (based on new_lines logical positions)
+    let mut file_header_line_indices: Vec<usize> = Vec::new();
+
+    for (file_idx, file) in history.commit_files.iter().enumerate() {
+        let is_current_file = file_idx == history.selected_file;
+        let file_header_bg = if is_current_file { styles::HUNK_BG } else { styles::BG };
+
+        // File header: New side gets full header, Old side gets a blank line
+        file_header_line_indices.push(logical_line);
+        if logical_line >= render_start && logical_line < render_end {
+            // New side: full file header
+            let mut new_header_spans = vec![
+                Span::styled(
+                    if is_current_file { " \u{25b6} " } else { "   " },
+                    ratatui::style::Style::default()
+                        .fg(if is_current_file { styles::CYAN } else { styles::DIM })
+                        .bg(file_header_bg),
+                ),
+                Span::styled(
+                    format!("{} ", file.status.symbol()),
+                    match &file.status {
+                        crate::git::FileStatus::Added => ratatui::style::Style::default()
+                            .fg(styles::GREEN)
+                            .bg(file_header_bg),
+                        crate::git::FileStatus::Deleted => ratatui::style::Style::default()
+                            .fg(styles::RED)
+                            .bg(file_header_bg),
+                        _ => ratatui::style::Style::default()
+                            .fg(styles::YELLOW)
+                            .bg(file_header_bg),
+                    },
+                ),
+                Span::styled(
+                    &file.path,
+                    ratatui::style::Style::default()
+                        .fg(if is_current_file { styles::BRIGHT } else { styles::TEXT })
+                        .bg(file_header_bg),
+                ),
+                Span::styled(
+                    format!("  +{} -{}", file.adds, file.dels),
+                    ratatui::style::Style::default()
+                        .fg(styles::DIM)
+                        .bg(file_header_bg),
+                ),
+            ];
+            let header_len: usize = new_header_spans.iter().map(|s| s.content.chars().count()).sum();
+            let remaining = (new_inner.width as usize).saturating_sub(header_len);
+            new_header_spans.push(Span::styled(
+                " ".repeat(remaining),
+                ratatui::style::Style::default().bg(file_header_bg),
+            ));
+            new_lines.push(Line::from(new_header_spans));
+
+            // Old side: blank line matching the file header row
+            old_lines.push(
+                Line::from(Span::styled(
+                    "",
+                    ratatui::style::Style::default().bg(file_header_bg),
+                ))
+                .style(ratatui::style::Style::default().bg(file_header_bg)),
+            );
+        }
+        logical_line += 1;
+
+        // Blank separator after header
+        if logical_line >= render_start && logical_line < render_end {
+            old_lines.push(Line::from(""));
+            new_lines.push(Line::from(""));
+        }
+        logical_line += 1;
+
+        // Hunks
+        for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+            let is_current_hunk = is_current_file && hunk_idx == history.current_hunk;
+
+            // Early exit past viewport
+            if logical_line > render_end + buffer_lines {
+                break;
+            }
+
+            // Hunk header — both sides
+            if logical_line >= render_start && logical_line < render_end {
+                let marker = if is_current_hunk { "\u{25b6}" } else { " " };
+                let hunk_header_line = Line::from(vec![
+                    Span::styled(
+                        format!(" {} ", marker),
+                        if is_current_hunk {
+                            ratatui::style::Style::default()
+                                .fg(styles::CYAN)
+                                .bg(styles::HUNK_BG)
+                        } else {
+                            ratatui::style::Style::default()
+                                .fg(styles::DIM)
+                                .bg(styles::HUNK_BG)
+                        },
+                    ),
+                    Span::styled(&hunk.header, styles::hunk_header_style()),
+                ])
+                .style(styles::hunk_header_style());
+                old_lines.push(hunk_header_line.clone());
+                new_lines.push(hunk_header_line);
+            }
+            logical_line += 1;
+
+            // Hunk lines
+            for diff_line in &hunk.lines {
+                if logical_line > render_end + buffer_lines {
+                    break;
+                }
+
+                // Determine which side shows content vs blank padding
+                let old_shows = matches!(
+                    diff_line.line_type,
+                    LineType::Context | LineType::Delete
+                );
+                let new_shows = matches!(
+                    diff_line.line_type,
+                    LineType::Context | LineType::Add
+                );
+
+                let (prefix, base_style) = match diff_line.line_type {
+                    LineType::Add => ("+", styles::add_style()),
+                    LineType::Delete => ("-", styles::del_style()),
+                    LineType::Context => (" ", styles::default_style()),
+                };
+
+                let gutter_style = match diff_line.line_type {
+                    LineType::Add => {
+                        ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG)
+                    }
+                    LineType::Delete => {
+                        ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG)
+                    }
+                    LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                };
+
+                let pad_bg = match diff_line.line_type {
+                    LineType::Add => styles::ADD_BG,
+                    LineType::Delete => styles::DEL_BG,
+                    LineType::Context => styles::BG,
+                };
+
+                if logical_line >= render_start && logical_line < render_end {
+                    // Old side
+                    if old_shows {
+                        let num_str = diff_line
+                            .old_num
+                            .map(|n| format!("{:>4}", n))
+                            .unwrap_or_else(|| "    ".to_string());
+                        let mut spans = vec![
+                            Span::styled(format!("{} \u{2502}", num_str), gutter_style),
+                            Span::styled(prefix, base_style),
+                        ];
+                        if diff_line.content.is_empty() {
+                            spans.push(Span::styled("", base_style));
+                        } else {
+                            let highlighted =
+                                hl.highlight_line(&diff_line.content, &file.path, base_style);
+                            spans.extend(highlighted);
+                        }
+                        old_lines.push(Line::from(spans).style(base_style));
+                    } else {
+                        old_lines.push(
+                            Line::from(Span::styled(
+                                "",
+                                ratatui::style::Style::default().bg(pad_bg),
+                            ))
+                            .style(ratatui::style::Style::default().bg(pad_bg)),
+                        );
+                    }
+
+                    // New side
+                    if new_shows {
+                        let num_str = diff_line
+                            .new_num
+                            .map(|n| format!("{:>4}", n))
+                            .unwrap_or_else(|| "    ".to_string());
+                        let mut spans = vec![
+                            Span::styled(format!("{} \u{2502}", num_str), gutter_style),
+                            Span::styled(prefix, base_style),
+                        ];
+                        if diff_line.content.is_empty() {
+                            spans.push(Span::styled("", base_style));
+                        } else {
+                            let highlighted =
+                                hl.highlight_line(&diff_line.content, &file.path, base_style);
+                            spans.extend(highlighted);
+                        }
+                        new_lines.push(Line::from(spans).style(base_style));
+                    } else {
+                        new_lines.push(
+                            Line::from(Span::styled(
+                                "",
+                                ratatui::style::Style::default().bg(pad_bg),
+                            ))
+                            .style(ratatui::style::Style::default().bg(pad_bg)),
+                        );
+                    }
+                }
+                logical_line += 1;
+            }
+
+            // Blank line between hunks
+            if logical_line >= render_start && logical_line < render_end {
+                old_lines.push(Line::from(""));
+                new_lines.push(Line::from(""));
+            }
+            logical_line += 1;
+        }
+    }
+
+    // Render both panes with shared scroll
+    let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
+    let h_scroll = history.h_scroll;
+
+    let old_paragraph = Paragraph::new(old_lines).scroll((scroll_into_rendered, h_scroll));
+    let new_paragraph = Paragraph::new(new_lines).scroll((scroll_into_rendered, h_scroll));
+
+    f.render_widget(old_paragraph, old_inner);
+    f.render_widget(new_paragraph, new_inner);
+
+    // Sticky file header: pin current file name when its header has scrolled off-screen
+    if scroll > 0 && !file_header_line_indices.is_empty() {
+        let topmost_file_idx = file_header_line_indices
+            .iter()
+            .rposition(|&line_idx| line_idx <= scroll)
+            .unwrap_or(0);
+
+        let header_line = file_header_line_indices[topmost_file_idx];
+        if scroll > header_line {
+            if let Some(file) = history.commit_files.get(topmost_file_idx) {
+                let sticky_bg = styles::PANEL;
+
+                // Old pane sticky header: blank row with panel background
+                let old_sticky_area = Rect {
+                    x: old_inner.x,
+                    y: old_inner.y,
+                    width: old_inner.width,
+                    height: 1,
+                };
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        " ".repeat(old_inner.width as usize),
+                        ratatui::style::Style::default().bg(sticky_bg),
+                    ))),
+                    old_sticky_area,
+                );
+
+                // New pane sticky header: file info
+                let mut sticky_spans = vec![
+                    Span::styled(
+                        format!("{} ", file.status.symbol()),
+                        match &file.status {
+                            crate::git::FileStatus::Added => ratatui::style::Style::default()
+                                .fg(styles::GREEN)
+                                .bg(sticky_bg),
+                            crate::git::FileStatus::Deleted => ratatui::style::Style::default()
+                                .fg(styles::RED)
+                                .bg(sticky_bg),
+                            _ => ratatui::style::Style::default()
+                                .fg(styles::YELLOW)
+                                .bg(sticky_bg),
+                        },
+                    ),
+                    Span::styled(
+                        &file.path,
+                        ratatui::style::Style::default()
+                            .fg(styles::BRIGHT)
+                            .bg(sticky_bg),
+                    ),
+                    Span::styled(
+                        format!("  +{} -{}", file.adds, file.dels),
+                        ratatui::style::Style::default()
+                            .fg(styles::DIM)
+                            .bg(sticky_bg),
+                    ),
+                ];
+                let sticky_len: usize = sticky_spans.iter().map(|s| s.content.chars().count()).sum();
+                let sticky_remaining = (new_inner.width as usize).saturating_sub(sticky_len);
+                sticky_spans.push(Span::styled(
+                    " ".repeat(sticky_remaining),
+                    ratatui::style::Style::default().bg(sticky_bg),
+                ));
+
+                let new_sticky_area = Rect {
+                    x: new_inner.x,
+                    y: new_inner.y,
+                    width: new_inner.width,
+                    height: 1,
+                };
+                f.render_widget(Paragraph::new(Line::from(sticky_spans)), new_sticky_area);
+            }
+        }
+    }
+
+    // File indicator "File N/M" on New pane top-right
+    if total_files > 0 {
+        let indicator_text = format!("File {}/{}", history.selected_file + 1, total_files);
+        let indicator_width = indicator_text.len() + 3;
+        let indicator_area = Rect {
+            x: halves[1].x + halves[1].width.saturating_sub(indicator_width as u16 + 1),
+            y: halves[1].y,
+            width: indicator_width as u16,
+            height: 1,
+        };
+        let indicator = Paragraph::new(Line::from(Span::styled(
+            indicator_text,
+            ratatui::style::Style::default().fg(styles::MUTED),
+        )));
+        f.render_widget(indicator, indicator_area);
+    }
 }
 
 /// Render multi-file commit diff (History mode)

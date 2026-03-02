@@ -602,45 +602,22 @@ pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
 
 // ── History (commit log + commit diffs) ──
 
-/// Get commit log for the branch (relative to base), skipping `skip` commits.
+/// Get all commits in the log, skipping `skip` commits.
 pub fn git_log_branch(
-    base: &str,
+    _base: &str,
     repo_root: &str,
     limit: usize,
     skip: usize,
 ) -> Result<Vec<CommitInfo>> {
-    // TODO(risk:medium): if the first `git log` call fails (non-zero exit), the code silently
-    // falls back to `git log` without the range — logging all commits in the repo rather than
-    // just branch commits. The failure is swallowed and the caller receives a full repo history
-    // with no indication that the range was ignored. This can be very misleading in History mode.
-    let range = format!("{}..HEAD", base);
     let format_str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
     let limit_str = format!("--max-count={}", limit);
     let skip_str = format!("--skip={}", skip);
 
     let output = Command::new("git")
-        .args([
-            "log",
-            &range,
-            &limit_str,
-            &skip_str,
-            format_str,
-            "--shortstat",
-        ])
+        .args(["log", &limit_str, &skip_str, format_str, "--shortstat"])
         .current_dir(repo_root)
         .output()
         .context("Failed to run git log")?;
-
-    if !output.status.success() {
-        // Might be on a detached HEAD or base doesn't exist — try without range
-        let output = Command::new("git")
-            .args(["log", &limit_str, &skip_str, format_str, "--shortstat"])
-            .current_dir(repo_root)
-            .output()
-            .context("Failed to run git log")?;
-
-        return parse_git_log(&String::from_utf8_lossy(&output.stdout));
-    }
 
     parse_git_log(&String::from_utf8_lossy(&output.stdout))
 }
