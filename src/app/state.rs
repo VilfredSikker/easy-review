@@ -312,6 +312,9 @@ pub struct TabState {
     /// Optional finding ID this comment responds to (for finding replies)
     pub comment_finding_ref: Option<String>,
 
+    /// When set, submitting a comment appends a threaded reply to this question ID
+    pub reply_thread_target: Option<String>,
+
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
 
@@ -507,6 +510,7 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
+            reply_thread_target: None,
             pr_data: None,
             history: None,
             watched_config,
@@ -586,6 +590,7 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
+            reply_thread_target: None,
             pr_data: None,
             history: None,
             watched_config: WatchedConfig::default(),
@@ -1074,7 +1079,9 @@ impl TabState {
         // Write back to disk if anything changed
         if questions_changed {
             if let Some(ref qs) = self.ai.questions {
-                let path = format!("{}/.er-questions.json", repo_root);
+                let er_dir = format!("{}/.er", repo_root);
+                let _ = std::fs::create_dir_all(&er_dir);
+                let path = format!("{}/questions.json", er_dir);
                 if let Ok(json) = serde_json::to_string_pretty(qs) {
                     let tmp = format!("{}.tmp", path);
                     let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
@@ -1083,7 +1090,9 @@ impl TabState {
         }
         if comments_changed {
             if let Some(ref gc) = self.ai.github_comments {
-                let path = format!("{}/.er-github-comments.json", repo_root);
+                let er_dir = format!("{}/.er", repo_root);
+                let _ = std::fs::create_dir_all(&er_dir);
+                let path = format!("{}/github-comments.json", er_dir);
                 if let Ok(json) = serde_json::to_string_pretty(gc) {
                     let tmp = format!("{}.tmp", path);
                     let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
@@ -1410,57 +1419,65 @@ impl TabState {
         }
     }
 
-    pub fn next_file(&mut self) {
+    pub fn next_file(&mut self, watched_in_all_tabs: bool) {
         self.focused_comment_id = None;
         self.focused_finding_id = None;
         if let Some(idx) = self.selected_watched {
-            // In watched section — move down within watched files
-            let visible_watched = self.visible_watched_files();
-            if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
-                if pos + 1 < visible_watched.len() {
-                    self.selected_watched = Some(visible_watched[pos + 1].0);
+            if self.mode != DiffMode::Hidden && !watched_in_all_tabs {
+                // selected_watched is stale (mode switched while on a watched file) — clear it
+                self.selected_watched = None;
+                // fall through to diff navigation below
+            } else {
+                // Hidden mode: navigate within watched files
+                let visible_watched = self.visible_watched_files();
+                if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
+                    if pos + 1 < visible_watched.len() {
+                        self.selected_watched = Some(visible_watched[pos + 1].0);
+                    } else if !visible_watched.is_empty() {
+                        // Wrap within watched files only
+                        self.selected_watched = Some(visible_watched[0].0);
+                    }
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
-                } else if self.mode == DiffMode::Hidden {
-                    // Hidden mode: no diff files — wrap within watched files only
-                    if !visible_watched.is_empty() {
-                        self.selected_watched = Some(visible_watched[0].0);
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                    }
-                } else {
-                    // At last watched file — wrap to first diff file
-                    self.selected_watched = None;
-                    let visible = self.visible_files();
-                    if !visible.is_empty() {
-                        self.selected_file = visible[0].0;
-                        self.current_hunk = 0;
-                        self.current_line = None;
-                        self.selection_anchor = None;
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                        self.panel_scroll = 0;
-                        self.ensure_file_parsed();
-                        self.rebuild_hunk_offsets();
-                    }
                 }
+                return;
             }
-        } else {
-            // In diff section
-            let visible = self.visible_files();
-            if visible.is_empty() {
-                // No diff files — jump to watched if available
+        }
+        // In diff section
+        let visible = self.visible_files();
+        if visible.is_empty() {
+            // No diff files — jump to watched if available
+            if self.mode == DiffMode::Hidden || watched_in_all_tabs {
                 let visible_watched = self.visible_watched_files();
                 if !visible_watched.is_empty() {
                     self.selected_watched = Some(visible_watched[0].0);
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
                 }
-                return;
             }
-            if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
-                if pos + 1 < visible.len() {
-                    self.selected_file = visible[pos + 1].0;
+            return;
+        }
+        if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
+            if pos + 1 < visible.len() {
+                self.selected_file = visible[pos + 1].0;
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selection_anchor = None;
+                self.diff_scroll = 0;
+                self.h_scroll = 0;
+                self.panel_scroll = 0;
+                self.ensure_file_parsed();
+                self.rebuild_hunk_offsets();
+            } else {
+                // At last diff file — transition to watched files
+                let visible_watched = self.visible_watched_files();
+                if (self.mode == DiffMode::Hidden || watched_in_all_tabs) && !visible_watched.is_empty() {
+                    self.selected_watched = Some(visible_watched[0].0);
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                } else {
+                    // Wrap to first diff file
+                    self.selected_file = visible[0].0;
                     self.current_hunk = 0;
                     self.current_line = None;
                     self.selection_anchor = None;
@@ -1469,84 +1486,78 @@ impl TabState {
                     self.panel_scroll = 0;
                     self.ensure_file_parsed();
                     self.rebuild_hunk_offsets();
-                } else {
-                    // At last diff file
-                    let visible_watched = self.visible_watched_files();
-                    if !visible_watched.is_empty() {
-                        // Transition to watched section
-                        self.selected_watched = Some(visible_watched[0].0);
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                    } else {
-                        // Wrap to first diff file
-                        self.selected_file = visible[0].0;
-                        self.current_hunk = 0;
-                        self.current_line = None;
-                        self.selection_anchor = None;
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                        self.panel_scroll = 0;
-                        self.ensure_file_parsed();
-                        self.rebuild_hunk_offsets();
-                    }
-                }
-            } else {
-                // Current selection not in visible set — snap to first
-                self.selected_file = visible[0].0;
-                self.current_hunk = 0;
-                self.diff_scroll = 0;
-                self.h_scroll = 0;
-                self.panel_scroll = 0;
-                self.ensure_file_parsed();
-                self.rebuild_hunk_offsets();
-            }
-        }
-    }
-
-    pub fn prev_file(&mut self) {
-        self.focused_comment_id = None;
-        self.focused_finding_id = None;
-        if let Some(idx) = self.selected_watched {
-            // In watched section — move up within watched files
-            let visible_watched = self.visible_watched_files();
-            if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
-                if pos > 0 {
-                    self.selected_watched = Some(visible_watched[pos - 1].0);
-                    self.diff_scroll = 0;
-                    self.h_scroll = 0;
-                } else if self.mode == DiffMode::Hidden {
-                    // Hidden mode: no diff files — wrap within watched files only
-                    if !visible_watched.is_empty() {
-                        self.selected_watched = Some(visible_watched.last().unwrap().0);
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                    }
-                } else {
-                    // At first watched file — transition back to diff section
-                    self.selected_watched = None;
-                    let visible = self.visible_files();
-                    if !visible.is_empty() {
-                        self.selected_file = visible.last().unwrap().0;
-                        self.current_hunk = 0;
-                        self.current_line = None;
-                        self.selection_anchor = None;
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                        self.panel_scroll = 0;
-                        self.ensure_file_parsed();
-                        self.rebuild_hunk_offsets();
-                    }
                 }
             }
         } else {
-            // In diff section — normal navigation
-            let visible = self.visible_files();
-            if visible.is_empty() {
+            // Current selection not in visible set — snap to first
+            self.selected_file = visible[0].0;
+            self.current_hunk = 0;
+            self.diff_scroll = 0;
+            self.h_scroll = 0;
+            self.panel_scroll = 0;
+            self.ensure_file_parsed();
+            self.rebuild_hunk_offsets();
+        }
+    }
+
+    pub fn prev_file(&mut self, watched_in_all_tabs: bool) {
+        self.focused_comment_id = None;
+        self.focused_finding_id = None;
+        if let Some(idx) = self.selected_watched {
+            if self.mode != DiffMode::Hidden && !watched_in_all_tabs {
+                // selected_watched is stale (mode switched while on a watched file) — clear it
+                self.selected_watched = None;
+                // fall through to diff navigation below
+            } else {
+                // Hidden mode: navigate within watched files
+                let visible_watched = self.visible_watched_files();
+                if let Some(pos) = visible_watched.iter().position(|(i, _)| *i == idx) {
+                    if pos > 0 {
+                        self.selected_watched = Some(visible_watched[pos - 1].0);
+                    } else if !visible_watched.is_empty() {
+                        // Wrap within watched files only
+                        self.selected_watched = Some(visible_watched.last().unwrap().0);
+                    }
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                }
                 return;
             }
-            if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
-                if pos > 0 {
-                    self.selected_file = visible[pos - 1].0;
+        }
+        // In diff section — normal navigation
+        let visible = self.visible_files();
+        if visible.is_empty() {
+            if self.mode == DiffMode::Hidden || watched_in_all_tabs {
+                let visible_watched = self.visible_watched_files();
+                if !visible_watched.is_empty() {
+                    self.selected_watched = Some(visible_watched.last().unwrap().0);
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                }
+            }
+            return;
+        }
+        if let Some(pos) = visible.iter().position(|(i, _)| *i == self.selected_file) {
+            if pos > 0 {
+                self.selected_file = visible[pos - 1].0;
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selection_anchor = None;
+                self.diff_scroll = 0;
+                self.h_scroll = 0;
+                self.panel_scroll = 0;
+                self.ensure_file_parsed();
+                self.rebuild_hunk_offsets();
+            } else {
+                // At first diff file — transition to watched files
+                let visible_watched = self.visible_watched_files();
+                if (self.mode == DiffMode::Hidden || watched_in_all_tabs) && !visible_watched.is_empty() {
+                    self.selected_watched = Some(visible_watched.last().unwrap().0);
+                    self.diff_scroll = 0;
+                    self.h_scroll = 0;
+                } else {
+                    // Wrap to last diff file
+                    self.selected_file = visible.last().unwrap().0;
                     self.current_hunk = 0;
                     self.current_line = None;
                     self.selection_anchor = None;
@@ -1555,36 +1566,17 @@ impl TabState {
                     self.panel_scroll = 0;
                     self.ensure_file_parsed();
                     self.rebuild_hunk_offsets();
-                } else {
-                    // At first diff file — wrap to last item
-                    let visible_watched = self.visible_watched_files();
-                    if !visible_watched.is_empty() {
-                        self.selected_watched = Some(visible_watched.last().unwrap().0);
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                    } else {
-                        // Wrap to last diff file
-                        self.selected_file = visible.last().unwrap().0;
-                        self.current_hunk = 0;
-                        self.current_line = None;
-                        self.selection_anchor = None;
-                        self.diff_scroll = 0;
-                        self.h_scroll = 0;
-                        self.panel_scroll = 0;
-                        self.ensure_file_parsed();
-                        self.rebuild_hunk_offsets();
-                    }
                 }
-            } else {
-                // Current selection not in visible set — snap to first
-                self.selected_file = visible[0].0;
-                self.current_hunk = 0;
-                self.diff_scroll = 0;
-                self.h_scroll = 0;
-                self.panel_scroll = 0;
-                self.ensure_file_parsed();
-                self.rebuild_hunk_offsets();
             }
+        } else {
+            // Current selection not in visible set — snap to first
+            self.selected_file = visible[0].0;
+            self.current_hunk = 0;
+            self.diff_scroll = 0;
+            self.h_scroll = 0;
+            self.panel_scroll = 0;
+            self.ensure_file_parsed();
+            self.rebuild_hunk_offsets();
         }
     }
 
@@ -1612,6 +1604,31 @@ impl TabState {
     /// Move to the next line within the current hunk (arrow down)
     pub fn next_line(&mut self) {
         self.selection_anchor = None;
+
+        if self.selected_watched.is_some() {
+            let total_lines = self.watched_file_line_count();
+            if total_lines == 0 {
+                return;
+            }
+            let new_line = match self.current_line {
+                None => 0,
+                Some(line) => {
+                    if line + 1 < total_lines {
+                        line + 1
+                    } else {
+                        line
+                    }
+                }
+            };
+            self.current_line = Some(new_line);
+            let header_lines: u16 = 3;
+            let target_row = header_lines + new_line as u16;
+            if target_row < self.diff_scroll {
+                self.diff_scroll = target_row;
+            }
+            return;
+        }
+
         let total_lines = self.current_hunk_line_count();
         if total_lines == 0 {
             return;
@@ -1640,6 +1657,26 @@ impl TabState {
     /// Move to the previous line within the current hunk (arrow up)
     pub fn prev_line(&mut self) {
         self.selection_anchor = None;
+
+        if self.selected_watched.is_some() {
+            let total_lines = self.watched_file_line_count();
+            if total_lines == 0 {
+                return;
+            }
+            let new_line = match self.current_line {
+                None => total_lines - 1,
+                Some(0) => 0,
+                Some(line) => line - 1,
+            };
+            self.current_line = Some(new_line);
+            let header_lines: u16 = 3;
+            let target_row = header_lines + new_line as u16;
+            if target_row < self.diff_scroll {
+                self.diff_scroll = target_row;
+            }
+            return;
+        }
+
         match self.current_line {
             None => {
                 // Enter line mode at the last line of the current hunk
@@ -1663,6 +1700,17 @@ impl TabState {
                 self.current_line = Some(line - 1);
                 self.scroll_to_current_hunk();
             }
+        }
+    }
+
+    fn watched_file_line_count(&self) -> usize {
+        let wf = match self.selected_watched_file() {
+            Some(w) => w,
+            None => return 0,
+        };
+        match crate::git::read_watched_file_content(&self.repo_root, &wf.path) {
+            Ok(Some(content)) => content.lines().count().max(1),
+            _ => 0,
         }
     }
 
@@ -2555,7 +2603,12 @@ impl TabState {
     }
 
     fn load_reviewed_files(repo_root: &str) -> HashSet<String> {
-        let path = format!("{}/.er-reviewed", repo_root);
+        let new_path = format!("{}/.er/reviewed", repo_root);
+        let path = if std::path::Path::new(&new_path).exists() {
+            new_path
+        } else {
+            format!("{}/.er-reviewed", repo_root)
+        };
         match std::fs::read_to_string(&path) {
             Ok(content) => content
                 .lines()
@@ -2567,7 +2620,9 @@ impl TabState {
     }
 
     fn save_reviewed_files(&self) -> Result<()> {
-        let path = format!("{}/.er-reviewed", self.repo_root);
+        let er_dir = format!("{}/.er", self.repo_root);
+        let _ = std::fs::create_dir_all(&er_dir);
+        let path = format!("{}/.er/reviewed", self.repo_root);
         if self.reviewed.is_empty() {
             // Remove file if no reviewed files
             let _ = std::fs::remove_file(&path);
@@ -3177,14 +3232,20 @@ impl App {
         let split_active = self.split_diff_active(&self.config.clone());
         let split_focus = self.tab().split_focus;
         let tab = self.tab_mut();
+        let is_watched = tab.selected_diff_file().is_none();
         let file_path = match tab.selected_diff_file() {
             Some(f) => f.path.clone(),
-            None => return,
+            None => match tab.selected_watched_file() {
+                Some(w) => w.path.clone(),
+                None => return,
+            },
         };
         tab.comment_input.clear();
         tab.comment_file = file_path;
-        tab.comment_hunk = tab.current_hunk;
-        tab.comment_line_num = if split_active {
+        tab.comment_hunk = if is_watched { 0 } else { tab.current_hunk };
+        tab.comment_line_num = if is_watched {
+            tab.current_line.map(|l| l + 1)
+        } else if split_active {
             tab.current_line_number_for_split(split_focus)
         } else {
             tab.current_line_number()
@@ -3288,6 +3349,76 @@ impl App {
         self.input_mode = InputMode::Comment;
     }
 
+    /// Start a threaded reply to a question (appends to question.replies instead of creating flat reply)
+    pub fn start_question_thread_reply(&mut self, question_id: &str) {
+        let tab = self.tab_mut();
+        tab.comment_input.clear();
+        tab.reply_thread_target = Some(question_id.to_string());
+        self.input_mode = InputMode::Comment;
+    }
+
+    fn submit_question_thread_reply(&mut self, target_id: String, text: String) -> Result<()> {
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let diff_hash = tab.branch_diff_hash.clone();
+
+        let er_dir = format!("{}/.er", repo_root);
+        let _ = std::fs::create_dir_all(&er_dir);
+        let new_questions_path = format!("{}/questions.json", er_dir);
+        let questions_path = if std::path::Path::new(&new_questions_path).exists() {
+            new_questions_path.clone()
+        } else {
+            let old_path = format!("{}/.er-questions.json", repo_root);
+            if std::path::Path::new(&old_path).exists() {
+                old_path
+            } else {
+                new_questions_path.clone()
+            }
+        };
+
+        let mut questions: ai::ErQuestions = match std::fs::read_to_string(&questions_path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or(ai::ErQuestions {
+                version: 1,
+                diff_hash: diff_hash.clone(),
+                questions: Vec::new(),
+            }),
+            Err(_) => ai::ErQuestions {
+                version: 1,
+                diff_hash: diff_hash.clone(),
+                questions: Vec::new(),
+            },
+        };
+
+        if let Some(question) = questions.questions.iter_mut().find(|q| q.id == target_id) {
+            let reply_id = format!("r-{}", question.replies.len());
+            question.replies.push(ai::Reply {
+                id: reply_id,
+                author: "You".to_string(),
+                timestamp: chrono_now(),
+                text: text.clone(),
+            });
+        } else {
+            self.notify("Question not found for reply");
+            self.input_mode = InputMode::Normal;
+            self.tab_mut().reply_thread_target = None;
+            return Ok(());
+        }
+
+        let write_path = format!("{}/.er/questions.json", repo_root);
+        let _ = std::fs::create_dir_all(format!("{}/.er", repo_root));
+        let json = serde_json::to_string_pretty(&questions)?;
+        let tmp_path = format!("{}.tmp", write_path);
+        std::fs::write(&tmp_path, json)?;
+        std::fs::rename(&tmp_path, &write_path)?;
+
+        self.tab_mut().comment_input.clear();
+        self.tab_mut().reply_thread_target = None;
+        self.input_mode = InputMode::Normal;
+        self.tab_mut().reload_ai_state();
+        self.notify(&format!("Reply added: {}", truncate(&text, 40)));
+        Ok(())
+    }
+
     /// Start replying to an AI finding — creates a GitHubComment referencing the finding
     pub fn start_reply_finding(&mut self, finding_id: &str) {
         let tab = self.tab();
@@ -3343,6 +3474,11 @@ impl App {
             return self.update_comment(edit_id, text);
         }
 
+        // Thread reply to a question
+        if let Some(target_id) = tab.reply_thread_target.clone() {
+            return self.submit_question_thread_reply(target_id, text);
+        }
+
         let comment_type = tab.comment_type;
         match comment_type {
             CommentType::Question => self.submit_question(text),
@@ -3362,13 +3498,27 @@ impl App {
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
-        // Load or create .er-questions.json
-        let questions_path = format!("{}/.er-questions.json", repo_root);
+        // Load or create .er/questions.json (with fallback to legacy path)
+        let er_dir = format!("{}/.er", repo_root);
+        let _ = std::fs::create_dir_all(&er_dir);
+        let questions_path = {
+            let new_path = format!("{}/questions.json", er_dir);
+            if std::path::Path::new(&new_path).exists() {
+                new_path
+            } else {
+                let old_path = format!("{}/.er-questions.json", repo_root);
+                if std::path::Path::new(&old_path).exists() {
+                    old_path
+                } else {
+                    new_path
+                }
+            }
+        };
         let mut questions: ai::ErQuestions = match std::fs::read_to_string(&questions_path) {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(qs) => qs,
                 Err(_) => {
-                    self.notify("Warning: .er-questions.json is invalid JSON — starting fresh");
+                    self.notify("Warning: questions.json is invalid JSON — starting fresh");
                     ai::ErQuestions {
                         version: 1,
                         diff_hash: diff_hash.clone(),
@@ -3418,13 +3568,15 @@ impl App {
             relocated_at_hash: self.tab().branch_diff_hash.clone(),
             in_reply_to: reply_to,
             author: "You".to_string(),
+            replies: vec![],
         });
 
-        // Write atomically
+        // Write atomically to .er/ path
+        let write_path = format!("{}/.er/questions.json", repo_root);
         let json = serde_json::to_string_pretty(&questions)?;
-        let tmp_path = format!("{}.tmp", questions_path);
+        let tmp_path = format!("{}.tmp", write_path);
         std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &questions_path)?;
+        std::fs::rename(&tmp_path, &write_path)?;
 
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
@@ -3447,14 +3599,28 @@ impl App {
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
-        // Load or create .er-github-comments.json
-        let comments_path = format!("{}/.er-github-comments.json", repo_root);
+        // Load or create .er/github-comments.json (with fallback to legacy path)
+        let er_dir = format!("{}/.er", repo_root);
+        let _ = std::fs::create_dir_all(&er_dir);
+        let comments_path = {
+            let new_path = format!("{}/github-comments.json", er_dir);
+            if std::path::Path::new(&new_path).exists() {
+                new_path
+            } else {
+                let old_path = format!("{}/.er-github-comments.json", repo_root);
+                if std::path::Path::new(&old_path).exists() {
+                    old_path
+                } else {
+                    new_path
+                }
+            }
+        };
         let mut gh_comments: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(gc) => gc,
                 Err(_) => {
                     self.notify(
-                        "Warning: .er-github-comments.json is invalid JSON — starting fresh",
+                        "Warning: github-comments.json is invalid JSON — starting fresh",
                     );
                     ai::ErGitHubComments {
                         version: 1,
@@ -3514,11 +3680,12 @@ impl App {
             finding_ref,
         });
 
-        // Write atomically
+        // Write atomically to .er/ path
+        let write_path = format!("{}/.er/github-comments.json", repo_root);
         let json = serde_json::to_string_pretty(&gh_comments)?;
-        let tmp_path = format!("{}.tmp", comments_path);
+        let tmp_path = format!("{}.tmp", write_path);
         std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &comments_path)?;
+        std::fs::rename(&tmp_path, &write_path)?;
 
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
@@ -3591,6 +3758,51 @@ impl App {
             } else {
                 LineAnchor::default()
             }
+        } else if let Some(wf) = tab.selected_watched_file() {
+            if let Some(ln) = comment_line_num {
+                let path = wf.path.clone();
+                let repo_root = tab.repo_root.clone();
+                if let Ok(Some(content)) =
+                    crate::git::read_watched_file_content(&repo_root, &path)
+                {
+                    let file_lines: Vec<&str> = content.lines().collect();
+                    let idx = ln.saturating_sub(1);
+                    let line_content = file_lines.get(idx).map(|s| s.to_string()).unwrap_or_default();
+                    let context_start = idx.saturating_sub(3);
+                    let context_before = file_lines[context_start..idx]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
+                    let context_end = (idx + 4).min(file_lines.len());
+                    let context_after = if idx + 1 < file_lines.len() {
+                        file_lines[(idx + 1)..context_end]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    LineAnchor {
+                        line_start: Some(ln),
+                        line_content,
+                        context_before,
+                        context_after,
+                        old_line_start: None,
+                        hunk_header: String::new(),
+                    }
+                } else {
+                    LineAnchor {
+                        line_start: Some(ln),
+                        line_content: String::new(),
+                        context_before: Vec::new(),
+                        context_after: Vec::new(),
+                        old_line_start: None,
+                        hunk_header: String::new(),
+                    }
+                }
+            } else {
+                LineAnchor::default()
+            }
         } else {
             LineAnchor::default()
         }
@@ -3614,8 +3826,16 @@ impl App {
         let diff_hash = self.tab().diff_hash.clone();
 
         if comment_id.starts_with("q-") {
-            let path = format!("{}/.er-questions.json", repo_root);
-            if let Ok(content) = std::fs::read_to_string(&path) {
+            let er_dir = format!("{}/.er", repo_root);
+            let _ = std::fs::create_dir_all(&er_dir);
+            let new_path = format!("{}/questions.json", er_dir);
+            let old_path = format!("{}/.er-questions.json", repo_root);
+            let read_path = if std::path::Path::new(&new_path).exists() {
+                new_path.clone()
+            } else {
+                old_path
+            };
+            if let Ok(content) = std::fs::read_to_string(&read_path) {
                 if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
                     if let Some(q) = qs.questions.iter_mut().find(|q| q.id == comment_id) {
                         q.text = new_text.clone();
@@ -3631,14 +3851,22 @@ impl App {
                         q.stale = false;
                     }
                     let json = serde_json::to_string_pretty(&qs)?;
-                    let tmp = format!("{}.tmp", path);
+                    let tmp = format!("{}.tmp", new_path);
                     std::fs::write(&tmp, json)?;
-                    std::fs::rename(&tmp, &path)?;
+                    std::fs::rename(&tmp, &new_path)?;
                 }
             }
         } else {
-            let path = format!("{}/.er-github-comments.json", repo_root);
-            if let Ok(content) = std::fs::read_to_string(&path) {
+            let er_dir = format!("{}/.er", repo_root);
+            let _ = std::fs::create_dir_all(&er_dir);
+            let new_path = format!("{}/github-comments.json", er_dir);
+            let old_path = format!("{}/.er-github-comments.json", repo_root);
+            let read_path = if std::path::Path::new(&new_path).exists() {
+                new_path.clone()
+            } else {
+                old_path
+            };
+            if let Ok(content) = std::fs::read_to_string(&read_path) {
                 if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
                         c.comment = new_text.clone();
@@ -3654,9 +3882,9 @@ impl App {
                         c.stale = false;
                     }
                     let json = serde_json::to_string_pretty(&gc)?;
-                    let tmp = format!("{}.tmp", path);
+                    let tmp = format!("{}.tmp", new_path);
                     std::fs::write(&tmp, json)?;
-                    std::fs::rename(&tmp, &path)?;
+                    std::fs::rename(&tmp, &new_path)?;
                 }
             }
         }
@@ -3720,7 +3948,11 @@ impl App {
             .as_ref()
             .and_then(|fid| all.iter().position(|(_, _, _, id)| id == fid))
             .or_else(|| {
-                let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+                let current_file = if tab.selected_watched.is_some() {
+                    tab.selected_watched_file().map(|w| w.path.as_str())
+                } else {
+                    tab.files.get(tab.selected_file).map(|f| f.path.as_str())
+                };
                 current_file.and_then(|cf| {
                     if forward {
                         all.iter().position(|(f, _, _, _)| f == cf)
@@ -3758,13 +3990,17 @@ impl App {
         tab.focused_comment_id = Some(comment_id.clone());
         tab.focused_finding_id = None;
 
-        let needs_file_change = tab
-            .files
-            .get(tab.selected_file)
-            .is_none_or(|f| f.path != *file);
+        // Check if currently on the right file (diff files or watched files)
+        let current_file_path = if tab.selected_watched.is_some() {
+            tab.selected_watched_file().map(|w| w.path.clone())
+        } else {
+            tab.files.get(tab.selected_file).map(|f| f.path.clone())
+        };
+        let needs_file_change = current_file_path.as_deref() != Some(file.as_str());
 
         if needs_file_change {
             if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
+                tab.selected_watched = None;
                 tab.selected_file = idx;
                 tab.current_hunk = hunk_index.unwrap_or(0);
                 tab.current_line = None;
@@ -3773,6 +4009,15 @@ impl App {
                 tab.h_scroll = 0;
                 tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
+            } else if let Some(idx) = tab.watched_files.iter().position(|w| w.path == *file) {
+                tab.selected_watched = Some(idx);
+                tab.selected_file = 0;
+                tab.current_hunk = 0;
+                tab.current_line = None;
+                tab.selection_anchor = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.mode = DiffMode::Hidden;
             }
         } else if let Some(hi) = hunk_index {
             tab.current_hunk = hi;
@@ -3808,7 +4053,11 @@ impl App {
             .as_ref()
             .and_then(|fid| all.iter().position(|(_, _, _, id)| id == fid))
             .or_else(|| {
-                let current_file = tab.files.get(tab.selected_file).map(|f| f.path.as_str());
+                let current_file = if tab.selected_watched.is_some() {
+                    tab.selected_watched_file().map(|w| w.path.as_str())
+                } else {
+                    tab.files.get(tab.selected_file).map(|f| f.path.as_str())
+                };
                 let current_hunk = tab.current_hunk;
                 current_file.and_then(|cf| {
                     if forward {
@@ -3853,13 +4102,16 @@ impl App {
         tab.focused_finding_id = Some(finding_id.clone());
         tab.focused_comment_id = None;
 
-        let needs_file_change = tab
-            .files
-            .get(tab.selected_file)
-            .is_none_or(|f| f.path != *file);
+        let current_file_path = if tab.selected_watched.is_some() {
+            tab.selected_watched_file().map(|w| w.path.clone())
+        } else {
+            tab.files.get(tab.selected_file).map(|f| f.path.clone())
+        };
+        let needs_file_change = current_file_path.as_deref() != Some(file.as_str());
 
         if needs_file_change {
             if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
+                tab.selected_watched = None;
                 tab.selected_file = idx;
                 tab.current_hunk = hunk_index.unwrap_or(0);
                 tab.current_line = None;
@@ -3868,6 +4120,15 @@ impl App {
                 tab.h_scroll = 0;
                 tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
+            } else if let Some(idx) = tab.watched_files.iter().position(|w| w.path == *file) {
+                tab.selected_watched = Some(idx);
+                tab.selected_file = 0;
+                tab.current_hunk = 0;
+                tab.current_line = None;
+                tab.selection_anchor = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.mode = DiffMode::Hidden;
             }
         } else if let Some(hi) = hunk_index {
             tab.current_hunk = hi;
@@ -3906,7 +4167,11 @@ impl App {
         let current_pos = current_id
             .and_then(|fid| all.iter().position(|(_, _, _, id, _)| id == fid))
             .or_else(|| {
-                let current_file = tab.files.get(tab.selected_file).map(|f| &f.path);
+                let current_file: Option<&str> = if tab.selected_watched.is_some() {
+                    tab.selected_watched_file().map(|w| w.path.as_str())
+                } else {
+                    tab.files.get(tab.selected_file).map(|f| f.path.as_str())
+                };
                 current_file.and_then(|cf| {
                     if forward {
                         all.iter().position(|(f, _, _, _, _)| f == cf)
@@ -3953,13 +4218,16 @@ impl App {
             }
         }
 
-        let needs_file_change = tab
-            .files
-            .get(tab.selected_file)
-            .is_none_or(|f| f.path != *file);
+        let current_file_path = if tab.selected_watched.is_some() {
+            tab.selected_watched_file().map(|w| w.path.clone())
+        } else {
+            tab.files.get(tab.selected_file).map(|f| f.path.clone())
+        };
+        let needs_file_change = current_file_path.as_deref() != Some(file.as_str());
 
         if needs_file_change {
             if let Some(idx) = tab.files.iter().position(|f| f.path == *file) {
+                tab.selected_watched = None;
                 tab.selected_file = idx;
                 tab.current_hunk = hunk_index.unwrap_or(0);
                 tab.current_line = None;
@@ -3968,6 +4236,15 @@ impl App {
                 tab.h_scroll = 0;
                 tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
+            } else if let Some(idx) = tab.watched_files.iter().position(|w| w.path == *file) {
+                tab.selected_watched = Some(idx);
+                tab.selected_file = 0;
+                tab.current_hunk = 0;
+                tab.current_line = None;
+                tab.selection_anchor = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.mode = DiffMode::Hidden;
             }
         } else if let Some(hi) = hunk_index {
             tab.current_hunk = hi;
@@ -3986,21 +4263,37 @@ impl App {
         let is_question = comment_id.starts_with("q-");
 
         if is_question {
-            // Delete from .er-questions.json
-            let path = format!("{}/.er-questions.json", repo_root);
-            if let Ok(content) = std::fs::read_to_string(&path) {
+            // Delete from .er/questions.json
+            let er_dir = format!("{}/.er", repo_root);
+            let _ = std::fs::create_dir_all(&er_dir);
+            let new_path = format!("{}/questions.json", er_dir);
+            let old_path = format!("{}/.er-questions.json", repo_root);
+            let read_path = if std::path::Path::new(&new_path).exists() {
+                new_path.clone()
+            } else {
+                old_path
+            };
+            if let Ok(content) = std::fs::read_to_string(&read_path) {
                 if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
                     qs.questions.retain(|q| q.id != comment_id);
                     let json = serde_json::to_string_pretty(&qs)?;
-                    let tmp_path = format!("{}.tmp", path);
+                    let tmp_path = format!("{}.tmp", new_path);
                     std::fs::write(&tmp_path, &json)?;
-                    std::fs::rename(&tmp_path, &path)?;
+                    std::fs::rename(&tmp_path, &new_path)?;
                 }
             }
         } else {
-            // Delete from .er-github-comments.json
-            let path = format!("{}/.er-github-comments.json", repo_root);
-            if let Ok(content) = std::fs::read_to_string(&path) {
+            // Delete from .er/github-comments.json
+            let er_dir = format!("{}/.er", repo_root);
+            let _ = std::fs::create_dir_all(&er_dir);
+            let new_path = format!("{}/github-comments.json", er_dir);
+            let old_path = format!("{}/.er-github-comments.json", repo_root);
+            let read_path = if std::path::Path::new(&new_path).exists() {
+                new_path.clone()
+            } else {
+                old_path
+            };
+            if let Ok(content) = std::fs::read_to_string(&read_path) {
                 if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
                     // Check if the comment has a github_id for API deletion
                     let github_id = gc
@@ -4038,9 +4331,9 @@ impl App {
                     });
 
                     let json = serde_json::to_string_pretty(&gc)?;
-                    let tmp_path = format!("{}.tmp", path);
+                    let tmp_path = format!("{}.tmp", new_path);
                     std::fs::write(&tmp_path, &json)?;
-                    std::fs::rename(&tmp_path, &path)?;
+                    std::fs::rename(&tmp_path, &new_path)?;
                 }
             }
         }
@@ -4135,7 +4428,9 @@ impl App {
 
         // Persist atomically via temp file + rename
         if let Some(ref checklist) = tab.ai.checklist {
-            let checklist_path = format!("{}/.er-checklist.json", tab.repo_root);
+            let er_dir = format!("{}/.er", tab.repo_root);
+            let _ = std::fs::create_dir_all(&er_dir);
+            let checklist_path = format!("{}/checklist.json", er_dir);
             let tmp_path = format!("{}.tmp", checklist_path);
             let json = serde_json::to_string_pretty(checklist)?;
             std::fs::write(&tmp_path, json)?;
@@ -4177,6 +4472,21 @@ impl App {
         let text = self.tab().files[si].hunks[hi].to_text();
         Self::copy_to_clipboard(&text)?;
         self.notify("Hunk copied to clipboard");
+        Ok(())
+    }
+
+    /// Copy the current file's path to the system clipboard
+    pub fn copy_file_path(&mut self) -> Result<()> {
+        let file = match self.tab().selected_diff_file() {
+            Some(f) => f,
+            None => {
+                self.notify("No file selected");
+                return Ok(());
+            }
+        };
+        let path = file.path.clone();
+        Self::copy_to_clipboard(&path)?;
+        self.notify(&format!("Copied: {}", path));
         Ok(())
     }
 
@@ -4476,6 +4786,7 @@ mod tests {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
+            reply_thread_target: None,
             pr_data: None,
             history: None,
             watched_config: WatchedConfig::default(),
@@ -4698,7 +5009,7 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.selected_file = 1;
-        tab.next_file();
+        tab.next_file(false);
         assert_eq!(tab.selected_file, 0);
     }
 
@@ -4710,7 +5021,7 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.selected_file = 0;
-        tab.prev_file();
+        tab.prev_file(false);
         assert_eq!(tab.selected_file, 1);
     }
 
@@ -4723,7 +5034,7 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.selected_file = 0;
-        tab.next_file();
+        tab.next_file(false);
         assert_eq!(tab.selected_file, 1);
     }
 
@@ -4736,7 +5047,7 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.selected_file = 2;
-        tab.prev_file();
+        tab.prev_file(false);
         assert_eq!(tab.selected_file, 1);
     }
 
@@ -4746,7 +5057,7 @@ mod tests {
         let mut tab = make_test_tab(files);
         tab.search_query = "zzz".to_string();
         // Should not panic
-        tab.next_file();
+        tab.next_file(false);
         assert_eq!(tab.selected_file, 0);
     }
 

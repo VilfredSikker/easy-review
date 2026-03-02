@@ -19,7 +19,7 @@ main.rs event loop
   ├── crossterm poll (100ms) → input handlers → mutate App
   ├── watch_rx.try_recv()    → App::refresh_diff()
   ├── hint_rx.try_recv()     → PR base hint (background thread, fires once)
-  ├── check_ai_files_changed → reload .er-* files
+  ├── check_ai_files_changed → reload .er/ files
   ├── periodic rescan (~5s)  → refresh_watched_files()
   └── ui::draw(frame, app, highlighter)
 ```

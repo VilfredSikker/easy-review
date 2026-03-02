@@ -427,7 +427,11 @@ fn handle_normal_input(
             if let Some(id) = app.tab().focused_comment_id.clone() {
                 if let Some(comment) = app.tab().ai.find_comment(&id) {
                     if comment.can_reply() {
-                        app.start_reply_comment(&id);
+                        if id.starts_with("q-") {
+                            app.start_question_thread_reply(&id);
+                        } else {
+                            app.start_reply_comment(&id);
+                        }
                     }
                 }
             } else if let Some(id) = app.tab().focused_finding_id.clone() {
@@ -513,15 +517,24 @@ fn handle_normal_input(
         return handle_history_input(app, key);
     }
 
-    // ── Hidden mode: file navigation only (no diff files — j/k move within watched) ──
+    // ── Hidden mode: file navigation + questions (no diff files — j/k move within watched) ──
     if app.tab().mode == DiffMode::Hidden {
         match key.code {
-            KeyCode::Char('j') => app.tab_mut().prev_file(),
-            KeyCode::Char('k') => app.tab_mut().next_file(),
+            KeyCode::Char('j') => {
+                let flag = app.config.features.watched_in_all_tabs;
+                app.tab_mut().prev_file(flag);
+            }
+            KeyCode::Char('k') => {
+                let flag = app.config.features.watched_in_all_tabs;
+                app.tab_mut().next_file(flag);
+            }
+            KeyCode::Down => app.tab_mut().next_line(),
+            KeyCode::Up => app.tab_mut().prev_line(),
             KeyCode::Char('/') => {
                 app.input_mode = InputMode::Search;
                 app.tab_mut().search_query.clear();
             }
+            KeyCode::Char('q') => app.start_comment(crate::ai::CommentType::Question),
             _ => {}
         }
         return Ok(());
@@ -531,8 +544,14 @@ fn handle_normal_input(
 
     match key.code {
         // File navigation
-        KeyCode::Char('j') => app.tab_mut().prev_file(),
-        KeyCode::Char('k') => app.tab_mut().next_file(),
+        KeyCode::Char('j') => {
+            let flag = app.config.features.watched_in_all_tabs;
+            app.tab_mut().prev_file(flag);
+        }
+        KeyCode::Char('k') => {
+            let flag = app.config.features.watched_in_all_tabs;
+            app.tab_mut().next_file(flag);
+        }
 
         // Line/comment navigation (arrow keys: comments when focused, else lines)
         // Shift+arrow extends selection, plain arrow clears it
@@ -699,6 +718,11 @@ fn handle_normal_input(
         // Yank hunk to clipboard
         KeyCode::Char('y') => {
             app.yank_hunk()?;
+        }
+
+        // Copy file path to clipboard
+        KeyCode::Char('Y') => {
+            app.copy_file_path()?;
         }
 
         // Copy rich context to clipboard (for agent terminal)
@@ -1527,6 +1551,7 @@ mod tests {
                 relocated_at_hash: String::new(),
                 in_reply_to: None,
                 author: "You".to_string(),
+                replies: vec![],
             }],
         });
         app.tab_mut().focused_comment_id = Some("q-abc".to_string());

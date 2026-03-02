@@ -71,14 +71,23 @@ pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
     hashes
 }
 
+fn er_path_with_fallback(repo_root: &str, new_name: &str, old_name: &str) -> std::path::PathBuf {
+    let root = Path::new(repo_root);
+    let new_path = root.join(".er").join(new_name);
+    if new_path.exists() {
+        return new_path;
+    }
+    root.join(old_name)
+}
+
 /// Load all .er-* files from a repo root and check staleness against current diff hash
 pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     let mut state = AiState::default();
 
-    // Load .er-review.json
-    let review_path = Path::new(repo_root).join(".er-review.json");
+    // Load review.json
+    let review_path = er_path_with_fallback(repo_root, "review.json", ".er-review.json");
     // TODO(risk:medium): `read_to_string` loads the entire file into memory before
-    // deserialising. A very large or adversarially crafted `.er-review.json` (e.g. a
+    // deserialising. A very large or adversarially crafted `.er/review.json` (e.g. a
     // findings array with millions of entries) will spike memory before serde can reject
     // it. Consider capping the read with `take(MAX_BYTES)` on the file handle.
     if let Ok(content) = std::fs::read_to_string(&review_path) {
@@ -91,8 +100,8 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-order.json
-    let order_path = Path::new(repo_root).join(".er-order.json");
+    // Load order.json
+    let order_path = er_path_with_fallback(repo_root, "order.json", ".er-order.json");
     if let Ok(content) = std::fs::read_to_string(&order_path) {
         if let Ok(order) = serde_json::from_str::<ErOrder>(&content) {
             // Check staleness against review hash or independently
@@ -107,9 +116,9 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-summary.md
-    let summary_path = Path::new(repo_root).join(".er-summary.md");
-    // TODO(risk:medium): No size limit on `.er-summary.md`. A multi-megabyte markdown
+    // Load summary.md
+    let summary_path = er_path_with_fallback(repo_root, "summary.md", ".er-summary.md");
+    // TODO(risk:medium): No size limit on `.er/summary.md`. A multi-megabyte markdown
     // file is read entirely into a heap-allocated String. The UI renders it inline, so
     // the entire content stays in memory for the lifetime of the session.
     if let Ok(content) = std::fs::read_to_string(&summary_path) {
@@ -118,8 +127,8 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-checklist.json
-    let checklist_path = Path::new(repo_root).join(".er-checklist.json");
+    // Load checklist.json
+    let checklist_path = er_path_with_fallback(repo_root, "checklist.json", ".er-checklist.json");
     if let Ok(content) = std::fs::read_to_string(&checklist_path) {
         if let Ok(checklist) = serde_json::from_str::<ErChecklist>(&content) {
             if !state.is_stale && checklist.diff_hash != current_diff_hash {
@@ -129,8 +138,8 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-questions.json (personal review questions)
-    let questions_path = Path::new(repo_root).join(".er-questions.json");
+    // Load questions.json (personal review questions)
+    let questions_path = er_path_with_fallback(repo_root, "questions.json", ".er-questions.json");
     if let Ok(content) = std::fs::read_to_string(&questions_path) {
         if let Ok(mut questions) = serde_json::from_str::<ErQuestions>(&content) {
             // Per-comment staleness: mark all stale if diff changed
@@ -143,8 +152,9 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-github-comments.json (GitHub PR comments)
-    let gh_comments_path = Path::new(repo_root).join(".er-github-comments.json");
+    // Load github-comments.json (GitHub PR comments)
+    let gh_comments_path =
+        er_path_with_fallback(repo_root, "github-comments.json", ".er-github-comments.json");
     if let Ok(content) = std::fs::read_to_string(&gh_comments_path) {
         if let Ok(mut gh_comments) = serde_json::from_str::<ErGitHubComments>(&content) {
             // Per-comment staleness
@@ -157,14 +167,14 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load legacy .er-feedback.json (only if new files don't exist — migration support)
-    // TODO(risk:medium): TOCTOU window here: between the time `.er-questions.json` and
-    // `.er-github-comments.json` were found to not exist (earlier reads) and this check,
+    // Load legacy feedback.json (only if new files don't exist — migration support)
+    // TODO(risk:medium): TOCTOU window here: between the time `questions.json` and
+    // `github-comments.json` were found to not exist (earlier reads) and this check,
     // another process could have written those files. The result is that the legacy file
     // is loaded even though the new files are now present, potentially causing duplicate
     // comments to be shown via the Legacy fallback path in the query methods.
     if state.questions.is_none() && state.github_comments.is_none() {
-        let feedback_path = Path::new(repo_root).join(".er-feedback.json");
+        let feedback_path = er_path_with_fallback(repo_root, "feedback.json", ".er-feedback.json");
         if let Ok(content) = std::fs::read_to_string(&feedback_path) {
             if let Ok(feedback) = serde_json::from_str::<ErFeedback>(&content) {
                 state.feedback = Some(feedback);
@@ -175,7 +185,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     state
 }
 
-/// Get the mtime of the most recently modified .er-* file
+/// Get the mtime of the most recently modified .er/ file (or legacy .er-* fallback)
 // TODO(risk:medium): TOCTOU race: mtime is read here, but the actual file read happens
 // later in `load_ai_state`. Between these two calls another process (e.g. a concurrent
 // AI skill run) can overwrite the file, so the mtime poll can indicate "no change" while
@@ -184,7 +194,20 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 // The impact is a missed or spurious reload — incorrect data displayed until the next tick.
 pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
     let root = Path::new(repo_root);
-    let files = [
+
+    // New .er/ paths
+    let new_files = [
+        "review.json",
+        "order.json",
+        "summary.md",
+        "checklist.json",
+        "feedback.json",
+        "questions.json",
+        "github-comments.json",
+    ];
+
+    // Legacy .er-* paths (fallback)
+    let old_files = [
         ".er-review.json",
         ".er-order.json",
         ".er-summary.md",
@@ -194,16 +217,20 @@ pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
         ".er-github-comments.json",
     ];
 
-    files
-        .iter()
-        .filter_map(|name| {
-            let path = root.join(name);
-            // TODO(risk:minor): `metadata().modified()` can fail on filesystems that do not
-            // support mtime (e.g. FAT32, some network mounts). The `ok()?` silently drops
-            // these files from the max calculation, meaning their updates are never detected.
-            std::fs::metadata(&path).ok()?.modified().ok()
-        })
-        .max()
+    let new_mtimes = new_files.iter().filter_map(|name| {
+        let path = root.join(".er").join(name);
+        // TODO(risk:minor): `metadata().modified()` can fail on filesystems that do not
+        // support mtime (e.g. FAT32, some network mounts). The `ok()?` silently drops
+        // these files from the max calculation, meaning their updates are never detected.
+        std::fs::metadata(&path).ok()?.modified().ok()
+    });
+
+    let old_mtimes = old_files.iter().filter_map(|name| {
+        let path = root.join(name);
+        std::fs::metadata(&path).ok()?.modified().ok()
+    });
+
+    new_mtimes.chain(old_mtimes).max()
 }
 
 #[cfg(test)]

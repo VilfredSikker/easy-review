@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# er-cleanup-all — Full wipe: all .er/ files + .er-reviews/ cache + legacy .er-*
+set -euo pipefail
+
+removed=0
+
+# Remove .er/ directory entirely
+if [ -d .er ]; then
+  count=$(find .er -type f | wc -l | tr -d ' ')
+  rm -rf .er
+  echo "  removed .er/ ($count files)"
+  removed=$((removed + count))
+fi
+
+# Remove legacy .er-* files
+for f in .er-review.json .er-order.json .er-checklist.json .er-summary.md \
+         .er-feedback.json .er-feedback.prev.json \
+         .er-questions.json .er-questions.prev.json \
+         .er-github-comments.json .er-github-comments.prev.json \
+         .er-agent-context.json .er-diff-tmp .er-reviewed; do
+  if [ -f "$f" ]; then
+    rm "$f"
+    echo "  removed $f (legacy)"
+    ((removed++))
+  fi
+done
+
+# Remove persistence cache
+if [ -d .er-reviews ]; then
+  branches=$(ls -1 .er-reviews/ 2>/dev/null | wc -l | tr -d ' ')
+  rm -rf .er-reviews
+  echo "  removed .er-reviews/ ($branches branches)"
+  removed=$((removed + 1))
+fi
+
+# Remove snapshots (legacy location)
+if [ -d .er-snapshots ]; then
+  rm -rf .er-snapshots
+  echo "  removed .er-snapshots/ (legacy)"
+  ((removed++))
+fi
+
+if [ "$removed" -eq 0 ]; then
+  echo "Nothing to clean — no er artifacts found."
+else
+  echo "Full wipe complete."
+fi

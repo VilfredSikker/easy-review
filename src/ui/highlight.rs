@@ -32,6 +32,13 @@ pub struct Highlighter {
     theme_set: ThemeSet,
     /// Cache: content+filename hash → highlighted spans (fg colors only)
     cache: HashMap<u64, Vec<CachedSpan>>,
+    /// Cache: file extension → syntax index in syntax_set.syntaxes()
+    /// Avoids repeated find_syntax_for_file() calls (which do file IO for shebang detection)
+    syntax_cache: HashMap<String, Option<usize>>,
+    /// Last filename used for syntax lookup — skip re-lookup when highlighting
+    /// consecutive lines from the same file
+    last_file: String,
+    last_syntax_idx: Option<usize>,
 }
 
 /// Maximum cache entries before eviction
@@ -43,7 +50,73 @@ impl Highlighter {
             syntax_set: two_face::syntax::extra_newlines(),
             theme_set: ThemeSet::load_defaults(),
             cache: HashMap::new(),
+            syntax_cache: HashMap::new(),
+            last_file: String::new(),
+            last_syntax_idx: None,
         }
+    }
+
+    /// Look up the syntax index for a filename, using cached extension mapping.
+    /// Returns the index into `self.syntax_set.syntaxes()`.
+    fn syntax_index_for_file(&mut self, filename: &str) -> usize {
+        // Fast path: same file as last call (common during sequential line rendering)
+        if filename == self.last_file {
+            if let Some(idx) = self.last_syntax_idx {
+                return idx;
+            }
+        }
+
+        let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+
+        let idx = match self.syntax_cache.get(&ext) {
+            Some(Some(idx)) => *idx,
+            Some(None) => {
+                let plain = self.syntax_set.find_syntax_plain_text();
+                let plain_idx = self
+                    .syntax_set
+                    .syntaxes()
+                    .iter()
+                    .position(|s| std::ptr::eq(s, plain))
+                    .unwrap_or(0);
+                plain_idx
+            }
+            None => {
+                // Cache miss — do the lookup once per unique extension
+                let found = self
+                    .syntax_set
+                    .find_syntax_by_extension(&ext)
+                    .or_else(|| {
+                        // Fallback for extensions not directly in the set
+                        let fallback = match ext.as_str() {
+                            "svelte" | "vue" | "astro" => "HTML",
+                            _ => return None,
+                        };
+                        self.syntax_set.find_syntax_by_name(fallback)
+                    });
+
+                let syntax_idx = found.map(|syntax| {
+                    self.syntax_set
+                        .syntaxes()
+                        .iter()
+                        .position(|s| std::ptr::eq(s, syntax))
+                        .unwrap_or(0)
+                });
+
+                self.syntax_cache.insert(ext, syntax_idx);
+                syntax_idx.unwrap_or_else(|| {
+                    let plain = self.syntax_set.find_syntax_plain_text();
+                    self.syntax_set
+                        .syntaxes()
+                        .iter()
+                        .position(|s| std::ptr::eq(s, plain))
+                        .unwrap_or(0)
+                })
+            }
+        };
+
+        self.last_file = filename.to_string();
+        self.last_syntax_idx = Some(idx);
+        idx
     }
 
     /// Highlight a single line of code, returning styled spans.
@@ -68,22 +141,9 @@ impl Highlighter {
                 .collect();
         }
 
-        // Cache miss — perform highlighting
-        // two-face's syntax set covers TS, TSX, TOML, Svelte (via HTML), etc.
-        // Fall back to HTML for .svelte/.vue/.astro which aren't in the set directly.
-        let syntax = self
-            .syntax_set
-            .find_syntax_for_file(filename)
-            .ok()
-            .flatten()
-            .or_else(|| {
-                let fallback = match filename.rsplit('.').next() {
-                    Some("svelte" | "vue" | "astro") => "HTML",
-                    _ => return None,
-                };
-                self.syntax_set.find_syntax_by_name(fallback)
-            })
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+        // Cache miss — look up syntax (cached by extension)
+        let syntax_idx = self.syntax_index_for_file(filename);
+        let syntax = &self.syntax_set.syntaxes()[syntax_idx];
 
         let theme = &self.theme_set.themes["base16-ocean.dark"];
         let mut highlighter = HighlightLines::new(syntax, theme);
@@ -116,9 +176,17 @@ impl Highlighter {
                     .map(|cs| Span::styled(cs.text.clone(), base_style.fg(cs.fg)))
                     .collect();
 
-                // Store in cache (evict if too large)
+                // Store in cache — partial eviction if too large
                 if self.cache.len() >= MAX_CACHE_SIZE {
-                    self.cache.clear();
+                    let keys_to_remove: Vec<u64> = self
+                        .cache
+                        .keys()
+                        .take(MAX_CACHE_SIZE / 2)
+                        .copied()
+                        .collect();
+                    for k in keys_to_remove {
+                        self.cache.remove(&k);
+                    }
                 }
                 self.cache.insert(key, cached_spans);
 

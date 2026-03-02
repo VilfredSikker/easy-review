@@ -1,6 +1,6 @@
 # ai/ — AI Review Integration
 
-Data model and loader for AI-generated review files. The `.er-*` files are produced by external tools (Claude Code skills) and consumed here. This module does NOT run AI — it reads AI output.
+Data model and loader for AI-generated review files. The `.er/` directory files are produced by external tools (Claude Code skills) and consumed here. This module does NOT run AI — it reads AI output.
 
 ## Files
 
@@ -8,17 +8,17 @@ Data model and loader for AI-generated review files. The `.er-*` files are produ
 |------|-------|---------|
 | `mod.rs` | ~6 | Re-exports |
 | `review.rs` | ~920 | Data model: all structs, enums, navigation, state management |
-| `loader.rs` | ~145 | File I/O: loads `.er-*` JSON files, computes diff hash |
+| `loader.rs` | ~145 | File I/O: loads `.er/` JSON files (with `.er-*` fallback), computes diff hash |
 
 ## External Files (written by AI skills, read here)
 
 | File | Struct | Purpose |
 |------|--------|---------|
-| `.er-review.json` | `ErReview` | Per-file risk levels, findings, suggestions |
-| `.er-order.json` | `ErOrder` | Suggested file review order with groupings |
-| `.er-summary.md` | (raw text) | Markdown summary of overall changes |
-| `.er-checklist.json` | `ErChecklist` | Review checklist items |
-| `.er-feedback.json` | `ErFeedback` | Human comments (this is the only file `er` writes to) |
+| `.er/review.json` | `ErReview` | Per-file risk levels, findings, suggestions |
+| `.er/order.json` | `ErOrder` | Suggested file review order with groupings |
+| `.er/summary.md` | (raw text) | Markdown summary of overall changes |
+| `.er/checklist.json` | `ErChecklist` | Review checklist items |
+| `.er/feedback.json` | `ErFeedback` | Human comments (this is the only file `er` writes to) |
 
 ## Key Types (review.rs)
 
@@ -42,7 +42,9 @@ Data model and loader for AI-generated review files. The `.er-*` files are produ
 
 ## Important Patterns
 
-- Staleness is all-or-nothing: if any `.er-*` file has a different `diff_hash`, the entire AI state is marked stale
+- Staleness is all-or-nothing: if any `.er/` file has a different `diff_hash`, the entire AI state is marked stale
 - `AiState` preserves `view_mode/review_focus/review_cursor` across reloads (handled by `TabState::reload_ai_state()`)
 - `ErFeedback` is the only file `er` writes to — all others are read-only from `er`'s perspective
 - Finding banners link to hunks via `hunk_index: Option<usize>`, enabling inline display in the diff view
+- Loader checks `.er/<name>` first; falls back to legacy `.er-<name>` path for backward compat. Always writes to `.er/`.
+- `ReviewQuestion` has a `replies: Vec<Reply>` field for self-contained threaded conversation (Reply has id, author, timestamp, text)

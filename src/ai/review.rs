@@ -398,6 +398,14 @@ pub struct ErQuestions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reply {
+    pub id: String,
+    pub author: String,
+    pub timestamp: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewQuestion {
     pub id: String,
     #[serde(default)]
@@ -441,6 +449,8 @@ pub struct ReviewQuestion {
     /// Author display name (defaults to "You")
     #[serde(default = "default_author")]
     pub author: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<Reply>,
 }
 
 // ── .er-github-comments.json — GitHub PR comments ──
@@ -1837,6 +1847,7 @@ mod tests {
             relocated_at_hash: String::new(),
             in_reply_to: None,
             author: "You".to_string(),
+            replies: vec![],
         }
     }
 

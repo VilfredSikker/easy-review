@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# er-cleanup — Remove .er/ sidecar files (keeps .er-reviews/ cache)
+# Also cleans up legacy .er-* files from pre-migration
+set -euo pipefail
+
+removed=0
+
+# New .er/ sidecar files
+for f in .er/review.json .er/order.json .er/checklist.json .er/summary.md \
+         .er/feedback.json .er/feedback.prev.json \
+         .er/questions.json .er/questions.prev.json \
+         .er/github-comments.json .er/github-comments.prev.json \
+         .er/agent-context.json .er/diff-tmp .er/reviewed; do
+  if [ -f "$f" ]; then
+    rm "$f"
+    echo "  removed $f"
+    ((removed++))
+  fi
+done
+
+# Legacy .er-* files (pre-migration)
+for f in .er-review.json .er-order.json .er-checklist.json .er-summary.md \
+         .er-feedback.json .er-feedback.prev.json \
+         .er-questions.json .er-questions.prev.json \
+         .er-github-comments.json .er-github-comments.prev.json \
+         .er-agent-context.json .er-diff-tmp .er-reviewed; do
+  if [ -f "$f" ]; then
+    rm "$f"
+    echo "  removed $f (legacy)"
+    ((removed++))
+  fi
+done
+
+# Clean empty .er/ directory
+if [ -d .er ] && [ -z "$(ls -A .er 2>/dev/null)" ]; then
+  rmdir .er
+  echo "  removed empty .er/"
+fi
+
+if [ "$removed" -eq 0 ]; then
+  echo "Nothing to clean — no sidecar files found."
+else
+  echo "Cleaned $removed file(s). Cache (.er-reviews/) preserved."
+fi

@@ -20,7 +20,7 @@ All state lives here. No rendering, no I/O beyond git commands and file persiste
 - Scroll: `diff_scroll`, `h_scroll`
 - Review tracking: `reviewed: HashSet<String>`, `show_unreviewed_only`, `filtered_reviewed_count()`
 - Filters: `filter_expr`, `filter_rules: Vec<FilterRule>`, `filter_history`, `filter_input`
-- AI: `ai: AiState` (loaded from `.er-*` files)
+- AI: `ai: AiState` (loaded from `.er/` files)
 - Comments: `comment_input`, `comment_file`, `comment_hunk`, `comment_line_num`
 - Watched: `watched_config`, `watched_files`, `selected_watched`, `show_watched`, `watched_not_ignored`
 
@@ -45,20 +45,20 @@ All state lives here. No rendering, no I/O beyond git commands and file persiste
 
 | File | Format | Written by |
 |------|--------|------------|
-| `.er-reviewed` | Plaintext, one path per line | `save_reviewed_files()` |
-| `.er-feedback.json` | JSON (`ErFeedback`) | `submit_comment()` |
-| `.er-checklist.json` | JSON (`ErChecklist`) | `review_toggle_checklist()` |
+| `.er/reviewed` | Plaintext, one path per line | `save_reviewed_files()` |
+| `.er/feedback.json` | JSON (`ErFeedback`) | `submit_comment()` |
+| `.er/checklist.json` | JSON (`ErChecklist`) | `review_toggle_checklist()` |
 | `.er-config.toml` | TOML (`ErConfig`) | User-created (read-only) |
-| `.er-snapshots/` | Raw file copies | `update_watched_snapshot()` |
+| `.er/snapshots/` | Raw file copies | `update_watched_snapshot()` |
 
-`.er-reviewed` is deleted when empty. `.er-feedback.json` is reset when `diff_hash` changes (stale comments cleared).
+`.er/reviewed` is deleted when empty. `.er/feedback.json` is reset when `diff_hash` changes (stale comments cleared).
 
 ## Important Patterns
 
 - `refresh_watched_files()` — re-discovers watched files from glob patterns, verifies gitignore status
 - `refresh_diff()` — re-runs git diff, re-parses, recomputes `diff_hash`, reloads AI state, clamps selection indices
 - `reload_ai_state()` — preserves `view_mode/review_focus/review_cursor` across reloads
-- `check_ai_files_changed()` — compares `.er-*` file mtimes against `last_ai_check`; triggers reload if changed
+- `check_ai_files_changed()` — compares `.er/` file mtimes against `last_ai_check`; triggers reload if changed
 - `chrono_now()` — hand-rolled ISO 8601 UTC timestamp (avoids chrono crate dependency)
 - `notify(msg)` + `tick()` — notification auto-clears after 20 ticks (~2 seconds at 100ms poll)
 - `apply_filter_expr()` — parses filter expression into rules, updates history (MRU, deduped, max 20)
