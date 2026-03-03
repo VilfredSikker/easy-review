@@ -25,7 +25,7 @@ After running `/er-review` and making fixes. Instead of re-running the full revi
 ### Permission & hook constraints
 
 All Bash commands MUST start with an allowed command.
-Allowed first-words: `git`, `shasum`, `mkdir`, `cp`, `scripts/er-*`
+Allowed first-words: `git`, `shasum`, `mkdir`, `cp`, `er-freshness-check.sh`, `er-hash-files.sh`
 NOT allowed as first word: `for`, `rm`, `while`, `bash`, `sh`
 
 ## Step-by-step
@@ -48,13 +48,13 @@ If diff_scope is missing, default to "branch".
 
 TOOL CALL 2 — Bash (hash + per-file hashes):
   For branch scope:
-    scripts/er-freshness-check.sh <base_branch>
+    er-freshness-check.sh <base_branch>
   For unstaged/staged:
     git diff <scope-args> > .er-diff-tmp && shasum -a 256 .er-diff-tmp
   → Get current diff_hash
 
 TOOL CALL 3 — Bash (per-file hashes):
-  scripts/er-hash-files.sh <scope-args>
+  er-hash-files.sh <scope-args>
   → Compare each file hash against review.file_hashes
 
   → If current diff_hash matches review.diff_hash:

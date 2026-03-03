@@ -44,7 +44,7 @@ Before doing anything else, verify:
 
 ### Permission & hook constraints
 
-All Bash commands MUST start with an allowed command: `git`, `shasum`, `gh`, `cp`, `mkdir`, `scripts/er-*`.
+All Bash commands MUST start with an allowed command: `git`, `shasum`, `gh`, `cp`, `mkdir`, `er-freshness-check.sh`.
 Do NOT chain `rm` with `&&`. Do NOT pipe into `shasum`.
 
 ## Step-by-step
@@ -63,7 +63,7 @@ TOOL CALLS 2-5 — Read all review artifacts (parallel):
   Read .er-github-comments.json  (optional — include reviewer comments if diff_hash matches)
 
 TOOL CALL 6 — Bash (freshness check via helper script):
-  scripts/er-freshness-check.sh <base_branch>
+  er-freshness-check.sh <base_branch>
   → Validates base ref, captures diff to .er-diff-tmp, outputs hash + commit
   → Compare hash with diff_hash from .er-review.json
   → If stale: bail "Review data is stale. Run /er-review first, then /er-publish."

@@ -26,9 +26,9 @@ Note: Questions are personal/private — they are NOT synced to GitHub. Use `c`/
 
 ### Permission & hook constraints
 
-All Bash commands MUST start with an allowed command: `git`, `shasum`, `cp`, `mkdir`, `scripts/er-*`.
+All Bash commands MUST start with an allowed command: `git`, `shasum`, `cp`, `mkdir`, `er-freshness-check.sh`.
 Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
-Use `scripts/er-freshness-check.sh <base>` for base validation + diff + hash.
+Use `er-freshness-check.sh <base>` for base validation + diff + hash.
 
 ## Step-by-step
 
@@ -41,7 +41,7 @@ TOOL CALL 1 — Read .er/questions.json
     questions where replies is empty, OR last reply has author == "user"
 
 TOOL CALL 2 — Bash (validate freshness + capture diff):
-  scripts/er-freshness-check.sh <base_branch>
+  er-freshness-check.sh <base_branch>
   → Output: "ok", hash line, commit hash
   - Compare hash against questions.diff_hash
   - If questions stale: warn "Questions are stale (diff changed). Skipping." and exit

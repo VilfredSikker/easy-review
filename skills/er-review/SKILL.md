@@ -64,14 +64,14 @@ Outputs are written in parallel. Bash calls are batched with `&&`.
 ### Permission & hook constraints
 
 All Bash commands MUST start with an allowed command to avoid permission prompts.
-Allowed first-words: `git`, `shasum`, `mkdir`, `cp`, `scripts/er-*`
+Allowed first-words: `git`, `shasum`, `mkdir`, `cp`, `er-freshness-check.sh`, `er-hash-files.sh`
 NOT allowed as first word: `for`, `rm`, `while`, `bash`, `sh`
 
 - `&&` chaining is FINE for: `git`, `shasum`, `printf`, `mkdir`, `cp` (not in CHAIN_BLOCKED)
 - `rm` IS in CHAIN_BLOCKED — CANNOT appear after `&&`. Leave .er-diff-tmp in place (gitignored).
 - Do NOT pipe (`|`) into `shasum` — use file-based hashing: `shasum -a 256 <file>`
-- Use `scripts/er-hash-files.sh <scope-args>` for per-file hashing (avoids `for` loop)
-- Use `scripts/er-freshness-check.sh <base>` for base validation + diff capture + hash
+- Use `er-hash-files.sh <scope-args>` for per-file hashing (avoids `for` loop)
+- Use `er-freshness-check.sh <base>` for base validation + diff capture + hash
 
 ## Step-by-step
 
@@ -92,12 +92,12 @@ Scope args (used in all git diff commands below):
 
 TOOL CALL 1 — Bash (all setup via helper script):
   For branch scope:
-    scripts/er-freshness-check.sh <base>
+    er-freshness-check.sh <base>
     → Output: "ok", hash line, commit hash (3 lines)
   For unstaged/staged scope (no base branch):
     git diff <scope-args> > .er-diff-tmp && shasum -a 256 .er-diff-tmp && git rev-parse --short HEAD && git branch --show-current
   → Captures: diff_hash, commit_hash, branch_name
-  → Both forms match allow rules: scripts/er-* or git diff *
+  → Both forms match allow rules: er-*.sh or git diff *
 
 TOOL CALL 2 — Read .er-review.json (if it exists):
   → If exists AND diff_hash matches → print "Review is current", DONE (2 calls total)
