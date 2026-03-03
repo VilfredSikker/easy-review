@@ -534,7 +534,6 @@ fn handle_normal_input(
                 app.input_mode = InputMode::Search;
                 app.tab_mut().search_query.clear();
             }
-            KeyCode::Char('q') => app.start_comment(crate::ai::CommentType::Question),
             _ => {}
         }
         return Ok(());
@@ -1103,12 +1102,17 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
         }
     };
 
-    // Load existing .er-github-comments.json
-    // TODO(risk:minor): path is built by string concatenation; use Path::join to handle
-    // trailing slashes and avoid subtle path construction bugs.
-    let comments_path = format!("{}/.er-github-comments.json", repo_root);
+    // Load existing github-comments.json, falling back to legacy path
+    let er_dir = std::path::Path::new(&repo_root).join(".er");
+    let new_comments_path = er_dir.join("github-comments.json");
+    let legacy_comments_path = std::path::Path::new(&repo_root).join(".er-github-comments.json");
+    let read_path = if new_comments_path.exists() {
+        new_comments_path.clone()
+    } else {
+        legacy_comments_path
+    };
     let diff_hash = tab.branch_diff_hash.clone();
-    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&read_path) {
         Ok(content) => {
             serde_json::from_str(&content).unwrap_or_else(|_| crate::ai::ErGitHubComments {
                 version: 1,
@@ -1259,12 +1263,13 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     gc.comments.extend(github_entries);
 
     let json = serde_json::to_string_pretty(&gc)?;
-    let tmp_path = format!("{}.tmp", comments_path);
+    std::fs::create_dir_all(&er_dir)?;
+    let tmp_path = er_dir.join("github-comments.json.tmp");
     // TODO(risk:medium): if fs::write succeeds but fs::rename fails (e.g. permissions error),
     // the .tmp file is left behind and the comments file is not updated. The orphaned .tmp
     // will be picked up or confused on the next sync. Clean up the tmp file on rename failure.
     std::fs::write(&tmp_path, &json)?;
-    std::fs::rename(&tmp_path, &comments_path)?;
+    std::fs::rename(&tmp_path, &new_comments_path)?;
 
     app.tab_mut().reload_ai_state();
     app.notify(&format!(
@@ -1288,8 +1293,15 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     };
     let (owner, repo_name, pr_number) = pr_info;
 
-    let comments_path = format!("{}/.er-github-comments.json", repo_root);
-    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+    let er_dir = std::path::Path::new(&repo_root).join(".er");
+    let new_comments_path = er_dir.join("github-comments.json");
+    let legacy_comments_path = std::path::Path::new(&repo_root).join(".er-github-comments.json");
+    let read_path = if new_comments_path.exists() {
+        new_comments_path.clone()
+    } else {
+        legacy_comments_path
+    };
+    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&read_path) {
         Ok(content) => match serde_json::from_str(&content) {
             Ok(gc) => gc,
             Err(_) => return Ok(()),
@@ -1387,9 +1399,10 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     }
 
     let json = serde_json::to_string_pretty(&gc)?;
-    let tmp_path = format!("{}.tmp", comments_path);
+    std::fs::create_dir_all(&er_dir)?;
+    let tmp_path = er_dir.join("github-comments.json.tmp");
     std::fs::write(&tmp_path, &json)?;
-    std::fs::rename(&tmp_path, &comments_path)?;
+    std::fs::rename(&tmp_path, &new_comments_path)?;
     app.tab_mut().reload_ai_state();
 
     if failed > 0 {

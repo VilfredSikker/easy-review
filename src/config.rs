@@ -163,8 +163,11 @@ impl Default for DisplayConfig {
 /// Merging is deep: individual fields within sections (e.g. `[features]`) override independently.
 pub fn load_config(repo_root: &str) -> ErConfig {
     let local_path = format!("{repo_root}/.er-config.toml");
-    let global_path =
-        dirs::home_dir().map(|d| d.join(".config/er/config.toml").to_string_lossy().to_string());
+    let global_path = dirs::home_dir().map(|d| {
+        d.join(".config/er/config.toml")
+            .to_string_lossy()
+            .to_string()
+    });
 
     let global_table = global_path
         .and_then(|p| std::fs::read_to_string(p).ok())

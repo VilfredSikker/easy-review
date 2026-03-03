@@ -370,15 +370,14 @@ fn render_hidden_list(f: &mut Frame, area: Rect, app: &App) {
         .and_then(|sel| visible_watched.iter().position(|(i, _)| *i == sel))
         .unwrap_or(0);
 
-    let file_scroll = if visible_watched.len() <= viewport_height
-        || selected_pos < viewport_height / 2
-    {
-        0
-    } else if selected_pos > visible_watched.len().saturating_sub(viewport_height / 2) {
-        visible_watched.len().saturating_sub(viewport_height)
-    } else {
-        selected_pos.saturating_sub(viewport_height / 2)
-    };
+    let file_scroll =
+        if visible_watched.len() <= viewport_height || selected_pos < viewport_height / 2 {
+            0
+        } else if selected_pos > visible_watched.len().saturating_sub(viewport_height / 2) {
+            visible_watched.len().saturating_sub(viewport_height)
+        } else {
+            selected_pos.saturating_sub(viewport_height / 2)
+        };
 
     let viewport_end = (file_scroll + viewport_height).min(visible_watched.len());
     let viewport_slice = &visible_watched[file_scroll..viewport_end];

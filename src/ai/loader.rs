@@ -153,8 +153,11 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     }
 
     // Load github-comments.json (GitHub PR comments)
-    let gh_comments_path =
-        er_path_with_fallback(repo_root, "github-comments.json", ".er-github-comments.json");
+    let gh_comments_path = er_path_with_fallback(
+        repo_root,
+        "github-comments.json",
+        ".er-github-comments.json",
+    );
     if let Ok(content) = std::fs::read_to_string(&gh_comments_path) {
         if let Ok(mut gh_comments) = serde_json::from_str::<ErGitHubComments>(&content) {
             // Per-comment staleness

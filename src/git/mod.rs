@@ -12,6 +12,6 @@ pub use status::{
     get_current_branch_in, get_repo_root, get_repo_root_in, git_commit, git_diff_commit,
     git_diff_conflicts, git_diff_raw, git_diff_raw_file, git_log_branch, git_stage_all,
     git_stage_file, git_unstage_file, has_staged_changes, has_unstaged_changes,
-    is_merge_in_progress, list_worktrees, read_watched_file_content, save_snapshot,
-    unmerged_files, verify_gitignored, CommitInfo, FileStatus, WatchedFile, Worktree,
+    is_merge_in_progress, list_worktrees, read_watched_file_content, save_snapshot, unmerged_files,
+    verify_gitignored, CommitInfo, FileStatus, WatchedFile, Worktree,
 };

@@ -82,17 +82,14 @@ impl Highlighter {
             }
             None => {
                 // Cache miss — do the lookup once per unique extension
-                let found = self
-                    .syntax_set
-                    .find_syntax_by_extension(&ext)
-                    .or_else(|| {
-                        // Fallback for extensions not directly in the set
-                        let fallback = match ext.as_str() {
-                            "svelte" | "vue" | "astro" => "HTML",
-                            _ => return None,
-                        };
-                        self.syntax_set.find_syntax_by_name(fallback)
-                    });
+                let found = self.syntax_set.find_syntax_by_extension(&ext).or_else(|| {
+                    // Fallback for extensions not directly in the set
+                    let fallback = match ext.as_str() {
+                        "svelte" | "vue" | "astro" => "HTML",
+                        _ => return None,
+                    };
+                    self.syntax_set.find_syntax_by_name(fallback)
+                });
 
                 let syntax_idx = found.map(|syntax| {
                     self.syntax_set

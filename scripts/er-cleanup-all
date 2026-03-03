@@ -21,7 +21,7 @@ for f in .er-review.json .er-order.json .er-checklist.json .er-summary.md \
   if [ -f "$f" ]; then
     rm "$f"
     echo "  removed $f (legacy)"
-    ((removed++))
+    removed=$((removed + 1))
   fi
 done
 

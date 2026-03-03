@@ -1471,7 +1471,9 @@ impl TabState {
             } else {
                 // At last diff file — transition to watched files
                 let visible_watched = self.visible_watched_files();
-                if (self.mode == DiffMode::Hidden || watched_in_all_tabs) && !visible_watched.is_empty() {
+                if (self.mode == DiffMode::Hidden || watched_in_all_tabs)
+                    && !visible_watched.is_empty()
+                {
                     self.selected_watched = Some(visible_watched[0].0);
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
@@ -1551,7 +1553,9 @@ impl TabState {
             } else {
                 // At first diff file — transition to watched files
                 let visible_watched = self.visible_watched_files();
-                if (self.mode == DiffMode::Hidden || watched_in_all_tabs) && !visible_watched.is_empty() {
+                if (self.mode == DiffMode::Hidden || watched_in_all_tabs)
+                    && !visible_watched.is_empty()
+                {
                     self.selected_watched = Some(visible_watched.last().unwrap().0);
                     self.diff_scroll = 0;
                     self.h_scroll = 0;
@@ -3390,7 +3394,7 @@ impl App {
         };
 
         if let Some(question) = questions.questions.iter_mut().find(|q| q.id == target_id) {
-            let reply_id = format!("r-{}", question.replies.len());
+            let reply_id = format!("r-{}-{}", question.id, question.replies.len());
             question.replies.push(ai::Reply {
                 id: reply_id,
                 author: "You".to_string(),
@@ -3619,9 +3623,7 @@ impl App {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(gc) => gc,
                 Err(_) => {
-                    self.notify(
-                        "Warning: github-comments.json is invalid JSON — starting fresh",
-                    );
+                    self.notify("Warning: github-comments.json is invalid JSON — starting fresh");
                     ai::ErGitHubComments {
                         version: 1,
                         diff_hash: diff_hash.clone(),
@@ -3762,12 +3764,14 @@ impl App {
             if let Some(ln) = comment_line_num {
                 let path = wf.path.clone();
                 let repo_root = tab.repo_root.clone();
-                if let Ok(Some(content)) =
-                    crate::git::read_watched_file_content(&repo_root, &path)
+                if let Ok(Some(content)) = crate::git::read_watched_file_content(&repo_root, &path)
                 {
                     let file_lines: Vec<&str> = content.lines().collect();
                     let idx = ln.saturating_sub(1);
-                    let line_content = file_lines.get(idx).map(|s| s.to_string()).unwrap_or_default();
+                    let line_content = file_lines
+                        .get(idx)
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
                     let context_start = idx.saturating_sub(3);
                     let context_before = file_lines[context_start..idx]
                         .iter()
@@ -3927,6 +3931,8 @@ impl App {
     /// Uses focused_comment_id for exact position tracking instead of file+hunk guessing.
     fn jump_comment(&mut self, forward: bool, questions_only: bool) {
         let tab = self.tab_mut();
+        let show_questions = tab.layers.show_questions;
+        let show_github_comments = tab.layers.show_github_comments;
         let all = if questions_only {
             // Convert 3-tuple to 4-tuple for uniform handling
             tab.ai
@@ -3935,7 +3941,18 @@ impl App {
                 .map(|(f, h, id)| (f, h, None::<usize>, id))
                 .collect::<Vec<_>>()
         } else {
-            tab.ai.all_comments_ordered()
+            // Filter by layer visibility so we don't jump to items that won't render.
+            tab.ai
+                .all_comments_ordered()
+                .into_iter()
+                .filter(|(_, _, _, id)| {
+                    if id.starts_with("q-") {
+                        show_questions
+                    } else {
+                        show_github_comments
+                    }
+                })
+                .collect::<Vec<_>>()
         };
 
         if all.is_empty() {
@@ -4010,14 +4027,10 @@ impl App {
                 tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
             } else if let Some(idx) = tab.watched_files.iter().position(|w| w.path == *file) {
+                tab.set_mode(DiffMode::Hidden);
                 tab.selected_watched = Some(idx);
-                tab.selected_file = 0;
-                tab.current_hunk = 0;
-                tab.current_line = None;
                 tab.selection_anchor = None;
-                tab.diff_scroll = 0;
                 tab.h_scroll = 0;
-                tab.mode = DiffMode::Hidden;
             }
         } else if let Some(hi) = hunk_index {
             tab.current_hunk = hi;
@@ -4041,7 +4054,19 @@ impl App {
     /// Uses focused_finding_id for exact position tracking.
     fn jump_finding(&mut self, forward: bool) {
         let tab = self.tab_mut();
-        let all = tab.ai.all_findings_ordered();
+        // Pressing Ctrl+K is an explicit intent to see findings — enable the layer.
+        tab.layers.show_ai_findings = true;
+
+        // Findings don't render in Hidden mode (watched files), so only consider
+        // findings whose file appears in the normal diff file list.
+        let watched_paths: std::collections::HashSet<String> =
+            tab.watched_files.iter().map(|w| w.path.clone()).collect();
+        let all: Vec<_> = tab
+            .ai
+            .all_findings_ordered()
+            .into_iter()
+            .filter(|(f, _, _, _)| !watched_paths.contains(f))
+            .collect();
 
         if all.is_empty() {
             return;
@@ -4121,14 +4146,10 @@ impl App {
                 tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
             } else if let Some(idx) = tab.watched_files.iter().position(|w| w.path == *file) {
+                tab.set_mode(DiffMode::Hidden);
                 tab.selected_watched = Some(idx);
-                tab.selected_file = 0;
-                tab.current_hunk = 0;
-                tab.current_line = None;
                 tab.selection_anchor = None;
-                tab.diff_scroll = 0;
                 tab.h_scroll = 0;
-                tab.mode = DiffMode::Hidden;
             }
         } else if let Some(hi) = hunk_index {
             tab.current_hunk = hi;
@@ -4153,7 +4174,30 @@ impl App {
         use crate::ai::HintType;
 
         let tab = self.tab_mut();
-        let all = tab.ai.all_hints_ordered();
+        let show_questions = tab.layers.show_questions;
+        let show_github_comments = tab.layers.show_github_comments;
+
+        // Findings in watched files (Hidden mode) don't render — exclude them.
+        let watched_paths: std::collections::HashSet<String> =
+            tab.watched_files.iter().map(|w| w.path.clone()).collect();
+
+        // Filter to only hints whose layer is currently visible. Findings are
+        // included even when show_ai_findings is false because jump_hint will
+        // auto-enable the layer below (like jump_finding does for Ctrl+K).
+        let all: Vec<_> = tab
+            .ai
+            .all_hints_ordered()
+            .into_iter()
+            .filter(|(f, _, _, _id, hint_type)| match hint_type {
+                HintType::Question => show_questions,
+                HintType::GitHubComment => show_github_comments,
+                HintType::Finding => {
+                    // Exclude findings that live in watched files where they can't render.
+                    // Always include renderable findings — we'll auto-enable the layer on land.
+                    !watched_paths.contains(f)
+                }
+            })
+            .collect();
 
         if all.is_empty() {
             return;
@@ -4213,6 +4257,8 @@ impl App {
                 tab.focused_finding_id = None;
             }
             HintType::Finding => {
+                // Jumping to a finding is an intent signal — make it visible.
+                tab.layers.show_ai_findings = true;
                 tab.focused_finding_id = Some(id.clone());
                 tab.focused_comment_id = None;
             }
@@ -4237,14 +4283,10 @@ impl App {
                 tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
             } else if let Some(idx) = tab.watched_files.iter().position(|w| w.path == *file) {
+                tab.set_mode(DiffMode::Hidden);
                 tab.selected_watched = Some(idx);
-                tab.selected_file = 0;
-                tab.current_hunk = 0;
-                tab.current_line = None;
                 tab.selection_anchor = None;
-                tab.diff_scroll = 0;
                 tab.h_scroll = 0;
-                tab.mode = DiffMode::Hidden;
             }
         } else if let Some(hi) = hunk_index {
             tab.current_hunk = hi;

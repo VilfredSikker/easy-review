@@ -1,6 +1,6 @@
 # er-questions
 
-Read personal review questions from `.er/questions.json` and respond with threaded replies. Works standalone (no review required) or enriches `.er/review.json` findings when available.
+Read personal review questions from `.er/questions.json` and respond with threaded replies. Standalone — does not read or modify `.er/review.json`.
 
 ## Trigger
 
@@ -9,25 +9,20 @@ Run as `/er-questions`.
 ## What it does
 
 1. Reads `.er/questions.json` — personal review questions added via the `er` TUI (press `q` on a line or `Q` on a hunk)
-2. Optionally reads `.er/review.json` — the current AI review (if it exists)
-3. Validates freshness: questions must match current diff hash (if stale, warn and abort). Review staleness is non-blocking — proceeds in standalone mode.
-4. For each question needing a response (no replies yet, or last reply author == "user"):
+2. Validates freshness: questions must match current diff hash (if stale, warn and abort)
+3. For each question needing a response (no replies yet, or last reply author == "user"):
    - Reads the relevant code context from the diff
    - Appends a `Reply` to `question.replies[]`:
      ```json
      { "id": "r-N", "author": "ai", "timestamp": "ISO 8601", "text": "..." }
      ```
-   - When review exists: also finds/creates the related finding and adds to `finding.responses[]`
-   - If the question reveals a new issue: adds a new finding (when review exists)
-   - If the question resolves a concern: notes this in the response
-5. Writes the updated `.er/questions.json` (with replies added to questions)
-6. If review was loaded, writes updated `.er/review.json`
+4. Writes the updated `.er/questions.json` (with replies added to questions)
 
 Note: Questions are personal/private — they are NOT synced to GitHub. Use `c`/`C` in `er` for GitHub PR comments instead.
 
 ## Speed budget
 
-**Target: ~6 tool calls total.**
+**Target: ~5 tool calls total.**
 
 ### Permission & hook constraints
 
@@ -45,19 +40,13 @@ TOOL CALL 1 — Read .er/questions.json
   - Filter to questions needing response:
     questions where replies is empty, OR last reply has author == "user"
 
-TOOL CALL 2 — Read .er/review.json (OPTIONAL)
-  - If it doesn't exist, continue in standalone mode (no findings enrichment)
-  - If it exists, extract base_branch and findings
-
-TOOL CALL 3 — Bash (validate freshness):
+TOOL CALL 2 — Bash (validate freshness + capture diff):
   scripts/er-freshness-check.sh <base_branch>
   → Output: "ok", hash line, commit hash
   - Compare hash against questions.diff_hash
   - If questions stale: warn "Questions are stale (diff changed). Skipping." and exit
-  - If review exists and review stale: warn "Review is stale — proceeding without review context"
-    and continue in standalone mode (clear review from context)
 
-TOOL CALL 4 — Read .er/diff-tmp (full diff into context)
+TOOL CALL 3 — Read .er/diff-tmp (full diff into context)
   - If watched-file questions exist (hunk_index is null), also read those source files directly
   - This is ALL the code context needed. Do NOT read individual source files per comment.
 
@@ -74,23 +63,10 @@ IN-CONTEXT (zero tool calls) — Process all questions from the diff:
        "timestamp": "<ISO 8601>",
        "text": "<thoughtful response referencing actual code from the diff>"
      }
-  d. If review exists:
-     - Find the most relevant finding in review.files[question.file].findings
-     - Add a response to finding.responses[]:
-       {
-         "id": "r-<n>",
-         "in_reply_to": "<question.id>",
-         "timestamp": "<ISO 8601>",
-         "text": "<same response>",
-         "new_findings": []
-       }
-     - If the question reveals a new issue, create a new finding
-     - If the question says "resolved", "ok", "fixed", note it
 
-TOOL CALL 5 — Write .er/questions.json (updated with replies on each question)
-  - Also write .er/review.json if it was loaded and modified
+TOOL CALL 4 — Write .er/questions.json (updated with replies on each question)
 
-TOOL CALL 6 — Bash: mkdir -p .er && cp .er/questions.json .er/questions.prev.json
+TOOL CALL 5 — Bash: mkdir -p .er && cp .er/questions.json .er/questions.prev.json
 
 Print summary: "Processed N questions. Added M replies."
 ```

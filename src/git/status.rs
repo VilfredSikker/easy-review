@@ -821,7 +821,10 @@ pub fn save_snapshot(repo_root: &str, rel_path: &str) -> Result<()> {
     // would cause the join to escape the repo directory. `Path::join` does not sanitize
     // ".." components. Validate that the resolved canonical path of `dst` still starts
     // with `repo_root` before writing.
-    let dst = Path::new(repo_root).join(".er").join("snapshots").join(rel_path);
+    let dst = Path::new(repo_root)
+        .join(".er")
+        .join("snapshots")
+        .join(rel_path);
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -857,7 +860,10 @@ pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Opti
 pub fn diff_watched_file_snapshot(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
     // TODO(risk:high): same path traversal risk — `rel_path` is not canonicalized before joining.
     let current_path = Path::new(repo_root).join(rel_path);
-    let snapshot_path = Path::new(repo_root).join(".er").join("snapshots").join(rel_path);
+    let snapshot_path = Path::new(repo_root)
+        .join(".er")
+        .join("snapshots")
+        .join(rel_path);
 
     if !snapshot_path.exists() {
         // First time seeing this file — save snapshot, signal "new file"

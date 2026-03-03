@@ -1340,13 +1340,11 @@ fn render_history_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlight
     }
 
     if history.commit_files.is_empty() {
-        let commit = &history.commits[history.selected_commit];
-        render_history_empty(
-            f,
-            area,
-            &format!("Empty commit: {}", commit.short_hash),
-            visible_count,
-        );
+        let msg = match history.commits.get(history.selected_commit) {
+            Some(commit) => format!("Empty commit: {}", commit.short_hash),
+            None => "Empty commit".to_string(),
+        };
+        render_history_empty(f, area, &msg, visible_count);
         return;
     }
 
@@ -1402,7 +1400,11 @@ fn render_history_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlight
 
     for (file_idx, file) in history.commit_files.iter().enumerate() {
         let is_current_file = file_idx == history.selected_file;
-        let file_header_bg = if is_current_file { styles::HUNK_BG } else { styles::BG };
+        let file_header_bg = if is_current_file {
+            styles::HUNK_BG
+        } else {
+            styles::BG
+        };
 
         // File header: New side gets full header, Old side gets a blank line
         file_header_line_indices.push(logical_line);
@@ -1412,7 +1414,11 @@ fn render_history_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlight
                 Span::styled(
                     if is_current_file { " \u{25b6} " } else { "   " },
                     ratatui::style::Style::default()
-                        .fg(if is_current_file { styles::CYAN } else { styles::DIM })
+                        .fg(if is_current_file {
+                            styles::CYAN
+                        } else {
+                            styles::DIM
+                        })
                         .bg(file_header_bg),
                 ),
                 Span::styled(
@@ -1432,7 +1438,11 @@ fn render_history_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlight
                 Span::styled(
                     &file.path,
                     ratatui::style::Style::default()
-                        .fg(if is_current_file { styles::BRIGHT } else { styles::TEXT })
+                        .fg(if is_current_file {
+                            styles::BRIGHT
+                        } else {
+                            styles::TEXT
+                        })
                         .bg(file_header_bg),
                 ),
                 Span::styled(
@@ -1442,7 +1452,10 @@ fn render_history_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlight
                         .bg(file_header_bg),
                 ),
             ];
-            let header_len: usize = new_header_spans.iter().map(|s| s.content.chars().count()).sum();
+            let header_len: usize = new_header_spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum();
             let remaining = (new_inner.width as usize).saturating_sub(header_len);
             new_header_spans.push(Span::styled(
                 " ".repeat(remaining),
@@ -1508,14 +1521,8 @@ fn render_history_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlight
                 }
 
                 // Determine which side shows content vs blank padding
-                let old_shows = matches!(
-                    diff_line.line_type,
-                    LineType::Context | LineType::Delete
-                );
-                let new_shows = matches!(
-                    diff_line.line_type,
-                    LineType::Context | LineType::Add
-                );
+                let old_shows = matches!(diff_line.line_type, LineType::Context | LineType::Delete);
+                let new_shows = matches!(diff_line.line_type, LineType::Context | LineType::Add);
 
                 let (prefix, base_style) = match diff_line.line_type {
                     LineType::Add => ("+", styles::add_style()),
@@ -1524,12 +1531,12 @@ fn render_history_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlight
                 };
 
                 let gutter_style = match diff_line.line_type {
-                    LineType::Add => {
-                        ratatui::style::Style::default().fg(styles::DIM).bg(styles::ADD_BG)
-                    }
-                    LineType::Delete => {
-                        ratatui::style::Style::default().fg(styles::DIM).bg(styles::DEL_BG)
-                    }
+                    LineType::Add => ratatui::style::Style::default()
+                        .fg(styles::DIM)
+                        .bg(styles::ADD_BG),
+                    LineType::Delete => ratatui::style::Style::default()
+                        .fg(styles::DIM)
+                        .bg(styles::DEL_BG),
                     LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
                 };
 
@@ -1674,7 +1681,8 @@ fn render_history_split(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlight
                             .bg(sticky_bg),
                     ),
                 ];
-                let sticky_len: usize = sticky_spans.iter().map(|s| s.content.chars().count()).sum();
+                let sticky_len: usize =
+                    sticky_spans.iter().map(|s| s.content.chars().count()).sum();
                 let sticky_remaining = (new_inner.width as usize).saturating_sub(sticky_len);
                 sticky_spans.push(Span::styled(
                     " ".repeat(sticky_remaining),
@@ -1728,23 +1736,17 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
     }
 
     if history.commit_files.is_empty() {
-        // TODO(risk:high): history.selected_commit is not bounds-checked before indexing.
-        // If selected_commit >= history.commits.len() this panics. commits.is_empty() is
-        // checked above, but selected_commit could still be out of range if state is stale.
-        // Use .get() and fall back gracefully.
-        let commit = &history.commits[history.selected_commit];
-        render_history_empty(
-            f,
-            area,
-            &format!("Empty commit: {}", commit.short_hash),
-            visible_count,
-        );
+        let msg = match history.commits.get(history.selected_commit) {
+            Some(commit) => format!("Empty commit: {}", commit.short_hash),
+            None => "Empty commit".to_string(),
+        };
+        render_history_empty(f, area, &msg, visible_count);
         return;
     }
 
-    // TODO(risk:high): same unchecked index — selected_commit must be validated against
-    // history.commits.len() before this point, not just after a commits.is_empty() guard.
-    let commit = &history.commits[history.selected_commit];
+    let Some(commit) = history.commits.get(history.selected_commit) else {
+        return;
+    };
     let title = format!(" {} · {} ", commit.short_hash, commit.subject);
     let total_files = history.commit_files.len();
 
@@ -1774,7 +1776,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
         // Track file header line index regardless of viewport (needed for sticky header)
         file_header_line_indices.push(line_idx);
 
-        if line_idx >= render_start && line_idx <= render_end {
+        if line_idx >= render_start && line_idx < render_end {
             let mut header_spans = vec![
                 Span::styled(
                     if is_current_file { " ▶ " } else { "   " },
@@ -1841,7 +1843,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
             let is_current_hunk = is_current_file && hunk_idx == history.current_hunk;
 
             // Hunk header
-            if line_idx >= render_start && line_idx <= render_end {
+            if line_idx >= render_start && line_idx < render_end {
                 let marker = if is_current_hunk { "▶" } else { " " };
                 lines.push(
                     Line::from(vec![
@@ -1871,7 +1873,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                 let is_selected_line =
                     is_current_hunk && history.current_line == Some(diff_line_idx);
 
-                if line_idx >= render_start && line_idx <= render_end {
+                if line_idx >= render_start && line_idx < render_end {
                     let old_num = diff_line
                         .old_num
                         .map(|n| format!("{:>4}", n))
@@ -1907,9 +1909,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                             LineType::Delete => ratatui::style::Style::default()
                                 .fg(styles::DIM)
                                 .bg(styles::DEL_BG),
-                            LineType::Context => {
-                                ratatui::style::Style::default().fg(styles::DIM)
-                            }
+                            LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
                         }
                     };
 
@@ -2317,7 +2317,7 @@ fn render_thread_replies(
             ));
         }
 
-        let used: usize = header_spans.iter().map(|s| s.content.len()).sum();
+        let used: usize = header_spans.iter().map(|s| s.content.chars().count()).sum();
         let remaining = (width as usize).saturating_sub(used);
         if remaining > 0 {
             header_spans.push(Span::styled(
@@ -2458,7 +2458,13 @@ fn mode_switch_hint(visible_count: usize) -> String {
 }
 
 /// Render an empty state when no file is selected
-fn render_empty(f: &mut Frame, area: Rect, mode: &DiffMode, base_branch: &str, visible_count: usize) {
+fn render_empty(
+    f: &mut Frame,
+    area: Rect,
+    mode: &DiffMode,
+    base_branch: &str,
+    visible_count: usize,
+) {
     let block = Block::default()
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG));
@@ -2471,16 +2477,19 @@ fn render_empty(f: &mut Frame, area: Rect, mode: &DiffMode, base_branch: &str, v
         ),
         DiffMode::Unstaged => (
             "  No unstaged changes".to_string(),
-            format!("  Stage files with git add, or {}", switch_hint.trim_start()),
+            format!(
+                "  Stage files with git add, or {}",
+                switch_hint.trim_start()
+            ),
         ),
         DiffMode::Staged => (
             "  No staged changes".to_string(),
-            format!("  Stage files with git add, or {}", switch_hint.trim_start()),
+            format!(
+                "  Stage files with git add, or {}",
+                switch_hint.trim_start()
+            ),
         ),
-        _ => (
-            "  No files changed".to_string(),
-            switch_hint.clone(),
-        ),
+        _ => ("  No files changed".to_string(), switch_hint.clone()),
     };
 
     let text = Paragraph::new(vec![
@@ -2627,16 +2636,28 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                     ratatui::style::Style::default().fg(styles::GREEN),
                 )));
                 // Fall through to show content
-                render_watched_content_lines(&mut lines, repo_root, path, size, None, app, area.width);
+                render_watched_content_lines(
+                    &mut lines, repo_root, path, size, None, app, area.width,
+                );
             }
             Err(_) => {
                 // Error — fall back to content mode
-                render_watched_content_lines(&mut lines, repo_root, path, size, None, app, area.width);
+                render_watched_content_lines(
+                    &mut lines, repo_root, path, size, None, app, area.width,
+                );
             }
         }
     } else {
         // Content mode — show full file content
-        render_watched_content_lines(&mut lines, repo_root, path, size, tab.current_line, app, area.width);
+        render_watched_content_lines(
+            &mut lines,
+            repo_root,
+            path,
+            size,
+            tab.current_line,
+            app,
+            area.width,
+        );
     }
 
     let title = format!(" {} ", path);
@@ -2687,9 +2708,7 @@ fn render_watched_content_lines(
     for comment in &unanchored {
         let visible = match comment {
             CommentRef::Question(_) => tab.layers.show_questions,
-            CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
-                tab.layers.show_github_comments
-            }
+            CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
         };
         if !visible {
             continue;
@@ -2768,8 +2787,7 @@ fn render_watched_content_lines(
 
                     let replies = tab.ai.replies_to(comment.id());
                     for reply in &replies {
-                        let is_focused =
-                            tab.focused_comment_id.as_deref() == Some(reply.id());
+                        let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
                         render_reply_lines(lines, reply, area_width, true, is_focused);
                     }
                 }
