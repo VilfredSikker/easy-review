@@ -75,8 +75,8 @@ pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
 pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     let mut state = AiState::default();
 
-    // Load .er-review.json
-    let review_path = Path::new(repo_root).join(".er-review.json");
+    // Load .er/review.json
+    let review_path = Path::new(repo_root).join(".er").join("review.json");
     // TODO(risk:medium): `read_to_string` loads the entire file into memory before
     // deserialising. A very large or adversarially crafted `.er-review.json` (e.g. a
     // findings array with millions of entries) will spike memory before serde can reject
@@ -91,8 +91,8 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-order.json
-    let order_path = Path::new(repo_root).join(".er-order.json");
+    // Load .er/order.json
+    let order_path = Path::new(repo_root).join(".er").join("order.json");
     if let Ok(content) = std::fs::read_to_string(&order_path) {
         if let Ok(order) = serde_json::from_str::<ErOrder>(&content) {
             // Check staleness against review hash or independently
@@ -107,8 +107,8 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-summary.md
-    let summary_path = Path::new(repo_root).join(".er-summary.md");
+    // Load .er/summary.md
+    let summary_path = Path::new(repo_root).join(".er").join("summary.md");
     // TODO(risk:medium): No size limit on `.er-summary.md`. A multi-megabyte markdown
     // file is read entirely into a heap-allocated String. The UI renders it inline, so
     // the entire content stays in memory for the lifetime of the session.
@@ -118,8 +118,8 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-checklist.json
-    let checklist_path = Path::new(repo_root).join(".er-checklist.json");
+    // Load .er/checklist.json
+    let checklist_path = Path::new(repo_root).join(".er").join("checklist.json");
     if let Ok(content) = std::fs::read_to_string(&checklist_path) {
         if let Ok(checklist) = serde_json::from_str::<ErChecklist>(&content) {
             if !state.is_stale && checklist.diff_hash != current_diff_hash {
@@ -129,30 +129,18 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
-    // Load .er-questions.json (personal review questions)
-    let questions_path = Path::new(repo_root).join(".er-questions.json");
+    // Load .er/questions.json (personal review questions)
+    let questions_path = Path::new(repo_root).join(".er").join("questions.json");
     if let Ok(content) = std::fs::read_to_string(&questions_path) {
-        if let Ok(mut questions) = serde_json::from_str::<ErQuestions>(&content) {
-            // Per-comment staleness: mark all stale if diff changed
-            if questions.diff_hash != current_diff_hash {
-                for q in &mut questions.questions {
-                    q.stale = true;
-                }
-            }
+        if let Ok(questions) = serde_json::from_str::<ErQuestions>(&content) {
             state.questions = Some(questions);
         }
     }
 
-    // Load .er-github-comments.json (GitHub PR comments)
-    let gh_comments_path = Path::new(repo_root).join(".er-github-comments.json");
+    // Load .er/github-comments.json (GitHub PR comments)
+    let gh_comments_path = Path::new(repo_root).join(".er").join("github-comments.json");
     if let Ok(content) = std::fs::read_to_string(&gh_comments_path) {
-        if let Ok(mut gh_comments) = serde_json::from_str::<ErGitHubComments>(&content) {
-            // Per-comment staleness
-            if gh_comments.diff_hash != current_diff_hash {
-                for c in &mut gh_comments.comments {
-                    c.stale = true;
-                }
-            }
+        if let Ok(gh_comments) = serde_json::from_str::<ErGitHubComments>(&content) {
             state.github_comments = Some(gh_comments);
         }
     }
@@ -164,7 +152,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     // is loaded even though the new files are now present, potentially causing duplicate
     // comments to be shown via the Legacy fallback path in the query methods.
     if state.questions.is_none() && state.github_comments.is_none() {
-        let feedback_path = Path::new(repo_root).join(".er-feedback.json");
+        let feedback_path = Path::new(repo_root).join(".er").join("feedback.json");
         if let Ok(content) = std::fs::read_to_string(&feedback_path) {
             if let Ok(feedback) = serde_json::from_str::<ErFeedback>(&content) {
                 state.feedback = Some(feedback);
@@ -183,21 +171,21 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 // time `load_ai_state` runs the file is already overwritten again with identical content).
 // The impact is a missed or spurious reload — incorrect data displayed until the next tick.
 pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
-    let root = Path::new(repo_root);
+    let er_dir = Path::new(repo_root).join(".er");
     let files = [
-        ".er-review.json",
-        ".er-order.json",
-        ".er-summary.md",
-        ".er-checklist.json",
-        ".er-feedback.json",
-        ".er-questions.json",
-        ".er-github-comments.json",
+        "review.json",
+        "order.json",
+        "summary.md",
+        "checklist.json",
+        "feedback.json",
+        "questions.json",
+        "github-comments.json",
     ];
 
     files
         .iter()
         .filter_map(|name| {
-            let path = root.join(name);
+            let path = er_dir.join(name);
             // TODO(risk:minor): `metadata().modified()` can fail on filesystems that do not
             // support mtime (e.g. FAT32, some network mounts). The `ok()?` silently drops
             // these files from the max calculation, meaning their updates are never detected.

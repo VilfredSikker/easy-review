@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use super::styles;
-use super::utils::word_wrap;
+use super::utils::{horizontal_rule, word_wrap};
 use crate::ai::{CommentRef, CommentType, PanelContent, ReviewFocus, RiskLevel};
 use crate::app::App;
 
@@ -109,7 +109,7 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
     // Ratatui clips the widget to the allocated area so the extra characters are thrown
     // away. Capping the repeat at area.width as usize avoids the wasted allocation.
     lines.push(Line::from(vec![Span::styled(
-        "─".repeat(area.width.saturating_sub(2) as usize),
+        horizontal_rule(area.width.saturating_sub(2) as usize),
         Style::default().fg(styles::BORDER),
     )]));
 
@@ -402,7 +402,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
         }
     } else {
         lines.push(Line::from(vec![Span::styled(
-            " No .er-summary.md found",
+            " No .er/summary.md found",
             Style::default().fg(styles::MUTED),
         )]));
     }
@@ -493,7 +493,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
         }
     } else {
         lines.push(Line::from(vec![Span::styled(
-            " No .er-review.json found",
+            " No .er/review.json found",
             Style::default().fg(styles::MUTED),
         )]));
     }
@@ -574,7 +574,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
         }
     } else {
         lines.push(Line::from(vec![Span::styled(
-            " No .er-checklist.json found",
+            " No .er/checklist.json found",
             Style::default().fg(styles::MUTED),
         )]));
     }
