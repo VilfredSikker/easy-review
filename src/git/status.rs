@@ -595,13 +595,7 @@ pub fn has_unpushed_commits(repo_root: &str) -> bool {
 pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<String> {
     let range = format!("{}..{}", from, to);
     let output = Command::new("git")
-        .args([
-            "diff",
-            &range,
-            "--unified=3",
-            "--no-color",
-            "--no-ext-diff",
-        ])
+        .args(["diff", &range, "--unified=3", "--no-color", "--no-ext-diff"])
         .current_dir(repo_root)
         .output()
         .context("Failed to run git diff for range")?;

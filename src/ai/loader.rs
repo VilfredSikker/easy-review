@@ -138,7 +138,9 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     }
 
     // Load .er/github-comments.json (GitHub PR comments)
-    let gh_comments_path = Path::new(repo_root).join(".er").join("github-comments.json");
+    let gh_comments_path = Path::new(repo_root)
+        .join(".er")
+        .join("github-comments.json");
     if let Ok(content) = std::fs::read_to_string(&gh_comments_path) {
         if let Ok(gh_comments) = serde_json::from_str::<ErGitHubComments>(&content) {
             state.github_comments = Some(gh_comments);

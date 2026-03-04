@@ -3194,10 +3194,7 @@ impl App {
             .into_iter()
             .map(|(i, _)| i)
             .collect();
-        let pos_before = visible_before
-            .iter()
-            .position(|&i| i == si)
-            .unwrap_or(0);
+        let pos_before = visible_before.iter().position(|&i| i == si).unwrap_or(0);
 
         let tab = self.tab_mut();
         let was_reviewed = tab.reviewed.contains_key(&path);
@@ -4143,8 +4140,7 @@ impl App {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
                     qs.questions.retain(|q| {
-                        q.id != comment_id
-                            && q.in_reply_to.as_deref() != Some(comment_id)
+                        q.id != comment_id && q.in_reply_to.as_deref() != Some(comment_id)
                     });
                     let json = serde_json::to_string_pretty(&qs)?;
                     let tmp_path = format!("{}.tmp", path);
@@ -4796,7 +4792,8 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.show_unreviewed_only = true;
-        tab.reviewed.insert("src/main.rs".to_string(), String::new());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
         tab.reviewed.insert("src/lib.rs".to_string(), String::new());
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 0);
@@ -4811,7 +4808,8 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.show_unreviewed_only = true;
-        tab.reviewed.insert("src/main.rs".to_string(), String::new());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 2);
         assert_eq!(visible[0].1.path, "src/lib.rs");
@@ -4829,7 +4827,8 @@ mod tests {
         tab.search_query = "src".to_string();
         tab.search_query_lower = "src".to_string();
         tab.show_unreviewed_only = true;
-        tab.reviewed.insert("src/main.rs".to_string(), String::new());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].1.path, "src/lib.rs");
@@ -4851,7 +4850,8 @@ mod tests {
             make_file("src/util.rs", vec![], 1, 0),
         ];
         let mut tab = make_test_tab(files);
-        tab.reviewed.insert("src/main.rs".to_string(), String::new());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
         assert_eq!(tab.reviewed_count(), (1, 3));
     }
 
@@ -4862,7 +4862,8 @@ mod tests {
             make_file("src/lib.rs", vec![], 1, 0),
         ];
         let mut tab = make_test_tab(files);
-        tab.reviewed.insert("src/main.rs".to_string(), String::new());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
         tab.reviewed.insert("src/lib.rs".to_string(), String::new());
         assert_eq!(tab.reviewed_count(), (2, 2));
     }

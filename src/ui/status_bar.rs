@@ -164,7 +164,10 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         } else {
             " STAGED "
         };
-        modes.push(Span::styled(staged_label, mode_style(DiffMode::Staged, tab.mode)));
+        modes.push(Span::styled(
+            staged_label,
+            mode_style(DiffMode::Staged, tab.mode),
+        ));
         modes.push(Span::raw(" "));
     }
     if app.config.features.view_history {
