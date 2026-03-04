@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Generate sample .er-* files in the current repo for testing the AI overlay.
+# Generate sample .er/ files in the current repo for testing the AI overlay.
 #
 # Usage:
 #   cd your-repo
 #   bash /path/to/generate-test-fixtures.sh
 #
 # This reads the current git diff (branch mode, unstaged, or staged) and
-# creates .er-review.json, .er-order.json, .er-checklist.json, and .er-summary.md
+# creates .er/review.json, .er/order.json, .er/checklist.json, and .er/summary.md
 # with realistic but synthetic data. The diff_hash matches the current diff
 # so the data will NOT show as stale.
 #
@@ -89,8 +89,9 @@ done <<< "$FILES"
 
 REVIEW+='}}'
 
-echo "$REVIEW" | python3 -m json.tool > .er-review.json 2>/dev/null || echo "$REVIEW" > .er-review.json
-echo "✓ Created .er-review.json"
+mkdir -p .er
+echo "$REVIEW" | python3 -m json.tool > .er/review.json 2>/dev/null || echo "$REVIEW" > .er/review.json
+echo "✓ Created .er/review.json"
 
 # Build .er-order.json
 ORDER='{"version":1,"diff_hash":"'"$DIFF_HASH"'","order":['
@@ -106,8 +107,8 @@ while IFS= read -r filepath; do
 done <<< "$FILES"
 ORDER+='],"groups":{"main":{"label":"Main Changes","color":"blue"}}}'
 
-echo "$ORDER" | python3 -m json.tool > .er-order.json 2>/dev/null || echo "$ORDER" > .er-order.json
-echo "✓ Created .er-order.json"
+echo "$ORDER" | python3 -m json.tool > .er/order.json 2>/dev/null || echo "$ORDER" > .er/order.json
+echo "✓ Created .er/order.json"
 
 # Build .er-checklist.json
 FILE_COUNT=$(echo "$FILES" | grep -c '.' 2>/dev/null || true)
@@ -118,11 +119,11 @@ CHECKLIST+='{"id":"c-3","text":"Review test coverage for new code paths","catego
 CHECKLIST+='{"id":"c-4","text":"Confirm no secrets or credentials in diff","category":"security","checked":true,"related_findings":[],"related_files":[]}'
 CHECKLIST+=']}'
 
-echo "$CHECKLIST" | python3 -m json.tool > .er-checklist.json 2>/dev/null || echo "$CHECKLIST" > .er-checklist.json
-echo "✓ Created .er-checklist.json"
+echo "$CHECKLIST" | python3 -m json.tool > .er/checklist.json 2>/dev/null || echo "$CHECKLIST" > .er/checklist.json
+echo "✓ Created .er/checklist.json"
 
 # Build .er-summary.md
-cat > .er-summary.md << 'SUMMARY'
+cat > .er/summary.md << 'SUMMARY'
 ## AI Review Summary
 
 This changeset modifies core application logic across multiple files.
@@ -135,10 +136,10 @@ This changeset modifies core application logic across multiple files.
 **Risk assessment:** Medium overall — most changes are straightforward but
 the error handling gaps should be addressed before merge.
 SUMMARY
-echo "✓ Created .er-summary.md"
+echo "✓ Created .er/summary.md"
 
 echo ""
 echo "Done! Open 'er' and press 'v' to toggle the AI overlay."
 echo "To test stale detection: edit any tracked file, then reopen er."
 echo ""
-echo "To clean up: rm .er-review.json .er-order.json .er-checklist.json .er-summary.md"
+echo "To clean up: rm -r .er/"
