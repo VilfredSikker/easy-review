@@ -704,16 +704,16 @@ impl AiState {
                     .push((CommentSource::GitHubComment, i));
                 // Line index: top-level only (matching comments_for_line behavior)
                 if let Some(ls) = c.line_start {
-                    if c.in_reply_to.is_none() {
+                    if c.in_reply_to.is_none() && c.finding_ref.is_none() {
                         line_index
                             .entry((c.file.clone(), ls))
                             .or_default()
                             .push((CommentSource::GitHubComment, i));
                     }
                 }
-                // File count: top-level only (matching file_github_comment_count behavior)
+                // File count: top-level only, excluding finding replies
                 let counts = file_comment_counts.entry(c.file.clone()).or_insert((0, 0));
-                if c.in_reply_to.is_none() {
+                if c.in_reply_to.is_none() && c.finding_ref.is_none() {
                     counts.1 += 1;
                 }
             }
@@ -751,40 +751,111 @@ impl AiState {
         self.review.as_ref()?.files.get(path)
     }
 
-    /// Get all findings for a specific file and hunk (by positional index)
-    pub fn findings_for_hunk(&self, path: &str, hunk_index: usize) -> Vec<&Finding> {
-        match self.file_review(path) {
-            Some(fr) => fr
-                .findings
-                .iter()
-                .filter(|f| f.hunk_index == Some(hunk_index))
-                .collect(),
-            None => Vec::new(),
-        }
-    }
-
-    /// Get findings whose `line_start` falls within a hunk's new-side line range.
-    /// Used for non-branch diff modes where `hunk_index` doesn't match.
-    pub fn findings_for_hunk_by_line_range(
+    /// Get hunk-level findings (no line_start) for a specific file and hunk index.
+    /// Findings with no hunk_index and no line_start attach to the last hunk.
+    pub fn findings_for_hunk(
         &self,
         path: &str,
-        new_start: usize,
-        new_count: usize,
+        hunk_index: usize,
+        total_hunks: usize,
     ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
                 .iter()
                 .filter(|f| {
-                    if let Some(ls) = f.line_start {
-                        ls >= new_start && ls < new_start + new_count
-                    } else {
-                        false
+                    if f.line_start.is_some() {
+                        return false;
                     }
+                    if let Some(hi) = f.hunk_index {
+                        return hi == hunk_index;
+                    }
+                    // No hunk_index and no line_start → show at last hunk
+                    hunk_index + 1 == total_hunks
                 })
                 .collect(),
             None => Vec::new(),
         }
+    }
+
+    /// Get findings anchored to a specific line within a hunk (by hunk index).
+    pub fn findings_for_line(
+        &self,
+        path: &str,
+        hunk_index: usize,
+        line_num: usize,
+    ) -> Vec<&Finding> {
+        match self.file_review(path) {
+            Some(fr) => fr
+                .findings
+                .iter()
+                .filter(|f| {
+                    f.line_start == Some(line_num)
+                        && (f.hunk_index == Some(hunk_index) || f.hunk_index.is_none())
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Get findings anchored to a specific line (by line number, no hunk index).
+    /// Used for non-branch diff modes where `hunk_index` doesn't match.
+    pub fn findings_for_line_by_range(&self, path: &str, line_num: usize) -> Vec<&Finding> {
+        match self.file_review(path) {
+            Some(fr) => fr
+                .findings
+                .iter()
+                .filter(|f| f.line_start == Some(line_num))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Get hunk-level findings (no line_start) for non-branch diff modes.
+    /// Uses hunk_index when available; falls back to returning findings without
+    /// any line anchor that haven't been matched to a specific hunk.
+    pub fn findings_for_hunk_by_line_range(
+        &self,
+        path: &str,
+        _new_start: usize,
+        _new_count: usize,
+        hunk_index: usize,
+        total_hunks: usize,
+    ) -> Vec<&Finding> {
+        match self.file_review(path) {
+            Some(fr) => fr
+                .findings
+                .iter()
+                .filter(|f| {
+                    // Skip line-anchored findings — they render inline
+                    if f.line_start.is_some() {
+                        return false;
+                    }
+                    // Match by hunk_index if available
+                    if let Some(hi) = f.hunk_index {
+                        return hi == hunk_index;
+                    }
+                    // No hunk_index and no line_start → show at last hunk
+                    hunk_index + 1 == total_hunks
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Check if there are any comments or questions (excluding findings).
+    pub fn has_comments_or_questions(&self) -> bool {
+        if let Some(qs) = &self.questions {
+            if !qs.questions.is_empty() {
+                return true;
+            }
+        }
+        if let Some(gc) = &self.github_comments {
+            if !gc.comments.is_empty() {
+                return true;
+            }
+        }
+        false
     }
 
     // ── Unified comment queries (questions + github comments) ──
@@ -1524,7 +1595,7 @@ mod tests {
     #[test]
     fn findings_for_hunk_no_review_returns_empty() {
         let state = AiState::default();
-        assert!(state.findings_for_hunk("a.rs", 0).is_empty());
+        assert!(state.findings_for_hunk("a.rs", 0, 1).is_empty());
     }
 
     #[test]
@@ -1539,7 +1610,7 @@ mod tests {
                 make_finding("3", Some(0), RiskLevel::Low),
             ],
         )]));
-        let results = state.findings_for_hunk("a.rs", 0);
+        let results = state.findings_for_hunk("a.rs", 0, 2);
         assert_eq!(results.len(), 2);
         assert!(results.iter().any(|f| f.id == "1"));
         assert!(results.iter().any(|f| f.id == "3"));
@@ -1553,7 +1624,7 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", Some(0), RiskLevel::High)],
         )]));
-        let results = state.findings_for_hunk("a.rs", 99);
+        let results = state.findings_for_hunk("a.rs", 99, 100);
         assert!(results.is_empty());
     }
 
@@ -1565,31 +1636,47 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", Some(0), RiskLevel::High)],
         )]));
-        let results = state.findings_for_hunk("unknown.rs", 0);
+        let results = state.findings_for_hunk("unknown.rs", 0, 1);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn findings_for_hunk_null_hunk_index_attaches_to_last_hunk() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![make_finding("1", None, RiskLevel::High)],
+        )]));
+        // Should NOT appear on hunk 0 (not the last hunk)
+        assert!(state.findings_for_hunk("a.rs", 0, 3).is_empty());
+        // Should appear on last hunk (index 2 of 3)
+        let results = state.findings_for_hunk("a.rs", 2, 3);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "1");
     }
 
     // ── AiState::findings_for_hunk_by_line_range ──
 
     #[test]
-    fn line_range_matches_finding_within_hunk() {
+    fn hunk_by_line_range_returns_hunk_level_findings() {
         let mut state = AiState::default();
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
             vec![
-                make_finding_with_lines("1", Some(0), Some(10), Some(12), RiskLevel::High),
-                make_finding_with_lines("2", Some(1), Some(25), Some(30), RiskLevel::Medium),
+                make_finding("1", Some(0), RiskLevel::High),
+                make_finding("2", Some(1), RiskLevel::Medium),
             ],
         )]));
-        // Hunk covers lines 10..20 → finding "1" (line_start=10) matches
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10);
+        // Hunk-level finding with hunk_index=0 matches
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 2);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "1");
     }
 
     #[test]
-    fn line_range_excludes_finding_outside_hunk() {
+    fn hunk_by_line_range_excludes_line_anchored_findings() {
         let mut state = AiState::default();
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
@@ -1597,90 +1684,104 @@ mod tests {
             vec![make_finding_with_lines(
                 "1",
                 Some(0),
-                Some(50),
-                Some(55),
+                Some(10),
+                Some(12),
                 RiskLevel::High,
             )],
         )]));
-        // Hunk covers lines 10..20 → finding at line 50 does not match
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10);
+        // Line-anchored findings are rendered inline, not at hunk level
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 1);
         assert!(results.is_empty());
     }
 
     #[test]
-    fn line_range_excludes_finding_without_line_start() {
+    fn hunk_by_line_range_unknown_file_returns_empty() {
         let mut state = AiState::default();
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
             vec![make_finding("1", Some(0), RiskLevel::High)],
         )]));
-        // Finding has no line_start → cannot match by line range
-        let results = state.findings_for_hunk_by_line_range("a.rs", 1, 100);
+        let results = state.findings_for_hunk_by_line_range("unknown.rs", 10, 5, 0, 1);
         assert!(results.is_empty());
     }
 
     #[test]
-    fn line_range_boundary_start_inclusive() {
+    fn hunk_by_line_range_no_review_returns_empty() {
+        let state = AiState::default();
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 1);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn hunk_by_line_range_null_hunk_index_attaches_to_last_hunk() {
         let mut state = AiState::default();
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
-            vec![make_finding_with_lines(
-                "1",
-                None,
-                Some(10),
-                None,
-                RiskLevel::Low,
-            )],
+            vec![make_finding("1", None, RiskLevel::High)],
         )]));
-        // new_start=10, new_count=5 → range [10, 15). line_start=10 is included.
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5);
+        // Should NOT appear on hunk 0 (not the last)
+        assert!(state
+            .findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 2)
+            .is_empty());
+        // Should appear on last hunk
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5, 1, 2);
         assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "1");
     }
 
+    // ── AiState::findings_for_line ──
+
     #[test]
-    fn line_range_boundary_end_exclusive() {
+    fn findings_for_line_matches_by_hunk_and_line() {
         let mut state = AiState::default();
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
-            vec![make_finding_with_lines(
-                "1",
-                None,
-                Some(15),
-                None,
-                RiskLevel::Low,
-            )],
+            vec![
+                make_finding_with_lines("1", Some(0), Some(10), Some(12), RiskLevel::High),
+                make_finding_with_lines("2", Some(0), Some(15), Some(18), RiskLevel::Medium),
+                make_finding("3", Some(0), RiskLevel::Low),
+            ],
         )]));
-        // new_start=10, new_count=5 → range [10, 15). line_start=15 is excluded.
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5);
-        assert!(results.is_empty());
+        let results = state.findings_for_line("a.rs", 0, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "1");
     }
 
     #[test]
-    fn line_range_unknown_file_returns_empty() {
+    fn findings_for_line_no_match_returns_empty() {
         let mut state = AiState::default();
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
             vec![make_finding_with_lines(
                 "1",
-                None,
+                Some(0),
                 Some(10),
                 None,
                 RiskLevel::High,
             )],
         )]));
-        let results = state.findings_for_hunk_by_line_range("unknown.rs", 10, 5);
+        let results = state.findings_for_line("a.rs", 0, 99);
         assert!(results.is_empty());
     }
 
     #[test]
-    fn line_range_no_review_returns_empty() {
-        let state = AiState::default();
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5);
-        assert!(results.is_empty());
+    fn findings_for_line_by_range_matches_by_line_only() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![
+                make_finding_with_lines("1", Some(0), Some(10), None, RiskLevel::High),
+                make_finding_with_lines("2", None, Some(10), None, RiskLevel::Medium),
+            ],
+        )]));
+        // Both findings match line 10 regardless of hunk_index
+        let results = state.findings_for_line_by_range("a.rs", 10);
+        assert_eq!(results.len(), 2);
     }
 
     // ── AiState::comments_for_hunk ──

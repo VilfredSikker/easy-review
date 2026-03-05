@@ -447,8 +447,8 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("r", " reply "));
         }
 
-        if !tab.ai.all_hints_ordered().is_empty() {
-            hints.push(Hint::new("J/K", " hints "));
+        if tab.ai.has_comments_or_questions() {
+            hints.push(Hint::new("J/K", " comments "));
         }
 
         // Cleanup hints — only when data exists
@@ -552,11 +552,12 @@ fn build_hints(app: &App) -> Vec<Hint> {
     let mut hints: Vec<Hint> = Vec::new();
 
     if tab.panel.is_some() {
-        // Context: panel open — show panel + core nav
+        // Context: panel open — show panel controls + relevant actions
         if h.navigation {
             hints.push(Hint::new("j/k", " nav "));
             hints.push(Hint::new("n/N", " hunks "));
             hints.push(Hint::new("␣", " review "));
+            hints.push(Hint::new("/", " search "));
         }
         if tab.panel_focus {
             hints.push(Hint::new("Esc", " unfocus "));
@@ -564,6 +565,30 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("Tab", " focus panel "));
         }
         hints.push(Hint::new("p", " close panel "));
+
+        // PR-specific action
+        if tab.panel == Some(PanelContent::PrOverview) && tab.pr_data.is_some() {
+            hints.push(Hint::new("o", " open in browser "));
+        }
+
+        // Comments
+        if h.comments && tab.mode != DiffMode::Staged {
+            hints.push(Hint::new("q", " question "));
+            hints.push(Hint::new("c", " comment "));
+        }
+
+        // GitHub sync
+        if h.github && tab.pr_data.is_some() {
+            hints.push(Hint::new("G", " gh pull "));
+            hints.push(Hint::new("P", " gh push "));
+        }
+
+        // Filter & sort
+        if h.filter {
+            hints.push(Hint::new("u", " unreviewed "));
+            hints.push(Hint::new("f", " filter "));
+        }
+
         if app.tabs.len() > 1 {
             hints.push(Hint::new("[/]", " tabs "));
         }
@@ -613,9 +638,9 @@ fn build_hints(app: &App) -> Vec<Hint> {
                 hints.push(Hint::new("r", " reply "));
             }
 
-            // Comment/finding jump hints — only when targets exist
-            if !tab.ai.all_hints_ordered().is_empty() {
-                hints.push(Hint::new("J/K", " hints "));
+            // Comment/question jump hints — only when targets exist
+            if tab.ai.has_comments_or_questions() {
+                hints.push(Hint::new("J/K", " comments "));
             }
 
             // Cleanup hints — only when data exists
@@ -772,10 +797,14 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
     match &app.input_mode {
         InputMode::Confirm(action) => {
             let prompt = match action {
-                ConfirmAction::DeleteComment { .. } => "Delete comment? (y/n)",
-                ConfirmAction::Push => "Push branch to remote? (y/n)",
-                ConfirmAction::CleanupQuestions => "Clear all questions? (y/n)",
-                ConfirmAction::CleanupReviews => "Clear all reviews? (y/n)",
+                ConfirmAction::DeleteComment { .. } => "Delete comment? (y/n)".to_string(),
+                ConfirmAction::Push => "Push branch to remote? (y/n)".to_string(),
+                ConfirmAction::CleanupQuestions { count } => {
+                    format!("Clear {} question(s)? (y/n)", count)
+                }
+                ConfirmAction::CleanupReviews { count } => {
+                    format!("Clear {} review file(s)? (y/n)", count)
+                }
             };
             let spans = vec![
                 Span::styled(
@@ -937,6 +966,9 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             // race on terminal resize), rows[i] will panic with an out-of-bounds index. Clamp the
             // enumeration to rows.len().
             for (i, line) in lines.into_iter().enumerate() {
+                if i >= rows.len() {
+                    break;
+                }
                 let bar = Paragraph::new(line).style(panel_bg);
                 f.render_widget(bar, rows[i]);
             }

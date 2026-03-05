@@ -274,8 +274,8 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     // Settings overlay has additional keybindings
     if matches!(app.overlay, Some(app::OverlayData::Settings { .. })) {
         match key.code {
-            KeyCode::Char('k') | KeyCode::Down => app.overlay_next(),
-            KeyCode::Char('j') | KeyCode::Up => app.overlay_prev(),
+            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
             KeyCode::Char(' ') | KeyCode::Enter => {
                 // Space and Enter both toggle the current item
                 app.settings_toggle();
@@ -291,8 +291,8 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     match key.code {
-        KeyCode::Char('k') | KeyCode::Down => app.overlay_next(),
-        KeyCode::Char('j') | KeyCode::Up => app.overlay_prev(),
+        KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+        KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
         KeyCode::Enter => app.overlay_select()?,
         KeyCode::Backspace => app.overlay_go_up(),
         KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
@@ -456,11 +456,18 @@ fn handle_normal_input(
         }
         // Cleanup AI sidecar files
         KeyCode::Char('z') if key.modifiers == KeyModifiers::NONE => {
-            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions);
+            let count = app
+                .tab()
+                .ai
+                .questions
+                .as_ref()
+                .map_or(0, |q| q.questions.len());
+            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
             return Ok(());
         }
         KeyCode::Char('Z') => {
-            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews);
+            let count = app.tab().ai.review.as_ref().map_or(0, |r| r.files.len());
+            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
             return Ok(());
         }
         KeyCode::Char('x') => {
@@ -483,7 +490,18 @@ fn handle_normal_input(
             return Ok(());
         }
         KeyCode::Char('o') => {
-            app.open_directory_browser();
+            if app.tab().panel == Some(PanelContent::PrOverview) && app.tab().pr_data.is_some() {
+                let repo_root = app.tab().repo_root.clone();
+                let _ = std::process::Command::new("gh")
+                    .args(["pr", "view", "--web"])
+                    .current_dir(&repo_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                app.notify("Opening PR in browser...");
+            } else {
+                app.open_directory_browser();
+            }
             return Ok(());
         }
 
@@ -1067,13 +1085,13 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.notify(&format!("Push failed: {}", e));
                     }
                 }
-            } else if let InputMode::Confirm(ConfirmAction::CleanupQuestions) = action {
+            } else if let InputMode::Confirm(ConfirmAction::CleanupQuestions { .. }) = action {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
                 cleanup_questions(&repo_root);
                 app.tab_mut().reload_ai_state();
                 app.notify("Questions cleared");
-            } else if let InputMode::Confirm(ConfirmAction::CleanupReviews) = action {
+            } else if let InputMode::Confirm(ConfirmAction::CleanupReviews { .. }) = action {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
                 cleanup_reviews(&repo_root);
@@ -1297,8 +1315,14 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     std::fs::rename(&tmp_path, &comments_path)?;
 
     app.tab_mut().reload_ai_state();
+
+    // Refresh PR overview data (CI checks + reviewer status)
+    if let Some(pr_data) = github::gh_pr_overview(&repo_root) {
+        app.tab_mut().pr_data = Some(pr_data);
+    }
+
     app.notify(&format!(
-        "GitHub sync: {} from GitHub, {} local kept",
+        "GitHub sync: {} from GitHub, {} local kept, PR status refreshed",
         github_count, local_count
     ));
     Ok(())

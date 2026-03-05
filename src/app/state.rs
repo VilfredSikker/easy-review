@@ -137,8 +137,8 @@ pub enum InputMode {
 pub enum ConfirmAction {
     DeleteComment { comment_id: String },
     Push,
-    CleanupQuestions,
-    CleanupReviews,
+    CleanupQuestions { count: usize },
+    CleanupReviews { count: usize },
 }
 
 /// Which pane has focus in split diff view
@@ -644,13 +644,19 @@ impl TabState {
 
     /// Re-run git diff and update the file list
     pub fn refresh_diff(&mut self) -> Result<()> {
-        self.refresh_diff_impl(true)
+        self.refresh_diff_impl(true, true)
     }
 
     /// Lightweight refresh: skips branch hash recomputation in non-Branch modes.
     /// Use for watch events where the extra git diff call adds unwanted latency.
     pub fn refresh_diff_quick(&mut self) -> Result<()> {
-        self.refresh_diff_impl(false)
+        self.refresh_diff_impl(false, false)
+    }
+
+    /// Refresh for mode switch: recompute hashes but don't auto-unmark.
+    /// Diff content differs per mode, so hash changes don't mean actual file changes.
+    pub fn refresh_diff_mode_switch(&mut self) -> Result<()> {
+        self.refresh_diff_impl(true, false)
     }
 
     /// Refresh conflict files for Conflicts mode.
@@ -713,7 +719,7 @@ impl TabState {
         self.file_tree_cache = None;
     }
 
-    fn refresh_diff_impl(&mut self, recompute_branch_hash: bool) -> Result<()> {
+    fn refresh_diff_impl(&mut self, recompute_branch_hash: bool, auto_unmark: bool) -> Result<()> {
         // History mode doesn't use git_diff_raw — skip normal diff refresh
         if self.mode == DiffMode::History {
             return Ok(());
@@ -742,7 +748,13 @@ impl TabState {
                 self.committed_unpushed = false;
                 staged_raw
             } else {
-                git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root)?
+                match git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root) {
+                    Ok(raw) => raw,
+                    Err(_) => {
+                        self.committed_unpushed = false;
+                        String::new()
+                    }
+                }
             }
         } else {
             git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?
@@ -856,10 +868,11 @@ impl TabState {
         // staleness detection doesn't need sub-second precision.
         if recompute_branch_hash {
             self.current_per_file_hashes = ai::compute_per_file_hashes(&raw);
+            if auto_unmark {
+                // Auto-unmark reviewed files whose diff has changed since they were marked.
+                self.pending_unmark_count = self.auto_unmark_changed_reviewed();
+            }
         }
-
-        // Auto-unmark reviewed files whose diff has changed since they were marked.
-        self.pending_unmark_count = self.auto_unmark_changed_reviewed();
 
         // Load AI state from .er-* files
         self.reload_ai_state();
@@ -1863,14 +1876,13 @@ impl TabState {
                 return;
             }
         }
-        // TODO(risk:medium): file_headers.get(selected_file) uses the raw file index, but selected_file
-        // is an index into self.files (which may be reordered by mtime sort). If sort_by_mtime is active,
-        // the file at self.files[selected_file] corresponds to a different header than
-        // self.file_headers[selected_file], so we'd parse the wrong file's diff.
-        // Parse on demand from raw diff
-        if let (Some(ref raw), Some(header)) =
-            (&self.raw_diff, self.file_headers.get(self.selected_file))
-        {
+        // Parse on demand from raw diff — look up header by path (not index) to handle mtime sort
+        let path = self.files.get(self.selected_file).map(|f| f.path.clone());
+        let header_idx = path
+            .as_ref()
+            .and_then(|p| self.file_headers.iter().position(|h| h.path == *p));
+        if let (Some(ref raw), Some(idx)) = (&self.raw_diff, header_idx) {
+            let header = &self.file_headers[idx];
             let parsed = git::parse_file_at_offset(raw, header);
             if !parsed.hunks.is_empty() {
                 if let Some(file) = self.files.get_mut(self.selected_file) {
@@ -2331,6 +2343,7 @@ impl TabState {
             let prev_line = self.current_line;
 
             self.mode = mode;
+            self.committed_unpushed = false;
             if mode == DiffMode::History {
                 // Initialize history state if first time
                 if self.history.is_none() {
@@ -2374,7 +2387,7 @@ impl TabState {
                 self.current_line = None;
                 self.selected_watched = None;
                 self.diff_scroll = 0;
-                let _ = self.refresh_diff();
+                let _ = self.refresh_diff_mode_switch();
 
                 // Restore selection by path (file order may differ between modes)
                 if let Some(path) = prev_path {
@@ -3448,9 +3461,13 @@ impl App {
             }
             match found {
                 Some(f) => f,
-                None => return,
+                None => {
+                    self.notify("Finding not found — review may be stale");
+                    return;
+                }
             }
         } else {
+            self.notify("No AI review loaded — cannot reply to finding");
             return;
         };
 
@@ -4026,22 +4043,27 @@ impl App {
         tab.scroll_to_current_hunk();
     }
 
-    /// Jump to the next hint (unified: comments + questions + findings).
+    /// Jump to the next comment/question (Shift+J). Excludes findings.
     pub fn next_hint(&mut self) {
         self.jump_hint(true);
     }
 
-    /// Jump to the previous hint (unified: comments + questions + findings).
+    /// Jump to the previous comment/question (Shift+K). Excludes findings.
     pub fn prev_hint(&mut self) {
         self.jump_hint(false);
     }
 
-    /// Unified navigation across comments, questions, and findings.
+    /// Navigation across comments and questions only (excludes findings).
     fn jump_hint(&mut self, forward: bool) {
         use crate::ai::HintType;
 
         let tab = self.tab_mut();
-        let all = tab.ai.all_hints_ordered();
+        let all: Vec<_> = tab
+            .ai
+            .all_hints_ordered()
+            .into_iter()
+            .filter(|(_, _, _, _, ht)| *ht != HintType::Finding)
+            .collect();
 
         if all.is_empty() {
             return;
@@ -4413,7 +4435,9 @@ impl App {
         }
 
         // AI finding if present
-        let findings = tab.ai.findings_for_hunk(&file.path, tab.current_hunk);
+        let findings = tab
+            .ai
+            .findings_for_hunk(&file.path, tab.current_hunk, file.hunks.len());
         if let Some(finding) = findings.first() {
             text.push_str(&format!(
                 "\nFinding: [{:?}] {}\n",
@@ -5460,6 +5484,7 @@ mod tests {
             body: String::new(),
             state: "OPEN".to_string(),
             author: "u".to_string(),
+            url: String::new(),
             base_branch: "main".to_string(),
             head_branch: "feat".to_string(),
             checks: vec![],
@@ -5491,6 +5516,7 @@ mod tests {
             body: String::new(),
             state: "OPEN".to_string(),
             author: "u".to_string(),
+            url: String::new(),
             base_branch: "main".to_string(),
             head_branch: "feat".to_string(),
             checks: vec![],
@@ -5570,6 +5596,7 @@ mod tests {
             body: String::new(),
             state: "OPEN".to_string(),
             author: "user".to_string(),
+            url: String::new(),
             base_branch: "main".to_string(),
             head_branch: "feature".to_string(),
             checks: vec![],

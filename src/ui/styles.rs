@@ -96,6 +96,9 @@ pub const STALE: Color = Color::Rgb(180, 160, 40);
 /// AI finding banner background (warm tint against cool bg for contrast)
 pub const FINDING_BG: Color = Color::Rgb(36, 28, 18);
 
+/// AI finding banner background when focused (brighter warm tint)
+pub const FINDING_FOCUS_BG: Color = Color::Rgb(50, 38, 22);
+
 /// Risk dot styles
 pub fn risk_high() -> Style {
     Style::default().fg(RED).add_modifier(Modifier::BOLD)
@@ -112,11 +115,6 @@ pub fn risk_low() -> Style {
 #[allow(dead_code)]
 pub fn risk_info() -> Style {
     Style::default().fg(BLUE)
-}
-
-/// Finding banner style
-pub fn finding_style() -> Style {
-    Style::default().fg(ORANGE).bg(FINDING_BG)
 }
 
 /// Line cursor background (subtle purple tint to match selection theme)

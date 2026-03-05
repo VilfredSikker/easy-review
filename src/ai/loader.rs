@@ -4,6 +4,24 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
+const MAX_SIDECAR_BYTES: u64 = 10_000_000;
+
+/// Read a sidecar file with a size limit to prevent memory spikes from large/adversarial files.
+fn read_sidecar(path: &Path) -> std::io::Result<String> {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > MAX_SIDECAR_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Sidecar file too large: {} bytes (limit {})",
+                metadata.len(),
+                MAX_SIDECAR_BYTES
+            ),
+        ));
+    }
+    std::fs::read_to_string(path)
+}
+
 /// Compute SHA-256 hash of raw diff output (for staleness detection).
 /// Used for .er-review.json compatibility where the hash is persisted.
 pub fn compute_diff_hash(raw_diff: &str) -> String {
@@ -77,11 +95,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 
     // Load .er/review.json
     let review_path = Path::new(repo_root).join(".er").join("review.json");
-    // TODO(risk:medium): `read_to_string` loads the entire file into memory before
-    // deserialising. A very large or adversarially crafted `.er-review.json` (e.g. a
-    // findings array with millions of entries) will spike memory before serde can reject
-    // it. Consider capping the read with `take(MAX_BYTES)` on the file handle.
-    if let Ok(content) = std::fs::read_to_string(&review_path) {
+    if let Ok(content) = read_sidecar(&review_path) {
         // TODO(risk:minor): Deserialization errors are silently swallowed (`Err(_) => {}`).
         // A malformed sidecar will appear as if the file doesn't exist; there is no
         // user-visible indication that a parse failure occurred.
@@ -93,7 +107,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 
     // Load .er/order.json
     let order_path = Path::new(repo_root).join(".er").join("order.json");
-    if let Ok(content) = std::fs::read_to_string(&order_path) {
+    if let Ok(content) = read_sidecar(&order_path) {
         if let Ok(order) = serde_json::from_str::<ErOrder>(&content) {
             // Check staleness against review hash or independently
             if !state.is_stale && order.diff_hash != current_diff_hash {
@@ -109,10 +123,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 
     // Load .er/summary.md
     let summary_path = Path::new(repo_root).join(".er").join("summary.md");
-    // TODO(risk:medium): No size limit on `.er-summary.md`. A multi-megabyte markdown
-    // file is read entirely into a heap-allocated String. The UI renders it inline, so
-    // the entire content stays in memory for the lifetime of the session.
-    if let Ok(content) = std::fs::read_to_string(&summary_path) {
+    if let Ok(content) = read_sidecar(&summary_path) {
         if !content.trim().is_empty() {
             state.summary = Some(content);
         }
@@ -120,7 +131,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 
     // Load .er/checklist.json
     let checklist_path = Path::new(repo_root).join(".er").join("checklist.json");
-    if let Ok(content) = std::fs::read_to_string(&checklist_path) {
+    if let Ok(content) = read_sidecar(&checklist_path) {
         if let Ok(checklist) = serde_json::from_str::<ErChecklist>(&content) {
             if !state.is_stale && checklist.diff_hash != current_diff_hash {
                 state.is_stale = true;
@@ -131,7 +142,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 
     // Load .er/questions.json (personal review questions)
     let questions_path = Path::new(repo_root).join(".er").join("questions.json");
-    if let Ok(content) = std::fs::read_to_string(&questions_path) {
+    if let Ok(content) = read_sidecar(&questions_path) {
         if let Ok(questions) = serde_json::from_str::<ErQuestions>(&content) {
             state.questions = Some(questions);
         }
@@ -141,7 +152,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     let gh_comments_path = Path::new(repo_root)
         .join(".er")
         .join("github-comments.json");
-    if let Ok(content) = std::fs::read_to_string(&gh_comments_path) {
+    if let Ok(content) = read_sidecar(&gh_comments_path) {
         if let Ok(gh_comments) = serde_json::from_str::<ErGitHubComments>(&content) {
             state.github_comments = Some(gh_comments);
         }
@@ -155,7 +166,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     // comments to be shown via the Legacy fallback path in the query methods.
     if state.questions.is_none() && state.github_comments.is_none() {
         let feedback_path = Path::new(repo_root).join(".er").join("feedback.json");
-        if let Ok(content) = std::fs::read_to_string(&feedback_path) {
+        if let Ok(content) = read_sidecar(&feedback_path) {
             if let Ok(feedback) = serde_json::from_str::<ErFeedback>(&content) {
                 state.feedback = Some(feedback);
             }
