@@ -12,11 +12,11 @@ After running `/er-review` and making fixes. Instead of re-running the full revi
 
 ## What it does
 
-1. Reads the existing `.er-review.json`
+1. Reads the existing `.er/review.json`
 2. Compares per-file diff hashes to identify which files changed
 3. For changed files: re-evaluates each finding against the new code
 4. Removes findings that are resolved, updates those that persist
-5. Writes updated `.er-*` files with the current `diff_hash`
+5. Writes updated `.er/` files with the current `diff_hash`
 
 ## Speed budget
 
@@ -33,7 +33,7 @@ NOT allowed as first word: `for`, `rm`, `while`, `bash`, `sh`
 ```
 Step 1: Read existing review (1 tool call)
 
-TOOL CALL 1 — Read .er-review.json:
+TOOL CALL 1 — Read .er/review.json:
   → If missing: print "No review found. Run /er-review first.", DONE.
   → Extract: diff_hash, diff_scope, base_branch, head_branch, file_hashes, files
 
@@ -50,7 +50,7 @@ TOOL CALL 2 — Bash (hash + per-file hashes):
   For branch scope:
     scripts/er-freshness-check.sh <base_branch>
   For unstaged/staged:
-    git diff <scope-args> > .er-diff-tmp && shasum -a 256 .er-diff-tmp
+    git diff <scope-args> > .er/diff-tmp && shasum -a 256 .er/diff-tmp
   → Get current diff_hash
 
 TOOL CALL 3 — Bash (per-file hashes):
@@ -69,9 +69,9 @@ TOOL CALL 3 — Bash (per-file hashes):
 Step 3: Load diffs for changed files (1-2 tool calls)
 
 TOOL CALL 4 — Bash: capture full diff
-  git diff <scope-args> > .er-diff-tmp
+  git diff <scope-args> > .er/diff-tmp
 
-TOOL CALL 5 — Read .er-diff-tmp
+TOOL CALL 5 — Read .er/diff-tmp
   → Load into context
 
 Step 4: In-context validation (zero tool calls)
@@ -104,21 +104,21 @@ After validation, produce:
 - Updated file_hashes (from Step 2 per-file hashes)
 - Brief refresh summary
 
-Regenerate .er-order.json to remove entries for removed files.
-Regenerate .er-checklist.json: uncheck items whose related_findings were all resolved,
+Regenerate .er/order.json to remove entries for removed files.
+Regenerate .er/checklist.json: uncheck items whose related_findings were all resolved,
 preserve checked state for items with persisting findings.
-Regenerate .er-summary.md: append a "Refresh" section noting what changed.
+Regenerate .er/summary.md: append a "Refresh" section noting what changed.
 
 Step 5: Write updated files (3-4 tool calls)
 
 TOOL CALLS 6-9 — Write updated files in parallel:
-  - .er-review.json (with new diff_hash, updated file_hashes, updated_at, preserved version)
-  - .er-order.json (updated)
-  - .er-checklist.json (updated)
-  - .er-summary.md (updated with refresh note)
+  - .er/review.json (with new diff_hash, updated file_hashes, updated_at, preserved version)
+  - .er/order.json (updated)
+  - .er/checklist.json (updated)
+  - .er/summary.md (updated with refresh note)
 
 TOOL CALL 10 — Bash: persist to cache
-  mkdir -p .er-reviews/<branch>/<commit>/ && cp .er-review.json .er-order.json .er-checklist.json .er-summary.md .er-reviews/<branch>/<commit>/
+  mkdir -p .er/reviews/<branch>/<commit>/ && cp .er/review.json .er/order.json .er/checklist.json .er/summary.md .er/reviews/<branch>/<commit>/
 
 Print summary:
   "Refresh complete: N findings resolved, M persisting, K shifted"
@@ -128,10 +128,10 @@ Print summary:
 
 ## Output schema
 
-Same as `/er-review`. The `.er-review.json` output follows the exact same schema —
+Same as `/er-review`. The `.er/review.json` output follows the exact same schema —
 only the content changes (findings removed/updated, hashes updated).
 
-Key fields to update in `.er-review.json`:
+Key fields to update in `.er/review.json`:
 - `diff_hash` → current diff hash
 - `file_hashes` → current per-file hashes
 - `updated_at` → current ISO 8601 timestamp
@@ -147,4 +147,4 @@ Key fields to update in `.er-review.json`:
 
 ## .gitignore
 
-No new files — uses the same `.er-*` files as `/er-review`.
+No new files — uses the same `.er/` files as `/er-review`.

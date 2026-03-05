@@ -143,7 +143,7 @@
     <div class="max-w-4xl mx-auto text-center relative">
       <div class="fade-up fade-up-1 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-border text-xs text-text-dim font-mono mb-8">
         <span class="w-1.5 h-1.5 rounded-full bg-green animate-pulse"></span>
-        v1.3 — now open source
+        v1.4 — now open source
       </div>
 
       <h1 class="fade-up fade-up-2 text-4xl sm:text-5xl md:text-6xl font-body font-600 tracking-tight leading-[1.1] mb-6">
@@ -342,9 +342,13 @@
                 <span class="text-text-dim">·</span>
                 <span class="text-text-dim"><span class="text-text">Tab</span> focus</span>
                 <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">U</span> next unreviewed</span>
+                <span class="text-text-dim">·</span>
                 <span class="text-text-dim"><span class="text-text">G</span> pull</span>
                 <span class="text-text-dim">·</span>
                 <span class="text-text-dim"><span class="text-text">P</span> push</span>
+                <span class="text-text-dim">·</span>
+                <span class="text-text-dim"><span class="text-text">^p</span> git push</span>
               </div>
             </div>
 
@@ -410,7 +414,7 @@
           <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(167,139,250,0.06)_0%,transparent_70%)] pointer-events-none"></div>
           <div class="w-9 h-9 rounded-md bg-accent/15 border border-accent/25 flex items-center justify-center mb-4 font-mono text-accent text-sm">⬡</div>
           <h3 class="font-body font-500 text-base mb-2">AI-powered review</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-xs">/er-review</span> from Claude Code to get per-file risk ratings and hunk-level findings rendered inline. Press <span class="keycap">a</span> to toggle the AI findings layer — independent of comments and panel.</p>
+          <p class="text-sm text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-xs">/er-review</span> from Claude Code to get per-file risk ratings and hunk-level findings rendered inline. Press <span class="keycap">a</span> to toggle the AI findings layer. Run <span class="font-mono text-accent text-xs">/er-questions</span> standalone — no full review needed — to get AI answers to your private questions.</p>
         </div>
 
         <!-- Feature 2: Two comment types -->
@@ -446,7 +450,22 @@
         <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
           <div class="w-9 h-9 rounded-md bg-blue/10 border border-blue/20 flex items-center justify-center mb-4 font-mono text-blue text-sm">✓</div>
           <h3 class="font-body font-500 text-base mb-2">Review tracking</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Mark files as reviewed with <span class="keycap">Space</span>, filter to unreviewed with <span class="keycap">u</span>. Never lose your place.</p>
+          <p class="text-sm text-text-dim leading-relaxed">Mark files as reviewed with <span class="keycap">Space</span>. Press <span class="keycap">U</span> to jump straight to the next unreviewed file. Marks clear automatically when the diff changes under a reviewed file.</p>
+        </div>
+
+        <!-- Feature: Git push from TUI -->
+        <div class="reveal bg-surface border border-green/30 rounded-lg p-6 hover:border-green/50 transition group relative overflow-hidden">
+          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(74,222,128,0.06)_0%,transparent_70%)] pointer-events-none"></div>
+          <div class="w-9 h-9 rounded-md bg-green/15 border border-green/25 flex items-center justify-center mb-4 font-mono text-green text-sm">↑</div>
+          <h3 class="font-body font-500 text-base mb-2">Git push from TUI</h3>
+          <p class="text-sm text-text-dim leading-relaxed">After committing, press <span class="keycap">Ctrl+P</span> to push to the remote without leaving <span class="font-mono text-accent text-xs">er</span>. Stage, commit, push — the full flow in one place.</p>
+        </div>
+
+        <!-- Feature: Cleanup commands -->
+        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
+          <div class="w-9 h-9 rounded-md bg-yellow/10 border border-yellow/20 flex items-center justify-center mb-4 font-mono text-yellow text-sm">z</div>
+          <h3 class="font-body font-500 text-base mb-2">Cleanup commands</h3>
+          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">z</span> to clear AI review artifacts for the current file, or <span class="keycap">Z</span> to reset all AI state. Wipe stale results and start fresh without leaving the TUI.</p>
         </div>
 
         <!-- Feature 8 -->
@@ -568,8 +587,8 @@
         <div class="reveal flex gap-6 items-start">
           <div class="flex-shrink-0 w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center font-mono text-accent text-sm">5</div>
           <div>
-            <h3 class="font-body font-500 text-lg mb-1">Review, stage, commit</h3>
-            <p class="text-text-dim leading-relaxed">Navigate files with <span class="keycap">j</span><span class="keycap">k</span>, lines with <span class="keycap">↑</span><span class="keycap">↓</span>, hunks with <span class="keycap">n</span><span class="keycap">N</span>. Stage what looks good with <span class="keycap">s</span>, mark reviewed with <span class="keycap">Space</span>.</p>
+            <h3 class="font-body font-500 text-lg mb-1">Review, stage, commit, push</h3>
+            <p class="text-text-dim leading-relaxed">Navigate files with <span class="keycap">j</span><span class="keycap">k</span>, lines with <span class="keycap">↑</span><span class="keycap">↓</span>, hunks with <span class="keycap">n</span><span class="keycap">N</span>. Jump to the next unreviewed file with <span class="keycap">U</span>. Stage what looks good with <span class="keycap">s</span>, mark reviewed with <span class="keycap">Space</span>, then press <span class="keycap">Ctrl+P</span> to push — without leaving the TUI.</p>
           </div>
         </div>
 

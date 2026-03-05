@@ -19,6 +19,12 @@ const VIRTUALIZE_THRESHOLD: usize = 200;
 /// Threshold above which a "large file" warning is shown in the title
 const LARGE_FILE_WARNING_LINES: usize = 2000;
 
+/// Blank unified gutter matching `format!("{} {} \u{2502}", "    ", "    ")`
+const BLANK_UNIFIED_GUTTER: &str = "          \u{2502}";
+
+/// Blank split gutter matching `format!("{} \u{2502}", "    ")`
+const BLANK_SPLIT_GUTTER: &str = "     \u{2502}";
+
 /// Render the diff view panel (right side)
 pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let tab = app.tab();
@@ -31,7 +37,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
     // Check if a watched file is selected
     if let Some(watched) = tab.selected_watched_file() {
-        render_watched(f, area, app, &watched.path.clone(), watched.size);
+        render_watched(f, area, app, &watched.path, watched.size);
         return;
     }
 
@@ -330,7 +336,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 // Segments are owned Strings; highlight them and convert to Span<'static>
                 // so they can safely outlive the local `segments` Vec.
                 let segments = word_wrap(&diff_line.content, unified_wrap_width.max(1));
-                let blank_gutter = format!("{} {} \u{2502}", "    ", "    ");
                 for (seg_idx, segment) in segments.iter().enumerate() {
                     if logical_line >= render_start && logical_line < render_end {
                         let mut spans: Vec<Span<'static>> = if seg_idx == 0 {
@@ -343,7 +348,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                             ]
                         } else {
                             vec![
-                                Span::styled(blank_gutter.clone(), gutter_style),
+                                Span::styled(BLANK_UNIFIED_GUTTER, gutter_style),
                                 Span::styled(" ", base_style),
                             ]
                         };
@@ -633,6 +638,49 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let paragraph = Paragraph::new(lines).block(block).scroll(visible_scroll);
 
     f.render_widget(paragraph, area);
+
+    // Sticky file path header: when the user scrolls down far enough that the file header
+    // (logical_line=0) leaves the viewport, pin it at the top row of the diff area so
+    // context is never lost. Only shown when scroll > 0 (header is off-screen).
+    if scroll > 0 {
+        let sticky_bg = styles::PANEL;
+        let mut sticky_spans: Vec<Span> = vec![
+            Span::styled(
+                format!("  {} ", file.status.symbol()),
+                match &file.status {
+                    crate::git::FileStatus::Added => styles::status_added(),
+                    crate::git::FileStatus::Deleted => styles::status_deleted(),
+                    _ => styles::status_modified(),
+                },
+            ),
+            Span::styled(
+                file.path.clone(),
+                ratatui::style::Style::default()
+                    .fg(styles::BRIGHT)
+                    .bg(sticky_bg),
+            ),
+            Span::styled(
+                format!("  +{} -{}", file.adds, file.dels),
+                ratatui::style::Style::default()
+                    .fg(styles::DIM)
+                    .bg(sticky_bg),
+            ),
+        ];
+        // Pad to fill the full width so the background covers the row
+        let sticky_len: usize = sticky_spans.iter().map(|s| s.content.chars().count()).sum();
+        let sticky_remaining = (area.width as usize).saturating_sub(sticky_len);
+        sticky_spans.push(Span::styled(
+            " ".repeat(sticky_remaining),
+            ratatui::style::Style::default().bg(sticky_bg),
+        ));
+        let sticky_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(Line::from(sticky_spans)), sticky_area);
+    }
 
     // Render hunk indicator overlay in top-right corner
     if total_hunks > 0 {
@@ -956,7 +1004,6 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 // Segments are owned Strings; highlight them and convert to Span<'static>
                 // so they can safely outlive the local `segments` Vec.
                 let segments = word_wrap(&diff_line.content, split_wrap_width.max(1));
-                let blank_gutter = format!("{} \u{2502}", "    ");
                 for (seg_idx, segment) in segments.iter().enumerate() {
                     if logical_line >= render_start && logical_line < render_end {
                         let mut spans: Vec<Span<'static>> = if seg_idx == 0 {
@@ -966,7 +1013,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                             ]
                         } else {
                             vec![
-                                Span::styled(blank_gutter.clone(), gutter_style),
+                                Span::styled(BLANK_SPLIT_GUTTER, gutter_style),
                                 Span::styled(" ", base_style),
                             ]
                         };
@@ -1216,6 +1263,50 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     let paragraph = Paragraph::new(lines).scroll(visible_scroll);
 
     f.render_widget(paragraph, inner);
+
+    // Sticky file path header for the New side: when the file header at logical_line=0 has
+    // scrolled off the top of the inner viewport, overlay a 1-row sticky header so the user
+    // always knows which file they're reviewing. Old side shows a blank line at logical_line=0
+    // so no sticky header is needed there.
+    if side == SplitSide::New && scroll > 0 {
+        let sticky_bg = styles::PANEL;
+        let mut sticky_spans: Vec<Span> = vec![
+            Span::styled(
+                format!("  {} ", file.status.symbol()),
+                match &file.status {
+                    crate::git::FileStatus::Added => styles::status_added(),
+                    crate::git::FileStatus::Deleted => styles::status_deleted(),
+                    _ => styles::status_modified(),
+                },
+            ),
+            Span::styled(
+                file.path.clone(),
+                ratatui::style::Style::default()
+                    .fg(styles::BRIGHT)
+                    .bg(sticky_bg),
+            ),
+            Span::styled(
+                format!("  +{} -{}", file.adds, file.dels),
+                ratatui::style::Style::default()
+                    .fg(styles::DIM)
+                    .bg(sticky_bg),
+            ),
+        ];
+        // Pad to fill the full inner width
+        let sticky_len: usize = sticky_spans.iter().map(|s| s.content.chars().count()).sum();
+        let sticky_remaining = (inner.width as usize).saturating_sub(sticky_len);
+        sticky_spans.push(Span::styled(
+            " ".repeat(sticky_remaining),
+            ratatui::style::Style::default().bg(sticky_bg),
+        ));
+        let sticky_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(Line::from(sticky_spans)), sticky_area);
+    }
 }
 
 /// Render multi-file commit diff (History mode)
@@ -1926,7 +2017,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                     for hunk in &diff_file.hunks {
                         lines.push(
                             Line::from(Span::styled(
-                                format!("  {}", hunk.header.clone()),
+                                format!("  {}", hunk.header),
                                 styles::hunk_header_style(),
                             ))
                             .style(styles::hunk_header_style()),

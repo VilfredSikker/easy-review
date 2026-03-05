@@ -1,6 +1,6 @@
 # er Skills for Claude Code
 
-These skills power the AI feedback loop in `er`. They generate `.er-*` sidecar files that `er` reads and renders in the AI overlay.
+These skills power the AI feedback loop in `er`. They generate `.er/` sidecar files that `er` reads and renders in the AI overlay.
 
 ## Setup (local, pre-plugin)
 
@@ -30,7 +30,7 @@ ln -s $(pwd)/skills/er-publish ~/.claude/commands/er-publish
 
 | Step | Where | What happens |
 |------|-------|--------------|
-| 1 | Claude Code | `/er-review` — writes `.er-*.json` files |
+| 1 | Claude Code | `/er-review` — writes `.er/*.json` files |
 | 2 | er (TUI) | Auto-detects new files, press `v` for AI Overlay mode |
 | 3 | er (TUI) | Review findings inline, press `c` to comment on a hunk |
 | 4 | Claude Code | `/er-questions` — reads feedback, responds, archives |
@@ -57,4 +57,4 @@ cd your-repo
 bash /path/to/easy-review/scripts/generate-test-fixtures.sh
 ```
 
-This creates .er-* files with matching diff_hash so you can test the overlay rendering.
+This creates .er/ files with matching diff_hash so you can test the overlay rendering.

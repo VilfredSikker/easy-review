@@ -559,6 +559,57 @@ pub fn git_stage_all(repo_root: &str) -> Result<()> {
     Ok(())
 }
 
+/// Push current branch to remote, returning trimmed stderr output on success
+pub fn git_push(repo_root: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["push"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git push")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git push failed: {}", stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
+}
+
+/// Returns true if the current branch has commits not yet pushed to upstream
+#[allow(dead_code)]
+pub fn has_unpushed_commits(repo_root: &str) -> bool {
+    let output = Command::new("git")
+        .args(["rev-list", "--count", "@{upstream}..HEAD"])
+        .current_dir(repo_root)
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            let count_str = String::from_utf8_lossy(&out.stdout);
+            count_str.trim().parse::<u64>().unwrap_or(0) > 0
+        }
+        _ => false,
+    }
+}
+
+/// Get raw diff output between two refs (e.g. "HEAD~1" and "HEAD")
+pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<String> {
+    let range = format!("{}..{}", from, to);
+    let output = Command::new("git")
+        .args(["diff", &range, "--unified=3", "--no-color", "--no-ext-diff"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git diff for range")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !stderr.is_empty() && !output.status.success() {
+        anyhow::bail!("git diff {} failed: {}", range, stderr.trim());
+    }
+
+    Ok(stdout)
+}
+
 /// Commit staged changes with the given message
 pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
     // TODO(risk:minor): `message` is passed as a separate argument to Command::args, so shell
