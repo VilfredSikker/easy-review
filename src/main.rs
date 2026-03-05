@@ -456,7 +456,12 @@ fn handle_normal_input(
         }
         // Cleanup AI sidecar files
         KeyCode::Char('z') if key.modifiers == KeyModifiers::NONE => {
-            let count = app.tab().ai.questions.as_ref().map_or(0, |q| q.questions.len());
+            let count = app
+                .tab()
+                .ai
+                .questions
+                .as_ref()
+                .map_or(0, |q| q.questions.len());
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
             return Ok(());
         }
@@ -485,9 +490,7 @@ fn handle_normal_input(
             return Ok(());
         }
         KeyCode::Char('o') => {
-            if app.tab().panel == Some(PanelContent::PrOverview)
-                && app.tab().pr_data.is_some()
-            {
+            if app.tab().panel == Some(PanelContent::PrOverview) && app.tab().pr_data.is_some() {
                 let repo_root = app.tab().repo_root.clone();
                 let _ = std::process::Command::new("gh")
                     .args(["pr", "view", "--web"])

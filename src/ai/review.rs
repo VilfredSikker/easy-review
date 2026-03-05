@@ -753,7 +753,12 @@ impl AiState {
 
     /// Get hunk-level findings (no line_start) for a specific file and hunk index.
     /// Findings with no hunk_index and no line_start attach to the last hunk.
-    pub fn findings_for_hunk(&self, path: &str, hunk_index: usize, total_hunks: usize) -> Vec<&Finding> {
+    pub fn findings_for_hunk(
+        &self,
+        path: &str,
+        hunk_index: usize,
+        total_hunks: usize,
+    ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
@@ -774,7 +779,12 @@ impl AiState {
     }
 
     /// Get findings anchored to a specific line within a hunk (by hunk index).
-    pub fn findings_for_line(&self, path: &str, hunk_index: usize, line_num: usize) -> Vec<&Finding> {
+    pub fn findings_for_line(
+        &self,
+        path: &str,
+        hunk_index: usize,
+        line_num: usize,
+    ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
@@ -1712,7 +1722,9 @@ mod tests {
             vec![make_finding("1", None, RiskLevel::High)],
         )]));
         // Should NOT appear on hunk 0 (not the last)
-        assert!(state.findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 2).is_empty());
+        assert!(state
+            .findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 2)
+            .is_empty());
         // Should appear on last hunk
         let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5, 1, 2);
         assert_eq!(results.len(), 1);
@@ -1744,7 +1756,13 @@ mod tests {
         state.review = Some(make_review_with_files(vec![(
             "a.rs",
             RiskLevel::High,
-            vec![make_finding_with_lines("1", Some(0), Some(10), None, RiskLevel::High)],
+            vec![make_finding_with_lines(
+                "1",
+                Some(0),
+                Some(10),
+                None,
+                RiskLevel::High,
+            )],
         )]));
         let results = state.findings_for_line("a.rs", 0, 99);
         assert!(results.is_empty());

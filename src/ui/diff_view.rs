@@ -426,15 +426,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             if in_overlay {
                 if let Some(new_line_num) = diff_line.new_num {
                     let line_findings = match tab.mode {
-                        DiffMode::Branch => tab.ai.findings_for_line(&file.path, hunk_idx, new_line_num),
-                        DiffMode::Unstaged | DiffMode::Staged => tab.ai.findings_for_line_by_range(&file.path, new_line_num),
+                        DiffMode::Branch => {
+                            tab.ai.findings_for_line(&file.path, hunk_idx, new_line_num)
+                        }
+                        DiffMode::Unstaged | DiffMode::Staged => {
+                            tab.ai.findings_for_line_by_range(&file.path, new_line_num)
+                        }
                         DiffMode::History | DiffMode::Conflicts => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
                         let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
                         let pre_len = lines.len();
-                        render_finding_banner(&mut lines, finding, area.width, file_stale, is_focused);
+                        render_finding_banner(
+                            &mut lines, finding, area.width, file_stale, is_focused,
+                        );
                         let finding_line_count = lines.len() - pre_len;
                         if logical_line < render_start || logical_line >= render_end {
                             lines.truncate(pre_len);
@@ -1119,15 +1125,25 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             if side == SplitSide::New && tab.layers.show_ai_findings {
                 if let Some(new_line_num) = diff_line.new_num {
                     let line_findings = match tab.mode {
-                        DiffMode::Branch => tab.ai.findings_for_line(&file.path, hunk_idx, new_line_num),
-                        DiffMode::Unstaged | DiffMode::Staged => tab.ai.findings_for_line_by_range(&file.path, new_line_num),
+                        DiffMode::Branch => {
+                            tab.ai.findings_for_line(&file.path, hunk_idx, new_line_num)
+                        }
+                        DiffMode::Unstaged | DiffMode::Staged => {
+                            tab.ai.findings_for_line_by_range(&file.path, new_line_num)
+                        }
                         DiffMode::History | DiffMode::Conflicts => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
                         let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
                         let pre_len = lines.len();
-                        render_finding_banner(&mut lines, finding, inner.width, file_stale, is_focused);
+                        render_finding_banner(
+                            &mut lines,
+                            finding,
+                            inner.width,
+                            file_stale,
+                            is_focused,
+                        );
                         let finding_line_count = lines.len() - pre_len;
                         if logical_line < render_start || logical_line >= render_end {
                             lines.truncate(pre_len);
@@ -1883,21 +1899,14 @@ fn render_finding_banner(
     let stale_tag = if file_stale { " [stale]" } else { "" };
 
     let mut title_spans = vec![
-        Span::styled(
-            format!("  {} ", finding.severity.symbol()),
-            severity_style,
-        ),
+        Span::styled(format!("  {} ", finding.severity.symbol()), severity_style),
         Span::styled(
             format!("[{}]", finding.category),
-            ratatui::style::Style::default()
-                .fg(styles::DIM)
-                .bg(bg),
+            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
         ),
         Span::styled(
             format!(" {}{}", finding.title, stale_tag),
-            ratatui::style::Style::default()
-                .fg(styles::ORANGE)
-                .bg(bg),
+            ratatui::style::Style::default().fg(styles::ORANGE).bg(bg),
         ),
     ];
     if focused {
@@ -1910,10 +1919,7 @@ fn render_finding_banner(
         ));
     }
 
-    lines.push(
-        Line::from(title_spans)
-        .style(ratatui::style::Style::default().bg(bg)),
-    );
+    lines.push(Line::from(title_spans).style(ratatui::style::Style::default().bg(bg)));
 
     if !finding.description.is_empty() {
         let desc = finding.description.lines().next().unwrap_or("");
@@ -1931,9 +1937,7 @@ fn render_finding_banner(
         lines.push(
             Line::from(vec![Span::styled(
                 format!("    {}", truncated),
-                ratatui::style::Style::default()
-                    .fg(styles::MUTED)
-                    .bg(bg),
+                ratatui::style::Style::default().fg(styles::MUTED).bg(bg),
             )])
             .style(ratatui::style::Style::default().bg(bg)),
         );
@@ -1955,9 +1959,7 @@ fn render_finding_banner(
         lines.push(
             Line::from(vec![Span::styled(
                 format!("    \u{2192} {}", truncated),
-                ratatui::style::Style::default()
-                    .fg(styles::GREEN)
-                    .bg(bg),
+                ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
             )])
             .style(ratatui::style::Style::default().bg(bg)),
         );

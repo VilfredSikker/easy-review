@@ -646,10 +646,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                     .fg(styles::DIM)
                     .add_modifier(Modifier::UNDERLINED),
             ),
-            Span::styled(
-                "  (o to open)",
-                Style::default().fg(styles::MUTED),
-            ),
+            Span::styled("  (o to open)", Style::default().fg(styles::MUTED)),
         ]));
     }
     lines.push(Line::from(""));

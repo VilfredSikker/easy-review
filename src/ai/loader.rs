@@ -12,7 +12,11 @@ fn read_sidecar(path: &Path) -> std::io::Result<String> {
     if metadata.len() > MAX_SIDECAR_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("Sidecar file too large: {} bytes (limit {})", metadata.len(), MAX_SIDECAR_BYTES),
+            format!(
+                "Sidecar file too large: {} bytes (limit {})",
+                metadata.len(),
+                MAX_SIDECAR_BYTES
+            ),
         ));
     }
     std::fs::read_to_string(path)
