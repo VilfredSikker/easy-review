@@ -12,10 +12,12 @@ use crate::ai::{CommentRef, CommentType, PanelContent, ReviewFocus, RiskLevel};
 use crate::app::App;
 
 // PR check conclusion display helpers
-fn check_icon(conclusion: Option<&str>) -> (&'static str, ratatui::style::Color) {
-    match conclusion {
-        Some("success") => ("✓", styles::GREEN),
-        Some("failure") | Some("cancelled") | Some("timed_out") => ("✗", styles::RED_TEXT),
+fn check_icon(bucket: Option<&str>) -> (&'static str, ratatui::style::Color) {
+    match bucket {
+        Some("pass") | Some("success") => ("✓", styles::GREEN),
+        Some("fail") | Some("failure") | Some("cancelled") | Some("timed_out") => {
+            ("✗", styles::RED_TEXT)
+        }
         Some("skipped") => ("–", styles::MUTED),
         _ => ("○", styles::DIM),
     }
@@ -629,10 +631,30 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             Style::default().fg(styles::DIM),
         ),
     ]));
+    let max_w = area.width.saturating_sub(3) as usize;
+    if !pr.url.is_empty() {
+        // Short display that fits narrow panels: "owner/repo#N"
+        let display = pr
+            .url
+            .strip_prefix("https://github.com/")
+            .unwrap_or(&pr.url)
+            .replace("/pull/", "#");
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {}", display),
+                Style::default()
+                    .fg(styles::DIM)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            Span::styled(
+                "  (o to open)",
+                Style::default().fg(styles::MUTED),
+            ),
+        ]));
+    }
     lines.push(Line::from(""));
 
     // Title (word-wrapped)
-    let max_w = area.width.saturating_sub(3) as usize;
     for wrapped in word_wrap(&pr.title, max_w) {
         lines.push(Line::from(vec![Span::styled(
             format!(" {}", wrapped),
@@ -692,11 +714,11 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         lines.push(Line::from(""));
         for check in &pr.checks {
             let (icon, color) = check_icon(check.conclusion.as_deref());
-            let status_text = if check.status == "completed" {
-                check.conclusion.as_deref().unwrap_or("unknown").to_string()
-            } else {
-                check.status.clone()
-            };
+            let status_text = check
+                .conclusion
+                .as_deref()
+                .unwrap_or(&check.status)
+                .to_lowercase();
             // TODO(risk:minor): max_w.saturating_sub(13) can reach 0 when max_w < 13
             // (very narrow panel — area.width < 16). chars().take(0) produces an empty
             // string yielding just "…". Enforce a minimum panel width at the layout level

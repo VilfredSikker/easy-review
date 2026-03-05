@@ -192,13 +192,9 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
 
 /// Get the raw diff output from git for a given mode
 pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
-    // TODO(risk:high): `base` is an unsanitized branch/ref name that comes from user input
-    // (--pr flag, config file, or auto-detection). A value like "--output=/tmp/evil" or
-    // "-O/tmp/evil" injected as the base branch would be concatenated into merge_base_ref and
-    // passed to git diff as a positional argument, not an option. However, if base itself is
-    // used as an arg in the args array directly (not as part of merge_base_ref), git would
-    // interpret leading dashes as flags. Confirm all callers sanitize the base value and
-    // never pass it raw through untrusted channels (e.g., branch names from `gh api` output).
+    if base.starts_with('-') {
+        anyhow::bail!("Invalid base branch: {}", base);
+    }
     let merge_base_ref = format!("{}...HEAD", base);
     let args: Vec<&str> = match mode {
         "branch" => vec![

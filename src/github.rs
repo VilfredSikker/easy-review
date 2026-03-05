@@ -19,6 +19,7 @@ pub struct PrOverviewData {
     pub body: String,
     pub state: String,
     pub author: String,
+    pub url: String,
     pub base_branch: String,
     pub head_branch: String,
     pub checks: Vec<CiCheck>,
@@ -582,7 +583,7 @@ pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
             "pr",
             "view",
             "--json",
-            "number,title,body,state,author,baseRefName,headRefName,reviews",
+            "number,title,body,state,author,url,baseRefName,headRefName,reviews",
         ])
         .current_dir(repo_root)
         .output()
@@ -600,6 +601,7 @@ pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
     let body = v["body"].as_str().unwrap_or("").to_string();
     let state = v["state"].as_str().unwrap_or("").to_string();
     let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+    let url = v["url"].as_str().unwrap_or("").to_string();
     let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
     let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
 
@@ -629,6 +631,7 @@ pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
         body,
         state,
         author,
+        url,
         base_branch,
         head_branch,
         checks,
@@ -639,7 +642,7 @@ pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
 /// Fetch CI check runs for the current PR
 fn gh_pr_checks_data(repo_root: &str) -> Result<Vec<CiCheck>> {
     let output = Command::new("gh")
-        .args(["pr", "checks", "--json", "name,status,conclusion"])
+        .args(["pr", "checks", "--json", "name,state,bucket"])
         .current_dir(repo_root)
         .output()
         .context("Failed to run gh pr checks")?;
@@ -655,12 +658,14 @@ fn gh_pr_checks_data(repo_root: &str) -> Result<Vec<CiCheck>> {
         .iter()
         .filter_map(|c| {
             let name = c["name"].as_str()?;
-            let status = c["status"].as_str().unwrap_or("unknown");
-            let conclusion = c["conclusion"].as_str().map(|s| s.to_string());
+            // gh pr checks uses "state" (e.g. SUCCESS, FAILURE, PENDING)
+            // and "bucket" (pass, fail, pending) for grouping
+            let state = c["state"].as_str().unwrap_or("unknown");
+            let bucket = c["bucket"].as_str().map(|s| s.to_string());
             Some(CiCheck {
                 name: name.to_string(),
-                status: status.to_string(),
-                conclusion,
+                status: state.to_string(),
+                conclusion: bucket,
             })
         })
         .collect();
@@ -817,6 +822,7 @@ mod tests {
             body: "Detailed description".to_string(),
             state: "OPEN".to_string(),
             author: "contributor".to_string(),
+            url: "https://github.com/owner/repo/pull/42".to_string(),
             base_branch: "main".to_string(),
             head_branch: "fix/the-bug".to_string(),
             checks: vec![],
@@ -949,31 +955,31 @@ mod tests {
 
     #[test]
     fn ci_checks_parsed_from_gh_json() {
-        // Simulate `gh pr checks --json name,status,conclusion` output
+        // Simulate `gh pr checks --json name,state,bucket` output
         let json = r#"[
-            {"name": "test", "status": "completed", "conclusion": "success"},
-            {"name": "lint", "status": "completed", "conclusion": "failure"},
-            {"name": "build", "status": "in_progress"}
+            {"name": "test", "state": "SUCCESS", "bucket": "pass"},
+            {"name": "lint", "state": "FAILURE", "bucket": "fail"},
+            {"name": "build", "state": "PENDING"}
         ]"#;
         let arr: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
         let checks: Vec<CiCheck> = arr
             .iter()
             .filter_map(|c| {
                 let name = c["name"].as_str()?;
-                let status = c["status"].as_str().unwrap_or("unknown");
-                let conclusion = c["conclusion"].as_str().map(|s| s.to_string());
+                let state = c["state"].as_str().unwrap_or("unknown");
+                let bucket = c["bucket"].as_str().map(|s| s.to_string());
                 Some(CiCheck {
                     name: name.to_string(),
-                    status: status.to_string(),
-                    conclusion,
+                    status: state.to_string(),
+                    conclusion: bucket,
                 })
             })
             .collect();
 
         assert_eq!(checks.len(), 3);
         assert_eq!(checks[0].name, "test");
-        assert_eq!(checks[0].conclusion, Some("success".to_string()));
-        assert_eq!(checks[1].conclusion, Some("failure".to_string()));
-        assert!(checks[2].conclusion.is_none()); // in_progress — no conclusion yet
+        assert_eq!(checks[0].conclusion, Some("pass".to_string()));
+        assert_eq!(checks[1].conclusion, Some("fail".to_string()));
+        assert!(checks[2].conclusion.is_none()); // pending — no bucket yet
     }
 }

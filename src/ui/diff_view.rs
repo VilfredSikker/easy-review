@@ -8,7 +8,7 @@ use ratatui::{
 use super::highlight::Highlighter;
 use super::styles;
 use super::utils::word_wrap;
-use crate::ai::{CommentRef, CommentType, RiskLevel};
+use crate::ai::{CommentRef, CommentType, Finding, RiskLevel};
 use crate::app::{App, DiffMode, SplitSide};
 use crate::config::ErConfig;
 use crate::git::LineType;
@@ -421,111 +421,69 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     }
                 }
             }
+
+            // ── Inline line-level findings (rendered after comments for the target line) ──
+            if in_overlay {
+                if let Some(new_line_num) = diff_line.new_num {
+                    let line_findings = match tab.mode {
+                        DiffMode::Branch => tab.ai.findings_for_line(&file.path, hunk_idx, new_line_num),
+                        DiffMode::Unstaged | DiffMode::Staged => tab.ai.findings_for_line_by_range(&file.path, new_line_num),
+                        DiffMode::History | DiffMode::Conflicts => vec![],
+                    };
+                    let file_stale = tab.ai.is_file_stale(&file.path);
+                    for finding in &line_findings {
+                        let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
+                        let pre_len = lines.len();
+                        render_finding_banner(&mut lines, finding, area.width, file_stale, is_focused);
+                        let finding_line_count = lines.len() - pre_len;
+                        if logical_line < render_start || logical_line >= render_end {
+                            lines.truncate(pre_len);
+                        }
+                        logical_line += finding_line_count;
+
+                        // Render response comments for this finding
+                        let finding_comments = tab.ai.comments_for_finding(&finding.id);
+                        for fc in &finding_comments {
+                            if !tab.layers.show_github_comments {
+                                continue;
+                            }
+                            let is_focused = tab.focused_comment_id.as_deref() == Some(fc.id());
+                            let pre_len = lines.len();
+                            render_reply_lines(&mut lines, fc, area.width, false, is_focused);
+                            let fc_line_count = lines.len() - pre_len;
+                            if logical_line < render_start || logical_line >= render_end {
+                                lines.truncate(pre_len);
+                            }
+                            logical_line += fc_line_count;
+                        }
+                    }
+                }
+            }
         }
 
-        // ── AI finding banners after each hunk (overlay mode) ──
+        // ── AI finding banners after each hunk (hunk-level only, overlay mode) ──
         if in_overlay {
+            let total_hunks = file.hunks.len();
             let findings = match tab.mode {
-                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx),
+                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx, total_hunks),
                 DiffMode::Unstaged | DiffMode::Staged => tab.ai.findings_for_hunk_by_line_range(
                     &file.path,
                     hunk.new_start,
                     hunk.new_count,
+                    hunk_idx,
+                    total_hunks,
                 ),
                 DiffMode::History | DiffMode::Conflicts => vec![], // AI findings not shown in History/Conflicts mode
             };
             for finding in &findings {
-                let severity_style = if file_stale {
-                    styles::stale_style()
-                } else {
-                    match finding.severity {
-                        RiskLevel::High => styles::risk_high(),
-                        RiskLevel::Medium => styles::risk_medium(),
-                        RiskLevel::Low => styles::risk_low(),
-                        RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
-                    }
-                };
-
-                let stale_tag = if file_stale { " [stale]" } else { "" };
-
-                if logical_line >= render_start && logical_line < render_end {
-                    lines.push(
-                        Line::from(vec![
-                            Span::styled(
-                                format!("  {} ", finding.severity.symbol()),
-                                severity_style,
-                            ),
-                            Span::styled(
-                                format!("[{}]", finding.category),
-                                ratatui::style::Style::default()
-                                    .fg(styles::DIM)
-                                    .bg(styles::FINDING_BG),
-                            ),
-                            Span::styled(
-                                format!(" {}{}", finding.title, stale_tag),
-                                ratatui::style::Style::default()
-                                    .fg(styles::ORANGE)
-                                    .bg(styles::FINDING_BG),
-                            ),
-                        ])
-                        .style(styles::finding_style()),
-                    );
+                let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
+                let pre_len = lines.len();
+                render_finding_banner(&mut lines, finding, area.width, file_stale, is_focused);
+                let finding_line_count = lines.len() - pre_len;
+                if logical_line < render_start || logical_line >= render_end {
+                    lines.truncate(pre_len);
                 }
-                logical_line += 1;
-
-                if !finding.description.is_empty() {
-                    if logical_line >= render_start && logical_line < render_end {
-                        let desc = finding.description.lines().next().unwrap_or("");
-                        let max_len = area.width.saturating_sub(6) as usize;
-                        let truncated = if desc.chars().count() > max_len {
-                            format!(
-                                "{}\u{2026}",
-                                desc.chars()
-                                    .take(max_len.saturating_sub(1))
-                                    .collect::<String>()
-                            )
-                        } else {
-                            desc.to_string()
-                        };
-                        lines.push(
-                            Line::from(vec![Span::styled(
-                                format!("    {}", truncated),
-                                ratatui::style::Style::default()
-                                    .fg(styles::MUTED)
-                                    .bg(styles::FINDING_BG),
-                            )])
-                            .style(ratatui::style::Style::default().bg(styles::FINDING_BG)),
-                        );
-                    }
-                    logical_line += 1;
-                }
-
-                if !finding.suggestion.is_empty() {
-                    if logical_line >= render_start && logical_line < render_end {
-                        let sug = finding.suggestion.lines().next().unwrap_or("");
-                        let max_len = area.width.saturating_sub(8) as usize;
-                        let truncated = if sug.chars().count() > max_len {
-                            format!(
-                                "{}\u{2026}",
-                                sug.chars()
-                                    .take(max_len.saturating_sub(1))
-                                    .collect::<String>()
-                            )
-                        } else {
-                            sug.to_string()
-                        };
-                        lines.push(
-                            Line::from(vec![Span::styled(
-                                format!("    \u{2192} {}", truncated),
-                                ratatui::style::Style::default()
-                                    .fg(styles::GREEN)
-                                    .bg(styles::FINDING_BG),
-                            )])
-                            .style(ratatui::style::Style::default().bg(styles::FINDING_BG)),
-                        );
-                    }
-                    logical_line += 1;
-                }
+                logical_line += finding_line_count;
 
                 // Render response comments for this finding
                 let finding_comments = tab.ai.comments_for_finding(&finding.id);
@@ -1156,84 +1114,54 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 // lines the other side has — so both panes stay vertically aligned.
                 // TODO: split view — implement aligned comment padding across panes
             }
+
+            // ── Inline line-level findings (split view, New side only) ──
+            if side == SplitSide::New && tab.layers.show_ai_findings {
+                if let Some(new_line_num) = diff_line.new_num {
+                    let line_findings = match tab.mode {
+                        DiffMode::Branch => tab.ai.findings_for_line(&file.path, hunk_idx, new_line_num),
+                        DiffMode::Unstaged | DiffMode::Staged => tab.ai.findings_for_line_by_range(&file.path, new_line_num),
+                        DiffMode::History | DiffMode::Conflicts => vec![],
+                    };
+                    let file_stale = tab.ai.is_file_stale(&file.path);
+                    for finding in &line_findings {
+                        let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
+                        let pre_len = lines.len();
+                        render_finding_banner(&mut lines, finding, inner.width, file_stale, is_focused);
+                        let finding_line_count = lines.len() - pre_len;
+                        if logical_line < render_start || logical_line >= render_end {
+                            lines.truncate(pre_len);
+                        }
+                        logical_line += finding_line_count;
+                    }
+                }
+            }
         }
 
-        // AI finding banners — only on New side (same as unified view)
+        // AI finding banners — hunk-level only, on New side (same as unified view)
         if side == SplitSide::New && tab.layers.show_ai_findings {
             let file_stale = tab.ai.is_file_stale(&file.path);
+            let total_hunks = file.hunks.len();
             let findings = match tab.mode {
-                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx),
+                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx, total_hunks),
                 DiffMode::Unstaged | DiffMode::Staged => tab.ai.findings_for_hunk_by_line_range(
                     &file.path,
                     hunk.new_start,
                     hunk.new_count,
+                    hunk_idx,
+                    total_hunks,
                 ),
                 DiffMode::History | DiffMode::Conflicts => vec![],
             };
             for finding in &findings {
-                let severity_style = if file_stale {
-                    styles::stale_style()
-                } else {
-                    match finding.severity {
-                        RiskLevel::High => styles::risk_high(),
-                        RiskLevel::Medium => styles::risk_medium(),
-                        RiskLevel::Low => styles::risk_low(),
-                        RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
-                    }
-                };
-                let stale_tag = if file_stale { " [stale]" } else { "" };
-
-                if logical_line >= render_start && logical_line < render_end {
-                    lines.push(
-                        Line::from(vec![
-                            Span::styled(
-                                format!("  {} ", finding.severity.symbol()),
-                                severity_style,
-                            ),
-                            Span::styled(
-                                format!("[{}]", finding.category),
-                                ratatui::style::Style::default()
-                                    .fg(styles::DIM)
-                                    .bg(styles::FINDING_BG),
-                            ),
-                            Span::styled(
-                                format!(" {}{}", finding.title, stale_tag),
-                                ratatui::style::Style::default()
-                                    .fg(styles::ORANGE)
-                                    .bg(styles::FINDING_BG),
-                            ),
-                        ])
-                        .style(styles::finding_style()),
-                    );
+                let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
+                let pre_len = lines.len();
+                render_finding_banner(&mut lines, finding, inner.width, file_stale, is_focused);
+                let finding_line_count = lines.len() - pre_len;
+                if logical_line < render_start || logical_line >= render_end {
+                    lines.truncate(pre_len);
                 }
-                logical_line += 1;
-
-                if !finding.description.is_empty() {
-                    if logical_line >= render_start && logical_line < render_end {
-                        let desc = finding.description.lines().next().unwrap_or("");
-                        let max_len = inner.width.saturating_sub(6) as usize;
-                        let truncated = if desc.chars().count() > max_len {
-                            format!(
-                                "{}\u{2026}",
-                                desc.chars()
-                                    .take(max_len.saturating_sub(1))
-                                    .collect::<String>()
-                            )
-                        } else {
-                            desc.to_string()
-                        };
-                        lines.push(
-                            Line::from(vec![Span::styled(
-                                format!("    {}", truncated),
-                                ratatui::style::Style::default()
-                                    .fg(styles::MUTED)
-                                    .bg(styles::FINDING_BG),
-                            )])
-                            .style(ratatui::style::Style::default().bg(styles::FINDING_BG)),
-                        );
-                    }
-                    logical_line += 1;
-                }
+                logical_line += finding_line_count;
             }
         }
 
@@ -1326,18 +1254,24 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
     }
 
     if history.commit_files.is_empty() {
-        // TODO(risk:high): history.selected_commit is not bounds-checked before indexing.
-        // If selected_commit >= history.commits.len() this panics. commits.is_empty() is
-        // checked above, but selected_commit could still be out of range if state is stale.
-        // Use .get() and fall back gracefully.
-        let commit = &history.commits[history.selected_commit];
+        let commit = match history.commits.get(history.selected_commit) {
+            Some(c) => c,
+            None => {
+                render_history_empty(f, area, "No commit selected");
+                return;
+            }
+        };
         render_history_empty(f, area, &format!("Empty commit: {}", commit.short_hash));
         return;
     }
 
-    // TODO(risk:high): same unchecked index — selected_commit must be validated against
-    // history.commits.len() before this point, not just after a commits.is_empty() guard.
-    let commit = &history.commits[history.selected_commit];
+    let commit = match history.commits.get(history.selected_commit) {
+        Some(c) => c,
+        None => {
+            render_history_empty(f, area, "No commit selected");
+            return;
+        }
+    };
     let title = format!(" {} · {} ", commit.short_hash, commit.subject);
     let total_files = history.commit_files.len();
 
@@ -1586,7 +1520,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 
             let sticky_area = Rect {
                 x: area.x,
-                y: area.y,
+                y: area.y + 1,
                 width: area.width,
                 height: 1,
             };
@@ -1915,6 +1849,115 @@ fn render_reply_lines(
             Line::from(vec![Span::styled(
                 format!("  {}{}", padding, wrapped),
                 ratatui::style::Style::default().fg(styles::TEXT).bg(bg),
+            )])
+            .style(ratatui::style::Style::default().bg(bg)),
+        );
+    }
+}
+
+/// Render an AI finding banner (title + description + suggestion)
+fn render_finding_banner(
+    lines: &mut Vec<Line<'_>>,
+    finding: &Finding,
+    width: u16,
+    file_stale: bool,
+    focused: bool,
+) {
+    let bg = if focused {
+        styles::FINDING_FOCUS_BG
+    } else {
+        styles::FINDING_BG
+    };
+
+    let severity_style = if file_stale {
+        styles::stale_style()
+    } else {
+        match finding.severity {
+            RiskLevel::High => styles::risk_high(),
+            RiskLevel::Medium => styles::risk_medium(),
+            RiskLevel::Low => styles::risk_low(),
+            RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
+        }
+    };
+
+    let stale_tag = if file_stale { " [stale]" } else { "" };
+
+    let mut title_spans = vec![
+        Span::styled(
+            format!("  {} ", finding.severity.symbol()),
+            severity_style,
+        ),
+        Span::styled(
+            format!("[{}]", finding.category),
+            ratatui::style::Style::default()
+                .fg(styles::DIM)
+                .bg(bg),
+        ),
+        Span::styled(
+            format!(" {}{}", finding.title, stale_tag),
+            ratatui::style::Style::default()
+                .fg(styles::ORANGE)
+                .bg(bg),
+        ),
+    ];
+    if focused {
+        title_spans.push(Span::styled(
+            "  ◆ focused",
+            ratatui::style::Style::default()
+                .fg(styles::PURPLE)
+                .bg(bg)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
+
+    lines.push(
+        Line::from(title_spans)
+        .style(ratatui::style::Style::default().bg(bg)),
+    );
+
+    if !finding.description.is_empty() {
+        let desc = finding.description.lines().next().unwrap_or("");
+        let max_len = width.saturating_sub(6) as usize;
+        let truncated = if desc.chars().count() > max_len {
+            format!(
+                "{}\u{2026}",
+                desc.chars()
+                    .take(max_len.saturating_sub(1))
+                    .collect::<String>()
+            )
+        } else {
+            desc.to_string()
+        };
+        lines.push(
+            Line::from(vec![Span::styled(
+                format!("    {}", truncated),
+                ratatui::style::Style::default()
+                    .fg(styles::MUTED)
+                    .bg(bg),
+            )])
+            .style(ratatui::style::Style::default().bg(bg)),
+        );
+    }
+
+    if !finding.suggestion.is_empty() {
+        let sug = finding.suggestion.lines().next().unwrap_or("");
+        let max_len = width.saturating_sub(8) as usize;
+        let truncated = if sug.chars().count() > max_len {
+            format!(
+                "{}\u{2026}",
+                sug.chars()
+                    .take(max_len.saturating_sub(1))
+                    .collect::<String>()
+            )
+        } else {
+            sug.to_string()
+        };
+        lines.push(
+            Line::from(vec![Span::styled(
+                format!("    \u{2192} {}", truncated),
+                ratatui::style::Style::default()
+                    .fg(styles::GREEN)
+                    .bg(bg),
             )])
             .style(ratatui::style::Style::default().bg(bg)),
         );
