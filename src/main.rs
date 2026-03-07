@@ -65,6 +65,11 @@ fn main() -> Result<()> {
         app.tab_mut().apply_filter_expr(filter_expr);
     }
 
+    // Restore previous session if diff hash matches
+    for tab in &mut app.tabs {
+        tab.restore_session();
+    }
+
     // Hint + PR data: check for PR in background (avoids blocking startup on network)
     let (hint_rx, pr_data_rx) =
         if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
@@ -154,6 +159,10 @@ fn run_app<B: Backend>(
     let mut refresh_deadline = Instant::now();
     let mut pending_file_count = 0usize;
 
+    // Session auto-save: debounced at ~2 seconds
+    let mut session_dirty = false;
+    let mut session_save_deadline = Instant::now();
+
     // Start watching by default
     let root_str = app.tab().repo_root.clone();
     let root = std::path::Path::new(&root_str);
@@ -191,6 +200,10 @@ fn run_app<B: Backend>(
                     }
                 }
             }
+
+            // Mark session dirty after any key input
+            session_dirty = true;
+            session_save_deadline = Instant::now() + Duration::from_secs(2);
         }
 
         // Check for file watch events (non-blocking) — debounced
@@ -261,10 +274,18 @@ fn run_app<B: Backend>(
             }
         }
 
+        // Debounced session auto-save (~2s after last change)
+        if session_dirty && Instant::now() >= session_save_deadline {
+            session_dirty = false;
+            app.tab().save_session();
+        }
+
         // Tick — used for auto-clearing notifications
         app.tick();
 
         if app.should_quit {
+            // Save session on quit
+            app.tab().save_session();
             return Ok(());
         }
     }
