@@ -240,6 +240,9 @@ fn run_app<B: Backend>(
             app.notify("✓ AI data refreshed");
         }
 
+        // Poll summary agent for completion
+        app.check_summary_agent();
+
         // Rescan watched files (every 50 ticks ≈ 5s)
         if app.ai_poll_counter.is_multiple_of(50) {
             app.tab_mut().refresh_watched_files();
@@ -675,6 +678,12 @@ fn handle_normal_input(
         // Copy rich context to clipboard (for agent terminal)
         KeyCode::Char('A') => {
             app.copy_context()?;
+            return Ok(());
+        }
+
+        // Generate diff summary via agent (D)
+        KeyCode::Char('D') => {
+            app.spawn_summary_agent()?;
             return Ok(());
         }
 
@@ -1481,6 +1490,8 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
+            summary_rx: None,
+            summary_status: None,
         }
     }
 

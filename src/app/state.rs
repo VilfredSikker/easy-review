@@ -2647,6 +2647,17 @@ impl TabState {
 
 // ── Main App State ──
 
+/// Status of the background summary agent
+#[derive(Debug, Clone, PartialEq)]
+pub enum SummaryAgentStatus {
+    /// Agent is currently running
+    Running,
+    /// Agent finished successfully
+    Done,
+    /// Agent failed with an error message
+    Failed(String),
+}
+
 pub struct App {
     /// Open tabs (one per repo)
     pub tabs: Vec<TabState>,
@@ -2677,6 +2688,12 @@ pub struct App {
 
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
+
+    /// Receiver for summary agent completion (None = no agent running)
+    pub summary_rx: Option<std::sync::mpsc::Receiver<Result<()>>>,
+
+    /// Current status of the summary agent
+    pub summary_status: Option<SummaryAgentStatus>,
 }
 
 impl App {
@@ -2740,6 +2757,8 @@ impl App {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: er_config,
+            summary_rx: None,
+            summary_status: None,
         })
     }
 
@@ -4502,6 +4521,125 @@ impl App {
     }
 
     /// Tick called on every event loop iteration — used for notification auto-clear
+
+    // ── Summary Agent ──
+
+    /// Spawn a background agent to generate .er/summary.md from the current diff.
+    pub fn spawn_summary_agent(&mut self) -> Result<()> {
+        if self.summary_status == Some(SummaryAgentStatus::Running) {
+            self.notify("Summary agent already running");
+            return Ok(());
+        }
+
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let base_branch = tab.base_branch.clone();
+
+        // Resolve agent command: summary.command overrides agent.command
+        let cmd = self
+            .config
+            .summary
+            .command
+            .clone()
+            .unwrap_or_else(|| self.config.agent.command.clone());
+
+        // Build the prompt for the agent
+        let prompt = format!(
+            "Generate a concise, human-readable summary of the code changes in this branch \
+             (compared to {base}). Write the output as markdown to the file {output}. \
+             Focus on what changed and why, grouped by area. Keep it under 500 words. \
+             Do not include the raw diff in the output.",
+            base = base_branch,
+            output = format!("{}/.er/summary.md", repo_root),
+        );
+
+        // Build args: use summary.args if set, else agent.args, replacing {prompt}
+        let template_args = self
+            .config
+            .summary
+            .args
+            .clone()
+            .unwrap_or_else(|| self.config.agent.args.clone());
+
+        let args: Vec<String> = template_args
+            .iter()
+            .map(|a| a.replace("{prompt}", &prompt))
+            .collect();
+
+        // Ensure .er/ directory exists
+        let er_dir = std::path::Path::new(&repo_root).join(".er");
+        std::fs::create_dir_all(&er_dir)?;
+
+        let push_to_pr = self.config.summary.push_to_pr;
+        let repo_root_clone = repo_root.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let output = std::process::Command::new(&cmd)
+                    .args(&args)
+                    .current_dir(&repo_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                    .context("Failed to run summary agent")?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("Summary agent failed: {}", stderr.trim());
+                }
+
+                // Optionally push to PR body
+                if push_to_pr {
+                    let summary_path =
+                        std::path::Path::new(&repo_root_clone).join(".er/summary.md");
+                    if let Ok(summary) = std::fs::read_to_string(&summary_path) {
+                        if !summary.trim().is_empty() {
+                            crate::github::gh_pr_edit_body(&repo_root_clone, &summary)?;
+                        }
+                    }
+                }
+
+                Ok(())
+            })();
+            let _ = tx.send(result);
+        });
+
+        self.summary_rx = Some(rx);
+        self.summary_status = Some(SummaryAgentStatus::Running);
+        self.notify("Summary agent started...");
+        Ok(())
+    }
+
+    /// Poll the summary agent for completion (called from event loop).
+    pub fn check_summary_agent(&mut self) {
+        if let Some(ref rx) = self.summary_rx {
+            match rx.try_recv() {
+                Ok(Ok(())) => {
+                    self.summary_status = Some(SummaryAgentStatus::Done);
+                    self.summary_rx = None;
+                    // Force AI state reload to pick up new summary.md
+                    self.tab_mut().last_ai_check = None;
+                    self.notify("Summary generated");
+                }
+                Ok(Err(e)) => {
+                    let msg = format!("{}", e);
+                    self.summary_status = Some(SummaryAgentStatus::Failed(msg.clone()));
+                    self.summary_rx = None;
+                    self.notify(&format!("Summary failed: {}", msg));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Still running
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.summary_status =
+                        Some(SummaryAgentStatus::Failed("Agent thread crashed".into()));
+                    self.summary_rx = None;
+                    self.notify("Summary agent crashed");
+                }
+            }
+        }
+    }
     pub fn tick(&mut self) {
         // TODO(risk:minor): watch_message_ticks is a u8 (max 255). If notify() is called without a
         // subsequent tick draining it (e.g., during a long blocking git operation), ticks can overflow
@@ -5816,6 +5954,8 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
+            summary_rx: None,
+            summary_status: None,
         }
     }
 

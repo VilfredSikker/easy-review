@@ -8,6 +8,8 @@ pub struct ErConfig {
     #[serde(default)]
     pub agent: AgentConfig,
     #[serde(default)]
+    pub summary: SummaryConfig,
+    #[serde(default)]
     pub display: DisplayConfig,
     #[serde(default)]
     pub watched: WatchedConfig,
@@ -50,6 +52,30 @@ pub struct AgentConfig {
     pub command: String,
     #[serde(default = "default_agent_args")]
     pub args: Vec<String>,
+}
+
+/// [summary] section — configuration for diff summary / changelog generation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryConfig {
+    /// Command to run for summary generation (defaults to agent.command)
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Args for the summary command ({diff} is replaced with the raw diff)
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    /// Whether to auto-push the summary to the GitHub PR body
+    #[serde(default)]
+    pub push_to_pr: bool,
+}
+
+impl Default for SummaryConfig {
+    fn default() -> Self {
+        Self {
+            command: None,
+            args: None,
+            push_to_pr: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,6 +370,21 @@ pub fn settings_items() -> Vec<SettingsItem> {
         SettingsItem::StringDisplay {
             label: "Args".into(),
             get: |c| c.agent.args.join(" "),
+        },
+        SettingsItem::SectionHeader("Summary (D)".into()),
+        SettingsItem::StringDisplay {
+            label: "Command".into(),
+            get: |c| {
+                c.summary
+                    .command
+                    .clone()
+                    .unwrap_or_else(|| c.agent.command.clone())
+            },
+        },
+        SettingsItem::BoolToggle {
+            label: "Push to PR body".into(),
+            get: |c| c.summary.push_to_pr,
+            set: |c, v| c.summary.push_to_pr = v,
         },
     ]
 }
