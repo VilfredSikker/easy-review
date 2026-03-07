@@ -1,5 +1,6 @@
 mod ai;
 mod app;
+mod archwatch;
 mod config;
 mod git;
 mod github;
@@ -231,6 +232,16 @@ fn run_app<B: Backend>(
                     if count == 1 { "" } else { "s" },
                     ai_status
                 ));
+            }
+
+            // Auto-update Archwatch if enabled
+            if app.config.archwatch.auto_launch {
+                let _ = archwatch::launch_archwatch(
+                    &app.config.archwatch,
+                    &app.tab().repo_root,
+                    &app.tab().files,
+                    &app.tab().ai,
+                );
             }
         }
 
@@ -501,6 +512,24 @@ fn handle_normal_input(
                 app.notify("Opening PR in browser...");
             } else {
                 app.open_directory_browser();
+            }
+            return Ok(());
+        }
+
+        // Launch Archwatch dependency graph with highlighted changed modules (g)
+        KeyCode::Char('g') => {
+            let result = {
+                let tab = app.tab();
+                archwatch::launch_archwatch(
+                    &app.config.archwatch,
+                    &tab.repo_root,
+                    &tab.files,
+                    &tab.ai,
+                )
+            };
+            match result {
+                Ok(msg) => app.notify(&msg),
+                Err(e) => app.notify(&format!("Archwatch: {}", e)),
             }
             return Ok(());
         }

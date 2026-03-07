@@ -41,6 +41,9 @@ glob = "0.3"
 anyhow = "1"
 two-face = "0.5.1"
 
+# WebSocket (Archwatch integration)
+tungstenite = "0.24"
+
 [profile.release]
 opt-level = 3
 lto = true

@@ -13,6 +13,8 @@ pub struct ErConfig {
     pub watched: WatchedConfig,
     #[serde(default)]
     pub hints: HintConfig,
+    #[serde(default)]
+    pub archwatch: ArchwatchConfig,
 }
 
 /// [watched] section configuration
@@ -98,6 +100,38 @@ impl Default for HintConfig {
             settings: true,
         }
     }
+}
+
+/// [archwatch] section — Archwatch dependency graph integration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchwatchConfig {
+    /// Path to the archwatch binary (default: "archwatch")
+    #[serde(default = "default_archwatch_bin")]
+    pub binary: String,
+    /// Port for Archwatch server (default: 3210)
+    #[serde(default = "default_archwatch_port")]
+    pub port: u16,
+    /// Auto-launch Archwatch when a diff is loaded
+    #[serde(default)]
+    pub auto_launch: bool,
+}
+
+impl Default for ArchwatchConfig {
+    fn default() -> Self {
+        Self {
+            binary: default_archwatch_bin(),
+            port: default_archwatch_port(),
+            auto_launch: false,
+        }
+    }
+}
+
+fn default_archwatch_bin() -> String {
+    "archwatch".to_string()
+}
+
+fn default_archwatch_port() -> u16 {
+    3210
 }
 
 fn default_true() -> bool {
@@ -344,6 +378,20 @@ pub fn settings_items() -> Vec<SettingsItem> {
         SettingsItem::StringDisplay {
             label: "Args".into(),
             get: |c| c.agent.args.join(" "),
+        },
+        SettingsItem::SectionHeader("Archwatch".into()),
+        SettingsItem::StringDisplay {
+            label: "Binary".into(),
+            get: |c| c.archwatch.binary.clone(),
+        },
+        SettingsItem::StringDisplay {
+            label: "Port".into(),
+            get: |c| c.archwatch.port.to_string(),
+        },
+        SettingsItem::BoolToggle {
+            label: "Auto-launch on diff load".into(),
+            get: |c| c.archwatch.auto_launch,
+            set: |c, v| c.archwatch.auto_launch = v,
         },
     ]
 }
