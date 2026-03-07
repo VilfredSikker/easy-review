@@ -220,12 +220,10 @@ pub fn save_config(config: &ErConfig) -> Result<()> {
         .join("er");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
+    let tmp_path = dir.join("config.toml.tmp");
     let content = toml::to_string_pretty(config)?;
-    // TODO(risk:high): write is non-atomic — if the process is killed mid-write (e.g. Ctrl+C
-    // during save) the config file is left with partial content and becomes unreadable on next
-    // launch (silently falls back to defaults, losing all user settings). Write to a .tmp file
-    // and rename atomically, the same pattern used for .er-github-comments.json.
-    std::fs::write(path, content)?;
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
