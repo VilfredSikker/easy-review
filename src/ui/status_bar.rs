@@ -7,7 +7,7 @@ use ratatui::{
 
 use super::styles;
 use crate::ai::PanelContent;
-use crate::app::{App, ConfirmAction, DiffMode, InputMode};
+use crate::app::{AgentStatus, App, ConfirmAction, DiffMode, InputMode};
 
 /// Compute the display width of a list of spans
 fn spans_width(spans: &[Span]) -> usize {
@@ -314,6 +314,52 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::BLUE),
         ));
     }
+    // Agent status badge
+    match &tab.agent_status {
+        AgentStatus::Running(started) => {
+            if !right.is_empty() {
+                right.push(Span::raw("  "));
+            }
+            let elapsed = started.elapsed().as_secs();
+            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let frame = spinner[(elapsed as usize) % spinner.len()];
+            right.push(Span::styled(
+                format!("{} AGENT {}s", frame, elapsed),
+                ratatui::style::Style::default()
+                    .fg(styles::CYAN)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+        }
+        AgentStatus::Done => {
+            if !right.is_empty() {
+                right.push(Span::raw("  "));
+            }
+            right.push(Span::styled(
+                "\u{2713} AGENT",
+                ratatui::style::Style::default()
+                    .fg(styles::GREEN)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+        }
+        AgentStatus::Failed(msg) => {
+            if !right.is_empty() {
+                right.push(Span::raw("  "));
+            }
+            let label = if msg.len() > 20 {
+                format!("\u{2717} AGENT: {}…", &msg[..20])
+            } else {
+                format!("\u{2717} AGENT: {}", msg)
+            };
+            right.push(Span::styled(
+                label,
+                ratatui::style::Style::default()
+                    .fg(styles::RED)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+        }
+        AgentStatus::Idle => {}
+    }
+
     if app.watching {
         if !right.is_empty() {
             right.push(Span::raw("  "));
@@ -468,6 +514,7 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
         if tab.ai.has_data() {
             hints.push(Hint::new("a", " AI "));
         }
+        hints.push(Hint::new("^a", " agent "));
     }
 
     // GitHub sync — only when PR data is available
@@ -660,6 +707,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
             if tab.ai.has_data() {
                 hints.push(Hint::new("a", " AI "));
             }
+            hints.push(Hint::new("^a", " agent "));
         }
 
         // GitHub sync — only when PR data is available

@@ -391,6 +391,28 @@ pub struct TabState {
     /// True after a commit in Staged mode — causes diff view to show HEAD~1..HEAD until next
     /// new staged change or the user pushes.
     pub committed_unpushed: bool,
+
+    /// Status of the background agent review process
+    pub agent_status: AgentStatus,
+}
+
+/// Status of a background agent process
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentStatus {
+    /// No agent running
+    Idle,
+    /// Agent is running (started at the given instant)
+    Running(Instant),
+    /// Agent completed successfully
+    Done,
+    /// Agent failed with an error message
+    Failed(String),
+}
+
+impl Default for AgentStatus {
+    fn default() -> Self {
+        AgentStatus::Idle
+    }
 }
 
 /// A single reference to a symbol (file + line)
@@ -547,6 +569,7 @@ impl TabState {
             symbol_refs: None,
             pending_unmark_count: 0,
             committed_unpushed: false,
+            agent_status: AgentStatus::Idle,
         };
 
         tab.refresh_diff()?;
@@ -629,6 +652,7 @@ impl TabState {
             symbol_refs: None,
             pending_unmark_count: 0,
             committed_unpushed: false,
+            agent_status: AgentStatus::Idle,
         }
     }
 
@@ -2642,6 +2666,33 @@ impl TabState {
             let _ = self.save_reviewed_files();
         }
         count
+    }
+
+    /// Expand template variables in a string: {repo_root}, {base_branch},
+    /// {current_branch}, {diff_mode}, {pr_number}
+    fn expand_agent_vars(&self, s: &str) -> String {
+        let pr_number = self
+            .pr_data
+            .as_ref()
+            .map(|p| p.number.to_string())
+            .unwrap_or_default();
+        s.replace("{repo_root}", &self.repo_root)
+            .replace("{base_branch}", &self.base_branch)
+            .replace("{current_branch}", &self.current_branch)
+            .replace("{diff_mode}", self.mode.git_mode())
+            .replace("{pr_number}", &pr_number)
+    }
+
+    /// Build the agent command + args with template variables expanded.
+    /// Returns (command, args) ready for `std::process::Command`.
+    pub fn build_agent_command(&self, config: &crate::config::AgentConfig) -> (String, Vec<String>) {
+        let cmd = self.expand_agent_vars(&config.command);
+        let args: Vec<String> = config
+            .args
+            .iter()
+            .map(|a| self.expand_agent_vars(a))
+            .collect();
+        (cmd, args)
     }
 }
 
@@ -4691,6 +4742,7 @@ mod tests {
             symbol_refs: None,
             pending_unmark_count: 0,
             committed_unpushed: false,
+            agent_status: AgentStatus::Idle,
         }
     }
 

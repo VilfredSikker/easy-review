@@ -50,6 +50,15 @@ pub struct AgentConfig {
     pub command: String,
     #[serde(default = "default_agent_args")]
     pub args: Vec<String>,
+    /// Key to trigger agent review from the TUI (default: "ctrl+a")
+    #[serde(default = "default_trigger_key")]
+    pub trigger_key: String,
+    /// Automatically trigger agent review when a new diff is loaded
+    #[serde(default)]
+    pub auto_review: bool,
+    /// Timeout in seconds for the agent process (default: 300)
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,11 +141,22 @@ impl Default for FeatureFlags {
     }
 }
 
+fn default_trigger_key() -> String {
+    "ctrl+a".into()
+}
+
+fn default_timeout_secs() -> u64 {
+    300
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             command: default_agent_cmd(),
             args: default_agent_args(),
+            trigger_key: default_trigger_key(),
+            auto_review: false,
+            timeout_secs: default_timeout_secs(),
         }
     }
 }
@@ -344,6 +364,19 @@ pub fn settings_items() -> Vec<SettingsItem> {
         SettingsItem::StringDisplay {
             label: "Args".into(),
             get: |c| c.agent.args.join(" "),
+        },
+        SettingsItem::StringDisplay {
+            label: "Trigger key".into(),
+            get: |c| c.agent.trigger_key.clone(),
+        },
+        SettingsItem::BoolToggle {
+            label: "Auto review on diff load".into(),
+            get: |c| c.agent.auto_review,
+            set: |c, v| c.agent.auto_review = v,
+        },
+        SettingsItem::StringDisplay {
+            label: "Timeout (secs)".into(),
+            get: |c| c.agent.timeout_secs.to_string(),
         },
     ]
 }

@@ -8,7 +8,10 @@ mod watch;
 
 use crate::ai::{PanelContent, ReviewFocus};
 use anyhow::Result;
-use app::{cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode, InputMode, SplitSide};
+use app::{
+    cleanup_questions, cleanup_reviews, AgentStatus, App, ConfirmAction, DiffMode, InputMode,
+    SplitSide,
+};
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -18,9 +21,17 @@ use crossterm::{
 use ratatui::prelude::*;
 use std::io;
 use std::path::Path;
+use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use watch::{FileWatcher, WatchEvent};
+
+/// Result from a background agent process
+struct AgentResult {
+    tab_index: usize,
+    success: bool,
+    error: Option<String>,
+}
 
 /// Terminal UI for reviewing git diffs
 #[derive(Parser)]
@@ -149,6 +160,9 @@ fn run_app<B: Backend>(
     let mut hint_rx = hint_rx;
     let mut pr_data_rx = pr_data_rx;
 
+    // Channel for agent process results
+    let (agent_tx, agent_rx) = mpsc::channel::<AgentResult>();
+
     // Debounce state for file watcher refreshes
     let mut pending_refresh = false;
     let mut refresh_deadline = Instant::now();
@@ -186,7 +200,7 @@ fn run_app<B: Backend>(
                         InputMode::Filter => handle_filter_input(app, key),
                         InputMode::Commit => handle_commit_input(app, key)?,
                         InputMode::Normal => {
-                            handle_normal_input(app, key, &watch_tx, &mut _watcher)?
+                            handle_normal_input(app, key, &watch_tx, &mut _watcher, &agent_tx)?
                         }
                     }
                 }
@@ -261,6 +275,32 @@ fn run_app<B: Backend>(
             }
         }
 
+        // Check for agent process completion
+        while let Ok(result) = agent_rx.try_recv() {
+            if result.tab_index < app.tabs.len() {
+                if result.success {
+                    app.tabs[result.tab_index].agent_status = AgentStatus::Done;
+                    app.notify("Agent review complete");
+                } else {
+                    let msg = result.error.unwrap_or_else(|| "unknown error".into());
+                    app.tabs[result.tab_index].agent_status =
+                        AgentStatus::Failed(msg.clone());
+                    app.notify(&format!("Agent failed: {}", msg));
+                }
+            }
+        }
+
+        // Check agent timeout
+        for tab in &mut app.tabs {
+            if let AgentStatus::Running(started) = tab.agent_status {
+                let timeout = Duration::from_secs(app.config.agent.timeout_secs);
+                if started.elapsed() > timeout {
+                    tab.agent_status =
+                        AgentStatus::Failed("timed out".into());
+                }
+            }
+        }
+
         // Tick — used for auto-clearing notifications
         app.tick();
 
@@ -306,6 +346,7 @@ fn handle_normal_input(
     key: KeyEvent,
     watch_tx: &mpsc::Sender<WatchEvent>,
     watcher: &mut Option<FileWatcher>,
+    agent_tx: &mpsc::Sender<AgentResult>,
 ) -> Result<()> {
     // ── Global keys: work in all view modes including AiReview ──
 
@@ -580,6 +621,12 @@ fn handle_normal_input(
         // Open settings overlay
         KeyCode::Char(',') => {
             app.open_settings();
+            return Ok(());
+        }
+
+        // Trigger agent review (Ctrl+a)
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            trigger_agent(app, &agent_tx);
             return Ok(());
         }
 
@@ -1454,6 +1501,104 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     Ok(())
 }
 
+/// Spawn a background agent review process for the active tab
+fn trigger_agent(app: &mut App, agent_tx: &mpsc::Sender<AgentResult>) {
+    let tab = app.tab();
+
+    // Don't start another agent if one is already running
+    if matches!(tab.agent_status, AgentStatus::Running(_)) {
+        app.notify("Agent already running");
+        return;
+    }
+
+    let (cmd, args) = tab.build_agent_command(&app.config.agent);
+    let repo_root = tab.repo_root.clone();
+    let tab_index = app.active_tab;
+    let timeout_secs = app.config.agent.timeout_secs;
+
+    app.tab_mut().agent_status = AgentStatus::Running(Instant::now());
+    app.notify(&format!("Agent started: {}", cmd));
+
+    let tx = agent_tx.clone();
+    std::thread::spawn(move || {
+        let result = Command::new(&cmd)
+            .args(&args)
+            .current_dir(&repo_root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+
+        match result {
+            Ok(mut child) => {
+                // Wait with timeout
+                let start = Instant::now();
+                let timeout = Duration::from_secs(timeout_secs);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            if status.success() {
+                                let _ = tx.send(AgentResult {
+                                    tab_index,
+                                    success: true,
+                                    error: None,
+                                });
+                            } else {
+                                let stderr = child
+                                    .stderr
+                                    .take()
+                                    .and_then(|mut s| {
+                                        use std::io::Read;
+                                        let mut buf = String::new();
+                                        s.read_to_string(&mut buf).ok().map(|_| buf)
+                                    })
+                                    .unwrap_or_default();
+                                let msg = if stderr.is_empty() {
+                                    format!("exit code {}", status.code().unwrap_or(-1))
+                                } else {
+                                    stderr.lines().next().unwrap_or("").to_string()
+                                };
+                                let _ = tx.send(AgentResult {
+                                    tab_index,
+                                    success: false,
+                                    error: Some(msg),
+                                });
+                            }
+                            return;
+                        }
+                        Ok(None) => {
+                            if start.elapsed() > timeout {
+                                let _ = child.kill();
+                                let _ = tx.send(AgentResult {
+                                    tab_index,
+                                    success: false,
+                                    error: Some("timed out".into()),
+                                });
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_millis(250));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AgentResult {
+                                tab_index,
+                                success: false,
+                                error: Some(e.to_string()),
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(AgentResult {
+                    tab_index,
+                    success: false,
+                    error: Some(format!("failed to start: {}", e)),
+                });
+            }
+        }
+    });
+}
+
 fn chrono_now() -> String {
     app::chrono_now()
 }
@@ -1510,9 +1655,10 @@ mod tests {
 
     fn send_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         let (tx, _rx) = mpsc::channel::<watch::WatchEvent>();
+        let (atx, _arx) = mpsc::channel::<AgentResult>();
         let mut watcher: Option<watch::FileWatcher> = None;
         let key = KeyEvent::new(code, modifiers);
-        handle_normal_input(app, key, &tx, &mut watcher).unwrap();
+        handle_normal_input(app, key, &tx, &mut watcher, &atx).unwrap();
     }
 
     // ── Ctrl+q vs bare q ──
