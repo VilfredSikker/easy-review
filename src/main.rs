@@ -8,7 +8,7 @@ mod watch;
 
 use crate::ai::{PanelContent, ReviewFocus};
 use anyhow::Result;
-use app::{cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode, InputMode, SplitSide};
+use app::{cleanup_questions, cleanup_reviews, App, ApprovalState, ConfirmAction, DiffMode, InputMode, SplitSide};
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -672,6 +672,20 @@ fn handle_normal_input(
             return Ok(());
         }
 
+        // Review approval workflow
+        KeyCode::Char('g') => {
+            let (state, met, total) = app.tab().approval_readiness(&app.config.approval);
+            match state {
+                ApprovalState::Ready => {
+                    app.input_mode = InputMode::Confirm(ConfirmAction::Approve { force: false });
+                }
+                _ => {
+                    app.notify(&format!("Not ready ({}/{} checks passed) — use settings to adjust", met, total));
+                }
+            }
+            return Ok(());
+        }
+
         // Copy rich context to clipboard (for agent terminal)
         KeyCode::Char('A') => {
             app.copy_context()?;
@@ -1097,6 +1111,9 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 cleanup_reviews(&repo_root);
                 app.tab_mut().reload_ai_state();
                 app.notify("Review cleared");
+            } else if let InputMode::Confirm(ConfirmAction::Approve { .. }) = action {
+                app.input_mode = InputMode::Normal;
+                execute_approval(app)?;
             }
         }
         KeyCode::Char('n') | KeyCode::Esc => {
@@ -1122,6 +1139,51 @@ fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
             app.tab_mut().commit_input.pop();
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// Execute the approval workflow: push branch and/or approve PR on GitHub
+fn execute_approval(app: &mut App) -> Result<()> {
+    let config = app.config.approval.clone();
+    let repo_root = app.tab().repo_root.clone();
+    let mut actions: Vec<String> = Vec::new();
+
+    // Push branch to remote
+    if config.push_on_approve {
+        match git::git_push(&repo_root) {
+            Ok(_) => {
+                app.tab_mut().committed_unpushed = false;
+                let _ = app.tab_mut().refresh_diff();
+                actions.push("pushed".into());
+            }
+            Err(e) => {
+                app.notify(&format!("Approval push failed: {}", e));
+                return Ok(());
+            }
+        }
+    }
+
+    // Approve PR on GitHub via gh CLI
+    if config.gh_approve {
+        match github::gh_pr_approve(&repo_root) {
+            Ok(_) => actions.push("PR approved".into()),
+            Err(e) => {
+                let msg = if actions.is_empty() {
+                    format!("GitHub approve failed: {}", e)
+                } else {
+                    format!("Pushed, but GitHub approve failed: {}", e)
+                };
+                app.notify(&msg);
+                return Ok(());
+            }
+        }
+    }
+
+    if actions.is_empty() {
+        app.notify("Approved! (no actions configured)");
+    } else {
+        app.notify(&format!("Approved! {}", actions.join(", ")));
     }
     Ok(())
 }

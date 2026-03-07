@@ -13,6 +13,8 @@ pub struct ErConfig {
     pub watched: WatchedConfig,
     #[serde(default)]
     pub hints: HintConfig,
+    #[serde(default)]
+    pub approval: ApprovalConfig,
 }
 
 /// [watched] section configuration
@@ -96,6 +98,42 @@ impl Default for HintConfig {
             filter: true,
             sort: true,
             settings: true,
+        }
+    }
+}
+
+/// [approval] section — review approval workflow configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalConfig {
+    /// Push the branch to remote on approval
+    #[serde(default = "default_true")]
+    pub push_on_approve: bool,
+    /// Approve the PR on GitHub via `gh pr review --approve` on approval
+    #[serde(default)]
+    pub gh_approve: bool,
+    /// Require all files to be marked as reviewed before approval
+    #[serde(default = "default_true")]
+    pub require_all_reviewed: bool,
+    /// Require no unresolved personal questions
+    #[serde(default = "default_true")]
+    pub require_no_questions: bool,
+    /// Require no high-severity AI findings
+    #[serde(default)]
+    pub require_no_high_findings: bool,
+    /// Require no unresolved local GitHub comments
+    #[serde(default)]
+    pub require_no_unresolved_comments: bool,
+}
+
+impl Default for ApprovalConfig {
+    fn default() -> Self {
+        Self {
+            push_on_approve: true,
+            gh_approve: false,
+            require_all_reviewed: true,
+            require_no_questions: true,
+            require_no_high_findings: false,
+            require_no_unresolved_comments: false,
         }
     }
 }
@@ -335,6 +373,37 @@ pub fn settings_items() -> Vec<SettingsItem> {
             label: "Settings (,)".into(),
             get: |c| c.hints.settings,
             set: |c, v| c.hints.settings = v,
+        },
+        SettingsItem::SectionHeader("Approval".into()),
+        SettingsItem::BoolToggle {
+            label: "Push on approve".into(),
+            get: |c| c.approval.push_on_approve,
+            set: |c, v| c.approval.push_on_approve = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "GitHub PR approve".into(),
+            get: |c| c.approval.gh_approve,
+            set: |c, v| c.approval.gh_approve = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Require all reviewed".into(),
+            get: |c| c.approval.require_all_reviewed,
+            set: |c, v| c.approval.require_all_reviewed = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Require no questions".into(),
+            get: |c| c.approval.require_no_questions,
+            set: |c, v| c.approval.require_no_questions = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Require no high findings".into(),
+            get: |c| c.approval.require_no_high_findings,
+            set: |c, v| c.approval.require_no_high_findings = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Require no unresolved comments".into(),
+            get: |c| c.approval.require_no_unresolved_comments,
+            set: |c, v| c.approval.require_no_unresolved_comments = v,
         },
         SettingsItem::SectionHeader("Agent".into()),
         SettingsItem::StringDisplay {

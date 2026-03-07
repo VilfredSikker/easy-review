@@ -139,6 +139,18 @@ pub enum ConfirmAction {
     Push,
     CleanupQuestions { count: usize },
     CleanupReviews { count: usize },
+    Approve { force: bool },
+}
+
+/// Readiness state for the review approval workflow
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ApprovalState {
+    /// Not ready — one or more requirements are unmet
+    NotReady,
+    /// Partially ready — some requirements met but not all
+    Partial,
+    /// All requirements met — ready to approve
+    Ready,
 }
 
 /// Which pane has focus in split diff view
@@ -2570,6 +2582,77 @@ impl TabState {
             }
         }
         Some((reviewed, total))
+    }
+
+    /// Compute the review approval readiness state.
+    /// Checks four conditions:
+    /// 1. All files marked as reviewed
+    /// 2. No unresolved personal questions
+    /// 3. No unresolved high-severity AI findings
+    /// 4. No unresolved GitHub comments (local, unresolved)
+    /// Returns (ApprovalState, met_count, total_checks)
+    pub fn approval_readiness(&self, config: &crate::config::ApprovalConfig) -> (ApprovalState, usize, usize) {
+        let mut total = 0;
+        let mut met = 0;
+
+        // Check 1: All files reviewed
+        if config.require_all_reviewed {
+            total += 1;
+            let (reviewed, file_total) = self.reviewed_count();
+            if file_total == 0 || reviewed == file_total {
+                met += 1;
+            }
+        }
+
+        // Check 2: No unresolved questions
+        if config.require_no_questions {
+            total += 1;
+            let unresolved = self.ai.questions.as_ref()
+                .map(|q| q.questions.iter().filter(|q| !q.resolved).count())
+                .unwrap_or(0);
+            if unresolved == 0 {
+                met += 1;
+            }
+        }
+
+        // Check 3: No high-severity AI findings
+        if config.require_no_high_findings {
+            total += 1;
+            let high_findings = self.ai.review.as_ref()
+                .map(|r| {
+                    r.files.values()
+                        .flat_map(|fr| fr.findings.iter())
+                        .filter(|f| matches!(f.severity, crate::ai::RiskLevel::High))
+                        .count()
+                })
+                .unwrap_or(0);
+            if high_findings == 0 {
+                met += 1;
+            }
+        }
+
+        // Check 4: No unresolved local GitHub comments
+        if config.require_no_unresolved_comments {
+            total += 1;
+            let unresolved = self.ai.github_comments.as_ref()
+                .map(|gc| gc.comments.iter()
+                    .filter(|c| c.source == "local" && !c.resolved && c.in_reply_to.is_none())
+                    .count())
+                .unwrap_or(0);
+            if unresolved == 0 {
+                met += 1;
+            }
+        }
+
+        let state = if total == 0 || met == total {
+            ApprovalState::Ready
+        } else if met > 0 {
+            ApprovalState::Partial
+        } else {
+            ApprovalState::NotReady
+        };
+
+        (state, met, total)
     }
 
     fn load_reviewed_files(repo_root: &str) -> HashMap<String, String> {

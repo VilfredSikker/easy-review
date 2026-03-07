@@ -575,6 +575,22 @@ pub fn gh_pr_delete_comment(
     Ok(())
 }
 
+/// Approve the current branch's PR on GitHub via `gh pr review --approve`
+pub fn gh_pr_approve(repo_root: &str) -> Result<()> {
+    let output = Command::new("gh")
+        .args(["pr", "review", "--approve"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run gh pr review --approve")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr review --approve failed: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
 /// Fetch PR overview data: title, body, state, author, branches, reviewers
 pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
     // Fetch core PR fields

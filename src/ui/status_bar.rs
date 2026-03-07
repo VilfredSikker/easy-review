@@ -7,7 +7,7 @@ use ratatui::{
 
 use super::styles;
 use crate::ai::PanelContent;
-use crate::app::{App, ConfirmAction, DiffMode, InputMode};
+use crate::app::{App, ApprovalState, ConfirmAction, DiffMode, InputMode};
 
 /// Compute the display width of a list of spans
 fn spans_width(spans: &[Span]) -> usize {
@@ -314,6 +314,25 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::BLUE),
         ));
     }
+    // Approval readiness indicator
+    {
+        let (state, _met, _total) = tab.approval_readiness(&app.config.approval);
+        if !right.is_empty() {
+            right.push(Span::raw("  "));
+        }
+        let (label, color) = match state {
+            ApprovalState::NotReady => (" NOT READY ", styles::RED),
+            ApprovalState::Partial => (" PARTIAL ", styles::YELLOW),
+            ApprovalState::Ready => (" READY ", styles::GREEN),
+        };
+        right.push(Span::styled(
+            label,
+            ratatui::style::Style::default()
+                .fg(styles::BG)
+                .bg(color)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
     if app.watching {
         if !right.is_empty() {
             right.push(Span::raw("  "));
@@ -476,6 +495,9 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
         hints.push(Hint::new("P", " gh push "));
     }
 
+    // Approval
+    hints.push(Hint::new("g", " approve "));
+
     // Editor
     if h.navigation {
         hints.push(Hint::new("e", " edit "));
@@ -583,6 +605,9 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("P", " gh push "));
         }
 
+        // Approval
+        hints.push(Hint::new("g", " approve "));
+
         // Filter & sort
         if h.filter {
             hints.push(Hint::new("u", " unreviewed "));
@@ -667,6 +692,9 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("G", " gh pull "));
             hints.push(Hint::new("P", " gh push "));
         }
+
+        // Approval
+        hints.push(Hint::new("g", " approve "));
 
         // Filter & sort
         if h.filter {
@@ -804,6 +832,13 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 }
                 ConfirmAction::CleanupReviews { count } => {
                     format!("Clear {} review file(s)? (y/n)", count)
+                }
+                ConfirmAction::Approve { force } => {
+                    if *force {
+                        "Force-approve and ship? (y/n)".to_string()
+                    } else {
+                        "Approve and ship? (y/n)".to_string()
+                    }
                 }
             };
             let spans = vec![
