@@ -1485,16 +1485,15 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 
         // Only show the sticky header if the file's header has scrolled off-screen
         // (i.e., the scroll position is past the header line itself).
-        // TODO(risk:high): file_header_line_indices[topmost_file_idx] and
-        // history.commit_files[topmost_file_idx] are both unchecked index accesses.
-        // rposition() returns an index into file_header_line_indices which was built in
-        // the same loop as the files, so lengths should match — but if commit_files was
-        // mutated between the build and this read (concurrent watch refresh) they can
-        // diverge and both accesses panic. Take a snapshot of commit_files at the top of
-        // render_history_diff and use it throughout.
-        let header_line = file_header_line_indices[topmost_file_idx];
+        let header_line = match file_header_line_indices.get(topmost_file_idx) {
+            Some(&l) => l,
+            None => return,
+        };
+        let file = match history.commit_files.get(topmost_file_idx) {
+            Some(f) => f,
+            None => return,
+        };
         if scroll > header_line {
-            let file = &history.commit_files[topmost_file_idx];
             let sticky_bg = styles::PANEL;
 
             let mut sticky_spans = vec![
