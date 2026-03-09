@@ -159,8 +159,13 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     }
     if app.config.features.view_staged {
         modes.push(Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)));
+        let staged_label = if tab.mode == DiffMode::Staged && tab.committed_unpushed {
+            " COMMITTED "
+        } else {
+            " STAGED "
+        };
         modes.push(Span::styled(
-            " STAGED ",
+            staged_label,
             mode_style(DiffMode::Staged, tab.mode),
         ));
         modes.push(Span::raw(" "));
@@ -407,21 +412,89 @@ fn build_ai_panel_hints(app: &App) -> Vec<Hint> {
 /// Build hints for History mode
 fn build_history_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
-    let mut hints = vec![
-        Hint::new("j/k", " commits "),
-        Hint::new("n/N", " files "),
-        Hint::new("↑↓", " lines "),
-        Hint::new("h/l", " scroll "),
-        Hint::new("/", " search "),
-        Hint::new("m", " recent "),
-        Hint::new("q", " question "),
-        Hint::new("^q", " quit "),
-    ];
+    let h = &app.config.hints;
+    let mut hints = Vec::new();
 
+    // Navigation
+    if h.navigation {
+        hints.push(Hint::new("j/k", " commits "));
+        hints.push(Hint::new("n/N", " files "));
+        hints.push(Hint::new("↑↓", " lines "));
+        hints.push(Hint::new("h/l", " scroll "));
+        hints.push(Hint::new("/", " search "));
+    }
+
+    hints.push(Hint::new("m", " recent "));
+
+    // Comment hints (shared with normal mode)
+    if h.comments {
+        hints.push(Hint::new("q", " question "));
+        hints.push(Hint::new("c", " comment "));
+
+        if let Some(ref fid) = tab.focused_comment_id {
+            if let Some(comment) = tab.ai.find_comment(fid) {
+                if comment.can_reply() {
+                    hints.push(Hint::new("r", " reply "));
+                }
+                if comment.author() == "You" && comment.in_reply_to().is_none() {
+                    hints.push(Hint::new("e", " edit "));
+                }
+                if comment.can_delete() {
+                    hints.push(Hint::new("d", " delete "));
+                }
+            }
+        } else if tab.focused_finding_id.is_some() {
+            hints.push(Hint::new("r", " reply "));
+        }
+
+        if tab.ai.has_comments_or_questions() {
+            hints.push(Hint::new("J/K", " comments "));
+        }
+
+        // Cleanup hints — only when data exists
+        if tab.ai.has_questions() {
+            hints.push(Hint::new("z", " clear questions "));
+        }
+        if tab.ai.has_data() {
+            hints.push(Hint::new("Z", " clear reviews "));
+        }
+    }
+
+    // AI hints
+    if h.ai {
+        if tab.layers.show_ai_findings && tab.ai.total_findings() > 0 {
+            hints.push(Hint::new("^j/^k", " findings "));
+        }
+        if tab.ai.has_data() {
+            hints.push(Hint::new("a", " AI "));
+        }
+    }
+
+    // GitHub sync — only when PR data is available
+    if h.github && tab.pr_data.is_some() {
+        hints.push(Hint::new("G", " gh pull "));
+        hints.push(Hint::new("P", " gh push "));
+    }
+
+    // Editor
+    if h.navigation {
+        hints.push(Hint::new("e", " edit "));
+        hints.push(Hint::new("p", " panel "));
+    }
+
+    // Tab switching
     if app.tabs.len() > 1 {
         hints.push(Hint::new("[/]", " tabs "));
         hints.push(Hint::new("x", " close tab "));
     }
+
+    // Settings
+    if h.settings {
+        hints.push(Hint::new(",", " settings "));
+    }
+
+    hints.push(Hint::new("A", " copy "));
+    hints.push(Hint::new("^q", " quit "));
 
     // Show current file in commit if navigating
     if let Some(ref history) = tab.history {
@@ -440,10 +513,18 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
         }
     }
 
+    // Status indicators
+    if !tab.filter_expr.is_empty() {
+        hints.push(Hint {
+            key: "F:".to_string(),
+            label: format!(" {} ", tab.filter_expr),
+        });
+    }
+
     if !tab.search_query.is_empty() {
         hints.push(Hint {
             key: String::new(),
-            label: format!(" filter: \"{}\" ", tab.search_query),
+            label: format!(" search: \"{}\" ", tab.search_query),
         });
     }
 
@@ -471,11 +552,12 @@ fn build_hints(app: &App) -> Vec<Hint> {
     let mut hints: Vec<Hint> = Vec::new();
 
     if tab.panel.is_some() {
-        // Context: panel open — show panel + core nav
+        // Context: panel open — show panel controls + relevant actions
         if h.navigation {
             hints.push(Hint::new("j/k", " nav "));
             hints.push(Hint::new("n/N", " hunks "));
             hints.push(Hint::new("␣", " review "));
+            hints.push(Hint::new("/", " search "));
         }
         if tab.panel_focus {
             hints.push(Hint::new("Esc", " unfocus "));
@@ -483,6 +565,30 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("Tab", " focus panel "));
         }
         hints.push(Hint::new("p", " close panel "));
+
+        // PR-specific action
+        if tab.panel == Some(PanelContent::PrOverview) && tab.pr_data.is_some() {
+            hints.push(Hint::new("o", " open in browser "));
+        }
+
+        // Comments
+        if h.comments && tab.mode != DiffMode::Staged {
+            hints.push(Hint::new("q", " question "));
+            hints.push(Hint::new("c", " comment "));
+        }
+
+        // GitHub sync
+        if h.github && tab.pr_data.is_some() {
+            hints.push(Hint::new("G", " gh pull "));
+            hints.push(Hint::new("P", " gh push "));
+        }
+
+        // Filter & sort
+        if h.filter {
+            hints.push(Hint::new("u", " unreviewed "));
+            hints.push(Hint::new("f", " filter "));
+        }
+
         if app.tabs.len() > 1 {
             hints.push(Hint::new("[/]", " tabs "));
         }
@@ -508,6 +614,9 @@ fn build_hints(app: &App) -> Vec<Hint> {
                 if h.staging {
                     hints.push(Hint::new("c", " commit "));
                 }
+                if tab.committed_unpushed {
+                    hints.push(Hint::new("^p", " push "));
+                }
             } else {
                 hints.push(Hint::new("q", " question "));
                 hints.push(Hint::new("c", " comment "));
@@ -529,9 +638,17 @@ fn build_hints(app: &App) -> Vec<Hint> {
                 hints.push(Hint::new("r", " reply "));
             }
 
-            // Comment/finding jump hints — only when targets exist
-            if !tab.ai.all_hints_ordered().is_empty() {
-                hints.push(Hint::new("J/K", " hints "));
+            // Comment/question jump hints — only when targets exist
+            if tab.ai.has_comments_or_questions() {
+                hints.push(Hint::new("J/K", " comments "));
+            }
+
+            // Cleanup hints — only when data exists
+            if tab.ai.has_questions() {
+                hints.push(Hint::new("z", " clear questions "));
+            }
+            if tab.ai.has_data() {
+                hints.push(Hint::new("Z", " clear reviews "));
             }
         }
 
@@ -555,6 +672,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         if h.filter {
             hints.push(Hint::new("m", " recent "));
             hints.push(Hint::new("u", " unreviewed "));
+            hints.push(Hint::new("U", " next unreviewed "));
             hints.push(Hint::new("f", " filter "));
         }
 
@@ -679,7 +797,14 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
     match &app.input_mode {
         InputMode::Confirm(action) => {
             let prompt = match action {
-                ConfirmAction::DeleteComment { .. } => "Delete comment? (y/n)",
+                ConfirmAction::DeleteComment { .. } => "Delete comment? (y/n)".to_string(),
+                ConfirmAction::Push => "Push branch to remote? (y/n)".to_string(),
+                ConfirmAction::CleanupQuestions { count } => {
+                    format!("Clear {} question(s)? (y/n)", count)
+                }
+                ConfirmAction::CleanupReviews { count } => {
+                    format!("Clear {} review file(s)? (y/n)", count)
+                }
             };
             let spans = vec![
                 Span::styled(
@@ -841,6 +966,9 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             // race on terminal resize), rows[i] will panic with an out-of-bounds index. Clamp the
             // enumeration to rows.len().
             for (i, line) in lines.into_iter().enumerate() {
+                if i >= rows.len() {
+                    break;
+                }
                 let bar = Paragraph::new(line).style(panel_bg);
                 f.render_widget(bar, rows[i]);
             }

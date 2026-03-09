@@ -1,6 +1,6 @@
 # er-checklist
 
-Generate or update the `.er-checklist.json` review checklist from the current diff and review data.
+Generate or update the `.er/checklist.json` review checklist from the current diff and review data.
 
 ## Trigger
 
@@ -9,22 +9,22 @@ Run as `/er-checklist`.
 ## What it does
 
 1. Reads the current git diff
-2. Reads `.er-review.json` if it exists (to link checklist items to findings)
-3. Reads `.er-feedback.json` if it exists (human comments may surface new checklist items)
+2. Reads `.er/review.json` if it exists (to link checklist items to findings)
+3. Reads `.er/feedback.json` if it exists (human comments may surface new checklist items)
 4. Computes `diff_hash` for staleness detection
-5. Writes `.er-checklist.json`
+5. Writes `.er/checklist.json`
 
 ## Speed budget
 
 **Target: ≤5 tool calls, ≤30 seconds.**
 
-- TOOL CALLS 1-2: Read .er-review.json and .er-feedback.json (parallel — skip if missing)
+- TOOL CALLS 1-2: Read .er/review.json and .er/feedback.json (parallel — skip if missing)
 - TOOL CALL 3: Bash — `scripts/er-freshness-check.sh <base>` (captures diff + hash)
-- TOOL CALL 4: Read .er-diff-tmp (full diff into context)
+- TOOL CALL 4: Read .er/diff-tmp (full diff into context)
 - IN-CONTEXT: Generate checklist — zero tool calls
-- TOOL CALL 5: Write .er-checklist.json
+- TOOL CALL 5: Write .er/checklist.json
 
-Base branch comes from .er-review.json. If missing, detect: main then master.
+Base branch comes from .er/review.json. If missing, detect: main then master.
 
 ### Permission & hook constraints
 

@@ -82,9 +82,6 @@ pub struct DiffFileHeader {
     pub byte_length: usize,
 }
 
-/// Threshold for enabling lazy (two-phase) parsing
-pub const LAZY_PARSE_THRESHOLD: usize = 5000;
-
 /// Fast header-only scan of a raw diff.
 /// Extracts file paths, status, +/- counts, and byte offsets without
 /// allocating DiffLine structs. ~10x faster than full parse for large diffs.

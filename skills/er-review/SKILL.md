@@ -1,6 +1,6 @@
 # er-review
 
-Quick AI code review for the current git diff, producing `.er-*` sidecar files that the `er` TUI reads.
+Quick AI code review for the current git diff, producing `.er/` sidecar files that the `er` TUI reads.
 
 ## Trigger
 
@@ -40,20 +40,20 @@ For `unstaged` and `staged` scopes, the base branch is irrelevant — the diff i
 3. Checks persistence cache for reusable prior review
 4. Analyses every changed file and hunk (single-pass, no agents) — incrementally if a base review exists
 5. Writes four files to the repo root:
-   - `.er-review.json` — per-file risk levels, summaries, and findings pinned to hunks
-   - `.er-order.json` — suggested review order grouped by logical concern
-   - `.er-checklist.json` — actionable review checklist items
-   - `.er-summary.md` — human-readable overall summary
-6. Persists the review to `.er-reviews/<branch>/<commit-hash>/` for incremental reuse
+   - `.er/review.json` — per-file risk levels, summaries, and findings pinned to hunks
+   - `.er/order.json` — suggested review order grouped by logical concern
+   - `.er/checklist.json` — actionable review checklist items
+   - `.er/summary.md` — human-readable overall summary
+6. Persists the review to `.er/reviews/<branch>/<commit-hash>/` for incremental reuse
 
 ## Feedback-aware mode
 
-Before generating, check if `.er-feedback.json` exists and its `diff_hash` matches the current diff. If it does, read the human comments and:
+Before generating, check if `.er/feedback.json` exists and its `diff_hash` matches the current diff. If it does, read the human comments and:
 - Address each comment in the relevant finding's `responses` array
 - Add new findings if a comment reveals something you missed
-- Archive the old feedback to `.er-feedback.prev.json`
+- Archive the old feedback to `.er/feedback.prev.json`
 
-If `.er-feedback.json` exists but its `diff_hash` doesn't match, ignore it (it's stale).
+If `.er/feedback.json` exists but its `diff_hash` doesn't match, ignore it (it's stale).
 
 ## Speed budget
 
@@ -68,7 +68,7 @@ Allowed first-words: `git`, `shasum`, `mkdir`, `cp`, `scripts/er-*`
 NOT allowed as first word: `for`, `rm`, `while`, `bash`, `sh`
 
 - `&&` chaining is FINE for: `git`, `shasum`, `printf`, `mkdir`, `cp` (not in CHAIN_BLOCKED)
-- `rm` IS in CHAIN_BLOCKED — CANNOT appear after `&&`. Leave .er-diff-tmp in place (gitignored).
+- `rm` IS in CHAIN_BLOCKED — CANNOT appear after `&&`. Leave .er/diff-tmp in place (gitignored).
 - Do NOT pipe (`|`) into `shasum` — use file-based hashing: `shasum -a 256 <file>`
 - Use `scripts/er-hash-files.sh <scope-args>` for per-file hashing (avoids `for` loop)
 - Use `scripts/er-freshness-check.sh <base>` for base validation + diff capture + hash
@@ -95,22 +95,22 @@ TOOL CALL 1 — Bash (all setup via helper script):
     scripts/er-freshness-check.sh <base>
     → Output: "ok", hash line, commit hash (3 lines)
   For unstaged/staged scope (no base branch):
-    git diff <scope-args> > .er-diff-tmp && shasum -a 256 .er-diff-tmp && git rev-parse --short HEAD && git branch --show-current
+    git diff <scope-args> > .er/diff-tmp && shasum -a 256 .er/diff-tmp && git rev-parse --short HEAD && git branch --show-current
   → Captures: diff_hash, commit_hash, branch_name
   → Both forms match allow rules: scripts/er-* or git diff *
 
-TOOL CALL 2 — Read .er-review.json (if it exists):
+TOOL CALL 2 — Read .er/review.json (if it exists):
   → If exists AND diff_hash matches → print "Review is current", DONE (2 calls total)
-  → .er-diff-tmp is left in place (overwritten next run, gitignored)
+  → .er/diff-tmp is left in place (overwritten next run, gitignored)
 
 Step 2: Check persistence cache (1-2 tool calls)
 
-TOOL CALL 3 — Read .er-reviews/<branch>/<commit-hash>/.er-review.json:
+TOOL CALL 3 — Read .er/reviews/<branch>/<commit-hash>/review.json:
   → If exists AND diff_hash matches:
-    TOOL CALL 4 — Bash: cp .er-reviews/<branch>/<commit>/.er-review.json .er-reviews/<branch>/<commit>/.er-order.json .er-reviews/<branch>/<commit>/.er-checklist.json .er-reviews/<branch>/<commit>/.er-summary.md .
+    TOOL CALL 4 — Bash: cp .er/reviews/<branch>/<commit>/review.json .er/reviews/<branch>/<commit>/order.json .er/reviews/<branch>/<commit>/checklist.json .er/reviews/<branch>/<commit>/summary.md .er/
     → Print "Restored cached review", DONE (4 calls total)
   → If exists but diff_hash mismatched: use as incremental base (Step 4)
-  → If not found, check most recent in .er-reviews/<branch>/ for incremental base
+  → If not found, check most recent in .er/reviews/<branch>/ for incremental base
   → If nothing found → full analysis (Step 3)
 
 Step 3: Full analysis (~10 tool calls total)
@@ -118,12 +118,12 @@ Step 3: Full analysis (~10 tool calls total)
 TOOL CALL 4 — Bash (per-file hashes + full diff via helper script):
   er-hash-files.sh <scope-args>
   → Runs a single git diff, splits in-memory, outputs <file>\t<hash> per line.
-  → Also leaves the full diff in .er-diff-tmp (reused by TOOL CALL 5).
+  → Also leaves the full diff in .er/diff-tmp (reused by TOOL CALL 5).
 
-TOOL CALL 5 — Read .er-diff-tmp (the full diff):
+TOOL CALL 5 — Read .er/diff-tmp (the full diff):
   → This loads the ENTIRE diff into context. Do NOT read individual files.
 
-(Optional) TOOL CALL 7 — Read .er-feedback.json if it exists
+(Optional) TOOL CALL 7 — Read .er/feedback.json if it exists
 
 IN-CONTEXT ANALYSIS (zero tool calls):
   With the full diff in context, analyse ALL files in a single thinking pass:
@@ -148,12 +148,12 @@ IN-CONTEXT ANALYSIS (zero tool calls):
   }
 
 TOOL CALLS 8-11 — Write all four output files (parallel):
-  Write .er-review.json, .er-order.json, .er-checklist.json, .er-summary.md
+  Write .er/review.json, .er/order.json, .er/checklist.json, .er/summary.md
 
 TOOL CALL 12 — Bash (persist, one command):
-  mkdir -p .er-reviews/<branch>/<commit>/ && cp .er-review.json .er-order.json .er-checklist.json .er-summary.md .er-reviews/<branch>/<commit>/
+  mkdir -p .er/reviews/<branch>/<commit>/ && cp .er/review.json .er/order.json .er/checklist.json .er/summary.md .er/reviews/<branch>/<commit>/
 
-Print summary. (.er-diff-tmp left in place — gitignored, overwritten next run.)
+Print summary. (.er/diff-tmp left in place — gitignored, overwritten next run.)
 
 Step 4: Incremental analysis (~12 tool calls total)
 
@@ -161,16 +161,16 @@ Uses the base review from Step 2 (already in context).
 
 TOOL CALL 4 — Bash (per-file hashes + full diff via helper script):
   er-hash-files.sh <scope-args>
-  → Single git diff, in-memory split. Also leaves full diff in .er-diff-tmp.
+  → Single git diff, in-memory split. Also leaves full diff in .er/diff-tmp.
 
 Compare each file hash against base review's file_hashes:
   - Hash matches → preserve findings as-is
   - Hash changed or new file → needs re-analysis
   - Files in base but not in new diff → drop
 
-TOOL CALL 5 — Read .er-diff-tmp (full diff into context)
+TOOL CALL 5 — Read .er/diff-tmp (full diff into context)
 
-(Optional) TOOL CALL 7 — Read .er-feedback.json if it exists
+(Optional) TOOL CALL 7 — Read .er/feedback.json if it exists
 
 IN-CONTEXT ANALYSIS (zero tool calls):
   Analyse ONLY changed + new files. Merge with preserved findings.
@@ -185,7 +185,7 @@ Print: "Incremental review: N files preserved, M files re-analyzed, K files new"
 
 ## Output schemas
 
-### .er-review.json
+### .er/review.json
 ```json
 {
   "version": 1,
@@ -216,7 +216,7 @@ New fields (additive, backward-compatible — TUI ignores unknown fields):
 - `updated_at` — distinguishes initial from incremental reviews
 - `file_hashes` — per-file diff hashes for incremental comparison
 
-### .er-order.json
+### .er/order.json
 ```json
 {
   "version": 1,
@@ -233,7 +233,7 @@ New fields (additive, backward-compatible — TUI ignores unknown fields):
 }
 ```
 
-### .er-checklist.json
+### .er/checklist.json
 ```json
 {
   "version": 1,
@@ -256,11 +256,11 @@ New fields (additive, backward-compatible — TUI ignores unknown fields):
 Reviews are persisted by branch and commit hash:
 
 ```
-.er-reviews/<branch>/<commit-hash>/
-  .er-review.json
-  .er-order.json
-  .er-checklist.json
-  .er-summary.md
+.er/reviews/<branch>/<commit-hash>/
+  review.json
+  order.json
+  checklist.json
+  summary.md
 ```
 
 **What the review covers vs the commit hash:**
@@ -270,9 +270,9 @@ Reviews are persisted by branch and commit hash:
 - When you add a new commit, the new review still covers the entire scope. The incremental logic compares the old diff against the new diff file-by-file. Files with identical diff chunks carry forward. Only modified files get re-analyzed.
 
 **Cache lookup order:**
-1. Exact match: `.er-reviews/<branch>/<current-commit>/` with matching diff_hash → fast restore
+1. Exact match: `.er/reviews/<branch>/<current-commit>/` with matching diff_hash → fast restore
 2. Stale match at current commit: use as incremental base
-3. Most recent review in `.er-reviews/<branch>/`: use as incremental base
+3. Most recent review in `.er/reviews/<branch>/`: use as incremental base
 4. Nothing found: full analysis
 
 ## Large diff handling
@@ -297,9 +297,9 @@ For diffs >100KB or >20 files, apply these shortcuts to stay under 90 seconds:
 
 ## .gitignore
 
-Add `.er-*` to the project's `.gitignore`. This single pattern covers all sidecar files:
-- `.er-review.json`, `.er-order.json`, `.er-summary.md`, `.er-checklist.json`
-- `.er-feedback.json`, `.er-feedback.prev.json`
-- `.er-reviewed`
-- `.er-reviews/` (persistence cache)
-- `.er-diff-tmp` (temporary)
+Add `.er/` to the project's `.gitignore`. This single pattern covers all sidecar files:
+- `.er/review.json`, `.er/order.json`, `.er/summary.md`, `.er/checklist.json`
+- `.er/feedback.json`, `.er/feedback.prev.json`
+- `.er/reviewed`
+- `.er/reviews/` (persistence cache)
+- `.er/diff-tmp` (temporary)

@@ -8,7 +8,10 @@ mod watch;
 
 use crate::ai::{PanelContent, ReviewFocus};
 use anyhow::Result;
-use app::{App, ConfirmAction, DiffMode, InputMode, SplitSide};
+use app::{
+    cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode, HubAction, InputMode,
+    SplitSide,
+};
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -173,7 +176,7 @@ fn run_app<B: Backend>(
         terminal.draw(|f| ui::draw(f, app, hl))?;
 
         // Poll for events with a timeout (lets us process watch events too)
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 // Route keys: overlay takes priority, then search, then normal
                 if app.overlay.is_some() {
@@ -194,11 +197,8 @@ fn run_app<B: Backend>(
         }
 
         // Check for file watch events (non-blocking) — debounced
-        // TODO(risk:medium): only one event is drained per loop tick. Under a burst of rapid
-        // changes the channel accumulates events faster than they are consumed, causing
-        // pending_file_count to undercount and the debounce deadline to reset on every tick,
-        // potentially delaying the refresh indefinitely. Drain all available events in a loop.
-        if let Ok(WatchEvent::FilesChanged(paths)) = watch_rx.try_recv() {
+        // Drain all pending events each tick to avoid accumulation under rapid changes.
+        while let Ok(WatchEvent::FilesChanged(paths)) = watch_rx.try_recv() {
             pending_file_count += paths.len();
             pending_refresh = true;
             refresh_deadline = Instant::now() + Duration::from_millis(200);
@@ -210,6 +210,7 @@ fn run_app<B: Backend>(
             let count = pending_file_count;
             pending_file_count = 0;
             let _ = app.tab_mut().refresh_diff_quick();
+            let unmark_count = std::mem::replace(&mut app.tab_mut().pending_unmark_count, 0);
             let ai_status = if app.tab().ai.has_data() {
                 if app.tab().ai.is_stale {
                     " · AI stale"
@@ -219,12 +220,21 @@ fn run_app<B: Backend>(
             } else {
                 ""
             };
-            app.notify(&format!(
-                "{} file{} changed{}",
-                count,
-                if count == 1 { "" } else { "s" },
-                ai_status
-            ));
+            if unmark_count > 0 {
+                app.notify(&format!(
+                    "{} reviewed file{} auto-unmarked (diff changed){}",
+                    unmark_count,
+                    if unmark_count == 1 { "" } else { "s" },
+                    ai_status
+                ));
+            } else {
+                app.notify(&format!(
+                    "{} file{} changed{}",
+                    count,
+                    if count == 1 { "" } else { "s" },
+                    ai_status
+                ));
+            }
         }
 
         // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
@@ -267,8 +277,8 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     // Settings overlay has additional keybindings
     if matches!(app.overlay, Some(app::OverlayData::Settings { .. })) {
         match key.code {
-            KeyCode::Char('k') | KeyCode::Down => app.overlay_next(),
-            KeyCode::Char('j') | KeyCode::Up => app.overlay_prev(),
+            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
             KeyCode::Char(' ') | KeyCode::Enter => {
                 // Space and Enter both toggle the current item
                 app.settings_toggle();
@@ -284,12 +294,90 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     match key.code {
-        KeyCode::Char('k') | KeyCode::Down => app.overlay_next(),
-        KeyCode::Char('j') | KeyCode::Up => app.overlay_prev(),
-        KeyCode::Enter => app.overlay_select()?,
+        KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+        KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+        KeyCode::Enter => {
+            app.overlay_select()?;
+            // Dispatch pending hub action if overlay_select set one
+            if let Some(action) = app.pending_hub_action.take() {
+                app.overlay = None;
+                dispatch_hub_action(app, action)?;
+            }
+        }
         KeyCode::Backspace => app.overlay_go_up(),
         KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
         _ => {}
+    }
+    Ok(())
+}
+
+fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
+    match action {
+        HubAction::Noop => {}
+        HubAction::PushToRemote => {
+            if app.tab().mode == DiffMode::Staged {
+                app.input_mode = InputMode::Confirm(ConfirmAction::Push);
+            }
+        }
+        HubAction::PullGitHubComments => {
+            sync_github_comments(app)?;
+        }
+        HubAction::PushCommentsToGitHub => {
+            push_all_comments_to_github(app)?;
+        }
+        HubAction::RefreshDiff => {
+            app.tab_mut().refresh_diff()?;
+            app.notify("Refreshed");
+        }
+        HubAction::StageFile => {
+            app.toggle_stage_file()?;
+        }
+        HubAction::StageAll => {
+            app.stage_all()?;
+        }
+        HubAction::CopyContext => {
+            app.copy_context()?;
+        }
+        HubAction::ToggleAiFindings => {
+            app.tab_mut().toggle_layer_ai();
+            let on = app.tab().layers.show_ai_findings;
+            app.notify(if on {
+                "AI findings: ON"
+            } else {
+                "AI findings: OFF"
+            });
+        }
+        HubAction::ToggleComments => {
+            app.tab_mut().toggle_layer_comments();
+            let on = app.tab().layers.show_github_comments;
+            app.notify(if on {
+                "Comments: visible"
+            } else {
+                "Comments: hidden"
+            });
+        }
+        HubAction::ToggleQuestions => {
+            app.tab_mut().toggle_layer_questions();
+            let on = app.tab().layers.show_questions;
+            app.notify(if on {
+                "Questions: visible"
+            } else {
+                "Questions: hidden"
+            });
+        }
+        HubAction::CleanupQuestions => {
+            let count = app
+                .tab()
+                .ai
+                .questions
+                .as_ref()
+                .map_or(0, |q| q.questions.len());
+            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
+        }
+        HubAction::CleanupReviews => {
+            let count = app.tab().ai.review.as_ref().map_or(0, |r| r.files.len());
+            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
+        }
     }
     Ok(())
 }
@@ -447,6 +535,22 @@ fn handle_normal_input(
             }
             return Ok(());
         }
+        // Cleanup AI sidecar files
+        KeyCode::Char('z') if key.modifiers == KeyModifiers::NONE => {
+            let count = app
+                .tab()
+                .ai
+                .questions
+                .as_ref()
+                .map_or(0, |q| q.questions.len());
+            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
+            return Ok(());
+        }
+        KeyCode::Char('Z') => {
+            let count = app.tab().ai.review.as_ref().map_or(0, |r| r.files.len());
+            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
+            return Ok(());
+        }
         KeyCode::Char('x') => {
             app.close_tab();
             return Ok(());
@@ -467,7 +571,18 @@ fn handle_normal_input(
             return Ok(());
         }
         KeyCode::Char('o') => {
-            app.open_directory_browser();
+            if app.tab().panel == Some(PanelContent::PrOverview) && app.tab().pr_data.is_some() {
+                let repo_root = app.tab().repo_root.clone();
+                let _ = std::process::Command::new("gh")
+                    .args(["pr", "view", "--web"])
+                    .current_dir(&repo_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                app.notify("Opening PR in browser...");
+            } else {
+                app.open_directory_browser();
+            }
             return Ok(());
         }
 
@@ -516,12 +631,225 @@ fn handle_normal_input(
         }
     }
 
-    // ── History mode: route to dedicated handler ──
-    if app.tab().mode == DiffMode::History {
+    // ── Shared feature keys: work in all diff modes including History ──
+    let mode = app.tab().mode;
+
+    match key.code {
+        // Search
+        KeyCode::Char('/') => {
+            app.input_mode = InputMode::Search;
+            let tab = app.tab_mut();
+            tab.search_query.clear();
+            tab.search_query_lower.clear();
+            return Ok(());
+        }
+
+        // Filter
+        KeyCode::Char('f') => {
+            app.input_mode = InputMode::Filter;
+            // Pre-populate with current expression for editing
+            app.tab_mut().filter_input = app.tab().filter_expr.clone();
+            return Ok(());
+        }
+
+        // Filter history
+        KeyCode::Char('F') => {
+            app.open_filter_history();
+            return Ok(());
+        }
+
+        // Open settings overlay
+        KeyCode::Char(',') => {
+            app.open_settings();
+            return Ok(());
+        }
+
+        // Toggle AI findings layer (a)
+        KeyCode::Char('a') => {
+            app.tab_mut().toggle_layer_ai();
+            let on = app.tab().layers.show_ai_findings;
+            app.notify(if on {
+                "AI findings: ON"
+            } else {
+                "AI findings: OFF"
+            });
+            return Ok(());
+        }
+
+        // Push current branch to remote (Staged mode only)
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.tab().mode == DiffMode::Staged {
+                app.input_mode = InputMode::Confirm(ConfirmAction::Push);
+            }
+            return Ok(());
+        }
+
+        // Toggle context panel (p) — cycles through panel states
+        KeyCode::Char('p') => {
+            app.tab_mut().toggle_panel();
+            return Ok(());
+        }
+
+        // Tab: in History mode only toggle panel focus; in other modes also handle split pane
+        KeyCode::Tab => {
+            if mode != DiffMode::History && app.split_diff_active(&app.config.clone()) {
+                let tab = app.tab_mut();
+                tab.split_focus = match tab.split_focus {
+                    SplitSide::Old => SplitSide::New,
+                    SplitSide::New => SplitSide::Old,
+                };
+            } else {
+                let tab = app.tab_mut();
+                if tab.panel.is_some() {
+                    tab.panel_focus = !tab.panel_focus;
+                }
+            }
+            return Ok(());
+        }
+
+        // In Staged mode, c = commit; otherwise c = GitHub comment
+        KeyCode::Char('c') => {
+            if app.tab().mode == DiffMode::Staged {
+                app.start_commit();
+            } else {
+                app.start_comment(crate::ai::CommentType::GitHubComment);
+            }
+            return Ok(());
+        }
+
+        // Toggle comment layer visibility (C)
+        KeyCode::Char('C') => {
+            app.tab_mut().toggle_layer_comments();
+            let on = app.tab().layers.show_github_comments;
+            app.notify(if on {
+                "Comments: visible"
+            } else {
+                "Comments: hidden"
+            });
+            return Ok(());
+        }
+
+        // Toggle question layer visibility (Q)
+        KeyCode::Char('Q') => {
+            app.tab_mut().toggle_layer_questions();
+            let on = app.tab().layers.show_questions;
+            app.notify(if on {
+                "Questions: visible"
+            } else {
+                "Questions: hidden"
+            });
+            return Ok(());
+        }
+
+        // GitHub comment sync (pull)
+        KeyCode::Char('G') => {
+            sync_github_comments(app)?;
+            return Ok(());
+        }
+
+        // Push all comments to GitHub
+        KeyCode::Char('P') => {
+            push_all_comments_to_github(app)?;
+            return Ok(());
+        }
+
+        // AI modal hub (A)
+        KeyCode::Char('A') => {
+            app.open_ai_hub();
+            return Ok(());
+        }
+
+        // Git modal hub (g)
+        KeyCode::Char('g') => {
+            app.open_git_hub();
+            return Ok(());
+        }
+
+        // Verify modal hub (v)
+        KeyCode::Char('v') => {
+            app.open_verify_hub();
+            return Ok(());
+        }
+
+        // Help modal hub (?)
+        KeyCode::Char('?') => {
+            app.open_help_hub();
+            return Ok(());
+        }
+
+        // Expand/compact toggle for compacted files (no-op in History — commit files aren't compacted)
+        KeyCode::Enter => {
+            let is_compacted = app.tab().selected_diff_file().is_some_and(|f| f.compacted);
+            if is_compacted {
+                app.tab_mut().toggle_compacted()?;
+            }
+            return Ok(());
+        }
+
+        // Clear search first, then filter (History gains filter-clear, which is correct)
+        KeyCode::Esc => {
+            if !app.tab().search_query.is_empty() {
+                let tab = app.tab_mut();
+                tab.search_query.clear();
+                tab.search_query_lower.clear();
+            } else if !app.tab().filter_expr.is_empty() {
+                app.tab_mut().clear_filter();
+                app.notify("Filter cleared");
+            }
+            return Ok(());
+        }
+
+        // Stage/unstage file (or update snapshot for watched files) — not meaningful in History
+        KeyCode::Char('s') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
+            if app.tab().selected_watched.is_some() {
+                // Update snapshot for watched file
+                if app.tab().watched_config.diff_mode == "snapshot" {
+                    match app.tab_mut().update_watched_snapshot() {
+                        Ok(()) => app.notify("Snapshot updated"),
+                        Err(e) => app.notify(&format!("Snapshot error: {}", e)),
+                    }
+                } else {
+                    app.notify("Snapshot mode not enabled (diff_mode = \"content\")");
+                }
+            } else {
+                app.toggle_stage_file()?;
+            }
+            return Ok(());
+        }
+
+        // Toggle reviewed — review tracking is per-branch, not meaningful in History
+        KeyCode::Char(' ') if mode != DiffMode::History => {
+            app.toggle_reviewed()?;
+            return Ok(());
+        }
+
+        // Toggle unreviewed-only filter — not meaningful in History
+        KeyCode::Char('u') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
+            app.toggle_unreviewed_filter();
+            return Ok(());
+        }
+
+        // Jump to next unreviewed file — not meaningful in History
+        KeyCode::Char('U') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
+            app.next_unreviewed_file();
+            return Ok(());
+        }
+
+        // Yank hunk — yank_hunk uses tab().files directly, not mode-aware
+        KeyCode::Char('y') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
+            app.yank_hunk()?;
+            return Ok(());
+        }
+
+        _ => {}
+    }
+
+    // ── History mode: route to dedicated handler (pure navigation only) ──
+    if mode == DiffMode::History {
         return handle_history_input(app, key);
     }
 
-    // ── Normal mode keys ──
+    // ── Non-History navigation keys ──
 
     match key.code {
         // File navigation
@@ -632,154 +960,6 @@ fn handle_normal_input(
             }
         }
 
-        // Search
-        KeyCode::Char('/') => {
-            app.input_mode = InputMode::Search;
-            app.tab_mut().search_query.clear();
-        }
-
-        // Filter
-        KeyCode::Char('f') => {
-            app.input_mode = InputMode::Filter;
-            // Pre-populate with current expression for editing
-            app.tab_mut().filter_input = app.tab().filter_expr.clone();
-        }
-
-        // Filter history
-        KeyCode::Char('F') => {
-            app.open_filter_history();
-        }
-
-        // Stage/unstage file (or update snapshot for watched files)
-        KeyCode::Char('s') => {
-            if app.tab().selected_watched.is_some() {
-                // Update snapshot for watched file
-                if app.tab().watched_config.diff_mode == "snapshot" {
-                    match app.tab_mut().update_watched_snapshot() {
-                        Ok(()) => app.notify("Snapshot updated"),
-                        Err(e) => app.notify(&format!("Snapshot error: {}", e)),
-                    }
-                } else {
-                    app.notify("Snapshot mode not enabled (diff_mode = \"content\")");
-                }
-            } else {
-                app.toggle_stage_file()?;
-            }
-        }
-
-        // Open settings overlay
-        KeyCode::Char(',') => {
-            app.open_settings();
-        }
-
-        // Toggle reviewed
-        KeyCode::Char(' ') => {
-            app.toggle_reviewed()?;
-        }
-
-        // Toggle unreviewed-only filter
-        KeyCode::Char('u') => {
-            app.toggle_unreviewed_filter();
-        }
-
-        // Expand/compact toggle for compacted files
-        KeyCode::Enter => {
-            let is_compacted = app.tab().selected_diff_file().is_some_and(|f| f.compacted);
-            if is_compacted {
-                app.tab_mut().toggle_compacted()?;
-            }
-        }
-
-        // Yank hunk to clipboard
-        KeyCode::Char('y') => {
-            app.yank_hunk()?;
-        }
-
-        // Copy rich context to clipboard (for agent terminal)
-        KeyCode::Char('A') => {
-            app.copy_context()?;
-        }
-
-        // In Staged mode, c = commit; otherwise c = GitHub comment
-        KeyCode::Char('c') => {
-            if app.tab().mode == DiffMode::Staged {
-                app.start_commit();
-            } else {
-                app.start_comment(crate::ai::CommentType::GitHubComment);
-            }
-        }
-        KeyCode::Char('C') => {
-            app.tab_mut().toggle_layer_comments();
-            let on = app.tab().layers.show_github_comments;
-            app.notify(if on {
-                "Comments: visible"
-            } else {
-                "Comments: hidden"
-            });
-        }
-
-        // Toggle question layer visibility (Q)
-        KeyCode::Char('Q') => {
-            app.tab_mut().toggle_layer_questions();
-            let on = app.tab().layers.show_questions;
-            app.notify(if on {
-                "Questions: visible"
-            } else {
-                "Questions: hidden"
-            });
-        }
-
-        // Tab: toggle split pane focus when split diff is active; otherwise toggle panel focus
-        KeyCode::Tab => {
-            if app.split_diff_active(&app.config.clone()) {
-                let tab = app.tab_mut();
-                tab.split_focus = match tab.split_focus {
-                    SplitSide::Old => SplitSide::New,
-                    SplitSide::New => SplitSide::Old,
-                };
-            } else {
-                let tab = app.tab_mut();
-                if tab.panel.is_some() {
-                    tab.panel_focus = !tab.panel_focus;
-                }
-            }
-        }
-
-        // GitHub comment sync (pull)
-        KeyCode::Char('G') => {
-            sync_github_comments(app)?;
-        }
-
-        // Push all comments to GitHub
-        KeyCode::Char('P') => {
-            push_all_comments_to_github(app)?;
-        }
-
-        // Toggle AI findings layer (a)
-        KeyCode::Char('a') => {
-            app.tab_mut().toggle_layer_ai();
-            let on = app.tab().layers.show_ai_findings;
-            app.notify(if on {
-                "AI findings: ON"
-            } else {
-                "AI findings: OFF"
-            });
-        }
-        // Toggle context panel (p) — cycles through panel states
-        KeyCode::Char('p') => {
-            app.tab_mut().toggle_panel();
-        }
-
-        // Clear search first, then filter (innermost → outermost)
-        KeyCode::Esc => {
-            if !app.tab().search_query.is_empty() {
-                app.tab_mut().search_query.clear();
-            } else if !app.tab().filter_expr.is_empty() {
-                app.tab_mut().clear_filter();
-                app.notify("Filter cleared");
-            }
-        }
-
         _ => {}
     }
     Ok(())
@@ -887,41 +1067,6 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::PageDown => app.tab_mut().history_scroll_down(20),
         KeyCode::PageUp => app.tab_mut().history_scroll_up(20),
 
-        // Search (filter commits)
-        KeyCode::Char('/') => {
-            app.input_mode = InputMode::Search;
-            app.tab_mut().search_query.clear();
-        }
-
-        // Clear search filter
-        KeyCode::Esc => {
-            if !app.tab().search_query.is_empty() {
-                app.tab_mut().search_query.clear();
-            }
-        }
-
-        // Toggle AI findings layer
-        KeyCode::Char('a') => {
-            app.tab_mut().toggle_layer_ai();
-            let on = app.tab().layers.show_ai_findings;
-            app.notify(if on {
-                "AI findings: ON"
-            } else {
-                "AI findings: OFF"
-            });
-        }
-        // Toggle context panel
-        KeyCode::Char('p') => {
-            app.tab_mut().toggle_panel();
-        }
-        // Toggle panel focus
-        KeyCode::Tab => {
-            let tab = app.tab_mut();
-            if tab.panel.is_some() {
-                tab.panel_focus = !tab.panel_focus;
-            }
-        }
-
         _ => {}
     }
     Ok(())
@@ -942,17 +1087,23 @@ fn handle_search_input(app: &mut App, key: KeyEvent) {
         KeyCode::Enter | KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
             if key.code == KeyCode::Esc {
-                app.tab_mut().search_query.clear();
+                let tab = app.tab_mut();
+                tab.search_query.clear();
+                tab.search_query_lower.clear();
             } else {
                 // Search confirmed — snap selection to a visible file
                 app.tab_mut().snap_to_visible();
             }
         }
         KeyCode::Char(c) => {
-            app.tab_mut().search_query.push(c);
+            let tab = app.tab_mut();
+            tab.search_query.push(c);
+            tab.search_query_lower = tab.search_query.to_lowercase();
         }
         KeyCode::Backspace => {
-            app.tab_mut().search_query.pop();
+            let tab = app.tab_mut();
+            tab.search_query.pop();
+            tab.search_query_lower = tab.search_query.to_lowercase();
         }
         _ => {}
     }
@@ -1020,6 +1171,31 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             let action = app.input_mode.clone();
             if let InputMode::Confirm(ConfirmAction::DeleteComment { comment_id }) = action {
                 app.confirm_delete_comment(&comment_id)?;
+            } else if let InputMode::Confirm(ConfirmAction::Push) = action {
+                app.input_mode = InputMode::Normal;
+                let repo_root = app.tab().repo_root.clone();
+                match git::git_push(&repo_root) {
+                    Ok(_) => {
+                        app.tab_mut().committed_unpushed = false;
+                        let _ = app.tab_mut().refresh_diff();
+                        app.notify("Pushed!");
+                    }
+                    Err(e) => {
+                        app.notify(&format!("Push failed: {}", e));
+                    }
+                }
+            } else if let InputMode::Confirm(ConfirmAction::CleanupQuestions { .. }) = action {
+                app.input_mode = InputMode::Normal;
+                let repo_root = app.tab().repo_root.clone();
+                cleanup_questions(&repo_root);
+                app.tab_mut().reload_ai_state();
+                app.notify("Questions cleared");
+            } else if let InputMode::Confirm(ConfirmAction::CleanupReviews { .. }) = action {
+                app.input_mode = InputMode::Normal;
+                let repo_root = app.tab().repo_root.clone();
+                cleanup_reviews(&repo_root);
+                app.tab_mut().reload_ai_state();
+                app.notify("Review cleared");
             }
         }
         KeyCode::Char('n') | KeyCode::Esc => {
@@ -1073,10 +1249,10 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
         }
     };
 
-    // Load existing .er-github-comments.json
+    // Load existing .er/github-comments.json
     // TODO(risk:minor): path is built by string concatenation; use Path::join to handle
     // trailing slashes and avoid subtle path construction bugs.
-    let comments_path = format!("{}/.er-github-comments.json", repo_root);
+    let comments_path = format!("{}/.er/github-comments.json", repo_root);
     let diff_hash = tab.branch_diff_hash.clone();
     let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
         Ok(content) => {
@@ -1228,6 +1404,7 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     gc.comments = local_unpushed;
     gc.comments.extend(github_entries);
 
+    std::fs::create_dir_all(format!("{}/.er", repo_root))?;
     let json = serde_json::to_string_pretty(&gc)?;
     let tmp_path = format!("{}.tmp", comments_path);
     // TODO(risk:medium): if fs::write succeeds but fs::rename fails (e.g. permissions error),
@@ -1237,8 +1414,14 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     std::fs::rename(&tmp_path, &comments_path)?;
 
     app.tab_mut().reload_ai_state();
+
+    // Refresh PR overview data (CI checks + reviewer status)
+    if let Some(pr_data) = github::gh_pr_overview(&repo_root) {
+        app.tab_mut().pr_data = Some(pr_data);
+    }
+
     app.notify(&format!(
-        "GitHub sync: {} from GitHub, {} local kept",
+        "GitHub sync: {} from GitHub, {} local kept, PR status refreshed",
         github_count, local_count
     ));
     Ok(())
@@ -1258,7 +1441,7 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     };
     let (owner, repo_name, pr_number) = pr_info;
 
-    let comments_path = format!("{}/.er-github-comments.json", repo_root);
+    let comments_path = format!("{}/.er/github-comments.json", repo_root);
     let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
         Ok(content) => match serde_json::from_str(&content) {
             Ok(gc) => gc,
@@ -1397,6 +1580,7 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
+            pending_hub_action: None,
         }
     }
 

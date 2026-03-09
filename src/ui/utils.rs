@@ -1,3 +1,9 @@
+/// Returns a horizontal rule string of `width` dashes, capped at 300 to prevent
+/// pathological allocations on very wide terminals.
+pub(crate) fn horizontal_rule(width: usize) -> String {
+    "\u{2500}".repeat(width.min(300))
+}
+
 /// Simple word-wrap helper.
 /// Uses `chars().count()` for the width check so multi-byte UTF-8 strings
 /// are measured in characters, not bytes.

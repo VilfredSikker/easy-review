@@ -192,13 +192,9 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
 
 /// Get the raw diff output from git for a given mode
 pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
-    // TODO(risk:high): `base` is an unsanitized branch/ref name that comes from user input
-    // (--pr flag, config file, or auto-detection). A value like "--output=/tmp/evil" or
-    // "-O/tmp/evil" injected as the base branch would be concatenated into merge_base_ref and
-    // passed to git diff as a positional argument, not an option. However, if base itself is
-    // used as an arg in the args array directly (not as part of merge_base_ref), git would
-    // interpret leading dashes as flags. Confirm all callers sanitize the base value and
-    // never pass it raw through untrusted channels (e.g., branch names from `gh api` output).
+    if base.starts_with('-') {
+        anyhow::bail!("Invalid base branch: {}", base);
+    }
     let merge_base_ref = format!("{}...HEAD", base);
     let args: Vec<&str> = match mode {
         "branch" => vec![
@@ -557,6 +553,57 @@ pub fn git_stage_all(repo_root: &str) -> Result<()> {
         anyhow::bail!("git add -A failed: {}", stderr.trim());
     }
     Ok(())
+}
+
+/// Push current branch to remote, returning trimmed stderr output on success
+pub fn git_push(repo_root: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["push"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git push")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git push failed: {}", stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
+}
+
+/// Returns true if the current branch has commits not yet pushed to upstream
+#[allow(dead_code)]
+pub fn has_unpushed_commits(repo_root: &str) -> bool {
+    let output = Command::new("git")
+        .args(["rev-list", "--count", "@{upstream}..HEAD"])
+        .current_dir(repo_root)
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            let count_str = String::from_utf8_lossy(&out.stdout);
+            count_str.trim().parse::<u64>().unwrap_or(0) > 0
+        }
+        _ => false,
+    }
+}
+
+/// Get raw diff output between two refs (e.g. "HEAD~1" and "HEAD")
+pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<String> {
+    let range = format!("{}..{}", from, to);
+    let output = Command::new("git")
+        .args(["diff", &range, "--unified=3", "--no-color", "--no-ext-diff"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git diff for range")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !stderr.is_empty() && !output.status.success() {
+        anyhow::bail!("git diff {} failed: {}", range, stderr.trim());
+    }
+
+    Ok(stdout)
 }
 
 /// Commit staged changes with the given message

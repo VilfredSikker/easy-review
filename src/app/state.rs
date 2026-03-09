@@ -5,7 +5,7 @@ use crate::git::{
 };
 use crate::github::PrOverviewData;
 use anyhow::{Context, Result};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[allow(unused_imports)]
@@ -136,6 +136,9 @@ pub enum InputMode {
 #[allow(dead_code)]
 pub enum ConfirmAction {
     DeleteComment { comment_id: String },
+    Push,
+    CleanupQuestions { count: usize },
+    CleanupReviews { count: usize },
 }
 
 /// Which pane has focus in split diff view
@@ -177,6 +180,69 @@ pub enum OverlayData {
         selected: usize,
         preset_count: usize,
     },
+    ModalHub {
+        kind: HubKind,
+        items: Vec<HubItem>,
+        selected: usize,
+    },
+}
+
+/// Which modal hub is open
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HubKind {
+    Git,
+    Ai,
+    Verify,
+    Help,
+}
+
+impl HubKind {
+    pub fn title(&self) -> &'static str {
+        match self {
+            HubKind::Git => "GIT",
+            HubKind::Ai => "AI",
+            HubKind::Verify => "VERIFY",
+            HubKind::Help => "HELP",
+        }
+    }
+}
+
+/// A single item in a modal hub menu
+#[derive(Debug, Clone)]
+pub struct HubItem {
+    /// Display label (e.g. "Push to remote")
+    pub label: String,
+    /// Short keybind hint shown right-aligned (e.g. "Ctrl+P")
+    pub hint: String,
+    /// Brief description shown below label
+    pub description: String,
+    /// Action to dispatch when selected
+    pub action: HubAction,
+    /// Whether this item is a section header (non-selectable)
+    pub is_header: bool,
+    /// Whether the item is currently enabled/applicable
+    pub enabled: bool,
+}
+
+/// Actions dispatched from modal hub selections
+#[derive(Debug, Clone, PartialEq)]
+pub enum HubAction {
+    Noop,
+    // Git hub actions
+    PushToRemote,
+    PullGitHubComments,
+    PushCommentsToGitHub,
+    RefreshDiff,
+    StageFile,
+    StageAll,
+    // AI hub actions
+    CopyContext,
+    ToggleAiFindings,
+    ToggleComments,
+    ToggleQuestions,
+    CleanupQuestions,
+    CleanupReviews,
+    // Help — no dispatch, just informational
 }
 
 // ── Per-Tab State ──
@@ -248,14 +314,26 @@ pub struct TabState {
     /// Search/filter input
     pub search_query: String,
 
-    /// Files marked as reviewed (paths relative to repo root)
-    pub reviewed: HashSet<String>,
+    /// Files marked as reviewed: path → SHA-256 hash of the file's diff at mark time.
+    /// Empty-string hash is a sentinel for entries loaded from the old single-column format
+    /// (backwards compat) — those entries are never auto-unmarked.
+    pub reviewed: HashMap<String, String>,
+
+    /// Per-file diff hashes for the current refresh (volatile, not persisted).
+    /// Used to detect when a reviewed file's diff has changed since it was marked.
+    pub current_per_file_hashes: HashMap<String, String>,
 
     /// Only show unreviewed files in the file tree
     pub show_unreviewed_only: bool,
 
     /// Sort files by mtime (newest first) — works in any diff mode
     pub sort_by_mtime: bool,
+
+    /// Cached mtime per file path, populated on refresh (avoids per-frame fs::metadata calls)
+    pub mtime_cache: HashMap<String, std::time::SystemTime>,
+
+    /// Pre-lowercased search query for use in visible_files() (avoids per-call allocation)
+    pub search_query_lower: String,
 
     /// AI review state (loaded from .er-* files)
     pub ai: AiState,
@@ -368,6 +446,14 @@ pub struct TabState {
     // ── Symbol references ──
     /// Symbol reference lookup state (populated via panel action)
     pub symbol_refs: Option<SymbolRefsState>,
+
+    /// Count of files auto-unmarked during the last refresh (drained by App for notification).
+    /// Set to 0 after every refresh; non-zero means the App should surface a notification.
+    pub pending_unmark_count: usize,
+
+    /// True after a commit in Staged mode — causes diff view to show HEAD~1..HEAD until next
+    /// new staged change or the user pushes.
+    pub committed_unpushed: bool,
 }
 
 /// A single reference to a symbol (file + line)
@@ -487,8 +573,11 @@ impl TabState {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed,
+            current_per_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
+            mtime_cache: HashMap::new(),
+            search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
@@ -519,6 +608,8 @@ impl TabState {
             file_headers: Vec::new(),
             raw_diff: None,
             symbol_refs: None,
+            pending_unmark_count: 0,
+            committed_unpushed: false,
         };
 
         tab.refresh_diff()?;
@@ -563,9 +654,12 @@ impl TabState {
             filter_rules: Vec::new(),
             filter_input: String::new(),
             filter_history: Vec::new(),
-            reviewed: HashSet::new(),
+            reviewed: HashMap::new(),
+            current_per_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
+            mtime_cache: HashMap::new(),
+            search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
@@ -596,6 +690,8 @@ impl TabState {
             file_headers: Vec::new(),
             raw_diff: None,
             symbol_refs: None,
+            pending_unmark_count: 0,
+            committed_unpushed: false,
         }
     }
 
@@ -611,13 +707,19 @@ impl TabState {
 
     /// Re-run git diff and update the file list
     pub fn refresh_diff(&mut self) -> Result<()> {
-        self.refresh_diff_impl(true)
+        self.refresh_diff_impl(true, true)
     }
 
     /// Lightweight refresh: skips branch hash recomputation in non-Branch modes.
     /// Use for watch events where the extra git diff call adds unwanted latency.
     pub fn refresh_diff_quick(&mut self) -> Result<()> {
-        self.refresh_diff_impl(false)
+        self.refresh_diff_impl(false, false)
+    }
+
+    /// Refresh for mode switch: recompute hashes but don't auto-unmark.
+    /// Diff content differs per mode, so hash changes don't mean actual file changes.
+    pub fn refresh_diff_mode_switch(&mut self) -> Result<()> {
+        self.refresh_diff_impl(true, false)
     }
 
     /// Refresh conflict files for Conflicts mode.
@@ -680,7 +782,7 @@ impl TabState {
         self.file_tree_cache = None;
     }
 
-    fn refresh_diff_impl(&mut self, recompute_branch_hash: bool) -> Result<()> {
+    fn refresh_diff_impl(&mut self, recompute_branch_hash: bool, auto_unmark: bool) -> Result<()> {
         // History mode doesn't use git_diff_raw — skip normal diff refresh
         if self.mode == DiffMode::History {
             return Ok(());
@@ -700,13 +802,31 @@ impl TabState {
         let prev_hunk = self.current_hunk;
         let prev_line = self.current_line;
 
-        let raw = git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
+        // In Staged mode after a commit, show HEAD~1..HEAD unless new staged changes exist
+        let raw = if self.mode == DiffMode::Staged && self.committed_unpushed {
+            let staged_raw =
+                git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
+            if !staged_raw.is_empty() {
+                // New staged changes exist — resume normal staged view
+                self.committed_unpushed = false;
+                staged_raw
+            } else {
+                match git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root) {
+                    Ok(raw) => raw,
+                    Err(_) => {
+                        self.committed_unpushed = false;
+                        String::new()
+                    }
+                }
+            }
+        } else {
+            git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?
+        };
 
-        // Decide parsing strategy based on diff size
-        // TODO(risk:medium): counting newlines by iterating raw bytes on every refresh is O(n) over the full diff.
-        // For very large diffs (hundreds of MB) this adds measurable latency on every watch event.
-        let line_count = raw.as_bytes().iter().filter(|&&b| b == b'\n').count();
-        if line_count > git::LAZY_PARSE_THRESHOLD {
+        // Decide parsing strategy based on diff size.
+        // Use byte-length heuristic (O(1)) instead of counting newlines (O(n)).
+        // 200_000 bytes ≈ ~5000 lines (at ~40 bytes/line), equivalent to LAZY_PARSE_THRESHOLD.
+        if raw.len() > 200_000 {
             // Lazy mode: header-only parse, files get hunks on demand
             let headers = git::parse_diff_headers(&raw);
             self.files = headers.iter().map(git::header_to_stub).collect();
@@ -765,6 +885,9 @@ impl TabState {
             self.sort_files_by_mtime();
         }
 
+        // Refresh mtime cache once per diff load (avoids per-frame fs::metadata calls)
+        self.refresh_mtime_cache();
+
         // Update memory budget
         self.update_mem_budget();
 
@@ -782,17 +905,36 @@ impl TabState {
 
         // Branch diff hash for AI staleness detection.
         // In Branch mode, reuse — no second git call needed.
-        // In other modes, only run the extra git diff on explicit refresh.
-        // This guarantees at most 2 git diff calls (down from 3).
+        // In other modes, only run the extra git diff when AI data is loaded AND it's a full refresh.
+        // Skipping when no AI data exists avoids a redundant git diff call with no consumer.
         if self.mode == DiffMode::Branch {
-            self.branch_diff_hash = self.diff_hash.clone();
+            // Always use SHA-256 for branch_diff_hash (used by .er/questions.json).
+            // diff_hash may be a fast hash during quick refresh, but branch_diff_hash
+            // must always be SHA-256 for compatibility with external skills.
+            if recompute_branch_hash {
+                self.branch_diff_hash = self.diff_hash.clone();
+            } else {
+                self.branch_diff_hash = ai::compute_diff_hash(&raw);
+            }
             branch_raw_owned = Some(raw.clone());
-        } else if recompute_branch_hash {
+        } else if recompute_branch_hash && (self.ai.has_data() || self.ai.has_questions()) {
             let br = git::git_diff_raw("branch", &self.base_branch, &self.repo_root)?;
             self.branch_diff_hash = ai::compute_diff_hash(&br);
             branch_raw_owned = Some(br);
         } else {
             branch_raw_owned = None;
+        }
+
+        // Compute per-file hashes from the raw diff output.
+        // Used to detect when a reviewed file's diff changes since it was marked.
+        // Skip on quick refreshes (watch events) — SHA-256 per-file is expensive and
+        // staleness detection doesn't need sub-second precision.
+        if recompute_branch_hash {
+            self.current_per_file_hashes = ai::compute_per_file_hashes(&raw);
+            if auto_unmark {
+                // Auto-unmark reviewed files whose diff has changed since they were marked.
+                self.pending_unmark_count = self.auto_unmark_changed_reviewed();
+            }
         }
 
         // Load AI state from .er-* files
@@ -1029,7 +1171,7 @@ impl TabState {
         // Write back to disk if anything changed
         if questions_changed {
             if let Some(ref qs) = self.ai.questions {
-                let path = format!("{}/.er-questions.json", repo_root);
+                let path = format!("{}/.er/questions.json", repo_root);
                 if let Ok(json) = serde_json::to_string_pretty(qs) {
                     let tmp = format!("{}.tmp", path);
                     let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
@@ -1038,7 +1180,7 @@ impl TabState {
         }
         if comments_changed {
             if let Some(ref gc) = self.ai.github_comments {
-                let path = format!("{}/.er-github-comments.json", repo_root);
+                let path = format!("{}/.er/github-comments.json", repo_root);
                 if let Ok(json) = serde_json::to_string_pretty(gc) {
                     let tmp = format!("{}.tmp", path);
                     let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
@@ -1245,15 +1387,14 @@ impl TabState {
             visible.retain(|(_, f)| super::filter::apply_filter(&self.filter_rules, f));
         }
 
-        // Phase 2: Apply search query
-        if !self.search_query.is_empty() {
-            let q = self.search_query.to_lowercase();
-            visible.retain(|(_, f)| f.path.to_lowercase().contains(&q));
+        // Phase 2: Apply search query (uses pre-lowercased query to avoid per-call allocation)
+        if !self.search_query_lower.is_empty() {
+            visible.retain(|(_, f)| f.path.to_lowercase().contains(&self.search_query_lower));
         }
 
         // Phase 3: Apply unreviewed-only toggle
         if self.show_unreviewed_only {
-            visible.retain(|(_, f)| !self.reviewed.contains(&f.path));
+            visible.retain(|(_, f)| !self.reviewed.contains_key(&f.path));
         }
 
         visible
@@ -1264,14 +1405,13 @@ impl TabState {
         if !self.show_watched {
             return Vec::new();
         }
-        if self.search_query.is_empty() {
+        if self.search_query_lower.is_empty() {
             self.watched_files.iter().enumerate().collect()
         } else {
-            let q = self.search_query.to_lowercase();
             self.watched_files
                 .iter()
                 .enumerate()
-                .filter(|(_, f)| f.path.to_lowercase().contains(&q))
+                .filter(|(_, f)| f.path.to_lowercase().contains(&self.search_query_lower))
                 .collect()
         }
     }
@@ -1799,14 +1939,13 @@ impl TabState {
                 return;
             }
         }
-        // TODO(risk:medium): file_headers.get(selected_file) uses the raw file index, but selected_file
-        // is an index into self.files (which may be reordered by mtime sort). If sort_by_mtime is active,
-        // the file at self.files[selected_file] corresponds to a different header than
-        // self.file_headers[selected_file], so we'd parse the wrong file's diff.
-        // Parse on demand from raw diff
-        if let (Some(ref raw), Some(header)) =
-            (&self.raw_diff, self.file_headers.get(self.selected_file))
-        {
+        // Parse on demand from raw diff — look up header by path (not index) to handle mtime sort
+        let path = self.files.get(self.selected_file).map(|f| f.path.clone());
+        let header_idx = path
+            .as_ref()
+            .and_then(|p| self.file_headers.iter().position(|h| h.path == *p));
+        if let (Some(ref raw), Some(idx)) = (&self.raw_diff, header_idx) {
+            let header = &self.file_headers[idx];
             let parsed = git::parse_file_at_offset(raw, header);
             if !parsed.hunks.is_empty() {
                 if let Some(file) = self.files.get_mut(self.selected_file) {
@@ -2267,6 +2406,7 @@ impl TabState {
             let prev_line = self.current_line;
 
             self.mode = mode;
+            self.committed_unpushed = false;
             if mode == DiffMode::History {
                 // Initialize history state if first time
                 if self.history.is_none() {
@@ -2310,7 +2450,7 @@ impl TabState {
                 self.current_line = None;
                 self.selected_watched = None;
                 self.diff_scroll = 0;
-                let _ = self.refresh_diff();
+                let _ = self.refresh_diff_mode_switch();
 
                 // Restore selection by path (file order may differ between modes)
                 if let Some(path) = prev_path {
@@ -2411,6 +2551,20 @@ impl TabState {
         });
     }
 
+    /// Populate `mtime_cache` with one `fs::metadata` call per diff file.
+    /// Called after the diff is loaded so rendering never touches the filesystem directly.
+    pub fn refresh_mtime_cache(&mut self) {
+        use std::fs;
+        use std::time::SystemTime;
+        self.mtime_cache.clear();
+        for file in &self.files {
+            let mtime = fs::metadata(format!("{}/{}", self.repo_root, file.path))
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            self.mtime_cache.insert(file.path.clone(), mtime);
+        }
+    }
+
     fn clamp_hunk(&mut self) {
         let total = self.total_hunks();
         if total == 0 {
@@ -2458,7 +2612,7 @@ impl TabState {
         let reviewed = self
             .files
             .iter()
-            .filter(|f| self.reviewed.contains(&f.path))
+            .filter(|f| self.reviewed.contains_key(&f.path))
             .count();
         (reviewed, total)
     }
@@ -2473,7 +2627,7 @@ impl TabState {
         for f in &self.files {
             if super::filter::apply_filter(&self.filter_rules, f) {
                 total += 1;
-                if self.reviewed.contains(&f.path) {
+                if self.reviewed.contains_key(&f.path) {
                     reviewed += 1;
                 }
             }
@@ -2481,34 +2635,76 @@ impl TabState {
         Some((reviewed, total))
     }
 
-    fn load_reviewed_files(repo_root: &str) -> HashSet<String> {
-        let path = format!("{}/.er-reviewed", repo_root);
+    fn load_reviewed_files(repo_root: &str) -> HashMap<String, String> {
+        let path = format!("{}/.er/reviewed", repo_root);
         match std::fs::read_to_string(&path) {
             Ok(content) => content
                 .lines()
-                .map(|l| l.trim().to_string())
+                .map(|l| l.trim())
                 .filter(|l| !l.is_empty())
+                .map(|l| {
+                    // New format: "path\thash". Old format: "path" (no tab).
+                    // Old-format entries get an empty-string hash sentinel — they are
+                    // never auto-unmarked so existing reviewed state is preserved.
+                    if let Some((p, h)) = l.split_once('\t') {
+                        (p.to_string(), h.to_string())
+                    } else {
+                        (l.to_string(), String::new())
+                    }
+                })
                 .collect(),
-            Err(_) => HashSet::new(),
+            Err(_) => HashMap::new(),
         }
     }
 
     fn save_reviewed_files(&self) -> Result<()> {
-        let path = format!("{}/.er-reviewed", self.repo_root);
+        let path = format!("{}/.er/reviewed", self.repo_root);
         if self.reviewed.is_empty() {
             // Remove file if no reviewed files
             let _ = std::fs::remove_file(&path);
             return Ok(());
         }
-        let mut lines: Vec<&String> = self.reviewed.iter().collect();
-        lines.sort();
-        let content = lines
+        std::fs::create_dir_all(format!("{}/.er", self.repo_root))?;
+        let mut entries: Vec<(&String, &String)> = self.reviewed.iter().collect();
+        entries.sort_by_key(|(p, _)| p.as_str());
+        let content = entries
             .iter()
-            .map(|s| s.as_str())
+            .map(|(p, h)| format!("{}\t{}", p, h))
             .collect::<Vec<_>>()
             .join("\n");
         std::fs::write(&path, format!("{}\n", content))?;
         Ok(())
+    }
+
+    /// Remove reviewed entries whose stored diff hash no longer matches the current diff.
+    /// Entries with an empty hash (old-format backwards compat sentinel) are skipped.
+    /// Returns the number of entries removed. Saves the file if any were removed.
+    fn auto_unmark_changed_reviewed(&mut self) -> usize {
+        let stale: Vec<String> = self
+            .reviewed
+            .iter()
+            .filter_map(|(path, stored_hash)| {
+                // Skip old-format entries (no hash stored)
+                if stored_hash.is_empty() {
+                    return None;
+                }
+                let current_hash = self.current_per_file_hashes.get(path);
+                // Unmark if the hash changed or the file disappeared from the diff
+                match current_hash {
+                    Some(h) if h == stored_hash => None,
+                    _ => Some(path.clone()),
+                }
+            })
+            .collect();
+
+        let count = stale.len();
+        if count > 0 {
+            for path in &stale {
+                self.reviewed.remove(path);
+            }
+            let _ = self.save_reviewed_files();
+        }
+        count
     }
 }
 
@@ -2544,6 +2740,9 @@ pub struct App {
 
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
+
+    /// Pending action from a modal hub selection (consumed by the event loop)
+    pub pending_hub_action: Option<HubAction>,
 }
 
 impl App {
@@ -2607,6 +2806,7 @@ impl App {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: er_config,
+            pending_hub_action: None,
         })
     }
 
@@ -2735,6 +2935,342 @@ impl App {
         });
     }
 
+    // ── Overlay: Modal Hubs ──
+
+    /// Open the Git modal hub
+    pub fn open_git_hub(&mut self) {
+        let in_staged = self.tab().mode == DiffMode::Staged;
+        let items = vec![
+            HubItem {
+                label: "Push to remote".into(),
+                hint: "".into(),
+                description: "Push current branch to origin".into(),
+                action: HubAction::PushToRemote,
+                is_header: false,
+                enabled: in_staged,
+            },
+            HubItem {
+                label: "Stage current file".into(),
+                hint: "s".into(),
+                description: "Stage or unstage the selected file".into(),
+                action: HubAction::StageFile,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Stage all files".into(),
+                hint: "".into(),
+                description: "Stage all changed files".into(),
+                action: HubAction::StageAll,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Refresh diff".into(),
+                hint: "R".into(),
+                description: "Re-run git diff and reload".into(),
+                action: HubAction::RefreshDiff,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Pull GitHub comments".into(),
+                hint: "".into(),
+                description: "Sync review comments from GitHub PR".into(),
+                action: HubAction::PullGitHubComments,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Push comments to GitHub".into(),
+                hint: "".into(),
+                description: "Publish local comments to the PR".into(),
+                action: HubAction::PushCommentsToGitHub,
+                is_header: false,
+                enabled: true,
+            },
+        ];
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Git,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// Open the AI modal hub
+    pub fn open_ai_hub(&mut self) {
+        let has_ai = self.tab().ai.has_data();
+        let items = vec![
+            HubItem {
+                label: "Copy context to clipboard".into(),
+                hint: "".into(),
+                description: "Copy diff context for agent terminal".into(),
+                action: HubAction::CopyContext,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Toggle AI findings".into(),
+                hint: "a".into(),
+                description: "Show/hide inline AI findings".into(),
+                action: HubAction::ToggleAiFindings,
+                is_header: false,
+                enabled: has_ai,
+            },
+            HubItem {
+                label: "Toggle comments".into(),
+                hint: "".into(),
+                description: "Show/hide GitHub comment layer".into(),
+                action: HubAction::ToggleComments,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Toggle questions".into(),
+                hint: "".into(),
+                description: "Show/hide question layer".into(),
+                action: HubAction::ToggleQuestions,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Cleanup questions".into(),
+                hint: "z".into(),
+                description: "Delete .er/questions.json".into(),
+                action: HubAction::CleanupQuestions,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Cleanup reviews".into(),
+                hint: "Z".into(),
+                description: "Delete .er/review.json".into(),
+                action: HubAction::CleanupReviews,
+                is_header: false,
+                enabled: has_ai,
+            },
+        ];
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Ai,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// Open the Verify modal hub (forward-looking — stubs for now)
+    pub fn open_verify_hub(&mut self) {
+        let items = vec![
+            HubItem {
+                label: "Run tests".into(),
+                hint: "".into(),
+                description: "Run project test suite (coming soon)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Run linter".into(),
+                hint: "".into(),
+                description: "Run configured linter (coming soon)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Type check".into(),
+                hint: "".into(),
+                description: "Run type checker (coming soon)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Security scan".into(),
+                hint: "".into(),
+                description: "Run security audit (coming soon)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+        ];
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Verify,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// Open the Help modal hub (keybind reference)
+    pub fn open_help_hub(&mut self) {
+        let items = vec![
+            HubItem {
+                label: "── Navigation ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "j / k".into(),
+                hint: "".into(),
+                description: "Previous / next file".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "n / N".into(),
+                hint: "".into(),
+                description: "Next / previous hunk".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "↑ / ↓".into(),
+                hint: "".into(),
+                description: "Line navigation".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "1-5".into(),
+                hint: "".into(),
+                description: "Switch diff mode (Branch/Unstaged/Staged/History/Conflicts)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "── Review ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "Space".into(),
+                hint: "".into(),
+                description: "Toggle file reviewed".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "q".into(),
+                hint: "".into(),
+                description: "Add review question".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "c".into(),
+                hint: "".into(),
+                description: "Add GitHub comment (or commit in Staged)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "r / d".into(),
+                hint: "".into(),
+                description: "Reply to / delete focused comment".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "── Tools ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "/ / f".into(),
+                hint: "".into(),
+                description: "Search / filter files".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "e".into(),
+                hint: "".into(),
+                description: "Open in editor".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "p".into(),
+                hint: "".into(),
+                description: "Toggle context panel".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "── Modals ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "g".into(),
+                hint: "".into(),
+                description: "Git operations hub".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "A".into(),
+                hint: "".into(),
+                description: "AI tools hub".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "v".into(),
+                hint: "".into(),
+                description: "Verify hub (tests, lint)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: ", / S".into(),
+                hint: "".into(),
+                description: "Settings".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Ctrl+q".into(),
+                hint: "".into(),
+                description: "Quit".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+        ];
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Help,
+            items,
+            selected: 0,
+        });
+    }
+
     // ── Overlay: Settings ──
 
     /// Open the settings overlay
@@ -2825,6 +3361,21 @@ impl App {
                     *selected += 1;
                 }
             }
+            Some(OverlayData::ModalHub {
+                items, selected, ..
+            }) => {
+                // Skip headers when navigating down
+                let mut next = *selected + 1;
+                while next < items.len() {
+                    if !items[next].is_header {
+                        break;
+                    }
+                    next += 1;
+                }
+                if next < items.len() {
+                    *selected = next;
+                }
+            }
             None => {}
         }
     }
@@ -2848,6 +3399,20 @@ impl App {
                         prev -= 1;
                     }
                     if !matches!(items[prev], config::SettingsItem::SectionHeader(_)) {
+                        *selected = prev;
+                    }
+                }
+            }
+            Some(OverlayData::ModalHub {
+                items, selected, ..
+            }) => {
+                // Skip headers when navigating up
+                if *selected > 0 {
+                    let mut prev = *selected - 1;
+                    while prev > 0 && items[prev].is_header {
+                        prev -= 1;
+                    }
+                    if !items[prev].is_header {
                         *selected = prev;
                     }
                 }
@@ -2941,6 +3506,16 @@ impl App {
             }
             OverlayData::Settings { .. } => {
                 // Already handled above
+            }
+            OverlayData::ModalHub {
+                items, selected, ..
+            } => {
+                if let Some(item) = items.get(selected) {
+                    if item.enabled && !item.is_header && item.action != HubAction::Noop {
+                        // Store action, close overlay, then caller dispatches
+                        self.pending_hub_action = Some(item.action.clone());
+                    }
+                }
             }
         }
         Ok(())
@@ -3066,14 +3641,56 @@ impl App {
         }
         let path = self.tab().files[si].path.clone();
 
+        // Capture current position in visible list before toggling — needed for
+        // advancing selection when show_unreviewed_only is active.
+        let visible_before: Vec<usize> = self
+            .tab()
+            .visible_files()
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+        let pos_before = visible_before.iter().position(|&i| i == si).unwrap_or(0);
+
         let tab = self.tab_mut();
-        let was_reviewed = tab.reviewed.contains(&path);
+        let was_reviewed = tab.reviewed.contains_key(&path);
         if was_reviewed {
             tab.reviewed.remove(&path);
         } else {
-            tab.reviewed.insert(path.clone());
+            // Store the current per-file hash so we can detect when the diff changes.
+            // Falls back to empty string if the file isn't in the current diff (shouldn't
+            // happen normally, but guards against a race between parse and toggle).
+            let hash = tab
+                .current_per_file_hashes
+                .get(&path)
+                .cloned()
+                .unwrap_or_default();
+            tab.reviewed.insert(path.clone(), hash);
         }
         tab.save_reviewed_files()?;
+
+        // When marking a file reviewed while show_unreviewed_only is active, advance
+        // to the next unreviewed file so the user doesn't land on a now-hidden entry.
+        if !was_reviewed && self.tab().show_unreviewed_only {
+            let visible_after: Vec<usize> = self
+                .tab()
+                .visible_files()
+                .into_iter()
+                .map(|(i, _)| i)
+                .collect();
+            if !visible_after.is_empty() {
+                // Pick file at same position, clamped to last.
+                let next_pos = pos_before.min(visible_after.len() - 1);
+                let target = visible_after[next_pos];
+                let tab = self.tab_mut();
+                tab.selected_file = target;
+                tab.current_hunk = 0;
+                tab.current_line = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.ensure_file_parsed();
+                tab.rebuild_hunk_offsets();
+            }
+        }
 
         if was_reviewed {
             self.notify(&format!("Unreviewed: {}", path));
@@ -3095,6 +3712,54 @@ impl App {
         } else {
             self.notify("Showing all files");
         }
+    }
+
+    /// Jump to the next unreviewed file (wraps around). Reports if all reviewed.
+    pub fn next_unreviewed_file(&mut self) {
+        // Collect the data we need before any mutable borrow.
+        let (current_pos, targets): (usize, Vec<(usize, bool)>) = {
+            let tab = self.tab();
+            let visible = tab.visible_files();
+            if visible.is_empty() {
+                return;
+            }
+            let pos = visible
+                .iter()
+                .position(|(i, _)| *i == tab.selected_file)
+                .unwrap_or(0);
+            let targets: Vec<(usize, bool)> = visible
+                .iter()
+                .map(|(i, f)| (*i, tab.reviewed.contains_key(&f.path)))
+                .collect();
+            (pos, targets)
+        };
+
+        if targets.is_empty() {
+            return;
+        }
+
+        let len = targets.len();
+        // Scan forward (wrapping) starting one past current position.
+        for offset in 1..=len {
+            let idx = (current_pos + offset) % len;
+            let (raw_idx, is_reviewed) = targets[idx];
+            if !is_reviewed {
+                let tab = self.tab_mut();
+                tab.selected_file = raw_idx;
+                tab.current_hunk = 0;
+                tab.current_line = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.ensure_file_parsed();
+                tab.rebuild_hunk_offsets();
+                // Borrow the path for the notification after releasing tab_mut.
+                let path = self.tab().files[raw_idx].path.clone();
+                self.notify(&format!("Jumped to: {}", path));
+                return;
+            }
+        }
+
+        self.notify("All visible files reviewed");
     }
 
     // ── Comment System ──
@@ -3238,9 +3903,13 @@ impl App {
             }
             match found {
                 Some(f) => f,
-                None => return,
+                None => {
+                    self.notify("Finding not found — review may be stale");
+                    return;
+                }
             }
         } else {
+            self.notify("No AI review loaded — cannot reply to finding");
             return;
         };
 
@@ -3281,21 +3950,31 @@ impl App {
     fn submit_question(&mut self, text: String) -> Result<()> {
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();
-        let diff_hash = tab.branch_diff_hash.clone();
+        let mut diff_hash = tab.branch_diff_hash.clone();
+        let base_branch = tab.base_branch.clone();
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
         let comment_line_num = tab.comment_line_num;
         let reply_to = tab.comment_reply_to.clone();
 
+        // Compute branch_diff_hash on-demand when not yet set (e.g., non-Branch mode with no AI data).
+        // Without this, questions would always be marked stale because the hash would be empty.
+        if diff_hash.is_empty() {
+            if let Ok(br) = git::git_diff_raw("branch", &base_branch, &repo_root) {
+                diff_hash = ai::compute_diff_hash(&br);
+                self.tab_mut().branch_diff_hash = diff_hash.clone();
+            }
+        }
+
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
-        // Load or create .er-questions.json
-        let questions_path = format!("{}/.er-questions.json", repo_root);
+        // Load or create .er/questions.json
+        let questions_path = format!("{}/.er/questions.json", repo_root);
         let mut questions: ai::ErQuestions = match std::fs::read_to_string(&questions_path) {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(qs) => qs,
                 Err(_) => {
-                    self.notify("Warning: .er-questions.json is invalid JSON — starting fresh");
+                    self.notify("Warning: .er/questions.json is invalid JSON — starting fresh");
                     ai::ErQuestions {
                         version: 1,
                         diff_hash: diff_hash.clone(),
@@ -3348,6 +4027,7 @@ impl App {
         });
 
         // Write atomically
+        std::fs::create_dir_all(format!("{}/.er", repo_root))?;
         let json = serde_json::to_string_pretty(&questions)?;
         let tmp_path = format!("{}.tmp", questions_path);
         std::fs::write(&tmp_path, json)?;
@@ -3361,7 +4041,7 @@ impl App {
         Ok(())
     }
 
-    /// Submit a GitHub PR comment to .er-github-comments.json
+    /// Submit a GitHub PR comment to .er/github-comments.json
     fn submit_github_comment(&mut self, text: String) -> Result<()> {
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();
@@ -3374,14 +4054,14 @@ impl App {
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
-        // Load or create .er-github-comments.json
-        let comments_path = format!("{}/.er-github-comments.json", repo_root);
+        // Load or create .er/github-comments.json
+        let comments_path = format!("{}/.er/github-comments.json", repo_root);
         let mut gh_comments: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(gc) => gc,
                 Err(_) => {
                     self.notify(
-                        "Warning: .er-github-comments.json is invalid JSON — starting fresh",
+                        "Warning: .er/github-comments.json is invalid JSON — starting fresh",
                     );
                     ai::ErGitHubComments {
                         version: 1,
@@ -3442,6 +4122,7 @@ impl App {
         });
 
         // Write atomically
+        std::fs::create_dir_all(format!("{}/.er", repo_root))?;
         let json = serde_json::to_string_pretty(&gh_comments)?;
         let tmp_path = format!("{}.tmp", comments_path);
         std::fs::write(&tmp_path, json)?;
@@ -3541,7 +4222,7 @@ impl App {
         let diff_hash = self.tab().diff_hash.clone();
 
         if comment_id.starts_with("q-") {
-            let path = format!("{}/.er-questions.json", repo_root);
+            let path = format!("{}/.er/questions.json", repo_root);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
                     if let Some(q) = qs.questions.iter_mut().find(|q| q.id == comment_id) {
@@ -3564,7 +4245,7 @@ impl App {
                 }
             }
         } else {
-            let path = format!("{}/.er-github-comments.json", repo_root);
+            let path = format!("{}/.er/github-comments.json", repo_root);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
@@ -3804,22 +4485,27 @@ impl App {
         tab.scroll_to_current_hunk();
     }
 
-    /// Jump to the next hint (unified: comments + questions + findings).
+    /// Jump to the next comment/question (Shift+J). Excludes findings.
     pub fn next_hint(&mut self) {
         self.jump_hint(true);
     }
 
-    /// Jump to the previous hint (unified: comments + questions + findings).
+    /// Jump to the previous comment/question (Shift+K). Excludes findings.
     pub fn prev_hint(&mut self) {
         self.jump_hint(false);
     }
 
-    /// Unified navigation across comments, questions, and findings.
+    /// Navigation across comments and questions only (excludes findings).
     fn jump_hint(&mut self, forward: bool) {
         use crate::ai::HintType;
 
         let tab = self.tab_mut();
-        let all = tab.ai.all_hints_ordered();
+        let all: Vec<_> = tab
+            .ai
+            .all_hints_ordered()
+            .into_iter()
+            .filter(|(_, _, _, _, ht)| *ht != HintType::Finding)
+            .collect();
 
         if all.is_empty() {
             return;
@@ -3913,11 +4599,13 @@ impl App {
         let is_question = comment_id.starts_with("q-");
 
         if is_question {
-            // Delete from .er-questions.json
-            let path = format!("{}/.er-questions.json", repo_root);
+            // Delete from .er/questions.json
+            let path = format!("{}/.er/questions.json", repo_root);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
-                    qs.questions.retain(|q| q.id != comment_id);
+                    qs.questions.retain(|q| {
+                        q.id != comment_id && q.in_reply_to.as_deref() != Some(comment_id)
+                    });
                     let json = serde_json::to_string_pretty(&qs)?;
                     let tmp_path = format!("{}.tmp", path);
                     std::fs::write(&tmp_path, &json)?;
@@ -3925,8 +4613,8 @@ impl App {
                 }
             }
         } else {
-            // Delete from .er-github-comments.json
-            let path = format!("{}/.er-github-comments.json", repo_root);
+            // Delete from .er/github-comments.json
+            let path = format!("{}/.er/github-comments.json", repo_root);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
                     // Check if the comment has a github_id for API deletion
@@ -4004,8 +4692,9 @@ impl App {
         git::git_commit(&repo_root, &message)?;
         self.tab_mut().commit_input.clear();
         self.input_mode = InputMode::Normal;
+        self.tab_mut().committed_unpushed = true;
         let _ = self.tab_mut().refresh_diff();
-        self.notify("Committed!");
+        self.notify("Committed! Ctrl+P to push");
         Ok(())
     }
 
@@ -4050,7 +4739,7 @@ impl App {
         }
     }
 
-    /// Toggle the checklist item at cursor and persist to .er-checklist.json
+    /// Toggle the checklist item at cursor and persist to .er/checklist.json
     pub fn review_toggle_checklist(&mut self) -> Result<()> {
         let tab = self.tab_mut();
         if tab.review_focus != ReviewFocus::Checklist {
@@ -4062,7 +4751,7 @@ impl App {
 
         // Persist atomically via temp file + rename
         if let Some(ref checklist) = tab.ai.checklist {
-            let checklist_path = format!("{}/.er-checklist.json", tab.repo_root);
+            let checklist_path = format!("{}/.er/checklist.json", tab.repo_root);
             let tmp_path = format!("{}.tmp", checklist_path);
             let json = serde_json::to_string_pretty(checklist)?;
             std::fs::write(&tmp_path, json)?;
@@ -4188,7 +4877,9 @@ impl App {
         }
 
         // AI finding if present
-        let findings = tab.ai.findings_for_hunk(&file.path, tab.current_hunk);
+        let findings = tab
+            .ai
+            .findings_for_hunk(&file.path, tab.current_hunk, file.hunks.len());
         if let Some(finding) = findings.first() {
             text.push_str(&format!(
                 "\nFinding: [{:?}] {}\n",
@@ -4341,6 +5032,22 @@ pub(crate) fn chrono_now() -> String {
     )
 }
 
+/// Delete personal questions sidecar files. Errors are ignored (files may not exist).
+pub fn cleanup_questions(repo_root: &str) {
+    let base = std::path::Path::new(repo_root).join(".er");
+    let _ = std::fs::remove_file(base.join("questions.json"));
+    let _ = std::fs::remove_file(base.join("questions.prev.json"));
+}
+
+/// Delete AI review sidecar files. Errors are ignored (files may not exist).
+pub fn cleanup_reviews(repo_root: &str) {
+    let base = std::path::Path::new(repo_root).join(".er");
+    let _ = std::fs::remove_file(base.join("review.json"));
+    let _ = std::fs::remove_file(base.join("order.json"));
+    let _ = std::fs::remove_file(base.join("checklist.json"));
+    let _ = std::fs::remove_file(base.join("summary.md"));
+}
+
 /// Truncate a string to max_len chars, adding … if truncated
 fn truncate(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
@@ -4355,7 +5062,7 @@ mod tests {
     use super::*;
     use crate::ai::AiState;
     use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     fn make_test_tab(files: Vec<DiffFile>) -> TabState {
         use crate::ai::{InlineLayers, ReviewFocus};
@@ -4388,9 +5095,12 @@ mod tests {
             filter_rules: Vec::new(),
             filter_input: String::new(),
             filter_history: Vec::new(),
-            reviewed: HashSet::new(),
+            reviewed: HashMap::new(),
+            current_per_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
+            mtime_cache: HashMap::new(),
+            search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
@@ -4421,6 +5131,8 @@ mod tests {
             file_headers: Vec::new(),
             raw_diff: None,
             symbol_refs: None,
+            pending_unmark_count: 0,
+            committed_unpushed: false,
         }
     }
 
@@ -4508,6 +5220,7 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.search_query = "src".to_string();
+        tab.search_query_lower = "src".to_string();
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].1.path, "src/main.rs");
@@ -4518,6 +5231,7 @@ mod tests {
         let files = vec![make_file("src/main.rs", vec![], 1, 0)];
         let mut tab = make_test_tab(files);
         tab.search_query = "zzz".to_string();
+        tab.search_query_lower = "zzz".to_string();
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 0);
     }
@@ -4530,6 +5244,7 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.search_query = "SRC".to_string();
+        tab.search_query_lower = "src".to_string();
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].1.path, "src/main.rs");
@@ -4543,8 +5258,9 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.show_unreviewed_only = true;
-        tab.reviewed.insert("src/main.rs".to_string());
-        tab.reviewed.insert("src/lib.rs".to_string());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
+        tab.reviewed.insert("src/lib.rs".to_string(), String::new());
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 0);
     }
@@ -4558,7 +5274,8 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.show_unreviewed_only = true;
-        tab.reviewed.insert("src/main.rs".to_string());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 2);
         assert_eq!(visible[0].1.path, "src/lib.rs");
@@ -4574,8 +5291,10 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.search_query = "src".to_string();
+        tab.search_query_lower = "src".to_string();
         tab.show_unreviewed_only = true;
-        tab.reviewed.insert("src/main.rs".to_string());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].1.path, "src/lib.rs");
@@ -4597,7 +5316,8 @@ mod tests {
             make_file("src/util.rs", vec![], 1, 0),
         ];
         let mut tab = make_test_tab(files);
-        tab.reviewed.insert("src/main.rs".to_string());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
         assert_eq!(tab.reviewed_count(), (1, 3));
     }
 
@@ -4608,8 +5328,9 @@ mod tests {
             make_file("src/lib.rs", vec![], 1, 0),
         ];
         let mut tab = make_test_tab(files);
-        tab.reviewed.insert("src/main.rs".to_string());
-        tab.reviewed.insert("src/lib.rs".to_string());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
+        tab.reviewed.insert("src/lib.rs".to_string(), String::new());
         assert_eq!(tab.reviewed_count(), (2, 2));
     }
 
@@ -4670,6 +5391,7 @@ mod tests {
         let files = vec![make_file("a.rs", vec![], 1, 0)];
         let mut tab = make_test_tab(files);
         tab.search_query = "zzz".to_string();
+        tab.search_query_lower = "zzz".to_string();
         // Should not panic
         tab.next_file();
         assert_eq!(tab.selected_file, 0);
@@ -4915,6 +5637,7 @@ mod tests {
         let mut tab = make_test_tab(files);
         tab.selected_file = 1; // points at tests/foo.rs
         tab.search_query = "src".to_string(); // only src/main.rs visible
+        tab.search_query_lower = "src".to_string();
         tab.snap_to_visible();
         assert_eq!(tab.selected_file, 0); // snapped to src/main.rs (index 0)
     }
@@ -5203,6 +5926,7 @@ mod tests {
             body: String::new(),
             state: "OPEN".to_string(),
             author: "u".to_string(),
+            url: String::new(),
             base_branch: "main".to_string(),
             head_branch: "feat".to_string(),
             checks: vec![],
@@ -5234,6 +5958,7 @@ mod tests {
             body: String::new(),
             state: "OPEN".to_string(),
             author: "u".to_string(),
+            url: String::new(),
             base_branch: "main".to_string(),
             head_branch: "feat".to_string(),
             checks: vec![],
@@ -5313,6 +6038,7 @@ mod tests {
             body: String::new(),
             state: "OPEN".to_string(),
             author: "user".to_string(),
+            url: String::new(),
             base_branch: "main".to_string(),
             head_branch: "feature".to_string(),
             checks: vec![],
@@ -5532,6 +6258,7 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
+            pending_hub_action: None,
         }
     }
 
@@ -5752,9 +6479,10 @@ mod tests {
         // Phase 1: Filter to "src/" files only
         tab.filter_rules = crate::app::filter::parse_filter_expr("src/*");
         // Phase 2: Search query narrows further
-        tab.search_query = "main".to_string();
+        tab.search_query_lower = "main".to_string();
         // Phase 3: Mark main.rs as reviewed, toggle unreviewed only
-        tab.reviewed.insert("src/main.rs".to_string());
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
         tab.show_unreviewed_only = true;
 
         let visible = tab.visible_files();
@@ -5773,7 +6501,7 @@ mod tests {
         ];
         let mut tab = make_test_tab(files);
         tab.filter_rules = crate::app::filter::parse_filter_expr("src/*");
-        tab.search_query = "lib".to_string();
+        tab.search_query_lower = "lib".to_string();
 
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 1);
@@ -5789,7 +6517,7 @@ mod tests {
         let mut tab = make_test_tab(files);
         tab.selected_file = 0;
         // Filter out all files
-        tab.search_query = "nonexistent".to_string();
+        tab.search_query_lower = "nonexistent".to_string();
         tab.snap_to_visible();
         // visible_files is empty, snap_to_visible returns early without changing
         let visible = tab.visible_files();

@@ -218,7 +218,7 @@ src/
 ├── ai/
 │   ├── mod.rs        Module exports
 │   ├── review.rs     AI data model (AiState, findings, view modes)
-│   └── loader.rs     .er-* file loading, diff hashing, mtime polling
+│   └── loader.rs     .er/ file loading, diff hashing, mtime polling
 ├── ui/
 │   ├── mod.rs        Layout coordinator (ViewMode-based dispatch)
 │   ├── styles.rs     Color scheme (blue-undertone dark theme)
@@ -272,15 +272,15 @@ wrap_lines = false        # soft-wrap long lines
 
 ## AI Integration
 
-`er` reads `.er-*.json` sidecar files written by Claude Code skills:
+`er` reads `.er/` sidecar files written by Claude Code skills:
 
 | File | Purpose |
 |------|---------|
-| `.er-review.json` | Per-file risk levels, findings with hunk anchors |
-| `.er-order.json` | Suggested review order with groupings |
-| `.er-summary.md` | Markdown summary of overall changes |
-| `.er-checklist.json` | Review checklist items |
-| `.er-feedback.json` | Your comments and GitHub-synced comments (the only file `er` writes) |
+| `.er/review.json` | Per-file risk levels, findings with hunk anchors |
+| `.er/order.json` | Suggested review order with groupings |
+| `.er/summary.md` | Markdown summary of overall changes |
+| `.er/checklist.json` | Review checklist items |
+| `.er/feedback.json` | Your comments and GitHub-synced comments (the only file `er` writes) |
 
 Claude Code skills: `/er-review` (full analysis), `/er-questions` (respond to comments), `/er-risk-sort`, `/er-summary`, `/er-checklist`. See `skills/README.md` for setup.
 

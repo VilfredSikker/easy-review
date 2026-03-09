@@ -1,6 +1,6 @@
 # er-summary
 
-Generate or regenerate the `.er-summary.md` review summary from the current diff and review data.
+Generate or regenerate the `.er/summary.md` review summary from the current diff and review data.
 
 ## Trigger
 
@@ -9,21 +9,21 @@ Run as `/er-summary`.
 ## What it does
 
 1. Reads the current git diff
-2. Reads `.er-review.json` if it exists (for findings context)
-3. Reads `.er-feedback.json` if it exists (for human commentary)
-4. Writes `.er-summary.md` — a concise, human-readable markdown summary
+2. Reads `.er/review.json` if it exists (for findings context)
+3. Reads `.er/feedback.json` if it exists (for human commentary)
+4. Writes `.er/summary.md` — a concise, human-readable markdown summary
 
 ## Speed budget
 
 **Target: ≤5 tool calls, ≤30 seconds.**
 
-- TOOL CALLS 1-2: Read .er-review.json and .er-feedback.json (parallel — skip if missing)
+- TOOL CALLS 1-2: Read .er/review.json and .er/feedback.json (parallel — skip if missing)
 - TOOL CALL 3: Bash — `scripts/er-freshness-check.sh <base>` (captures diff + hash)
-- TOOL CALL 4: Read .er-diff-tmp (full diff into context)
+- TOOL CALL 4: Read .er/diff-tmp (full diff into context)
 - IN-CONTEXT: Generate summary — zero tool calls
-- TOOL CALL 5: Write .er-summary.md
+- TOOL CALL 5: Write .er/summary.md
 
-Base branch comes from .er-review.json. If missing, detect: main then master.
+Base branch comes from .er/review.json. If missing, detect: main then master.
 
 ### Permission & hook constraints
 
@@ -56,5 +56,5 @@ Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
 - Focus on *what matters*, not on listing every file that changed
 - If there are human comments in feedback, incorporate their insights
 - Keep it under 30 lines — it's rendered in a TUI
-- The diff_hash is NOT stored in the markdown file (it's the only .er-* file without one)
+- The diff_hash is NOT stored in the markdown file (it's the only .er/ file without one)
 - Write in second person: "You should review..." not "The reviewer should..."

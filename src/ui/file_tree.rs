@@ -7,7 +7,7 @@ use ratatui::{
 use std::time::SystemTime;
 
 use super::styles;
-use super::utils::word_wrap;
+use super::utils::{horizontal_rule, word_wrap};
 use crate::ai::RiskLevel;
 use crate::app::{App, DiffMode};
 use crate::git::FileStatus;
@@ -152,15 +152,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             let has_questions = question_count > 0;
             let has_gh_comments = gh_comment_count > 0;
 
-            // Relative time when sorting by mtime
-            // TODO(risk:minor): std::fs::metadata is called for every visible file on every
-            // render frame (~10 fps). For a file tree with 50 visible items this is 500
-            // syscalls per second, wasting CPU and causing noticeable latency on slow
-            // filesystems (NFS, FUSE). Cache the mtime alongside the file list and refresh
-            // only on watch events.
+            // Relative time when sorting by mtime — read from the cache populated on refresh,
+            // not from the filesystem directly (avoids per-frame syscalls).
             let time_str = if tab.sort_by_mtime {
-                let mtime = std::fs::metadata(format!("{}/{}", tab.repo_root, file.path))
-                    .and_then(|m| m.modified())
+                let mtime = tab
+                    .mtime_cache
+                    .get(&file.path)
+                    .copied()
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 Some(format_relative_time(mtime))
             } else {
@@ -192,7 +190,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             // Stats: +adds -dels
             let stats = format!("+{} -{}", file.adds, file.dels);
 
-            let is_reviewed = tab.reviewed.contains(&file.path);
+            let is_reviewed = tab.reviewed.contains_key(&file.path);
             let is_compacted = file.compacted;
 
             let line_style = if is_selected {
@@ -275,9 +273,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         let dash_count = sep_width.saturating_sub(sep_label.len()) / 2;
         let sep_text = format!(
             "{}{}{}",
-            "\u{2500}".repeat(dash_count),
+            horizontal_rule(dash_count),
             sep_label,
-            "\u{2500}".repeat(sep_width.saturating_sub(dash_count + sep_label.len()))
+            horizontal_rule(sep_width.saturating_sub(dash_count + sep_label.len()))
         );
         items.push(
             ListItem::new(Line::from(Span::styled(
@@ -477,7 +475,7 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
 
             // Separator line
             let separator = Line::from(Span::styled(
-                "─".repeat(area.width.saturating_sub(2) as usize),
+                horizontal_rule(area.width.saturating_sub(2) as usize),
                 ratatui::style::Style::default().fg(styles::BORDER),
             ));
 
