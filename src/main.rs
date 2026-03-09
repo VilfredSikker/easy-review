@@ -9,7 +9,10 @@ mod watch;
 
 use crate::ai::{PanelContent, ReviewFocus};
 use anyhow::Result;
-use app::{cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode, InputMode, SplitSide};
+use app::{
+    cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode, HubAction, InputMode,
+    SplitSide,
+};
 use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -304,10 +307,88 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
         KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
-        KeyCode::Enter => app.overlay_select()?,
+        KeyCode::Enter => {
+            app.overlay_select()?;
+            // Dispatch pending hub action if overlay_select set one
+            if let Some(action) = app.pending_hub_action.take() {
+                app.overlay = None;
+                dispatch_hub_action(app, action)?;
+            }
+        }
         KeyCode::Backspace => app.overlay_go_up(),
         KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
         _ => {}
+    }
+    Ok(())
+}
+
+fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
+    match action {
+        HubAction::Noop => {}
+        HubAction::PushToRemote => {
+            if app.tab().mode == DiffMode::Staged {
+                app.input_mode = InputMode::Confirm(ConfirmAction::Push);
+            }
+        }
+        HubAction::PullGitHubComments => {
+            sync_github_comments(app)?;
+        }
+        HubAction::PushCommentsToGitHub => {
+            push_all_comments_to_github(app)?;
+        }
+        HubAction::RefreshDiff => {
+            app.tab_mut().refresh_diff()?;
+            app.notify("Refreshed");
+        }
+        HubAction::StageFile => {
+            app.toggle_stage_file()?;
+        }
+        HubAction::StageAll => {
+            app.stage_all()?;
+        }
+        HubAction::CopyContext => {
+            app.copy_context()?;
+        }
+        HubAction::ToggleAiFindings => {
+            app.tab_mut().toggle_layer_ai();
+            let on = app.tab().layers.show_ai_findings;
+            app.notify(if on {
+                "AI findings: ON"
+            } else {
+                "AI findings: OFF"
+            });
+        }
+        HubAction::ToggleComments => {
+            app.tab_mut().toggle_layer_comments();
+            let on = app.tab().layers.show_github_comments;
+            app.notify(if on {
+                "Comments: visible"
+            } else {
+                "Comments: hidden"
+            });
+        }
+        HubAction::ToggleQuestions => {
+            app.tab_mut().toggle_layer_questions();
+            let on = app.tab().layers.show_questions;
+            app.notify(if on {
+                "Questions: visible"
+            } else {
+                "Questions: hidden"
+            });
+        }
+        HubAction::CleanupQuestions => {
+            let count = app
+                .tab()
+                .ai
+                .questions
+                .as_ref()
+                .map_or(0, |q| q.questions.len());
+            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
+        }
+        HubAction::CleanupReviews => {
+            let count = app.tab().ai.review.as_ref().map_or(0, |r| r.files.len());
+            app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
+        }
     }
     Ok(())
 }
@@ -701,9 +782,27 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Copy rich context to clipboard (for agent terminal)
+        // AI modal hub (A)
         KeyCode::Char('A') => {
-            app.copy_context()?;
+            app.open_ai_hub();
+            return Ok(());
+        }
+
+        // Git modal hub (g)
+        KeyCode::Char('g') => {
+            app.open_git_hub();
+            return Ok(());
+        }
+
+        // Verify modal hub (v)
+        KeyCode::Char('v') => {
+            app.open_verify_hub();
+            return Ok(());
+        }
+
+        // Help modal hub (?)
+        KeyCode::Char('?') => {
+            app.open_help_hub();
             return Ok(());
         }
 
@@ -1510,6 +1609,7 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
+            pending_hub_action: None,
         }
     }
 
