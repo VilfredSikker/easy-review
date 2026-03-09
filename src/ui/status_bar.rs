@@ -420,24 +420,15 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
         hints.push(Hint::new("j/k", " commits "));
         hints.push(Hint::new("n/N", " files "));
         hints.push(Hint::new("↑↓", " lines "));
-        hints.push(Hint::new("h/l", " scroll "));
         hints.push(Hint::new("/", " search "));
     }
 
-    hints.push(Hint::new("m", " recent "));
-
-    // Comment hints (shared with normal mode)
+    // Context-sensitive: focused comment actions
     if h.comments {
-        hints.push(Hint::new("q", " question "));
-        hints.push(Hint::new("c", " comment "));
-
         if let Some(ref fid) = tab.focused_comment_id {
             if let Some(comment) = tab.ai.find_comment(fid) {
                 if comment.can_reply() {
                     hints.push(Hint::new("r", " reply "));
-                }
-                if comment.author() == "You" && comment.in_reply_to().is_none() {
-                    hints.push(Hint::new("e", " edit "));
                 }
                 if comment.can_delete() {
                     hints.push(Hint::new("d", " delete "));
@@ -446,55 +437,20 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
         } else if tab.focused_finding_id.is_some() {
             hints.push(Hint::new("r", " reply "));
         }
-
-        if tab.ai.has_comments_or_questions() {
-            hints.push(Hint::new("J/K", " comments "));
-        }
-
-        // Cleanup hints — only when data exists
-        if tab.ai.has_questions() {
-            hints.push(Hint::new("z", " clear questions "));
-        }
-        if tab.ai.has_data() {
-            hints.push(Hint::new("Z", " clear reviews "));
-        }
     }
 
-    // AI hints
-    if h.ai {
-        if tab.layers.show_ai_findings && tab.ai.total_findings() > 0 {
-            hints.push(Hint::new("^j/^k", " findings "));
-        }
-        if tab.ai.has_data() {
-            hints.push(Hint::new("a", " AI "));
-        }
-    }
+    // Hub triggers
+    hints.push(Hint::new("g", " git "));
+    hints.push(Hint::new("A", " ai "));
+    hints.push(Hint::new("?", " help "));
+    hints.push(Hint::new("^q", " quit "));
 
-    // GitHub sync — only when PR data is available
-    if h.github && tab.pr_data.is_some() {
-        hints.push(Hint::new("G", " gh pull "));
-        hints.push(Hint::new("P", " gh push "));
-    }
-
-    // Editor
-    if h.navigation {
+    // Verbose hints for history mode
+    if h.verbose {
         hints.push(Hint::new("e", " edit "));
         hints.push(Hint::new("p", " panel "));
+        hints.push(Hint::new("f", " filter "));
     }
-
-    // Tab switching
-    if app.tabs.len() > 1 {
-        hints.push(Hint::new("[/]", " tabs "));
-        hints.push(Hint::new("x", " close tab "));
-    }
-
-    // Settings
-    if h.settings {
-        hints.push(Hint::new(",", " settings "));
-    }
-
-    hints.push(Hint::new("A", " copy "));
-    hints.push(Hint::new("^q", " quit "));
 
     // Show current file in commit if navigating
     if let Some(ref history) = tab.history {
@@ -552,12 +508,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
     let mut hints: Vec<Hint> = Vec::new();
 
     if tab.panel.is_some() {
-        // Context: panel open — show panel controls + relevant actions
+        // Context: panel open — show panel controls
         if h.navigation {
             hints.push(Hint::new("j/k", " nav "));
             hints.push(Hint::new("n/N", " hunks "));
-            hints.push(Hint::new("␣", " review "));
-            hints.push(Hint::new("/", " search "));
         }
         if tab.panel_focus {
             hints.push(Hint::new("Esc", " unfocus "));
@@ -571,30 +525,24 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("o", " open in browser "));
         }
 
-        // Comments
-        if h.comments && tab.mode != DiffMode::Staged {
-            hints.push(Hint::new("q", " question "));
-            hints.push(Hint::new("c", " comment "));
-        }
-
-        // GitHub sync
-        if h.github && tab.pr_data.is_some() {
-            hints.push(Hint::new("G", " gh pull "));
-            hints.push(Hint::new("P", " gh push "));
-        }
-
-        // Filter & sort
-        if h.filter {
-            hints.push(Hint::new("u", " unreviewed "));
-            hints.push(Hint::new("f", " filter "));
-        }
-
-        if app.tabs.len() > 1 {
-            hints.push(Hint::new("[/]", " tabs "));
-        }
+        // Hub triggers — always shown
+        hints.push(Hint::new("g", " git "));
+        hints.push(Hint::new("A", " ai "));
+        hints.push(Hint::new("v", " verify "));
+        hints.push(Hint::new("?", " help "));
         hints.push(Hint::new("^q", " quit "));
+
+        // Verbose hints for panel-open mode
+        if h.verbose {
+            if tab.mode != DiffMode::Staged {
+                hints.push(Hint::new("q", " question "));
+                hints.push(Hint::new("c", " comment "));
+            }
+            hints.push(Hint::new("f", " filter "));
+            hints.push(Hint::new("u", " unreviewed "));
+        }
     } else {
-        // Default normal mode
+        // Default normal mode — essential navigation only
         if h.navigation {
             hints.push(Hint::new("j/k", " nav "));
             hints.push(Hint::new("n/N", " hunks "));
@@ -602,33 +550,20 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("/", " search "));
         }
 
-        // Staging hints
+        // Staging: the most common workflow keys stay visible
         if h.staging && (tab.mode == DiffMode::Unstaged || tab.mode == DiffMode::Staged) {
             hints.push(Hint::new("s", " stage "));
         }
-        // Staging not applicable in Conflicts mode
+        if h.staging && tab.mode == DiffMode::Staged {
+            hints.push(Hint::new("c", " commit "));
+        }
 
-        // Comment hints
+        // Context-sensitive: focused comment actions
         if h.comments {
-            if tab.mode == DiffMode::Staged {
-                if h.staging {
-                    hints.push(Hint::new("c", " commit "));
-                }
-                if tab.committed_unpushed {
-                    hints.push(Hint::new("^p", " push "));
-                }
-            } else {
-                hints.push(Hint::new("q", " question "));
-                hints.push(Hint::new("c", " comment "));
-            }
-
             if let Some(ref fid) = tab.focused_comment_id {
                 if let Some(comment) = tab.ai.find_comment(fid) {
                     if comment.can_reply() {
                         hints.push(Hint::new("r", " reply "));
-                    }
-                    if comment.author() == "You" && comment.in_reply_to().is_none() {
-                        hints.push(Hint::new("e", " edit "));
                     }
                     if comment.can_delete() {
                         hints.push(Hint::new("d", " delete "));
@@ -637,64 +572,46 @@ fn build_hints(app: &App) -> Vec<Hint> {
             } else if tab.focused_finding_id.is_some() {
                 hints.push(Hint::new("r", " reply "));
             }
+        }
 
-            // Comment/question jump hints — only when targets exist
-            if tab.ai.has_comments_or_questions() {
-                hints.push(Hint::new("J/K", " comments "));
+        // Hub triggers — always shown
+        hints.push(Hint::new("g", " git "));
+        hints.push(Hint::new("A", " ai "));
+        hints.push(Hint::new("v", " verify "));
+        hints.push(Hint::new("?", " help "));
+        hints.push(Hint::new("^q", " quit "));
+
+        // Verbose hints — additional keybinds beyond hub triggers
+        if h.verbose {
+            if tab.mode != DiffMode::Staged {
+                hints.push(Hint::new("q", " question "));
+                hints.push(Hint::new("c", " comment "));
             }
-
-            // Cleanup hints — only when data exists
+            hints.push(Hint::new("e", " edit "));
+            hints.push(Hint::new("p", " panel "));
+            hints.push(Hint::new("f", " filter "));
+            hints.push(Hint::new("u", " unreviewed "));
+            hints.push(Hint::new("U", " next unreviewed "));
+            hints.push(Hint::new("m", " recent "));
+            if tab.ai.has_data() {
+                hints.push(Hint::new("a", " AI toggle "));
+            }
+            // Show comment navigation hints when current file has comments
+            if let Some(file) = tab.files.get(tab.selected_file) {
+                let has_comments = tab.ai.file_question_count(&file.path) > 0
+                    || tab.ai.file_github_comment_count(&file.path) > 0;
+                if has_comments {
+                    hints.push(Hint::new("J/K", " comments "));
+                }
+            }
             if tab.ai.has_questions() {
                 hints.push(Hint::new("z", " clear questions "));
             }
             if tab.ai.has_data() {
                 hints.push(Hint::new("Z", " clear reviews "));
             }
-        }
-
-        // AI hints
-        if h.ai {
-            if tab.layers.show_ai_findings && tab.ai.total_findings() > 0 {
-                hints.push(Hint::new("^j/^k", " findings "));
-            }
-            if tab.ai.has_data() {
-                hints.push(Hint::new("a", " AI "));
-            }
-        }
-
-        // GitHub sync — only when PR data is available
-        if h.github && tab.pr_data.is_some() {
-            hints.push(Hint::new("G", " gh pull "));
-            hints.push(Hint::new("P", " gh push "));
-        }
-
-        // Filter & sort
-        if h.filter {
-            hints.push(Hint::new("m", " recent "));
-            hints.push(Hint::new("u", " unreviewed "));
-            hints.push(Hint::new("U", " next unreviewed "));
-            hints.push(Hint::new("f", " filter "));
-        }
-
-        if h.navigation {
-            hints.push(Hint::new("e", " edit "));
-            hints.push(Hint::new("p", " panel "));
-            if app.split_diff_active(&app.config) {
-                hints.push(Hint::new("Tab", " pane "));
-            }
-        }
-
-        // Tab switching — only when multiple tabs open
-        if app.tabs.len() > 1 {
-            hints.push(Hint::new("[/]", " tabs "));
-        }
-
-        // Settings
-        if h.settings {
             hints.push(Hint::new(",", " settings "));
         }
-
-        hints.push(Hint::new("^q", " quit "));
     }
 
     // Status indicators always shown

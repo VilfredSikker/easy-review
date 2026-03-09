@@ -211,28 +211,17 @@ fn run_app<B: Backend>(
             pending_file_count = 0;
             let _ = app.tab_mut().refresh_diff_quick();
             let unmark_count = std::mem::replace(&mut app.tab_mut().pending_unmark_count, 0);
-            let ai_status = if app.tab().ai.has_data() {
-                if app.tab().ai.is_stale {
-                    " · AI stale"
-                } else {
-                    " · AI synced"
-                }
-            } else {
-                ""
-            };
             if unmark_count > 0 {
                 app.notify(&format!(
-                    "{} reviewed file{} auto-unmarked (diff changed){}",
+                    "{} reviewed file{} auto-unmarked (diff changed)",
                     unmark_count,
                     if unmark_count == 1 { "" } else { "s" },
-                    ai_status
                 ));
             } else {
                 app.notify(&format!(
-                    "{} file{} changed{}",
+                    "{} file{} changed",
                     count,
                     if count == 1 { "" } else { "s" },
-                    ai_status
                 ));
             }
         }
@@ -441,16 +430,7 @@ fn handle_normal_input(
         // Reload/refresh diff
         KeyCode::Char('R') => {
             app.tab_mut().refresh_diff()?;
-            let ai_status = if app.tab().ai.has_data() {
-                if app.tab().ai.is_stale {
-                    " · AI stale"
-                } else {
-                    " · AI synced"
-                }
-            } else {
-                ""
-            };
-            app.notify(&format!("Refreshed{}", ai_status));
+            app.notify("Refreshed");
             return Ok(());
         }
 

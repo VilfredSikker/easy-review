@@ -843,21 +843,6 @@ impl AiState {
         }
     }
 
-    /// Check if there are any comments or questions (excluding findings).
-    pub fn has_comments_or_questions(&self) -> bool {
-        if let Some(qs) = &self.questions {
-            if !qs.questions.is_empty() {
-                return true;
-            }
-        }
-        if let Some(gc) = &self.github_comments {
-            if !gc.comments.is_empty() {
-                return true;
-            }
-        }
-        false
-    }
-
     // ── Unified comment queries (questions + github comments) ──
 
     /// Get all comments (questions + GitHub) for a specific file and hunk (including replies)
