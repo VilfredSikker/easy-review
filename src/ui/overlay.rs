@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use super::styles;
-use crate::app::{DirEntry, OverlayData, Worktree};
+use crate::app::{DirEntry, HubItem, HubKind, OverlayData, Worktree};
 
 /// Render the active overlay on top of the main UI
 /// Note: Settings overlay is rendered separately in ui/mod.rs since it needs App access.
@@ -34,6 +34,13 @@ pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
             preset_count,
         } => {
             render_filter_history(f, area, history, *selected, *preset_count);
+        }
+        OverlayData::ModalHub {
+            kind,
+            items,
+            selected,
+        } => {
+            render_modal_hub(f, area, *kind, items, *selected);
         }
     }
 }
@@ -308,6 +315,113 @@ fn render_filter_history(
         .style(ratatui::style::Style::default().bg(styles::PANEL));
 
     let list = List::new(items).block(block);
+    f.render_widget(list, popup);
+}
+
+fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem], selected: usize) {
+    // For Help hub, use wider popup to fit descriptions
+    let is_help = kind == HubKind::Help;
+    let popup_width = if is_help {
+        60u16.min(area.width.saturating_sub(6))
+    } else {
+        55u16.min(area.width.saturating_sub(6))
+    };
+    let popup_height = (items.len() as u16 + 2)
+        .min(area.height.saturating_sub(4))
+        .max(5);
+    let popup = centered_rect(popup_width, popup_height, area);
+
+    f.render_widget(Clear, popup);
+
+    let title_color = match kind {
+        HubKind::Git => styles::GREEN,
+        HubKind::Ai => styles::PURPLE,
+        HubKind::Verify => styles::YELLOW,
+        HubKind::Help => styles::CYAN,
+    };
+
+    let list_items: Vec<ListItem> = items
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| {
+            if item.is_header {
+                // Section header: rendered as dimmed label
+                return ListItem::new(Line::from(Span::styled(
+                    &item.label,
+                    ratatui::style::Style::default()
+                        .fg(title_color)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                )))
+                .style(ratatui::style::Style::default().bg(styles::PANEL));
+            }
+
+            let is_sel = idx == selected;
+            let marker = if is_sel { "▶ " } else { "  " };
+
+            let label_style = if !item.enabled {
+                ratatui::style::Style::default().fg(styles::MUTED)
+            } else if is_sel {
+                ratatui::style::Style::default().fg(styles::BRIGHT)
+            } else {
+                ratatui::style::Style::default().fg(styles::TEXT)
+            };
+
+            let mut spans = vec![
+                Span::styled(marker, ratatui::style::Style::default().fg(title_color)),
+                Span::styled(&item.label, label_style),
+            ];
+
+            // For Help hub, show description inline after the label
+            if is_help && !item.description.is_empty() {
+                // Pad label to align descriptions
+                let pad = 12usize.saturating_sub(item.label.len());
+                spans.push(Span::raw(" ".repeat(pad)));
+                spans.push(Span::styled(
+                    &item.description,
+                    ratatui::style::Style::default().fg(styles::DIM),
+                ));
+            } else {
+                // For action hubs, show hint right-aligned and description dimmed
+                if !item.hint.is_empty() {
+                    spans.push(Span::styled(
+                        format!("  [{}]", item.hint),
+                        ratatui::style::Style::default().fg(styles::DIM),
+                    ));
+                }
+                if !item.description.is_empty() {
+                    spans.push(Span::styled(
+                        format!("  {}", item.description),
+                        ratatui::style::Style::default().fg(styles::MUTED),
+                    ));
+                }
+            }
+
+            let style = if is_sel {
+                styles::selected_style()
+            } else {
+                ratatui::style::Style::default().bg(styles::PANEL)
+            };
+
+            ListItem::new(Line::from(spans)).style(style)
+        })
+        .collect();
+
+    let close_hint = if is_help {
+        "Esc=close"
+    } else {
+        "Enter=select, Esc=close"
+    };
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" {} ({}) ", kind.title(), close_hint),
+            ratatui::style::Style::default().fg(title_color),
+        ))
+        .borders(Borders::ALL)
+        .border_style(ratatui::style::Style::default().fg(title_color))
+        .style(ratatui::style::Style::default().bg(styles::PANEL));
+
+    let list = List::new(list_items).block(block);
     f.render_widget(list, popup);
 }
 
