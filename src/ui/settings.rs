@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem},
     Frame,
@@ -188,23 +188,5 @@ pub fn render_settings(f: &mut Frame, area: Rect, app: &App, selected: usize) {
     f.render_widget(list, popup);
 }
 
-/// Calculate a centered rectangle within an area
-fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(r.height.saturating_sub(height) / 2),
-            Constraint::Length(height),
-            Constraint::Min(0),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(r.width.saturating_sub(width) / 2),
-            Constraint::Length(width),
-            Constraint::Min(0),
-        ])
-        .split(vertical[1])[1]
-}
+// Use the shared centered_rect from utils (deduplicated from overlay + settings)
+use super::utils::centered_rect;

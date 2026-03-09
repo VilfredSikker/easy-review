@@ -340,6 +340,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "syntect",
+ "tempfile",
  "toml",
  "two-face",
 ]

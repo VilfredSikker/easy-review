@@ -347,3 +347,306 @@ pub fn settings_items() -> Vec<SettingsItem> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── deep_merge ──
+
+    #[test]
+    fn deep_merge_empty_base_overwritten_by_overlay() {
+        let mut base = toml::map::Map::new();
+        let mut overlay = toml::map::Map::new();
+        overlay.insert("key".into(), toml::Value::String("value".into()));
+        deep_merge(&mut base, overlay);
+        assert_eq!(base.get("key").unwrap().as_str().unwrap(), "value");
+    }
+
+    #[test]
+    fn deep_merge_empty_overlay_preserves_base() {
+        let mut base = toml::map::Map::new();
+        base.insert("key".into(), toml::Value::String("original".into()));
+        let overlay = toml::map::Map::new();
+        deep_merge(&mut base, overlay);
+        assert_eq!(base.get("key").unwrap().as_str().unwrap(), "original");
+    }
+
+    #[test]
+    fn deep_merge_scalar_values_replaced() {
+        let mut base = toml::map::Map::new();
+        base.insert("key".into(), toml::Value::String("old".into()));
+        let mut overlay = toml::map::Map::new();
+        overlay.insert("key".into(), toml::Value::String("new".into()));
+        deep_merge(&mut base, overlay);
+        assert_eq!(base.get("key").unwrap().as_str().unwrap(), "new");
+    }
+
+    #[test]
+    fn deep_merge_nested_tables_merge_recursively() {
+        let mut inner_base = toml::map::Map::new();
+        inner_base.insert("a".into(), toml::Value::Boolean(true));
+        inner_base.insert("b".into(), toml::Value::Boolean(false));
+        let mut base = toml::map::Map::new();
+        base.insert("section".into(), toml::Value::Table(inner_base));
+
+        let mut inner_overlay = toml::map::Map::new();
+        inner_overlay.insert("b".into(), toml::Value::Boolean(true));
+        inner_overlay.insert("c".into(), toml::Value::Boolean(true));
+        let mut overlay = toml::map::Map::new();
+        overlay.insert("section".into(), toml::Value::Table(inner_overlay));
+
+        deep_merge(&mut base, overlay);
+
+        let section = base.get("section").unwrap().as_table().unwrap();
+        assert!(section.get("a").unwrap().as_bool().unwrap());
+        assert!(section.get("b").unwrap().as_bool().unwrap()); // overridden
+        assert!(section.get("c").unwrap().as_bool().unwrap()); // added
+    }
+
+    #[test]
+    fn deep_merge_three_levels_deep() {
+        let mut l3_base = toml::map::Map::new();
+        l3_base.insert("val".into(), toml::Value::Integer(1));
+        let mut l2_base = toml::map::Map::new();
+        l2_base.insert("inner".into(), toml::Value::Table(l3_base));
+        let mut base = toml::map::Map::new();
+        base.insert("outer".into(), toml::Value::Table(l2_base));
+
+        let mut l3_overlay = toml::map::Map::new();
+        l3_overlay.insert("val".into(), toml::Value::Integer(99));
+        let mut l2_overlay = toml::map::Map::new();
+        l2_overlay.insert("inner".into(), toml::Value::Table(l3_overlay));
+        let mut overlay = toml::map::Map::new();
+        overlay.insert("outer".into(), toml::Value::Table(l2_overlay));
+
+        deep_merge(&mut base, overlay);
+
+        let val = base["outer"].as_table().unwrap()["inner"]
+            .as_table()
+            .unwrap()["val"]
+            .as_integer()
+            .unwrap();
+        assert_eq!(val, 99);
+    }
+
+    #[test]
+    fn deep_merge_array_values_replaced_not_appended() {
+        let mut base = toml::map::Map::new();
+        base.insert(
+            "arr".into(),
+            toml::Value::Array(vec![toml::Value::Integer(1), toml::Value::Integer(2)]),
+        );
+        let mut overlay = toml::map::Map::new();
+        overlay.insert(
+            "arr".into(),
+            toml::Value::Array(vec![toml::Value::Integer(3)]),
+        );
+        deep_merge(&mut base, overlay);
+        let arr = base.get("arr").unwrap().as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].as_integer().unwrap(), 3);
+    }
+
+    #[test]
+    fn deep_merge_type_mismatch_scalar_overwrites_table() {
+        let mut inner = toml::map::Map::new();
+        inner.insert("a".into(), toml::Value::Boolean(true));
+        let mut base = toml::map::Map::new();
+        base.insert("key".into(), toml::Value::Table(inner));
+
+        let mut overlay = toml::map::Map::new();
+        overlay.insert("key".into(), toml::Value::String("replaced".into()));
+
+        deep_merge(&mut base, overlay);
+        assert_eq!(base.get("key").unwrap().as_str().unwrap(), "replaced");
+    }
+
+    #[test]
+    fn deep_merge_type_mismatch_table_overwrites_scalar() {
+        let mut base = toml::map::Map::new();
+        base.insert("key".into(), toml::Value::String("old".into()));
+
+        let mut inner = toml::map::Map::new();
+        inner.insert("a".into(), toml::Value::Boolean(true));
+        let mut overlay = toml::map::Map::new();
+        overlay.insert("key".into(), toml::Value::Table(inner));
+
+        deep_merge(&mut base, overlay);
+        assert!(base.get("key").unwrap().is_table());
+        assert!(base["key"].as_table().unwrap()["a"].as_bool().unwrap());
+    }
+
+    // ── load_config ──
+
+    #[test]
+    fn load_config_missing_files_produce_defaults() {
+        let config = load_config("/nonexistent/repo/path");
+        assert!(config.features.view_branch);
+        assert!(config.features.view_unstaged);
+        assert_eq!(config.display.tab_width, 4);
+        assert_eq!(config.agent.command, "claude");
+    }
+
+    #[test]
+    fn load_config_partial_toml_merges_with_defaults() {
+        let dir = std::env::temp_dir().join("er_test_partial_toml");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join(".er-config.toml");
+        std::fs::write(&config_path, "[features]\nview_branch = false\n").unwrap();
+
+        let config = load_config(dir.to_str().unwrap());
+        assert!(!config.features.view_branch); // overridden
+        assert!(config.features.view_unstaged); // default preserved
+        assert_eq!(config.display.tab_width, 4); // default preserved
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_config_malformed_toml_falls_back_to_defaults() {
+        let dir = std::env::temp_dir().join("er_test_malformed_toml");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join(".er-config.toml");
+        std::fs::write(&config_path, "this is not valid { toml ]]").unwrap();
+
+        let config = load_config(dir.to_str().unwrap());
+        // Should fall back to defaults
+        assert!(config.features.view_branch);
+        assert_eq!(config.display.tab_width, 4);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Default values ──
+
+    #[test]
+    fn feature_flags_all_default_to_true() {
+        let flags = FeatureFlags::default();
+        assert!(flags.view_branch);
+        assert!(flags.view_unstaged);
+        assert!(flags.view_staged);
+        assert!(flags.view_history);
+        assert!(flags.view_conflicts);
+    }
+
+    #[test]
+    fn tab_width_defaults_to_4() {
+        let display = DisplayConfig::default();
+        assert_eq!(display.tab_width, 4);
+    }
+
+    #[test]
+    fn agent_command_defaults_to_claude() {
+        let agent = AgentConfig::default();
+        assert_eq!(agent.command, "claude");
+    }
+
+    #[test]
+    fn serde_roundtrip_preserves_all_fields() {
+        let config = ErConfig {
+            features: FeatureFlags {
+                view_branch: false,
+                view_unstaged: true,
+                view_staged: false,
+                view_history: true,
+                view_conflicts: false,
+            },
+            display: DisplayConfig {
+                tab_width: 8,
+                line_numbers: false,
+                wrap_lines: true,
+                split_diff: true,
+            },
+            agent: AgentConfig {
+                command: "my-agent".into(),
+                args: vec!["--flag".into()],
+            },
+            ..Default::default()
+        };
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let restored: ErConfig = toml::from_str(&toml_str).unwrap();
+
+        assert!(!restored.features.view_branch);
+        assert!(restored.features.view_history);
+        assert_eq!(restored.display.tab_width, 8);
+        assert!(restored.display.wrap_lines);
+        assert_eq!(restored.agent.command, "my-agent");
+        assert_eq!(restored.agent.args, vec!["--flag"]);
+    }
+
+    // ── settings_items ──
+
+    #[test]
+    fn settings_items_returns_expected_count() {
+        let items = settings_items();
+        // Count non-header items (BoolToggle, NumberEdit, StringDisplay)
+        let toggleable: Vec<_> = items
+            .iter()
+            .filter(|i| !matches!(i, SettingsItem::SectionHeader(_)))
+            .collect();
+        assert!(
+            toggleable.len() >= 14,
+            "Expected at least 14 toggleable items, got {}",
+            toggleable.len()
+        );
+        assert!(
+            items.len() >= 18,
+            "Expected at least 18 total items, got {}",
+            items.len()
+        );
+    }
+
+    #[test]
+    fn settings_items_bool_toggle_get_set_read_write_correct_fields() {
+        let mut config = ErConfig::default();
+
+        let items = settings_items();
+        // Find the "Branch diff" toggle and verify it reads/writes view_branch
+        let branch_toggle = items.iter().find(|i| match i {
+            SettingsItem::BoolToggle { label, .. } => label.contains("Branch"),
+            _ => false,
+        });
+        if let Some(SettingsItem::BoolToggle { get, set, .. }) = branch_toggle {
+            assert!(get(&config));
+            set(&mut config, false);
+            assert!(!config.features.view_branch);
+            assert!(!get(&config));
+        } else {
+            panic!("Branch diff toggle not found");
+        }
+
+        // Verify line_numbers toggle
+        let line_num_toggle = items.iter().find(|i| match i {
+            SettingsItem::BoolToggle { label, .. } => label.contains("Line numbers"),
+            _ => false,
+        });
+        if let Some(SettingsItem::BoolToggle { get, set, .. }) = line_num_toggle {
+            assert!(get(&config));
+            set(&mut config, false);
+            assert!(!config.display.line_numbers);
+        } else {
+            panic!("Line numbers toggle not found");
+        }
+    }
+
+    #[test]
+    fn settings_items_section_headers_present_in_correct_order() {
+        let items = settings_items();
+        let headers: Vec<&str> = items
+            .iter()
+            .filter_map(|i| match i {
+                SettingsItem::SectionHeader(title) => Some(title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(headers.contains(&"Views"));
+        assert!(headers.contains(&"Display"));
+        assert!(headers.contains(&"Key Hints"));
+        assert!(headers.contains(&"Agent"));
+        // Views should come before Display
+        let views_pos = headers.iter().position(|h| *h == "Views").unwrap();
+        let display_pos = headers.iter().position(|h| *h == "Display").unwrap();
+        assert!(views_pos < display_pos);
+    }
+}

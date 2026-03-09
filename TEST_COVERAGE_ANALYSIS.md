@@ -1,6 +1,6 @@
 # Test Coverage Analysis — easy-review
 
-## Current State: 324 tests, 9 of 24 files tested
+## Current State: 385 tests, 15 of 24 files tested
 
 The codebase has solid test foundations for core parsing and state logic, but significant
 gaps exist in configuration, UI helper logic, and the comment/GitHub integration layer.
@@ -9,23 +9,23 @@ gaps exist in configuration, UI helper logic, and the comment/GitHub integration
 
 | Module | Lines | Tests | Coverage |
 |--------|------:|------:|----------|
-| `app/state.rs` | 5,533 | 101 | Good for navigation/scroll; gaps in comments, watched files |
+| `app/state.rs` | 5,533 | 112 | Good for navigation/scroll/filter; gaps in comments, watched files |
 | `ai/review.rs` | 2,153 | 63 | Good for queries; gaps in staleness, thread management |
 | `git/diff.rs` | 1,222 | 39 | Excellent — parser well-covered |
 | `app/filter.rs` | 483 | 31 | Excellent — model test coverage |
 | `github.rs` | 931 | 26 | URL parsing solid; no tests for comment sync |
-| `git/status.rs` | 985 | 18 | Log/shortstat parsing only; base branch detection untested |
+| `git/status.rs` | 985 | 25 | Log/shortstat/base-branch detection covered |
+| `config.rs` | 361 | 18 | deep_merge, load_config, defaults, settings_items covered |
 | `main.rs` | 1,553 | 15 | Key-binding routing only |
+| `ui/panel.rs` | 852 | 13 | check_icon, review_state_style covered |
 | `ai/relocate.rs` | 556 | 9 | Decent coverage of relocation algorithm |
 | `ai/loader.rs` | 308 | 9 | Hash computation only; file loading untested |
 | `ui/file_tree.rs` | 589 | 8 | Path shortening only |
-| `ui/utils.rs` | 108 | 5 | Word-wrap only |
-| **config.rs** | **361** | **0** | **No tests** |
-| **ui/diff_view.rs** | **1,939** | **0** | **No tests** |
-| **ui/panel.rs** | **852** | **0** | **No tests** |
-| **ui/status_bar.rs** | **842** | **0** | **No tests** |
-| **ui/overlay.rs** | **338** | **0** | **No tests** |
-| **ui/settings.rs** | **234** | **0** | **No tests** |
+| `ui/utils.rs` | 132 | 8 | Word-wrap + centered_rect covered |
+| `ui/status_bar.rs` | 842 | 4 | spans_width, pack_hint_lines, Hint::width covered |
+| `ui/diff_view.rs` | 1,939 | 3 | format_size covered |
+| **ui/overlay.rs** | **315** | **0** | **No tests** (centered_rect deduplicated to utils) |
+| **ui/settings.rs** | **200** | **0** | **No tests** (centered_rect deduplicated to utils) |
 | **ui/styles.rs** | **207** | **0** | **No tests** |
 | **ui/highlight.rs** | **139** | **0** | **No tests** |
 | **watch/mod.rs** | **85** | **0** | **No tests** |
@@ -218,26 +218,26 @@ Track progress by checking items off as tests are added.
 
 ### P1 — Critical Gaps
 
-#### config.rs (~20 tests)
-- [ ] `deep_merge()` — empty base overwritten by overlay
-- [ ] `deep_merge()` — empty overlay preserves base
-- [ ] `deep_merge()` — scalar values replaced, not merged
-- [ ] `deep_merge()` — nested tables merge recursively (3+ levels)
-- [ ] `deep_merge()` — array values replaced, not appended
-- [ ] `deep_merge()` — type mismatch (scalar overlaying table and vice versa)
-- [ ] `load_config()` — missing config files produce correct defaults
-- [ ] `load_config()` — partial TOML merges correctly with defaults
+#### config.rs (~20 tests) — 18 added
+- [x] `deep_merge()` — empty base overwritten by overlay
+- [x] `deep_merge()` — empty overlay preserves base
+- [x] `deep_merge()` — scalar values replaced, not merged
+- [x] `deep_merge()` — nested tables merge recursively (3+ levels)
+- [x] `deep_merge()` — array values replaced, not appended
+- [x] `deep_merge()` — type mismatch (scalar overlaying table and vice versa)
+- [x] `load_config()` — missing config files produce correct defaults
+- [x] `load_config()` — partial TOML merges correctly with defaults
 - [ ] `load_config()` — local config overrides global at field level
-- [ ] `load_config()` — malformed TOML gracefully falls back to defaults
-- [ ] Default values — `FeatureFlags` fields all default to `true`
-- [ ] Default values — `tab_width` defaults to 4
-- [ ] Default values — agent command defaults to `"claude"`
-- [ ] Default values — serde round-trip preserves all fields
-- [ ] `settings_items()` — returns expected number of items
-- [ ] `settings_items()` — BoolToggle get/set closures read/write correct fields
-- [ ] `settings_items()` — section headers present in correct order
+- [x] `load_config()` — malformed TOML gracefully falls back to defaults
+- [x] Default values — `FeatureFlags` fields all default to `true`
+- [x] Default values — `tab_width` defaults to 4
+- [x] Default values — agent command defaults to `"claude"`
+- [x] Default values — serde round-trip preserves all fields
+- [x] `settings_items()` — returns expected number of items
+- [x] `settings_items()` — BoolToggle get/set closures read/write correct fields
+- [x] `settings_items()` — section headers present in correct order
 
-#### app/state.rs — Comment lifecycle (~15 tests)
+#### app/state.rs — Comment lifecycle (~15 tests) — 5 added
 - [ ] `submit_comment()` — new question sets correct file/hunk/line fields
 - [ ] `submit_comment()` — new GitHub comment sets correct fields
 - [ ] `submit_comment()` — reply sets `in_reply_to` correctly
@@ -249,27 +249,28 @@ Track progress by checking items off as tests are added.
 - [ ] `confirm_delete_comment()` — focus moves to valid comment after deletion
 - [ ] `next_comment()` / `prev_comment()` — single comment stays in place
 - [ ] `next_comment()` / `prev_comment()` — crosses file boundaries
-- [ ] `next_comment()` / `prev_comment()` — empty list no crash
-- [ ] `start_comment()` — sets input mode correctly
+- [x] `next_comment()` / `prev_comment()` — empty list no crash
+- [x] `start_comment()` — sets input mode correctly
 - [ ] `start_reply_comment()` — sets reply target correctly
-- [ ] `start_edit_comment()` — populates input buffer with existing text
+- [x] `start_edit_comment()` — populates input buffer with existing text
 
-#### app/state.rs — Filter pipeline (~5 tests)
-- [ ] Filter rules + search query + unreviewed toggle all active simultaneously
-- [ ] `snap_to_visible_selected_file()` when all files filtered out
-- [ ] `apply_filter_expr()` history deduplication
-- [ ] `apply_filter_expr()` history capped at 20 entries
-- [ ] Filter cleared restores full file list
+#### app/state.rs — Filter pipeline (~5 tests) — 6 added
+- [x] Filter rules + search query + unreviewed toggle all active simultaneously
+- [x] `snap_to_visible_selected_file()` when all files filtered out
+- [x] `apply_filter_expr()` history deduplication
+- [x] `apply_filter_expr()` history capped at 20 entries
+- [x] Filter cleared restores full file list
+- [x] Filter rules + search narrows correctly
 
-#### git/status.rs — Base branch detection (~8 tests)
+#### git/status.rs — Base branch detection (~8 tests) — 7 added
 - [ ] Repo with upstream tracking branch uses upstream
-- [ ] Repo with only `main` detects main
-- [ ] Repo with only `master` falls back to master
-- [ ] Repo with `develop` branch detected in fallback chain
+- [x] Repo with only `main` detects main
+- [x] Repo with only `master` falls back to master
+- [x] Repo with `develop` branch detected in fallback chain
 - [ ] Empty repo with no commits handles gracefully
-- [ ] `strip_upstream_remote()` — no `/` in input
-- [ ] `strip_upstream_remote()` — multiple `/` separators
-- [ ] Branch on its own base (current == detected base) handled
+- [x] `strip_upstream_remote()` — no `/` in input
+- [x] `strip_upstream_remote()` — multiple `/` separators (+ empty after slash)
+- [x] Branch on its own base (current == detected base) handled
 
 ### P2 — High Value Gaps
 
@@ -299,30 +300,31 @@ Track progress by checking items off as tests are added.
 
 ### P3 — UI Pure Logic
 
-#### ui/status_bar.rs (~5 tests)
-- [ ] `pack_hint_lines()` — hints fit in one line
-- [ ] `pack_hint_lines()` — hints wrap to multiple lines
+#### ui/status_bar.rs (~5 tests) — 4 added
+- [x] `pack_hint_lines()` — hints fit in one line
+- [x] `pack_hint_lines()` — hints wrap to multiple lines
 - [ ] `bottom_bar_height()` matches actual packed line count
-- [ ] `spans_width()` — correct character counting
+- [x] `spans_width()` — correct character counting
 - [ ] `top_bar_height()` — single tab vs multi-tab
+- [x] `Hint::width()` — includes key and label
 
-#### ui/diff_view.rs (~3 tests)
-- [ ] Size formatting — bytes range (0, 1023)
-- [ ] Size formatting — KB range (1024 → "1.0 KB")
-- [ ] Size formatting — MB range (1048576 → "1.0 MB")
+#### ui/diff_view.rs (~3 tests) — 3 added
+- [x] Size formatting — bytes range (0, 1023)
+- [x] Size formatting — KB range (1024 → "1.0 KB")
+- [x] Size formatting — MB range (1048576 → "1.0 MB")
 
-#### ui/panel.rs (~5 tests)
-- [ ] `check_icon()` — maps all conclusion states correctly
-- [ ] `review_state_style()` — maps all review states correctly
+#### ui/panel.rs (~5 tests) — 13 added
+- [x] `check_icon()` — maps all conclusion states correctly (7 tests: success, failure, cancelled, timed_out, skipped, unknown, None)
+- [x] `review_state_style()` — maps all review states correctly (6 tests: approved, changes_requested, commented, dismissed, pending/unknown)
 - [ ] File risk sorting — High before Medium before Low
 - [ ] Comment target label formatting (hunk-only, hunk+line, file-level)
 - [ ] Reviewer deduplication and sort order
 
-#### ui/overlay.rs — centered_rect (~3 tests)
-- [ ] Centering popup in larger area
-- [ ] Popup larger than area (clamping)
-- [ ] Zero-size edge case
-- [ ] Deduplicate `centered_rect()` from `ui/settings.rs` to `ui/utils.rs`
+#### ui/overlay.rs — centered_rect (~3 tests) — 3 added + deduplication
+- [x] Centering popup in larger area
+- [x] Popup larger than area (clamping)
+- [x] Zero-size edge case
+- [x] Deduplicate `centered_rect()` from `ui/settings.rs` to `ui/utils.rs`
 
 ### P4 — Lower Priority
 
