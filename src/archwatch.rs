@@ -75,9 +75,9 @@ fn try_websocket_update(config: &ArchwatchConfig, entries: &[HighlightEntry]) ->
     // Quick connectivity check with a short timeout
     let addr = format!("127.0.0.1:{}", config.port);
     if TcpStream::connect_timeout(
-        &addr.parse().unwrap_or_else(|_| {
-            std::net::SocketAddr::from(([127, 0, 0, 1], config.port))
-        }),
+        &addr
+            .parse()
+            .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], config.port))),
         Duration::from_millis(500),
     )
     .is_err()

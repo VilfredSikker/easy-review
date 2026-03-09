@@ -346,6 +346,21 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
         HubAction::StageAll => {
             app.stage_all()?;
         }
+        HubAction::LaunchArchwatch => {
+            let result = {
+                let tab = app.tab();
+                archwatch::launch_archwatch(
+                    &app.config.archwatch,
+                    &tab.repo_root,
+                    &tab.files,
+                    &tab.ai,
+                )
+            };
+            match result {
+                Ok(msg) => app.notify(&msg),
+                Err(e) => app.notify(&format!("Archwatch: {}", e)),
+            }
+        }
         HubAction::CopyContext => {
             app.copy_context()?;
         }
@@ -593,24 +608,6 @@ fn handle_normal_input(
                 app.notify("Opening PR in browser...");
             } else {
                 app.open_directory_browser();
-            }
-            return Ok(());
-        }
-
-        // Launch Archwatch dependency graph with highlighted changed modules (g)
-        KeyCode::Char('g') => {
-            let result = {
-                let tab = app.tab();
-                archwatch::launch_archwatch(
-                    &app.config.archwatch,
-                    &tab.repo_root,
-                    &tab.files,
-                    &tab.ai,
-                )
-            };
-            match result {
-                Ok(msg) => app.notify(&msg),
-                Err(e) => app.notify(&format!("Archwatch: {}", e)),
             }
             return Ok(());
         }

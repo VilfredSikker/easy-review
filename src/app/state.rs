@@ -235,6 +235,7 @@ pub enum HubAction {
     RefreshDiff,
     StageFile,
     StageAll,
+    LaunchArchwatch,
     // AI hub actions
     CopyContext,
     ToggleAiFindings,
@@ -2986,6 +2987,14 @@ impl App {
                 hint: "".into(),
                 description: "Publish local comments to the PR".into(),
                 action: HubAction::PushCommentsToGitHub,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Launch Archwatch".into(),
+                hint: "".into(),
+                description: "Open dependency graph with changed modules highlighted".into(),
+                action: HubAction::LaunchArchwatch,
                 is_header: false,
                 enabled: true,
             },
