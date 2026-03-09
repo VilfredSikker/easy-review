@@ -43,6 +43,8 @@ two-face = "0.5.1"
 
 # WebSocket (Archwatch integration)
 tungstenite = "0.24"
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

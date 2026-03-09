@@ -358,6 +358,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "syntect",
+ "tempfile",
  "toml",
  "tungstenite",
  "two-face",
