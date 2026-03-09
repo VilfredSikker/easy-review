@@ -180,6 +180,69 @@ pub enum OverlayData {
         selected: usize,
         preset_count: usize,
     },
+    ModalHub {
+        kind: HubKind,
+        items: Vec<HubItem>,
+        selected: usize,
+    },
+}
+
+/// Which modal hub is open
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HubKind {
+    Git,
+    Ai,
+    Verify,
+    Help,
+}
+
+impl HubKind {
+    pub fn title(&self) -> &'static str {
+        match self {
+            HubKind::Git => "GIT",
+            HubKind::Ai => "AI",
+            HubKind::Verify => "VERIFY",
+            HubKind::Help => "HELP",
+        }
+    }
+}
+
+/// A single item in a modal hub menu
+#[derive(Debug, Clone)]
+pub struct HubItem {
+    /// Display label (e.g. "Push to remote")
+    pub label: String,
+    /// Short keybind hint shown right-aligned (e.g. "Ctrl+P")
+    pub hint: String,
+    /// Brief description shown below label
+    pub description: String,
+    /// Action to dispatch when selected
+    pub action: HubAction,
+    /// Whether this item is a section header (non-selectable)
+    pub is_header: bool,
+    /// Whether the item is currently enabled/applicable
+    pub enabled: bool,
+}
+
+/// Actions dispatched from modal hub selections
+#[derive(Debug, Clone, PartialEq)]
+pub enum HubAction {
+    Noop,
+    // Git hub actions
+    PushToRemote,
+    PullGitHubComments,
+    PushCommentsToGitHub,
+    RefreshDiff,
+    StageFile,
+    StageAll,
+    // AI hub actions
+    CopyContext,
+    ToggleAiFindings,
+    ToggleComments,
+    ToggleQuestions,
+    CleanupQuestions,
+    CleanupReviews,
+    // Help — no dispatch, just informational
 }
 
 // ── Per-Tab State ──
@@ -2694,6 +2757,9 @@ pub struct App {
 
     /// Current status of the summary agent
     pub summary_status: Option<SummaryAgentStatus>,
+
+    /// Pending action from a modal hub selection (consumed by the event loop)
+    pub pending_hub_action: Option<HubAction>,
 }
 
 impl App {
@@ -2759,6 +2825,7 @@ impl App {
             config: er_config,
             summary_rx: None,
             summary_status: None,
+            pending_hub_action: None,
         })
     }
 
@@ -2887,6 +2954,342 @@ impl App {
         });
     }
 
+    // ── Overlay: Modal Hubs ──
+
+    /// Open the Git modal hub
+    pub fn open_git_hub(&mut self) {
+        let in_staged = self.tab().mode == DiffMode::Staged;
+        let items = vec![
+            HubItem {
+                label: "Push to remote".into(),
+                hint: "".into(),
+                description: "Push current branch to origin".into(),
+                action: HubAction::PushToRemote,
+                is_header: false,
+                enabled: in_staged,
+            },
+            HubItem {
+                label: "Stage current file".into(),
+                hint: "s".into(),
+                description: "Stage or unstage the selected file".into(),
+                action: HubAction::StageFile,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Stage all files".into(),
+                hint: "".into(),
+                description: "Stage all changed files".into(),
+                action: HubAction::StageAll,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Refresh diff".into(),
+                hint: "R".into(),
+                description: "Re-run git diff and reload".into(),
+                action: HubAction::RefreshDiff,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Pull GitHub comments".into(),
+                hint: "".into(),
+                description: "Sync review comments from GitHub PR".into(),
+                action: HubAction::PullGitHubComments,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Push comments to GitHub".into(),
+                hint: "".into(),
+                description: "Publish local comments to the PR".into(),
+                action: HubAction::PushCommentsToGitHub,
+                is_header: false,
+                enabled: true,
+            },
+        ];
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Git,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// Open the AI modal hub
+    pub fn open_ai_hub(&mut self) {
+        let has_ai = self.tab().ai.has_data();
+        let items = vec![
+            HubItem {
+                label: "Copy context to clipboard".into(),
+                hint: "".into(),
+                description: "Copy diff context for agent terminal".into(),
+                action: HubAction::CopyContext,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Toggle AI findings".into(),
+                hint: "a".into(),
+                description: "Show/hide inline AI findings".into(),
+                action: HubAction::ToggleAiFindings,
+                is_header: false,
+                enabled: has_ai,
+            },
+            HubItem {
+                label: "Toggle comments".into(),
+                hint: "".into(),
+                description: "Show/hide GitHub comment layer".into(),
+                action: HubAction::ToggleComments,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Toggle questions".into(),
+                hint: "".into(),
+                description: "Show/hide question layer".into(),
+                action: HubAction::ToggleQuestions,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Cleanup questions".into(),
+                hint: "z".into(),
+                description: "Delete .er/questions.json".into(),
+                action: HubAction::CleanupQuestions,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Cleanup reviews".into(),
+                hint: "Z".into(),
+                description: "Delete .er/review.json".into(),
+                action: HubAction::CleanupReviews,
+                is_header: false,
+                enabled: has_ai,
+            },
+        ];
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Ai,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// Open the Verify modal hub (forward-looking — stubs for now)
+    pub fn open_verify_hub(&mut self) {
+        let items = vec![
+            HubItem {
+                label: "Run tests".into(),
+                hint: "".into(),
+                description: "Run project test suite (coming soon)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Run linter".into(),
+                hint: "".into(),
+                description: "Run configured linter (coming soon)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Type check".into(),
+                hint: "".into(),
+                description: "Run type checker (coming soon)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Security scan".into(),
+                hint: "".into(),
+                description: "Run security audit (coming soon)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+        ];
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Verify,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// Open the Help modal hub (keybind reference)
+    pub fn open_help_hub(&mut self) {
+        let items = vec![
+            HubItem {
+                label: "── Navigation ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "j / k".into(),
+                hint: "".into(),
+                description: "Previous / next file".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "n / N".into(),
+                hint: "".into(),
+                description: "Next / previous hunk".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "↑ / ↓".into(),
+                hint: "".into(),
+                description: "Line navigation".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "1-5".into(),
+                hint: "".into(),
+                description: "Switch diff mode (Branch/Unstaged/Staged/History/Conflicts)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "── Review ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "Space".into(),
+                hint: "".into(),
+                description: "Toggle file reviewed".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "q".into(),
+                hint: "".into(),
+                description: "Add review question".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "c".into(),
+                hint: "".into(),
+                description: "Add GitHub comment (or commit in Staged)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "r / d".into(),
+                hint: "".into(),
+                description: "Reply to / delete focused comment".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "── Tools ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "/ / f".into(),
+                hint: "".into(),
+                description: "Search / filter files".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "e".into(),
+                hint: "".into(),
+                description: "Open in editor".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "p".into(),
+                hint: "".into(),
+                description: "Toggle context panel".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "── Modals ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "g".into(),
+                hint: "".into(),
+                description: "Git operations hub".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "A".into(),
+                hint: "".into(),
+                description: "AI tools hub".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "v".into(),
+                hint: "".into(),
+                description: "Verify hub (tests, lint)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: ", / S".into(),
+                hint: "".into(),
+                description: "Settings".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Ctrl+q".into(),
+                hint: "".into(),
+                description: "Quit".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+        ];
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Help,
+            items,
+            selected: 0,
+        });
+    }
+
     // ── Overlay: Settings ──
 
     /// Open the settings overlay
@@ -2977,6 +3380,21 @@ impl App {
                     *selected += 1;
                 }
             }
+            Some(OverlayData::ModalHub {
+                items, selected, ..
+            }) => {
+                // Skip headers when navigating down
+                let mut next = *selected + 1;
+                while next < items.len() {
+                    if !items[next].is_header {
+                        break;
+                    }
+                    next += 1;
+                }
+                if next < items.len() {
+                    *selected = next;
+                }
+            }
             None => {}
         }
     }
@@ -3000,6 +3418,20 @@ impl App {
                         prev -= 1;
                     }
                     if !matches!(items[prev], config::SettingsItem::SectionHeader(_)) {
+                        *selected = prev;
+                    }
+                }
+            }
+            Some(OverlayData::ModalHub {
+                items, selected, ..
+            }) => {
+                // Skip headers when navigating up
+                if *selected > 0 {
+                    let mut prev = *selected - 1;
+                    while prev > 0 && items[prev].is_header {
+                        prev -= 1;
+                    }
+                    if !items[prev].is_header {
                         *selected = prev;
                     }
                 }
@@ -3093,6 +3525,16 @@ impl App {
             }
             OverlayData::Settings { .. } => {
                 // Already handled above
+            }
+            OverlayData::ModalHub {
+                items, selected, ..
+            } => {
+                if let Some(item) = items.get(selected) {
+                    if item.enabled && !item.is_header && item.action != HubAction::Noop {
+                        // Store action, close overlay, then caller dispatches
+                        self.pending_hub_action = Some(item.action.clone());
+                    }
+                }
             }
         }
         Ok(())
@@ -5956,6 +6398,7 @@ mod tests {
             config: ErConfig::default(),
             summary_rx: None,
             summary_status: None,
+            pending_hub_action: None,
         }
     }
 
