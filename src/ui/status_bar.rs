@@ -496,7 +496,7 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
     }
 
     // Approval
-    hints.push(Hint::new("g", " approve "));
+    hints.push(Hint::new("^a", " approve "));
 
     // Editor
     if h.navigation {
@@ -606,7 +606,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         }
 
         // Approval
-        hints.push(Hint::new("g", " approve "));
+        hints.push(Hint::new("^a", " approve "));
 
         // Filter & sort
         if h.filter {
@@ -694,7 +694,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         }
 
         // Approval
-        hints.push(Hint::new("g", " approve "));
+        hints.push(Hint::new("^a", " approve "));
 
         // Filter & sort
         if h.filter {
