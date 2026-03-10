@@ -517,7 +517,7 @@ pub fn expand_compacted_file(
     mode: &str,
     base: &str,
 ) -> anyhow::Result<()> {
-    let raw = super::status::git_diff_raw_file(mode, base, repo_root, &file.path)?;
+    let raw = super::status::git_diff_raw_file(mode, base, repo_root, &file.path, None)?;
     let parsed = parse_diff(&raw);
     if let Some(f) = parsed.into_iter().next() {
         file.hunks = f.hunks;
@@ -525,6 +525,26 @@ pub fn expand_compacted_file(
         file.dels = f.dels;
         file.compacted = false;
         file.raw_hunk_count = 0;
+    }
+    Ok(())
+}
+
+/// Re-fetch a file's diff with a custom context level (`--unified=N`).
+/// Replaces hunks, adds, and dels. Does not touch the `compacted` flag.
+pub fn refetch_file_with_context(
+    file: &mut DiffFile,
+    repo_root: &str,
+    mode: &str,
+    base: &str,
+    context_lines: usize,
+) -> anyhow::Result<()> {
+    let raw =
+        super::status::git_diff_raw_file(mode, base, repo_root, &file.path, Some(context_lines))?;
+    let parsed = parse_diff(&raw);
+    if let Some(f) = parsed.into_iter().next() {
+        file.hunks = f.hunks;
+        file.adds = f.adds;
+        file.dels = f.dels;
     }
     Ok(())
 }

@@ -598,6 +598,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         if h.navigation {
             hints.push(Hint::new("j/k", " nav "));
             hints.push(Hint::new("n/N", " hunks "));
+            hints.push(Hint::new("+/-", " context "));
             hints.push(Hint::new("␣", " review "));
             hints.push(Hint::new("/", " search "));
         }

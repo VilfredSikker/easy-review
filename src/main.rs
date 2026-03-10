@@ -786,6 +786,16 @@ fn handle_normal_input(
             return Ok(());
         }
 
+        // Expand / collapse context lines for current file
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            app.tab_mut().expand_context()?;
+            return Ok(());
+        }
+        KeyCode::Char('-') => {
+            app.tab_mut().collapse_context()?;
+            return Ok(());
+        }
+
         // Clear search first, then filter (History gains filter-clear, which is correct)
         KeyCode::Esc => {
             if !app.tab().search_query.is_empty() {
@@ -853,8 +863,16 @@ fn handle_normal_input(
 
     match key.code {
         // File navigation
-        KeyCode::Char('j') => app.tab_mut().prev_file(),
-        KeyCode::Char('k') => app.tab_mut().next_file(),
+        KeyCode::Char('j') => {
+            app.tab_mut().prev_file();
+            let threshold = app.config.display.auto_context_threshold;
+            app.tab_mut().maybe_auto_expand_context(threshold);
+        }
+        KeyCode::Char('k') => {
+            app.tab_mut().next_file();
+            let threshold = app.config.display.auto_context_threshold;
+            app.tab_mut().maybe_auto_expand_context(threshold);
+        }
 
         // Line/comment navigation (arrow keys: comments when focused, else lines)
         // Shift+arrow extends selection, plain arrow clears it
