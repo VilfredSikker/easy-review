@@ -3027,7 +3027,7 @@ impl App {
             .ai
             .questions
             .as_ref()
-            .map_or(false, |q| !q.questions.is_empty());
+            .is_some_and(|q| !q.questions.is_empty());
         let summary_configured = self.config.commands.summary.is_some();
         let items = vec![
             HubItem {
@@ -3114,11 +3114,7 @@ impl App {
             HubItem {
                 label: "Run tests".into(),
                 hint: "".into(),
-                description: cmds
-                    .test
-                    .as_deref()
-                    .unwrap_or(not_configured)
-                    .to_string(),
+                description: cmds.test.as_deref().unwrap_or(not_configured).to_string(),
                 action: HubAction::RunCommand("test".into()),
                 is_header: false,
                 enabled: cmds.test.is_some(),
@@ -3126,11 +3122,7 @@ impl App {
             HubItem {
                 label: "Run linter".into(),
                 hint: "".into(),
-                description: cmds
-                    .lint
-                    .as_deref()
-                    .unwrap_or(not_configured)
-                    .to_string(),
+                description: cmds.lint.as_deref().unwrap_or(not_configured).to_string(),
                 action: HubAction::RunCommand("lint".into()),
                 is_header: false,
                 enabled: cmds.lint.is_some(),
@@ -5061,8 +5053,7 @@ impl App {
 
                 // Summary-specific: optionally push to PR body
                 if push_to_pr {
-                    let summary_path =
-                        std::path::Path::new(&repo_root).join(".er/summary.md");
+                    let summary_path = std::path::Path::new(&repo_root).join(".er/summary.md");
                     if let Ok(summary) = std::fs::read_to_string(&summary_path) {
                         if !summary.trim().is_empty() {
                             crate::github::gh_pr_edit_body(&repo_root, &summary)?;

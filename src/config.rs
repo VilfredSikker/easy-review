@@ -80,7 +80,7 @@ pub struct AgentConfig {
 }
 
 /// [summary] section — configuration for diff summary / changelog generation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SummaryConfig {
     /// Command to run for summary generation (defaults to agent.command)
     #[serde(default)]
@@ -93,15 +93,6 @@ pub struct SummaryConfig {
     pub push_to_pr: bool,
 }
 
-impl Default for SummaryConfig {
-    fn default() -> Self {
-        Self {
-            command: None,
-            args: None,
-            push_to_pr: false,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayConfig {
