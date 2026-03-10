@@ -14,16 +14,17 @@ Data model and loader for AI-generated review files. The `.er-*` files are produ
 
 | File | Struct | Purpose |
 |------|--------|---------|
-| `.er-review.json` | `ErReview` | Per-file risk levels, findings, suggestions |
-| `.er-order.json` | `ErOrder` | Suggested file review order with groupings |
-| `.er-summary.md` | (raw text) | Markdown summary of overall changes |
-| `.er-checklist.json` | `ErChecklist` | Review checklist items |
-| `.er-feedback.json` | `ErFeedback` | Human comments (this is the only file `er` writes to) |
+| `.er/review.json` | `ErReview` | Per-file risk levels, findings, suggestions |
+| `.er/order.json` | `ErOrder` | Suggested file review order with groupings |
+| `.er/summary.md` | (raw text) | Markdown summary of overall changes |
+| `.er/checklist.json` | `ErChecklist` | Review checklist items |
+| `.er/questions.json` | JSON | Personal review questions |
+| `.er/github-comments.json` | JSON | GitHub PR comments (two-way sync) |
 
 ## Key Types (review.rs)
 
 **`AiState`** — Aggregate state for one tab. Holds all five data types (optional) plus:
-- `is_stale` — true if any `.er-*` file's `diff_hash` differs from current diff
+- `is_stale` — true if any `.er/` file's `diff_hash` differs from current diff
 - `view_mode: ViewMode` — `Default | Overlay | SidePanel | AiReview`
 - `review_focus: ReviewFocus` — `Files | Checklist` (which AiReview column has focus)
 - `review_cursor: usize` — cursor position within the focused column

@@ -260,23 +260,31 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
     Ok(stdout)
 }
 
-/// Get the raw diff output for a single file
-pub fn git_diff_raw_file(mode: &str, base: &str, repo_root: &str, path: &str) -> Result<String> {
+/// Get the raw diff output for a single file.
+/// `context_lines` overrides the default `--unified=3` context (pass `None` for default).
+pub fn git_diff_raw_file(
+    mode: &str,
+    base: &str,
+    repo_root: &str,
+    path: &str,
+    context_lines: Option<usize>,
+) -> Result<String> {
     let merge_base_ref = format!("{}...HEAD", base);
+    let unified_arg = format!("--unified={}", context_lines.unwrap_or(3));
     let mut args: Vec<&str> = match mode {
         "branch" => vec![
             "diff",
             &merge_base_ref,
-            "--unified=3",
+            &unified_arg,
             "--no-color",
             "--no-ext-diff",
             "--",
         ],
-        "unstaged" => vec!["diff", "--unified=3", "--no-color", "--no-ext-diff", "--"],
+        "unstaged" => vec!["diff", &unified_arg, "--no-color", "--no-ext-diff", "--"],
         "staged" => vec![
             "diff",
             "--staged",
-            "--unified=3",
+            &unified_arg,
             "--no-color",
             "--no-ext-diff",
             "--",
@@ -869,7 +877,10 @@ pub fn save_snapshot(repo_root: &str, rel_path: &str) -> Result<()> {
     // would cause the join to escape the repo directory. `Path::join` does not sanitize
     // ".." components. Validate that the resolved canonical path of `dst` still starts
     // with `repo_root` before writing.
-    let dst = Path::new(repo_root).join(".er-snapshots").join(rel_path);
+    let dst = Path::new(repo_root)
+        .join(".er")
+        .join("snapshots")
+        .join(rel_path);
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -905,7 +916,10 @@ pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Opti
 pub fn diff_watched_file_snapshot(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
     // TODO(risk:high): same path traversal risk — `rel_path` is not canonicalized before joining.
     let current_path = Path::new(repo_root).join(rel_path);
-    let snapshot_path = Path::new(repo_root).join(".er-snapshots").join(rel_path);
+    let snapshot_path = Path::new(repo_root)
+        .join(".er")
+        .join("snapshots")
+        .join(rel_path);
 
     if !snapshot_path.exists() {
         // First time seeing this file — save snapshot, signal "new file"

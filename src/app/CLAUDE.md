@@ -45,13 +45,14 @@ All state lives here. No rendering, no I/O beyond git commands and file persiste
 
 | File | Format | Written by |
 |------|--------|------------|
-| `.er-reviewed` | Plaintext, one path per line | `save_reviewed_files()` |
-| `.er-feedback.json` | JSON (`ErFeedback`) | `submit_comment()` |
-| `.er-checklist.json` | JSON (`ErChecklist`) | `review_toggle_checklist()` |
+| `.er/reviewed` | Plaintext, one path per line | `save_reviewed_files()` |
+| `.er/questions.json` | JSON | `submit_comment()` (questions) |
+| `.er/github-comments.json` | JSON | `submit_comment()` (GitHub comments) |
+| `.er/checklist.json` | JSON (`ErChecklist`) | `review_toggle_checklist()` |
 | `.er-config.toml` | TOML (`ErConfig`) | User-created (read-only) |
-| `.er-snapshots/` | Raw file copies | `update_watched_snapshot()` |
+| `.er/snapshots/` | Raw file copies | `update_watched_snapshot()` |
 
-`.er-reviewed` is deleted when empty. `.er-feedback.json` is reset when `diff_hash` changes (stale comments cleared).
+`.er/reviewed` is deleted when empty. Comments are reset when `diff_hash` changes (stale comments cleared).
 
 ## Important Patterns
 
