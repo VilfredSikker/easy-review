@@ -2863,14 +2863,19 @@ impl TabState {
 
         // Restore navigation (clamped to current file count)
         let file_count = self.files.len();
-        self.selected_file = session.selected_file.min(file_count.saturating_sub(1));
+        if file_count == 0 {
+            return false;
+        }
+        self.selected_file = session.selected_file.min(file_count - 1);
         self.diff_scroll = session.diff_scroll;
         self.h_scroll = session.h_scroll;
 
         // Restore hunk/line within the selected file
         if let Some(file) = self.files.get(self.selected_file) {
             let hunk_count = file.hunks.len();
-            self.current_hunk = session.current_hunk.min(hunk_count.saturating_sub(1));
+            if hunk_count > 0 {
+                self.current_hunk = session.current_hunk.min(hunk_count - 1);
+            }
             self.current_line = session.current_line;
         }
 
