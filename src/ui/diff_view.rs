@@ -1,7 +1,7 @@
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Block, Borders, Clear, Padding, Paragraph},
     Frame,
 };
 
@@ -24,6 +24,16 @@ const BLANK_UNIFIED_GUTTER: &str = "          \u{2502}";
 
 /// Blank split gutter matching `format!("{} \u{2502}", "    ")`
 const BLANK_SPLIT_GUTTER: &str = "     \u{2502}";
+
+/// Pad `lines` with empty BG-styled rows so the Paragraph fills the entire visible area.
+/// Without this, Ratatui's double-buffer reuses the previous frame's cell content for rows
+/// below the Paragraph's last text line, causing stale content to bleed through.
+fn pad_lines_to_fill(lines: &mut Vec<Line<'_>>, scroll_y: u16, visible_height: u16) {
+    let needed = scroll_y as usize + visible_height as usize;
+    while lines.len() < needed {
+        lines.push(Line::from("").style(ratatui::style::Style::default().bg(styles::BG)));
+    }
+}
 
 /// Render the diff view panel (right side)
 pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
@@ -64,10 +74,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let total_diff_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
     let use_viewport = total_diff_lines > VIRTUALIZE_THRESHOLD;
 
+    let context_suffix = match tab.context_overrides.get(&file.path).copied() {
+        Some(99999) => " [full context]".to_string(),
+        Some(n) if n != 3 => format!(" [context: {}]", n),
+        _ => String::new(),
+    };
     let title = if total_diff_lines > LARGE_FILE_WARNING_LINES {
-        format!(" {} \u{26a0} +{} lines ", file.path, total_diff_lines)
+        format!(
+            " {} \u{26a0} +{} lines{} ",
+            file.path, total_diff_lines, context_suffix
+        )
     } else {
-        format!(" {} ", file.path)
+        format!(" {}{} ", file.path, context_suffix)
     };
 
     // Viewport window parameters
@@ -509,9 +527,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             }
         }
 
-        // Blank line between hunks
+        // Gap indicator or blank line between hunks
         if logical_line >= render_start && logical_line < render_end {
-            lines.push(Line::from(""));
+            let gap = if hunk_idx + 1 < file.hunks.len() {
+                let next = &file.hunks[hunk_idx + 1];
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
+            } else {
+                0
+            };
+            if gap > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("  ··· {} lines hidden (+/- to expand) ···", gap),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                )));
+            } else {
+                lines.push(Line::from(""));
+            }
         }
         logical_line += 1;
     }
@@ -599,8 +631,26 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         (tab.active_diff_scroll(), effective_h_scroll)
     };
 
-    let paragraph = Paragraph::new(lines).block(block).scroll(visible_scroll);
+    // Pre-slice to visible rows instead of relying on Paragraph::scroll() for vertical
+    // dimension. This guarantees every row has explicit Line content — no empty rows left
+    // for Block/Clear to fill, preventing stale content bleed-through.
+    let inner_height = block.inner(area).height as usize;
+    let scroll_y = visible_scroll.0 as usize;
+    let visible_end = (scroll_y + inner_height).min(lines.len());
+    let mut visible_lines: Vec<Line> = if scroll_y < lines.len() {
+        lines.drain(scroll_y..visible_end).collect()
+    } else {
+        Vec::new()
+    };
+    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG));
+    while visible_lines.len() < inner_height {
+        visible_lines.push(bg_line.clone());
+    }
+    let paragraph = Paragraph::new(visible_lines)
+        .block(block)
+        .scroll((0, effective_h_scroll));
 
+    f.render_widget(Clear, area);
     f.render_widget(paragraph, area);
 
     // Sticky file path header: when the user scrolls down far enough that the file header
@@ -727,6 +777,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         .style(ratatui::style::Style::default().bg(styles::BG));
 
     let inner = block.inner(area);
+    f.render_widget(Clear, area);
     f.render_widget(block, area);
 
     let file = match tab.selected_diff_file() {
@@ -1181,9 +1232,23 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             }
         }
 
-        // Blank line between hunks
+        // Gap indicator or blank line between hunks
         if logical_line >= render_start && logical_line < render_end {
-            lines.push(Line::from(""));
+            let gap = if hunk_idx + 1 < file.hunks.len() {
+                let next = &file.hunks[hunk_idx + 1];
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
+            } else {
+                0
+            };
+            if gap > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("  ··· {} lines hidden (+/- to expand) ···", gap),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                )));
+            } else {
+                lines.push(Line::from(""));
+            }
         }
         logical_line += 1;
     }
@@ -1204,7 +1269,20 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         (tab.active_diff_scroll(), effective_h_scroll)
     };
 
-    let paragraph = Paragraph::new(lines).scroll(visible_scroll);
+    // Pre-slice to visible rows — same fix as unified render path.
+    let inner_height = inner.height as usize;
+    let scroll_y = visible_scroll.0 as usize;
+    let visible_end = (scroll_y + inner_height).min(lines.len());
+    let mut visible_lines: Vec<Line> = if scroll_y < lines.len() {
+        lines.drain(scroll_y..visible_end).collect()
+    } else {
+        Vec::new()
+    };
+    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG));
+    while visible_lines.len() < inner_height {
+        visible_lines.push(bg_line.clone());
+    }
+    let paragraph = Paragraph::new(visible_lines).scroll((0, effective_h_scroll));
 
     f.render_widget(paragraph, inner);
 
@@ -1449,8 +1527,22 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                 lines.push(Line::from(spans).style(base_style));
             }
 
-            // Blank line between hunks
-            lines.push(Line::from(""));
+            // Gap indicator or blank line between hunks
+            let gap = if hunk_idx + 1 < file.hunks.len() {
+                let next = &file.hunks[hunk_idx + 1];
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
+            } else {
+                0
+            };
+            if gap > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("  ··· {} lines hidden ···", gap),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                )));
+            } else {
+                lines.push(Line::from(""));
+            }
         }
     }
 
@@ -1465,10 +1557,24 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
         .style(ratatui::style::Style::default().bg(styles::BG))
         .padding(Padding::new(0, 1, 0, 0));
 
-    let paragraph = Paragraph::new(lines)
+    // Pre-slice to visible rows — same fix as unified render path.
+    let inner_height = block.inner(area).height as usize;
+    let scroll_y = history.diff_scroll as usize;
+    let visible_end = (scroll_y + inner_height).min(lines.len());
+    let mut visible_lines: Vec<Line> = if scroll_y < lines.len() {
+        lines.drain(scroll_y..visible_end).collect()
+    } else {
+        Vec::new()
+    };
+    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG));
+    while visible_lines.len() < inner_height {
+        visible_lines.push(bg_line.clone());
+    }
+    let paragraph = Paragraph::new(visible_lines)
         .block(block)
-        .scroll((history.diff_scroll, history.h_scroll));
+        .scroll((0, history.h_scroll));
 
+    f.render_widget(Clear, area);
     f.render_widget(paragraph, area);
 
     // Sticky filename header: when a file's header scrolls above the viewport,
@@ -1568,7 +1674,7 @@ fn render_history_empty(f: &mut Frame, area: Rect, message: &str) {
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG));
 
-    let text = Paragraph::new(vec![
+    let mut empty_lines = vec![
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled(
@@ -1580,9 +1686,11 @@ fn render_history_empty(f: &mut Frame, area: Rect, message: &str) {
             "  Switch modes with [1] [2] [3]",
             ratatui::style::Style::default().fg(styles::DIM),
         )),
-    ])
-    .block(block);
+    ];
+    pad_lines_to_fill(&mut empty_lines, 0, area.height);
+    let text = Paragraph::new(empty_lines).block(block);
 
+    f.render_widget(Clear, area);
     f.render_widget(text, area);
 }
 
@@ -1603,7 +1711,7 @@ fn render_compacted(f: &mut Frame, area: Rect, file: &crate::git::DiffFile) {
         String::new()
     };
 
-    let text = Paragraph::new(vec![
+    let mut compacted_lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled(
@@ -1633,9 +1741,11 @@ fn render_compacted(f: &mut Frame, area: Rect, file: &crate::git::DiffFile) {
             "  compacted automatically to save memory.",
             ratatui::style::Style::default().fg(styles::DIM),
         )),
-    ])
-    .block(block);
+    ];
+    pad_lines_to_fill(&mut compacted_lines, 0, area.height);
+    let text = Paragraph::new(compacted_lines).block(block);
 
+    f.render_widget(Clear, area);
     f.render_widget(text, area);
 }
 
@@ -1972,7 +2082,7 @@ fn render_empty(f: &mut Frame, area: Rect) {
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG));
 
-    let text = Paragraph::new(vec![
+    let mut empty_lines = vec![
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled(
@@ -1984,9 +2094,11 @@ fn render_empty(f: &mut Frame, area: Rect) {
             "  Switch modes with [1] [2] [3]",
             ratatui::style::Style::default().fg(styles::DIM),
         )),
-    ])
-    .block(block);
+    ];
+    pad_lines_to_fill(&mut empty_lines, 0, area.height);
+    let text = Paragraph::new(empty_lines).block(block);
 
+    f.render_widget(Clear, area);
     f.render_widget(text, area);
 }
 
@@ -2017,13 +2129,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
     ]));
 
     // Size info
-    let size_str = if size < 1024 {
-        format!("{} B", size)
-    } else if size < 1024 * 1024 {
-        format!("{:.1} KB", size as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
-    };
+    let size_str = format_size(size);
     lines.push(Line::from(Span::styled(
         format!("  Size: {}", size_str),
         ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
@@ -2140,10 +2246,24 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
         .style(ratatui::style::Style::default().bg(styles::BG))
         .padding(Padding::new(0, 1, 0, 0));
 
-    let paragraph = Paragraph::new(lines)
+    // Pre-slice to visible rows — same fix as unified render path.
+    let inner_height = block.inner(area).height as usize;
+    let scroll_y = tab.diff_scroll as usize;
+    let visible_end = (scroll_y + inner_height).min(lines.len());
+    let mut visible_lines: Vec<Line> = if scroll_y < lines.len() {
+        lines.drain(scroll_y..visible_end).collect()
+    } else {
+        Vec::new()
+    };
+    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG));
+    while visible_lines.len() < inner_height {
+        visible_lines.push(bg_line.clone());
+    }
+    let paragraph = Paragraph::new(visible_lines)
         .block(block)
-        .scroll((tab.diff_scroll, tab.h_scroll));
+        .scroll((0, tab.h_scroll));
 
+    f.render_widget(Clear, area);
     f.render_widget(paragraph, area);
 }
 
@@ -2207,5 +2327,41 @@ fn render_watched_content_lines(lines: &mut Vec<Line>, repo_root: &str, path: &s
                 ratatui::style::Style::default().fg(styles::RED),
             )));
         }
+    }
+}
+
+/// Format a file size in human-readable form (B, KB, MB)
+fn format_size(size: u64) -> String {
+    if size < 1024 {
+        format!("{} B", size)
+    } else if size < 1024 * 1024 {
+        format!("{:.1} KB", size as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_size_bytes_range() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_kb_range() {
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(2048), "2.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_size_mb_range() {
+        assert_eq!(format_size(1048576), "1.0 MB");
+        assert_eq!(format_size(2 * 1024 * 1024), "2.0 MB");
     }
 }

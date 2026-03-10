@@ -575,6 +575,22 @@ pub fn gh_pr_delete_comment(
     Ok(())
 }
 
+/// Update the PR body with the given content via `gh pr edit --body`
+pub fn gh_pr_edit_body(repo_root: &str, body: &str) -> Result<()> {
+    let output = Command::new("gh")
+        .args(["pr", "edit", "--body", body])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to update PR body")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to update PR body: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
 /// Fetch PR overview data: title, body, state, author, branches, reviewers
 pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
     // Fetch core PR fields

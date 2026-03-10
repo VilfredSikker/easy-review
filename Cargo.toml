@@ -41,6 +41,9 @@ glob = "0.3"
 anyhow = "1"
 two-face = "0.5.1"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 opt-level = 3
 lto = true

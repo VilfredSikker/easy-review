@@ -68,6 +68,11 @@ fn main() -> Result<()> {
         app.tab_mut().apply_filter_expr(filter_expr);
     }
 
+    // Restore previous session if diff hash matches
+    for tab in &mut app.tabs {
+        tab.restore_session();
+    }
+
     // Hint + PR data: check for PR in background (avoids blocking startup on network)
     let (hint_rx, pr_data_rx) =
         if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
@@ -157,6 +162,10 @@ fn run_app<B: Backend>(
     let mut refresh_deadline = Instant::now();
     let mut pending_file_count = 0usize;
 
+    // Session auto-save: debounced at ~2 seconds
+    let mut session_dirty = false;
+    let mut session_save_deadline = Instant::now();
+
     // Start watching by default
     let root_str = app.tab().repo_root.clone();
     let root = std::path::Path::new(&root_str);
@@ -194,6 +203,10 @@ fn run_app<B: Backend>(
                     }
                 }
             }
+
+            // Mark session dirty after any key input
+            session_dirty = true;
+            session_save_deadline = Instant::now() + Duration::from_secs(2);
         }
 
         // Check for file watch events (non-blocking) — debounced
@@ -232,6 +245,9 @@ fn run_app<B: Backend>(
             app.notify("✓ AI data refreshed");
         }
 
+        // Poll background commands for completion
+        app.check_commands();
+
         // Rescan watched files (every 50 ticks ≈ 5s)
         if app.ai_poll_counter.is_multiple_of(50) {
             app.tab_mut().refresh_watched_files();
@@ -253,10 +269,18 @@ fn run_app<B: Backend>(
             }
         }
 
+        // Debounced session auto-save (~2s after last change)
+        if session_dirty && Instant::now() >= session_save_deadline {
+            session_dirty = false;
+            app.tab().save_session();
+        }
+
         // Tick — used for auto-clearing notifications
         app.tick();
 
         if app.should_quit {
+            // Save session on quit
+            app.tab().save_session();
             return Ok(());
         }
     }
@@ -366,6 +390,13 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
         HubAction::CleanupReviews => {
             let count = app.tab().ai.review.as_ref().map_or(0, |r| r.files.len());
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
+        }
+        HubAction::RunCommand(name) => {
+            if let Some(cmd) = app.config.resolve_command(&name) {
+                app.spawn_command(&name, &cmd)?;
+            } else {
+                app.notify(&format!("{}: not configured", name));
+            }
         }
     }
     Ok(())
@@ -766,6 +797,16 @@ fn handle_normal_input(
             return Ok(());
         }
 
+        // Expand / collapse context lines for current file
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            app.tab_mut().expand_context()?;
+            return Ok(());
+        }
+        KeyCode::Char('-') => {
+            app.tab_mut().collapse_context()?;
+            return Ok(());
+        }
+
         // Clear search first, then filter (History gains filter-clear, which is correct)
         KeyCode::Esc => {
             if !app.tab().search_query.is_empty() {
@@ -833,8 +874,16 @@ fn handle_normal_input(
 
     match key.code {
         // File navigation
-        KeyCode::Char('j') => app.tab_mut().prev_file(),
-        KeyCode::Char('k') => app.tab_mut().next_file(),
+        KeyCode::Char('j') => {
+            app.tab_mut().prev_file();
+            let threshold = app.config.display.auto_context_threshold;
+            app.tab_mut().maybe_auto_expand_context(threshold);
+        }
+        KeyCode::Char('k') => {
+            app.tab_mut().next_file();
+            let threshold = app.config.display.auto_context_threshold;
+            app.tab_mut().maybe_auto_expand_context(threshold);
+        }
 
         // Line/comment navigation (arrow keys: comments when focused, else lines)
         // Shift+arrow extends selection, plain arrow clears it
@@ -1560,6 +1609,8 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         }
     }

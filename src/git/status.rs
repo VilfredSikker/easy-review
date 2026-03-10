@@ -260,23 +260,31 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
     Ok(stdout)
 }
 
-/// Get the raw diff output for a single file
-pub fn git_diff_raw_file(mode: &str, base: &str, repo_root: &str, path: &str) -> Result<String> {
+/// Get the raw diff output for a single file.
+/// `context_lines` overrides the default `--unified=3` context (pass `None` for default).
+pub fn git_diff_raw_file(
+    mode: &str,
+    base: &str,
+    repo_root: &str,
+    path: &str,
+    context_lines: Option<usize>,
+) -> Result<String> {
     let merge_base_ref = format!("{}...HEAD", base);
+    let unified_arg = format!("--unified={}", context_lines.unwrap_or(3));
     let mut args: Vec<&str> = match mode {
         "branch" => vec![
             "diff",
             &merge_base_ref,
-            "--unified=3",
+            &unified_arg,
             "--no-color",
             "--no-ext-diff",
             "--",
         ],
-        "unstaged" => vec!["diff", "--unified=3", "--no-color", "--no-ext-diff", "--"],
+        "unstaged" => vec!["diff", &unified_arg, "--no-color", "--no-ext-diff", "--"],
         "staged" => vec![
             "diff",
             "--staged",
-            "--unified=3",
+            &unified_arg,
             "--no-color",
             "--no-ext-diff",
             "--",
@@ -869,7 +877,10 @@ pub fn save_snapshot(repo_root: &str, rel_path: &str) -> Result<()> {
     // would cause the join to escape the repo directory. `Path::join` does not sanitize
     // ".." components. Validate that the resolved canonical path of `dst` still starts
     // with `repo_root` before writing.
-    let dst = Path::new(repo_root).join(".er-snapshots").join(rel_path);
+    let dst = Path::new(repo_root)
+        .join(".er")
+        .join("snapshots")
+        .join(rel_path);
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -905,7 +916,10 @@ pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Opti
 pub fn diff_watched_file_snapshot(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
     // TODO(risk:high): same path traversal risk — `rel_path` is not canonicalized before joining.
     let current_path = Path::new(repo_root).join(rel_path);
-    let snapshot_path = Path::new(repo_root).join(".er-snapshots").join(rel_path);
+    let snapshot_path = Path::new(repo_root)
+        .join(".er")
+        .join("snapshots")
+        .join(rel_path);
 
     if !snapshot_path.exists() {
         // First time seeing this file — save snapshot, signal "new file"
@@ -1085,6 +1099,124 @@ mod tests {
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].short_hash, "aaaa123");
         assert_eq!(commits[1].short_hash, "bbbb123");
+    }
+
+    // ── strip upstream remote logic (used in detect_base_branch) ──
+
+    /// Helper to replicate the upstream branch name extraction logic from detect_base_branch_impl
+    fn strip_upstream(upstream: &str) -> &str {
+        upstream
+            .find('/')
+            .map(|i| &upstream[i + 1..])
+            .unwrap_or(upstream)
+    }
+
+    #[test]
+    fn strip_upstream_no_slash() {
+        assert_eq!(strip_upstream("main"), "main");
+    }
+
+    #[test]
+    fn strip_upstream_multiple_slashes() {
+        assert_eq!(
+            strip_upstream("origin/feature/sub/task"),
+            "feature/sub/task"
+        );
+    }
+
+    #[test]
+    fn strip_upstream_empty_after_slash() {
+        // Edge case: "origin/" → empty string after slash
+        assert_eq!(strip_upstream("origin/"), "");
+    }
+
+    // ── detect_base_branch_impl integration tests (require temp git repo) ──
+
+    /// Helper: create a temp git repo, returning its path.
+    /// Disables commit signing to work in CI / sandboxed environments.
+    fn init_temp_repo() -> (tempfile::TempDir, String) {
+        init_temp_repo_with_branch("main")
+    }
+
+    fn init_temp_repo_with_branch(branch: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap().to_string();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&path)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("HOME", dir.path())
+                .output()
+                .unwrap();
+        };
+        run(&["init", "-b", branch]);
+        // Disable signing in this repo
+        run(&[
+            "-c",
+            "commit.gpgsign=false",
+            "config",
+            "commit.gpgsign",
+            "false",
+        ]);
+        // Create an initial commit so HEAD exists
+        std::fs::write(dir.path().join("README"), "init").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "--no-gpg-sign", "-m", "init"]);
+        (dir, path)
+    }
+
+    fn git_in(path: &str, args: &[&str]) {
+        let parent = std::path::Path::new(path).parent().unwrap();
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("HOME", parent)
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn detect_base_branch_with_only_main() {
+        let (_dir, path) = init_temp_repo();
+        git_in(&path, &["checkout", "-b", "feature"]);
+        let result = detect_base_branch_in(&path).unwrap();
+        assert_eq!(result, "main");
+    }
+
+    #[test]
+    fn detect_base_branch_with_only_master() {
+        let (_dir, path) = init_temp_repo_with_branch("master");
+        git_in(&path, &["checkout", "-b", "feature"]);
+        let result = detect_base_branch_in(&path).unwrap();
+        assert_eq!(result, "master");
+    }
+
+    #[test]
+    fn detect_base_branch_with_develop() {
+        let (_dir, path) = init_temp_repo();
+        git_in(&path, &["branch", "-m", "main", "develop"]);
+        git_in(&path, &["checkout", "-b", "feature"]);
+        let result = detect_base_branch_in(&path).unwrap();
+        assert_eq!(result, "develop");
+    }
+
+    #[test]
+    fn detect_base_branch_on_main_itself_falls_through() {
+        let (_dir, path) = init_temp_repo();
+        // We are on main, which skips "main" as candidate (current == candidate)
+        // No other branches exist, so it falls back to the hard-coded "main"
+        let result = detect_base_branch_in(&path).unwrap();
+        assert_eq!(result, "main");
     }
 
     #[test]

@@ -5,6 +5,7 @@ use crate::git::{
 };
 use crate::github::PrOverviewData;
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -173,7 +174,7 @@ pub enum OverlayData {
     Settings {
         selected: usize,
         /// Snapshot of config at overlay open time, for Cancel revert
-        saved_config: ErConfig,
+        saved_config: Box<ErConfig>,
     },
     FilterHistory {
         history: Vec<String>,
@@ -242,6 +243,8 @@ pub enum HubAction {
     ToggleQuestions,
     CleanupQuestions,
     CleanupReviews,
+    /// Run a named command from [commands] config (e.g. "summary", "test", "lint")
+    RunCommand(String),
     // Help — no dispatch, just informational
 }
 
@@ -454,6 +457,10 @@ pub struct TabState {
     /// True after a commit in Staged mode — causes diff view to show HEAD~1..HEAD until next
     /// new staged change or the user pushes.
     pub committed_unpushed: bool,
+
+    /// Per-file context line overrides (path -> context lines count).
+    /// Default context is 3 (git's --unified=3). Cleared on diff refresh.
+    pub context_overrides: HashMap<String, usize>,
 }
 
 /// A single reference to a symbol (file + line)
@@ -471,6 +478,107 @@ pub struct SymbolRefsState {
     pub in_diff: Vec<SymbolRefEntry>,
     pub external: Vec<SymbolRefEntry>,
     pub cursor: usize,
+}
+
+// ── Session Persistence ──
+
+/// Serializable session state for restoring review progress across restarts.
+/// Keyed by diff hash — only restored when the diff hasn't changed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionState {
+    /// SHA-256 hash of the diff this session was saved against
+    pub diff_hash: String,
+
+    /// Current branch name (for sanity check on restore)
+    #[serde(default)]
+    pub branch: String,
+
+    /// Index of the selected file
+    #[serde(default)]
+    pub selected_file: usize,
+
+    /// Current hunk index
+    #[serde(default)]
+    pub current_hunk: usize,
+
+    /// Current line index within hunk (None = hunk-level)
+    #[serde(default)]
+    pub current_line: Option<usize>,
+
+    /// Vertical scroll offset in diff view
+    #[serde(default)]
+    pub diff_scroll: u16,
+
+    /// Horizontal scroll offset
+    #[serde(default)]
+    pub h_scroll: u16,
+
+    /// Active diff viewing mode
+    #[serde(default)]
+    pub diff_mode: String,
+
+    /// File paths the user explicitly expanded
+    #[serde(default)]
+    pub user_expanded: Vec<String>,
+
+    /// Active filter expression
+    #[serde(default)]
+    pub filter_expr: String,
+
+    /// Filter history (most recent first)
+    #[serde(default)]
+    pub filter_history: Vec<String>,
+
+    /// Whether showing only unreviewed files
+    #[serde(default)]
+    pub show_unreviewed_only: bool,
+
+    /// Whether sorting by mtime
+    #[serde(default)]
+    pub sort_by_mtime: bool,
+
+    /// In-progress comment draft text (empty if none)
+    #[serde(default)]
+    pub comment_draft: String,
+
+    /// Comment draft target file
+    #[serde(default)]
+    pub comment_draft_file: String,
+
+    /// Comment draft target hunk
+    #[serde(default)]
+    pub comment_draft_hunk: usize,
+
+    /// Comment draft target line
+    #[serde(default)]
+    pub comment_draft_line: Option<usize>,
+
+    /// Comment draft type ("question" or "github")
+    #[serde(default)]
+    pub comment_draft_type: String,
+}
+
+impl SessionState {
+    const SESSION_FILE: &'static str = ".er/session.json";
+
+    /// Save session to .er/session.json, writing atomically via tmp+rename.
+    pub fn save(&self, repo_root: &str) -> Result<()> {
+        let dir = format!("{}/.er", repo_root);
+        std::fs::create_dir_all(&dir)?;
+        let path = format!("{}/{}", repo_root, Self::SESSION_FILE);
+        let tmp_path = format!("{}.tmp", path);
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
+    }
+
+    /// Load session from .er/session.json. Returns None if file doesn't exist or is invalid.
+    pub fn load(repo_root: &str) -> Option<Self> {
+        let path = format!("{}/{}", repo_root, Self::SESSION_FILE);
+        let content = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
 }
 
 /// Precomputed cumulative line offsets for each hunk in the selected file
@@ -610,6 +718,7 @@ impl TabState {
             symbol_refs: None,
             pending_unmark_count: 0,
             committed_unpushed: false,
+            context_overrides: HashMap::new(),
         };
 
         tab.refresh_diff()?;
@@ -692,6 +801,7 @@ impl TabState {
             symbol_refs: None,
             pending_unmark_count: 0,
             committed_unpushed: false,
+            context_overrides: HashMap::new(),
         }
     }
 
@@ -880,6 +990,9 @@ impl TabState {
                 }
             }
         }
+
+        // Clear per-file context overrides — diff content has changed
+        self.context_overrides.clear();
 
         if self.sort_by_mtime {
             self.sort_files_by_mtime();
@@ -1968,7 +2081,7 @@ impl TabState {
                 let repo_root = self.repo_root.clone();
                 let mode = self.mode.git_mode().to_string();
                 let base = self.base_branch.clone();
-                if let Ok(raw) = git::git_diff_raw_file(&mode, &base, &repo_root, &path) {
+                if let Ok(raw) = git::git_diff_raw_file(&mode, &base, &repo_root, &path, None) {
                     let parsed = git::parse_diff(&raw);
                     if let Some(p) = parsed.into_iter().next() {
                         if let Some(file) = self.files.get_mut(self.selected_file) {
@@ -2019,6 +2132,156 @@ impl TabState {
             }
         }
         Ok(())
+    }
+
+    /// Context level progression for expand/collapse
+    const CONTEXT_STEPS: &'static [usize] = &[3, 10, 25, 50, 99999];
+
+    /// Expand context lines for the currently selected file.
+    /// Steps through increasing context levels: 3 → 10 → 25 → 50 → full.
+    /// If the file is compacted, expands it first.
+    pub fn expand_context(&mut self) -> Result<()> {
+        // History mode not supported (would need per-file commit diff)
+        if self.mode == DiffMode::History {
+            return Ok(());
+        }
+
+        let file = match self.files.get(self.selected_file) {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        // If compacted, expand it first (same as Enter)
+        if file.compacted {
+            return self.toggle_compacted();
+        }
+
+        // Untracked files (Added status with synthetic diff) are already full-file
+        if file.status == git::FileStatus::Added && file.hunks.len() <= 1 {
+            return Ok(());
+        }
+
+        let path = file.path.clone();
+        let current = self.context_overrides.get(&path).copied().unwrap_or(3);
+
+        // Find next step above current
+        let next = Self::CONTEXT_STEPS
+            .iter()
+            .copied()
+            .find(|&s| s > current)
+            .unwrap_or(99999);
+        if next == current {
+            return Ok(());
+        }
+
+        // Re-fetch the file diff with new context
+        if let Some(file) = self.files.get_mut(self.selected_file) {
+            git::refetch_file_with_context(
+                file,
+                &self.repo_root,
+                self.mode.git_mode(),
+                &self.base_branch,
+                next,
+            )?;
+        }
+        self.context_overrides.insert(path, next);
+        self.rebuild_hunk_offsets();
+        self.update_mem_budget();
+        Ok(())
+    }
+
+    /// Collapse context lines for the currently selected file.
+    /// Steps back through context levels: full → 50 → 25 → 10 → 3.
+    pub fn collapse_context(&mut self) -> Result<()> {
+        if self.mode == DiffMode::History {
+            return Ok(());
+        }
+
+        let file = match self.files.get(self.selected_file) {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        if file.compacted {
+            return Ok(());
+        }
+
+        let path = file.path.clone();
+        let current = self.context_overrides.get(&path).copied().unwrap_or(3);
+
+        if current <= 3 {
+            return Ok(());
+        }
+
+        // Find previous step below current
+        let prev = Self::CONTEXT_STEPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|&s| s < current)
+            .unwrap_or(3);
+
+        if let Some(file) = self.files.get_mut(self.selected_file) {
+            git::refetch_file_with_context(
+                file,
+                &self.repo_root,
+                self.mode.git_mode(),
+                &self.base_branch,
+                prev,
+            )?;
+        }
+
+        if prev == 3 {
+            self.context_overrides.remove(&path);
+        } else {
+            self.context_overrides.insert(path, prev);
+        }
+        self.rebuild_hunk_offsets();
+        self.update_mem_budget();
+        Ok(())
+    }
+
+    /// Auto-expand context for small files on selection.
+    /// Files with total diff lines ≤ threshold get full context automatically.
+    pub fn maybe_auto_expand_context(&mut self, threshold: usize) {
+        if threshold == 0 || self.mode == DiffMode::History {
+            return;
+        }
+
+        let file = match self.files.get(self.selected_file) {
+            Some(f) => f,
+            None => return,
+        };
+
+        // Skip compacted, already-overridden, or untracked files
+        if file.compacted || self.context_overrides.contains_key(&file.path) {
+            return;
+        }
+        if file.status == git::FileStatus::Added && file.hunks.len() <= 1 {
+            return;
+        }
+
+        let total_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+        if total_lines > threshold || total_lines == 0 {
+            return;
+        }
+
+        let path = file.path.clone();
+        if let Some(file) = self.files.get_mut(self.selected_file) {
+            if git::refetch_file_with_context(
+                file,
+                &self.repo_root,
+                self.mode.git_mode(),
+                &self.base_branch,
+                99999,
+            )
+            .is_ok()
+            {
+                self.context_overrides.insert(path, 99999);
+                self.rebuild_hunk_offsets();
+                self.update_mem_budget();
+            }
+        }
     }
 
     /// Get cached visible files, rebuilding cache if needed
@@ -2709,9 +2972,124 @@ impl TabState {
         }
         count
     }
+
+    /// Capture current state into a SessionState for persistence.
+    pub fn capture_session(&self) -> SessionState {
+        SessionState {
+            diff_hash: self.branch_diff_hash.clone(),
+            branch: self.current_branch.clone(),
+            selected_file: self.selected_file,
+            current_hunk: self.current_hunk,
+            current_line: self.current_line,
+            diff_scroll: self.diff_scroll,
+            h_scroll: self.h_scroll,
+            diff_mode: self.mode.git_mode().to_string(),
+            user_expanded: self.user_expanded.iter().cloned().collect(),
+            filter_expr: self.filter_expr.clone(),
+            filter_history: self.filter_history.clone(),
+            show_unreviewed_only: self.show_unreviewed_only,
+            sort_by_mtime: self.sort_by_mtime,
+            comment_draft: self.comment_input.clone(),
+            comment_draft_file: self.comment_file.clone(),
+            comment_draft_hunk: self.comment_hunk,
+            comment_draft_line: self.comment_line_num,
+            comment_draft_type: match self.comment_type {
+                CommentType::Question => "question".to_string(),
+                CommentType::GitHubComment => "github".to_string(),
+            },
+        }
+    }
+
+    /// Restore session state if the diff hash matches. Returns true if restored.
+    pub fn restore_session(&mut self) -> bool {
+        let session = match SessionState::load(&self.repo_root) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        // Only restore if the diff hasn't changed
+        if session.diff_hash != self.branch_diff_hash {
+            return false;
+        }
+
+        // Restore diff mode
+        let mode = match session.diff_mode.as_str() {
+            "branch" => DiffMode::Branch,
+            "unstaged" => DiffMode::Unstaged,
+            "staged" => DiffMode::Staged,
+            "history" => DiffMode::History,
+            "conflicts" => DiffMode::Conflicts,
+            _ => DiffMode::Branch,
+        };
+        if mode != self.mode {
+            self.set_mode(mode);
+        }
+
+        // Restore navigation (clamped to current file count)
+        let file_count = self.files.len();
+        if file_count == 0 {
+            return false;
+        }
+        self.selected_file = session.selected_file.min(file_count - 1);
+        self.diff_scroll = session.diff_scroll;
+        self.h_scroll = session.h_scroll;
+
+        // Restore hunk/line within the selected file
+        if let Some(file) = self.files.get(self.selected_file) {
+            let hunk_count = file.hunks.len();
+            if hunk_count > 0 {
+                self.current_hunk = session.current_hunk.min(hunk_count - 1);
+            }
+            self.current_line = session.current_line;
+        }
+
+        // Restore expanded files
+        self.user_expanded = session.user_expanded.into_iter().collect();
+
+        // Restore filter
+        if !session.filter_expr.is_empty() {
+            self.apply_filter_expr(&session.filter_expr);
+        }
+        self.filter_history = session.filter_history;
+
+        // Restore view preferences
+        self.show_unreviewed_only = session.show_unreviewed_only;
+        self.sort_by_mtime = session.sort_by_mtime;
+
+        // Restore comment draft if non-empty
+        if !session.comment_draft.is_empty() {
+            self.comment_input = session.comment_draft;
+            self.comment_file = session.comment_draft_file;
+            self.comment_hunk = session.comment_draft_hunk;
+            self.comment_line_num = session.comment_draft_line;
+            self.comment_type = match session.comment_draft_type.as_str() {
+                "question" => CommentType::Question,
+                _ => CommentType::GitHubComment,
+            };
+        }
+
+        true
+    }
+
+    /// Save current session state to .er/session.json.
+    pub fn save_session(&self) {
+        let session = self.capture_session();
+        let _ = session.save(&self.repo_root);
+    }
 }
 
 // ── Main App State ──
+
+/// Status of a background command (generic, replaces SummaryAgentStatus)
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandStatus {
+    /// Command is currently running
+    Running,
+    /// Command finished successfully
+    Done,
+    /// Command failed with an error message
+    Failed(String),
+}
 
 pub struct App {
     /// Open tabs (one per repo)
@@ -2743,6 +3121,12 @@ pub struct App {
 
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
+
+    /// Receivers for running background commands (keyed by command name)
+    pub command_rx: std::collections::HashMap<String, std::sync::mpsc::Receiver<Result<()>>>,
+
+    /// Status of each named command (keyed by command name like "summary", "test", etc.)
+    pub command_status: std::collections::HashMap<String, CommandStatus>,
 
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
@@ -2809,6 +3193,8 @@ impl App {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: er_config,
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         })
     }
@@ -3003,6 +3389,14 @@ impl App {
     /// Open the AI modal hub
     pub fn open_ai_hub(&mut self) {
         let has_ai = self.tab().ai.has_data();
+        let has_review = self.tab().ai.review.is_some();
+        let has_questions = self
+            .tab()
+            .ai
+            .questions
+            .as_ref()
+            .is_some_and(|q| !q.questions.is_empty());
+        let summary_configured = self.config.commands.summary.is_some();
         let items = vec![
             HubItem {
                 label: "Copy context to clipboard".into(),
@@ -3037,20 +3431,40 @@ impl App {
                 enabled: true,
             },
             HubItem {
+                label: "Generate summary".into(),
+                hint: "".into(),
+                description: if summary_configured {
+                    self.config.commands.summary.as_deref().unwrap().to_string()
+                } else {
+                    "set [commands] summary in .er-config.toml".into()
+                },
+                action: HubAction::RunCommand("summary".into()),
+                is_header: false,
+                enabled: summary_configured,
+            },
+            HubItem {
                 label: "Cleanup questions".into(),
                 hint: "z".into(),
-                description: "Delete .er/questions.json".into(),
+                description: if has_questions {
+                    "Delete .er/questions.json".into()
+                } else {
+                    "no questions to clean up".into()
+                },
                 action: HubAction::CleanupQuestions,
                 is_header: false,
-                enabled: true,
+                enabled: has_questions,
             },
             HubItem {
                 label: "Cleanup reviews".into(),
                 hint: "Z".into(),
-                description: "Delete .er/review.json".into(),
+                description: if has_review {
+                    "Delete .er/review.json".into()
+                } else {
+                    "no review data to clean up".into()
+                },
                 action: HubAction::CleanupReviews,
                 is_header: false,
-                enabled: has_ai,
+                enabled: has_review,
             },
         ];
         self.overlay = Some(OverlayData::ModalHub {
@@ -3060,40 +3474,50 @@ impl App {
         });
     }
 
-    /// Open the Verify modal hub (forward-looking — stubs for now)
+    /// Open the Verify modal hub — items enabled when configured in [commands]
     pub fn open_verify_hub(&mut self) {
+        let cmds = &self.config.commands;
+        let not_configured = "set in [commands] in .er-config.toml";
         let items = vec![
             HubItem {
                 label: "Run tests".into(),
                 hint: "".into(),
-                description: "Run project test suite (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds.test.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunCommand("test".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.test.is_some(),
             },
             HubItem {
                 label: "Run linter".into(),
                 hint: "".into(),
-                description: "Run configured linter (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds.lint.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunCommand("lint".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.lint.is_some(),
             },
             HubItem {
                 label: "Type check".into(),
                 hint: "".into(),
-                description: "Run type checker (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds
+                    .typecheck
+                    .as_deref()
+                    .unwrap_or(not_configured)
+                    .to_string(),
+                action: HubAction::RunCommand("typecheck".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.typecheck.is_some(),
             },
             HubItem {
                 label: "Security scan".into(),
                 hint: "".into(),
-                description: "Run security audit (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds
+                    .security
+                    .as_deref()
+                    .unwrap_or(not_configured)
+                    .to_string(),
+                action: HubAction::RunCommand("security".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.security.is_some(),
             },
         ];
         self.overlay = Some(OverlayData::ModalHub {
@@ -3287,7 +3711,7 @@ impl App {
 
         self.overlay = Some(OverlayData::Settings {
             selected: first_selectable,
-            saved_config: self.config.clone(),
+            saved_config: Box::new(self.config.clone()),
         });
     }
 
@@ -3316,7 +3740,7 @@ impl App {
     /// Revert settings to the saved snapshot and close the overlay
     pub fn settings_cancel(&mut self) {
         if let Some(OverlayData::Settings { saved_config, .. }) = self.overlay.take() {
-            self.config = saved_config;
+            self.config = *saved_config;
         }
     }
 
@@ -4946,7 +5370,113 @@ impl App {
         self.watch_message_ticks = 0;
     }
 
-    /// Tick called on every event loop iteration — used for notification auto-clear
+    // ── Background Commands ──
+
+    /// Spawn a shell command in the background under the given name.
+    /// The command string is run via `sh -c` in the repo root.
+    /// Placeholders {base}, {branch}, {repo}, {output} are substituted.
+    pub fn spawn_command(&mut self, name: &str, shell_cmd: &str) -> Result<()> {
+        if self.command_status.get(name) == Some(&CommandStatus::Running) {
+            self.notify(&format!("{} already running", name));
+            return Ok(());
+        }
+
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let base = tab.base_branch.clone();
+        let branch = tab.current_branch.clone();
+        let output_path = format!("{}/.er/summary.md", repo_root);
+
+        // Substitute placeholders
+        let cmd = shell_cmd
+            .replace("{base}", &base)
+            .replace("{branch}", &branch)
+            .replace("{repo}", &repo_root)
+            .replace("{output}", &output_path);
+
+        // Ensure .er/ directory exists
+        let er_dir = std::path::Path::new(&repo_root).join(".er");
+        std::fs::create_dir_all(&er_dir)?;
+
+        let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
+        let name_owned = name.to_string();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let output = std::process::Command::new("sh")
+                    .args(["-c", &cmd])
+                    .current_dir(&repo_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                    .with_context(|| format!("Failed to run {}", name_owned))?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("{} failed: {}", name_owned, stderr.trim());
+                }
+
+                // Summary-specific: optionally push to PR body
+                if push_to_pr {
+                    let summary_path = std::path::Path::new(&repo_root).join(".er/summary.md");
+                    if let Ok(summary) = std::fs::read_to_string(&summary_path) {
+                        if !summary.trim().is_empty() {
+                            crate::github::gh_pr_edit_body(&repo_root, &summary)?;
+                        }
+                    }
+                }
+
+                Ok(())
+            })();
+            let _ = tx.send(result);
+        });
+
+        self.command_rx.insert(name.to_string(), rx);
+        self.command_status
+            .insert(name.to_string(), CommandStatus::Running);
+        self.notify(&format!("{} started...", name));
+        Ok(())
+    }
+
+    /// Poll all running commands for completion (called from event loop).
+    pub fn check_commands(&mut self) {
+        let names: Vec<String> = self.command_rx.keys().cloned().collect();
+        for name in names {
+            let result = if let Some(rx) = self.command_rx.get(&name) {
+                match rx.try_recv() {
+                    Ok(ok_or_err) => Some(ok_or_err),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(Err(anyhow::anyhow!("{} thread crashed", name)))
+                    }
+                }
+            } else {
+                None
+            };
+
+            if let Some(result) = result {
+                self.command_rx.remove(&name);
+                match result {
+                    Ok(()) => {
+                        self.command_status
+                            .insert(name.clone(), CommandStatus::Done);
+                        // Summary-specific: force AI reload
+                        if name == "summary" {
+                            self.tab_mut().last_ai_check = None;
+                        }
+                        self.notify(&format!("{} done", name));
+                    }
+                    Err(e) => {
+                        let msg = format!("{}", e);
+                        self.command_status
+                            .insert(name.clone(), CommandStatus::Failed(msg.clone()));
+                        self.notify(&format!("{} failed: {}", name, msg));
+                    }
+                }
+            }
+        }
+    }
     pub fn tick(&mut self) {
         // TODO(risk:minor): watch_message_ticks is a u8 (max 255). If notify() is called without a
         // subsequent tick draining it (e.g., during a long blocking git operation), ticks can overflow
@@ -5136,6 +5666,7 @@ mod tests {
             symbol_refs: None,
             pending_unmark_count: 0,
             committed_unpushed: false,
+            context_overrides: HashMap::new(),
         }
     }
 
@@ -6261,6 +6792,8 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         }
     }
@@ -6466,5 +6999,201 @@ mod tests {
         tab.current_line = None;
         assert_eq!(tab.current_line_number_for_split(SplitSide::New), None);
         assert_eq!(tab.current_line_number_for_split(SplitSide::Old), None);
+    }
+
+    // ── Filter pipeline ──
+
+    #[test]
+    fn filter_rules_search_and_unreviewed_all_active() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 10, 0),
+            make_file("src/lib.rs", vec![], 5, 0),
+            make_file("tests/test.rs", vec![], 3, 0),
+            make_file("src/utils.rs", vec![], 2, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        // Phase 1: Filter to "src/" files only
+        tab.filter_rules = crate::app::filter::parse_filter_expr("src/*");
+        // Phase 2: Search query narrows further
+        tab.search_query_lower = "main".to_string();
+        // Phase 3: Mark main.rs as reviewed, toggle unreviewed only
+        tab.reviewed
+            .insert("src/main.rs".to_string(), String::new());
+        tab.show_unreviewed_only = true;
+
+        let visible = tab.visible_files();
+        // src/main.rs matches filter+search but is reviewed → excluded
+        // src/lib.rs matches filter but not search → excluded
+        // tests/test.rs doesn't match filter → excluded
+        assert_eq!(visible.len(), 0);
+    }
+
+    #[test]
+    fn filter_rules_plus_search_narrows_correctly() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 10, 0),
+            make_file("src/lib.rs", vec![], 5, 0),
+            make_file("tests/test.rs", vec![], 3, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.filter_rules = crate::app::filter::parse_filter_expr("src/*");
+        tab.search_query_lower = "lib".to_string();
+
+        let visible = tab.visible_files();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].1.path, "src/lib.rs");
+    }
+
+    #[test]
+    fn snap_to_visible_when_all_files_filtered_out() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.selected_file = 0;
+        // Filter out all files
+        tab.search_query_lower = "nonexistent".to_string();
+        tab.snap_to_visible();
+        // visible_files is empty, snap_to_visible returns early without changing
+        let visible = tab.visible_files();
+        assert!(visible.is_empty());
+    }
+
+    #[test]
+    fn apply_filter_expr_history_deduplication() {
+        let files = vec![make_file("src/main.rs", vec![], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.apply_filter_expr("*.rs");
+        tab.apply_filter_expr("*.ts");
+        tab.apply_filter_expr("*.rs"); // duplicate
+                                       // "*.rs" should appear only once (at front)
+        assert_eq!(tab.filter_history.len(), 2);
+        assert_eq!(tab.filter_history[0], "*.rs");
+        assert_eq!(tab.filter_history[1], "*.ts");
+    }
+
+    #[test]
+    fn apply_filter_expr_history_capped_at_20() {
+        let files = vec![make_file("src/main.rs", vec![], 1, 0)];
+        let mut tab = make_test_tab(files);
+        for i in 0..25 {
+            tab.apply_filter_expr(&format!("filter_{}", i));
+        }
+        assert_eq!(tab.filter_history.len(), 20);
+        // Most recent should be first
+        assert_eq!(tab.filter_history[0], "filter_24");
+    }
+
+    #[test]
+    fn clear_filter_restores_full_file_list() {
+        let files = vec![
+            make_file("src/main.rs", vec![], 1, 0),
+            make_file("tests/test.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.apply_filter_expr("src/*");
+        assert_eq!(tab.visible_files().len(), 1);
+        tab.clear_filter();
+        assert_eq!(tab.visible_files().len(), 2);
+    }
+
+    // ── Comment lifecycle ──
+
+    #[test]
+    fn start_comment_sets_input_mode() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::Question);
+        assert!(matches!(app.input_mode, InputMode::Comment));
+        assert_eq!(app.tab().comment_type, CommentType::Question);
+        assert_eq!(app.tab().comment_file, "src/main.rs");
+    }
+
+    #[test]
+    fn start_comment_github_type() {
+        let files = vec![make_file(
+            "src/lib.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "code", Some(5))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::GitHubComment);
+        assert!(matches!(app.input_mode, InputMode::Comment));
+        assert_eq!(app.tab().comment_type, CommentType::GitHubComment);
+    }
+
+    #[test]
+    fn submit_comment_empty_text_returns_to_normal() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::Question);
+        // Comment input is empty
+        assert!(app.submit_comment().is_ok());
+        assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn next_comment_empty_list_no_crash() {
+        let files = vec![make_file("src/main.rs", vec![], 0, 0)];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        // Should not crash even with no comments
+        app.next_comment();
+        app.prev_comment();
+    }
+
+    #[test]
+    fn start_edit_comment_populates_input_buffer() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let mut tab = make_test_tab(files);
+        // Manually add a question to the AI state
+        tab.ai.questions = Some(crate::ai::ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![crate::ai::ReviewQuestion {
+                id: "q-123-0".to_string(),
+                timestamp: String::new(),
+                file: "src/main.rs".to_string(),
+                hunk_index: Some(0),
+                line_start: Some(1),
+                line_content: "line".to_string(),
+                text: "Why is this here?".to_string(),
+                resolved: false,
+                stale: false,
+                context_before: Vec::new(),
+                context_after: Vec::new(),
+                old_line_start: None,
+                hunk_header: String::new(),
+                anchor_status: "original".to_string(),
+                relocated_at_hash: String::new(),
+                in_reply_to: None,
+                author: "You".to_string(),
+            }],
+        });
+        let mut app = make_test_app(tab);
+        app.start_edit_comment("q-123-0");
+        assert!(matches!(app.input_mode, InputMode::Comment));
+        assert_eq!(app.tab().comment_input, "Why is this here?");
+        assert_eq!(app.tab().comment_edit_id, Some("q-123-0".to_string()));
     }
 }

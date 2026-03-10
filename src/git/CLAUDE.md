@@ -38,7 +38,7 @@ Key functions:
 - `list_worktrees(repo_root)` — parses `git worktree list --porcelain`
 - `discover_watched_files(repo_root, patterns)` — glob-matches patterns, returns `Vec<WatchedFile>` with path/mtime/size
 - `verify_gitignored(repo_root, path)` — checks `git check-ignore` for safety warnings
-- `save_snapshot(repo_root, rel_path)` — copies file to `.er-snapshots/` for snapshot diff mode
+- `save_snapshot(repo_root, rel_path)` — copies file to `.er/snapshots/` for snapshot diff mode
 - `read_watched_file_content(repo_root, rel_path)` — reads file content, detects binary (null byte in first 8KB)
 - `diff_watched_file_snapshot(repo_root, rel_path)` — runs `git diff --no-index` between snapshot and current file
 
