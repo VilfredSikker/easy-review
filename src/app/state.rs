@@ -5,6 +5,7 @@ use crate::git::{
 };
 use crate::github::PrOverviewData;
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -471,6 +472,107 @@ pub struct SymbolRefsState {
     pub in_diff: Vec<SymbolRefEntry>,
     pub external: Vec<SymbolRefEntry>,
     pub cursor: usize,
+}
+
+// ── Session Persistence ──
+
+/// Serializable session state for restoring review progress across restarts.
+/// Keyed by diff hash — only restored when the diff hasn't changed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionState {
+    /// SHA-256 hash of the diff this session was saved against
+    pub diff_hash: String,
+
+    /// Current branch name (for sanity check on restore)
+    #[serde(default)]
+    pub branch: String,
+
+    /// Index of the selected file
+    #[serde(default)]
+    pub selected_file: usize,
+
+    /// Current hunk index
+    #[serde(default)]
+    pub current_hunk: usize,
+
+    /// Current line index within hunk (None = hunk-level)
+    #[serde(default)]
+    pub current_line: Option<usize>,
+
+    /// Vertical scroll offset in diff view
+    #[serde(default)]
+    pub diff_scroll: u16,
+
+    /// Horizontal scroll offset
+    #[serde(default)]
+    pub h_scroll: u16,
+
+    /// Active diff viewing mode
+    #[serde(default)]
+    pub diff_mode: String,
+
+    /// File paths the user explicitly expanded
+    #[serde(default)]
+    pub user_expanded: Vec<String>,
+
+    /// Active filter expression
+    #[serde(default)]
+    pub filter_expr: String,
+
+    /// Filter history (most recent first)
+    #[serde(default)]
+    pub filter_history: Vec<String>,
+
+    /// Whether showing only unreviewed files
+    #[serde(default)]
+    pub show_unreviewed_only: bool,
+
+    /// Whether sorting by mtime
+    #[serde(default)]
+    pub sort_by_mtime: bool,
+
+    /// In-progress comment draft text (empty if none)
+    #[serde(default)]
+    pub comment_draft: String,
+
+    /// Comment draft target file
+    #[serde(default)]
+    pub comment_draft_file: String,
+
+    /// Comment draft target hunk
+    #[serde(default)]
+    pub comment_draft_hunk: usize,
+
+    /// Comment draft target line
+    #[serde(default)]
+    pub comment_draft_line: Option<usize>,
+
+    /// Comment draft type ("question" or "github")
+    #[serde(default)]
+    pub comment_draft_type: String,
+}
+
+impl SessionState {
+    const SESSION_FILE: &'static str = ".er/session.json";
+
+    /// Save session to .er/session.json, writing atomically via tmp+rename.
+    pub fn save(&self, repo_root: &str) -> Result<()> {
+        let dir = format!("{}/.er", repo_root);
+        std::fs::create_dir_all(&dir)?;
+        let path = format!("{}/{}", repo_root, Self::SESSION_FILE);
+        let tmp_path = format!("{}.tmp", path);
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
+    }
+
+    /// Load session from .er/session.json. Returns None if file doesn't exist or is invalid.
+    pub fn load(repo_root: &str) -> Option<Self> {
+        let path = format!("{}/{}", repo_root, Self::SESSION_FILE);
+        let content = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
 }
 
 /// Precomputed cumulative line offsets for each hunk in the selected file
@@ -2705,6 +2807,110 @@ impl TabState {
             let _ = self.save_reviewed_files();
         }
         count
+    }
+
+    /// Capture current state into a SessionState for persistence.
+    pub fn capture_session(&self) -> SessionState {
+        SessionState {
+            diff_hash: self.branch_diff_hash.clone(),
+            branch: self.current_branch.clone(),
+            selected_file: self.selected_file,
+            current_hunk: self.current_hunk,
+            current_line: self.current_line,
+            diff_scroll: self.diff_scroll,
+            h_scroll: self.h_scroll,
+            diff_mode: self.mode.git_mode().to_string(),
+            user_expanded: self.user_expanded.iter().cloned().collect(),
+            filter_expr: self.filter_expr.clone(),
+            filter_history: self.filter_history.clone(),
+            show_unreviewed_only: self.show_unreviewed_only,
+            sort_by_mtime: self.sort_by_mtime,
+            comment_draft: self.comment_input.clone(),
+            comment_draft_file: self.comment_file.clone(),
+            comment_draft_hunk: self.comment_hunk,
+            comment_draft_line: self.comment_line_num,
+            comment_draft_type: match self.comment_type {
+                CommentType::Question => "question".to_string(),
+                CommentType::GitHubComment => "github".to_string(),
+            },
+        }
+    }
+
+    /// Restore session state if the diff hash matches. Returns true if restored.
+    pub fn restore_session(&mut self) -> bool {
+        let session = match SessionState::load(&self.repo_root) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        // Only restore if the diff hasn't changed
+        if session.diff_hash != self.branch_diff_hash {
+            return false;
+        }
+
+        // Restore diff mode
+        let mode = match session.diff_mode.as_str() {
+            "branch" => DiffMode::Branch,
+            "unstaged" => DiffMode::Unstaged,
+            "staged" => DiffMode::Staged,
+            "history" => DiffMode::History,
+            "conflicts" => DiffMode::Conflicts,
+            _ => DiffMode::Branch,
+        };
+        if mode != self.mode {
+            self.set_mode(mode);
+        }
+
+        // Restore navigation (clamped to current file count)
+        let file_count = self.files.len();
+        if file_count == 0 {
+            return false;
+        }
+        self.selected_file = session.selected_file.min(file_count - 1);
+        self.diff_scroll = session.diff_scroll;
+        self.h_scroll = session.h_scroll;
+
+        // Restore hunk/line within the selected file
+        if let Some(file) = self.files.get(self.selected_file) {
+            let hunk_count = file.hunks.len();
+            if hunk_count > 0 {
+                self.current_hunk = session.current_hunk.min(hunk_count - 1);
+            }
+            self.current_line = session.current_line;
+        }
+
+        // Restore expanded files
+        self.user_expanded = session.user_expanded.into_iter().collect();
+
+        // Restore filter
+        if !session.filter_expr.is_empty() {
+            self.apply_filter_expr(&session.filter_expr);
+        }
+        self.filter_history = session.filter_history;
+
+        // Restore view preferences
+        self.show_unreviewed_only = session.show_unreviewed_only;
+        self.sort_by_mtime = session.sort_by_mtime;
+
+        // Restore comment draft if non-empty
+        if !session.comment_draft.is_empty() {
+            self.comment_input = session.comment_draft;
+            self.comment_file = session.comment_draft_file;
+            self.comment_hunk = session.comment_draft_hunk;
+            self.comment_line_num = session.comment_draft_line;
+            self.comment_type = match session.comment_draft_type.as_str() {
+                "question" => CommentType::Question,
+                _ => CommentType::GitHubComment,
+            };
+        }
+
+        true
+    }
+
+    /// Save current session state to .er/session.json.
+    pub fn save_session(&self) {
+        let session = self.capture_session();
+        let _ = session.save(&self.repo_root);
     }
 }
 
