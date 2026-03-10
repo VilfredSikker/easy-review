@@ -93,7 +93,6 @@ pub struct SummaryConfig {
     pub push_to_pr: bool,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayConfig {
     #[serde(default = "default_tab_width")]
