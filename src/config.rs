@@ -204,30 +204,12 @@ impl Default for DisplayConfig {
 }
 
 impl ErConfig {
-    /// Resolve the effective summary shell command.
-    /// Priority: commands.summary > legacy summary.command+args > legacy agent.command+args
-    pub fn resolve_summary_command(&self) -> Option<String> {
-        if let Some(ref cmd) = self.commands.summary {
-            return Some(cmd.clone());
-        }
-        // Legacy fallback: build a shell string from summary/agent command + args
-        let cmd = self
-            .summary
-            .command
-            .as_ref()
-            .unwrap_or(&self.agent.command);
-        let args = self
-            .summary
-            .args
-            .as_ref()
-            .unwrap_or(&self.agent.args);
-        Some(format!("{} {}", cmd, args.join(" ")))
-    }
-
     /// Resolve a command by name from the [commands] config section.
+    /// Returns None if the command is not configured — callers should
+    /// disable the action and show a "not configured" hint.
     pub fn resolve_command(&self, name: &str) -> Option<String> {
         match name {
-            "summary" => self.resolve_summary_command(),
+            "summary" => self.commands.summary.clone(),
             "test" => self.commands.test.clone(),
             "lint" => self.commands.lint.clone(),
             "typecheck" => self.commands.typecheck.clone(),
@@ -428,7 +410,7 @@ pub fn settings_items() -> Vec<SettingsItem> {
                 c.commands
                     .summary
                     .clone()
-                    .unwrap_or_else(|| "(agent default)".into())
+                    .unwrap_or_else(|| "not configured".into())
             },
         },
         SettingsItem::BoolToggle {

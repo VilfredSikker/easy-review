@@ -3021,6 +3021,14 @@ impl App {
     /// Open the AI modal hub
     pub fn open_ai_hub(&mut self) {
         let has_ai = self.tab().ai.has_data();
+        let has_review = self.tab().ai.review.is_some();
+        let has_questions = self
+            .tab()
+            .ai
+            .questions
+            .as_ref()
+            .map_or(false, |q| !q.questions.is_empty());
+        let summary_configured = self.config.commands.summary.is_some();
         let items = vec![
             HubItem {
                 label: "Copy context to clipboard".into(),
@@ -3057,32 +3065,38 @@ impl App {
             HubItem {
                 label: "Generate summary".into(),
                 hint: "".into(),
-                description: self
-                    .config
-                    .commands
-                    .summary
-                    .as_deref()
-                    .unwrap_or("agent default")
-                    .to_string(),
+                description: if summary_configured {
+                    self.config.commands.summary.as_deref().unwrap().to_string()
+                } else {
+                    "set [commands] summary in .er-config.toml".into()
+                },
                 action: HubAction::RunCommand("summary".into()),
                 is_header: false,
-                enabled: self.config.resolve_summary_command().is_some(),
+                enabled: summary_configured,
             },
             HubItem {
                 label: "Cleanup questions".into(),
                 hint: "z".into(),
-                description: "Delete .er/questions.json".into(),
+                description: if has_questions {
+                    "Delete .er/questions.json".into()
+                } else {
+                    "no questions to clean up".into()
+                },
                 action: HubAction::CleanupQuestions,
                 is_header: false,
-                enabled: true,
+                enabled: has_questions,
             },
             HubItem {
                 label: "Cleanup reviews".into(),
                 hint: "Z".into(),
-                description: "Delete .er/review.json".into(),
+                description: if has_review {
+                    "Delete .er/review.json".into()
+                } else {
+                    "no review data to clean up".into()
+                },
                 action: HubAction::CleanupReviews,
                 is_header: false,
-                enabled: has_ai,
+                enabled: has_review,
             },
         ];
         self.overlay = Some(OverlayData::ModalHub {
@@ -3095,6 +3109,7 @@ impl App {
     /// Open the Verify modal hub — items enabled when configured in [commands]
     pub fn open_verify_hub(&mut self) {
         let cmds = &self.config.commands;
+        let not_configured = "set in [commands] in .er-config.toml";
         let items = vec![
             HubItem {
                 label: "Run tests".into(),
@@ -3102,7 +3117,7 @@ impl App {
                 description: cmds
                     .test
                     .as_deref()
-                    .unwrap_or("not configured")
+                    .unwrap_or(not_configured)
                     .to_string(),
                 action: HubAction::RunCommand("test".into()),
                 is_header: false,
@@ -3114,7 +3129,7 @@ impl App {
                 description: cmds
                     .lint
                     .as_deref()
-                    .unwrap_or("not configured")
+                    .unwrap_or(not_configured)
                     .to_string(),
                 action: HubAction::RunCommand("lint".into()),
                 is_header: false,
@@ -3126,7 +3141,7 @@ impl App {
                 description: cmds
                     .typecheck
                     .as_deref()
-                    .unwrap_or("not configured")
+                    .unwrap_or(not_configured)
                     .to_string(),
                 action: HubAction::RunCommand("typecheck".into()),
                 is_header: false,
@@ -3138,7 +3153,7 @@ impl App {
                 description: cmds
                     .security
                     .as_deref()
-                    .unwrap_or("not configured")
+                    .unwrap_or(not_configured)
                     .to_string(),
                 action: HubAction::RunCommand("security".into()),
                 is_header: false,
