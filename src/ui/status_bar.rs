@@ -660,6 +660,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
             if tab.ai.has_data() {
                 hints.push(Hint::new("a", " AI "));
             }
+            hints.push(Hint::new("D", " summary "));
         }
 
         // GitHub sync — only when PR data is available

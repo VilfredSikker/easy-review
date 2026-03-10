@@ -8,11 +8,38 @@ pub struct ErConfig {
     #[serde(default)]
     pub agent: AgentConfig,
     #[serde(default)]
+    pub summary: SummaryConfig,
+    #[serde(default)]
     pub display: DisplayConfig,
     #[serde(default)]
     pub watched: WatchedConfig,
     #[serde(default)]
     pub hints: HintConfig,
+    #[serde(default)]
+    pub commands: CommandsConfig,
+}
+
+/// [commands] section — configurable shell commands for hub actions.
+/// Each command is a shell string run via `sh -c`. Placeholders:
+/// `{base}` (base branch), `{branch}` (current branch), `{repo}` (repo root),
+/// `{output}` (default output path, e.g. `{repo}/.er/summary.md`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CommandsConfig {
+    /// Generate diff summary (AI hub)
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// Run tests (Verify hub)
+    #[serde(default)]
+    pub test: Option<String>,
+    /// Run linter (Verify hub)
+    #[serde(default)]
+    pub lint: Option<String>,
+    /// Type check (Verify hub)
+    #[serde(default)]
+    pub typecheck: Option<String>,
+    /// Security scan (Verify hub)
+    #[serde(default)]
+    pub security: Option<String>,
 }
 
 /// [watched] section configuration
@@ -50,6 +77,20 @@ pub struct AgentConfig {
     pub command: String,
     #[serde(default = "default_agent_args")]
     pub args: Vec<String>,
+}
+
+/// [summary] section — configuration for diff summary / changelog generation
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SummaryConfig {
+    /// Command to run for summary generation (defaults to agent.command)
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Args for the summary command ({diff} is replaced with the raw diff)
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    /// Whether to auto-push the summary to the GitHub PR body
+    #[serde(default)]
+    pub push_to_pr: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +189,22 @@ impl Default for DisplayConfig {
             line_numbers: true,
             wrap_lines: false,
             split_diff: false,
+        }
+    }
+}
+
+impl ErConfig {
+    /// Resolve a command by name from the [commands] config section.
+    /// Returns None if the command is not configured — callers should
+    /// disable the action and show a "not configured" hint.
+    pub fn resolve_command(&self, name: &str) -> Option<String> {
+        match name {
+            "summary" => self.commands.summary.clone(),
+            "test" => self.commands.test.clone(),
+            "lint" => self.commands.lint.clone(),
+            "typecheck" => self.commands.typecheck.clone(),
+            "security" => self.commands.security.clone(),
+            _ => None,
         }
     }
 }
@@ -336,14 +393,56 @@ pub fn settings_items() -> Vec<SettingsItem> {
             get: |c| c.hints.settings,
             set: |c, v| c.hints.settings = v,
         },
-        SettingsItem::SectionHeader("Agent".into()),
+        SettingsItem::SectionHeader("Commands".into()),
         SettingsItem::StringDisplay {
-            label: "Command".into(),
-            get: |c| c.agent.command.clone(),
+            label: "Summary".into(),
+            get: |c| {
+                c.commands
+                    .summary
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into())
+            },
+        },
+        SettingsItem::BoolToggle {
+            label: "Push summary to PR body".into(),
+            get: |c| c.summary.push_to_pr,
+            set: |c, v| c.summary.push_to_pr = v,
         },
         SettingsItem::StringDisplay {
-            label: "Args".into(),
-            get: |c| c.agent.args.join(" "),
+            label: "Test".into(),
+            get: |c| {
+                c.commands
+                    .test
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into())
+            },
+        },
+        SettingsItem::StringDisplay {
+            label: "Lint".into(),
+            get: |c| {
+                c.commands
+                    .lint
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into())
+            },
+        },
+        SettingsItem::StringDisplay {
+            label: "Type check".into(),
+            get: |c| {
+                c.commands
+                    .typecheck
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into())
+            },
+        },
+        SettingsItem::StringDisplay {
+            label: "Security".into(),
+            get: |c| {
+                c.commands
+                    .security
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into())
+            },
         },
     ]
 }
@@ -643,7 +742,7 @@ mod tests {
         assert!(headers.contains(&"Views"));
         assert!(headers.contains(&"Display"));
         assert!(headers.contains(&"Key Hints"));
-        assert!(headers.contains(&"Agent"));
+        assert!(headers.contains(&"Commands"));
         // Views should come before Display
         let views_pos = headers.iter().position(|h| *h == "Views").unwrap();
         let display_pos = headers.iter().position(|h| *h == "Display").unwrap();

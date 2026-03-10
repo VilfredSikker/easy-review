@@ -174,7 +174,7 @@ pub enum OverlayData {
     Settings {
         selected: usize,
         /// Snapshot of config at overlay open time, for Cancel revert
-        saved_config: ErConfig,
+        saved_config: Box<ErConfig>,
     },
     FilterHistory {
         history: Vec<String>,
@@ -243,6 +243,8 @@ pub enum HubAction {
     ToggleQuestions,
     CleanupQuestions,
     CleanupReviews,
+    /// Run a named command from [commands] config (e.g. "summary", "test", "lint")
+    RunCommand(String),
     // Help — no dispatch, just informational
 }
 
@@ -2916,6 +2918,17 @@ impl TabState {
 
 // ── Main App State ──
 
+/// Status of a background command (generic, replaces SummaryAgentStatus)
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandStatus {
+    /// Command is currently running
+    Running,
+    /// Command finished successfully
+    Done,
+    /// Command failed with an error message
+    Failed(String),
+}
+
 pub struct App {
     /// Open tabs (one per repo)
     pub tabs: Vec<TabState>,
@@ -2946,6 +2959,12 @@ pub struct App {
 
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
+
+    /// Receivers for running background commands (keyed by command name)
+    pub command_rx: std::collections::HashMap<String, std::sync::mpsc::Receiver<Result<()>>>,
+
+    /// Status of each named command (keyed by command name like "summary", "test", etc.)
+    pub command_status: std::collections::HashMap<String, CommandStatus>,
 
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
@@ -3012,6 +3031,8 @@ impl App {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: er_config,
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         })
     }
@@ -3206,6 +3227,14 @@ impl App {
     /// Open the AI modal hub
     pub fn open_ai_hub(&mut self) {
         let has_ai = self.tab().ai.has_data();
+        let has_review = self.tab().ai.review.is_some();
+        let has_questions = self
+            .tab()
+            .ai
+            .questions
+            .as_ref()
+            .is_some_and(|q| !q.questions.is_empty());
+        let summary_configured = self.config.commands.summary.is_some();
         let items = vec![
             HubItem {
                 label: "Copy context to clipboard".into(),
@@ -3240,20 +3269,40 @@ impl App {
                 enabled: true,
             },
             HubItem {
+                label: "Generate summary".into(),
+                hint: "".into(),
+                description: if summary_configured {
+                    self.config.commands.summary.as_deref().unwrap().to_string()
+                } else {
+                    "set [commands] summary in .er-config.toml".into()
+                },
+                action: HubAction::RunCommand("summary".into()),
+                is_header: false,
+                enabled: summary_configured,
+            },
+            HubItem {
                 label: "Cleanup questions".into(),
                 hint: "z".into(),
-                description: "Delete .er/questions.json".into(),
+                description: if has_questions {
+                    "Delete .er/questions.json".into()
+                } else {
+                    "no questions to clean up".into()
+                },
                 action: HubAction::CleanupQuestions,
                 is_header: false,
-                enabled: true,
+                enabled: has_questions,
             },
             HubItem {
                 label: "Cleanup reviews".into(),
                 hint: "Z".into(),
-                description: "Delete .er/review.json".into(),
+                description: if has_review {
+                    "Delete .er/review.json".into()
+                } else {
+                    "no review data to clean up".into()
+                },
                 action: HubAction::CleanupReviews,
                 is_header: false,
-                enabled: has_ai,
+                enabled: has_review,
             },
         ];
         self.overlay = Some(OverlayData::ModalHub {
@@ -3263,40 +3312,50 @@ impl App {
         });
     }
 
-    /// Open the Verify modal hub (forward-looking — stubs for now)
+    /// Open the Verify modal hub — items enabled when configured in [commands]
     pub fn open_verify_hub(&mut self) {
+        let cmds = &self.config.commands;
+        let not_configured = "set in [commands] in .er-config.toml";
         let items = vec![
             HubItem {
                 label: "Run tests".into(),
                 hint: "".into(),
-                description: "Run project test suite (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds.test.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunCommand("test".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.test.is_some(),
             },
             HubItem {
                 label: "Run linter".into(),
                 hint: "".into(),
-                description: "Run configured linter (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds.lint.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunCommand("lint".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.lint.is_some(),
             },
             HubItem {
                 label: "Type check".into(),
                 hint: "".into(),
-                description: "Run type checker (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds
+                    .typecheck
+                    .as_deref()
+                    .unwrap_or(not_configured)
+                    .to_string(),
+                action: HubAction::RunCommand("typecheck".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.typecheck.is_some(),
             },
             HubItem {
                 label: "Security scan".into(),
                 hint: "".into(),
-                description: "Run security audit (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds
+                    .security
+                    .as_deref()
+                    .unwrap_or(not_configured)
+                    .to_string(),
+                action: HubAction::RunCommand("security".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.security.is_some(),
             },
         ];
         self.overlay = Some(OverlayData::ModalHub {
@@ -3490,7 +3549,7 @@ impl App {
 
         self.overlay = Some(OverlayData::Settings {
             selected: first_selectable,
-            saved_config: self.config.clone(),
+            saved_config: Box::new(self.config.clone()),
         });
     }
 
@@ -3519,7 +3578,7 @@ impl App {
     /// Revert settings to the saved snapshot and close the overlay
     pub fn settings_cancel(&mut self) {
         if let Some(OverlayData::Settings { saved_config, .. }) = self.overlay.take() {
-            self.config = saved_config;
+            self.config = *saved_config;
         }
     }
 
@@ -5149,7 +5208,113 @@ impl App {
         self.watch_message_ticks = 0;
     }
 
-    /// Tick called on every event loop iteration — used for notification auto-clear
+    // ── Background Commands ──
+
+    /// Spawn a shell command in the background under the given name.
+    /// The command string is run via `sh -c` in the repo root.
+    /// Placeholders {base}, {branch}, {repo}, {output} are substituted.
+    pub fn spawn_command(&mut self, name: &str, shell_cmd: &str) -> Result<()> {
+        if self.command_status.get(name) == Some(&CommandStatus::Running) {
+            self.notify(&format!("{} already running", name));
+            return Ok(());
+        }
+
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let base = tab.base_branch.clone();
+        let branch = tab.current_branch.clone();
+        let output_path = format!("{}/.er/summary.md", repo_root);
+
+        // Substitute placeholders
+        let cmd = shell_cmd
+            .replace("{base}", &base)
+            .replace("{branch}", &branch)
+            .replace("{repo}", &repo_root)
+            .replace("{output}", &output_path);
+
+        // Ensure .er/ directory exists
+        let er_dir = std::path::Path::new(&repo_root).join(".er");
+        std::fs::create_dir_all(&er_dir)?;
+
+        let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
+        let name_owned = name.to_string();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let output = std::process::Command::new("sh")
+                    .args(["-c", &cmd])
+                    .current_dir(&repo_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                    .with_context(|| format!("Failed to run {}", name_owned))?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("{} failed: {}", name_owned, stderr.trim());
+                }
+
+                // Summary-specific: optionally push to PR body
+                if push_to_pr {
+                    let summary_path = std::path::Path::new(&repo_root).join(".er/summary.md");
+                    if let Ok(summary) = std::fs::read_to_string(&summary_path) {
+                        if !summary.trim().is_empty() {
+                            crate::github::gh_pr_edit_body(&repo_root, &summary)?;
+                        }
+                    }
+                }
+
+                Ok(())
+            })();
+            let _ = tx.send(result);
+        });
+
+        self.command_rx.insert(name.to_string(), rx);
+        self.command_status
+            .insert(name.to_string(), CommandStatus::Running);
+        self.notify(&format!("{} started...", name));
+        Ok(())
+    }
+
+    /// Poll all running commands for completion (called from event loop).
+    pub fn check_commands(&mut self) {
+        let names: Vec<String> = self.command_rx.keys().cloned().collect();
+        for name in names {
+            let result = if let Some(rx) = self.command_rx.get(&name) {
+                match rx.try_recv() {
+                    Ok(ok_or_err) => Some(ok_or_err),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(Err(anyhow::anyhow!("{} thread crashed", name)))
+                    }
+                }
+            } else {
+                None
+            };
+
+            if let Some(result) = result {
+                self.command_rx.remove(&name);
+                match result {
+                    Ok(()) => {
+                        self.command_status
+                            .insert(name.clone(), CommandStatus::Done);
+                        // Summary-specific: force AI reload
+                        if name == "summary" {
+                            self.tab_mut().last_ai_check = None;
+                        }
+                        self.notify(&format!("{} done", name));
+                    }
+                    Err(e) => {
+                        let msg = format!("{}", e);
+                        self.command_status
+                            .insert(name.clone(), CommandStatus::Failed(msg.clone()));
+                        self.notify(&format!("{} failed: {}", name, msg));
+                    }
+                }
+            }
+        }
+    }
     pub fn tick(&mut self) {
         // TODO(risk:minor): watch_message_ticks is a u8 (max 255). If notify() is called without a
         // subsequent tick draining it (e.g., during a long blocking git operation), ticks can overflow
@@ -6464,6 +6629,8 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         }
     }

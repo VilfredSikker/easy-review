@@ -256,6 +256,9 @@ fn run_app<B: Backend>(
             app.notify("✓ AI data refreshed");
         }
 
+        // Poll background commands for completion
+        app.check_commands();
+
         // Rescan watched files (every 50 ticks ≈ 5s)
         if app.ai_poll_counter.is_multiple_of(50) {
             app.tab_mut().refresh_watched_files();
@@ -398,6 +401,13 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
         HubAction::CleanupReviews => {
             let count = app.tab().ai.review.as_ref().map_or(0, |r| r.files.len());
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
+        }
+        HubAction::RunCommand(name) => {
+            if let Some(cmd) = app.config.resolve_command(&name) {
+                app.spawn_command(&name, &cmd)?;
+            } else {
+                app.notify(&format!("{}: not configured", name));
+            }
         }
     }
     Ok(())
@@ -1601,6 +1611,8 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         }
     }
