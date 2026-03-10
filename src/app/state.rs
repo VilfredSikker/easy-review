@@ -242,6 +242,7 @@ pub enum HubAction {
     ToggleQuestions,
     CleanupQuestions,
     CleanupReviews,
+    GenerateSummary,
     // Help — no dispatch, just informational
 }
 
@@ -3049,6 +3050,14 @@ impl App {
                 hint: "".into(),
                 description: "Show/hide question layer".into(),
                 action: HubAction::ToggleQuestions,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Generate summary".into(),
+                hint: "".into(),
+                description: "Run agent to generate .er/summary.md".into(),
+                action: HubAction::GenerateSummary,
                 is_header: false,
                 enabled: true,
             },

@@ -381,6 +381,9 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             let count = app.tab().ai.review.as_ref().map_or(0, |r| r.files.len());
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
         }
+        HubAction::GenerateSummary => {
+            app.spawn_summary_agent()?;
+        }
     }
     Ok(())
 }
@@ -777,12 +780,6 @@ fn handle_normal_input(
         // Help modal hub (?)
         KeyCode::Char('?') => {
             app.open_help_hub();
-            return Ok(());
-        }
-
-        // Generate diff summary via agent (D)
-        KeyCode::Char('D') => {
-            app.spawn_summary_agent()?;
             return Ok(());
         }
 
