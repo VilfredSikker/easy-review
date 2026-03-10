@@ -116,17 +116,9 @@ pub struct HintConfig {
     #[serde(default = "default_true")]
     pub comments: bool,
     #[serde(default = "default_true")]
-    pub github: bool,
-    #[serde(default = "default_true")]
     pub staging: bool,
-    #[serde(default = "default_true")]
-    pub ai: bool,
-    #[serde(default = "default_true")]
-    pub filter: bool,
-    #[serde(default = "default_true")]
-    pub sort: bool,
-    #[serde(default = "default_true")]
-    pub settings: bool,
+    #[serde(default)]
+    pub verbose: bool,
 }
 
 impl Default for HintConfig {
@@ -134,12 +126,8 @@ impl Default for HintConfig {
         Self {
             navigation: true,
             comments: true,
-            github: true,
             staging: true,
-            ai: true,
-            filter: true,
-            sort: true,
-            settings: true,
+            verbose: false,
         }
     }
 }
@@ -367,39 +355,24 @@ pub fn settings_items() -> Vec<SettingsItem> {
         },
         SettingsItem::SectionHeader("Key Hints".into()),
         SettingsItem::BoolToggle {
-            label: "Navigation (j/k, n/N, ↑↓)".into(),
+            label: "Navigation (j/k, n/N, ␣, /)".into(),
             get: |c| c.hints.navigation,
             set: |c, v| c.hints.navigation = v,
         },
         SettingsItem::BoolToggle {
-            label: "Comments (q, c, J/K, d/r)".into(),
-            get: |c| c.hints.comments,
-            set: |c, v| c.hints.comments = v,
-        },
-        SettingsItem::BoolToggle {
-            label: "GitHub sync (G, P)".into(),
-            get: |c| c.hints.github,
-            set: |c, v| c.hints.github = v,
-        },
-        SettingsItem::BoolToggle {
-            label: "Staging (s, S, c commit)".into(),
+            label: "Staging (s, c commit)".into(),
             get: |c| c.hints.staging,
             set: |c, v| c.hints.staging = v,
         },
         SettingsItem::BoolToggle {
-            label: "AI (a, ^j/^k)".into(),
-            get: |c| c.hints.ai,
-            set: |c, v| c.hints.ai = v,
+            label: "Comment actions (r, d)".into(),
+            get: |c| c.hints.comments,
+            set: |c, v| c.hints.comments = v,
         },
         SettingsItem::BoolToggle {
-            label: "Filter & sort (f, u, m)".into(),
-            get: |c| c.hints.filter,
-            set: |c, v| c.hints.filter = v,
-        },
-        SettingsItem::BoolToggle {
-            label: "Settings (,)".into(),
-            get: |c| c.hints.settings,
-            set: |c, v| c.hints.settings = v,
+            label: "Verbose hints".into(),
+            get: |c| c.hints.verbose,
+            set: |c, v| c.hints.verbose = v,
         },
         SettingsItem::SectionHeader("Commands".into()),
         SettingsItem::StringDisplay {

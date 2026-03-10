@@ -1050,8 +1050,11 @@ impl TabState {
             }
         }
 
-        // Load AI state from .er-* files
-        self.reload_ai_state();
+        // Load AI state from .er-* files (only on full refresh — watch-triggered
+        // quick refreshes let the separate AI polling handle .er/ changes)
+        if recompute_branch_hash {
+            self.reload_ai_state();
+        }
 
         // Relocate comments to follow moved code
         self.relocate_all_comments();
@@ -3672,7 +3675,7 @@ impl App {
                 enabled: false,
             },
             HubItem {
-                label: ", / S".into(),
+                label: ",".into(),
                 hint: "".into(),
                 description: "Settings".into(),
                 action: HubAction::Noop,
