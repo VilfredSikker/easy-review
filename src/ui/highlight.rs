@@ -78,21 +78,27 @@ impl Highlighter {
         }
 
         // Cache miss — perform highlighting
-        // two-face's syntax set covers TS, TSX, TOML, Svelte (via HTML), etc.
-        // Fall back to HTML for .svelte/.vue/.astro which aren't in the set directly.
-        let syntax = self
-            .syntax_set
-            .find_syntax_for_file(filename)
-            .ok()
-            .flatten()
-            .or_else(|| {
-                let fallback = match filename.rsplit('.').next() {
-                    Some("svelte" | "vue" | "astro") => "HTML",
-                    _ => return None,
-                };
-                self.syntax_set.find_syntax_by_name(fallback)
-            })
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+        // two-face's syntax set covers TS, TSX, TOML, Svelte, Vue, etc.
+        // For .svelte/.vue files, force TypeScript syntax: these are embedded-language
+        // files where per-line highlighting with the native syntax fails (HighlightLines
+        // starts fresh each line, losing <script> block context). TypeScript handles
+        // the script section correctly, which is the majority of reviewed code.
+        let syntax = match filename.rsplit('.').next() {
+            Some("svelte" | "vue") => self
+                .syntax_set
+                .find_syntax_by_name("TypeScript")
+                .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text()),
+            Some("astro") => self
+                .syntax_set
+                .find_syntax_by_name("HTML")
+                .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text()),
+            _ => self
+                .syntax_set
+                .find_syntax_for_file(filename)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text()),
+        };
 
         let theme = &self.theme_set.themes["base16-ocean.dark"];
         let mut highlighter = HighlightLines::new(syntax, theme);
