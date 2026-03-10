@@ -242,7 +242,8 @@ pub enum HubAction {
     ToggleQuestions,
     CleanupQuestions,
     CleanupReviews,
-    GenerateSummary,
+    /// Run a named command from [commands] config (e.g. "summary", "test", "lint")
+    RunCommand(String),
     // Help — no dispatch, just informational
 }
 
@@ -2711,14 +2712,14 @@ impl TabState {
 
 // ── Main App State ──
 
-/// Status of the background summary agent
+/// Status of a background command (generic, replaces SummaryAgentStatus)
 #[derive(Debug, Clone, PartialEq)]
-pub enum SummaryAgentStatus {
-    /// Agent is currently running
+pub enum CommandStatus {
+    /// Command is currently running
     Running,
-    /// Agent finished successfully
+    /// Command finished successfully
     Done,
-    /// Agent failed with an error message
+    /// Command failed with an error message
     Failed(String),
 }
 
@@ -2753,11 +2754,11 @@ pub struct App {
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
 
-    /// Receiver for summary agent completion (None = no agent running)
-    pub summary_rx: Option<std::sync::mpsc::Receiver<Result<()>>>,
+    /// Receivers for running background commands (keyed by command name)
+    pub command_rx: std::collections::HashMap<String, std::sync::mpsc::Receiver<Result<()>>>,
 
-    /// Current status of the summary agent
-    pub summary_status: Option<SummaryAgentStatus>,
+    /// Status of each named command (keyed by command name like "summary", "test", etc.)
+    pub command_status: std::collections::HashMap<String, CommandStatus>,
 
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
@@ -2824,8 +2825,8 @@ impl App {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: er_config,
-            summary_rx: None,
-            summary_status: None,
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         })
     }
@@ -3056,10 +3057,16 @@ impl App {
             HubItem {
                 label: "Generate summary".into(),
                 hint: "".into(),
-                description: "Run agent to generate .er/summary.md".into(),
-                action: HubAction::GenerateSummary,
+                description: self
+                    .config
+                    .commands
+                    .summary
+                    .as_deref()
+                    .unwrap_or("agent default")
+                    .to_string(),
+                action: HubAction::RunCommand("summary".into()),
                 is_header: false,
-                enabled: true,
+                enabled: self.config.resolve_summary_command().is_some(),
             },
             HubItem {
                 label: "Cleanup questions".into(),
@@ -3085,40 +3092,57 @@ impl App {
         });
     }
 
-    /// Open the Verify modal hub (forward-looking — stubs for now)
+    /// Open the Verify modal hub — items enabled when configured in [commands]
     pub fn open_verify_hub(&mut self) {
+        let cmds = &self.config.commands;
         let items = vec![
             HubItem {
                 label: "Run tests".into(),
                 hint: "".into(),
-                description: "Run project test suite (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds
+                    .test
+                    .as_deref()
+                    .unwrap_or("not configured")
+                    .to_string(),
+                action: HubAction::RunCommand("test".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.test.is_some(),
             },
             HubItem {
                 label: "Run linter".into(),
                 hint: "".into(),
-                description: "Run configured linter (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds
+                    .lint
+                    .as_deref()
+                    .unwrap_or("not configured")
+                    .to_string(),
+                action: HubAction::RunCommand("lint".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.lint.is_some(),
             },
             HubItem {
                 label: "Type check".into(),
                 hint: "".into(),
-                description: "Run type checker (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds
+                    .typecheck
+                    .as_deref()
+                    .unwrap_or("not configured")
+                    .to_string(),
+                action: HubAction::RunCommand("typecheck".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.typecheck.is_some(),
             },
             HubItem {
                 label: "Security scan".into(),
                 hint: "".into(),
-                description: "Run security audit (coming soon)".into(),
-                action: HubAction::Noop,
+                description: cmds
+                    .security
+                    .as_deref()
+                    .unwrap_or("not configured")
+                    .to_string(),
+                action: HubAction::RunCommand("security".into()),
                 is_header: false,
-                enabled: false,
+                enabled: cmds.security.is_some(),
             },
         ];
         self.overlay = Some(OverlayData::ModalHub {
@@ -4973,80 +4997,60 @@ impl App {
 
     /// Tick called on every event loop iteration — used for notification auto-clear
 
-    // ── Summary Agent ──
+    // ── Background Commands ──
 
-    /// Spawn a background agent to generate .er/summary.md from the current diff.
-    pub fn spawn_summary_agent(&mut self) -> Result<()> {
-        if self.summary_status == Some(SummaryAgentStatus::Running) {
-            self.notify("Summary agent already running");
+    /// Spawn a shell command in the background under the given name.
+    /// The command string is run via `sh -c` in the repo root.
+    /// Placeholders {base}, {branch}, {repo}, {output} are substituted.
+    pub fn spawn_command(&mut self, name: &str, shell_cmd: &str) -> Result<()> {
+        if self.command_status.get(name) == Some(&CommandStatus::Running) {
+            self.notify(&format!("{} already running", name));
             return Ok(());
         }
 
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();
-        let base_branch = tab.base_branch.clone();
+        let base = tab.base_branch.clone();
+        let branch = tab.current_branch.clone();
+        let output_path = format!("{}/.er/summary.md", repo_root);
 
-        // Resolve agent command: summary.command overrides agent.command
-        let cmd = self
-            .config
-            .summary
-            .command
-            .clone()
-            .unwrap_or_else(|| self.config.agent.command.clone());
-
-        // Build the prompt for the agent
-        let prompt = format!(
-            "Generate a concise, human-readable summary of the code changes in this branch \
-             (compared to {base}). Write the output as markdown to the file {output}. \
-             Focus on what changed and why, grouped by area. Keep it under 500 words. \
-             Do not include the raw diff in the output.",
-            base = base_branch,
-            output = format!("{}/.er/summary.md", repo_root),
-        );
-
-        // Build args: use summary.args if set, else agent.args, replacing {prompt}
-        let template_args = self
-            .config
-            .summary
-            .args
-            .clone()
-            .unwrap_or_else(|| self.config.agent.args.clone());
-
-        let args: Vec<String> = template_args
-            .iter()
-            .map(|a| a.replace("{prompt}", &prompt))
-            .collect();
+        // Substitute placeholders
+        let cmd = shell_cmd
+            .replace("{base}", &base)
+            .replace("{branch}", &branch)
+            .replace("{repo}", &repo_root)
+            .replace("{output}", &output_path);
 
         // Ensure .er/ directory exists
         let er_dir = std::path::Path::new(&repo_root).join(".er");
         std::fs::create_dir_all(&er_dir)?;
 
-        let push_to_pr = self.config.summary.push_to_pr;
-        let repo_root_clone = repo_root.clone();
+        let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
+        let name_owned = name.to_string();
 
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
-                let output = std::process::Command::new(&cmd)
-                    .args(&args)
+                let output = std::process::Command::new("sh")
+                    .args(["-c", &cmd])
                     .current_dir(&repo_root)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::piped())
                     .output()
-                    .context("Failed to run summary agent")?;
+                    .with_context(|| format!("Failed to run {}", name_owned))?;
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("Summary agent failed: {}", stderr.trim());
+                    anyhow::bail!("{} failed: {}", name_owned, stderr.trim());
                 }
 
-                // Optionally push to PR body
+                // Summary-specific: optionally push to PR body
                 if push_to_pr {
                     let summary_path =
-                        std::path::Path::new(&repo_root_clone).join(".er/summary.md");
+                        std::path::Path::new(&repo_root).join(".er/summary.md");
                     if let Ok(summary) = std::fs::read_to_string(&summary_path) {
                         if !summary.trim().is_empty() {
-                            crate::github::gh_pr_edit_body(&repo_root_clone, &summary)?;
+                            crate::github::gh_pr_edit_body(&repo_root, &summary)?;
                         }
                     }
                 }
@@ -5056,37 +5060,47 @@ impl App {
             let _ = tx.send(result);
         });
 
-        self.summary_rx = Some(rx);
-        self.summary_status = Some(SummaryAgentStatus::Running);
-        self.notify("Summary agent started...");
+        self.command_rx.insert(name.to_string(), rx);
+        self.command_status
+            .insert(name.to_string(), CommandStatus::Running);
+        self.notify(&format!("{} started...", name));
         Ok(())
     }
 
-    /// Poll the summary agent for completion (called from event loop).
-    pub fn check_summary_agent(&mut self) {
-        if let Some(ref rx) = self.summary_rx {
-            match rx.try_recv() {
-                Ok(Ok(())) => {
-                    self.summary_status = Some(SummaryAgentStatus::Done);
-                    self.summary_rx = None;
-                    // Force AI state reload to pick up new summary.md
-                    self.tab_mut().last_ai_check = None;
-                    self.notify("Summary generated");
+    /// Poll all running commands for completion (called from event loop).
+    pub fn check_commands(&mut self) {
+        let names: Vec<String> = self.command_rx.keys().cloned().collect();
+        for name in names {
+            let result = if let Some(rx) = self.command_rx.get(&name) {
+                match rx.try_recv() {
+                    Ok(ok_or_err) => Some(ok_or_err),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(Err(anyhow::anyhow!("{} thread crashed", name)))
+                    }
                 }
-                Ok(Err(e)) => {
-                    let msg = format!("{}", e);
-                    self.summary_status = Some(SummaryAgentStatus::Failed(msg.clone()));
-                    self.summary_rx = None;
-                    self.notify(&format!("Summary failed: {}", msg));
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    // Still running
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.summary_status =
-                        Some(SummaryAgentStatus::Failed("Agent thread crashed".into()));
-                    self.summary_rx = None;
-                    self.notify("Summary agent crashed");
+            } else {
+                None
+            };
+
+            if let Some(result) = result {
+                self.command_rx.remove(&name);
+                match result {
+                    Ok(()) => {
+                        self.command_status
+                            .insert(name.clone(), CommandStatus::Done);
+                        // Summary-specific: force AI reload
+                        if name == "summary" {
+                            self.tab_mut().last_ai_check = None;
+                        }
+                        self.notify(&format!("{} done", name));
+                    }
+                    Err(e) => {
+                        let msg = format!("{}", e);
+                        self.command_status
+                            .insert(name.clone(), CommandStatus::Failed(msg.clone()));
+                        self.notify(&format!("{} failed: {}", name, msg));
+                    }
                 }
             }
         }
@@ -6405,8 +6419,8 @@ mod tests {
             watch_message_ticks: 0,
             ai_poll_counter: 0,
             config: ErConfig::default(),
-            summary_rx: None,
-            summary_status: None,
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         }
     }

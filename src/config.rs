@@ -15,6 +15,31 @@ pub struct ErConfig {
     pub watched: WatchedConfig,
     #[serde(default)]
     pub hints: HintConfig,
+    #[serde(default)]
+    pub commands: CommandsConfig,
+}
+
+/// [commands] section — configurable shell commands for hub actions.
+/// Each command is a shell string run via `sh -c`. Placeholders:
+/// `{base}` (base branch), `{branch}` (current branch), `{repo}` (repo root),
+/// `{output}` (default output path, e.g. `{repo}/.er/summary.md`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CommandsConfig {
+    /// Generate diff summary (AI hub)
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// Run tests (Verify hub)
+    #[serde(default)]
+    pub test: Option<String>,
+    /// Run linter (Verify hub)
+    #[serde(default)]
+    pub lint: Option<String>,
+    /// Type check (Verify hub)
+    #[serde(default)]
+    pub typecheck: Option<String>,
+    /// Security scan (Verify hub)
+    #[serde(default)]
+    pub security: Option<String>,
 }
 
 /// [watched] section configuration
@@ -174,6 +199,40 @@ impl Default for DisplayConfig {
             line_numbers: true,
             wrap_lines: false,
             split_diff: false,
+        }
+    }
+}
+
+impl ErConfig {
+    /// Resolve the effective summary shell command.
+    /// Priority: commands.summary > legacy summary.command+args > legacy agent.command+args
+    pub fn resolve_summary_command(&self) -> Option<String> {
+        if let Some(ref cmd) = self.commands.summary {
+            return Some(cmd.clone());
+        }
+        // Legacy fallback: build a shell string from summary/agent command + args
+        let cmd = self
+            .summary
+            .command
+            .as_ref()
+            .unwrap_or(&self.agent.command);
+        let args = self
+            .summary
+            .args
+            .as_ref()
+            .unwrap_or(&self.agent.args);
+        Some(format!("{} {}", cmd, args.join(" ")))
+    }
+
+    /// Resolve a command by name from the [commands] config section.
+    pub fn resolve_command(&self, name: &str) -> Option<String> {
+        match name {
+            "summary" => self.resolve_summary_command(),
+            "test" => self.commands.test.clone(),
+            "lint" => self.commands.lint.clone(),
+            "typecheck" => self.commands.typecheck.clone(),
+            "security" => self.commands.security.clone(),
+            _ => None,
         }
     }
 }
@@ -362,29 +421,56 @@ pub fn settings_items() -> Vec<SettingsItem> {
             get: |c| c.hints.settings,
             set: |c, v| c.hints.settings = v,
         },
-        SettingsItem::SectionHeader("Agent".into()),
+        SettingsItem::SectionHeader("Commands".into()),
         SettingsItem::StringDisplay {
-            label: "Command".into(),
-            get: |c| c.agent.command.clone(),
-        },
-        SettingsItem::StringDisplay {
-            label: "Args".into(),
-            get: |c| c.agent.args.join(" "),
-        },
-        SettingsItem::SectionHeader("Summary (D)".into()),
-        SettingsItem::StringDisplay {
-            label: "Command".into(),
+            label: "Summary".into(),
             get: |c| {
-                c.summary
-                    .command
+                c.commands
+                    .summary
                     .clone()
-                    .unwrap_or_else(|| c.agent.command.clone())
+                    .unwrap_or_else(|| "(agent default)".into())
             },
         },
         SettingsItem::BoolToggle {
-            label: "Push to PR body".into(),
+            label: "Push summary to PR body".into(),
             get: |c| c.summary.push_to_pr,
             set: |c, v| c.summary.push_to_pr = v,
+        },
+        SettingsItem::StringDisplay {
+            label: "Test".into(),
+            get: |c| {
+                c.commands
+                    .test
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into())
+            },
+        },
+        SettingsItem::StringDisplay {
+            label: "Lint".into(),
+            get: |c| {
+                c.commands
+                    .lint
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into())
+            },
+        },
+        SettingsItem::StringDisplay {
+            label: "Type check".into(),
+            get: |c| {
+                c.commands
+                    .typecheck
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into())
+            },
+        },
+        SettingsItem::StringDisplay {
+            label: "Security".into(),
+            get: |c| {
+                c.commands
+                    .security
+                    .clone()
+                    .unwrap_or_else(|| "not configured".into())
+            },
         },
     ]
 }
@@ -684,7 +770,7 @@ mod tests {
         assert!(headers.contains(&"Views"));
         assert!(headers.contains(&"Display"));
         assert!(headers.contains(&"Key Hints"));
-        assert!(headers.contains(&"Agent"));
+        assert!(headers.contains(&"Commands"));
         // Views should come before Display
         let views_pos = headers.iter().position(|h| *h == "Views").unwrap();
         let display_pos = headers.iter().position(|h| *h == "Display").unwrap();
