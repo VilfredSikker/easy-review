@@ -173,7 +173,7 @@ pub enum OverlayData {
     Settings {
         selected: usize,
         /// Snapshot of config at overlay open time, for Cancel revert
-        saved_config: ErConfig,
+        saved_config: Box<ErConfig>,
     },
     FilterHistory {
         history: Vec<String>,
@@ -3343,7 +3343,7 @@ impl App {
 
         self.overlay = Some(OverlayData::Settings {
             selected: first_selectable,
-            saved_config: self.config.clone(),
+            saved_config: Box::new(self.config.clone()),
         });
     }
 
@@ -3372,7 +3372,7 @@ impl App {
     /// Revert settings to the saved snapshot and close the overlay
     pub fn settings_cancel(&mut self) {
         if let Some(OverlayData::Settings { saved_config, .. }) = self.overlay.take() {
-            self.config = saved_config;
+            self.config = *saved_config;
         }
     }
 
@@ -5001,8 +5001,6 @@ impl App {
         self.watch_message = Some(msg.to_string());
         self.watch_message_ticks = 0;
     }
-
-    /// Tick called on every event loop iteration — used for notification auto-clear
 
     // ── Background Commands ──
 
