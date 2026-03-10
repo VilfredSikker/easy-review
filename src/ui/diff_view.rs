@@ -531,7 +531,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         if logical_line >= render_start && logical_line < render_end {
             let gap = if hunk_idx + 1 < file.hunks.len() {
                 let next = &file.hunks[hunk_idx + 1];
-                next.old_start.saturating_sub(hunk.old_start + hunk.old_count)
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
             } else {
                 0
             };
@@ -1235,7 +1236,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         if logical_line >= render_start && logical_line < render_end {
             let gap = if hunk_idx + 1 < file.hunks.len() {
                 let next = &file.hunks[hunk_idx + 1];
-                next.old_start.saturating_sub(hunk.old_start + hunk.old_count)
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
             } else {
                 0
             };
@@ -1528,7 +1530,8 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
             // Gap indicator or blank line between hunks
             let gap = if hunk_idx + 1 < file.hunks.len() {
                 let next = &file.hunks[hunk_idx + 1];
-                next.old_start.saturating_sub(hunk.old_start + hunk.old_count)
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
             } else {
                 0
             };
