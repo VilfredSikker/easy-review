@@ -457,6 +457,10 @@ pub struct TabState {
     /// True after a commit in Staged mode — causes diff view to show HEAD~1..HEAD until next
     /// new staged change or the user pushes.
     pub committed_unpushed: bool,
+
+    /// Per-file context line overrides (path -> context lines count).
+    /// Default context is 3 (git's --unified=3). Cleared on diff refresh.
+    pub context_overrides: HashMap<String, usize>,
 }
 
 /// A single reference to a symbol (file + line)
@@ -714,6 +718,7 @@ impl TabState {
             symbol_refs: None,
             pending_unmark_count: 0,
             committed_unpushed: false,
+            context_overrides: HashMap::new(),
         };
 
         tab.refresh_diff()?;
@@ -796,6 +801,7 @@ impl TabState {
             symbol_refs: None,
             pending_unmark_count: 0,
             committed_unpushed: false,
+            context_overrides: HashMap::new(),
         }
     }
 
@@ -984,6 +990,9 @@ impl TabState {
                 }
             }
         }
+
+        // Clear per-file context overrides — diff content has changed
+        self.context_overrides.clear();
 
         if self.sort_by_mtime {
             self.sort_files_by_mtime();
@@ -2069,7 +2078,7 @@ impl TabState {
                 let repo_root = self.repo_root.clone();
                 let mode = self.mode.git_mode().to_string();
                 let base = self.base_branch.clone();
-                if let Ok(raw) = git::git_diff_raw_file(&mode, &base, &repo_root, &path) {
+                if let Ok(raw) = git::git_diff_raw_file(&mode, &base, &repo_root, &path, None) {
                     let parsed = git::parse_diff(&raw);
                     if let Some(p) = parsed.into_iter().next() {
                         if let Some(file) = self.files.get_mut(self.selected_file) {
@@ -2120,6 +2129,156 @@ impl TabState {
             }
         }
         Ok(())
+    }
+
+    /// Context level progression for expand/collapse
+    const CONTEXT_STEPS: &'static [usize] = &[3, 10, 25, 50, 99999];
+
+    /// Expand context lines for the currently selected file.
+    /// Steps through increasing context levels: 3 → 10 → 25 → 50 → full.
+    /// If the file is compacted, expands it first.
+    pub fn expand_context(&mut self) -> Result<()> {
+        // History mode not supported (would need per-file commit diff)
+        if self.mode == DiffMode::History {
+            return Ok(());
+        }
+
+        let file = match self.files.get(self.selected_file) {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        // If compacted, expand it first (same as Enter)
+        if file.compacted {
+            return self.toggle_compacted();
+        }
+
+        // Untracked files (Added status with synthetic diff) are already full-file
+        if file.status == git::FileStatus::Added && file.hunks.len() <= 1 {
+            return Ok(());
+        }
+
+        let path = file.path.clone();
+        let current = self.context_overrides.get(&path).copied().unwrap_or(3);
+
+        // Find next step above current
+        let next = Self::CONTEXT_STEPS
+            .iter()
+            .copied()
+            .find(|&s| s > current)
+            .unwrap_or(99999);
+        if next == current {
+            return Ok(());
+        }
+
+        // Re-fetch the file diff with new context
+        if let Some(file) = self.files.get_mut(self.selected_file) {
+            git::refetch_file_with_context(
+                file,
+                &self.repo_root,
+                self.mode.git_mode(),
+                &self.base_branch,
+                next,
+            )?;
+        }
+        self.context_overrides.insert(path, next);
+        self.rebuild_hunk_offsets();
+        self.update_mem_budget();
+        Ok(())
+    }
+
+    /// Collapse context lines for the currently selected file.
+    /// Steps back through context levels: full → 50 → 25 → 10 → 3.
+    pub fn collapse_context(&mut self) -> Result<()> {
+        if self.mode == DiffMode::History {
+            return Ok(());
+        }
+
+        let file = match self.files.get(self.selected_file) {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        if file.compacted {
+            return Ok(());
+        }
+
+        let path = file.path.clone();
+        let current = self.context_overrides.get(&path).copied().unwrap_or(3);
+
+        if current <= 3 {
+            return Ok(());
+        }
+
+        // Find previous step below current
+        let prev = Self::CONTEXT_STEPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|&s| s < current)
+            .unwrap_or(3);
+
+        if let Some(file) = self.files.get_mut(self.selected_file) {
+            git::refetch_file_with_context(
+                file,
+                &self.repo_root,
+                self.mode.git_mode(),
+                &self.base_branch,
+                prev,
+            )?;
+        }
+
+        if prev == 3 {
+            self.context_overrides.remove(&path);
+        } else {
+            self.context_overrides.insert(path, prev);
+        }
+        self.rebuild_hunk_offsets();
+        self.update_mem_budget();
+        Ok(())
+    }
+
+    /// Auto-expand context for small files on selection.
+    /// Files with total diff lines ≤ threshold get full context automatically.
+    pub fn maybe_auto_expand_context(&mut self, threshold: usize) {
+        if threshold == 0 || self.mode == DiffMode::History {
+            return;
+        }
+
+        let file = match self.files.get(self.selected_file) {
+            Some(f) => f,
+            None => return,
+        };
+
+        // Skip compacted, already-overridden, or untracked files
+        if file.compacted || self.context_overrides.contains_key(&file.path) {
+            return;
+        }
+        if file.status == git::FileStatus::Added && file.hunks.len() <= 1 {
+            return;
+        }
+
+        let total_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+        if total_lines > threshold || total_lines == 0 {
+            return;
+        }
+
+        let path = file.path.clone();
+        if let Some(file) = self.files.get_mut(self.selected_file) {
+            if git::refetch_file_with_context(
+                file,
+                &self.repo_root,
+                self.mode.git_mode(),
+                &self.base_branch,
+                99999,
+            )
+            .is_ok()
+            {
+                self.context_overrides.insert(path, 99999);
+                self.rebuild_hunk_offsets();
+                self.update_mem_budget();
+            }
+        }
     }
 
     /// Get cached visible files, rebuilding cache if needed
@@ -5504,6 +5663,7 @@ mod tests {
             symbol_refs: None,
             pending_unmark_count: 0,
             committed_unpushed: false,
+            context_overrides: HashMap::new(),
         }
     }
 

@@ -103,6 +103,9 @@ pub struct DisplayConfig {
     pub wrap_lines: bool,
     #[serde(default)]
     pub split_diff: bool,
+    /// Auto-expand context for files with ≤ this many diff lines (0 to disable)
+    #[serde(default = "default_auto_context_threshold")]
+    pub auto_context_threshold: usize,
 }
 
 /// [hints] section — toggle visibility of key hint groups in the bottom bar
@@ -149,6 +152,10 @@ fn default_tab_width() -> u8 {
     4
 }
 
+fn default_auto_context_threshold() -> usize {
+    50
+}
+
 fn default_agent_cmd() -> String {
     "claude".into()
 }
@@ -189,6 +196,7 @@ impl Default for DisplayConfig {
             line_numbers: true,
             wrap_lines: false,
             split_diff: false,
+            auto_context_threshold: default_auto_context_threshold(),
         }
     }
 }
@@ -656,6 +664,7 @@ mod tests {
                 line_numbers: false,
                 wrap_lines: true,
                 split_diff: true,
+                auto_context_threshold: 100,
             },
             agent: AgentConfig {
                 command: "my-agent".into(),

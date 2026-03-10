@@ -74,10 +74,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let total_diff_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
     let use_viewport = total_diff_lines > VIRTUALIZE_THRESHOLD;
 
+    let context_suffix = match tab.context_overrides.get(&file.path).copied() {
+        Some(99999) => " [full context]".to_string(),
+        Some(n) if n != 3 => format!(" [context: {}]", n),
+        _ => String::new(),
+    };
     let title = if total_diff_lines > LARGE_FILE_WARNING_LINES {
-        format!(" {} \u{26a0} +{} lines ", file.path, total_diff_lines)
+        format!(
+            " {} \u{26a0} +{} lines{} ",
+            file.path, total_diff_lines, context_suffix
+        )
     } else {
-        format!(" {} ", file.path)
+        format!(" {}{} ", file.path, context_suffix)
     };
 
     // Viewport window parameters
@@ -519,9 +527,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             }
         }
 
-        // Blank line between hunks
+        // Gap indicator or blank line between hunks
         if logical_line >= render_start && logical_line < render_end {
-            lines.push(Line::from(""));
+            let gap = if hunk_idx + 1 < file.hunks.len() {
+                let next = &file.hunks[hunk_idx + 1];
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
+            } else {
+                0
+            };
+            if gap > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("  ··· {} lines hidden (+/- to expand) ···", gap),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                )));
+            } else {
+                lines.push(Line::from(""));
+            }
         }
         logical_line += 1;
     }
@@ -1210,9 +1232,23 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             }
         }
 
-        // Blank line between hunks
+        // Gap indicator or blank line between hunks
         if logical_line >= render_start && logical_line < render_end {
-            lines.push(Line::from(""));
+            let gap = if hunk_idx + 1 < file.hunks.len() {
+                let next = &file.hunks[hunk_idx + 1];
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
+            } else {
+                0
+            };
+            if gap > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("  ··· {} lines hidden (+/- to expand) ···", gap),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                )));
+            } else {
+                lines.push(Line::from(""));
+            }
         }
         logical_line += 1;
     }
@@ -1491,8 +1527,22 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                 lines.push(Line::from(spans).style(base_style));
             }
 
-            // Blank line between hunks
-            lines.push(Line::from(""));
+            // Gap indicator or blank line between hunks
+            let gap = if hunk_idx + 1 < file.hunks.len() {
+                let next = &file.hunks[hunk_idx + 1];
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
+            } else {
+                0
+            };
+            if gap > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("  ··· {} lines hidden ···", gap),
+                    ratatui::style::Style::default().fg(styles::MUTED),
+                )));
+            } else {
+                lines.push(Line::from(""));
+            }
         }
     }
 
