@@ -134,6 +134,10 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         cmd.args(args);
         if let Some(root) = repo_root {
             cmd.current_dir(root);
+            // Prevent git from walking up into unrelated parent repos
+            if let Some(parent) = std::path::Path::new(root).parent() {
+                cmd.env("GIT_CEILING_DIRECTORIES", parent);
+            }
         }
         let out = cmd.output().ok()?;
         if out.status.success() {
