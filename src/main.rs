@@ -1,5 +1,6 @@
 mod ai;
 mod app;
+mod archwatch;
 mod config;
 mod git;
 mod github;
@@ -237,6 +238,16 @@ fn run_app<B: Backend>(
                     if count == 1 { "" } else { "s" },
                 ));
             }
+
+            // Auto-update Archwatch if enabled
+            if app.config.archwatch.auto_launch {
+                let _ = archwatch::launch_archwatch(
+                    &app.config.archwatch,
+                    &app.tab().repo_root,
+                    &app.tab().files,
+                    &app.tab().ai,
+                );
+            }
         }
 
         // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
@@ -347,6 +358,21 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
         }
         HubAction::StageAll => {
             app.stage_all()?;
+        }
+        HubAction::LaunchArchwatch => {
+            let result = {
+                let tab = app.tab();
+                archwatch::launch_archwatch(
+                    &app.config.archwatch,
+                    &tab.repo_root,
+                    &tab.files,
+                    &tab.ai,
+                )
+            };
+            match result {
+                Ok(msg) => app.notify(&msg),
+                Err(e) => app.notify(&format!("Archwatch: {}", e)),
+            }
         }
         HubAction::CopyContext => {
             app.copy_context()?;
