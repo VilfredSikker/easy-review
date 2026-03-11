@@ -6,6 +6,7 @@ use ratatui::{
     Frame,
 };
 
+use super::file_tree::shorten_path;
 use super::styles;
 use super::utils::{horizontal_rule, word_wrap};
 use crate::ai::{CommentRef, CommentType, PanelContent, ReviewFocus, RiskLevel};
@@ -194,16 +195,19 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 Span::styled(risk_label, risk_style),
             ]));
 
+            let max_w = area.width.saturating_sub(3) as usize;
+
             if !fr.risk_reason.is_empty() {
-                lines.push(Line::from(vec![Span::styled(
-                    format!(" {}", fr.risk_reason),
-                    Style::default().fg(styles::DIM),
-                )]));
+                for wrapped in word_wrap(&fr.risk_reason, max_w) {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(" {}", wrapped),
+                        Style::default().fg(styles::DIM),
+                    )]));
+                }
             }
 
             if !fr.summary.is_empty() {
                 lines.push(Line::from(""));
-                let max_w = area.width.saturating_sub(3) as usize;
                 for wrapped in word_wrap(&fr.summary, max_w) {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {}", wrapped),
@@ -213,6 +217,98 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             }
 
             lines.push(Line::from(""));
+        }
+    }
+
+    // All findings for this file — sorted by severity, then location
+    if tab.layers.show_ai_findings {
+        if let Some(fr) = tab.ai.file_review(path) {
+            if !fr.findings.is_empty() {
+                let file_stale = tab.ai.is_file_stale(path);
+                let max_w = area.width.saturating_sub(5) as usize;
+
+                let mut sorted_findings: Vec<&crate::ai::Finding> = fr.findings.iter().collect();
+                sorted_findings.sort_by(|a, b| {
+                    let sev_ord = |r: &RiskLevel| match r {
+                        RiskLevel::High => 0,
+                        RiskLevel::Medium => 1,
+                        RiskLevel::Low => 2,
+                        RiskLevel::Info => 3,
+                    };
+                    sev_ord(&a.severity)
+                        .cmp(&sev_ord(&b.severity))
+                        .then_with(|| a.hunk_index.cmp(&b.hunk_index))
+                        .then_with(|| a.line_start.cmp(&b.line_start))
+                });
+
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" Findings ({})", sorted_findings.len()),
+                    Style::default()
+                        .fg(styles::PURPLE)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                lines.push(Line::from(""));
+
+                for finding in sorted_findings {
+                    let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
+                    let bg = if is_focused {
+                        styles::FINDING_FOCUS_BG
+                    } else {
+                        styles::SURFACE
+                    };
+                    let prefix = if is_focused { "▸" } else { " " };
+
+                    let sev_style = if file_stale {
+                        styles::stale_style().bg(bg)
+                    } else {
+                        match finding.severity {
+                            RiskLevel::High => styles::risk_high().bg(bg),
+                            RiskLevel::Medium => styles::risk_medium().bg(bg),
+                            RiskLevel::Low => styles::risk_low().bg(bg),
+                            RiskLevel::Info => Style::default().fg(styles::BLUE).bg(bg),
+                        }
+                    };
+
+                    // Word-wrap the title line: first line gets icon prefix,
+                    // continuation lines get indent to align under text
+                    let title_text = format!("[{}] {}", finding.category, finding.title);
+                    let title_lines = word_wrap(&title_text, max_w);
+                    for (i, wrapped) in title_lines.iter().enumerate() {
+                        if i == 0 {
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!("{}{} ", prefix, finding.severity.symbol()),
+                                    sev_style,
+                                ),
+                                Span::styled(wrapped.to_string(), sev_style),
+                            ]));
+                        } else {
+                            lines.push(Line::from(vec![Span::styled(
+                                format!("   {}", wrapped),
+                                sev_style,
+                            )]));
+                        }
+                    }
+
+                    // Location line for inline findings (hunk/line-anchored)
+                    if finding.hunk_index.is_some() || finding.line_start.is_some() {
+                        let loc = match (finding.hunk_index, finding.line_start) {
+                            (Some(h), Some(l)) => {
+                                format!("   hunk {}, line {}", h + 1, l)
+                            }
+                            (Some(h), None) => format!("   hunk {}", h + 1),
+                            (None, Some(l)) => format!("   line {}", l),
+                            (None, None) => unreachable!(),
+                        };
+                        lines.push(Line::from(vec![Span::styled(
+                            loc,
+                            Style::default().fg(styles::DIM).bg(bg),
+                        )]));
+                    }
+
+                    lines.push(Line::from(""));
+                }
+            }
         }
     }
 
@@ -472,6 +568,8 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
 
             let prefix = if is_selected { "▸" } else { " " };
 
+            let max_path_w = area.width.saturating_sub(5) as usize;
+            let display_path = shorten_path(path, max_path_w);
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("{}{} ", prefix, fr.risk.symbol()),
@@ -481,7 +579,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
                         risk_style
                     },
                 ),
-                Span::styled(*path, path_style),
+                Span::styled(display_path, path_style),
             ]));
         }
 

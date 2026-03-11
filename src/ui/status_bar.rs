@@ -188,6 +188,14 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             mode_style(DiffMode::Conflicts, tab.mode),
         ));
     }
+    if app.config.features.view_hidden {
+        modes.push(Span::raw(" "));
+        modes.push(Span::styled(" 6 ", mode_style(DiffMode::Hidden, tab.mode)));
+        modes.push(Span::styled(
+            " HIDDEN ",
+            mode_style(DiffMode::Hidden, tab.mode),
+        ));
+    }
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(
@@ -716,6 +724,9 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
         InputMode::Confirm(action) => {
             let prompt = match action {
                 ConfirmAction::DeleteComment { .. } => "Delete comment? (y/n)".to_string(),
+                ConfirmAction::DeleteWatchedFile { ref path } => {
+                    format!("Delete {}? (y/n)", path)
+                }
                 ConfirmAction::Push => "Push branch to remote? (y/n)".to_string(),
                 ConfirmAction::CleanupQuestions { count } => {
                     format!("Clear {} question(s)? (y/n)", count)

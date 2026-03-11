@@ -502,7 +502,7 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Shorten a file path to fit within max_width
-fn shorten_path(path: &str, max_width: usize) -> String {
+pub(crate) fn shorten_path(path: &str, max_width: usize) -> String {
     if path.len() <= max_width {
         return path.to_string();
     }

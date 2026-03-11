@@ -69,6 +69,8 @@ pub struct FeatureFlags {
     pub view_history: bool,
     #[serde(default = "default_true")]
     pub view_conflicts: bool,
+    #[serde(default = "default_true")]
+    pub view_hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +166,7 @@ impl Default for FeatureFlags {
             view_staged: true,
             view_history: true,
             view_conflicts: true,
+            view_hidden: true,
         }
     }
 }
@@ -331,6 +334,11 @@ pub fn settings_items() -> Vec<SettingsItem> {
             label: "Conflicts (5)".into(),
             get: |c| c.features.view_conflicts,
             set: |c, v| c.features.view_conflicts = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Hidden files (6)".into(),
+            get: |c| c.features.view_hidden,
+            set: |c, v| c.features.view_hidden = v,
         },
         SettingsItem::SectionHeader("Display".into()),
         SettingsItem::BoolToggle {
@@ -608,6 +616,7 @@ mod tests {
         assert!(flags.view_staged);
         assert!(flags.view_history);
         assert!(flags.view_conflicts);
+        assert!(flags.view_hidden);
     }
 
     #[test]
@@ -631,6 +640,7 @@ mod tests {
                 view_staged: false,
                 view_history: true,
                 view_conflicts: false,
+                view_hidden: true,
             },
             display: DisplayConfig {
                 tab_width: 8,

@@ -444,6 +444,10 @@ fn handle_normal_input(
             app.tab_mut().set_mode(DiffMode::Conflicts);
             return Ok(());
         }
+        KeyCode::Char('6') if app.config.features.view_hidden => {
+            app.tab_mut().set_mode(DiffMode::Hidden);
+            return Ok(());
+        }
         // Toggle mtime sort (works in any mode)
         KeyCode::Char('m') => {
             let tab = app.tab_mut();
@@ -518,6 +522,18 @@ fn handle_normal_input(
         }
         KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.prev_finding();
+            return Ok(());
+        }
+        // Delete watched file in Hidden mode
+        KeyCode::Char('d')
+            if key.modifiers == KeyModifiers::NONE && app.tab().mode == DiffMode::Hidden =>
+        {
+            if let Some(idx) = app.tab().selected_watched {
+                if let Some(wf) = app.tab().watched_files.get(idx) {
+                    let path = wf.path.clone();
+                    app.input_mode = InputMode::Confirm(ConfirmAction::DeleteWatchedFile { path });
+                }
+            }
             return Ok(());
         }
         // Delete focused comment (after J/K jump) — only if deletable
@@ -758,9 +774,9 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Push all comments to GitHub
+        // Toggle context panel backward (P) — cycles through panel states in reverse
         KeyCode::Char('P') => {
-            push_all_comments_to_github(app)?;
+            app.tab_mut().toggle_panel_reverse();
             return Ok(());
         }
 
@@ -1219,6 +1235,28 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 cleanup_questions(&repo_root);
                 app.tab_mut().reload_ai_state();
                 app.notify("Questions cleared");
+            } else if let InputMode::Confirm(ConfirmAction::DeleteWatchedFile { ref path }) = action
+            {
+                let full_path = format!("{}/{}", app.tab().repo_root, path);
+                app.input_mode = InputMode::Normal;
+                match std::fs::remove_file(&full_path) {
+                    Ok(_) => {
+                        app.tab_mut().refresh_watched_files();
+                        // Clamp selection after removal
+                        let count = app.tab().watched_files.len();
+                        if count == 0 {
+                            app.tab_mut().selected_watched = None;
+                        } else if let Some(idx) = app.tab().selected_watched {
+                            if idx >= count {
+                                app.tab_mut().selected_watched = Some(count - 1);
+                            }
+                        }
+                        app.notify(&format!("Deleted: {}", path));
+                    }
+                    Err(e) => {
+                        app.notify(&format!("Delete failed: {}", e));
+                    }
+                }
             } else if let InputMode::Confirm(ConfirmAction::CleanupReviews { .. }) = action {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
