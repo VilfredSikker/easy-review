@@ -2710,12 +2710,18 @@ impl TabState {
                 self.current_line = None;
                 self.selected_watched = None;
                 self.diff_scroll = 0;
+                self.h_scroll = 0;
+                self.h_scroll_old = 0;
+                self.h_scroll_new = 0;
                 self.refresh_conflicts();
             } else {
                 self.current_hunk = 0;
                 self.current_line = None;
                 self.selected_watched = None;
                 self.diff_scroll = 0;
+                self.h_scroll = 0;
+                self.h_scroll_old = 0;
+                self.h_scroll_new = 0;
                 let _ = self.refresh_diff_mode_switch();
 
                 // Restore selection by path (file order may differ between modes)
