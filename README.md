@@ -10,11 +10,23 @@ When working with Claude Code (or similar AI tools), code gets written faster th
 
 ## Install
 
+### Quick install (macOS / Linux)
+
 ```bash
+curl -fsSL https://raw.githubusercontent.com/VilfredSikker/easy-review/main/install.sh | bash
+```
+
+Installs a pre-built binary to `~/.local/bin/`. Options: `--version v0.1.0`, `--dir /usr/local/bin`.
+
+### From source
+
+```bash
+git clone https://github.com/VilfredSikker/easy-review.git
+cd easy-review
 cargo install --path .
 ```
 
-Requires Rust 1.70+. The binary is called `er`.
+Requires Rust 1.70+.
 
 ## Usage
 
