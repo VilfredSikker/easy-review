@@ -81,10 +81,6 @@
       animation-delay: 0.5s, 1.7s;
     }
 
-    /* Scroll reveal */
-    .reveal { opacity: 0; transform: translateY(30px); transition: all 0.6s ease-out; }
-    .reveal.visible { opacity: 1; transform: translateY(0); }
-
     /* Smooth scroll */
     html { scroll-behavior: smooth; }
 
@@ -95,6 +91,7 @@
     /* Inline comment blocks */
     .comment-gh { background: rgba(34, 211, 238, 0.05); border-left: 2px solid #22d3ee; }
     .comment-ai { background: rgba(209, 134, 22, 0.07); border-left: 2px solid #d18616; }
+    .comment-q  { background: rgba(250, 204, 21, 0.05); border-left: 2px solid #facc15; }
 
     /* Keycap style */
     .keycap {
@@ -111,7 +108,296 @@
       font-family: 'JetBrains Mono', monospace;
       font-size: 0.75rem;
       color: #e4e4ef;
+      transition: box-shadow 0.15s, transform 0.15s;
     }
+    .keycap.pressed {
+      box-shadow: 0 0 8px rgba(167,139,250,0.5);
+      transform: scale(1.1);
+    }
+
+    /* ─── Scroll reveal ─── */
+    .reveal-up    { opacity: 0; transform: translateY(30px);  transition: all 0.7s cubic-bezier(0.16, 1, 0.3, 1); }
+    .reveal-left  { opacity: 0; transform: translateX(-40px); transition: all 0.7s cubic-bezier(0.16, 1, 0.3, 1); }
+    .reveal-right { opacity: 0; transform: translateX(40px);  transition: all 0.7s cubic-bezier(0.16, 1, 0.3, 1); }
+    .reveal-up.active, .reveal-left.active, .reveal-right.active {
+      opacity: 1; transform: translate(0);
+    }
+    /* legacy alias for old .reveal usage */
+    .reveal { opacity: 0; transform: translateY(30px); transition: all 0.6s ease-out; }
+    .reveal.visible, .reveal.active { opacity: 1; transform: translateY(0); }
+
+    /* ─── Stats strip ─── */
+    .stats-strip {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 0;
+      flex-wrap: wrap;
+    }
+    .stats-strip .stat-item {
+      flex: 1 1 150px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1.5rem;
+      border-right: 1px solid #2a2a3a;
+    }
+    .stats-strip .stat-item:last-child { border-right: none; }
+    .stat-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 2.5rem;
+      font-weight: 700;
+      color: #a78bfa;
+      line-height: 1;
+      margin-bottom: 0.4rem;
+    }
+    .stat-label {
+      font-size: 0.8rem;
+      color: #8888a0;
+      text-align: center;
+    }
+
+    /* ─── Timeline ─── */
+    .timeline-container { position: relative; padding-left: 2.5rem; }
+    .timeline-container::before {
+      content: '';
+      position: absolute;
+      left: 0.6rem;
+      top: 1rem;
+      bottom: 1rem;
+      width: 1px;
+      background: #2a2a3a;
+    }
+    .timeline-step {
+      position: relative;
+      padding-bottom: 2.5rem;
+      opacity: 0;
+      transform: translateX(-20px);
+      transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .timeline-step.active { opacity: 1; transform: translateX(0); }
+    .timeline-node {
+      position: absolute;
+      left: -2.5rem;
+      top: 0.25rem;
+      width: 1.25rem;
+      height: 1.25rem;
+      border-radius: 50%;
+      background: #1a1a24;
+      border: 2px solid #2a2a3a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .timeline-node.key {
+      width: 1.6rem;
+      height: 1.6rem;
+      left: calc(-2.5rem - 0.175rem);
+      background: rgba(167,139,250,0.15);
+      border-color: #a78bfa;
+      box-shadow: 0 0 12px rgba(167,139,250,0.3);
+    }
+    .timeline-node.key-cyan {
+      background: rgba(34,211,238,0.15);
+      border-color: #22d3ee;
+      box-shadow: 0 0 12px rgba(34,211,238,0.3);
+    }
+
+    /* ─── Mini terminal drop-ins ─── */
+    .mini-term {
+      background: #13131a;
+      border: 1px solid #2a2a3a;
+      border-radius: 10px;
+      overflow: hidden;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      box-shadow: 0 0 30px -8px rgba(167,139,250,0.12);
+    }
+    .mini-term-chrome {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid #2a2a3a;
+      background: #1a1a24;
+    }
+    .mini-term-chrome .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .mini-term-chrome .dot-r { background: rgba(248,113,113,0.6); }
+    .mini-term-chrome .dot-y { background: rgba(250,204,21,0.6); }
+    .mini-term-chrome .dot-g { background: rgba(74,222,128,0.6); }
+    .mini-term-chrome .title { margin-left: 0.5rem; font-size: 0.65rem; color: #55556a; }
+
+    /* ─── Showcase: Watch mode animation ─── */
+    @keyframes sc1-flash {
+      0%, 100% { background: transparent; }
+      20%, 35% { background: rgba(167,139,250,0.08); }
+    }
+    @keyframes sc1-badge {
+      0%, 15% { opacity: 0; transform: translateX(4px); }
+      20%, 75% { opacity: 1; transform: translateX(0); }
+      85%, 100% { opacity: 0; transform: translateX(4px); }
+    }
+    @keyframes sc1-check {
+      0%, 18% { opacity: 1; }
+      22%, 85% { opacity: 0; }
+      90%, 100% { opacity: 1; }
+    }
+    @keyframes sc1-newline {
+      0%, 25% { opacity: 0; transform: translateY(-4px); }
+      35%, 75% { opacity: 1; transform: translateY(0); }
+      85%, 100% { opacity: 0; transform: translateY(-4px); }
+    }
+    .sc1-file-flash { animation: sc1-flash 10s ease infinite; }
+    .sc1-badge      { animation: sc1-badge 10s ease infinite; }
+    .sc1-check      { animation: sc1-check 10s ease infinite; }
+    .sc1-newline    { animation: sc1-newline 10s ease infinite; animation-delay: 0.3s; }
+
+    /* ─── Showcase: Comments animation ─── */
+    @keyframes sc2-key-c {
+      0%, 10% { box-shadow: none; transform: scale(1); }
+      12%, 22% { box-shadow: 0 0 8px rgba(167,139,250,0.5); transform: scale(1.1); }
+      24%, 100% { box-shadow: none; transform: scale(1); }
+    }
+    @keyframes sc2-key-q {
+      0%, 35% { box-shadow: none; transform: scale(1); }
+      37%, 47% { box-shadow: 0 0 8px rgba(167,139,250,0.5); transform: scale(1.1); }
+      49%, 100% { box-shadow: none; transform: scale(1); }
+    }
+    @keyframes sc2-comment-gh {
+      0%, 8% { opacity: 0; transform: translateY(-4px); }
+      15%, 75% { opacity: 1; transform: translateY(0); }
+      85%, 100% { opacity: 0; transform: translateY(-4px); }
+    }
+    @keyframes sc2-comment-q {
+      0%, 35% { opacity: 0; transform: translateY(-4px); }
+      45%, 75% { opacity: 1; transform: translateY(0); }
+      85%, 100% { opacity: 0; transform: translateY(-4px); }
+    }
+    @keyframes sc2-reply {
+      0%, 50% { opacity: 0; max-height: 0; }
+      60%, 75% { opacity: 1; max-height: 40px; }
+      85%, 100% { opacity: 0; max-height: 0; }
+    }
+    .sc2-key-c    { animation: sc2-key-c 12s ease infinite; }
+    .sc2-key-q    { animation: sc2-key-q 12s ease infinite; }
+    .sc2-comment-gh { animation: sc2-comment-gh 12s ease infinite; }
+    .sc2-comment-q  { animation: sc2-comment-q 12s ease infinite; }
+    .sc2-reply      { animation: sc2-reply 12s ease infinite; overflow: hidden; }
+
+    /* ─── Showcase: PR panel animation ─── */
+    @keyframes sc3-spinner {
+      0%, 60% { content: '⟳'; color: #facc15; }
+      65%, 85% { content: '✓'; color: #4ade80; }
+      90%, 100% { content: '⟳'; color: #facc15; }
+    }
+    @keyframes sc3-status {
+      0%, 40% { opacity: 1; }
+      50%, 65% { opacity: 0; }
+      70%, 100% { opacity: 1; }
+    }
+    @keyframes sc3-approved {
+      0%, 45% { opacity: 0; }
+      55%, 85% { opacity: 1; }
+      90%, 100% { opacity: 0; }
+    }
+    @keyframes sc3-key-ctrl-p {
+      0%, 65% { box-shadow: none; transform: scale(1); }
+      68%, 78% { box-shadow: 0 0 8px rgba(167,139,250,0.5); transform: scale(1.1); }
+      80%, 100% { box-shadow: none; transform: scale(1); }
+    }
+    @keyframes sc3-pushed {
+      0%, 72% { opacity: 0; }
+      75%, 84% { opacity: 1; }
+      88%, 100% { opacity: 0; }
+    }
+    .sc3-spinner   { display: inline-block; animation: sc3-spinner 10s step-end infinite; }
+    .sc3-status    { animation: sc3-status 10s ease infinite; }
+    .sc3-approved  { animation: sc3-approved 10s ease infinite; }
+    .sc3-key-ctrl-p { animation: sc3-key-ctrl-p 10s ease infinite; }
+    .sc3-pushed    { animation: sc3-pushed 10s ease infinite; }
+
+    /* ─── Showcase: AI animation ─── */
+    @keyframes sc4-toggle {
+      0%, 15% { color: #55556a; }
+      20%, 85% { color: #4ade80; }
+      90%, 100% { color: #55556a; }
+    }
+    @keyframes sc4-findings {
+      0%, 18% { opacity: 0; }
+      25%, 78% { opacity: 1; }
+      85%, 100% { opacity: 0; }
+    }
+    @keyframes sc4-panel {
+      0%, 22% { opacity: 0; transform: translateX(12px); }
+      30%, 78% { opacity: 1; transform: translateX(0); }
+      85%, 100% { opacity: 0; transform: translateX(12px); }
+    }
+    @keyframes sc4-riskbar {
+      0%, 25% { width: 0%; }
+      40%, 78% { width: 65%; }
+      85%, 100% { width: 0%; }
+    }
+    @keyframes sc4-check1 {
+      0%, 35% { opacity: 0; }
+      42%, 78% { opacity: 1; }
+      85%, 100% { opacity: 0; }
+    }
+    .sc4-toggle   { animation: sc4-toggle 12s ease infinite; }
+    .sc4-findings { animation: sc4-findings 12s ease infinite; }
+    .sc4-panel    { animation: sc4-panel 12s ease infinite; }
+    .sc4-riskbar  { animation: sc4-riskbar 12s ease infinite; }
+    .sc4-check    { animation: sc4-check1 12s ease infinite; }
+
+    /* ─── Showcase: Filter animation ─── */
+    @keyframes sc5-key-f {
+      0%, 12% { box-shadow: none; transform: scale(1); }
+      15%, 25% { box-shadow: 0 0 8px rgba(167,139,250,0.5); transform: scale(1.1); }
+      28%, 100% { box-shadow: none; transform: scale(1); }
+    }
+    @keyframes sc5-filter-input {
+      0%, 10% { opacity: 0; max-height: 0; }
+      18%, 78% { opacity: 1; max-height: 30px; }
+      85%, 100% { opacity: 0; max-height: 0; }
+    }
+    @keyframes sc5-file-dim {
+      0%, 20% { opacity: 1; }
+      30%, 78% { opacity: 0.2; }
+      85%, 100% { opacity: 1; }
+    }
+    @keyframes sc5-file-bright {
+      0%, 20% { opacity: 0.3; }
+      30%, 78% { opacity: 1; }
+      85%, 100% { opacity: 0.3; }
+    }
+    @keyframes sc5-counter {
+      0%, 20% { content: '12/12'; }
+      30%, 78% { content: '4/12'; }
+      85%, 100% { content: '12/12'; }
+    }
+    .sc5-key-f         { animation: sc5-key-f 10s ease infinite; }
+    .sc5-filter-input  { animation: sc5-filter-input 10s ease infinite; overflow: hidden; }
+    .sc5-file-dim      { animation: sc5-file-dim 10s ease infinite; }
+    .sc5-file-bright   { animation: sc5-file-bright 10s ease infinite; }
+
+    /* ─── Showcase section layout ─── */
+    .showcase-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4rem;
+      align-items: center;
+    }
+    @media (max-width: 900px) {
+      .showcase-row {
+        grid-template-columns: 1fr;
+        gap: 2.5rem;
+      }
+      .showcase-row.reverse-mobile > *:first-child { order: 2; }
+      .showcase-row.reverse-mobile > *:last-child  { order: 1; }
+    }
+
+    /* ─── Spin keyframe for CI check ─── */
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .spin { display: inline-block; animation: spin 1.2s linear infinite; }
   </style>
 </head>
 <body class="grid-bg min-h-screen overflow-x-hidden">
@@ -152,7 +438,7 @@
       </h1>
 
       <p class="fade-up fade-up-3 text-lg sm:text-xl text-text-dim max-w-2xl mx-auto mb-10 font-light leading-relaxed">
-        A keyboard-driven terminal UI for reviewing git diffs — leave comments, sync with GitHub, and get AI-powered risk analysis. Built for developers who use AI coding assistants and need to review faster than they can code.
+        A keyboard-driven terminal UI for reviewing git diffs — leave comments, sync with GitHub, and get AI-powered risk analysis. Built for developers who use Claude Code and need to review faster than they can code.
       </p>
 
       <!-- Install command -->
@@ -391,214 +677,672 @@
     </div>
   </section>
 
-  <!-- ===== PITCH LINE ===== -->
-  <section class="py-16 px-6 border-y border-border/50">
-    <div class="max-w-3xl mx-auto text-center reveal">
-      <p class="text-2xl sm:text-3xl font-light leading-relaxed text-text-dim">
-        AI writes code in seconds. You shouldn't spend minutes figuring out what changed. <span class="text-text font-normal">Open <span class="font-mono text-accent">er</span>, leave comments, sync with GitHub, get AI risk analysis — and close the loop.</span>
-      </p>
+  <!-- ===== STATS STRIP ===== -->
+  <section class="border-y border-border/50 reveal-up">
+    <div class="max-w-5xl mx-auto stats-strip">
+      <div class="stat-item">
+        <div class="stat-value" data-target="5" data-suffix="">5</div>
+        <div class="stat-label">diff modes</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" data-static="true">&lt;1s</div>
+        <div class="stat-label">startup time</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" data-target="100" data-suffix="%">100%</div>
+        <div class="stat-label">keyboard-driven</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value" data-static="true">2-way</div>
+        <div class="stat-label">GitHub sync</div>
+      </div>
     </div>
   </section>
 
-  <!-- ===== FEATURES ===== -->
+  <!-- ===== SHOWCASE SECTIONS ===== -->
   <section id="features" class="py-24 px-6">
-    <div class="max-w-5xl mx-auto">
-      <div class="text-center mb-16 reveal">
-        <span class="font-mono text-xs text-accent uppercase tracking-widest">Features</span>
-        <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3">Everything you need, nothing you don't</h2>
+    <div class="max-w-6xl mx-auto space-y-32">
+
+      <!-- ── Showcase 1: Watch mode ── (text left, component right) -->
+      <div class="showcase-row">
+        <!-- Text -->
+        <div class="reveal-left">
+          <span class="font-mono text-xs text-green uppercase tracking-widest">Live updates</span>
+          <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">Watch your diff<br>update in real time</h2>
+          <p class="text-text-dim leading-relaxed mb-6">
+            Open <span class="font-mono text-accent text-sm">er</span> next to Claude Code in Ghostty or tmux. Every file save, every staged change, every commit — your diff view stays live. No manual refresh.
+          </p>
+          <ul class="space-y-3 text-sm text-text-dim mb-7">
+            <li class="flex gap-3">
+              <span class="text-green mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Live watch mode</strong> — 500ms debounce, watches working tree + staging + commits simultaneously</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-green mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Five diff modes</strong> — Branch, Unstaged, Staged, History, Conflicts. Switch instantly with <span class="keycap">1</span>–<span class="keycap">5</span></span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-green mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Review tracking</strong> — mark files reviewed with <span class="keycap">Space</span>, jump to next unreviewed with <span class="keycap">U</span>. Marks clear automatically when the diff underneath changes</span>
+            </li>
+          </ul>
+          <div class="flex flex-wrap gap-2 items-center">
+            <span class="text-xs text-text-muted">Keys:</span>
+            <span class="keycap">Space</span>
+            <span class="keycap">1</span><span class="keycap">2</span><span class="keycap">3</span><span class="keycap">4</span>
+            <span class="keycap">U</span>
+          </div>
+        </div>
+
+        <!-- Mini terminal: Watch mode -->
+        <div class="reveal-right">
+          <div class="mini-term">
+            <div class="mini-term-chrome">
+              <div class="dot dot-r"></div>
+              <div class="dot dot-y"></div>
+              <div class="dot dot-g"></div>
+              <span class="title">er — branch diff</span>
+              <span class="ml-auto text-green text-xs font-mono">● WATCH</span>
+            </div>
+            <div class="p-3">
+              <!-- file tree -->
+              <div class="text-text-muted text-xs uppercase tracking-wider mb-2">Files <span class="text-text-dim">· 5</span> <span class="text-green ml-2">Reviewed: <span class="text-green">2</span>/5</span></div>
+              <div class="space-y-0.5">
+                <!-- file 1: flashing on change -->
+                <div class="sc1-file-flash flex items-center gap-1.5 px-1.5 py-1 rounded bg-accent/10 text-accent">
+                  <span class="text-yellow text-xs">●</span>
+                  <span class="truncate text-xs">src/app/state.rs</span>
+                  <span class="ml-auto sc1-badge text-green text-xs shrink-0">+3 -1</span>
+                  <span class="sc1-check text-green text-xs shrink-0 ml-1">✓</span>
+                </div>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded text-text-dim">
+                  <span class="text-green text-xs">●</span>
+                  <span class="truncate text-xs">src/ui/diff_view.rs</span>
+                  <span class="ml-auto text-green text-xs">✓</span>
+                </div>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded text-text-dim">
+                  <span class="text-green text-xs">●</span>
+                  <span class="truncate text-xs">src/git/diff.rs</span>
+                </div>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded text-text-dim">
+                  <span class="text-red text-xs">●</span>
+                  <span class="truncate text-xs">src/config.rs</span>
+                </div>
+                <div class="flex items-center gap-1.5 px-1.5 py-1 rounded text-text-dim">
+                  <span class="text-text-muted text-xs">·</span>
+                  <span class="truncate text-xs">Cargo.toml</span>
+                </div>
+              </div>
+              <!-- new diff lines appearing -->
+              <div class="mt-3 pt-3 border-t border-border/50 space-y-0.5">
+                <div class="flex items-center gap-2 px-1">
+                  <span class="text-text-muted text-xs w-6 text-right">42</span>
+                  <span class="text-text-dim text-xs">    let result = self.compute();</span>
+                </div>
+                <div class="sc1-newline flex items-center gap-2 px-1 diff-add rounded">
+                  <span class="text-green/50 text-xs w-6 text-right">+</span>
+                  <span class="text-green text-xs">    tracing::debug!("result: {:?}", result);</span>
+                </div>
+                <div class="sc1-newline flex items-center gap-2 px-1 diff-add rounded" style="animation-delay: 0.15s;">
+                  <span class="text-green/50 text-xs w-6 text-right">+</span>
+                  <span class="text-green text-xs">    Ok(result)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-        <!-- Feature 1: AI Review -->
-        <div class="reveal bg-surface border border-accent/30 rounded-lg p-6 hover:border-accent/50 transition group relative overflow-hidden">
-          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(167,139,250,0.06)_0%,transparent_70%)] pointer-events-none"></div>
-          <div class="w-9 h-9 rounded-md bg-accent/15 border border-accent/25 flex items-center justify-center mb-4 font-mono text-accent text-sm">⬡</div>
-          <h3 class="font-body font-500 text-base mb-2">AI-powered review</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-xs">/er-review</span> from Claude Code to get per-file risk ratings and hunk-level findings rendered inline. Press <span class="keycap">a</span> to toggle the AI findings layer. Run <span class="font-mono text-accent text-xs">/er-questions</span> standalone — no full review needed — to get AI answers to your private questions.</p>
+      <!-- ── Showcase 2: Comments ── (component left, text right) -->
+      <div class="showcase-row reverse-mobile">
+        <!-- Mini terminal: Comments -->
+        <div class="reveal-left">
+          <div class="mini-term">
+            <div class="mini-term-chrome">
+              <div class="dot dot-r"></div>
+              <div class="dot dot-y"></div>
+              <div class="dot dot-g"></div>
+              <span class="title">src/auth/login.rs</span>
+              <span class="ml-auto text-cyan text-xs">💬 3</span>
+            </div>
+            <div class="p-3 space-y-0.5">
+              <!-- diff fragment -->
+              <div class="flex items-center gap-2 diff-add rounded px-1 py-0.5">
+                <span class="text-green/50 text-xs w-5 text-right">22</span>
+                <span class="text-green text-xs">+       let token = self.issue_token(&amp;user)?;</span>
+              </div>
+              <!-- cyan github comment -->
+              <div class="sc2-comment-gh comment-gh px-2 py-1.5 rounded-r">
+                <div class="flex items-center gap-1.5 mb-0.5">
+                  <span class="text-cyan text-xs">💬 @reviewer</span>
+                  <span class="text-text-muted text-xs">1h ago</span>
+                </div>
+                <div class="text-text-dim text-xs">Should validate token format before issuing?</div>
+                <!-- reply -->
+                <div class="sc2-reply text-text-muted text-xs mt-0.5">↳ 💬 @author: Added format check in next commit</div>
+              </div>
+              <div class="flex items-center gap-2 diff-add rounded px-1 py-0.5">
+                <span class="text-green/50 text-xs w-5 text-right">23</span>
+                <span class="text-green text-xs">+       let session = Session::new(user, token);</span>
+              </div>
+              <!-- yellow question -->
+              <div class="sc2-comment-q comment-q px-2 py-1.5 rounded-r">
+                <div class="flex items-center gap-1.5 mb-0.5">
+                  <span class="text-yellow text-xs">? private question</span>
+                </div>
+                <div class="text-text-dim text-xs">What happens if token expires mid-session?</div>
+              </div>
+              <!-- stale/dimmed comment -->
+              <div class="flex items-center gap-2 diff-add rounded px-1 py-0.5">
+                <span class="text-green/50 text-xs w-5 text-right">24</span>
+                <span class="text-green text-xs">+       self.store.save(&amp;session).await?;</span>
+              </div>
+              <div class="comment-gh px-2 py-1.5 rounded-r opacity-40">
+                <div class="flex items-center gap-1.5 mb-0.5">
+                  <span class="text-cyan text-xs">💬 @bob</span>
+                  <span class="text-yellow text-xs ml-1">⚠ stale</span>
+                </div>
+                <div class="text-text-dim text-xs">Line moved — comment may be misplaced</div>
+              </div>
+              <!-- keycap row -->
+              <div class="flex items-center gap-2 pt-2 mt-1 border-t border-border/50">
+                <span class="text-text-muted text-xs">Press:</span>
+                <span class="keycap sc2-key-c">c</span>
+                <span class="text-text-muted text-xs">GitHub comment</span>
+                <span class="keycap sc2-key-q ml-2">q</span>
+                <span class="text-text-muted text-xs">question</span>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- Feature 2: Two comment types -->
-        <div class="reveal bg-surface border border-cyan/30 rounded-lg p-6 hover:border-cyan/50 transition group relative overflow-hidden">
-          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.06)_0%,transparent_70%)] pointer-events-none"></div>
-          <div class="w-9 h-9 rounded-md bg-cyan/15 border border-cyan/25 flex items-center justify-center mb-4 font-mono text-cyan text-sm">💬</div>
-          <h3 class="font-body font-500 text-base mb-2">Two comment types</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">c</span> to leave GitHub comments (cyan) that sync with your PR. Press <span class="keycap">q</span> to leave private questions (yellow) for AI review. Reply to threads with <span class="keycap">r</span>.</p>
+        <!-- Text -->
+        <div class="reveal-right">
+          <span class="font-mono text-xs text-cyan uppercase tracking-widest">Comments</span>
+          <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">Leave comments<br>where they matter</h2>
+          <p class="text-text-dim leading-relaxed mb-6">
+            Two comment types, one keyboard. GitHub comments sync to your PR. Private questions go to AI review. Both anchor to the exact line — and follow it through 3-pass relocation when code shifts underneath.
+          </p>
+          <ul class="space-y-3 text-sm text-text-dim mb-7">
+            <li class="flex gap-3">
+              <span class="text-cyan mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Two comment types</strong> — <span class="keycap">c</span> for cyan GitHub comments that sync to your PR, <span class="keycap">q</span> for yellow private questions answered by AI</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-cyan mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">3-pass relocation</strong> — comments stay anchored as code shifts. Dim with a stale warning when their target line disappears entirely</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-cyan mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Line-level navigation</strong> — arrow keys move between lines. Comment on exact lines, not just hunks. Tab to enter comment focus mode</span>
+            </li>
+          </ul>
+          <div class="flex flex-wrap gap-2 items-center">
+            <span class="text-xs text-text-muted">Keys:</span>
+            <span class="keycap">c</span>
+            <span class="keycap">q</span>
+            <span class="keycap">r</span>
+            <span class="keycap">d</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Showcase 3: PR panel ── (text left, component right) -->
+      <div class="showcase-row">
+        <!-- Text -->
+        <div class="reveal-left">
+          <span class="font-mono text-xs text-blue uppercase tracking-widest">PR integration</span>
+          <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">Your PR, without<br>leaving the terminal</h2>
+          <p class="text-text-dim leading-relaxed mb-6">
+            CI checks, reviewer status, labels, and GitHub comment sync — all inside <span class="font-mono text-accent text-sm">er</span>. Auto-detects your base branch from the PR target. Push to remote with <span class="keycap">Ctrl+P</span> when you're done.
+          </p>
+          <ul class="space-y-3 text-sm text-text-dim mb-7">
+            <li class="flex gap-3">
+              <span class="text-blue mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Smart PR integration</strong> — auto-detects base branch, shows CI status, reviewer decisions, and labels without opening a browser</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-blue mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Two-way GitHub sync</strong> — <span class="keycap">G</span> pulls review comments from GitHub into your diff view. <span class="keycap">P</span> pushes your local comments back. Powered by the <span class="font-mono text-xs text-cyan">gh</span> CLI</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-blue mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Git push from TUI</strong> — stage, commit, and <span class="keycap">Ctrl+P</span> push without leaving <span class="font-mono text-accent text-sm">er</span></span>
+            </li>
+          </ul>
+          <div class="flex flex-wrap gap-2 items-center">
+            <span class="text-xs text-text-muted">Keys:</span>
+            <span class="keycap">G</span>
+            <span class="keycap">P</span>
+            <span class="keycap">p</span>
+            <span class="keycap">Ctrl+P</span>
+          </div>
         </div>
 
-        <!-- Feature 3 -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 font-mono text-accent text-sm">1</div>
-          <h3 class="font-body font-500 text-base mb-2">Five diff modes</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Branch diff, unstaged, staged, commit history, and merge conflicts. Switch with <span class="keycap">1</span> <span class="keycap">2</span> <span class="keycap">3</span> <span class="keycap">4</span> <span class="keycap">5</span> — see exactly what matters.</p>
+        <!-- Mini terminal: PR panel -->
+        <div class="reveal-right">
+          <div class="mini-term">
+            <div class="mini-term-chrome">
+              <div class="dot dot-r"></div>
+              <div class="dot dot-y"></div>
+              <div class="dot dot-g"></div>
+              <span class="title">PR #42 — context panel</span>
+            </div>
+            <div class="p-3 text-xs space-y-3">
+              <div>
+                <div class="text-blue font-bold mb-0.5">Refactor auth login</div>
+                <div class="text-text-muted text-xs">feat/auth-refactor → main</div>
+              </div>
+              <div>
+                <div class="text-text-muted uppercase tracking-wider text-xs mb-1.5">CI Checks</div>
+                <div class="space-y-0.5">
+                  <div><span class="text-green">✓</span> <span class="text-text-dim">Build (2m 14s)</span></div>
+                  <div><span class="text-green">✓</span> <span class="text-text-dim">Tests (1m 32s)</span></div>
+                  <div>
+                    <span class="sc3-spinner text-yellow inline-block">⟳</span>
+                    <span class="text-text-dim ml-1">Deploy</span>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div class="text-text-muted uppercase tracking-wider text-xs mb-1.5">Reviewers</div>
+                <div class="space-y-0.5">
+                  <div><span class="text-green">✓</span> <span class="text-text-dim">alice approved</span></div>
+                  <div class="sc3-status"><span class="text-red">✗</span> <span class="text-text-dim">bob changes requested</span></div>
+                  <div class="sc3-approved" style="margin-top: -1.1rem; position: relative;">
+                    <span class="text-green">✓</span> <span class="text-text-dim">bob approved</span>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div class="text-text-muted uppercase tracking-wider text-xs mb-1.5">Sync</div>
+                <div class="text-text-dim">4 local · <span class="text-cyan">2 synced</span></div>
+              </div>
+              <div class="pt-2 border-t border-border/50 flex items-center justify-between">
+                <span class="text-text-muted">git push origin HEAD</span>
+                <span class="keycap sc3-key-ctrl-p">Ctrl+P</span>
+              </div>
+              <div class="sc3-pushed text-green text-xs text-center">✓ Pushed to origin</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Showcase 4: AI review ── (component left, text right) -->
+      <div class="showcase-row reverse-mobile">
+        <!-- Mini terminal: AI composite -->
+        <div class="reveal-left">
+          <div class="mini-term">
+            <div class="mini-term-chrome">
+              <div class="dot dot-r"></div>
+              <div class="dot dot-y"></div>
+              <div class="dot dot-g"></div>
+              <span class="title">er — AI review</span>
+              <span class="ml-auto text-orange text-xs">⚠ 3 findings</span>
+            </div>
+            <div class="flex" style="min-height: 220px;">
+              <!-- Left: inline diff with AI findings -->
+              <div class="flex-1 border-r border-border p-2 overflow-hidden">
+                <!-- toggle -->
+                <div class="flex items-center gap-2 mb-2 px-1">
+                  <span class="text-text-muted text-xs">[</span>
+                  <span class="sc4-toggle text-xs font-mono font-bold">a</span>
+                  <span class="text-text-muted text-xs">] AI:</span>
+                  <span class="sc4-toggle text-xs font-bold">ON</span>
+                </div>
+                <!-- diff lines -->
+                <div class="space-y-0.5">
+                  <div class="diff-del flex gap-1 px-1 py-0.5 rounded text-xs">
+                    <span class="text-red/50 w-4 text-right shrink-0">-</span>
+                    <span class="text-red">fn verify(t: Token) {</span>
+                  </div>
+                  <div class="diff-add flex gap-1 px-1 py-0.5 rounded text-xs">
+                    <span class="text-green/50 w-4 text-right shrink-0">+</span>
+                    <span class="text-green">async fn verify(t: Token) -&gt; Result {</span>
+                  </div>
+                  <!-- AI finding 1 -->
+                  <div class="sc4-findings comment-ai px-2 py-1 rounded-r text-xs">
+                    <span class="text-orange">⚠ Logic</span>
+                    <span class="text-text-dim ml-1">Missing error propagation on verify</span>
+                  </div>
+                  <div class="diff-add flex gap-1 px-1 py-0.5 rounded text-xs">
+                    <span class="text-green/50 w-4 text-right shrink-0">+</span>
+                    <span class="text-green">    self.store.save(&amp;t).await?;</span>
+                  </div>
+                  <!-- AI finding 2 (stale) -->
+                  <div class="comment-ai px-2 py-1 rounded-r text-xs opacity-40">
+                    <span class="text-orange">⚠ Perf</span>
+                    <span class="text-yellow ml-1">⚠ stale</span>
+                  </div>
+                </div>
+              </div>
+              <!-- Right: AI summary panel -->
+              <div class="sc4-panel w-36 p-2 overflow-hidden flex-shrink-0">
+                <div class="text-text-muted text-xs uppercase tracking-wider mb-2">AI Summary</div>
+                <div class="mb-2">
+                  <div class="text-text-muted text-xs mb-0.5">Risk</div>
+                  <div class="text-yellow text-xs font-bold">Medium</div>
+                  <div class="w-full bg-border rounded-full h-1 mt-1">
+                    <div class="sc4-riskbar bg-yellow h-1 rounded-full" style="width: 0%;"></div>
+                  </div>
+                </div>
+                <div class="mb-2">
+                  <div class="text-text-muted text-xs mb-0.5">Findings</div>
+                  <div class="text-orange text-xs">3 issues</div>
+                </div>
+                <div>
+                  <div class="text-text-muted text-xs mb-1">Checklist</div>
+                  <div class="space-y-0.5 text-xs">
+                    <div class="sc4-check flex gap-1 text-green"><span>✓</span><span class="text-text-dim">Error handling</span></div>
+                    <div class="flex gap-1 text-text-muted"><span>○</span><span>Auth flow</span></div>
+                    <div class="flex gap-1 text-text-muted"><span>○</span><span>Tests</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- Feature 4 -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-green/10 border border-green/20 flex items-center justify-center mb-4 font-mono text-green text-sm">w</div>
-          <h3 class="font-body font-500 text-base mb-2">Live watch mode</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Diffs refresh automatically as files change. Perfect next to Claude Code — see changes as they're written.</p>
+        <!-- Text -->
+        <div class="reveal-right">
+          <span class="font-mono text-xs text-orange uppercase tracking-widest">AI review</span>
+          <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">AI reads the diff<br>so you don't have<br>to guess</h2>
+          <p class="text-text-dim leading-relaxed mb-6">
+            Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code. Risk ratings and hunk-level findings appear inline. Press <span class="keycap">a</span> to toggle the AI layer. Press <span class="keycap">p</span> for the AI Summary panel. Run <span class="font-mono text-accent text-sm">/er-questions</span> standalone to get answers to your private questions without a full review.
+          </p>
+          <ul class="space-y-3 text-sm text-text-dim mb-7">
+            <li class="flex gap-3">
+              <span class="text-orange mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">AI-powered review</strong> — per-file risk ratings, hunk-level findings, and a review checklist written by Claude Code, rendered inline in your diff</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-orange mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">AI Summary panel</strong> — press <span class="keycap">p</span> to see risk rating, findings count, and a file-by-file risk breakdown side-by-side with your diff</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-orange mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Cleanup commands</strong> — press <span class="keycap">z</span> to clear stale AI artifacts for the current file, <span class="keycap">Z</span> to reset all AI state</span>
+            </li>
+          </ul>
+          <div class="flex flex-wrap gap-2 items-center">
+            <span class="text-xs text-text-muted">Keys:</span>
+            <span class="keycap">a</span>
+            <span class="keycap">p</span>
+            <span class="keycap">z</span>
+            <span class="keycap">Z</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Showcase 5: Filters ── (text left, component right) -->
+      <div class="showcase-row">
+        <!-- Text -->
+        <div class="reveal-left">
+          <span class="font-mono text-xs text-cyan uppercase tracking-widest">Filters</span>
+          <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">Find what matters in<br>a thousand-line diff</h2>
+          <p class="text-text-dim leading-relaxed mb-6">
+            Combine glob patterns, file status, and size thresholds into a single filter expression. Press <span class="keycap">F</span> for built-in presets or filter history. Language-aware syntax highlighting via syntect makes every changed line readable.
+          </p>
+          <ul class="space-y-3 text-sm text-text-dim mb-7">
+            <li class="flex gap-3">
+              <span class="text-cyan mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Composable filters</strong> — press <span class="keycap">f</span> and type <span class="font-mono text-xs text-cyan">+*.rs,-*.lock,&gt;50</span> to show only Rust files over 50 lines. Reviewed counter tracks filtered and total progress separately</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-cyan mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Syntax highlighting</strong> — language-aware coloring via syntect. Diffs look like they do in your editor, not a wall of green and red</span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-cyan mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Symbol references</strong> — press <span class="keycap">g</span> to run git grep for the word at cursor. Results appear in the context panel so you see all usages without leaving the diff</span>
+            </li>
+          </ul>
+          <div class="flex flex-wrap gap-2 items-center">
+            <span class="text-xs text-text-muted">Keys:</span>
+            <span class="keycap">f</span>
+            <span class="keycap">F</span>
+            <span class="keycap">/</span>
+            <span class="keycap">g</span>
+          </div>
         </div>
 
-        <!-- Feature 5 -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-cyan/10 border border-cyan/20 flex items-center justify-center mb-4 font-mono text-cyan text-sm">⇥</div>
-          <h3 class="font-body font-500 text-base mb-2">Multi-repo tabs</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Open multiple repos or worktrees side-by-side. Navigate between them with <span class="keycap">[</span> <span class="keycap">]</span>.</p>
+        <!-- Mini terminal: Filters -->
+        <div class="reveal-right">
+          <div class="mini-term">
+            <div class="mini-term-chrome">
+              <div class="dot dot-r"></div>
+              <div class="dot dot-y"></div>
+              <div class="dot dot-g"></div>
+              <span class="title">er — branch diff</span>
+              <span class="ml-auto font-mono text-xs text-cyan" id="sc5-counter">12/12 files</span>
+            </div>
+            <div class="p-3">
+              <!-- filter input appearing -->
+              <div class="sc5-filter-input mb-2 bg-surface-2 border border-accent/40 rounded px-2 py-1 flex items-center gap-1">
+                <span class="text-text-muted text-xs">filter:</span>
+                <span class="text-cyan text-xs font-mono">+*.rs,-*.lock,&gt;50</span>
+                <span class="cursor-blink text-accent text-xs">▋</span>
+              </div>
+              <!-- file list: some dim, some bright -->
+              <div class="space-y-0.5 text-xs">
+                <div class="sc5-file-bright flex items-center gap-1.5 px-1 py-0.5">
+                  <span class="text-yellow">●</span>
+                  <span class="text-text">src/app/state.rs</span>
+                  <span class="ml-auto text-yellow">+82 -14</span>
+                </div>
+                <div class="sc5-file-dim flex items-center gap-1.5 px-1 py-0.5">
+                  <span class="text-text-muted">·</span>
+                  <span class="text-text-muted">Cargo.lock</span>
+                  <span class="ml-auto text-text-muted">+312 -0</span>
+                </div>
+                <div class="sc5-file-bright flex items-center gap-1.5 px-1 py-0.5">
+                  <span class="text-green">●</span>
+                  <span class="text-text">src/ui/diff_view.rs</span>
+                  <span class="ml-auto text-yellow">+45 -8</span>
+                </div>
+                <div class="sc5-file-dim flex items-center gap-1.5 px-1 py-0.5">
+                  <span class="text-text-muted">·</span>
+                  <span class="text-text-muted">Cargo.toml</span>
+                  <span class="ml-auto text-text-muted">+2 -1</span>
+                </div>
+                <div class="sc5-file-bright flex items-center gap-1.5 px-1 py-0.5">
+                  <span class="text-red">●</span>
+                  <span class="text-text">src/git/diff.rs</span>
+                  <span class="ml-auto text-yellow">+67 -23</span>
+                </div>
+                <div class="sc5-file-dim flex items-center gap-1.5 px-1 py-0.5">
+                  <span class="text-text-muted">·</span>
+                  <span class="text-text-muted">package-lock.json</span>
+                  <span class="ml-auto text-text-muted">+89 -0</span>
+                </div>
+                <div class="sc5-file-bright flex items-center gap-1.5 px-1 py-0.5">
+                  <span class="text-green">●</span>
+                  <span class="text-text">src/config.rs</span>
+                  <span class="ml-auto text-yellow">+51 -4</span>
+                </div>
+                <div class="sc5-file-dim flex items-center gap-1.5 px-1 py-0.5 opacity-50">
+                  <span class="text-text-muted">·</span>
+                  <span class="text-text-muted">… 5 more</span>
+                </div>
+              </div>
+              <!-- syntax highlighted snippet -->
+              <div class="mt-3 pt-3 border-t border-border/50 text-xs">
+                <div class="flex gap-2 diff-add rounded px-1 py-0.5">
+                  <span class="text-green/50">+</span>
+                  <span><span class="text-blue">pub fn</span> <span class="text-green">filter_files</span><span class="text-text">(</span><span class="text-accent">expr</span><span class="text-text">: &amp;str) {</span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Showcase 6: Config ── (component left, text right) -->
+      <div class="showcase-row reverse-mobile">
+        <!-- Mini terminal: Config composite -->
+        <div class="reveal-left">
+          <div class="mini-term">
+            <div class="mini-term-chrome">
+              <div class="dot dot-r"></div>
+              <div class="dot dot-y"></div>
+              <div class="dot dot-g"></div>
+              <span class="title">.er-config.toml</span>
+            </div>
+            <div class="flex" style="min-height: 200px;">
+              <!-- config file -->
+              <div class="flex-1 p-3 border-r border-border text-xs font-mono space-y-0.5 overflow-hidden">
+                <div><span class="text-accent">[features]</span></div>
+                <div><span class="text-blue">watch_mode</span> <span class="text-text-muted">=</span> <span class="text-green">true</span></div>
+                <div><span class="text-blue">ai_review</span> <span class="text-text-muted">=</span> <span class="text-green">true</span></div>
+                <div><span class="text-blue">github_sync</span> <span class="text-text-muted">=</span> <span class="text-green">true</span></div>
+                <div class="mt-1"><span class="text-accent">[display]</span></div>
+                <div><span class="text-blue">line_numbers</span> <span class="text-text-muted">=</span> <span class="text-orange">true</span></div>
+                <div><span class="text-blue">tab_width</span> <span class="text-text-muted">=</span> <span class="text-yellow">4</span></div>
+                <div class="mt-1"><span class="text-accent">[agent]</span></div>
+                <div><span class="text-blue">model</span> <span class="text-text-muted">=</span> <span class="text-green">"claude-opus-4"</span></div>
+                <div class="mt-1"><span class="text-accent">[watched]</span></div>
+                <div><span class="text-blue">globs</span> <span class="text-text-muted">=</span> <span class="text-text-muted">[</span></div>
+                <div class="pl-3"><span class="text-green">".work/**"</span><span class="text-text-muted">,</span></div>
+                <div class="pl-3"><span class="text-green">".er/**"</span></div>
+                <div><span class="text-text-muted">]</span></div>
+              </div>
+              <!-- .er/ directory listing -->
+              <div class="w-36 p-3 text-xs overflow-hidden flex-shrink-0">
+                <div class="text-text-muted uppercase tracking-wider text-xs mb-2">.er/</div>
+                <div class="space-y-1 font-mono">
+                  <div class="flex items-start gap-1">
+                    <span class="text-text-muted shrink-0">→</span>
+                    <span>
+                      <span class="text-text-dim">review.json</span>
+                      <span class="text-text-muted block text-xs leading-tight">AI findings</span>
+                    </span>
+                  </div>
+                  <div class="flex items-start gap-1">
+                    <span class="text-text-muted shrink-0">→</span>
+                    <span>
+                      <span class="text-text-dim">questions.json</span>
+                      <span class="text-text-muted block text-xs leading-tight">private Q&amp;A</span>
+                    </span>
+                  </div>
+                  <div class="flex items-start gap-1">
+                    <span class="text-text-muted shrink-0">→</span>
+                    <span>
+                      <span class="text-text-dim">github-comments.json</span>
+                      <span class="text-text-muted block text-xs leading-tight">PR sync</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="mt-3 pt-2 border-t border-border/50 text-text-muted text-xs leading-relaxed">
+                  Written by any tool.<br>Read by <span class="text-accent">er</span>.
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- Feature 7 -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-blue/10 border border-blue/20 flex items-center justify-center mb-4 font-mono text-blue text-sm">✓</div>
-          <h3 class="font-body font-500 text-base mb-2">Review tracking</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Mark files as reviewed with <span class="keycap">Space</span>. Press <span class="keycap">U</span> to jump straight to the next unreviewed file. Marks clear automatically when the diff changes under a reviewed file.</p>
+        <!-- Text -->
+        <div class="reveal-right">
+          <span class="font-mono text-xs text-accent uppercase tracking-widest">Philosophy</span>
+          <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">Lightweight by design —<br>configure everything,<br>bundle nothing</h2>
+          <p class="text-text-dim leading-relaxed mb-6">
+            <span class="font-mono text-accent text-sm">er</span> is a 4MB binary. It doesn't bundle an AI, a test runner, or a linter. It's a bridge: your tools write JSON to <span class="font-mono text-xs text-text">.er/</span>, <span class="font-mono text-accent text-sm">er</span> reads it and renders it inline. Claude Code writes review findings. You write comments. GitHub PR review state syncs both ways.
+          </p>
+          <ul class="space-y-3 text-sm text-text-dim mb-7">
+            <li class="flex gap-3">
+              <span class="text-accent mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Live settings overlay</strong> — press <span class="keycap">S</span> to toggle feature flags, adjust display options, and set agent config. Changes apply immediately and persist to <span class="font-mono text-xs text-accent">.er-config.toml</span></span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-accent mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">Per-repo config</strong> — <span class="font-mono text-xs text-text">.er-config.toml</span> in your repo root overrides global <span class="font-mono text-xs text-text">~/.config/er/config.toml</span>. Watched file globs for git-ignored paths like <span class="font-mono text-xs text-text">.work/</span></span>
+            </li>
+            <li class="flex gap-3">
+              <span class="text-accent mt-0.5 shrink-0">✓</span>
+              <span><strong class="text-text">.er/ JSON bridge</strong> — all sidecar files live in <span class="font-mono text-xs text-text">.er/</span> (single <span class="font-mono text-xs text-text">.gitignore</span> entry). Any tool can write to them — Claude Code, CI scripts, custom scripts. <span class="font-mono text-accent text-sm">er</span> picks up changes via mtime polling</span>
+            </li>
+          </ul>
+          <div class="flex flex-wrap gap-2 items-center">
+            <span class="text-xs text-text-muted">Keys:</span>
+            <span class="keycap">S</span>
+          </div>
         </div>
+      </div>
 
-        <!-- Feature: Git push from TUI -->
-        <div class="reveal bg-surface border border-green/30 rounded-lg p-6 hover:border-green/50 transition group relative overflow-hidden">
-          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(74,222,128,0.06)_0%,transparent_70%)] pointer-events-none"></div>
-          <div class="w-9 h-9 rounded-md bg-green/15 border border-green/25 flex items-center justify-center mb-4 font-mono text-green text-sm">↑</div>
-          <h3 class="font-body font-500 text-base mb-2">Git push from TUI</h3>
-          <p class="text-sm text-text-dim leading-relaxed">After committing, press <span class="keycap">Ctrl+P</span> to push to the remote without leaving <span class="font-mono text-accent text-xs">er</span>. Stage, commit, push — the full flow in one place.</p>
+    </div>
+  </section>
+
+  <!-- ===== SMALL THINGS THAT ADD UP ===== -->
+  <section class="py-16 px-6 border-t border-border/50">
+    <div class="max-w-5xl mx-auto">
+      <div class="text-center mb-10 reveal-up">
+        <span class="font-mono text-xs text-accent uppercase tracking-widest">Also</span>
+        <h2 class="text-2xl font-body font-500 mt-3">And the small things that add up</h2>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
+        <div class="reveal-up bg-surface border border-border rounded-lg px-5 py-4 flex items-start gap-4">
+          <span class="keycap mt-0.5 shrink-0">[ ]</span>
+          <div>
+            <div class="font-body font-500 text-sm mb-1">Multi-repo tabs</div>
+            <div class="text-xs text-text-dim">Multiple repos or worktrees side-by-side in one session</div>
+          </div>
         </div>
-
-        <!-- Feature: Cleanup commands -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-yellow/10 border border-yellow/20 flex items-center justify-center mb-4 font-mono text-yellow text-sm">z</div>
-          <h3 class="font-body font-500 text-base mb-2">Cleanup commands</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">z</span> to clear AI review artifacts for the current file, or <span class="keycap">Z</span> to reset all AI state. Wipe stale results and start fresh without leaving the TUI.</p>
-        </div>
-
-        <!-- Feature 8 -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-red/10 border border-red/20 flex items-center justify-center mb-4 font-mono text-red text-sm">◇</div>
-          <h3 class="font-body font-500 text-base mb-2">Syntax highlighting</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Language-aware coloring via syntect. Diffs look like they do in your editor, not a wall of green and red.</p>
-        </div>
-
-        <!-- Feature 9: Line navigation -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-green/10 border border-green/20 flex items-center justify-center mb-4 font-mono text-green text-sm">↕</div>
-          <h3 class="font-body font-500 text-base mb-2">Line-level navigation</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Arrow keys navigate individual lines within hunks. Comment on exact lines, not just hunks. <span class="keycap">n</span><span class="keycap">N</span> jumps between hunks.</p>
-        </div>
-
-        <!-- Feature 10: Composable filters -->
-        <div class="reveal bg-surface border border-cyan/30 rounded-lg p-6 hover:border-cyan/50 transition group relative overflow-hidden">
-          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.06)_0%,transparent_70%)] pointer-events-none"></div>
-          <div class="w-9 h-9 rounded-md bg-cyan/15 border border-cyan/25 flex items-center justify-center mb-4 font-mono text-cyan text-sm">f</div>
-          <h3 class="font-body font-500 text-base mb-2">Composable filters</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">f</span> to filter by glob, status, or size (<span class="font-mono text-xs text-cyan">+*.rs,-*.lock,>50</span>). Press <span class="keycap">F</span> for built-in presets and filter history. Reviewed counter tracks both filtered and total progress.</p>
-        </div>
-
-        <!-- Feature 11: Smart PR integration -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 font-mono text-accent text-sm">PR</div>
-          <h3 class="font-body font-500 text-base mb-2">Smart PR integration</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Full PR panel with CI checks, reviewer status, and labels. Auto-detects the right base branch and shows a hint when your diff target differs from the PR target.</p>
-        </div>
-
-        <!-- Feature 12: Context panel -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-blue/10 border border-blue/20 flex items-center justify-center mb-4 font-mono text-blue text-sm">p</div>
-          <h3 class="font-body font-500 text-base mb-2">Context panel</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">p</span> to open the side panel with PR overview, AI summary, file detail, or symbol references. Press <span class="keycap">Tab</span> to focus the panel and navigate its content.</p>
-        </div>
-
-        <!-- Feature 13: Two-way GitHub sync -->
-        <div class="reveal bg-surface border border-cyan/30 rounded-lg p-6 hover:border-cyan/50 transition group relative overflow-hidden">
-          <div class="absolute top-0 right-0 w-32 h-32 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.06)_0%,transparent_70%)] pointer-events-none"></div>
-          <div class="w-9 h-9 rounded-md bg-cyan/15 border border-cyan/25 flex items-center justify-center mb-4 font-mono text-cyan text-sm">⇅</div>
-          <h3 class="font-body font-500 text-base mb-2">Two-way GitHub sync</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">G</span> to pull review comments from GitHub. Press <span class="keycap">P</span> to push your local comments back. Reply threads included. Powered by the <span class="font-mono text-xs text-cyan">gh</span> CLI — no API token needed.</p>
-        </div>
-
-        <!-- Feature 14: Conflicts mode -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-red/10 border border-red/20 flex items-center justify-center mb-4 font-mono text-red text-sm">5</div>
-          <h3 class="font-body font-500 text-base mb-2">Conflicts mode</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">5</span> to enter Conflicts mode. Shows merge conflicts with resolved/unresolved indicators, staging support, and a merge status badge in the top bar.</p>
-        </div>
-
-        <!-- Feature 15: Comment relocation -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-yellow/10 border border-yellow/20 flex items-center justify-center mb-4 font-mono text-yellow text-sm">⚓</div>
-          <h3 class="font-body font-500 text-base mb-2">Comment relocation</h3>
-          <p class="text-sm text-text-dim leading-relaxed">A 3-pass algorithm keeps comments anchored to the right line as code changes underneath them. Comments dim with a warning when their target line disappears entirely.</p>
-        </div>
-
-        <!-- Feature 16: Symbol references -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-green/10 border border-green/20 flex items-center justify-center mb-4 font-mono text-green text-sm">g</div>
-          <h3 class="font-body font-500 text-base mb-2">Symbol references</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">g</span> to run git grep for the word at cursor. Results appear in the context panel so you can see all usages without leaving the diff.</p>
-        </div>
-
-        <!-- Feature 17: Live settings -->
-        <div class="reveal bg-surface border border-border rounded-lg p-6 hover:border-border-bright transition group">
-          <div class="w-9 h-9 rounded-md bg-accent/10 border border-accent/20 flex items-center justify-center mb-4 font-mono text-accent text-sm">S</div>
-          <h3 class="font-body font-500 text-base mb-2">Live settings</h3>
-          <p class="text-sm text-text-dim leading-relaxed">Press <span class="keycap">S</span> to open the settings overlay. Toggle feature flags, adjust display options, and set agent config. Changes apply live and persist to <span class="font-mono text-xs text-accent">.er-config.toml</span>.</p>
+        <div class="reveal-up bg-surface border border-border rounded-lg px-5 py-4 flex items-start gap-4" style="transition-delay: 80ms;">
+          <span class="keycap mt-0.5 shrink-0">5</span>
+          <div>
+            <div class="font-body font-500 text-sm mb-1">Conflicts mode</div>
+            <div class="text-xs text-text-dim">Dedicated merge conflict view with staging and resolved/unresolved indicators</div>
+          </div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- ===== WORKFLOW ===== -->
+  <!-- ===== WORKFLOW TIMELINE ===== -->
   <section class="py-24 px-6 border-t border-border/50">
-    <div class="max-w-4xl mx-auto">
-      <div class="text-center mb-16 reveal">
+    <div class="max-w-2xl mx-auto">
+      <div class="text-center mb-16 reveal-up">
         <span class="font-mono text-xs text-accent uppercase tracking-widest">Workflow</span>
-        <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3">Built for AI-assisted development</h2>
+        <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3">How it fits into your day</h2>
       </div>
 
-      <div class="space-y-12">
-        <div class="reveal flex gap-6 items-start">
-          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center font-mono text-accent text-sm">1</div>
-          <div>
-            <h3 class="font-body font-500 text-lg mb-1">Split your terminal</h3>
-            <p class="text-text-dim leading-relaxed">Claude Code on the left, <span class="font-mono text-accent">er</span> on the right. Ghostty, tmux, zellij — whatever you use.</p>
-          </div>
+      <div class="timeline-container">
+
+        <div class="timeline-step" style="transition-delay: 0ms;">
+          <div class="timeline-node"><span class="font-mono text-xs text-text-muted">1</span></div>
+          <h3 class="font-body font-500 text-base mb-1">Split your terminal</h3>
+          <p class="text-text-dim text-sm leading-relaxed">Claude Code on the left, <span class="font-mono text-accent text-sm">er</span> on the right. Works with Ghostty, tmux, zellij — whatever you already use.</p>
         </div>
 
-        <div class="reveal flex gap-6 items-start">
-          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center font-mono text-accent text-sm">2</div>
-          <div>
-            <h3 class="font-body font-500 text-lg mb-1">Enable watch mode</h3>
-            <p class="text-text-dim leading-relaxed">Press <span class="keycap">w</span> and diffs update live as the AI writes code. No manual refreshing.</p>
-          </div>
+        <div class="timeline-step" style="transition-delay: 200ms;">
+          <div class="timeline-node"><span class="font-mono text-xs text-text-muted">2</span></div>
+          <h3 class="font-body font-500 text-base mb-1">Watch mode is on by default</h3>
+          <p class="text-text-dim text-sm leading-relaxed">Diffs refresh as Claude Code writes. No manual refresh, no switching windows.</p>
         </div>
 
-        <div class="reveal flex gap-6 items-start">
-          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-accent/20 border border-accent/30 flex items-center justify-center font-mono text-accent text-sm">3</div>
-          <div>
-            <h3 class="font-body font-500 text-lg mb-1">Get AI review</h3>
-            <p class="text-text-dim leading-relaxed">Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code. Risk ratings, findings, and a review checklist appear inline in your diff view. Press <span class="keycap">a</span> to toggle the AI findings layer — independent of comments and panel.</p>
-          </div>
+        <div class="timeline-step" style="transition-delay: 400ms;">
+          <div class="timeline-node key"><span class="font-mono text-xs text-accent font-bold">3</span></div>
+          <h3 class="font-body font-500 text-base mb-1">Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code</h3>
+          <p class="text-text-dim text-sm leading-relaxed">Risk ratings, hunk-level findings, and a review checklist appear inline. Press <span class="keycap">a</span> to toggle the AI layer independently of your comments and panel.</p>
         </div>
 
-        <div class="reveal flex gap-6 items-start">
-          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center font-mono text-accent text-sm">4</div>
-          <div>
-            <h3 class="font-body font-500 text-lg mb-1">Comment and iterate</h3>
-            <p class="text-text-dim leading-relaxed">Press <span class="keycap">c</span> for GitHub comments or <span class="keycap">q</span> for private questions on hunks and lines. Open the context panel with <span class="keycap">p</span> for a PR overview alongside your diff. Re-run <span class="font-mono text-accent text-sm">/er-review</span> — the AI reads your feedback and updates its analysis.</p>
-          </div>
+        <div class="timeline-step" style="transition-delay: 600ms;">
+          <div class="timeline-node"><span class="font-mono text-xs text-text-muted">4</span></div>
+          <h3 class="font-body font-500 text-base mb-1">Comment and iterate</h3>
+          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">c</span> for GitHub comments or <span class="keycap">q</span> for private questions on any line. Open the context panel with <span class="keycap">p</span> for a PR overview alongside your diff. Re-run <span class="font-mono text-accent text-sm">/er-review</span> — the AI reads your questions and updates its analysis.</p>
         </div>
 
-        <div class="reveal flex gap-6 items-start">
-          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-surface-2 border border-border flex items-center justify-center font-mono text-accent text-sm">5</div>
-          <div>
-            <h3 class="font-body font-500 text-lg mb-1">Review, stage, commit, push</h3>
-            <p class="text-text-dim leading-relaxed">Navigate files with <span class="keycap">j</span><span class="keycap">k</span>, lines with <span class="keycap">↑</span><span class="keycap">↓</span>, hunks with <span class="keycap">n</span><span class="keycap">N</span>. Jump to the next unreviewed file with <span class="keycap">U</span>. Stage what looks good with <span class="keycap">s</span>, mark reviewed with <span class="keycap">Space</span>, then press <span class="keycap">Ctrl+P</span> to push — without leaving the TUI.</p>
-          </div>
+        <div class="timeline-step" style="transition-delay: 800ms;">
+          <div class="timeline-node"><span class="font-mono text-xs text-text-muted">5</span></div>
+          <h3 class="font-body font-500 text-base mb-1">Review, stage, commit, push</h3>
+          <p class="text-text-dim text-sm leading-relaxed">Navigate files with <span class="keycap">j</span><span class="keycap">k</span>, lines with <span class="keycap">↑</span><span class="keycap">↓</span>, hunks with <span class="keycap">n</span><span class="keycap">N</span>. Jump to next unreviewed with <span class="keycap">U</span>. Stage with <span class="keycap">s</span>, mark reviewed with <span class="keycap">Space</span>, then <span class="keycap">Ctrl+P</span> to push — without leaving the TUI.</p>
         </div>
 
-        <div class="reveal flex gap-6 items-start">
-          <div class="flex-shrink-0 w-10 h-10 rounded-full bg-cyan/20 border border-cyan/30 flex items-center justify-center font-mono text-cyan text-sm">6</div>
-          <div>
-            <h3 class="font-body font-500 text-lg mb-1">Sync with GitHub</h3>
-            <p class="text-text-dim leading-relaxed">Press <span class="keycap">G</span> to pull review comments from the PR into your diff view. Press <span class="keycap">P</span> to push your local comments back to GitHub. The full review loop, without leaving the terminal.</p>
-          </div>
+        <div class="timeline-step" style="transition-delay: 1000ms; padding-bottom: 0;">
+          <div class="timeline-node key-cyan"><span class="font-mono text-xs text-cyan font-bold">6</span></div>
+          <h3 class="font-body font-500 text-base mb-1">Sync with GitHub</h3>
+          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">G</span> to pull review comments from the PR into your diff view. Press <span class="keycap">P</span> to push your local comments back to GitHub. The full review loop, without leaving the terminal.</p>
         </div>
+
       </div>
     </div>
   </section>
@@ -606,12 +1350,12 @@
   <!-- ===== INSTALL ===== -->
   <section id="install" class="py-24 px-6 border-t border-border/50">
     <div class="max-w-3xl mx-auto text-center">
-      <div class="reveal">
+      <div class="reveal-up">
         <span class="font-mono text-xs text-accent uppercase tracking-widest">Install</span>
         <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-10">Up and running in 30 seconds</h2>
       </div>
 
-      <div class="reveal bg-surface border border-border rounded-xl overflow-hidden text-left glow-box">
+      <div class="reveal-up bg-surface border border-border rounded-xl overflow-hidden text-left glow-box">
         <div class="flex items-center gap-2 px-4 py-3 border-b border-border bg-surface-2">
           <div class="w-3 h-3 rounded-full bg-red/60"></div>
           <div class="w-3 h-3 rounded-full bg-yellow/60"></div>
@@ -636,7 +1380,7 @@
         </div>
       </div>
 
-      <p class="reveal text-sm text-text-muted mt-6">
+      <p class="reveal-up text-sm text-text-muted mt-6">
         Requires <span class="text-text-dim">Rust 1.70+</span> and <span class="text-text-dim">git</span>. Single binary, no runtime dependencies.
       </p>
     </div>
@@ -658,17 +1402,88 @@
     </div>
   </footer>
 
-  <!-- ===== SCROLL REVEAL JS ===== -->
+  <!-- ===== JS ===== -->
   <script>
-    const observer = new IntersectionObserver((entries) => {
+    // ─── Unified scroll reveal observer ───
+    const revealObserver = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         if (entry.isIntersecting) {
-          entry.target.classList.add('visible');
+          entry.target.classList.add('active');
+          entry.target.classList.add('visible'); // legacy support
+        }
+      });
+    }, { threshold: 0.12 });
+
+    document.querySelectorAll('.reveal, .reveal-up, .reveal-left, .reveal-right').forEach(el => {
+      revealObserver.observe(el);
+    });
+
+    // ─── Timeline stagger observer ───
+    const timelineObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const steps = entry.target.querySelectorAll('.timeline-step');
+          steps.forEach((step, i) => {
+            setTimeout(() => step.classList.add('active'), i * 200);
+          });
+          timelineObserver.unobserve(entry.target);
         }
       });
     }, { threshold: 0.1 });
 
-    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+    const timelineContainer = document.querySelector('.timeline-container');
+    if (timelineContainer) timelineObserver.observe(timelineContainer);
+
+    // ─── Stats counter animation ───
+    function animateCounter(el, target, duration) {
+      const start = performance.now();
+      const update = (now) => {
+        const elapsed = now - start;
+        const progress = Math.min(elapsed / duration, 1);
+        // ease-out cubic
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const current = Math.round(eased * target);
+        el.textContent = current + (el.dataset.suffix || '');
+        if (progress < 1) requestAnimationFrame(update);
+      };
+      requestAnimationFrame(update);
+    }
+
+    const statsObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.querySelectorAll('.stat-value[data-target]').forEach(el => {
+            const target = parseInt(el.dataset.target, 10);
+            animateCounter(el, target, 1000);
+          });
+          statsObserver.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.5 });
+
+    const statsStrip = document.querySelector('.stats-strip');
+    if (statsStrip) statsObserver.observe(statsStrip.parentElement || statsStrip);
+
+    // ─── Showcase 5 counter label ───
+    // Uses CSS animation timing to sync counter text
+    const sc5Counter = document.getElementById('sc5-counter');
+    if (sc5Counter) {
+      // mirror the sc5-file-dim animation timing (10s loop)
+      // 0-20%: "12/12", 30-78%: "4/12", 85-100%: "12/12"
+      const sc5Period = 10000;
+      function updateSc5Counter() {
+        const t = (performance.now() % sc5Period) / sc5Period;
+        if (t > 0.28 && t < 0.83) {
+          sc5Counter.textContent = '4/12 files';
+          sc5Counter.style.color = '#a78bfa';
+        } else {
+          sc5Counter.textContent = '12/12 files';
+          sc5Counter.style.color = '#8888a0';
+        }
+        requestAnimationFrame(updateSc5Counter);
+      }
+      requestAnimationFrame(updateSc5Counter);
+    }
   </script>
 </body>
 </html>
