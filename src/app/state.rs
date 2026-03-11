@@ -4883,7 +4883,7 @@ impl App {
             }
         };
 
-        let (ref file, hunk_index, _, ref finding_id) = all[next_idx];
+        let (ref file, hunk_index, line_start, ref finding_id) = all[next_idx];
 
         tab.focused_finding_id = Some(finding_id.clone());
         tab.focused_comment_id = None;
@@ -4907,6 +4907,22 @@ impl App {
         } else if let Some(hi) = hunk_index {
             tab.current_hunk = hi;
             tab.current_line = None;
+        }
+
+        // Compute current_line from finding's line_start for precise scroll positioning
+        let hi = hunk_index.unwrap_or(0);
+        if let Some(diff_file) = tab.files.get(tab.selected_file) {
+            if let Some(hunk) = diff_file.hunks.get(hi) {
+                if let Some(ls) = line_start {
+                    // Line-level finding: scroll to the specific line within the hunk
+                    if let Some(line_idx) = hunk.lines.iter().position(|l| l.new_num == Some(ls)) {
+                        tab.current_line = Some(line_idx);
+                    }
+                } else {
+                    // Hunk-level finding: renders at end of hunk, scroll near the end
+                    tab.current_line = Some(hunk.lines.len().saturating_sub(1));
+                }
+            }
         }
 
         tab.scroll_to_current_hunk();
