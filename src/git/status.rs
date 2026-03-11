@@ -171,8 +171,13 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         }
     }
 
-    // Common local branch names
-    for candidate in &["main", "master", "develop", "dev"] {
+    // Common local branch names (prefer main/master over develop/dev)
+    for candidate in &["main", "master"] {
+        if *candidate != current && run(&["rev-parse", "--verify", candidate]).is_some() {
+            return Ok(candidate.to_string());
+        }
+    }
+    for candidate in &["develop", "dev"] {
         if *candidate != current && run(&["rev-parse", "--verify", candidate]).is_some() {
             return Ok(candidate.to_string());
         }
