@@ -606,7 +606,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             title,
             ratatui::style::Style::default().fg(styles::BRIGHT),
         ))
-        .title_position(ratatui::widgets::block::Position::Top)
         .title_alignment(ratatui::layout::Alignment::Left)
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG))
@@ -1551,7 +1550,6 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
             title,
             ratatui::style::Style::default().fg(styles::BRIGHT),
         ))
-        .title_position(ratatui::widgets::block::Position::Top)
         .title_alignment(ratatui::layout::Alignment::Left)
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG))
@@ -2240,7 +2238,6 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
             title,
             ratatui::style::Style::default().fg(styles::WATCHED_TEXT),
         ))
-        .title_position(ratatui::widgets::block::Position::Top)
         .title_alignment(ratatui::layout::Alignment::Left)
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG))

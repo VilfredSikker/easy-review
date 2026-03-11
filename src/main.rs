@@ -145,7 +145,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_app<B: Backend>(
+fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     hl: &mut ui::highlight::Highlighter,
