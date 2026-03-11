@@ -134,7 +134,10 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         cmd.args(args);
         if let Some(root) = repo_root {
             cmd.current_dir(root);
-            // Prevent git from walking up into unrelated parent repos
+            // Isolate git to this repo: clear inherited GIT_DIR/GIT_WORK_TREE
+            // (e.g., from git hooks) and prevent discovery of parent repos
+            cmd.env_remove("GIT_DIR");
+            cmd.env_remove("GIT_WORK_TREE");
             if let Some(parent) = std::path::Path::new(root).parent() {
                 cmd.env("GIT_CEILING_DIRECTORIES", parent);
             }
