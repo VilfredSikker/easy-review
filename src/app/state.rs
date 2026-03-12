@@ -35,6 +35,7 @@ pub enum DiffMode {
     Staged,
     History,
     Conflicts,
+    Hidden,
 }
 
 impl DiffMode {
@@ -46,6 +47,7 @@ impl DiffMode {
             DiffMode::Staged => "STAGED",
             DiffMode::History => "HISTORY",
             DiffMode::Conflicts => "CONFLICTS",
+            DiffMode::Hidden => "HIDDEN",
         }
     }
 
@@ -56,6 +58,7 @@ impl DiffMode {
             DiffMode::Staged => "staged",
             DiffMode::History => "history",
             DiffMode::Conflicts => "conflicts",
+            DiffMode::Hidden => "hidden",
         }
     }
 }
@@ -137,6 +140,7 @@ pub enum InputMode {
 #[allow(dead_code)]
 pub enum ConfirmAction {
     DeleteComment { comment_id: String },
+    DeleteWatchedFile { path: String },
     Push,
     CleanupQuestions { count: usize },
     CleanupReviews { count: usize },
@@ -904,6 +908,12 @@ impl TabState {
             return Ok(());
         }
 
+        // Hidden mode only shows watched files — reload them instead of running git diff
+        if self.mode == DiffMode::Hidden {
+            self.refresh_watched_files();
+            return Ok(());
+        }
+
         // Update merge_active on every refresh
         self.merge_active = git::is_merge_in_progress(&self.repo_root);
 
@@ -911,6 +921,7 @@ impl TabState {
         let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
         let prev_hunk = self.current_hunk;
         let prev_line = self.current_line;
+        let prev_scroll = self.diff_scroll;
 
         // In Staged mode after a commit, show HEAD~1..HEAD unless new staged changes exist
         let raw = if self.mode == DiffMode::Staged && self.committed_unpushed {
@@ -1075,8 +1086,10 @@ impl TabState {
                 if prev_hunk < self.total_hunks() {
                     self.current_hunk = prev_hunk;
                     self.current_line = prev_line;
+                    self.diff_scroll = prev_scroll;
                 } else {
                     self.clamp_hunk();
+                    self.scroll_to_current_hunk();
                 }
             } else {
                 // File disappeared from diff — clamp index
@@ -1084,12 +1097,13 @@ impl TabState {
                     self.selected_file = self.files.len().saturating_sub(1);
                 }
                 self.clamp_hunk();
+                self.scroll_to_current_hunk();
             }
         } else {
             self.selected_file = 0;
             self.clamp_hunk();
+            self.scroll_to_current_hunk();
         }
-        self.scroll_to_current_hunk();
 
         // In lazy mode, parse the initially selected file on demand
         self.ensure_file_parsed();
@@ -1107,6 +1121,8 @@ impl TabState {
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         self.ai = ai::load_ai_state(&self.repo_root, &self.branch_diff_hash);
+        // Finding IDs may change after review reload — clear stale reference
+        self.focused_finding_id = None;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
         if self.ai.is_stale {
             self.ai.stale_files = prev_stale_files;
@@ -1397,6 +1413,48 @@ impl TabState {
         }
     }
 
+    /// Cycle panel in reverse: None → SymbolRefs → PrOverview → AiSummary → FileDetail → None
+    pub fn toggle_panel_reverse(&mut self) {
+        let has_ai = self.layers.show_ai_findings && self.ai.has_data();
+        let has_pr = self.pr_data.is_some();
+        let has_sym = self.symbol_refs.is_some();
+        self.panel = match self.panel {
+            None => {
+                if has_sym {
+                    Some(PanelContent::SymbolRefs)
+                } else if has_pr {
+                    Some(PanelContent::PrOverview)
+                } else if has_ai {
+                    Some(PanelContent::AiSummary)
+                } else {
+                    Some(PanelContent::FileDetail)
+                }
+            }
+            Some(PanelContent::SymbolRefs) => {
+                if has_pr {
+                    Some(PanelContent::PrOverview)
+                } else if has_ai {
+                    Some(PanelContent::AiSummary)
+                } else {
+                    Some(PanelContent::FileDetail)
+                }
+            }
+            Some(PanelContent::PrOverview) => {
+                if has_ai {
+                    Some(PanelContent::AiSummary)
+                } else {
+                    Some(PanelContent::FileDetail)
+                }
+            }
+            Some(PanelContent::AiSummary) => Some(PanelContent::FileDetail),
+            Some(PanelContent::FileDetail) => None,
+        };
+        self.panel_scroll = 0;
+        if self.panel.is_none() {
+            self.panel_focus = false;
+        }
+    }
+
     // ── Panel/review navigation ──
 
     /// Number of items in the left column (file risk list)
@@ -1603,6 +1661,7 @@ impl TabState {
                         self.current_line = None;
                         self.diff_scroll = 0;
                         self.h_scroll = 0;
+                        self.focused_finding_id = None;
                     }
                 }
             }
@@ -1617,6 +1676,7 @@ impl TabState {
                 self.current_line = None;
                 self.diff_scroll = 0;
                 self.h_scroll = 0;
+                self.focused_finding_id = None;
             }
         }
     }
@@ -1787,6 +1847,7 @@ impl TabState {
 
     pub fn next_hunk(&mut self) {
         self.focused_comment_id = None;
+        self.focused_finding_id = None;
         let total = self.total_hunks();
         if total > 0 && self.current_hunk < total - 1 {
             self.current_hunk += 1;
@@ -1798,6 +1859,7 @@ impl TabState {
 
     pub fn prev_hunk(&mut self) {
         self.focused_comment_id = None;
+        self.focused_finding_id = None;
         if self.current_hunk > 0 {
             self.current_hunk -= 1;
             self.current_line = None;
@@ -2711,6 +2773,21 @@ impl TabState {
                 self.selected_watched = None;
                 self.diff_scroll = 0;
                 self.refresh_conflicts();
+            } else if mode == DiffMode::Hidden {
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selected_watched = None;
+                self.diff_scroll = 0;
+                // Reload config to pick up any .er-config.toml changes
+                let er_config = crate::config::load_config(&self.repo_root);
+                self.watched_config = er_config.watched;
+                // Hidden mode shows only watched/gitignored files — clear regular diff
+                self.files.clear();
+                self.show_watched = true;
+                self.refresh_watched_files();
+                if !self.watched_files.is_empty() {
+                    self.selected_watched = Some(0);
+                }
             } else {
                 self.current_hunk = 0;
                 self.current_line = None;
@@ -4034,7 +4111,7 @@ impl App {
                 git::git_stage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Resolved: {}", file_path));
             }
-            DiffMode::History => {
+            DiffMode::History | DiffMode::Hidden => {
                 self.notify("Staging not available in this mode");
                 return Ok(());
             }
@@ -4831,7 +4908,14 @@ impl App {
     /// Uses focused_finding_id for exact position tracking.
     fn jump_finding(&mut self, forward: bool) {
         let tab = self.tab_mut();
-        let all = tab.ai.all_findings_ordered();
+        let file_paths: std::collections::HashSet<&str> =
+            tab.files.iter().map(|f| f.path.as_str()).collect();
+        let all: Vec<_> = tab
+            .ai
+            .all_findings_ordered()
+            .into_iter()
+            .filter(|(file, _, _, _)| file_paths.contains(file.as_str()))
+            .collect();
 
         if all.is_empty() {
             return;
@@ -4842,6 +4926,12 @@ impl App {
             .focused_finding_id
             .as_ref()
             .and_then(|fid| all.iter().position(|(_, _, _, id)| id == fid))
+            .filter(|&pos| {
+                // Ignore stale focused ID if user moved to a different file
+                tab.files
+                    .get(tab.selected_file)
+                    .is_some_and(|f| f.path == all[pos].0)
+            })
             .or_else(|| {
                 let current_file = tab.files.get(tab.selected_file).map(|f| f.path.as_str());
                 let current_hunk = tab.current_hunk;
@@ -4883,7 +4973,7 @@ impl App {
             }
         };
 
-        let (ref file, hunk_index, _, ref finding_id) = all[next_idx];
+        let (ref file, hunk_index, line_start, ref finding_id) = all[next_idx];
 
         tab.focused_finding_id = Some(finding_id.clone());
         tab.focused_comment_id = None;
@@ -4907,6 +4997,22 @@ impl App {
         } else if let Some(hi) = hunk_index {
             tab.current_hunk = hi;
             tab.current_line = None;
+        }
+
+        // Compute current_line from finding's line_start for precise scroll positioning
+        let hi = hunk_index.unwrap_or(0);
+        if let Some(diff_file) = tab.files.get(tab.selected_file) {
+            if let Some(hunk) = diff_file.hunks.get(hi) {
+                if let Some(ls) = line_start {
+                    // Line-level finding: scroll to the specific line within the hunk
+                    if let Some(line_idx) = hunk.lines.iter().position(|l| l.new_num == Some(ls)) {
+                        tab.current_line = Some(line_idx);
+                    }
+                } else {
+                    // Hunk-level finding: renders at end of hunk, scroll near the end
+                    tab.current_line = Some(hunk.lines.len().saturating_sub(1));
+                }
+            }
         }
 
         tab.scroll_to_current_hunk();
@@ -5146,14 +5252,29 @@ impl App {
         if let Some(path) = file_path {
             let file_idx = self.tab().files.iter().position(|f| f.path == path);
             if let Some(idx) = file_idx {
+                // Collect first anchored finding before taking mutable borrow
+                let first_finding = self
+                    .tab()
+                    .ai
+                    .file_review(&path)
+                    .and_then(|fr| {
+                        fr.findings
+                            .iter()
+                            .filter(|f| f.hunk_index.is_some())
+                            .min_by_key(|f| (f.hunk_index, f.line_start))
+                    })
+                    .map(|f| (f.hunk_index.unwrap(), f.id.clone()));
+
                 let tab = self.tab_mut();
                 tab.selected_file = idx;
-                tab.current_hunk = 0;
+                tab.current_hunk = first_finding.as_ref().map(|(hi, _)| *hi).unwrap_or(0);
+                tab.focused_finding_id = first_finding.map(|(_, id)| id);
                 tab.current_line = None;
                 tab.diff_scroll = 0;
                 tab.h_scroll = 0;
                 tab.ensure_file_parsed();
                 tab.rebuild_hunk_offsets();
+                tab.scroll_to_current_hunk();
                 if tab.panel.is_none() {
                     tab.panel = Some(PanelContent::FileDetail);
                 }
@@ -6587,6 +6708,72 @@ mod tests {
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
         tab.toggle_panel(); // PrOverview → None
         assert_eq!(tab.panel, None);
+    }
+
+    // ── toggle_panel_reverse full cycle ──
+
+    #[test]
+    fn toggle_panel_reverse_full_cycle_no_ai_no_pr() {
+        let mut tab = make_test_tab(vec![]);
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel_reverse(); // None → FileDetail (no sym, no PR, no AI)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel_reverse(); // FileDetail → None
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_reverse_full_cycle_with_ai_only() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.layers.show_ai_findings = true;
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel_reverse(); // None → AiSummary (no sym, no PR, has AI)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
+        tab.toggle_panel_reverse(); // AiSummary → FileDetail
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel_reverse(); // FileDetail → None
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_reverse_full_cycle_with_ai_and_pr() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.layers.show_ai_findings = true;
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 42,
+            title: "My PR".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "user".to_string(),
+            url: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: "feature".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel_reverse(); // None → PrOverview (no sym, has PR)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
+        tab.toggle_panel_reverse(); // PrOverview → AiSummary
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
+        tab.toggle_panel_reverse(); // AiSummary → FileDetail
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel_reverse(); // FileDetail → None
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_reverse_resets_scroll_and_focus() {
+        let mut tab = make_test_tab(vec![]);
+        tab.panel_scroll = 10;
+        tab.panel_focus = true;
+        tab.toggle_panel_reverse(); // None → FileDetail
+        assert_eq!(tab.panel_scroll, 0);
+        // panel_focus stays true when panel is open
+        tab.toggle_panel_reverse(); // FileDetail → None
+        assert!(!tab.panel_focus);
     }
 
     // ── DiffCache ──

@@ -751,13 +751,25 @@ impl AiState {
         self.review.as_ref()?.files.get(path)
     }
 
+    /// Get file-level findings (no hunk or line anchor) for a file path.
+    #[cfg(test)]
+    pub fn findings_for_file_level(&self, path: &str) -> Vec<&Finding> {
+        match self.file_review(path) {
+            Some(fr) => fr
+                .findings
+                .iter()
+                .filter(|f| f.hunk_index.is_none() && f.line_start.is_none())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// Get hunk-level findings (no line_start) for a specific file and hunk index.
-    /// Findings with no hunk_index and no line_start attach to the last hunk.
     pub fn findings_for_hunk(
         &self,
         path: &str,
         hunk_index: usize,
-        total_hunks: usize,
+        _total_hunks: usize,
     ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
@@ -770,8 +782,8 @@ impl AiState {
                     if let Some(hi) = f.hunk_index {
                         return hi == hunk_index;
                     }
-                    // No hunk_index and no line_start → show at last hunk
-                    hunk_index + 1 == total_hunks
+                    // No hunk_index and no line_start → file-level, show in panel only
+                    false
                 })
                 .collect(),
             None => Vec::new(),
@@ -820,7 +832,7 @@ impl AiState {
         _new_start: usize,
         _new_count: usize,
         hunk_index: usize,
-        total_hunks: usize,
+        _total_hunks: usize,
     ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
@@ -835,8 +847,8 @@ impl AiState {
                     if let Some(hi) = f.hunk_index {
                         return hi == hunk_index;
                     }
-                    // No hunk_index and no line_start → show at last hunk
-                    hunk_index + 1 == total_hunks
+                    // No hunk_index and no line_start → file-level, show in panel only
+                    false
                 })
                 .collect(),
             None => Vec::new(),
@@ -1164,6 +1176,10 @@ impl AiState {
         if let Some(review) = &self.review {
             for (file_path, file_review) in &review.files {
                 for finding in &file_review.findings {
+                    // Skip file-level findings — they show in the panel only
+                    if finding.hunk_index.is_none() && finding.line_start.is_none() {
+                        continue;
+                    }
                     result.push((
                         file_path.clone(),
                         finding.hunk_index,
@@ -1633,12 +1649,54 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", None, RiskLevel::High)],
         )]));
-        // Should NOT appear on hunk 0 (not the last hunk)
+        // File-level findings (hunk_index: None, line_start: None) no longer render inline
         assert!(state.findings_for_hunk("a.rs", 0, 3).is_empty());
-        // Should appear on last hunk (index 2 of 3)
-        let results = state.findings_for_hunk("a.rs", 2, 3);
+        assert!(state.findings_for_hunk("a.rs", 2, 3).is_empty());
+    }
+
+    // ── AiState::findings_for_file_level ──
+
+    #[test]
+    fn findings_for_file_level_returns_unanchored() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![
+                // file-level: no hunk_index, no line_start
+                make_finding("file_level", None, RiskLevel::High),
+                // hunk-anchored: excluded
+                make_finding("hunk_anchored", Some(0), RiskLevel::Medium),
+                // line-anchored: excluded
+                make_finding_with_lines(
+                    "line_anchored",
+                    Some(0),
+                    Some(10),
+                    Some(12),
+                    RiskLevel::Low,
+                ),
+            ],
+        )]));
+        let results = state.findings_for_file_level("a.rs");
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "1");
+        assert_eq!(results[0].id, "file_level");
+    }
+
+    #[test]
+    fn findings_for_file_level_no_review_returns_empty() {
+        let state = AiState::default();
+        assert!(state.findings_for_file_level("a.rs").is_empty());
+    }
+
+    #[test]
+    fn findings_for_file_level_unknown_file_returns_empty() {
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![make_finding("file_level", None, RiskLevel::High)],
+        )]));
+        assert!(state.findings_for_file_level("unknown.rs").is_empty());
     }
 
     // ── AiState::findings_for_hunk_by_line_range ──
@@ -1706,14 +1764,13 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", None, RiskLevel::High)],
         )]));
-        // Should NOT appear on hunk 0 (not the last)
+        // File-level findings (hunk_index: None, line_start: None) no longer render inline
         assert!(state
             .findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 2)
             .is_empty());
-        // Should appear on last hunk
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5, 1, 2);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "1");
+        assert!(state
+            .findings_for_hunk_by_line_range("a.rs", 10, 5, 1, 2)
+            .is_empty());
     }
 
     // ── AiState::findings_for_line ──
@@ -2483,11 +2540,9 @@ mod tests {
             ],
         )]));
         let ordered = state.all_findings_ordered();
-        assert_eq!(ordered.len(), 2);
-        // None < Some(0) in Rust Ord for Option<usize>
-        assert_eq!(ordered[0].1, None);
-        assert_eq!(ordered[0].3, "f_none");
-        assert_eq!(ordered[1].1, Some(0));
-        assert_eq!(ordered[1].3, "f_some");
+        // file-level finding (hunk_index: None, line_start: None) is excluded from navigation
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0].1, Some(0));
+        assert_eq!(ordered[0].3, "f_some");
     }
 }

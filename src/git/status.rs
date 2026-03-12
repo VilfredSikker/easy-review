@@ -134,6 +134,18 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         cmd.args(args);
         if let Some(root) = repo_root {
             cmd.current_dir(root);
+            // Isolate git to this repo: clear inherited GIT_* env vars
+            // (e.g., from git hooks or worktrees) that would leak refs
+            // from the parent repo into this context
+            cmd.env_remove("GIT_DIR");
+            cmd.env_remove("GIT_WORK_TREE");
+            cmd.env_remove("GIT_COMMON_DIR");
+            cmd.env_remove("GIT_OBJECT_DIRECTORY");
+            cmd.env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+            cmd.env_remove("GIT_INDEX_FILE");
+            if let Some(parent) = std::path::Path::new(root).parent() {
+                cmd.env("GIT_CEILING_DIRECTORIES", parent);
+            }
         }
         let out = cmd.output().ok()?;
         if out.status.success() {
@@ -171,8 +183,13 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         }
     }
 
-    // Common local branch names
-    for candidate in &["main", "master", "develop", "dev"] {
+    // Common local branch names (prefer main/master over develop/dev)
+    for candidate in &["main", "master"] {
+        if *candidate != current && run(&["rev-parse", "--verify", candidate]).is_some() {
+            return Ok(candidate.to_string());
+        }
+    }
+    for candidate in &["develop", "dev"] {
         if *candidate != current && run(&["rev-parse", "--verify", candidate]).is_some() {
             return Ok(candidate.to_string());
         }
@@ -824,7 +841,14 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
         // outside the repository root. The glob crate does not restrict matches to a subtree.
         // After glob expansion, each matched path should be checked to confirm it is still
         // beneath `repo_root` using `path.starts_with(repo_root)` after canonicalization.
-        let full_pattern = format!("{}/{}", repo_root, pattern);
+        // If pattern ends with "**", append "/*" so the glob crate matches files
+        // inside directories (Rust glob's "**" alone only yields directory entries).
+        let normalized = if pattern.ends_with("**") {
+            format!("{}/*", pattern)
+        } else {
+            pattern.clone()
+        };
+        let full_pattern = format!("{}/{}", repo_root, normalized);
         let entries = glob::glob(&full_pattern)
             .with_context(|| format!("Invalid glob pattern: {}", pattern))?;
         for entry in entries {
