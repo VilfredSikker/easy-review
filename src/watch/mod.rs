@@ -42,6 +42,13 @@ impl FileWatcher {
                             // corrupted characters and may fail to match downstream filters
                             // or open-in-editor logic.
                             let p = e.path.to_string_lossy().to_string();
+                            // Skip .er/ directory — written by er itself (session saves,
+                            // reviewed markers, comments, snapshots). Watching these causes
+                            // spurious "N files changed" refresh loops. AI sidecar files
+                            // are polled separately via mtime checks.
+                            if p.contains("/.er/") {
+                                return None;
+                            }
                             // Allow .git/index (staging) and .git/refs/ (commits) through
                             // but skip other .git/ noise (objects, logs, etc.)
                             if p.contains("/.git/") {

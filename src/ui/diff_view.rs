@@ -450,7 +450,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         DiffMode::Unstaged | DiffMode::Staged => {
                             tab.ai.findings_for_line_by_range(&file.path, new_line_num)
                         }
-                        DiffMode::History | DiffMode::Conflicts => vec![],
+                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -497,7 +497,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History | DiffMode::Conflicts => vec![], // AI findings not shown in History/Conflicts mode
+                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![], // AI findings not shown in History/Conflicts/Hidden mode
             };
             for finding in &findings {
                 let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
@@ -606,7 +606,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             title,
             ratatui::style::Style::default().fg(styles::BRIGHT),
         ))
-        .title_position(ratatui::widgets::block::Position::Top)
         .title_alignment(ratatui::layout::Alignment::Left)
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG))
@@ -1182,7 +1181,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         DiffMode::Unstaged | DiffMode::Staged => {
                             tab.ai.findings_for_line_by_range(&file.path, new_line_num)
                         }
-                        DiffMode::History | DiffMode::Conflicts => vec![],
+                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -1218,7 +1217,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History | DiffMode::Conflicts => vec![],
+                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
             };
             for finding in &findings {
                 let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
@@ -1551,7 +1550,6 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
             title,
             ratatui::style::Style::default().fg(styles::BRIGHT),
         ))
-        .title_position(ratatui::widgets::block::Position::Top)
         .title_alignment(ratatui::layout::Alignment::Left)
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG))
@@ -2240,7 +2238,6 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
             title,
             ratatui::style::Style::default().fg(styles::WATCHED_TEXT),
         ))
-        .title_position(ratatui::widgets::block::Position::Top)
         .title_alignment(ratatui::layout::Alignment::Left)
         .borders(Borders::NONE)
         .style(ratatui::style::Style::default().bg(styles::BG))

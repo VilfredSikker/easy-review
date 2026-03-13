@@ -69,6 +69,8 @@ pub struct FeatureFlags {
     pub view_history: bool,
     #[serde(default = "default_true")]
     pub view_conflicts: bool,
+    #[serde(default = "default_true")]
+    pub view_hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +166,7 @@ impl Default for FeatureFlags {
             view_staged: true,
             view_history: true,
             view_conflicts: true,
+            view_hidden: true,
         }
     }
 }
@@ -215,38 +218,30 @@ pub fn load_config(repo_root: &str) -> ErConfig {
 
     let global_table = global_path
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|c| c.parse::<toml::Value>().ok())
-        .and_then(|v| match v {
-            toml::Value::Table(t) => Some(t),
-            _ => None,
-        });
+        .and_then(|c| c.parse::<toml::Table>().ok());
 
-    // TODO(risk:medium): parse errors in the local .er-config.toml are silently ignored via
-    // .ok(). The user gets default config with no indication their file has a syntax error.
-    // At minimum, log the error to stderr so the user can diagnose misconfigured repos.
     let local_table = std::fs::read_to_string(&local_path)
         .ok()
-        .and_then(|c| c.parse::<toml::Value>().ok())
-        .and_then(|v| match v {
-            toml::Value::Table(t) => Some(t),
-            _ => None,
-        });
+        .and_then(|c| c.parse::<toml::Table>().ok());
 
-    let merged = match (global_table, local_table) {
+    eprintln!(
+        "DEBUG: global_table.is_some()={}, local_table.is_some()={}",
+        global_table.is_some(),
+        local_table.is_some()
+    );
+    let user_table = match (global_table, local_table) {
         (Some(mut global), Some(local)) => {
             deep_merge(&mut global, local);
-            toml::Value::Table(global)
+            global
         }
-        (Some(global), None) => toml::Value::Table(global),
-        (None, Some(local)) => toml::Value::Table(local),
+        (Some(global), None) => global,
+        (None, Some(local)) => local,
         (None, None) => return ErConfig::default(),
     };
 
-    // TODO(risk:medium): unwrap_or_default silently falls back to built-in defaults when the
-    // merged TOML fails to deserialize into ErConfig (e.g. wrong type for a field like
-    // tab_width = "four"). The user's entire config is dropped with no diagnostic. Log the
-    // deserialization error so the user knows their config was not applied.
-    merged.try_into().unwrap_or_default()
+    toml::Value::Table(user_table)
+        .try_into()
+        .unwrap_or_default()
 }
 
 /// Recursively merge `overlay` into `base`. Overlay values win; nested tables are merged recursively.
@@ -331,6 +326,11 @@ pub fn settings_items() -> Vec<SettingsItem> {
             label: "Conflicts (5)".into(),
             get: |c| c.features.view_conflicts,
             set: |c, v| c.features.view_conflicts = v,
+        },
+        SettingsItem::BoolToggle {
+            label: "Hidden files (6)".into(),
+            get: |c| c.features.view_hidden,
+            set: |c, v| c.features.view_hidden = v,
         },
         SettingsItem::SectionHeader("Display".into()),
         SettingsItem::BoolToggle {
@@ -608,6 +608,7 @@ mod tests {
         assert!(flags.view_staged);
         assert!(flags.view_history);
         assert!(flags.view_conflicts);
+        assert!(flags.view_hidden);
     }
 
     #[test]
@@ -631,6 +632,7 @@ mod tests {
                 view_staged: false,
                 view_history: true,
                 view_conflicts: false,
+                view_hidden: true,
             },
             display: DisplayConfig {
                 tab_width: 8,

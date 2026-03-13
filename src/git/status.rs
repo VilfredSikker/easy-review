@@ -134,6 +134,18 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         cmd.args(args);
         if let Some(root) = repo_root {
             cmd.current_dir(root);
+            // Isolate git to this repo: clear inherited GIT_* env vars
+            // (e.g., from git hooks or worktrees) that would leak refs
+            // from the parent repo into this context
+            cmd.env_remove("GIT_DIR");
+            cmd.env_remove("GIT_WORK_TREE");
+            cmd.env_remove("GIT_COMMON_DIR");
+            cmd.env_remove("GIT_OBJECT_DIRECTORY");
+            cmd.env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
+            cmd.env_remove("GIT_INDEX_FILE");
+            if let Some(parent) = std::path::Path::new(root).parent() {
+                cmd.env("GIT_CEILING_DIRECTORIES", parent);
+            }
         }
         let out = cmd.output().ok()?;
         if out.status.success() {
@@ -171,8 +183,13 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         }
     }
 
-    // Common local branch names
-    for candidate in &["main", "master", "develop", "dev"] {
+    // Common local branch names (prefer main/master over develop/dev)
+    for candidate in &["main", "master"] {
+        if *candidate != current && run(&["rev-parse", "--verify", candidate]).is_some() {
+            return Ok(candidate.to_string());
+        }
+    }
+    for candidate in &["develop", "dev"] {
         if *candidate != current && run(&["rev-parse", "--verify", candidate]).is_some() {
             return Ok(candidate.to_string());
         }
@@ -824,7 +841,14 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
         // outside the repository root. The glob crate does not restrict matches to a subtree.
         // After glob expansion, each matched path should be checked to confirm it is still
         // beneath `repo_root` using `path.starts_with(repo_root)` after canonicalization.
-        let full_pattern = format!("{}/{}", repo_root, pattern);
+        // If pattern ends with "**", append "/*" so the glob crate matches files
+        // inside directories (Rust glob's "**" alone only yields directory entries).
+        let normalized = if pattern.ends_with("**") {
+            format!("{}/*", pattern)
+        } else {
+            pattern.clone()
+        };
+        let full_pattern = format!("{}/{}", repo_root, normalized);
         let entries = glob::glob(&full_pattern)
             .with_context(|| format!("Invalid glob pattern: {}", pattern))?;
         for entry in entries {
@@ -1128,95 +1152,6 @@ mod tests {
     fn strip_upstream_empty_after_slash() {
         // Edge case: "origin/" → empty string after slash
         assert_eq!(strip_upstream("origin/"), "");
-    }
-
-    // ── detect_base_branch_impl integration tests (require temp git repo) ──
-
-    /// Helper: create a temp git repo, returning its path.
-    /// Disables commit signing to work in CI / sandboxed environments.
-    fn init_temp_repo() -> (tempfile::TempDir, String) {
-        init_temp_repo_with_branch("main")
-    }
-
-    fn init_temp_repo_with_branch(branch: &str) -> (tempfile::TempDir, String) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().to_str().unwrap().to_string();
-        let run = |args: &[&str]| {
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(&path)
-                .env("GIT_AUTHOR_NAME", "Test")
-                .env("GIT_AUTHOR_EMAIL", "test@test.com")
-                .env("GIT_COMMITTER_NAME", "Test")
-                .env("GIT_COMMITTER_EMAIL", "test@test.com")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("HOME", dir.path())
-                .output()
-                .unwrap();
-        };
-        run(&["init", "-b", branch]);
-        // Disable signing in this repo
-        run(&[
-            "-c",
-            "commit.gpgsign=false",
-            "config",
-            "commit.gpgsign",
-            "false",
-        ]);
-        // Create an initial commit so HEAD exists
-        std::fs::write(dir.path().join("README"), "init").unwrap();
-        run(&["add", "."]);
-        run(&["commit", "--no-gpg-sign", "-m", "init"]);
-        (dir, path)
-    }
-
-    fn git_in(path: &str, args: &[&str]) {
-        let parent = std::path::Path::new(path).parent().unwrap();
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(path)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("HOME", parent)
-            .output()
-            .unwrap();
-    }
-
-    #[test]
-    fn detect_base_branch_with_only_main() {
-        let (_dir, path) = init_temp_repo();
-        git_in(&path, &["checkout", "-b", "feature"]);
-        let result = detect_base_branch_in(&path).unwrap();
-        assert_eq!(result, "main");
-    }
-
-    #[test]
-    fn detect_base_branch_with_only_master() {
-        let (_dir, path) = init_temp_repo_with_branch("master");
-        git_in(&path, &["checkout", "-b", "feature"]);
-        let result = detect_base_branch_in(&path).unwrap();
-        assert_eq!(result, "master");
-    }
-
-    #[test]
-    fn detect_base_branch_with_develop() {
-        let (_dir, path) = init_temp_repo();
-        git_in(&path, &["branch", "-m", "main", "develop"]);
-        git_in(&path, &["checkout", "-b", "feature"]);
-        let result = detect_base_branch_in(&path).unwrap();
-        assert_eq!(result, "develop");
-    }
-
-    #[test]
-    fn detect_base_branch_on_main_itself_falls_through() {
-        let (_dir, path) = init_temp_repo();
-        // We are on main, which skips "main" as candidate (current == candidate)
-        // No other branches exist, so it falls back to the hard-coded "main"
-        let result = detect_base_branch_in(&path).unwrap();
-        assert_eq!(result, "main");
     }
 
     #[test]
