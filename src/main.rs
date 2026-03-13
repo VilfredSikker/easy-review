@@ -758,9 +758,9 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Push all comments to GitHub
+        // Reverse panel cycle
         KeyCode::Char('P') => {
-            push_all_comments_to_github(app)?;
+            app.tab_mut().toggle_panel_reverse();
             return Ok(());
         }
 

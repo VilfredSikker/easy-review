@@ -1397,6 +1397,47 @@ impl TabState {
         }
     }
 
+    pub fn toggle_panel_reverse(&mut self) {
+        let has_ai = self.layers.show_ai_findings && self.ai.has_data();
+        let has_pr = self.pr_data.is_some();
+        let has_symbol_refs = self.symbol_refs.is_some();
+        self.panel = match self.panel {
+            None => {
+                if has_symbol_refs {
+                    Some(PanelContent::SymbolRefs)
+                } else if has_pr {
+                    Some(PanelContent::PrOverview)
+                } else if has_ai {
+                    Some(PanelContent::AiSummary)
+                } else {
+                    Some(PanelContent::FileDetail)
+                }
+            }
+            Some(PanelContent::SymbolRefs) => {
+                if has_pr {
+                    Some(PanelContent::PrOverview)
+                } else if has_ai {
+                    Some(PanelContent::AiSummary)
+                } else {
+                    Some(PanelContent::FileDetail)
+                }
+            }
+            Some(PanelContent::PrOverview) => {
+                if has_ai {
+                    Some(PanelContent::AiSummary)
+                } else {
+                    Some(PanelContent::FileDetail)
+                }
+            }
+            Some(PanelContent::AiSummary) => Some(PanelContent::FileDetail),
+            Some(PanelContent::FileDetail) => None,
+        };
+        self.panel_scroll = 0;
+        if self.panel.is_none() {
+            self.panel_focus = false;
+        }
+    }
+
     // ── Panel/review navigation ──
 
     /// Number of items in the left column (file risk list)
@@ -6587,6 +6628,87 @@ mod tests {
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
         tab.toggle_panel(); // PrOverview → None
         assert_eq!(tab.panel, None);
+    }
+
+    // ── toggle_panel_reverse ──
+
+    #[test]
+    fn toggle_panel_reverse_full_cycle_no_ai_no_pr() {
+        let mut tab = make_test_tab(vec![]);
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel_reverse(); // None → FileDetail (only option)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel_reverse(); // FileDetail → None
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_reverse_full_cycle_with_ai_and_pr() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("summary".to_string());
+        tab.layers.show_ai_findings = true;
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 1,
+            title: "t".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "u".to_string(),
+            url: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: "feat".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        assert_eq!(tab.panel, None);
+        tab.toggle_panel_reverse(); // None → PrOverview (highest available without SymbolRefs)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
+        tab.toggle_panel_reverse(); // PrOverview → AiSummary
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
+        tab.toggle_panel_reverse(); // AiSummary → FileDetail
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+        tab.toggle_panel_reverse(); // FileDetail → None
+        assert_eq!(tab.panel, None);
+    }
+
+    #[test]
+    fn toggle_panel_reverse_skips_unavailable_panels() {
+        let mut tab = make_test_tab(vec![]);
+        // No AI, no PR: reverse from None goes straight to FileDetail
+        tab.toggle_panel_reverse();
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+    }
+
+    #[test]
+    fn toggle_panel_reverse_skips_ai_when_no_ai_data() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 2,
+            title: "t".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "u".to_string(),
+            url: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: "feat".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        // From PrOverview, no AI present: should go to FileDetail (skip AiSummary)
+        tab.panel = Some(crate::ai::PanelContent::PrOverview);
+        tab.toggle_panel_reverse();
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+    }
+
+    #[test]
+    fn toggle_panel_reverse_resets_scroll_and_clears_focus_on_close() {
+        let mut tab = make_test_tab(vec![]);
+        tab.panel = Some(crate::ai::PanelContent::FileDetail);
+        tab.panel_scroll = 99;
+        tab.panel_focus = true;
+        tab.toggle_panel_reverse(); // FileDetail → None
+        assert_eq!(tab.panel, None);
+        assert_eq!(tab.panel_scroll, 0);
+        assert!(!tab.panel_focus);
     }
 
     // ── DiffCache ──

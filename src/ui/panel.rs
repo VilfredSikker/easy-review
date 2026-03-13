@@ -161,12 +161,16 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     };
 
     // File path header
-    lines.push(Line::from(vec![Span::styled(
-        format!(" {}", path),
-        Style::default()
-            .fg(styles::TEXT)
-            .add_modifier(Modifier::BOLD),
-    )]));
+    let max_w = area.width.saturating_sub(3) as usize;
+    let path_style = Style::default()
+        .fg(styles::TEXT)
+        .add_modifier(Modifier::BOLD);
+    for wrapped in word_wrap(path, max_w) {
+        lines.push(Line::from(vec![Span::styled(
+            format!(" {}", wrapped),
+            path_style,
+        )]));
+    }
     lines.push(Line::from(""));
 
     // AI file review
@@ -195,15 +199,16 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             ]));
 
             if !fr.risk_reason.is_empty() {
-                lines.push(Line::from(vec![Span::styled(
-                    format!(" {}", fr.risk_reason),
-                    Style::default().fg(styles::DIM),
-                )]));
+                for wrapped in word_wrap(&fr.risk_reason, max_w) {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(" {}", wrapped),
+                        Style::default().fg(styles::DIM),
+                    )]));
+                }
             }
 
             if !fr.summary.is_empty() {
                 lines.push(Line::from(""));
-                let max_w = area.width.saturating_sub(3) as usize;
                 for wrapped in word_wrap(&fr.summary, max_w) {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {}", wrapped),
@@ -639,15 +644,23 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             .strip_prefix("https://github.com/")
             .unwrap_or(&pr.url)
             .replace("/pull/", "#");
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {}", display),
-                Style::default()
-                    .fg(styles::DIM)
-                    .add_modifier(Modifier::UNDERLINED),
-            ),
-            Span::styled("  (o to open)", Style::default().fg(styles::MUTED)),
-        ]));
+        let url_style = Style::default()
+            .fg(styles::DIM)
+            .add_modifier(Modifier::UNDERLINED);
+        let wrapped_url = word_wrap(&display, max_w.saturating_sub(13));
+        for (i, wrapped) in wrapped_url.iter().enumerate() {
+            if i == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(format!(" {}", wrapped), url_style),
+                    Span::styled("  (o to open)", Style::default().fg(styles::MUTED)),
+                ]));
+            } else {
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {}", wrapped),
+                    url_style,
+                )]));
+            }
+        }
     }
     lines.push(Line::from(""));
 
@@ -662,13 +675,27 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     }
     lines.push(Line::from(""));
 
-    // Branch info
-    lines.push(Line::from(vec![
-        Span::styled(" ", Style::default()),
-        Span::styled(&pr.head_branch, Style::default().fg(styles::CYAN)),
-        Span::styled(" → ", Style::default().fg(styles::DIM)),
-        Span::styled(&pr.base_branch, Style::default().fg(styles::TEXT)),
-    ]));
+    // Branch info — wrap long branch names
+    let branch_text = format!("{} → {}", pr.head_branch, pr.base_branch);
+    let wrapped_branch = word_wrap(&branch_text, max_w);
+    for wrapped in &wrapped_branch {
+        // Re-split on " → " to preserve per-segment styling on the first line
+        if let Some(arrow_pos) = wrapped.find(" → ") {
+            let head = &wrapped[..arrow_pos];
+            let base = &wrapped[arrow_pos + 3..];
+            lines.push(Line::from(vec![
+                Span::styled(" ", Style::default()),
+                Span::styled(head.to_string(), Style::default().fg(styles::CYAN)),
+                Span::styled(" → ", Style::default().fg(styles::DIM)),
+                Span::styled(base.to_string(), Style::default().fg(styles::TEXT)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                format!(" {}", wrapped),
+                Style::default().fg(styles::TEXT),
+            )]));
+        }
+    }
     lines.push(Line::from(""));
 
     // Body (first few lines, truncated)
