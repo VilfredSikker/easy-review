@@ -6765,6 +6765,35 @@ mod tests {
     }
 
     #[test]
+    fn toggle_panel_reverse_skips_unavailable_panels() {
+        let mut tab = make_test_tab(vec![]);
+        // No AI, no PR: reverse from None goes straight to FileDetail
+        tab.toggle_panel_reverse();
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+    }
+
+    #[test]
+    fn toggle_panel_reverse_skips_ai_when_no_ai_data() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_data = Some(crate::github::PrOverviewData {
+            number: 42,
+            title: "My PR".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "user".to_string(),
+            url: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: "feature".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        });
+        // From PrOverview, no AI present: should go to FileDetail (skip AiSummary)
+        tab.panel = Some(crate::ai::PanelContent::PrOverview);
+        tab.toggle_panel_reverse();
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
+    }
+
+    #[test]
     fn toggle_panel_reverse_resets_scroll_and_focus() {
         let mut tab = make_test_tab(vec![]);
         tab.panel_scroll = 10;
