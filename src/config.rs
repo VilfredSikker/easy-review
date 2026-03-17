@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -17,6 +18,107 @@ pub struct ErConfig {
     pub hints: HintConfig,
     #[serde(default)]
     pub commands: CommandsConfig,
+    #[serde(default)]
+    pub theme: ThemeConfig,
+}
+
+/// [theme] section — color overrides for the TUI.
+/// Each field accepts a hex color string like "#0B0B0F" or "#6AA5FA".
+/// Omitted fields fall back to the built-in brand colors.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ThemeConfig {
+    // Background colors
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub bg: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub surface: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub panel: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub border: Option<Color>,
+
+    // Text colors
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub text: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub dim: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub muted: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub bright: Option<Color>,
+
+    // Accent colors
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub blue: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub cyan: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub green: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub yellow: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub red: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub purple: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub orange: Option<Color>,
+
+    // Diff colors
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub add_bg: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub add_text: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub del_bg: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub del_text: Option<Color>,
+    #[serde(default, deserialize_with = "deser_opt_color", serialize_with = "ser_opt_color")]
+    pub hunk_bg: Option<Color>,
+}
+
+/// Parse a hex color string like "#FF00AA" or "FF00AA" into a Color::Rgb.
+pub fn parse_hex_color(s: &str) -> Option<Color> {
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::Rgb(r, g, b))
+}
+
+fn color_to_hex(c: Color) -> Option<String> {
+    match c {
+        Color::Rgb(r, g, b) => Some(format!("#{:02X}{:02X}{:02X}", r, g, b)),
+        _ => None,
+    }
+}
+
+fn deser_opt_color<'de, D>(deserializer: D) -> Result<Option<Color>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(s) => parse_hex_color(&s)
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid hex color: {s}"))),
+    }
+}
+
+fn ser_opt_color<S>(color: &Option<Color>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match color {
+        Some(c) => match color_to_hex(*c) {
+            Some(hex) => serializer.serialize_some(&hex),
+            None => serializer.serialize_none(),
+        },
+        None => serializer.serialize_none(),
+    }
 }
 
 /// [commands] section — configurable shell commands for hub actions.
@@ -731,5 +833,91 @@ mod tests {
         let views_pos = headers.iter().position(|h| *h == "Views").unwrap();
         let display_pos = headers.iter().position(|h| *h == "Display").unwrap();
         assert!(views_pos < display_pos);
+    }
+
+    // ── ThemeConfig ──
+
+    #[test]
+    fn parse_hex_color_valid() {
+        assert_eq!(parse_hex_color("#FF0000"), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_hex_color("00FF00"), Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(parse_hex_color("#0B0B0F"), Some(Color::Rgb(11, 11, 15)));
+    }
+
+    #[test]
+    fn parse_hex_color_invalid() {
+        assert_eq!(parse_hex_color("#GG0000"), None);
+        assert_eq!(parse_hex_color("#FF00"), None);
+        assert_eq!(parse_hex_color(""), None);
+    }
+
+    #[test]
+    fn theme_config_deserializes_from_toml() {
+        let toml_str = r##"
+[theme]
+bg = "#1A1A2E"
+text = "#E4E4EF"
+green = "#4ADE80"
+"##;
+        let config: ErConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.theme.bg, Some(Color::Rgb(26, 26, 46)));
+        assert_eq!(config.theme.text, Some(Color::Rgb(228, 228, 239)));
+        assert_eq!(config.theme.green, Some(Color::Rgb(74, 222, 128)));
+        assert!(config.theme.red.is_none()); // not specified → None
+    }
+
+    #[test]
+    fn theme_config_empty_produces_all_none() {
+        let config = ThemeConfig::default();
+        assert!(config.bg.is_none());
+        assert!(config.text.is_none());
+        assert!(config.blue.is_none());
+        assert!(config.add_bg.is_none());
+    }
+
+    #[test]
+    fn theme_config_roundtrip_serialization() {
+        let mut theme = ThemeConfig::default();
+        theme.bg = Some(Color::Rgb(20, 20, 30));
+        theme.red = Some(Color::Rgb(255, 0, 0));
+
+        let config = ErConfig {
+            theme,
+            ..Default::default()
+        };
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let restored: ErConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(restored.theme.bg, Some(Color::Rgb(20, 20, 30)));
+        assert_eq!(restored.theme.red, Some(Color::Rgb(255, 0, 0)));
+        assert!(restored.theme.blue.is_none());
+    }
+
+    #[test]
+    fn theme_config_invalid_hex_in_toml_errors() {
+        let toml_str = r##"
+[theme]
+bg = "not-a-color"
+"##;
+        let result: Result<ErConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_config_with_theme_overrides() {
+        let dir = std::env::temp_dir().join("er_test_theme");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join(".er-config.toml");
+        std::fs::write(
+            &config_path,
+            "[theme]\nbg = \"#1A1A2E\"\nred = \"#FF5555\"\n",
+        )
+        .unwrap();
+
+        let config = load_config(dir.to_str().unwrap());
+        assert_eq!(config.theme.bg, Some(Color::Rgb(26, 26, 46)));
+        assert_eq!(config.theme.red, Some(Color::Rgb(255, 85, 85)));
+        assert!(config.theme.text.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

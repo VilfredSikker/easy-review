@@ -3259,6 +3259,9 @@ impl App {
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
 
+        // Initialize the global theme from config (applies color overrides)
+        crate::ui::styles::init_theme(&er_config.theme);
+
         Ok(App {
             tabs,
             active_tab: 0,

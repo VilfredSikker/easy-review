@@ -5,7 +5,7 @@ mod overlay;
 pub mod panel;
 mod settings;
 mod status_bar;
-mod styles;
+pub mod styles;
 mod utils;
 
 use crate::app::{App, OverlayData};

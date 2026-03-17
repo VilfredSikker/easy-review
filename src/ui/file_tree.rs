@@ -134,7 +134,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                             RiskLevel::High => styles::risk_high(),
                             RiskLevel::Medium => styles::risk_medium(),
                             RiskLevel::Low => styles::risk_low(),
-                            RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
+                            RiskLevel::Info => ratatui::style::Style::default().fg(styles::blue()),
                         }
                     };
                     Some(Span::styled(format!("{} ", fr.risk.symbol()), dot_style))
@@ -197,15 +197,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 styles::selected_style()
             } else if is_compacted || is_reviewed {
                 ratatui::style::Style::default()
-                    .fg(styles::DIM)
-                    .bg(styles::SURFACE)
+                    .fg(styles::dim_color())
+                    .bg(styles::surface())
             } else {
                 styles::surface_style()
             };
 
             // Dim the symbol if reviewed (unless selected)
             let effective_symbol_style = if is_reviewed && !is_selected {
-                ratatui::style::Style::default().fg(styles::DIM)
+                ratatui::style::Style::default().fg(styles::dim_color())
             } else {
                 symbol_style
             };
@@ -229,35 +229,35 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 if is_selected {
                     styles::selected_style()
                 } else if is_reviewed {
-                    ratatui::style::Style::default().fg(styles::DIM)
+                    ratatui::style::Style::default().fg(styles::dim_color())
                 } else {
-                    ratatui::style::Style::default().fg(styles::TEXT)
+                    ratatui::style::Style::default().fg(styles::text())
                 },
             ));
             // Comment indicators after path (with counts)
             if has_questions {
                 spans.push(Span::styled(
                     q_indicator,
-                    ratatui::style::Style::default().fg(styles::YELLOW),
+                    ratatui::style::Style::default().fg(styles::yellow()),
                 ));
             }
             if has_gh_comments {
                 spans.push(Span::styled(
                     gh_indicator,
-                    ratatui::style::Style::default().fg(styles::CYAN),
+                    ratatui::style::Style::default().fg(styles::cyan()),
                 ));
             }
             // Show relative time when sorting by mtime
             if let Some(ref ts) = time_str {
                 spans.push(Span::styled(
                     format!("{:>7} ", ts),
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::muted()),
                 ));
             }
             if area.width > 24 {
                 spans.push(Span::styled(
                     format!("{:>8} ", stats),
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::dim_color()),
                 ));
             }
 
@@ -280,7 +280,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         items.push(
             ListItem::new(Line::from(Span::styled(
                 format!(" {}", sep_text),
-                ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
+                ratatui::style::Style::default().fg(styles::watched_muted()),
             )))
             .style(styles::surface_style()),
         );
@@ -302,9 +302,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
             let icon = if not_ignored { "\u{26a0}" } else { "\u{25c9}" };
             let icon_style = if not_ignored {
-                ratatui::style::Style::default().fg(styles::YELLOW)
+                ratatui::style::Style::default().fg(styles::yellow())
             } else {
-                ratatui::style::Style::default().fg(styles::WATCHED_TEXT)
+                ratatui::style::Style::default().fg(styles::watched_text())
             };
 
             let mut spans = vec![Span::styled(format!(" {} ", icon), icon_style)];
@@ -314,13 +314,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 if is_selected {
                     styles::selected_style()
                 } else {
-                    ratatui::style::Style::default().fg(styles::WATCHED_TEXT)
+                    ratatui::style::Style::default().fg(styles::watched_text())
                 },
             ));
             if area.width > 24 {
                 spans.push(Span::styled(
                     format!("{:>8} ", age),
-                    ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
+                    ratatui::style::Style::default().fg(styles::watched_muted()),
                 ));
             }
 
@@ -329,18 +329,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let title_style = if in_overlay && tab.ai.has_data() && !ai_stale {
-        ratatui::style::Style::default().fg(styles::PURPLE)
+        ratatui::style::Style::default().fg(styles::purple())
     } else if ai_stale {
         styles::stale_style()
     } else {
-        ratatui::style::Style::default().fg(styles::MUTED)
+        ratatui::style::Style::default().fg(styles::muted())
     };
 
     let block = Block::default()
         .title(Span::styled(title, title_style))
         .borders(Borders::RIGHT)
-        .border_style(ratatui::style::Style::default().fg(styles::BORDER))
-        .style(ratatui::style::Style::default().bg(styles::SURFACE))
+        .border_style(ratatui::style::Style::default().fg(styles::border()))
+        .style(ratatui::style::Style::default().bg(styles::surface()))
         .padding(Padding::new(0, 0, 0, 0));
 
     let list = List::new(items).block(block);
@@ -431,14 +431,14 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
             let wrapped_lines = word_wrap(&full_subject, subject_width);
 
             let indicator_style = if is_selected {
-                ratatui::style::Style::default().fg(styles::PURPLE)
+                ratatui::style::Style::default().fg(styles::purple())
             } else {
-                ratatui::style::Style::default().fg(styles::DIM)
+                ratatui::style::Style::default().fg(styles::dim_color())
             };
             let subject_style = if is_selected {
-                ratatui::style::Style::default().fg(styles::BRIGHT)
+                ratatui::style::Style::default().fg(styles::bright())
             } else {
-                ratatui::style::Style::default().fg(styles::TEXT)
+                ratatui::style::Style::default().fg(styles::text())
             };
             let continuation_indent = " ".repeat(indicator_width);
 
@@ -470,13 +470,13 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
             // Author line: indented, dimmed
             let author_line = Line::from(vec![Span::styled(
                 format!("   {}", commit.author),
-                ratatui::style::Style::default().fg(styles::DIM),
+                ratatui::style::Style::default().fg(styles::dim_color()),
             )]);
 
             // Separator line
             let separator = Line::from(Span::styled(
                 horizontal_rule(area.width.saturating_sub(2) as usize),
-                ratatui::style::Style::default().fg(styles::BORDER),
+                ratatui::style::Style::default().fg(styles::border()),
             ));
 
             let mut result = vec![ListItem::new(first_line).style(line_style)];
@@ -490,11 +490,11 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             title,
-            ratatui::style::Style::default().fg(styles::MUTED),
+            ratatui::style::Style::default().fg(styles::muted()),
         ))
         .borders(Borders::RIGHT)
-        .border_style(ratatui::style::Style::default().fg(styles::BORDER))
-        .style(ratatui::style::Style::default().bg(styles::SURFACE))
+        .border_style(ratatui::style::Style::default().fg(styles::border()))
+        .style(ratatui::style::Style::default().bg(styles::surface()))
         .padding(Padding::new(0, 0, 0, 0));
 
     let list = List::new(items).block(block);

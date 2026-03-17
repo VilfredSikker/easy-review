@@ -61,22 +61,22 @@ fn render_worktree_picker(f: &mut Frame, area: Rect, worktrees: &[Worktree], sel
             let marker = if is_sel { "▶ " } else { "  " };
 
             let line = Line::from(vec![
-                Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN)),
+                Span::styled(marker, ratatui::style::Style::default().fg(styles::cyan())),
                 Span::styled(
                     format!("{:<20}", wt.branch),
                     if is_sel {
-                        ratatui::style::Style::default().fg(styles::BRIGHT)
+                        ratatui::style::Style::default().fg(styles::bright())
                     } else {
-                        ratatui::style::Style::default().fg(styles::TEXT)
+                        ratatui::style::Style::default().fg(styles::text())
                     },
                 ),
-                Span::styled(&wt.path, ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled(&wt.path, ratatui::style::Style::default().fg(styles::dim_color())),
             ]);
 
             let style = if is_sel {
                 styles::selected_style()
             } else {
-                ratatui::style::Style::default().bg(styles::PANEL)
+                ratatui::style::Style::default().bg(styles::panel())
             };
 
             ListItem::new(line).style(style)
@@ -86,11 +86,11 @@ fn render_worktree_picker(f: &mut Frame, area: Rect, worktrees: &[Worktree], sel
     let block = Block::default()
         .title(Span::styled(
             " WORKTREES (Enter=select, Esc=close) ",
-            ratatui::style::Style::default().fg(styles::CYAN),
+            ratatui::style::Style::default().fg(styles::cyan()),
         ))
         .borders(Borders::ALL)
-        .border_style(ratatui::style::Style::default().fg(styles::CYAN))
-        .style(ratatui::style::Style::default().bg(styles::PANEL));
+        .border_style(ratatui::style::Style::default().fg(styles::cyan()))
+        .style(ratatui::style::Style::default().bg(styles::panel()));
 
     let list = List::new(items).block(block);
     f.render_widget(list, popup);
@@ -115,15 +115,15 @@ fn render_directory_browser(
         let block = Block::default()
             .title(Span::styled(
                 format!(" {} ", current_path),
-                ratatui::style::Style::default().fg(styles::CYAN),
+                ratatui::style::Style::default().fg(styles::cyan()),
             ))
             .borders(Borders::ALL)
-            .border_style(ratatui::style::Style::default().fg(styles::CYAN))
-            .style(ratatui::style::Style::default().bg(styles::PANEL));
+            .border_style(ratatui::style::Style::default().fg(styles::cyan()))
+            .style(ratatui::style::Style::default().bg(styles::panel()));
 
         let empty = Paragraph::new(Line::from(Span::styled(
             "  (empty directory)",
-            ratatui::style::Style::default().fg(styles::MUTED),
+            ratatui::style::Style::default().fg(styles::muted()),
         )))
         .block(block);
 
@@ -145,20 +145,20 @@ fn render_directory_browser(
             };
 
             let name_style = if entry.is_git_repo {
-                ratatui::style::Style::default().fg(styles::GREEN)
+                ratatui::style::Style::default().fg(styles::green())
             } else if entry.is_dir {
-                ratatui::style::Style::default().fg(styles::BLUE)
+                ratatui::style::Style::default().fg(styles::blue())
             } else {
-                ratatui::style::Style::default().fg(styles::TEXT)
+                ratatui::style::Style::default().fg(styles::text())
             };
 
             let mut spans = vec![
-                Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN)),
+                Span::styled(marker, ratatui::style::Style::default().fg(styles::cyan())),
                 Span::styled(icon, name_style),
                 Span::styled(
                     &entry.name,
                     if is_sel {
-                        ratatui::style::Style::default().fg(styles::BRIGHT)
+                        ratatui::style::Style::default().fg(styles::bright())
                     } else {
                         name_style
                     },
@@ -168,19 +168,19 @@ fn render_directory_browser(
             if entry.is_git_repo {
                 spans.push(Span::styled(
                     "  [git]",
-                    ratatui::style::Style::default().fg(styles::GREEN),
+                    ratatui::style::Style::default().fg(styles::green()),
                 ));
             } else if entry.is_dir {
                 spans.push(Span::styled(
                     "/",
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::dim_color()),
                 ));
             }
 
             let style = if is_sel {
                 styles::selected_style()
             } else {
-                ratatui::style::Style::default().bg(styles::PANEL)
+                ratatui::style::Style::default().bg(styles::panel())
             };
 
             ListItem::new(Line::from(spans)).style(style)
@@ -203,11 +203,11 @@ fn render_directory_browser(
     let block = Block::default()
         .title(Span::styled(
             format!(" {} (Enter=open, Bksp=up, Esc=close) ", title_path),
-            ratatui::style::Style::default().fg(styles::CYAN),
+            ratatui::style::Style::default().fg(styles::cyan()),
         ))
         .borders(Borders::ALL)
-        .border_style(ratatui::style::Style::default().fg(styles::CYAN))
-        .style(ratatui::style::Style::default().bg(styles::PANEL));
+        .border_style(ratatui::style::Style::default().fg(styles::cyan()))
+        .style(ratatui::style::Style::default().bg(styles::panel()));
 
     let list = List::new(items).block(block);
     f.render_widget(list, popup);
@@ -240,29 +240,29 @@ fn render_filter_history(
         let marker = if is_sel { "▶ " } else { "  " };
 
         let line = Line::from(vec![
-            Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN)),
+            Span::styled(marker, ratatui::style::Style::default().fg(styles::cyan())),
             Span::styled(
                 format!("{:<10}", preset.name),
                 if is_sel {
                     ratatui::style::Style::default()
-                        .fg(styles::BRIGHT)
+                        .fg(styles::bright())
                         .add_modifier(ratatui::style::Modifier::BOLD)
                 } else {
                     ratatui::style::Style::default()
-                        .fg(styles::BLUE)
+                        .fg(styles::blue())
                         .add_modifier(ratatui::style::Modifier::BOLD)
                 },
             ),
             Span::styled(
                 preset.expr,
-                ratatui::style::Style::default().fg(styles::DIM),
+                ratatui::style::Style::default().fg(styles::dim_color()),
             ),
         ]);
 
         let style = if is_sel {
             styles::selected_style()
         } else {
-            ratatui::style::Style::default().bg(styles::PANEL)
+            ratatui::style::Style::default().bg(styles::panel())
         };
 
         items.push(ListItem::new(line).style(style));
@@ -273,9 +273,9 @@ fn render_filter_history(
         items.push(
             ListItem::new(Line::from(Span::styled(
                 "── history ──",
-                ratatui::style::Style::default().fg(styles::MUTED),
+                ratatui::style::Style::default().fg(styles::muted()),
             )))
-            .style(ratatui::style::Style::default().bg(styles::PANEL)),
+            .style(ratatui::style::Style::default().bg(styles::panel())),
         );
 
         for (idx, expr) in history.iter().enumerate() {
@@ -284,13 +284,13 @@ fn render_filter_history(
             let marker = if is_sel { "▶ " } else { "  " };
 
             let line = Line::from(vec![
-                Span::styled(marker, ratatui::style::Style::default().fg(styles::YELLOW)),
+                Span::styled(marker, ratatui::style::Style::default().fg(styles::yellow())),
                 Span::styled(
                     expr.as_str(),
                     if is_sel {
-                        ratatui::style::Style::default().fg(styles::BRIGHT)
+                        ratatui::style::Style::default().fg(styles::bright())
                     } else {
-                        ratatui::style::Style::default().fg(styles::TEXT)
+                        ratatui::style::Style::default().fg(styles::text())
                     },
                 ),
             ]);
@@ -298,7 +298,7 @@ fn render_filter_history(
             let style = if is_sel {
                 styles::selected_style()
             } else {
-                ratatui::style::Style::default().bg(styles::PANEL)
+                ratatui::style::Style::default().bg(styles::panel())
             };
 
             items.push(ListItem::new(line).style(style));
@@ -308,11 +308,11 @@ fn render_filter_history(
     let block = Block::default()
         .title(Span::styled(
             " FILTERS (Enter=apply, Esc=close) ",
-            ratatui::style::Style::default().fg(styles::CYAN),
+            ratatui::style::Style::default().fg(styles::cyan()),
         ))
         .borders(Borders::ALL)
-        .border_style(ratatui::style::Style::default().fg(styles::CYAN))
-        .style(ratatui::style::Style::default().bg(styles::PANEL));
+        .border_style(ratatui::style::Style::default().fg(styles::cyan()))
+        .style(ratatui::style::Style::default().bg(styles::panel()));
 
     let list = List::new(items).block(block);
     f.render_widget(list, popup);
@@ -337,10 +337,10 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
     f.render_widget(Clear, popup);
 
     let title_color = match kind {
-        HubKind::Git => styles::GREEN,
-        HubKind::Ai => styles::PURPLE,
-        HubKind::Verify => styles::YELLOW,
-        HubKind::Help => styles::CYAN,
+        HubKind::Git => styles::green(),
+        HubKind::Ai => styles::purple(),
+        HubKind::Verify => styles::yellow(),
+        HubKind::Help => styles::cyan(),
     };
 
     let list_items: Vec<ListItem> = items
@@ -355,18 +355,18 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
                         .fg(title_color)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 )))
-                .style(ratatui::style::Style::default().bg(styles::PANEL));
+                .style(ratatui::style::Style::default().bg(styles::panel()));
             }
 
             let is_sel = idx == selected;
             let marker = if is_sel { "▶ " } else { "  " };
 
             let label_style = if !item.enabled {
-                ratatui::style::Style::default().fg(styles::MUTED)
+                ratatui::style::Style::default().fg(styles::muted())
             } else if is_sel {
-                ratatui::style::Style::default().fg(styles::BRIGHT)
+                ratatui::style::Style::default().fg(styles::bright())
             } else {
-                ratatui::style::Style::default().fg(styles::TEXT)
+                ratatui::style::Style::default().fg(styles::text())
             };
 
             let mut spans = vec![
@@ -381,20 +381,20 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
                 spans.push(Span::raw(" ".repeat(pad)));
                 spans.push(Span::styled(
                     &item.description,
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::dim_color()),
                 ));
             } else {
                 // For action hubs, show hint right-aligned and description dimmed
                 if !item.hint.is_empty() {
                     spans.push(Span::styled(
                         format!("  [{}]", item.hint),
-                        ratatui::style::Style::default().fg(styles::DIM),
+                        ratatui::style::Style::default().fg(styles::dim_color()),
                     ));
                 }
                 if !item.description.is_empty() {
                     spans.push(Span::styled(
                         format!("  {}", item.description),
-                        ratatui::style::Style::default().fg(styles::MUTED),
+                        ratatui::style::Style::default().fg(styles::muted()),
                     ));
                 }
             }
@@ -402,7 +402,7 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
             let style = if is_sel {
                 styles::selected_style()
             } else {
-                ratatui::style::Style::default().bg(styles::PANEL)
+                ratatui::style::Style::default().bg(styles::panel())
             };
 
             ListItem::new(Line::from(spans)).style(style)
@@ -422,7 +422,7 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
         ))
         .borders(Borders::ALL)
         .border_style(ratatui::style::Style::default().fg(title_color))
-        .style(ratatui::style::Style::default().bg(styles::PANEL));
+        .style(ratatui::style::Style::default().bg(styles::panel()));
 
     let list = List::new(list_items).block(block);
     f.render_widget(list, popup);

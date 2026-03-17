@@ -31,7 +31,7 @@ const BLANK_SPLIT_GUTTER: &str = "     \u{2502}";
 fn pad_lines_to_fill(lines: &mut Vec<Line<'_>>, scroll_y: u16, visible_height: u16) {
     let needed = scroll_y as usize + visible_height as usize;
     while lines.len() < needed {
-        lines.push(Line::from("").style(ratatui::style::Style::default().bg(styles::BG)));
+        lines.push(Line::from("").style(ratatui::style::Style::default().bg(styles::bg())));
     }
 }
 
@@ -123,11 +123,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         ),
         Span::styled(
             &file.path,
-            ratatui::style::Style::default().fg(styles::BRIGHT),
+            ratatui::style::Style::default().fg(styles::bright()),
         ),
         Span::styled(
             format!("  +{} -{}", file.adds, file.dels),
-            ratatui::style::Style::default().fg(styles::DIM),
+            ratatui::style::Style::default().fg(styles::dim_color()),
         ),
     ];
 
@@ -142,7 +142,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     RiskLevel::High => styles::risk_high(),
                     RiskLevel::Medium => styles::risk_medium(),
                     RiskLevel::Low => styles::risk_low(),
-                    RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
+                    RiskLevel::Info => ratatui::style::Style::default().fg(styles::blue()),
                 }
             };
             let risk_label = match fr.risk {
@@ -159,7 +159,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             if !fr.risk_reason.is_empty() {
                 header_spans.push(Span::styled(
                     format!(" — {}", fr.risk_reason),
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::dim_color()),
                 ));
             }
         }
@@ -177,7 +177,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 if logical_line >= render_start && logical_line < render_end {
                     lines.push(Line::from(vec![Span::styled(
                         format!("  \u{2139} {}", fr.summary),
-                        ratatui::style::Style::default().fg(styles::MUTED),
+                        ratatui::style::Style::default().fg(styles::muted()),
                     )]));
                 }
                 logical_line += 1;
@@ -254,12 +254,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         format!(" {} ", marker),
                         if is_current {
                             ratatui::style::Style::default()
-                                .fg(styles::CYAN)
-                                .bg(styles::HUNK_BG)
+                                .fg(styles::cyan())
+                                .bg(styles::hunk_bg())
                         } else {
                             ratatui::style::Style::default()
-                                .fg(styles::DIM)
-                                .bg(styles::HUNK_BG)
+                                .fg(styles::dim_color())
+                                .bg(styles::hunk_bg())
                         },
                     ),
                     Span::styled(&hunk.header, styles::hunk_header_style()),
@@ -335,17 +335,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
             let gutter_style = if is_selected_line {
                 ratatui::style::Style::default()
-                    .fg(styles::BRIGHT)
-                    .bg(styles::LINE_CURSOR_BG)
+                    .fg(styles::bright())
+                    .bg(styles::line_cursor_bg())
             } else {
                 match diff_line.line_type {
                     LineType::Add => ratatui::style::Style::default()
-                        .fg(styles::DIM)
-                        .bg(styles::ADD_BG),
+                        .fg(styles::dim_color())
+                        .bg(styles::add_bg()),
                     LineType::Delete => ratatui::style::Style::default()
-                        .fg(styles::DIM)
-                        .bg(styles::DEL_BG),
-                    LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                        .fg(styles::dim_color())
+                        .bg(styles::del_bg()),
+                    LineType::Context => ratatui::style::Style::default().fg(styles::dim_color()),
                 }
             };
 
@@ -539,7 +539,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             if gap > 0 {
                 lines.push(Line::from(Span::styled(
                     format!("  ··· {} lines hidden (+/- to expand) ···", gap),
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::muted()),
                 )));
             } else {
                 lines.push(Line::from(""));
@@ -583,7 +583,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             if logical_line >= render_start && logical_line < render_end {
                 lines.push(Line::from(Span::styled(
                     "  -- comments from deleted hunks --",
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::muted()),
                 )));
             }
             logical_line += 1;
@@ -604,11 +604,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let block = Block::default()
         .title(Span::styled(
             title,
-            ratatui::style::Style::default().fg(styles::BRIGHT),
+            ratatui::style::Style::default().fg(styles::bright()),
         ))
         .title_alignment(ratatui::layout::Alignment::Left)
         .borders(Borders::NONE)
-        .style(ratatui::style::Style::default().bg(styles::BG))
+        .style(ratatui::style::Style::default().bg(styles::bg()))
         .padding(Padding::new(0, 1, 0, 0));
 
     // Apply scroll: for virtualized rendering, adjust scroll to offset into the rendered window.
@@ -641,7 +641,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     } else {
         Vec::new()
     };
-    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG));
+    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::bg()));
     while visible_lines.len() < inner_height {
         visible_lines.push(bg_line.clone());
     }
@@ -656,7 +656,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     // (logical_line=0) leaves the viewport, pin it at the top row of the diff area so
     // context is never lost. Only shown when scroll > 0 (header is off-screen).
     if scroll > 0 {
-        let sticky_bg = styles::PANEL;
+        let sticky_bg = styles::panel();
         let mut sticky_spans: Vec<Span> = vec![
             Span::styled(
                 format!("  {} ", file.status.symbol()),
@@ -669,13 +669,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             Span::styled(
                 file.path.clone(),
                 ratatui::style::Style::default()
-                    .fg(styles::BRIGHT)
+                    .fg(styles::bright())
                     .bg(sticky_bg),
             ),
             Span::styled(
                 format!("  +{} -{}", file.adds, file.dels),
                 ratatui::style::Style::default()
-                    .fg(styles::DIM)
+                    .fg(styles::dim_color())
                     .bg(sticky_bg),
             ),
         ];
@@ -710,7 +710,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         };
         let indicator = Paragraph::new(Line::from(Span::styled(
             indicator_text,
-            ratatui::style::Style::default().fg(styles::MUTED),
+            ratatui::style::Style::default().fg(styles::muted()),
         )));
         f.render_widget(indicator, indicator_area);
     }
@@ -773,7 +773,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         .title(Span::styled(title, border_style))
         .borders(Borders::ALL)
         .border_style(border_style)
-        .style(ratatui::style::Style::default().bg(styles::BG));
+        .style(ratatui::style::Style::default().bg(styles::bg()));
 
     let inner = block.inner(area);
     f.render_widget(Clear, area);
@@ -832,11 +832,11 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 ),
                 Span::styled(
                     &file.path,
-                    ratatui::style::Style::default().fg(styles::BRIGHT),
+                    ratatui::style::Style::default().fg(styles::bright()),
                 ),
                 Span::styled(
                     format!("  +{} -{}", file.adds, file.dels),
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::dim_color()),
                 ),
             ];
             lines.push(Line::from(header_spans));
@@ -912,12 +912,12 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         format!(" {} ", marker),
                         if is_current {
                             ratatui::style::Style::default()
-                                .fg(styles::CYAN)
-                                .bg(styles::HUNK_BG)
+                                .fg(styles::cyan())
+                                .bg(styles::hunk_bg())
                         } else {
                             ratatui::style::Style::default()
-                                .fg(styles::DIM)
-                                .bg(styles::HUNK_BG)
+                                .fg(styles::dim_color())
+                                .bg(styles::hunk_bg())
                         },
                     ),
                     Span::styled(&hunk.header, styles::hunk_header_style()),
@@ -1001,17 +1001,17 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
                 let gutter_style = if is_selected_line {
                     ratatui::style::Style::default()
-                        .fg(styles::BRIGHT)
-                        .bg(styles::LINE_CURSOR_BG)
+                        .fg(styles::bright())
+                        .bg(styles::line_cursor_bg())
                 } else {
                     match diff_line.line_type {
                         LineType::Add => ratatui::style::Style::default()
-                            .fg(styles::DIM)
-                            .bg(styles::ADD_BG),
+                            .fg(styles::dim_color())
+                            .bg(styles::add_bg()),
                         LineType::Delete => ratatui::style::Style::default()
-                            .fg(styles::DIM)
-                            .bg(styles::DEL_BG),
-                        LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                            .fg(styles::dim_color())
+                            .bg(styles::del_bg()),
+                        LineType::Context => ratatui::style::Style::default().fg(styles::dim_color()),
                     }
                 };
 
@@ -1073,18 +1073,18 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
                         let gutter_style = if is_selected_line {
                             ratatui::style::Style::default()
-                                .fg(styles::BRIGHT)
-                                .bg(styles::LINE_CURSOR_BG)
+                                .fg(styles::bright())
+                                .bg(styles::line_cursor_bg())
                         } else {
                             match diff_line.line_type {
                                 LineType::Add => ratatui::style::Style::default()
-                                    .fg(styles::DIM)
-                                    .bg(styles::ADD_BG),
+                                    .fg(styles::dim_color())
+                                    .bg(styles::add_bg()),
                                 LineType::Delete => ratatui::style::Style::default()
-                                    .fg(styles::DIM)
-                                    .bg(styles::DEL_BG),
+                                    .fg(styles::dim_color())
+                                    .bg(styles::del_bg()),
                                 LineType::Context => {
-                                    ratatui::style::Style::default().fg(styles::DIM)
+                                    ratatui::style::Style::default().fg(styles::dim_color())
                                 }
                             }
                         };
@@ -1106,9 +1106,9 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     } else {
                         // Blank padding line for the side that doesn't show this change
                         let pad_bg = match diff_line.line_type {
-                            LineType::Add => styles::ADD_BG,
-                            LineType::Delete => styles::DEL_BG,
-                            LineType::Context => styles::BG,
+                            LineType::Add => styles::add_bg(),
+                            LineType::Delete => styles::del_bg(),
+                            LineType::Context => styles::bg(),
                         };
                         lines.push(
                             Line::from(Span::styled(
@@ -1243,7 +1243,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             if gap > 0 {
                 lines.push(Line::from(Span::styled(
                     format!("  ··· {} lines hidden (+/- to expand) ···", gap),
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::muted()),
                 )));
             } else {
                 lines.push(Line::from(""));
@@ -1277,7 +1277,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     } else {
         Vec::new()
     };
-    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG));
+    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::bg()));
     while visible_lines.len() < inner_height {
         visible_lines.push(bg_line.clone());
     }
@@ -1290,7 +1290,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     // always knows which file they're reviewing. Old side shows a blank line at logical_line=0
     // so no sticky header is needed there.
     if side == SplitSide::New && scroll > 0 {
-        let sticky_bg = styles::PANEL;
+        let sticky_bg = styles::panel();
         let mut sticky_spans: Vec<Span> = vec![
             Span::styled(
                 format!("  {} ", file.status.symbol()),
@@ -1303,13 +1303,13 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             Span::styled(
                 file.path.clone(),
                 ratatui::style::Style::default()
-                    .fg(styles::BRIGHT)
+                    .fg(styles::bright())
                     .bg(sticky_bg),
             ),
             Span::styled(
                 format!("  +{} -{}", file.adds, file.dels),
                 ratatui::style::Style::default()
-                    .fg(styles::DIM)
+                    .fg(styles::dim_color())
                     .bg(sticky_bg),
             ),
         ];
@@ -1383,9 +1383,9 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 
         // File header
         let file_header_bg = if is_current_file {
-            styles::HUNK_BG
+            styles::hunk_bg()
         } else {
-            styles::BG
+            styles::bg()
         };
 
         let mut header_spans = vec![
@@ -1393,9 +1393,9 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                 if is_current_file { " ▶ " } else { "   " },
                 ratatui::style::Style::default()
                     .fg(if is_current_file {
-                        styles::CYAN
+                        styles::cyan()
                     } else {
-                        styles::DIM
+                        styles::dim_color()
                     })
                     .bg(file_header_bg),
             ),
@@ -1403,13 +1403,13 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                 format!("{} ", file.status.symbol()),
                 match &file.status {
                     crate::git::FileStatus::Added => ratatui::style::Style::default()
-                        .fg(styles::GREEN)
+                        .fg(styles::green())
                         .bg(file_header_bg),
                     crate::git::FileStatus::Deleted => ratatui::style::Style::default()
-                        .fg(styles::RED)
+                        .fg(styles::red())
                         .bg(file_header_bg),
                     _ => ratatui::style::Style::default()
-                        .fg(styles::YELLOW)
+                        .fg(styles::yellow())
                         .bg(file_header_bg),
                 },
             ),
@@ -1417,16 +1417,16 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                 &file.path,
                 ratatui::style::Style::default()
                     .fg(if is_current_file {
-                        styles::BRIGHT
+                        styles::bright()
                     } else {
-                        styles::TEXT
+                        styles::text()
                     })
                     .bg(file_header_bg),
             ),
             Span::styled(
                 format!("  +{} -{}", file.adds, file.dels),
                 ratatui::style::Style::default()
-                    .fg(styles::DIM)
+                    .fg(styles::dim_color())
                     .bg(file_header_bg),
             ),
         ];
@@ -1455,12 +1455,12 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                         format!(" {} ", marker),
                         if is_current_hunk {
                             ratatui::style::Style::default()
-                                .fg(styles::CYAN)
-                                .bg(styles::HUNK_BG)
+                                .fg(styles::cyan())
+                                .bg(styles::hunk_bg())
                         } else {
                             ratatui::style::Style::default()
-                                .fg(styles::DIM)
-                                .bg(styles::HUNK_BG)
+                                .fg(styles::dim_color())
+                                .bg(styles::hunk_bg())
                         },
                     ),
                     Span::styled(&hunk.header, styles::hunk_header_style()),
@@ -1497,17 +1497,17 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 
                 let gutter_style = if is_selected_line {
                     ratatui::style::Style::default()
-                        .fg(styles::BRIGHT)
-                        .bg(styles::LINE_CURSOR_BG)
+                        .fg(styles::bright())
+                        .bg(styles::line_cursor_bg())
                 } else {
                     match diff_line.line_type {
                         LineType::Add => ratatui::style::Style::default()
-                            .fg(styles::DIM)
-                            .bg(styles::ADD_BG),
+                            .fg(styles::dim_color())
+                            .bg(styles::add_bg()),
                         LineType::Delete => ratatui::style::Style::default()
-                            .fg(styles::DIM)
-                            .bg(styles::DEL_BG),
-                        LineType::Context => ratatui::style::Style::default().fg(styles::DIM),
+                            .fg(styles::dim_color())
+                            .bg(styles::del_bg()),
+                        LineType::Context => ratatui::style::Style::default().fg(styles::dim_color()),
                     }
                 };
 
@@ -1537,7 +1537,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
             if gap > 0 {
                 lines.push(Line::from(Span::styled(
                     format!("  ··· {} lines hidden ···", gap),
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::muted()),
                 )));
             } else {
                 lines.push(Line::from(""));
@@ -1548,11 +1548,11 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
     let block = Block::default()
         .title(Span::styled(
             title,
-            ratatui::style::Style::default().fg(styles::BRIGHT),
+            ratatui::style::Style::default().fg(styles::bright()),
         ))
         .title_alignment(ratatui::layout::Alignment::Left)
         .borders(Borders::NONE)
-        .style(ratatui::style::Style::default().bg(styles::BG))
+        .style(ratatui::style::Style::default().bg(styles::bg()))
         .padding(Padding::new(0, 1, 0, 0));
 
     // Pre-slice to visible rows — same fix as unified render path.
@@ -1564,7 +1564,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
     } else {
         Vec::new()
     };
-    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG));
+    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::bg()));
     while visible_lines.len() < inner_height {
         visible_lines.push(bg_line.clone());
     }
@@ -1599,33 +1599,33 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
         let header_line = file_header_line_indices[topmost_file_idx];
         if scroll > header_line {
             let file = &history.commit_files[topmost_file_idx];
-            let sticky_bg = styles::PANEL;
+            let sticky_bg = styles::panel();
 
             let mut sticky_spans = vec![
                 Span::styled(
                     format!("{} ", file.status.symbol()),
                     match &file.status {
                         crate::git::FileStatus::Added => ratatui::style::Style::default()
-                            .fg(styles::GREEN)
+                            .fg(styles::green())
                             .bg(sticky_bg),
                         crate::git::FileStatus::Deleted => ratatui::style::Style::default()
-                            .fg(styles::RED)
+                            .fg(styles::red())
                             .bg(sticky_bg),
                         _ => ratatui::style::Style::default()
-                            .fg(styles::YELLOW)
+                            .fg(styles::yellow())
                             .bg(sticky_bg),
                     },
                 ),
                 Span::styled(
                     &file.path,
                     ratatui::style::Style::default()
-                        .fg(styles::BRIGHT)
+                        .fg(styles::bright())
                         .bg(sticky_bg),
                 ),
                 Span::styled(
                     format!("  +{} -{}", file.adds, file.dels),
                     ratatui::style::Style::default()
-                        .fg(styles::DIM)
+                        .fg(styles::dim_color())
                         .bg(sticky_bg),
                 ),
             ];
@@ -1660,7 +1660,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
         };
         let indicator = Paragraph::new(Line::from(Span::styled(
             indicator_text,
-            ratatui::style::Style::default().fg(styles::MUTED),
+            ratatui::style::Style::default().fg(styles::muted()),
         )));
         f.render_widget(indicator, indicator_area);
     }
@@ -1670,19 +1670,19 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 fn render_history_empty(f: &mut Frame, area: Rect, message: &str) {
     let block = Block::default()
         .borders(Borders::NONE)
-        .style(ratatui::style::Style::default().bg(styles::BG));
+        .style(ratatui::style::Style::default().bg(styles::bg()));
 
     let mut empty_lines = vec![
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled(
             format!("  {}", message),
-            ratatui::style::Style::default().fg(styles::MUTED),
+            ratatui::style::Style::default().fg(styles::muted()),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "  Switch modes with [1] [2] [3]",
-            ratatui::style::Style::default().fg(styles::DIM),
+            ratatui::style::Style::default().fg(styles::dim_color()),
         )),
     ];
     pad_lines_to_fill(&mut empty_lines, 0, area.height);
@@ -1697,10 +1697,10 @@ fn render_compacted(f: &mut Frame, area: Rect, file: &crate::git::DiffFile) {
     let block = Block::default()
         .title(Span::styled(
             format!(" {} ", file.path),
-            ratatui::style::Style::default().fg(styles::BRIGHT),
+            ratatui::style::Style::default().fg(styles::bright()),
         ))
         .borders(Borders::NONE)
-        .style(ratatui::style::Style::default().bg(styles::BG))
+        .style(ratatui::style::Style::default().bg(styles::bg()))
         .padding(Padding::new(0, 1, 0, 0));
 
     let hunks_label = if file.raw_hunk_count > 0 {
@@ -1714,30 +1714,30 @@ fn render_compacted(f: &mut Frame, area: Rect, file: &crate::git::DiffFile) {
         Line::from(vec![
             Span::styled(
                 "  \u{1f4e6} ",
-                ratatui::style::Style::default().fg(styles::MUTED),
+                ratatui::style::Style::default().fg(styles::muted()),
             ),
             Span::styled(
                 &file.path,
-                ratatui::style::Style::default().fg(styles::TEXT),
+                ratatui::style::Style::default().fg(styles::text()),
             ),
             Span::styled(
                 format!("  +{} \u{2212}{}{}", file.adds, file.dels, hunks_label),
-                ratatui::style::Style::default().fg(styles::DIM),
+                ratatui::style::Style::default().fg(styles::dim_color()),
             ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "  (compacted \u{2014} press Enter to expand)",
-            ratatui::style::Style::default().fg(styles::MUTED),
+            ratatui::style::Style::default().fg(styles::muted()),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "  Lock files, generated code, and large diffs are",
-            ratatui::style::Style::default().fg(styles::DIM),
+            ratatui::style::Style::default().fg(styles::dim_color()),
         )),
         Line::from(Span::styled(
             "  compacted automatically to save memory.",
-            ratatui::style::Style::default().fg(styles::DIM),
+            ratatui::style::Style::default().fg(styles::dim_color()),
         )),
     ];
     pad_lines_to_fill(&mut compacted_lines, 0, area.height);
@@ -1759,20 +1759,20 @@ fn render_comment_lines(
     let is_stale = comment.is_stale();
 
     let bg = if focused {
-        styles::COMMENT_FOCUS_BG
+        styles::comment_focus_bg()
     } else if inline {
-        styles::INLINE_COMMENT_BG
+        styles::inline_comment_bg()
     } else {
-        styles::COMMENT_BG
+        styles::comment_bg()
     };
 
     // Questions use yellow/orange, GitHub comments use cyan
     let accent = if is_stale {
-        styles::STALE
+        styles::stale_color()
     } else if is_question {
-        styles::YELLOW
+        styles::yellow()
     } else {
-        styles::CYAN
+        styles::cyan()
     };
 
     let icon = if is_question { "❓" } else { "💬" };
@@ -1793,7 +1793,7 @@ fn render_comment_lines(
                 format!("  {} ", icon)
             },
             ratatui::style::Style::default()
-                .fg(if focused { styles::PURPLE } else { accent })
+                .fg(if focused { styles::purple() } else { accent })
                 .bg(bg),
         ),
         Span::styled(
@@ -1811,7 +1811,7 @@ fn render_comment_lines(
         let time_part = ts.split('T').nth(1).unwrap_or("").trim_end_matches('Z');
         header_spans.push(Span::styled(
             format!("  {}", time_part),
-            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+            ratatui::style::Style::default().fg(styles::dim_color()).bg(bg),
         ));
     }
 
@@ -1821,14 +1821,14 @@ fn render_comment_lines(
         header_spans.push(Span::styled(
             "  \u{21aa} moved",
             ratatui::style::Style::default()
-                .fg(styles::RELOCATED_INDICATOR)
+                .fg(styles::relocated_indicator())
                 .bg(bg),
         ));
     } else if anchor == "lost" {
         header_spans.push(Span::styled(
             "  ? lost",
             ratatui::style::Style::default()
-                .fg(styles::LOST_INDICATOR)
+                .fg(styles::lost_indicator())
                 .bg(bg),
         ));
     }
@@ -1837,7 +1837,7 @@ fn render_comment_lines(
     if is_stale {
         header_spans.push(Span::styled(
             "  \u{26a0} stale",
-            ratatui::style::Style::default().fg(styles::STALE).bg(bg),
+            ratatui::style::Style::default().fg(styles::stale_color()).bg(bg),
         ));
     }
 
@@ -1845,12 +1845,12 @@ fn render_comment_lines(
     if comment.is_synced() {
         header_spans.push(Span::styled(
             "  ↑ synced",
-            ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
+            ratatui::style::Style::default().fg(styles::green()).bg(bg),
         ));
     } else if comment.comment_type() == CommentType::GitHubComment {
         header_spans.push(Span::styled(
             "  ↑ local",
-            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+            ratatui::style::Style::default().fg(styles::dim_color()).bg(bg),
         ));
     }
 
@@ -1859,7 +1859,7 @@ fn render_comment_lines(
         header_spans.push(Span::styled(
             "  ◆ focused",
             ratatui::style::Style::default()
-                .fg(styles::PURPLE)
+                .fg(styles::purple())
                 .bg(bg)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
@@ -1873,9 +1873,9 @@ fn render_comment_lines(
     let text = comment.text();
     let is_lost = anchor == "lost";
     let text_fg = if is_stale || is_lost {
-        styles::DIM
+        styles::dim_color()
     } else {
-        styles::TEXT
+        styles::text()
     };
     let padding = " ".repeat(indent.saturating_sub(2));
     for wrapped in word_wrap(text, max_len) {
@@ -1898,18 +1898,18 @@ fn render_reply_lines(
     focused: bool,
 ) {
     let bg = if focused {
-        styles::COMMENT_FOCUS_BG
+        styles::comment_focus_bg()
     } else if inline {
-        styles::INLINE_COMMENT_BG
+        styles::inline_comment_bg()
     } else {
-        styles::COMMENT_BG
+        styles::comment_bg()
     };
 
     let is_question = reply.comment_type() == CommentType::Question;
     let accent = if is_question {
-        styles::YELLOW
+        styles::yellow()
     } else {
-        styles::CYAN
+        styles::cyan()
     };
     let icon = if is_question { "❓" } else { "💬" };
     let author = reply.author();
@@ -1922,7 +1922,7 @@ fn render_reply_lines(
     let mut header_spans = vec![
         Span::styled(
             prefix,
-            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+            ratatui::style::Style::default().fg(styles::dim_color()).bg(bg),
         ),
         Span::styled(
             author.to_string(),
@@ -1938,26 +1938,26 @@ fn render_reply_lines(
         let time_part = ts.split('T').nth(1).unwrap_or("").trim_end_matches('Z');
         header_spans.push(Span::styled(
             format!("  {}", time_part),
-            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+            ratatui::style::Style::default().fg(styles::dim_color()).bg(bg),
         ));
     }
 
     if reply.is_synced() {
         header_spans.push(Span::styled(
             "  ↑ synced",
-            ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
+            ratatui::style::Style::default().fg(styles::green()).bg(bg),
         ));
     } else if reply.comment_type() == CommentType::GitHubComment {
         header_spans.push(Span::styled(
             "  ↑ local",
-            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+            ratatui::style::Style::default().fg(styles::dim_color()).bg(bg),
         ));
     }
 
     if focused {
         header_spans.push(Span::styled(
             "  ◆",
-            ratatui::style::Style::default().fg(styles::PURPLE).bg(bg),
+            ratatui::style::Style::default().fg(styles::purple()).bg(bg),
         ));
     }
 
@@ -1972,7 +1972,7 @@ fn render_reply_lines(
         lines.push(
             Line::from(vec![Span::styled(
                 format!("  {}{}", padding, wrapped),
-                ratatui::style::Style::default().fg(styles::TEXT).bg(bg),
+                ratatui::style::Style::default().fg(styles::text()).bg(bg),
             )])
             .style(ratatui::style::Style::default().bg(bg)),
         );
@@ -1988,9 +1988,9 @@ fn render_finding_banner(
     focused: bool,
 ) {
     let bg = if focused {
-        styles::FINDING_FOCUS_BG
+        styles::finding_focus_bg()
     } else {
-        styles::FINDING_BG
+        styles::finding_bg()
     };
 
     let severity_style = if file_stale {
@@ -2000,7 +2000,7 @@ fn render_finding_banner(
             RiskLevel::High => styles::risk_high(),
             RiskLevel::Medium => styles::risk_medium(),
             RiskLevel::Low => styles::risk_low(),
-            RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE),
+            RiskLevel::Info => ratatui::style::Style::default().fg(styles::blue()),
         }
     };
 
@@ -2010,18 +2010,18 @@ fn render_finding_banner(
         Span::styled(format!("  {} ", finding.severity.symbol()), severity_style),
         Span::styled(
             format!("[{}]", finding.category),
-            ratatui::style::Style::default().fg(styles::DIM).bg(bg),
+            ratatui::style::Style::default().fg(styles::dim_color()).bg(bg),
         ),
         Span::styled(
             format!(" {}{}", finding.title, stale_tag),
-            ratatui::style::Style::default().fg(styles::ORANGE).bg(bg),
+            ratatui::style::Style::default().fg(styles::orange()).bg(bg),
         ),
     ];
     if focused {
         title_spans.push(Span::styled(
             "  ◆ focused",
             ratatui::style::Style::default()
-                .fg(styles::PURPLE)
+                .fg(styles::purple())
                 .bg(bg)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
@@ -2045,7 +2045,7 @@ fn render_finding_banner(
         lines.push(
             Line::from(vec![Span::styled(
                 format!("    {}", truncated),
-                ratatui::style::Style::default().fg(styles::MUTED).bg(bg),
+                ratatui::style::Style::default().fg(styles::muted()).bg(bg),
             )])
             .style(ratatui::style::Style::default().bg(bg)),
         );
@@ -2067,7 +2067,7 @@ fn render_finding_banner(
         lines.push(
             Line::from(vec![Span::styled(
                 format!("    \u{2192} {}", truncated),
-                ratatui::style::Style::default().fg(styles::GREEN).bg(bg),
+                ratatui::style::Style::default().fg(styles::green()).bg(bg),
             )])
             .style(ratatui::style::Style::default().bg(bg)),
         );
@@ -2078,19 +2078,19 @@ fn render_finding_banner(
 fn render_empty(f: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::NONE)
-        .style(ratatui::style::Style::default().bg(styles::BG));
+        .style(ratatui::style::Style::default().bg(styles::bg()));
 
     let mut empty_lines = vec![
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled(
             "  No files changed",
-            ratatui::style::Style::default().fg(styles::MUTED),
+            ratatui::style::Style::default().fg(styles::muted()),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "  Switch modes with [1] [2] [3]",
-            ratatui::style::Style::default().fg(styles::DIM),
+            ratatui::style::Style::default().fg(styles::dim_color()),
         )),
     ];
     pad_lines_to_fill(&mut empty_lines, 0, area.height);
@@ -2118,11 +2118,11 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
     lines.push(Line::from(vec![
         Span::styled(
             format!("  ◉ {}", path),
-            ratatui::style::Style::default().fg(styles::WATCHED_TEXT),
+            ratatui::style::Style::default().fg(styles::watched_text()),
         ),
         Span::styled(
             format!("  ({})", status_label),
-            ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
+            ratatui::style::Style::default().fg(styles::watched_muted()),
         ),
     ]));
 
@@ -2130,7 +2130,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
     let size_str = format_size(size);
     lines.push(Line::from(Span::styled(
         format!("  Size: {}", size_str),
-        ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
+        ratatui::style::Style::default().fg(styles::watched_muted()),
     )));
 
     lines.push(Line::from(""));
@@ -2144,12 +2144,12 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
             Ok(Some(raw)) if raw.is_empty() => {
                 lines.push(Line::from(Span::styled(
                     "  No changes since snapshot",
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::muted()),
                 )));
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  Press s to update snapshot",
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::dim_color()),
                 )));
             }
             Ok(Some(raw)) => {
@@ -2158,7 +2158,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                 if let Some(diff_file) = parsed.into_iter().next() {
                     lines.push(Line::from(Span::styled(
                         "  diff vs snapshot",
-                        ratatui::style::Style::default().fg(styles::WATCHED_MUTED),
+                        ratatui::style::Style::default().fg(styles::watched_muted()),
                     )));
                     lines.push(Line::from(""));
 
@@ -2180,13 +2180,13 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                             };
                             let gutter_style = match diff_line.line_type {
                                 LineType::Add => ratatui::style::Style::default()
-                                    .fg(styles::DIM)
-                                    .bg(styles::ADD_BG),
+                                    .fg(styles::dim_color())
+                                    .bg(styles::add_bg()),
                                 LineType::Delete => ratatui::style::Style::default()
-                                    .fg(styles::DIM)
-                                    .bg(styles::DEL_BG),
+                                    .fg(styles::dim_color())
+                                    .bg(styles::del_bg()),
                                 LineType::Context => {
-                                    ratatui::style::Style::default().fg(styles::DIM)
+                                    ratatui::style::Style::default().fg(styles::dim_color())
                                 }
                             };
                             let old_num = diff_line
@@ -2210,14 +2210,14 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                 }
                 lines.push(Line::from(Span::styled(
                     "  Press s to update snapshot",
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::dim_color()),
                 )));
             }
             Ok(None) => {
                 // New file — snapshot just created
                 lines.push(Line::from(Span::styled(
                     "  Snapshot saved (first view)",
-                    ratatui::style::Style::default().fg(styles::GREEN),
+                    ratatui::style::Style::default().fg(styles::green()),
                 )));
                 // Fall through to show content
                 render_watched_content_lines(&mut lines, repo_root, path, size);
@@ -2236,11 +2236,11 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
     let block = Block::default()
         .title(Span::styled(
             title,
-            ratatui::style::Style::default().fg(styles::WATCHED_TEXT),
+            ratatui::style::Style::default().fg(styles::watched_text()),
         ))
         .title_alignment(ratatui::layout::Alignment::Left)
         .borders(Borders::NONE)
-        .style(ratatui::style::Style::default().bg(styles::BG))
+        .style(ratatui::style::Style::default().bg(styles::bg()))
         .padding(Padding::new(0, 1, 0, 0));
 
     // Pre-slice to visible rows — same fix as unified render path.
@@ -2252,7 +2252,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
     } else {
         Vec::new()
     };
-    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG));
+    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::bg()));
     while visible_lines.len() < inner_height {
         visible_lines.push(bg_line.clone());
     }
@@ -2273,7 +2273,7 @@ fn render_watched_content_lines(lines: &mut Vec<Line>, repo_root: &str, path: &s
                 "  Binary or large file ({:.1} MB)",
                 size as f64 / (1024.0 * 1024.0)
             ),
-            ratatui::style::Style::default().fg(styles::MUTED),
+            ratatui::style::Style::default().fg(styles::muted()),
         )));
         return;
     }
@@ -2284,7 +2284,7 @@ fn render_watched_content_lines(lines: &mut Vec<Line>, repo_root: &str, path: &s
             if total_lines > 10_000 {
                 lines.push(Line::from(Span::styled(
                     format!("  Large file ({} lines) — content truncated", total_lines),
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::muted()),
                 )));
                 lines.push(Line::from(""));
             }
@@ -2307,7 +2307,7 @@ fn render_watched_content_lines(lines: &mut Vec<Line>, repo_root: &str, path: &s
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     format!("  ... {} more lines", total_lines - max_lines),
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::muted()),
                 )));
             }
         }
@@ -2315,13 +2315,13 @@ fn render_watched_content_lines(lines: &mut Vec<Line>, repo_root: &str, path: &s
             // Binary file
             lines.push(Line::from(Span::styled(
                 format!("  Binary file ({:.1} KB)", size as f64 / 1024.0),
-                ratatui::style::Style::default().fg(styles::MUTED),
+                ratatui::style::Style::default().fg(styles::muted()),
             )));
         }
         Err(e) => {
             lines.push(Line::from(Span::styled(
                 format!("  Error reading file: {}", e),
-                ratatui::style::Style::default().fg(styles::RED),
+                ratatui::style::Style::default().fg(styles::red()),
             )));
         }
     }

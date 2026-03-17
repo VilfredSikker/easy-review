@@ -15,22 +15,22 @@ use crate::app::App;
 // PR check conclusion display helpers
 fn check_icon(bucket: Option<&str>) -> (&'static str, ratatui::style::Color) {
     match bucket {
-        Some("pass") | Some("success") => ("✓", styles::GREEN),
+        Some("pass") | Some("success") => ("✓", styles::green()),
         Some("fail") | Some("failure") | Some("cancelled") | Some("timed_out") => {
-            ("✗", styles::RED_TEXT)
+            ("✗", styles::red_text())
         }
-        Some("skipped") => ("–", styles::MUTED),
-        _ => ("○", styles::DIM),
+        Some("skipped") => ("–", styles::muted()),
+        _ => ("○", styles::dim_color()),
     }
 }
 
 fn review_state_style(state: &str) -> (&'static str, ratatui::style::Color) {
     match state {
-        "APPROVED" => ("✓ approved", styles::GREEN),
-        "CHANGES_REQUESTED" => ("✗ changes requested", styles::RED_TEXT),
-        "COMMENTED" => ("◆ commented", styles::CYAN),
-        "DISMISSED" => ("– dismissed", styles::MUTED),
-        _ => ("○ pending", styles::DIM),
+        "APPROVED" => ("✓ approved", styles::green()),
+        "CHANGES_REQUESTED" => ("✗ changes requested", styles::red_text()),
+        "COMMENTED" => ("◆ commented", styles::cyan()),
+        "DISMISSED" => ("– dismissed", styles::muted()),
+        _ => ("○ pending", styles::dim_color()),
     }
 }
 
@@ -55,55 +55,55 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
 
     let file_style = if content == PanelContent::FileDetail {
         Style::default()
-            .fg(styles::PURPLE)
+            .fg(styles::purple())
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(styles::DIM)
+        Style::default().fg(styles::dim_color())
     };
 
     let mut tab_spans = vec![
-        Span::styled(" [", Style::default().fg(styles::MUTED)),
+        Span::styled(" [", Style::default().fg(styles::muted())),
         Span::styled("File", file_style),
-        Span::styled("]", Style::default().fg(styles::MUTED)),
+        Span::styled("]", Style::default().fg(styles::muted())),
     ];
 
     if has_ai {
         let ai_style = if content == PanelContent::AiSummary {
             Style::default()
-                .fg(styles::PURPLE)
+                .fg(styles::purple())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(styles::DIM)
+            Style::default().fg(styles::dim_color())
         };
-        tab_spans.push(Span::styled(" [", Style::default().fg(styles::MUTED)));
+        tab_spans.push(Span::styled(" [", Style::default().fg(styles::muted())));
         tab_spans.push(Span::styled("AI", ai_style));
-        tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED)));
+        tab_spans.push(Span::styled("]", Style::default().fg(styles::muted())));
     }
 
     if has_pr {
         let pr_style = if content == PanelContent::PrOverview {
             Style::default()
-                .fg(styles::PURPLE)
+                .fg(styles::purple())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(styles::DIM)
+            Style::default().fg(styles::dim_color())
         };
-        tab_spans.push(Span::styled(" [", Style::default().fg(styles::MUTED)));
+        tab_spans.push(Span::styled(" [", Style::default().fg(styles::muted())));
         tab_spans.push(Span::styled("PR", pr_style));
-        tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED)));
+        tab_spans.push(Span::styled("]", Style::default().fg(styles::muted())));
     }
 
     if tab.symbol_refs.is_some() {
         let refs_style = if content == PanelContent::SymbolRefs {
             Style::default()
-                .fg(styles::PURPLE)
+                .fg(styles::purple())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(styles::DIM)
+            Style::default().fg(styles::dim_color())
         };
-        tab_spans.push(Span::styled(" [", Style::default().fg(styles::MUTED)));
+        tab_spans.push(Span::styled(" [", Style::default().fg(styles::muted())));
         tab_spans.push(Span::styled("Refs", refs_style));
-        tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED)));
+        tab_spans.push(Span::styled("]", Style::default().fg(styles::muted())));
     }
 
     lines.push(Line::from(tab_spans));
@@ -113,7 +113,7 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
     // away. Capping the repeat at area.width as usize avoids the wasted allocation.
     lines.push(Line::from(vec![Span::styled(
         horizontal_rule(area.width.saturating_sub(2) as usize),
-        Style::default().fg(styles::BORDER),
+        Style::default().fg(styles::border()),
     )]));
 
     // Content area
@@ -125,15 +125,15 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
     }
 
     let border_style = if tab.panel_focus {
-        Style::default().fg(styles::PURPLE)
+        Style::default().fg(styles::purple())
     } else {
-        Style::default().fg(styles::BORDER)
+        Style::default().fg(styles::border())
     };
 
     let block = Block::default()
         .borders(Borders::LEFT)
         .border_style(border_style)
-        .style(Style::default().bg(styles::SURFACE))
+        .style(Style::default().bg(styles::surface()))
         .padding(Padding::new(0, 1, 0, 0));
 
     let paragraph = Paragraph::new(lines)
@@ -156,7 +156,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             " No file selected",
-            Style::default().fg(styles::MUTED),
+            Style::default().fg(styles::muted()),
         )]));
         return;
     };
@@ -164,7 +164,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     // File path header
     let max_w = area.width.saturating_sub(3) as usize;
     let path_style = Style::default()
-        .fg(styles::TEXT)
+        .fg(styles::text())
         .add_modifier(Modifier::BOLD);
     for wrapped in word_wrap(path, max_w) {
         lines.push(Line::from(vec![Span::styled(
@@ -184,7 +184,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                     RiskLevel::High => styles::risk_high(),
                     RiskLevel::Medium => styles::risk_medium(),
                     RiskLevel::Low => styles::risk_low(),
-                    RiskLevel::Info => Style::default().fg(styles::BLUE),
+                    RiskLevel::Info => Style::default().fg(styles::blue()),
                 }
             };
             let risk_label = match fr.risk {
@@ -205,7 +205,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 for wrapped in word_wrap(&fr.risk_reason, max_w) {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {}", wrapped),
-                        Style::default().fg(styles::DIM),
+                        Style::default().fg(styles::dim_color()),
                     )]));
                 }
             }
@@ -215,7 +215,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 for wrapped in word_wrap(&fr.summary, max_w) {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {}", wrapped),
-                        Style::default().fg(styles::TEXT),
+                        Style::default().fg(styles::text()),
                     )]));
                 }
             }
@@ -248,7 +248,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 lines.push(Line::from(vec![Span::styled(
                     format!(" Findings ({})", sorted_findings.len()),
                     Style::default()
-                        .fg(styles::PURPLE)
+                        .fg(styles::purple())
                         .add_modifier(Modifier::BOLD),
                 )]));
                 lines.push(Line::from(""));
@@ -256,9 +256,9 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 for finding in sorted_findings {
                     let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
                     let bg = if is_focused {
-                        styles::FINDING_FOCUS_BG
+                        styles::finding_focus_bg()
                     } else {
-                        styles::SURFACE
+                        styles::surface()
                     };
                     let prefix = if is_focused { "▸" } else { " " };
 
@@ -269,7 +269,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                             RiskLevel::High => styles::risk_high().bg(bg),
                             RiskLevel::Medium => styles::risk_medium().bg(bg),
                             RiskLevel::Low => styles::risk_low().bg(bg),
-                            RiskLevel::Info => Style::default().fg(styles::BLUE).bg(bg),
+                            RiskLevel::Info => Style::default().fg(styles::blue()).bg(bg),
                         }
                     };
 
@@ -306,7 +306,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                         };
                         lines.push(Line::from(vec![Span::styled(
                             loc,
-                            Style::default().fg(styles::DIM).bg(bg),
+                            Style::default().fg(styles::dim_color()).bg(bg),
                         )]));
                     }
 
@@ -338,7 +338,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     if file_comments.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             " No comments for this file",
-            Style::default().fg(styles::MUTED),
+            Style::default().fg(styles::muted()),
         )]));
         return;
     }
@@ -363,7 +363,7 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     lines.push(Line::from(vec![Span::styled(
         header,
         Style::default()
-            .fg(styles::CYAN)
+            .fg(styles::cyan())
             .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(""));
@@ -373,11 +373,11 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     for comment in &file_comments {
         let is_question = comment.comment_type() == CommentType::Question;
         let accent = if comment.is_stale() {
-            styles::STALE
+            styles::stale_color()
         } else if is_question {
-            styles::YELLOW
+            styles::yellow()
         } else {
-            styles::CYAN
+            styles::cyan()
         };
         let bullet = "◆";
 
@@ -399,23 +399,23 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 author.to_string(),
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("  {}", target), Style::default().fg(styles::DIM)),
+            Span::styled(format!("  {}", target), Style::default().fg(styles::dim_color())),
         ];
 
         if comment.is_stale() {
             header_spans.push(Span::styled(
                 "  ⚠ stale",
-                Style::default().fg(styles::STALE),
+                Style::default().fg(styles::stale_color()),
             ));
         }
 
         if comment.is_synced() {
             header_spans.push(Span::styled(
                 "  ↑ synced",
-                Style::default().fg(styles::GREEN),
+                Style::default().fg(styles::green()),
             ));
         } else if comment.comment_type() == CommentType::GitHubComment {
-            header_spans.push(Span::styled("  ↑ local", Style::default().fg(styles::DIM)));
+            header_spans.push(Span::styled("  ↑ local", Style::default().fg(styles::dim_color())));
         }
 
         // Reply indicator
@@ -423,16 +423,16 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         if !replies.is_empty() {
             header_spans.push(Span::styled(
                 format!("  ↳ {}", replies.len()),
-                Style::default().fg(styles::DIM),
+                Style::default().fg(styles::dim_color()),
             ));
         }
 
         lines.push(Line::from(header_spans));
 
         let text_fg = if comment.is_stale() {
-            styles::DIM
+            styles::dim_color()
         } else {
-            styles::TEXT
+            styles::text()
         };
         for wrapped in word_wrap(comment.text(), max_w) {
             lines.push(Line::from(vec![Span::styled(
@@ -445,18 +445,18 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         for reply in &replies {
             let reply_author = reply.author();
             lines.push(Line::from(vec![
-                Span::styled("   ↳ ", Style::default().fg(styles::DIM)),
+                Span::styled("   ↳ ", Style::default().fg(styles::dim_color())),
                 Span::styled(
                     reply_author.to_string(),
                     Style::default()
-                        .fg(styles::CYAN)
+                        .fg(styles::cyan())
                         .add_modifier(Modifier::BOLD),
                 ),
             ]));
             for wrapped in word_wrap(reply.text(), max_w.saturating_sub(4)) {
                 lines.push(Line::from(vec![Span::styled(
                     format!("       {}", wrapped),
-                    Style::default().fg(styles::TEXT),
+                    Style::default().fg(styles::text()),
                 )]));
             }
         }
@@ -475,7 +475,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
     lines.push(Line::from(vec![Span::styled(
         format!(" AI Review Summary{}", stale_tag),
         Style::default()
-            .fg(styles::PURPLE)
+            .fg(styles::purple())
             .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(""));
@@ -490,14 +490,14 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
                 lines.push(Line::from(vec![Span::styled(
                     format!(" {}", text),
                     Style::default()
-                        .fg(styles::BRIGHT)
+                        .fg(styles::bright())
                         .add_modifier(Modifier::BOLD),
                 )]));
             } else {
                 for wrapped in word_wrap(line, max_w) {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {}", wrapped),
-                        Style::default().fg(styles::TEXT),
+                        Style::default().fg(styles::text()),
                     )]));
                 }
             }
@@ -505,7 +505,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
     } else {
         lines.push(Line::from(vec![Span::styled(
             " No .er/summary.md found",
-            Style::default().fg(styles::MUTED),
+            Style::default().fg(styles::muted()),
         )]));
     }
 
@@ -515,10 +515,10 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
     let is_files_focused = tab.review_focus == ReviewFocus::Files;
     let files_header_style = if is_files_focused {
         Style::default()
-            .fg(styles::BRIGHT)
+            .fg(styles::bright())
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(styles::BORDER)
+        Style::default().fg(styles::border())
     };
     lines.push(Line::from(vec![Span::styled(
         " ─── File Risk Overview ───",
@@ -552,22 +552,22 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
                     RiskLevel::High => styles::risk_high(),
                     RiskLevel::Medium => styles::risk_medium(),
                     RiskLevel::Low => styles::risk_low(),
-                    RiskLevel::Info => Style::default().fg(styles::BLUE),
+                    RiskLevel::Info => Style::default().fg(styles::blue()),
                 }
             };
 
             let bg = if is_selected {
-                styles::LINE_CURSOR_BG
+                styles::line_cursor_bg()
             } else {
-                styles::BG
+                styles::bg()
             };
             let path_style = if is_selected {
                 Style::default()
-                    .fg(styles::BRIGHT)
+                    .fg(styles::bright())
                     .bg(bg)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(styles::BRIGHT)
+                Style::default().fg(styles::bright())
             };
 
             let prefix = if is_selected { "▸" } else { " " };
@@ -592,13 +592,13 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
                 format!(" {} total findings across all files", total),
-                Style::default().fg(styles::MUTED),
+                Style::default().fg(styles::muted()),
             )]));
         }
     } else {
         lines.push(Line::from(vec![Span::styled(
             " No .er/review.json found",
-            Style::default().fg(styles::MUTED),
+            Style::default().fg(styles::muted()),
         )]));
     }
 
@@ -608,11 +608,11 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
     let is_checklist_focused = tab.review_focus == ReviewFocus::Checklist;
     let checklist_header_style = if is_checklist_focused {
         Style::default()
-            .fg(styles::CYAN)
+            .fg(styles::cyan())
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
         Style::default()
-            .fg(styles::CYAN)
+            .fg(styles::cyan())
             .add_modifier(Modifier::BOLD)
     };
     lines.push(Line::from(vec![Span::styled(
@@ -626,28 +626,28 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
         for (idx, item) in checklist.items.iter().enumerate() {
             let is_selected = is_checklist_focused && idx == cursor;
             let bg = if is_selected {
-                styles::LINE_CURSOR_BG
+                styles::line_cursor_bg()
             } else {
-                styles::SURFACE
+                styles::surface()
             };
 
             let check = if item.checked { "✓" } else { "○" };
             let check_style = if item.checked {
-                Style::default().fg(styles::GREEN).bg(bg)
+                Style::default().fg(styles::green()).bg(bg)
             } else {
-                Style::default().fg(styles::DIM).bg(bg)
+                Style::default().fg(styles::dim_color()).bg(bg)
             };
 
             let prefix = if is_selected { "▸" } else { " " };
             let text_style = if is_selected {
                 Style::default()
-                    .fg(styles::BRIGHT)
+                    .fg(styles::bright())
                     .bg(bg)
                     .add_modifier(Modifier::BOLD)
             } else if item.checked {
-                Style::default().fg(styles::MUTED)
+                Style::default().fg(styles::muted())
             } else {
-                Style::default().fg(styles::TEXT)
+                Style::default().fg(styles::text())
             };
 
             lines.push(Line::from(vec![
@@ -670,7 +670,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
             if !meta_parts.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
                     format!("   {}", meta_parts.join(" · ")),
-                    Style::default().fg(styles::MUTED).bg(bg),
+                    Style::default().fg(styles::muted()).bg(bg),
                 )]));
             }
 
@@ -679,7 +679,7 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::
     } else {
         lines.push(Line::from(vec![Span::styled(
             " No .er/checklist.json found",
-            Style::default().fg(styles::MUTED),
+            Style::default().fg(styles::muted()),
         )]));
     }
 }
@@ -690,7 +690,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     lines.push(Line::from(vec![Span::styled(
         " PR Overview",
         Style::default()
-            .fg(styles::PURPLE)
+            .fg(styles::purple())
             .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(""));
@@ -698,28 +698,28 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     let Some(pr) = tab.pr_data.as_ref() else {
         lines.push(Line::from(vec![Span::styled(
             " No PR data loaded",
-            Style::default().fg(styles::DIM),
+            Style::default().fg(styles::dim_color()),
         )]));
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             " Open a branch with an active PR",
-            Style::default().fg(styles::MUTED),
+            Style::default().fg(styles::muted()),
         )]));
         return;
     };
 
     // PR number + state
     let state_color = match pr.state.as_str() {
-        "OPEN" => styles::GREEN,
-        "CLOSED" => styles::RED_TEXT,
-        "MERGED" => styles::PURPLE,
-        _ => styles::MUTED,
+        "OPEN" => styles::green(),
+        "CLOSED" => styles::red_text(),
+        "MERGED" => styles::purple(),
+        _ => styles::muted(),
     };
     lines.push(Line::from(vec![
         Span::styled(
             format!(" #{} ", pr.number),
             Style::default()
-                .fg(styles::CYAN)
+                .fg(styles::cyan())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -730,7 +730,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         ),
         Span::styled(
             format!("  @{}", pr.author),
-            Style::default().fg(styles::DIM),
+            Style::default().fg(styles::dim_color()),
         ),
     ]));
     let max_w = area.width.saturating_sub(3) as usize;
@@ -742,14 +742,14 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             .unwrap_or(&pr.url)
             .replace("/pull/", "#");
         let url_style = Style::default()
-            .fg(styles::DIM)
+            .fg(styles::dim_color())
             .add_modifier(Modifier::UNDERLINED);
         let wrapped_url = word_wrap(&display, max_w.saturating_sub(13));
         for (i, wrapped) in wrapped_url.iter().enumerate() {
             if i == 0 {
                 lines.push(Line::from(vec![
                     Span::styled(format!(" {}", wrapped), url_style),
-                    Span::styled("  (o to open)", Style::default().fg(styles::MUTED)),
+                    Span::styled("  (o to open)", Style::default().fg(styles::muted())),
                 ]));
             } else {
                 lines.push(Line::from(vec![Span::styled(
@@ -766,7 +766,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         lines.push(Line::from(vec![Span::styled(
             format!(" {}", wrapped),
             Style::default()
-                .fg(styles::BRIGHT)
+                .fg(styles::bright())
                 .add_modifier(Modifier::BOLD),
         )]));
     }
@@ -782,14 +782,14 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             let base = &wrapped[arrow_pos + 3..];
             lines.push(Line::from(vec![
                 Span::styled(" ", Style::default()),
-                Span::styled(head.to_string(), Style::default().fg(styles::CYAN)),
-                Span::styled(" → ", Style::default().fg(styles::DIM)),
-                Span::styled(base.to_string(), Style::default().fg(styles::TEXT)),
+                Span::styled(head.to_string(), Style::default().fg(styles::cyan())),
+                Span::styled(" → ", Style::default().fg(styles::dim_color())),
+                Span::styled(base.to_string(), Style::default().fg(styles::text())),
             ]));
         } else {
             lines.push(Line::from(vec![Span::styled(
                 format!(" {}", wrapped),
-                Style::default().fg(styles::TEXT),
+                Style::default().fg(styles::text()),
             )]));
         }
     }
@@ -799,7 +799,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     if !pr.body.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             " ─── Description ───",
-            Style::default().fg(styles::BORDER),
+            Style::default().fg(styles::border()),
         )]));
         lines.push(Line::from(""));
         let mut shown = 0;
@@ -807,7 +807,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             if shown >= 8 {
                 lines.push(Line::from(vec![Span::styled(
                     " [scroll for more]",
-                    Style::default().fg(styles::MUTED),
+                    Style::default().fg(styles::muted()),
                 )]));
                 break;
             }
@@ -817,7 +817,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 for wrapped in word_wrap(line, max_w) {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {}", wrapped),
-                        Style::default().fg(styles::TEXT),
+                        Style::default().fg(styles::text()),
                     )]));
                     shown += 1;
                 }
@@ -830,7 +830,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     if !pr.checks.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             " ─── CI Checks ───",
-            Style::default().fg(styles::BORDER),
+            Style::default().fg(styles::border()),
         )]));
         lines.push(Line::from(""));
         for check in &pr.checks {
@@ -858,10 +858,10 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             };
             lines.push(Line::from(vec![
                 Span::styled(format!(" {} ", icon), Style::default().fg(color)),
-                Span::styled(check_name, Style::default().fg(styles::TEXT)),
+                Span::styled(check_name, Style::default().fg(styles::text())),
                 Span::styled(
                     format!("  {}", status_text),
-                    Style::default().fg(styles::MUTED),
+                    Style::default().fg(styles::muted()),
                 ),
             ]));
         }
@@ -872,7 +872,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     if !pr.reviewers.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             " ─── Reviewers ───",
-            Style::default().fg(styles::BORDER),
+            Style::default().fg(styles::border()),
         )]));
         lines.push(Line::from(""));
         // Deduplicate: keep latest review state per reviewer
@@ -890,7 +890,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                 Span::styled(
                     format!(" @{}  ", reviewer.login),
                     Style::default()
-                        .fg(styles::TEXT)
+                        .fg(styles::text())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(label, Style::default().fg(color)),
@@ -908,7 +908,7 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         None => {
             lines.push(Line::from(vec![Span::styled(
                 " No symbol references",
-                Style::default().fg(styles::MUTED),
+                Style::default().fg(styles::muted()),
             )]));
             return;
         }
@@ -916,11 +916,11 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
 
     // Header: symbol name
     lines.push(Line::from(vec![
-        Span::styled(" Symbol: ", Style::default().fg(styles::DIM)),
+        Span::styled(" Symbol: ", Style::default().fg(styles::dim_color())),
         Span::styled(
             &*state.symbol,
             Style::default()
-                .fg(styles::BLUE)
+                .fg(styles::blue())
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -934,7 +934,7 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         lines.push(Line::from(vec![Span::styled(
             format!(" In this diff ({})", state.in_diff.len()),
             Style::default()
-                .fg(styles::CYAN)
+                .fg(styles::cyan())
                 .add_modifier(Modifier::BOLD),
         )]));
 
@@ -955,17 +955,17 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             };
 
             let style = if is_selected {
-                Style::default().fg(styles::TEXT).bg(styles::PANEL)
+                Style::default().fg(styles::text()).bg(styles::panel())
             } else {
-                Style::default().fg(styles::TEXT)
+                Style::default().fg(styles::text())
             };
             let loc_style = if is_selected {
                 Style::default()
-                    .fg(styles::BLUE)
-                    .bg(styles::PANEL)
+                    .fg(styles::blue())
+                    .bg(styles::panel())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(styles::BLUE)
+                Style::default().fg(styles::blue())
             };
 
             lines.push(Line::from(vec![Span::styled(loc, loc_style)]));
@@ -984,7 +984,7 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         lines.push(Line::from(vec![Span::styled(
             format!(" Other files ({})", state.external.len()),
             Style::default()
-                .fg(styles::DIM)
+                .fg(styles::dim_color())
                 .add_modifier(Modifier::BOLD),
         )]));
 
@@ -1005,17 +1005,17 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             };
 
             let style = if is_selected {
-                Style::default().fg(styles::DIM).bg(styles::PANEL)
+                Style::default().fg(styles::dim_color()).bg(styles::panel())
             } else {
-                Style::default().fg(styles::DIM)
+                Style::default().fg(styles::dim_color())
             };
             let loc_style = if is_selected {
                 Style::default()
-                    .fg(styles::MUTED)
-                    .bg(styles::PANEL)
+                    .fg(styles::muted())
+                    .bg(styles::panel())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(styles::MUTED)
+                Style::default().fg(styles::muted())
             };
 
             lines.push(Line::from(vec![Span::styled(loc, loc_style)]));
@@ -1031,7 +1031,7 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     if state.in_diff.is_empty() && state.external.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             " No references found",
-            Style::default().fg(styles::MUTED),
+            Style::default().fg(styles::muted()),
         )]));
     }
 }
@@ -1044,14 +1044,14 @@ mod tests {
     fn check_icon_success() {
         let (icon, color) = check_icon(Some("success"));
         assert_eq!(icon, "✓");
-        assert_eq!(color, styles::GREEN);
+        assert_eq!(color, styles::green());
     }
 
     #[test]
     fn check_icon_failure() {
         let (icon, color) = check_icon(Some("failure"));
         assert_eq!(icon, "✗");
-        assert_eq!(color, styles::RED_TEXT);
+        assert_eq!(color, styles::red_text());
     }
 
     #[test]
@@ -1070,62 +1070,62 @@ mod tests {
     fn check_icon_skipped() {
         let (icon, color) = check_icon(Some("skipped"));
         assert_eq!(icon, "–");
-        assert_eq!(color, styles::MUTED);
+        assert_eq!(color, styles::muted());
     }
 
     #[test]
     fn check_icon_unknown() {
         let (icon, color) = check_icon(Some("unknown"));
         assert_eq!(icon, "○");
-        assert_eq!(color, styles::DIM);
+        assert_eq!(color, styles::dim_color());
     }
 
     #[test]
     fn check_icon_none() {
         let (icon, color) = check_icon(None);
         assert_eq!(icon, "○");
-        assert_eq!(color, styles::DIM);
+        assert_eq!(color, styles::dim_color());
     }
 
     #[test]
     fn review_state_style_approved() {
         let (label, color) = review_state_style("APPROVED");
         assert_eq!(label, "✓ approved");
-        assert_eq!(color, styles::GREEN);
+        assert_eq!(color, styles::green());
     }
 
     #[test]
     fn review_state_style_changes_requested() {
         let (label, color) = review_state_style("CHANGES_REQUESTED");
         assert_eq!(label, "✗ changes requested");
-        assert_eq!(color, styles::RED_TEXT);
+        assert_eq!(color, styles::red_text());
     }
 
     #[test]
     fn review_state_style_commented() {
         let (label, color) = review_state_style("COMMENTED");
         assert_eq!(label, "◆ commented");
-        assert_eq!(color, styles::CYAN);
+        assert_eq!(color, styles::cyan());
     }
 
     #[test]
     fn review_state_style_unknown_falls_to_default() {
         let (label, color) = review_state_style("UNKNOWN");
         assert_eq!(label, "○ pending");
-        assert_eq!(color, styles::DIM);
+        assert_eq!(color, styles::dim_color());
     }
 
     #[test]
     fn review_state_style_dismissed_exact() {
         let (label, color) = review_state_style("DISMISSED");
         assert_eq!(label, "– dismissed");
-        assert_eq!(color, styles::MUTED);
+        assert_eq!(color, styles::muted());
     }
 
     #[test]
     fn review_state_style_pending_unknown() {
         let (label, color) = review_state_style("PENDING");
         assert_eq!(label, "○ pending");
-        assert_eq!(color, styles::DIM);
+        assert_eq!(color, styles::dim_color());
     }
 }
