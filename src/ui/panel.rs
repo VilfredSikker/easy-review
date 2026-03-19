@@ -782,7 +782,7 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         // Re-split on " → " to preserve per-segment styling on the first line
         if let Some(arrow_pos) = wrapped.find(" → ") {
             let head = &wrapped[..arrow_pos];
-            let base = &wrapped[arrow_pos + 3..];
+            let base = &wrapped[arrow_pos + " → ".len()..];
             lines.push(Line::from(vec![
                 Span::styled(" ", Style::default()),
                 Span::styled(head.to_string(), Style::default().fg(styles::CYAN())),
