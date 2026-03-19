@@ -5921,6 +5921,25 @@ impl App {
 
     // ── Background Commands ──
 
+    /// Returns a list of (name, status_label, is_running) for agent commands
+    /// that should show a persistent status indicator in the top bar.
+    /// Only tracks "review" and "questions" commands.
+    pub fn agent_statuses(&self) -> Vec<(&str, &str, bool)> {
+        let mut result = Vec::new();
+        for name in &["review", "questions"] {
+            if let Some(status) = self.command_status.get(*name) {
+                match status {
+                    CommandStatus::Running => {
+                        result.push((*name, "running…", true));
+                    }
+                    // Done/Failed are shown via the notification system, not the badge
+                    _ => {}
+                }
+            }
+        }
+        result
+    }
+
     /// Spawn a shell command in the background under the given name.
     /// The command string is run via `sh -c` in the repo root.
     /// Placeholders {base}, {branch}, {repo}, {output} are substituted.

@@ -224,6 +224,23 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let mut right: Vec<Span> = Vec::new();
 
+    // Agent command status badges (persistent while running)
+    for (name, _label, _is_running) in app.agent_statuses() {
+        let display_name = match name {
+            "review" => "Review",
+            "questions" => "Questions",
+            _ => name,
+        };
+        right.push(Span::styled(
+            format!(" ◐ {} running… ", display_name),
+            ratatui::style::Style::default()
+                .fg(styles::BG())
+                .bg(styles::CYAN())
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+        right.push(Span::raw("  "));
+    }
+
     // AI badge + panel label
     if tab.ai.has_data() {
         if tab.ai.is_stale {
