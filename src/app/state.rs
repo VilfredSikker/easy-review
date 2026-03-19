@@ -7788,4 +7788,218 @@ mod tests {
         assert_eq!(app.tab().comment_input, "Why is this here?");
         assert_eq!(app.tab().comment_edit_id, Some("q-123-0".to_string()));
     }
+
+    // ── remote PR review ──
+
+    #[test]
+    fn new_for_test_initializes_remote_repo_as_none() {
+        let tab = TabState::new_for_test(vec![]);
+        assert!(tab.remote_repo.is_none());
+    }
+
+    #[test]
+    fn is_remote_returns_false_by_default() {
+        let tab = TabState::new_for_test(vec![]);
+        assert!(!tab.is_remote());
+    }
+
+    #[test]
+    fn is_remote_returns_true_when_remote_repo_set() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        assert!(tab.is_remote());
+    }
+
+    #[test]
+    fn tab_name_returns_last_path_component_in_normal_mode() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        assert_eq!(tab.tab_name(), "my-project");
+    }
+
+    #[test]
+    fn tab_name_returns_slug_in_remote_mode() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        assert_eq!(tab.tab_name(), "owner/repo");
+    }
+
+    #[test]
+    fn comments_dir_returns_er_subdir_in_normal_mode() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        assert_eq!(tab.comments_dir(), "/home/user/my-project/.er");
+    }
+
+    #[test]
+    fn comments_dir_returns_cache_path_in_remote_mode() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.pr_number = Some(42);
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        assert_eq!(
+            tab.comments_dir(),
+            format!("{}/.cache/er/remote/owner-repo-42", home)
+        );
+    }
+
+    #[test]
+    fn comments_dir_uses_normal_mode_when_pr_number_missing() {
+        // remote_repo without pr_number falls back to normal mode path
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.remote_repo = Some("owner/repo".to_string());
+        // pr_number is None — should fall through to normal path
+        assert_eq!(tab.comments_dir(), "/home/user/my-project/.er");
+    }
+
+    #[test]
+    fn github_comments_path_appends_filename_to_comments_dir() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        assert_eq!(
+            tab.github_comments_path(),
+            "/home/user/my-project/.er/github-comments.json"
+        );
+    }
+
+    #[test]
+    fn github_comments_path_uses_cache_dir_in_remote_mode() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.pr_number = Some(7);
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        assert_eq!(
+            tab.github_comments_path(),
+            format!(
+                "{}/.cache/er/remote/owner-repo-7/github-comments.json",
+                home
+            )
+        );
+    }
+
+    #[test]
+    fn comments_dir_replaces_slash_in_slug_with_dash() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("my-org/my-repo".to_string());
+        tab.pr_number = Some(1);
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        assert_eq!(
+            tab.comments_dir(),
+            format!("{}/.cache/er/remote/my-org-my-repo-1", home)
+        );
+    }
+
+    #[test]
+    fn reload_remote_comments_loads_from_file() {
+        let tmp =
+            std::env::var("TMPDIR").unwrap_or_else(|_| "/private/tmp/claude-501/".to_string());
+        let repo_root = format!(
+            "{}/er-test-reload-{}",
+            tmp.trim_end_matches('/'),
+            std::process::id()
+        );
+        // In normal mode, comments_dir() returns "{repo_root}/.er"
+        let er_dir = format!("{}/.er", repo_root);
+        std::fs::create_dir_all(&er_dir).unwrap();
+
+        let comments_json = serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc123",
+            "comments": [
+                {
+                    "id": "c-1",
+                    "file": "src/lib.rs",
+                    "comment": "Looks good",
+                    "source": "local",
+                    "author": "You",
+                    "resolved": false,
+                    "synced": false
+                }
+            ]
+        });
+        let path = format!("{}/github-comments.json", er_dir);
+        std::fs::write(&path, serde_json::to_string(&comments_json).unwrap()).unwrap();
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = repo_root.clone();
+
+        tab.reload_remote_comments();
+
+        let gc = tab
+            .ai
+            .github_comments
+            .as_ref()
+            .expect("github_comments should be loaded");
+        assert_eq!(gc.comments.len(), 1);
+        assert_eq!(gc.comments[0].id, "c-1");
+        assert_eq!(gc.comments[0].comment, "Looks good");
+
+        std::fs::remove_dir_all(&repo_root).ok();
+    }
+
+    #[test]
+    fn reload_remote_comments_handles_missing_file_gracefully() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/nonexistent/path/that/does/not/exist".to_string();
+        // Should not panic
+        tab.reload_remote_comments();
+        assert!(tab.ai.github_comments.is_none());
+    }
+
+    #[test]
+    fn reload_remote_comments_uses_remote_path_when_set() {
+        let tmp =
+            std::env::var("TMPDIR").unwrap_or_else(|_| "/private/tmp/claude-501/".to_string());
+        let cache_base = format!(
+            "{}/er-test-remote-{}",
+            tmp.trim_end_matches('/'),
+            std::process::id()
+        );
+        let cache_dir = format!("{}/owner-repo-99", cache_base);
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // We can't override HOME easily in tests, so instead we verify the path
+        // derivation logic by checking comments_dir() directly and writing there.
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.pr_number = Some(99);
+
+        let expected_dir = tab.comments_dir();
+        std::fs::create_dir_all(&expected_dir).unwrap();
+
+        let comments_json = serde_json::json!({
+            "version": 1,
+            "diff_hash": "",
+            "comments": [
+                {
+                    "id": "remote-c-1",
+                    "file": "src/main.rs",
+                    "comment": "Remote comment",
+                    "source": "github",
+                    "author": "octocat",
+                    "resolved": false,
+                    "synced": true
+                }
+            ]
+        });
+        std::fs::write(
+            tab.github_comments_path(),
+            serde_json::to_string(&comments_json).unwrap(),
+        )
+        .unwrap();
+
+        tab.reload_remote_comments();
+
+        let gc = tab
+            .ai
+            .github_comments
+            .as_ref()
+            .expect("github_comments should be loaded");
+        assert_eq!(gc.comments.len(), 1);
+        assert_eq!(gc.comments[0].id, "remote-c-1");
+        assert_eq!(gc.comments[0].source, "github");
+
+        std::fs::remove_dir_all(&expected_dir).ok();
+    }
 }
