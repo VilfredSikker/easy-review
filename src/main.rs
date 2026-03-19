@@ -52,14 +52,20 @@ fn main() -> Result<()> {
     // Init app state (detects repo, branch, base branch, runs initial diff)
     let mut app = App::new_with_args(&cli.paths)?;
 
-    // Handle --pr flag: override the first tab's base branch
+    // Handle --pr flag: fetch PR head ref and diff against it without checkout
     if let Some(pr_number) = cli.pr {
         github::ensure_gh_installed()?;
         let repo_root = app.tab().repo_root.clone();
+        let head_ref = github::fetch_pr_head(pr_number, &repo_root)?;
         let base = github::gh_pr_base_branch(pr_number, &repo_root)?;
         let base = github::ensure_base_ref_available(&repo_root, &base)?;
+        let head_branch = github::gh_pr_head_branch_name(pr_number, &repo_root)
+            .unwrap_or_else(|_| format!("pr/{}", pr_number));
         let tab = app.tab_mut();
         tab.base_branch = base;
+        tab.pr_head_ref = Some(head_ref);
+        tab.pr_number = Some(pr_number);
+        tab.current_branch = head_branch;
         tab.refresh_diff()?;
     }
 
@@ -89,7 +95,7 @@ fn main() -> Result<()> {
                         ));
                     }
                     // Fetch PR overview data regardless of base mismatch
-                    if let Some(data) = github::gh_pr_overview(&repo_root) {
+                    if let Some(data) = github::gh_pr_overview(&repo_root, Some(pr_num)) {
                         let _ = pr_tx.send(data);
                     }
                 }
@@ -98,7 +104,8 @@ fn main() -> Result<()> {
         } else {
             // For --pr flag or PR URL, fetch PR data synchronously (already in the right state)
             let repo_root = app.tab().repo_root.clone();
-            let pr_data = github::gh_pr_overview(&repo_root);
+            let pr_number_for_data = app.tab().pr_number;
+            let pr_data = github::gh_pr_overview(&repo_root, pr_number_for_data);
             if let Some(data) = pr_data {
                 app.tab_mut().pr_data = Some(data);
             }
@@ -428,11 +435,15 @@ fn handle_normal_input(
             app.tab_mut().set_mode(DiffMode::Branch);
             return Ok(());
         }
-        KeyCode::Char('2') if app.config.features.view_unstaged => {
+        KeyCode::Char('2')
+            if app.config.features.view_unstaged && app.tab().pr_head_ref.is_none() =>
+        {
             app.tab_mut().set_mode(DiffMode::Unstaged);
             return Ok(());
         }
-        KeyCode::Char('3') if app.config.features.view_staged => {
+        KeyCode::Char('3')
+            if app.config.features.view_staged && app.tab().pr_head_ref.is_none() =>
+        {
             app.tab_mut().set_mode(DiffMode::Staged);
             return Ok(());
         }
@@ -525,7 +536,7 @@ fn handle_normal_input(
             return Ok(());
         }
         // Delete watched file in Hidden mode
-        KeyCode::Char('d')
+        KeyCode::Char('x')
             if key.modifiers == KeyModifiers::NONE && app.tab().mode == DiffMode::Hidden =>
         {
             if let Some(idx) = app.tab().selected_watched {
@@ -537,7 +548,9 @@ fn handle_normal_input(
             return Ok(());
         }
         // Delete focused comment (after J/K jump) — only if deletable
-        KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => {
+        KeyCode::Char('x')
+            if key.modifiers == KeyModifiers::NONE && app.tab().focused_comment_id.is_some() =>
+        {
             if let Some(ref id) = app.tab().focused_comment_id.clone() {
                 if let Some(comment) = app.tab().ai.find_comment(id) {
                     if comment.can_delete() {
@@ -854,15 +867,17 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Toggle reviewed — review tracking is per-branch, not meaningful in History
-        KeyCode::Char(' ') if mode != DiffMode::History => {
-            app.toggle_reviewed()?;
+        // Toggle unreviewed-only filter — not meaningful in History
+        KeyCode::Char(' ')
+            if mode != DiffMode::History && key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            app.toggle_unreviewed_filter();
             return Ok(());
         }
 
-        // Toggle unreviewed-only filter — not meaningful in History
-        KeyCode::Char('u') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
-            app.toggle_unreviewed_filter();
+        // Toggle reviewed — review tracking is per-branch, not meaningful in History
+        KeyCode::Char(' ') if mode != DiffMode::History => {
+            app.toggle_reviewed()?;
             return Ok(());
         }
 
@@ -976,14 +991,20 @@ fn handle_normal_input(
         }
 
         // Scroll — routes to panel when panel is focused
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             if app.tab().panel_focus && app.tab().panel.is_some() {
                 app.tab_mut().panel_scroll_down(10);
             } else {
                 app.tab_mut().scroll_down(10);
             }
         }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             if app.tab().panel_focus && app.tab().panel.is_some() {
                 app.tab_mut().panel_scroll_up(10);
             } else {
@@ -1046,10 +1067,16 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         // Scroll — routes to focused column's scroll offset
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             ai_review_scroll(app, 10, true);
         }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             ai_review_scroll(app, 10, false);
         }
         KeyCode::PageDown => ai_review_scroll(app, 20, true),
@@ -1103,10 +1130,16 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         // Scroll
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             app.tab_mut().history_scroll_down(10);
         }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             app.tab_mut().history_scroll_up(10);
         }
         KeyCode::PageDown => app.tab_mut().history_scroll_down(20),
@@ -1296,6 +1329,7 @@ fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
 fn sync_github_comments(app: &mut App) -> Result<()> {
     let tab = app.tab();
     let repo_root = tab.repo_root.clone();
+    let explicit_pr_number = tab.pr_number;
 
     let pr_info = github::get_pr_info(&repo_root);
     let pr_info = match pr_info {
@@ -1306,7 +1340,12 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
         }
     };
 
-    let (owner, repo_name, pr_number) = pr_info;
+    // If we're in no-checkout PR review mode, override the PR number
+    let (owner, repo_name, pr_number) = if let Some(n) = explicit_pr_number {
+        (pr_info.0, pr_info.1, n)
+    } else {
+        pr_info
+    };
 
     let gh_comments = match github::gh_pr_comments(&owner, &repo_name, pr_number, &repo_root) {
         Ok(c) => c,
@@ -1483,7 +1522,8 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     app.tab_mut().reload_ai_state();
 
     // Refresh PR overview data (CI checks + reviewer status)
-    if let Some(pr_data) = github::gh_pr_overview(&repo_root) {
+    let pr_number_for_overview = app.tab().pr_number;
+    if let Some(pr_data) = github::gh_pr_overview(&repo_root, pr_number_for_overview) {
         app.tab_mut().pr_data = Some(pr_data);
     }
 
@@ -1498,6 +1538,7 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
 fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     let tab = app.tab();
     let repo_root = tab.repo_root.clone();
+    let explicit_pr_number = tab.pr_number;
 
     let pr_info = match github::get_pr_info(&repo_root) {
         Ok(info) => info,
@@ -1506,7 +1547,12 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
             return Ok(());
         }
     };
-    let (owner, repo_name, pr_number) = pr_info;
+    // If we're in no-checkout PR review mode, override the PR number
+    let (owner, repo_name, pr_number) = if let Some(n) = explicit_pr_number {
+        (pr_info.0, pr_info.1, n)
+    } else {
+        pr_info
+    };
 
     let comments_path = format!("{}/.er/github-comments.json", repo_root);
     let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
@@ -1717,7 +1763,7 @@ mod tests {
         assert!(!app.should_quit);
     }
 
-    // ── Ctrl+d vs bare d ──
+    // ── d scrolls down (bare and Ctrl+d) ──
 
     #[test]
     fn ctrl_d_scrolls_diff_when_no_focused_comment() {
@@ -1737,6 +1783,23 @@ mod tests {
     }
 
     #[test]
+    fn bare_d_scrolls_diff_when_no_focused_comment() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        assert_eq!(app.tab().diff_scroll, 0);
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert_eq!(
+            app.tab().diff_scroll,
+            10,
+            "bare d must scroll diff down by 10"
+        );
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "bare d must not change input_mode"
+        );
+    }
+
+    #[test]
     fn ctrl_d_does_not_trigger_delete_confirm_even_when_comment_focused() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         app.tab_mut().focused_comment_id = Some("q-123".to_string());
@@ -1750,7 +1813,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_d_triggers_delete_confirm_when_comment_focused() {
+    fn bare_x_triggers_delete_confirm_when_comment_focused() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         // Add a question to AI state so find_comment + can_delete succeeds
         app.tab_mut().ai.questions = Some(crate::ai::ErQuestions {
@@ -1777,29 +1840,30 @@ mod tests {
             }],
         });
         app.tab_mut().focused_comment_id = Some("q-abc".to_string());
-        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        send_key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         assert_eq!(
             app.input_mode,
             InputMode::Confirm(ConfirmAction::DeleteComment {
                 comment_id: "q-abc".to_string()
             }),
-            "bare d with focused comment must enter Confirm(DeleteComment)"
+            "bare x with focused comment must enter Confirm(DeleteComment)"
         );
     }
 
     #[test]
-    fn bare_d_does_nothing_when_no_comment_focused() {
+    fn bare_x_closes_tab_when_no_comment_focused() {
         let mut app = make_app(vec![make_file_with_hunk()]);
-        // focused_comment_id is None by default
-        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        // focused_comment_id is None by default — x falls through to close_tab
+        // With only one tab, close_tab is a no-op (doesn't crash)
+        send_key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         assert_eq!(
             app.input_mode,
             InputMode::Normal,
-            "bare d with no focused comment must stay in Normal mode"
+            "bare x with no focused comment must stay in Normal mode"
         );
     }
 
-    // ── Ctrl+u vs bare u ──
+    // ── u scrolls up (bare and Ctrl+u) ──
 
     #[test]
     fn ctrl_u_scrolls_diff_up() {
@@ -1810,6 +1874,18 @@ mod tests {
             app.tab().diff_scroll,
             10,
             "Ctrl+u must scroll diff up by 10"
+        );
+    }
+
+    #[test]
+    fn bare_u_scrolls_diff_up() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().diff_scroll = 20;
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(
+            app.tab().diff_scroll,
+            10,
+            "bare u must scroll diff up by 10"
         );
     }
 
@@ -1825,25 +1901,25 @@ mod tests {
     }
 
     #[test]
-    fn bare_u_toggles_unreviewed_filter_on() {
+    fn shift_space_toggles_unreviewed_filter_on() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         assert!(!app.tab().show_unreviewed_only);
-        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        send_key(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
         assert!(
             app.tab().show_unreviewed_only,
-            "bare u must toggle show_unreviewed_only to true"
+            "Shift+Space must toggle show_unreviewed_only to true"
         );
     }
 
     #[test]
-    fn bare_u_does_not_scroll_diff() {
+    fn shift_space_does_not_scroll_diff() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         app.tab_mut().diff_scroll = 20;
-        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        send_key(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
         assert_eq!(
             app.tab().diff_scroll,
             20,
-            "bare u must not change diff_scroll"
+            "Shift+Space must not change diff_scroll"
         );
     }
 

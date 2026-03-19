@@ -109,6 +109,14 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::GREEN),
         ),
     ];
+    if let Some(pr_num) = tab.pr_number {
+        info_spans.push(Span::styled(
+            format!(" [PR #{}]", pr_num),
+            ratatui::style::Style::default()
+                .fg(styles::CYAN)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+    }
     if tab.mode == DiffMode::Branch || tab.mode == DiffMode::History {
         info_spans.push(Span::styled(
             format!(" (vs {})", tab.base_branch),
@@ -439,7 +447,7 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
                     hints.push(Hint::new("r", " reply "));
                 }
                 if comment.can_delete() {
-                    hints.push(Hint::new("d", " delete "));
+                    hints.push(Hint::new("x", " delete "));
                 }
             }
         } else if tab.focused_finding_id.is_some() {
@@ -547,7 +555,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
                 hints.push(Hint::new("c", " comment "));
             }
             hints.push(Hint::new("f", " filter "));
-            hints.push(Hint::new("u", " unreviewed "));
+            hints.push(Hint::new("⇧Space", " unreviewed "));
         }
     } else {
         // Default normal mode — essential navigation only
@@ -575,7 +583,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
                         hints.push(Hint::new("r", " reply "));
                     }
                     if comment.can_delete() {
-                        hints.push(Hint::new("d", " delete "));
+                        hints.push(Hint::new("x", " delete "));
                     }
                 }
             } else if tab.focused_finding_id.is_some() {
@@ -599,7 +607,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("e", " edit "));
             hints.push(Hint::new("p", " panel "));
             hints.push(Hint::new("f", " filter "));
-            hints.push(Hint::new("u", " unreviewed "));
+            hints.push(Hint::new("⇧Space", " unreviewed "));
             hints.push(Hint::new("U", " next unreviewed "));
             hints.push(Hint::new("m", " recent "));
             if tab.ai.has_data() {
@@ -972,7 +980,7 @@ mod tests {
             Hint::new("n/N", " hunks "),
             Hint::new("^q", " quit "),
             Hint::new("f", " filter "),
-            Hint::new("u", " unreviewed "),
+            Hint::new("⇧Space", " unreviewed "),
             Hint::new(",", " settings "),
         ];
         // Total width of all hints > 20 chars, so they should wrap

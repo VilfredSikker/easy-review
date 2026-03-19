@@ -159,6 +159,7 @@ pub fn gh_pr_base_branch(pr_number: u64, repo_root: &str) -> Result<String> {
 }
 
 /// Checkout a PR by number using `gh pr checkout`
+#[allow(dead_code)]
 pub fn gh_pr_checkout(pr_number: u64, repo_root: &str) -> Result<()> {
     let output = Command::new("gh")
         .args(["pr", "checkout", &pr_number.to_string()])
@@ -172,6 +173,47 @@ pub fn gh_pr_checkout(pr_number: u64, repo_root: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Fetch PR head to a local ref without checking out. Returns the local ref name.
+pub fn fetch_pr_head(number: u64, root: &str) -> Result<String> {
+    let ref_name = format!("refs/er/pr/{}/head", number);
+    let output = std::process::Command::new("git")
+        .args([
+            "fetch",
+            "origin",
+            &format!("pull/{}/head:{}", number, ref_name),
+        ])
+        .current_dir(root)
+        .output()
+        .context("failed to run git fetch for PR head")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git fetch PR head failed: {}", stderr.trim());
+    }
+    Ok(ref_name)
+}
+
+/// Get the head branch name of a PR via gh CLI
+pub fn gh_pr_head_branch_name(number: u64, root: &str) -> Result<String> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--json",
+            "headRefName",
+            "--jq",
+            ".headRefName",
+        ])
+        .current_dir(root)
+        .output()
+        .context("failed to run gh pr view")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr view failed: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Verify the local repo's remote matches the PR's owner/repo
@@ -591,16 +633,22 @@ pub fn gh_pr_edit_body(repo_root: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
-/// Fetch PR overview data: title, body, state, author, branches, reviewers
-pub fn gh_pr_overview(repo_root: &str) -> Option<PrOverviewData> {
+/// Fetch PR overview data: title, body, state, author, branches, reviewers.
+/// If `pr_number` is Some, fetches that specific PR; otherwise auto-detects from current branch.
+pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
     // Fetch core PR fields
+    let mut args = vec!["pr", "view"];
+    let pr_num_str;
+    if let Some(n) = pr_number {
+        pr_num_str = n.to_string();
+        args.push(&pr_num_str);
+    }
+    args.extend_from_slice(&[
+        "--json",
+        "number,title,body,state,author,url,baseRefName,headRefName,reviews",
+    ]);
     let view_output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            "--json",
-            "number,title,body,state,author,url,baseRefName,headRefName,reviews",
-        ])
+        .args(&args)
         .current_dir(repo_root)
         .output()
         .ok()?;

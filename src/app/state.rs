@@ -416,6 +416,13 @@ pub struct TabState {
     /// Fetched PR overview data (loaded on startup if PR detected)
     pub pr_data: Option<PrOverviewData>,
 
+    /// Local git ref for PR head (e.g. refs/er/pr/42/head). Set when opened via --pr or PR URL
+    /// using no-checkout mode. When Some, diffs are computed against this ref instead of HEAD.
+    pub pr_head_ref: Option<String>,
+
+    /// PR number when opened via --pr or PR URL. Used for comment sync and PR data fetching.
+    pub pr_number: Option<u64>,
+
     // ── Commit input state ──
     /// Text buffer for the commit message being typed
     pub commit_input: String,
@@ -703,6 +710,8 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             pr_data: None,
+            pr_head_ref: None,
+            pr_number: None,
             history: None,
             watched_config,
             watched_files: Vec::new(),
@@ -786,6 +795,8 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             pr_data: None,
+            pr_head_ref: None,
+            pr_number: None,
             history: None,
             watched_config: WatchedConfig::default(),
             watched_files: Vec::new(),
@@ -924,9 +935,14 @@ impl TabState {
         let prev_scroll = self.diff_scroll;
 
         // In Staged mode after a commit, show HEAD~1..HEAD unless new staged changes exist
+        let head_ref_owned = self.pr_head_ref.clone();
         let raw = if self.mode == DiffMode::Staged && self.committed_unpushed {
-            let staged_raw =
-                git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?;
+            let staged_raw = git::git_diff_raw(
+                self.mode.git_mode(),
+                &self.base_branch,
+                &self.repo_root,
+                head_ref_owned.as_deref(),
+            )?;
             if !staged_raw.is_empty() {
                 // New staged changes exist — resume normal staged view
                 self.committed_unpushed = false;
@@ -941,7 +957,12 @@ impl TabState {
                 }
             }
         } else {
-            git::git_diff_raw(self.mode.git_mode(), &self.base_branch, &self.repo_root)?
+            git::git_diff_raw(
+                self.mode.git_mode(),
+                &self.base_branch,
+                &self.repo_root,
+                head_ref_owned.as_deref(),
+            )?
         };
 
         // Decide parsing strategy based on diff size.
@@ -995,9 +1016,16 @@ impl TabState {
             let repo_root = self.repo_root.clone();
             let git_mode = self.mode.git_mode();
             let base_branch = self.base_branch.clone();
+            let head_ref_owned2 = self.pr_head_ref.clone();
             for file in &mut self.files {
                 if to_expand.contains(&file.path) {
-                    git::expand_compacted_file(file, &repo_root, git_mode, &base_branch)?;
+                    git::expand_compacted_file(
+                        file,
+                        &repo_root,
+                        git_mode,
+                        &base_branch,
+                        head_ref_owned2.as_deref(),
+                    )?;
                 }
             }
         }
@@ -1042,7 +1070,12 @@ impl TabState {
             }
             branch_raw_owned = Some(raw.clone());
         } else if recompute_branch_hash && (self.ai.has_data() || self.ai.has_questions()) {
-            let br = git::git_diff_raw("branch", &self.base_branch, &self.repo_root)?;
+            let br = git::git_diff_raw(
+                "branch",
+                &self.base_branch,
+                &self.repo_root,
+                head_ref_owned.as_deref(),
+            )?;
             self.branch_diff_hash = ai::compute_diff_hash(&br);
             branch_raw_owned = Some(br);
         } else {
@@ -2143,7 +2176,15 @@ impl TabState {
                 let repo_root = self.repo_root.clone();
                 let mode = self.mode.git_mode().to_string();
                 let base = self.base_branch.clone();
-                if let Ok(raw) = git::git_diff_raw_file(&mode, &base, &repo_root, &path, None) {
+                let head_ref_owned = self.pr_head_ref.clone();
+                if let Ok(raw) = git::git_diff_raw_file(
+                    &mode,
+                    &base,
+                    &repo_root,
+                    &path,
+                    None,
+                    head_ref_owned.as_deref(),
+                ) {
                     let parsed = git::parse_diff(&raw);
                     if let Some(p) = parsed.into_iter().next() {
                         if let Some(file) = self.files.get_mut(self.selected_file) {
@@ -2171,6 +2212,7 @@ impl TabState {
                     &self.repo_root,
                     self.mode.git_mode(),
                     &self.base_branch,
+                    self.pr_head_ref.as_deref(),
                 )?;
                 self.user_expanded.insert(path);
                 self.rebuild_hunk_offsets();
@@ -2244,6 +2286,7 @@ impl TabState {
                 self.mode.git_mode(),
                 &self.base_branch,
                 next,
+                self.pr_head_ref.as_deref(),
             )?;
         }
         self.context_overrides.insert(path, next);
@@ -2290,6 +2333,7 @@ impl TabState {
                 self.mode.git_mode(),
                 &self.base_branch,
                 prev,
+                self.pr_head_ref.as_deref(),
             )?;
         }
 
@@ -2336,6 +2380,7 @@ impl TabState {
                 self.mode.git_mode(),
                 &self.base_branch,
                 99999,
+                self.pr_head_ref.as_deref(),
             )
             .is_ok()
             {
@@ -3220,12 +3265,12 @@ impl App {
             let mut tabs = Vec::new();
             for path in paths {
                 if crate::github::is_github_pr_url(path) {
-                    // GitHub PR URL — checkout and open
+                    // GitHub PR URL — fetch head ref and open without checkout
                     let pr_ref = crate::github::parse_github_pr_url(path)
                         .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", path))?;
                     crate::github::ensure_gh_installed()?;
 
-                    // We need to be in the repo to checkout. Use cwd.
+                    // We need to be in the repo. Use cwd.
                     let repo_root = git::get_repo_root().context(
                         "Cannot open PR URL: not in a git repository. Clone the repo first.",
                     )?;
@@ -3233,11 +3278,19 @@ impl App {
                     // Verify the local repo matches the PR's repo
                     crate::github::verify_remote_matches(&repo_root, &pr_ref)?;
 
-                    crate::github::gh_pr_checkout(pr_ref.number, &repo_root)?;
+                    // Fetch PR head to a local ref without touching the working tree
+                    let head_ref = crate::github::fetch_pr_head(pr_ref.number, &repo_root)?;
                     let base = crate::github::gh_pr_base_branch(pr_ref.number, &repo_root)?;
                     let base = crate::github::ensure_base_ref_available(&repo_root, &base)?;
+                    let head_branch =
+                        crate::github::gh_pr_head_branch_name(pr_ref.number, &repo_root)
+                            .unwrap_or_else(|_| format!("pr/{}", pr_ref.number));
 
-                    let tab = TabState::new_with_base(repo_root, base)?;
+                    let mut tab = TabState::new_with_base(repo_root, base)?;
+                    tab.pr_head_ref = Some(head_ref);
+                    tab.pr_number = Some(pr_ref.number);
+                    tab.current_branch = head_branch;
+                    tab.refresh_diff()?;
                     tabs.push(tab);
                 } else {
                     // Local path
@@ -4460,11 +4513,17 @@ impl App {
         let hunk_index = tab.comment_hunk;
         let comment_line_num = tab.comment_line_num;
         let reply_to = tab.comment_reply_to.clone();
+        let pr_head_ref_owned = tab.pr_head_ref.clone();
 
         // Compute branch_diff_hash on-demand when not yet set (e.g., non-Branch mode with no AI data).
         // Without this, questions would always be marked stale because the hash would be empty.
         if diff_hash.is_empty() {
-            if let Ok(br) = git::git_diff_raw("branch", &base_branch, &repo_root) {
+            if let Ok(br) = git::git_diff_raw(
+                "branch",
+                &base_branch,
+                &repo_root,
+                pr_head_ref_owned.as_deref(),
+            ) {
                 diff_hash = ai::compute_diff_hash(&br);
                 self.tab_mut().branch_diff_hash = diff_hash.clone();
             }
@@ -5768,6 +5827,8 @@ mod tests {
             comment_edit_id: None,
             comment_finding_ref: None,
             pr_data: None,
+            pr_head_ref: None,
+            pr_number: None,
             history: None,
             watched_config: WatchedConfig::default(),
             watched_files: Vec::new(),
