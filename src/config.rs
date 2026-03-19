@@ -180,6 +180,23 @@ impl Default for AgentConfig {
     }
 }
 
+impl AgentConfig {
+    /// Human-readable name for the agent (derived from command basename).
+    pub fn display_name(&self) -> String {
+        let basename = self
+            .command
+            .rsplit('/')
+            .next()
+            .unwrap_or(&self.command);
+        // Capitalize first letter
+        let mut chars = basename.chars();
+        match chars.next() {
+            Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+            None => "AI".to_string(),
+        }
+    }
+}
+
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {

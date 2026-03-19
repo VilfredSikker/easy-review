@@ -144,6 +144,10 @@ pub enum ConfirmAction {
     Push,
     CleanupQuestions { count: usize },
     CleanupReviews { count: usize },
+    /// Confirm clearing previous review before running AI review
+    RunAgentReview { clear_previous: bool },
+    /// Confirm clearing previous answers before running AI questions
+    RunAgentQuestions { clear_previous: bool },
 }
 
 /// Which pane has focus in split diff view
@@ -249,6 +253,10 @@ pub enum HubAction {
     CleanupReviews,
     /// Run a named command from [commands] config (e.g. "summary", "test", "lint")
     RunCommand(String),
+    /// Run AI review via configured agent command
+    PromptReview,
+    /// Run AI question answering via configured agent command
+    PromptQuestions,
     // Help — no dispatch, just informational
 }
 
@@ -3473,8 +3481,39 @@ impl App {
             .questions
             .as_ref()
             .is_some_and(|q| !q.questions.is_empty());
+        let has_unresolved_questions = self
+            .tab()
+            .ai
+            .questions
+            .as_ref()
+            .is_some_and(|q| q.questions.iter().any(|q| !q.resolved));
         let summary_configured = self.config.commands.summary.is_some();
+        let agent_name = self.config.agent.display_name();
         let items = vec![
+            HubItem {
+                label: format!("Review work ({})", agent_name),
+                hint: "".into(),
+                description: if has_review {
+                    "Run AI review (will ask to clear previous)".into()
+                } else {
+                    "Run AI code review on current diff".into()
+                },
+                action: HubAction::PromptReview,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: format!("Answer questions ({})", agent_name),
+                hint: "".into(),
+                description: if has_unresolved_questions {
+                    "Answer unresolved questions via AI".into()
+                } else {
+                    "No unresolved questions".into()
+                },
+                action: HubAction::PromptQuestions,
+                is_header: false,
+                enabled: has_unresolved_questions,
+            },
             HubItem {
                 label: "Copy context to clipboard".into(),
                 hint: "".into(),
@@ -5582,8 +5621,8 @@ impl App {
                     Ok(()) => {
                         self.command_status
                             .insert(name.clone(), CommandStatus::Done);
-                        // Summary-specific: force AI reload
-                        if name == "summary" {
+                        // Force AI reload for commands that write .er/ files
+                        if name == "summary" || name == "review" || name == "questions" {
                             self.tab_mut().last_ai_check = None;
                         }
                         self.notify(&format!("{} done", name));
@@ -5598,6 +5637,55 @@ impl App {
             }
         }
     }
+    /// Spawn the configured agent command with a pre-built prompt.
+    ///
+    /// Uses `agent.command` from config (default: "claude") with `-p` flag
+    /// for non-interactive agentic execution. The agent is expected to read
+    /// the diff and write `.er/` files directly.
+    pub fn spawn_agent_prompt(&mut self, name: &str, prompt: &str) -> Result<()> {
+        if self.command_status.get(name) == Some(&CommandStatus::Running) {
+            self.notify(&format!("{} already running", name));
+            return Ok(());
+        }
+
+        let repo_root = self.tab().repo_root.clone();
+        let agent_cmd = self.config.agent.command.clone();
+
+        // Ensure .er/ directory exists
+        let er_dir = std::path::Path::new(&repo_root).join(".er");
+        std::fs::create_dir_all(&er_dir)?;
+
+        let name_owned = name.to_string();
+        let prompt_owned = prompt.to_string();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let output = std::process::Command::new(&agent_cmd)
+                    .args(["-p", &prompt_owned])
+                    .current_dir(&repo_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                    .with_context(|| format!("Failed to run {} ({})", name_owned, agent_cmd))?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("{} failed: {}", name_owned, stderr.trim());
+                }
+
+                Ok(())
+            })();
+            let _ = tx.send(result);
+        });
+
+        self.command_rx.insert(name.to_string(), rx);
+        self.command_status
+            .insert(name.to_string(), CommandStatus::Running);
+        self.notify(&format!("{} started...", name));
+        Ok(())
+    }
+
     pub fn tick(&mut self) {
         // TODO(risk:minor): watch_message_ticks is a u8 (max 255). If notify() is called without a
         // subsequent tick draining it (e.g., during a long blocking git operation), ticks can overflow
@@ -5691,6 +5779,45 @@ pub fn cleanup_questions(repo_root: &str) {
     let base = std::path::Path::new(repo_root).join(".er");
     let _ = std::fs::remove_file(base.join("questions.json"));
     let _ = std::fs::remove_file(base.join("questions.prev.json"));
+}
+
+/// Remove AI-generated answers from questions.json, keeping human questions intact.
+/// Unmarks resolved status on questions whose answers are removed.
+pub fn cleanup_question_answers(repo_root: &str) {
+    let path = std::path::Path::new(repo_root)
+        .join(".er")
+        .join("questions.json");
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(mut qs) = serde_json::from_str::<crate::ai::ErQuestions>(&content) {
+            // Collect IDs of answers being removed (so we can un-resolve their parents)
+            let answer_ids: std::collections::HashSet<String> = qs
+                .questions
+                .iter()
+                .filter(|q| q.author == "Claude")
+                .map(|q| q.id.clone())
+                .collect();
+            let answered_question_ids: std::collections::HashSet<String> = qs
+                .questions
+                .iter()
+                .filter(|q| q.author == "Claude")
+                .filter_map(|q| q.in_reply_to.clone())
+                .collect();
+
+            // Remove AI answers
+            qs.questions.retain(|q| !answer_ids.contains(&q.id));
+
+            // Un-resolve questions whose answers were removed
+            for q in &mut qs.questions {
+                if answered_question_ids.contains(&q.id) {
+                    q.resolved = false;
+                }
+            }
+
+            if let Ok(json) = serde_json::to_string_pretty(&qs) {
+                let _ = std::fs::write(&path, json);
+            }
+        }
+    }
 }
 
 /// Delete AI review sidecar files. Errors are ignored (files may not exist).

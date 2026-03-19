@@ -9,8 +9,8 @@ mod watch;
 use crate::ai::{PanelContent, ReviewFocus};
 use anyhow::Result;
 use app::{
-    cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode, HubAction, InputMode,
-    SplitSide,
+    cleanup_question_answers, cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode,
+    HubAction, InputMode, SplitSide,
 };
 use clap::Parser;
 use crossterm::{
@@ -396,6 +396,44 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                 app.spawn_command(&name, &cmd)?;
             } else {
                 app.notify(&format!("{}: not configured", name));
+            }
+        }
+        HubAction::PromptReview => {
+            let has_review = app.tab().ai.review.is_some();
+            if has_review {
+                // Ask to clear previous review first
+                app.input_mode =
+                    InputMode::Confirm(ConfirmAction::RunAgentReview { clear_previous: true });
+            } else {
+                // No previous review, run directly
+                let base = app.tab().base_branch.clone();
+                let scope = app.tab().mode.git_mode();
+                let prompt =
+                    crate::ai::prompts::build_review_prompt(&base, &scope);
+                app.spawn_agent_prompt("review", &prompt)?;
+            }
+        }
+        HubAction::PromptQuestions => {
+            let has_answers = app
+                .tab()
+                .ai
+                .questions
+                .as_ref()
+                .is_some_and(|q| {
+                    q.questions
+                        .iter()
+                        .any(|q| q.in_reply_to.is_some() && q.author == "Claude")
+                });
+            if has_answers {
+                // Ask to clear previous answers first
+                app.input_mode = InputMode::Confirm(ConfirmAction::RunAgentQuestions {
+                    clear_previous: true,
+                });
+            } else {
+                // No previous answers, run directly
+                let base = app.tab().base_branch.clone();
+                let prompt = crate::ai::prompts::build_questions_prompt(&base);
+                app.spawn_agent_prompt("questions", &prompt)?;
             }
         }
     }
@@ -1263,9 +1301,47 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 cleanup_reviews(&repo_root);
                 app.tab_mut().reload_ai_state();
                 app.notify("Review cleared");
+            } else if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = action {
+                // User said "yes" to clearing previous review — clear, then run
+                app.input_mode = InputMode::Normal;
+                let repo_root = app.tab().repo_root.clone();
+                cleanup_reviews(&repo_root);
+                app.tab_mut().reload_ai_state();
+                let base = app.tab().base_branch.clone();
+                let scope = app.tab().mode.git_mode();
+                let prompt = crate::ai::prompts::build_review_prompt(&base, &scope);
+                app.spawn_agent_prompt("review", &prompt)?;
+            } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) = action {
+                // User said "yes" to clearing previous answers — clear answers, then run
+                app.input_mode = InputMode::Normal;
+                let repo_root = app.tab().repo_root.clone();
+                cleanup_question_answers(&repo_root);
+                app.tab_mut().reload_ai_state();
+                let base = app.tab().base_branch.clone();
+                let prompt = crate::ai::prompts::build_questions_prompt(&base);
+                app.spawn_agent_prompt("questions", &prompt)?;
             }
         }
-        KeyCode::Char('n') | KeyCode::Esc => {
+        KeyCode::Char('n') => {
+            // For agent prompts, 'n' = keep previous data but still run
+            if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = &app.input_mode {
+                app.input_mode = InputMode::Normal;
+                let base = app.tab().base_branch.clone();
+                let scope = app.tab().mode.git_mode();
+                let prompt = crate::ai::prompts::build_review_prompt(&base, &scope);
+                app.spawn_agent_prompt("review", &prompt)?;
+            } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) =
+                &app.input_mode
+            {
+                app.input_mode = InputMode::Normal;
+                let base = app.tab().base_branch.clone();
+                let prompt = crate::ai::prompts::build_questions_prompt(&base);
+                app.spawn_agent_prompt("questions", &prompt)?;
+            } else {
+                app.cancel_confirm();
+            }
+        }
+        KeyCode::Esc => {
             app.cancel_confirm();
         }
         _ => {} // Ignore all other keys in confirm mode

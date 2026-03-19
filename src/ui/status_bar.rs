@@ -734,6 +734,13 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 ConfirmAction::CleanupReviews { count } => {
                     format!("Clear {} review file(s)? (y/n)", count)
                 }
+                ConfirmAction::RunAgentReview { .. } => {
+                    "Clear previous review before running? (y=clear n=keep Esc=cancel)".to_string()
+                }
+                ConfirmAction::RunAgentQuestions { .. } => {
+                    "Clear previous AI answers before running? (y=clear n=keep Esc=cancel)"
+                        .to_string()
+                }
             };
             let spans = vec![
                 Span::styled(
