@@ -472,6 +472,10 @@ pub struct TabState {
     /// Per-file context line overrides (path -> context lines count).
     /// Default context is 3 (git's --unified=3). Cleared on diff refresh.
     pub context_overrides: HashMap<String, usize>,
+
+    /// Remote repo slug (e.g. "owner/repo") when reviewing a PR without a local clone.
+    /// When Some, git operations are disabled and diffs come from `gh pr diff --repo`.
+    pub remote_repo: Option<String>,
 }
 
 /// A single reference to a symbol (file + line)
@@ -655,6 +659,137 @@ impl TabState {
         Self::new_inner(repo_root, current_branch, base_branch)
     }
 
+    /// Create a TabState for remote PR review (no local git repo needed).
+    /// Uses `gh pr diff --repo` instead of local git operations.
+    pub fn new_remote(pr_ref: &crate::github::PrRef) -> Result<Self> {
+        let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
+
+        // Get metadata (base/head branch names)
+        let (base_branch, head_branch) =
+            crate::github::gh_pr_metadata_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
+
+        // Get the diff from GitHub
+        let raw = crate::github::gh_pr_diff_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
+
+        // Parse the diff
+        let compaction_config = crate::git::CompactionConfig::default();
+        let mut files = if raw.len() > 200_000 {
+            let headers = crate::git::parse_diff_headers(&raw);
+            headers.iter().map(crate::git::header_to_stub).collect()
+        } else {
+            let mut f = crate::git::parse_diff(&raw);
+            crate::git::compact_files(&mut f, &compaction_config);
+            f
+        };
+
+        let diff_hash = crate::ai::compute_diff_hash(&raw);
+        let lazy_mode = raw.len() > 200_000;
+        let file_headers = if lazy_mode {
+            let headers = crate::git::parse_diff_headers(&raw);
+            // Apply compaction to stubs in lazy mode
+            for (file, header) in files.iter_mut().zip(headers.iter()) {
+                let total_lines = header.adds + header.dels;
+                let should_compact = compaction_config.enabled
+                    && (compaction_config
+                        .patterns
+                        .iter()
+                        .any(|p| crate::git::compact_files_match(p, &file.path))
+                        || total_lines > compaction_config.max_lines_before_compact);
+                if should_compact {
+                    file.compacted = true;
+                    file.raw_hunk_count = header.hunk_count;
+                }
+            }
+            headers
+        } else {
+            Vec::new()
+        };
+
+        let er_config = crate::config::ErConfig::default();
+
+        let mut tab = TabState {
+            mode: DiffMode::Branch,
+            base_branch,
+            current_branch: head_branch,
+            repo_root: std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string()),
+            files,
+            selected_file: 0,
+            current_hunk: 0,
+            current_line: None,
+            selection_anchor: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+            split_focus: SplitSide::New,
+            h_scroll_old: 0,
+            h_scroll_new: 0,
+            layers: InlineLayers::default(),
+            panel: None,
+            panel_scroll: 0,
+            panel_focus: false,
+            focused_comment_id: None,
+            focused_finding_id: None,
+            user_expanded: HashSet::new(),
+            review_focus: ReviewFocus::Files,
+            review_cursor: 0,
+            search_query: String::new(),
+            filter_expr: String::new(),
+            filter_rules: Vec::new(),
+            filter_input: String::new(),
+            filter_history: Vec::new(),
+            reviewed: HashMap::new(),
+            current_per_file_hashes: HashMap::new(),
+            show_unreviewed_only: false,
+            sort_by_mtime: false,
+            mtime_cache: HashMap::new(),
+            search_query_lower: String::new(),
+            ai: AiState::default(),
+            diff_hash: diff_hash.clone(),
+            branch_diff_hash: diff_hash,
+            last_ai_check: None,
+            comment_input: String::new(),
+            comment_file: String::new(),
+            comment_hunk: 0,
+            comment_reply_to: None,
+            comment_line_num: None,
+            comment_type: CommentType::GitHubComment,
+            comment_edit_id: None,
+            comment_finding_ref: None,
+            pr_data: None,
+            pr_head_ref: None,
+            pr_number: Some(pr_ref.number),
+            history: None,
+            watched_config: er_config.watched.clone(),
+            watched_files: Vec::new(),
+            selected_watched: None,
+            show_watched: false,
+            watched_not_ignored: Vec::new(),
+            commit_input: String::new(),
+            merge_active: false,
+            unresolved_count: 0,
+            compaction_config,
+            hunk_offsets: None,
+            file_tree_cache: None,
+            mem_budget: MemoryBudget::default(),
+            lazy_mode,
+            file_headers,
+            raw_diff: if lazy_mode { Some(raw) } else { None },
+            symbol_refs: None,
+            pending_unmark_count: 0,
+            committed_unpushed: false,
+            context_overrides: HashMap::new(),
+            remote_repo: Some(repo_slug),
+        };
+
+        // Build hunk offsets for initial selection
+        tab.rebuild_hunk_offsets();
+        tab.ensure_file_parsed();
+        tab.update_mem_budget();
+
+        Ok(tab)
+    }
+
     fn new_inner(repo_root: String, current_branch: String, base_branch: String) -> Result<Self> {
         let reviewed = Self::load_reviewed_files(&repo_root);
         let er_config = config::load_config(&repo_root);
@@ -732,6 +867,7 @@ impl TabState {
             pending_unmark_count: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
+            remote_repo: None,
         };
 
         tab.refresh_diff()?;
@@ -817,15 +953,41 @@ impl TabState {
             pending_unmark_count: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
+            remote_repo: None,
         }
     }
 
     /// Short name for display in tab bar (last path component)
     pub fn tab_name(&self) -> String {
+        if let Some(ref slug) = self.remote_repo {
+            return slug.clone();
+        }
         std::path::Path::new(&self.repo_root)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| self.repo_root.clone())
+    }
+
+    /// Whether this tab is reviewing a remote PR (no local git repo).
+    pub fn is_remote(&self) -> bool {
+        self.remote_repo.is_some()
+    }
+
+    /// Directory for storing comment files. In remote mode, uses `~/.cache/er/remote/`.
+    /// In normal mode, uses `{repo_root}/.er/`.
+    pub fn comments_dir(&self) -> String {
+        if let (Some(ref slug), Some(n)) = (&self.remote_repo, self.pr_number) {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let safe_slug = slug.replace('/', "-");
+            format!("{}/.cache/er/remote/{}-{}", home, safe_slug, n)
+        } else {
+            format!("{}/.er", self.repo_root)
+        }
+    }
+
+    /// Path to github-comments.json. Uses cache dir in remote mode.
+    pub fn github_comments_path(&self) -> String {
+        format!("{}/github-comments.json", self.comments_dir())
     }
 
     // ── Diff ──
@@ -922,6 +1084,79 @@ impl TabState {
         // Hidden mode only shows watched files — reload them instead of running git diff
         if self.mode == DiffMode::Hidden {
             self.refresh_watched_files();
+            return Ok(());
+        }
+
+        // Remote mode: fetch diff from GitHub API instead of local git
+        if let Some(ref repo_slug) = self.remote_repo.clone() {
+            let parts: Vec<&str> = repo_slug.split('/').collect();
+            if parts.len() == 2 {
+                let owner = parts[0].to_string();
+                let repo = parts[1].to_string();
+                if let Some(pr_number) = self.pr_number {
+                    let raw = crate::github::gh_pr_diff_remote(&owner, &repo, pr_number)?;
+
+                    let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
+
+                    if raw.len() > 200_000 {
+                        let headers = crate::git::parse_diff_headers(&raw);
+                        self.files = headers.iter().map(crate::git::header_to_stub).collect();
+                        self.file_headers = headers;
+                        self.raw_diff = Some(raw.clone());
+                        self.lazy_mode = true;
+                        for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
+                            if self.user_expanded.contains(&file.path) {
+                                continue;
+                            }
+                            let total_lines = header.adds + header.dels;
+                            let should_compact = self.compaction_config.enabled
+                                && (self
+                                    .compaction_config
+                                    .patterns
+                                    .iter()
+                                    .any(|p| crate::git::compact_files_match(p, &file.path))
+                                    || total_lines
+                                        > self.compaction_config.max_lines_before_compact);
+                            if should_compact {
+                                file.compacted = true;
+                                file.raw_hunk_count = header.hunk_count;
+                            }
+                        }
+                    } else {
+                        self.files = crate::git::parse_diff(&raw);
+                        self.file_headers.clear();
+                        self.raw_diff = None;
+                        self.lazy_mode = false;
+                        crate::git::compact_files(&mut self.files, &self.compaction_config);
+                    }
+
+                    if recompute_branch_hash {
+                        self.diff_hash = crate::ai::compute_diff_hash(&raw);
+                        self.branch_diff_hash = self.diff_hash.clone();
+                    } else {
+                        self.diff_hash =
+                            format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
+                    }
+
+                    // Restore selection
+                    if let Some(ref path) = prev_path {
+                        if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
+                            self.selected_file = idx;
+                        } else {
+                            self.selected_file =
+                                self.files.len().saturating_sub(1).min(self.selected_file);
+                        }
+                    } else {
+                        self.selected_file = 0;
+                    }
+                    self.clamp_hunk();
+                    self.ensure_file_parsed();
+                    self.rebuild_hunk_offsets();
+                    self.file_tree_cache = None;
+                    self.update_mem_budget();
+                    return Ok(());
+                }
+            }
             return Ok(());
         }
 
@@ -1173,6 +1408,18 @@ impl TabState {
         self.last_ai_check = ai::latest_er_mtime(&self.repo_root);
     }
 
+    /// Reload github comments from cache in remote mode.
+    /// Unlike reload_ai_state() which reads from .er/, this reads from the remote cache dir.
+    pub fn reload_remote_comments(&mut self) {
+        let path = self.github_comments_path();
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
+                self.ai.github_comments = Some(gc);
+                self.ai.rebuild_comment_index();
+            }
+        }
+    }
+
     /// Relocate all comments to their new positions after a diff change.
     fn relocate_all_comments(&mut self) {
         let current_hash = self.diff_hash.clone();
@@ -1345,8 +1592,9 @@ impl TabState {
         }
         if comments_changed {
             if let Some(ref gc) = self.ai.github_comments {
-                let path = format!("{}/.er/github-comments.json", repo_root);
+                let path = self.github_comments_path();
                 if let Ok(json) = serde_json::to_string_pretty(gc) {
+                    let _ = std::fs::create_dir_all(self.comments_dir());
                     let tmp = format!("{}.tmp", path);
                     let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
                 }
@@ -2170,27 +2418,30 @@ impl TabState {
             }
         }
         // Fallback: offset parse returned no hunks but file has changes — fetch from git directly
-        if let Some(file) = self.files.get(self.selected_file) {
-            if file.adds + file.dels > 0 {
-                let path = file.path.clone();
-                let repo_root = self.repo_root.clone();
-                let mode = self.mode.git_mode().to_string();
-                let base = self.base_branch.clone();
-                let head_ref_owned = self.pr_head_ref.clone();
-                if let Ok(raw) = git::git_diff_raw_file(
-                    &mode,
-                    &base,
-                    &repo_root,
-                    &path,
-                    None,
-                    head_ref_owned.as_deref(),
-                ) {
-                    let parsed = git::parse_diff(&raw);
-                    if let Some(p) = parsed.into_iter().next() {
-                        if let Some(file) = self.files.get_mut(self.selected_file) {
-                            file.hunks = p.hunks;
-                            file.adds = p.adds;
-                            file.dels = p.dels;
+        // Skip git fallback in remote mode — raw_diff is our only source
+        if !self.is_remote() {
+            if let Some(file) = self.files.get(self.selected_file) {
+                if file.adds + file.dels > 0 {
+                    let path = file.path.clone();
+                    let repo_root = self.repo_root.clone();
+                    let mode = self.mode.git_mode().to_string();
+                    let base = self.base_branch.clone();
+                    let head_ref_owned = self.pr_head_ref.clone();
+                    if let Ok(raw) = git::git_diff_raw_file(
+                        &mode,
+                        &base,
+                        &repo_root,
+                        &path,
+                        None,
+                        head_ref_owned.as_deref(),
+                    ) {
+                        let parsed = git::parse_diff(&raw);
+                        if let Some(p) = parsed.into_iter().next() {
+                            if let Some(file) = self.files.get_mut(self.selected_file) {
+                                file.hunks = p.hunks;
+                                file.adds = p.adds;
+                                file.dels = p.dels;
+                            }
                         }
                     }
                 }
@@ -2204,36 +2455,61 @@ impl TabState {
     /// If compacted, expand by re-fetching from git.
     /// If expanded (and was compacted), re-compact it.
     pub fn toggle_compacted(&mut self) -> Result<()> {
-        if let Some(file) = self.files.get_mut(self.selected_file) {
-            if file.compacted {
-                let path = file.path.clone();
-                git::expand_compacted_file(
-                    file,
-                    &self.repo_root,
-                    self.mode.git_mode(),
-                    &self.base_branch,
-                    self.pr_head_ref.as_deref(),
-                )?;
-                self.user_expanded.insert(path);
-                self.rebuild_hunk_offsets();
-                self.update_mem_budget();
+        let is_remote = self.is_remote();
+        let is_compacted = self
+            .files
+            .get(self.selected_file)
+            .is_some_and(|f| f.compacted);
+        if is_compacted {
+            let path = self.files[self.selected_file].path.clone();
+            if is_remote {
+                // Remote mode: re-parse from raw_diff
+                let header_idx = self.file_headers.iter().position(|h| h.path == path);
+                if let Some(raw) = self.raw_diff.clone() {
+                    if let Some(idx) = header_idx {
+                        let header = self.file_headers[idx].clone();
+                        let parsed = git::parse_file_at_offset(&raw, &header);
+                        if let Some(file) = self.files.get_mut(self.selected_file) {
+                            file.hunks = parsed.hunks;
+                            file.adds = parsed.adds;
+                            file.dels = parsed.dels;
+                            file.compacted = false;
+                        }
+                    }
+                }
             } else {
-                // Re-compact: only if it matched a pattern or was large
-                // TODO(risk:minor): any file can be re-compacted via Enter regardless of whether it originally
-                // matched a compaction pattern. A file that was never auto-compacted (user navigated to it
-                // in eager mode) still gets compacted on the second Enter press, which may be surprising.
-                let path = file.path.clone();
-                file.compacted = true;
-                file.raw_hunk_count = file.hunks.len();
-                file.hunks.clear();
-                file.hunks.shrink_to_fit();
-                self.user_expanded.remove(&path);
-                self.current_hunk = 0;
-                self.current_line = None;
-                self.diff_scroll = 0;
-                self.hunk_offsets = None;
-                self.update_mem_budget();
+                // Extract values before mutable borrow of files
+                let repo_root = self.repo_root.clone();
+                let git_mode = self.mode.git_mode().to_string();
+                let base_branch = self.base_branch.clone();
+                let head_ref_owned = self.pr_head_ref.clone();
+                git::expand_compacted_file(
+                    &mut self.files[self.selected_file],
+                    &repo_root,
+                    &git_mode,
+                    &base_branch,
+                    head_ref_owned.as_deref(),
+                )?;
             }
+            self.user_expanded.insert(path);
+            self.rebuild_hunk_offsets();
+            self.update_mem_budget();
+        } else if let Some(file) = self.files.get_mut(self.selected_file) {
+            // Re-compact: only if it matched a pattern or was large
+            // TODO(risk:minor): any file can be re-compacted via Enter regardless of whether it originally
+            // matched a compaction pattern. A file that was never auto-compacted (user navigated to it
+            // in eager mode) still gets compacted on the second Enter press, which may be surprising.
+            let path = file.path.clone();
+            file.compacted = true;
+            file.raw_hunk_count = file.hunks.len();
+            file.hunks.clear();
+            file.hunks.shrink_to_fit();
+            self.user_expanded.remove(&path);
+            self.current_hunk = 0;
+            self.current_line = None;
+            self.diff_scroll = 0;
+            self.hunk_offsets = None;
+            self.update_mem_budget();
         }
         Ok(())
     }
@@ -3046,6 +3322,9 @@ impl TabState {
     }
 
     fn save_reviewed_files(&self) -> Result<()> {
+        if self.is_remote() {
+            return Ok(());
+        }
         let path = format!("{}/.er/reviewed", self.repo_root);
         if self.reviewed.is_empty() {
             // Remove file if no reviewed files
@@ -3124,6 +3403,9 @@ impl TabState {
 
     /// Restore session state if the diff hash matches. Returns true if restored.
     pub fn restore_session(&mut self) -> bool {
+        if self.is_remote() {
+            return false;
+        }
         let session = match SessionState::load(&self.repo_root) {
             Some(s) => s,
             None => return false,
@@ -3195,6 +3477,9 @@ impl TabState {
 
     /// Save current session state to .er/session.json.
     pub fn save_session(&self) {
+        if self.is_remote() {
+            return;
+        }
         let session = self.capture_session();
         let _ = session.save(&self.repo_root);
     }
@@ -3327,6 +3612,29 @@ impl App {
             command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         })
+    }
+
+    /// Create App for remote PR review — no local git repo needed.
+    pub fn new_remote(mut tab: TabState, pr_data: Option<crate::github::PrOverviewData>) -> Self {
+        if let Some(data) = pr_data {
+            tab.pr_data = Some(data);
+        }
+        let er_config = crate::config::ErConfig::default();
+        App {
+            tabs: vec![tab],
+            active_tab: 0,
+            input_mode: InputMode::Normal,
+            should_quit: false,
+            overlay: None,
+            watching: false,
+            watch_message: None,
+            watch_message_ticks: 0,
+            ai_poll_counter: 0,
+            config: er_config,
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
+            pending_hub_action: None,
+        }
     }
 
     // ── Tab Accessors ──
@@ -4607,7 +4915,6 @@ impl App {
     /// Submit a GitHub PR comment to .er/github-comments.json
     fn submit_github_comment(&mut self, text: String) -> Result<()> {
         let tab = self.tab();
-        let repo_root = tab.repo_root.clone();
         let diff_hash = tab.branch_diff_hash.clone();
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
@@ -4617,8 +4924,8 @@ impl App {
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
-        // Load or create .er/github-comments.json
-        let comments_path = format!("{}/.er/github-comments.json", repo_root);
+        // Load or create github-comments.json (uses cache dir in remote mode)
+        let comments_path = self.tab().github_comments_path();
         let mut gh_comments: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(gc) => gc,
@@ -4685,7 +4992,8 @@ impl App {
         });
 
         // Write atomically
-        std::fs::create_dir_all(format!("{}/.er", repo_root))?;
+        let comments_dir = self.tab().comments_dir();
+        std::fs::create_dir_all(&comments_dir)?;
         let json = serde_json::to_string_pretty(&gh_comments)?;
         let tmp_path = format!("{}.tmp", comments_path);
         std::fs::write(&tmp_path, json)?;
@@ -4693,7 +5001,13 @@ impl App {
 
         self.tab_mut().comment_input.clear();
         self.input_mode = InputMode::Normal;
-        self.tab_mut().reload_ai_state();
+        let is_remote = self.tab().is_remote();
+        if !is_remote {
+            self.tab_mut().reload_ai_state();
+        } else {
+            // In remote mode, manually reload github comments from the cache file
+            self.tab_mut().reload_remote_comments();
+        }
         let label = if is_reply { "Reply" } else { "Comment" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
@@ -4808,7 +5122,7 @@ impl App {
                 }
             }
         } else {
-            let path = format!("{}/.er/github-comments.json", repo_root);
+            let path = self.tab().github_comments_path();
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
@@ -5205,8 +5519,8 @@ impl App {
                 }
             }
         } else {
-            // Delete from .er/github-comments.json
-            let path = format!("{}/.er/github-comments.json", repo_root);
+            // Delete from github-comments.json (uses cache dir in remote mode)
+            let path = self.tab().github_comments_path();
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
                     // Check if the comment has a github_id for API deletion
@@ -5849,6 +6163,7 @@ mod tests {
             pending_unmark_count: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
+            remote_repo: None,
         }
     }
 

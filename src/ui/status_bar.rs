@@ -117,6 +117,12 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
+    if tab.is_remote() {
+        info_spans.push(Span::styled(
+            " [remote]",
+            ratatui::style::Style::default().fg(styles::ORANGE),
+        ));
+    }
     if tab.mode == DiffMode::Branch || tab.mode == DiffMode::History {
         info_spans.push(Span::styled(
             format!(" (vs {})", tab.base_branch),
@@ -145,6 +151,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     row_idx += 1;
 
     // ── Modes row: modes (left) + reviewed (right) ──
+    let show_all_modes = !tab.is_remote();
     let mut modes: Vec<Span> = vec![Span::raw(" ")];
     if app.config.features.view_branch {
         modes.push(Span::styled(" 1 ", mode_style(DiffMode::Branch, tab.mode)));
@@ -154,7 +161,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         ));
         modes.push(Span::raw(" "));
     }
-    if app.config.features.view_unstaged {
+    if app.config.features.view_unstaged && show_all_modes {
         modes.push(Span::styled(
             " 2 ",
             mode_style(DiffMode::Unstaged, tab.mode),
@@ -165,7 +172,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         ));
         modes.push(Span::raw(" "));
     }
-    if app.config.features.view_staged {
+    if app.config.features.view_staged && show_all_modes {
         modes.push(Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)));
         let staged_label = if tab.mode == DiffMode::Staged && tab.committed_unpushed {
             " COMMITTED "
@@ -178,14 +185,14 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         ));
         modes.push(Span::raw(" "));
     }
-    if app.config.features.view_history {
+    if app.config.features.view_history && show_all_modes {
         modes.push(Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)));
         modes.push(Span::styled(
             " HISTORY ",
             mode_style(DiffMode::History, tab.mode),
         ));
     }
-    if app.config.features.view_conflicts {
+    if app.config.features.view_conflicts && show_all_modes {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(
             " 5 ",
@@ -196,7 +203,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             mode_style(DiffMode::Conflicts, tab.mode),
         ));
     }
-    if app.config.features.view_hidden {
+    if app.config.features.view_hidden && show_all_modes {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(" 6 ", mode_style(DiffMode::Hidden, tab.mode)));
         modes.push(Span::styled(

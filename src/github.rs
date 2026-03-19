@@ -744,6 +744,278 @@ fn remote_matches_repo(remote: &str, owner: &str, repo: &str) -> bool {
     remote.contains(&format!("/{}", expected)) || remote.contains(&format!(":{}", expected))
 }
 
+/// Get raw unified diff for a PR via `gh pr diff N --repo owner/repo`.
+/// Works without a local clone — uses GitHub API via gh CLI.
+pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let output = Command::new("gh")
+        .args(["pr", "diff", &number.to_string(), "--repo", &repo_slug])
+        .output()
+        .context("Failed to run gh pr diff")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to get PR diff: {}", stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Get PR metadata (base branch, head branch) via `gh pr view --repo`.
+/// Returns (base_ref_name, head_ref_name).
+pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(String, String)> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "baseRefName,headRefName",
+            "--jq",
+            r#"[.baseRefName, .headRefName] | @tsv"#,
+        ])
+        .output()
+        .context("Failed to get PR metadata")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to get PR #{} metadata: {}", number, stderr.trim());
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
+    let (base, head) = text
+        .split_once('\t')
+        .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {}", text))?;
+
+    Ok((base.to_string(), head.to_string()))
+}
+
+/// Fetch PR overview data for a remote repo (no local clone needed).
+pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let view_output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "number,title,body,state,author,url,baseRefName,headRefName,reviews",
+        ])
+        .output()
+        .ok()?;
+
+    if !view_output.status.success() {
+        return None;
+    }
+
+    let json_str = String::from_utf8_lossy(&view_output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+
+    let number = v["number"].as_u64().unwrap_or(0);
+    let title = v["title"].as_str().unwrap_or("").to_string();
+    let body = v["body"].as_str().unwrap_or("").to_string();
+    let state = v["state"].as_str().unwrap_or("").to_string();
+    let author = v["author"]["login"].as_str().unwrap_or("").to_string();
+    let url = v["url"].as_str().unwrap_or("").to_string();
+    let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
+    let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
+
+    let reviewers: Vec<ReviewerStatus> = if let Some(reviews_arr) = v["reviews"].as_array() {
+        let mut reviewer_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for r in reviews_arr {
+            if let Some(login) = r["author"]["login"].as_str() {
+                let state = r["state"].as_str().unwrap_or("PENDING").to_string();
+                reviewer_map.insert(login.to_string(), state);
+            }
+        }
+        reviewer_map
+            .into_iter()
+            .map(|(login, state)| ReviewerStatus { login, state })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Skip CI checks for remote (would need --repo flag on gh pr checks too)
+    let checks = Vec::new();
+
+    Some(PrOverviewData {
+        number,
+        title,
+        body,
+        state,
+        author,
+        url,
+        base_branch,
+        head_branch,
+        checks,
+        reviewers,
+    })
+}
+
+/// Get PR info (owner, repo, number) for a remote repo. Used for comment sync in remote mode.
+#[allow(dead_code)]
+pub fn get_pr_info_remote(owner: &str, repo: &str, number: u64) -> (String, String, u64) {
+    (owner.to_string(), repo.to_string(), number)
+}
+
+/// Fetch PR comments for a remote repo (no local clone needed).
+pub fn gh_pr_comments_remote(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComment>> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
+            "--paginate",
+        ])
+        .output()
+        .context("Failed to fetch PR comments")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to fetch PR comments: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let all_comments: Vec<GitHubComment> = if stdout.contains("][") {
+        let mut results = Vec::new();
+        let mut depth = 0i32;
+        let mut start = 0;
+        for (i, ch) in stdout.char_indices() {
+            match ch {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Ok(mut batch) =
+                            serde_json::from_str::<Vec<GitHubComment>>(&stdout[start..=i])
+                        {
+                            results.append(&mut batch);
+                        }
+                        start = i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        results
+    } else {
+        serde_json::from_str(&stdout)?
+    };
+
+    Ok(all_comments)
+}
+
+/// Push a new review comment to a remote PR (no local clone needed).
+pub fn gh_pr_push_comment_remote(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    path: &str,
+    line: usize,
+    body: &str,
+) -> Result<u64> {
+    // Get the latest commit SHA for the PR
+    let repo_slug = format!("{}/{}", owner, repo);
+    let sha_output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "headRefOid",
+            "--jq",
+            ".headRefOid",
+        ])
+        .output()
+        .context("Failed to get PR head SHA")?;
+
+    if !sha_output.status.success() {
+        let stderr = String::from_utf8_lossy(&sha_output.stderr);
+        anyhow::bail!("Failed to get HEAD SHA: {}", stderr.trim());
+    }
+
+    let commit_id = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+    if commit_id.is_empty() {
+        anyhow::bail!("Failed to get HEAD SHA: empty output");
+    }
+
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
+            "-f",
+            &format!("body={}", body),
+            "-f",
+            &format!("path={}", path),
+            "-F",
+            &format!("line={}", line),
+            "-f",
+            "side=RIGHT",
+            "-f",
+            &format!("commit_id={}", commit_id),
+        ])
+        .output()
+        .context("Failed to push comment to GitHub")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to push comment: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resp: CreateCommentResponse =
+        serde_json::from_str(&stdout).context("Failed to parse create comment response")?;
+
+    Ok(resp.id)
+}
+
+/// Push a reply to an existing review comment on a remote PR.
+pub fn gh_pr_reply_comment_remote(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    in_reply_to: u64,
+    body: &str,
+) -> Result<u64> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
+            "-f",
+            &format!("body={}", body),
+            "-F",
+            &format!("in_reply_to={}", in_reply_to),
+        ])
+        .output()
+        .context("Failed to push reply to GitHub")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to push reply: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resp: CreateCommentResponse =
+        serde_json::from_str(&stdout).context("Failed to parse reply response")?;
+
+    Ok(resp.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,6 +1287,14 @@ mod tests {
         assert_eq!(number, 1);
         assert_eq!(author, ""); // missing → empty string default
         assert!(reviews.is_empty()); // missing → empty vec
+    }
+
+    #[test]
+    fn get_pr_info_remote_returns_tuple() {
+        let (o, r, n) = super::get_pr_info_remote("owner", "repo", 42);
+        assert_eq!(o, "owner");
+        assert_eq!(r, "repo");
+        assert_eq!(n, 42);
     }
 
     #[test]
