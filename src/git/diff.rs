@@ -516,8 +516,9 @@ pub fn expand_compacted_file(
     repo_root: &str,
     mode: &str,
     base: &str,
+    head_ref: Option<&str>,
 ) -> anyhow::Result<()> {
-    let raw = super::status::git_diff_raw_file(mode, base, repo_root, &file.path, None)?;
+    let raw = super::status::git_diff_raw_file(mode, base, repo_root, &file.path, None, head_ref)?;
     let parsed = parse_diff(&raw);
     if let Some(f) = parsed.into_iter().next() {
         file.hunks = f.hunks;
@@ -537,9 +538,16 @@ pub fn refetch_file_with_context(
     mode: &str,
     base: &str,
     context_lines: usize,
+    head_ref: Option<&str>,
 ) -> anyhow::Result<()> {
-    let raw =
-        super::status::git_diff_raw_file(mode, base, repo_root, &file.path, Some(context_lines))?;
+    let raw = super::status::git_diff_raw_file(
+        mode,
+        base,
+        repo_root,
+        &file.path,
+        Some(context_lines),
+        head_ref,
+    )?;
     let parsed = parse_diff(&raw);
     if let Some(f) = parsed.into_iter().next() {
         file.hunks = f.hunks;

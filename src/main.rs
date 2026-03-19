@@ -39,6 +39,10 @@ struct Cli {
     /// Pre-apply a file filter expression (e.g. '+*.rs,-*.lock')
     #[arg(long)]
     filter: Option<String>,
+
+    /// Review a PR from any directory without a local clone
+    #[arg(long)]
+    remote: bool,
 }
 
 fn main() -> Result<()> {
@@ -49,17 +53,81 @@ fn main() -> Result<()> {
         anyhow::bail!("Cannot use --pr together with a PR URL argument");
     }
 
+    // Validate --remote flag
+    if cli.remote {
+        if cli.pr.is_some() {
+            anyhow::bail!("Cannot use --remote together with --pr");
+        }
+        if !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
+            anyhow::bail!("--remote requires a GitHub PR URL argument");
+        }
+    }
+
+    // Remote mode: review PR from GitHub API without local clone
+    if cli.remote {
+        github::ensure_gh_installed()?;
+        let url = cli
+            .paths
+            .iter()
+            .find(|p| github::is_github_pr_url(p))
+            .unwrap();
+        let pr_ref = github::parse_github_pr_url(url)
+            .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", url))?;
+
+        let tab = app::TabState::new_remote(&pr_ref)?;
+        let pr_data = github::gh_pr_overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number);
+
+        let mut app = App::new_remote(tab, pr_data);
+
+        // Load any cached comments from previous remote sessions
+        app.tab_mut().reload_remote_comments();
+
+        // Apply --filter flag if provided
+        if let Some(ref filter_expr) = cli.filter {
+            app.tab_mut().apply_filter_expr(filter_expr);
+        }
+
+        let mut highlighter = ui::highlight::Highlighter::new();
+
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        let result = run_app(&mut terminal, &mut app, &mut highlighter, None, None);
+
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+
+        if let Err(err) = result {
+            eprintln!("Error: {:?}", err);
+        }
+
+        return Ok(());
+    }
+
     // Init app state (detects repo, branch, base branch, runs initial diff)
     let mut app = App::new_with_args(&cli.paths)?;
 
-    // Handle --pr flag: override the first tab's base branch
+    // Initialize theme from config
+    ui::themes::set_theme_by_name(&app.config.display.theme);
+
+    // Handle --pr flag: fetch PR head ref and diff against it without checkout
     if let Some(pr_number) = cli.pr {
         github::ensure_gh_installed()?;
         let repo_root = app.tab().repo_root.clone();
+        let head_ref = github::fetch_pr_head(pr_number, &repo_root)?;
         let base = github::gh_pr_base_branch(pr_number, &repo_root)?;
         let base = github::ensure_base_ref_available(&repo_root, &base)?;
+        let head_branch = github::gh_pr_head_branch_name(pr_number, &repo_root)
+            .unwrap_or_else(|_| format!("pr/{}", pr_number));
         let tab = app.tab_mut();
         tab.base_branch = base;
+        tab.pr_head_ref = Some(head_ref);
+        tab.pr_number = Some(pr_number);
+        tab.current_branch = head_branch;
         tab.refresh_diff()?;
     }
 
@@ -89,7 +157,7 @@ fn main() -> Result<()> {
                         ));
                     }
                     // Fetch PR overview data regardless of base mismatch
-                    if let Some(data) = github::gh_pr_overview(&repo_root) {
+                    if let Some(data) = github::gh_pr_overview(&repo_root, Some(pr_num)) {
                         let _ = pr_tx.send(data);
                     }
                 }
@@ -98,7 +166,8 @@ fn main() -> Result<()> {
         } else {
             // For --pr flag or PR URL, fetch PR data synchronously (already in the right state)
             let repo_root = app.tab().repo_root.clone();
-            let pr_data = github::gh_pr_overview(&repo_root);
+            let pr_number_for_data = app.tab().pr_number;
+            let pr_data = github::gh_pr_overview(&repo_root, pr_number_for_data);
             if let Some(data) = pr_data {
                 app.tab_mut().pr_data = Some(data);
             }
@@ -166,18 +235,22 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     let mut session_dirty = false;
     let mut session_save_deadline = Instant::now();
 
-    // Start watching by default
+    // Start watching by default (disabled in remote mode — no local files to watch)
     let root_str = app.tab().repo_root.clone();
     let root = std::path::Path::new(&root_str);
     // TODO(risk:minor): FileWatcher::new failure is silently swallowed — the user gets no
     // notification that watch mode failed to start. app.watching stays false, which is correct,
     // but there is no visible indication of why. Log or surface the error.
-    let mut _watcher: Option<FileWatcher> = match FileWatcher::new(root, 500, watch_tx.clone()) {
-        Ok(w) => {
-            app.watching = true;
-            Some(w)
+    let mut _watcher: Option<FileWatcher> = if app.tab().is_remote() {
+        None
+    } else {
+        match FileWatcher::new(root, 500, watch_tx.clone()) {
+            Ok(w) => {
+                app.watching = true;
+                Some(w)
+            }
+            Err(_) => None,
         }
-        Err(_) => None,
     };
 
     loop {
@@ -241,7 +314,10 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 
         // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
         app.ai_poll_counter = app.ai_poll_counter.wrapping_add(1);
-        if app.ai_poll_counter.is_multiple_of(10) && app.tab_mut().check_ai_files_changed() {
+        if !app.tab().is_remote()
+            && app.ai_poll_counter.is_multiple_of(10)
+            && app.tab_mut().check_ai_files_changed()
+        {
             app.notify("✓ AI data refreshed");
         }
 
@@ -249,7 +325,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         app.check_commands();
 
         // Rescan watched files (every 50 ticks ≈ 5s)
-        if app.ai_poll_counter.is_multiple_of(50) {
+        if !app.tab().is_remote() && app.ai_poll_counter.is_multiple_of(50) {
             app.tab_mut().refresh_watched_files();
         }
 
@@ -270,7 +346,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         }
 
         // Debounced session auto-save (~2s after last change)
-        if session_dirty && Instant::now() >= session_save_deadline {
+        if !app.tab().is_remote() && session_dirty && Instant::now() >= session_save_deadline {
             session_dirty = false;
             app.tab().save_session();
         }
@@ -280,7 +356,9 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 
         if app.should_quit {
             // Save session on quit
-            app.tab().save_session();
+            if !app.tab().is_remote() {
+                app.tab().save_session();
+            }
             return Ok(());
         }
     }
@@ -457,7 +535,11 @@ fn handle_normal_input(
 
         // Personal question on current line (q)
         KeyCode::Char('q') => {
-            app.start_comment(crate::ai::CommentType::Question);
+            if app.tab().is_remote() {
+                app.notify("Questions not available in remote mode");
+            } else {
+                app.start_comment(crate::ai::CommentType::Question);
+            }
             return Ok(());
         }
 
@@ -466,23 +548,31 @@ fn handle_normal_input(
             app.tab_mut().set_mode(DiffMode::Branch);
             return Ok(());
         }
-        KeyCode::Char('2') if app.config.features.view_unstaged => {
+        KeyCode::Char('2')
+            if app.config.features.view_unstaged
+                && app.tab().pr_head_ref.is_none()
+                && !app.tab().is_remote() =>
+        {
             app.tab_mut().set_mode(DiffMode::Unstaged);
             return Ok(());
         }
-        KeyCode::Char('3') if app.config.features.view_staged => {
+        KeyCode::Char('3')
+            if app.config.features.view_staged
+                && app.tab().pr_head_ref.is_none()
+                && !app.tab().is_remote() =>
+        {
             app.tab_mut().set_mode(DiffMode::Staged);
             return Ok(());
         }
-        KeyCode::Char('4') if app.config.features.view_history => {
+        KeyCode::Char('4') if app.config.features.view_history && !app.tab().is_remote() => {
             app.tab_mut().set_mode(DiffMode::History);
             return Ok(());
         }
-        KeyCode::Char('5') if app.config.features.view_conflicts => {
+        KeyCode::Char('5') if app.config.features.view_conflicts && !app.tab().is_remote() => {
             app.tab_mut().set_mode(DiffMode::Conflicts);
             return Ok(());
         }
-        KeyCode::Char('6') if app.config.features.view_hidden => {
+        KeyCode::Char('6') if app.config.features.view_hidden && !app.tab().is_remote() => {
             app.tab_mut().set_mode(DiffMode::Hidden);
             return Ok(());
         }
@@ -509,6 +599,10 @@ fn handle_normal_input(
 
         // Toggle watch mode
         KeyCode::Char('w') => {
+            if app.tab().is_remote() {
+                app.notify("Watch not available in remote mode");
+                return Ok(());
+            }
             if app.watching {
                 *watcher = None;
                 app.watching = false;
@@ -540,7 +634,11 @@ fn handle_normal_input(
                     }
                 }
             }
-            app.tab().open_in_editor()?;
+            if app.tab().is_remote() {
+                app.notify("Editor not available in remote mode");
+            } else {
+                app.tab().open_in_editor()?;
+            }
             return Ok(());
         }
 
@@ -563,7 +661,7 @@ fn handle_normal_input(
             return Ok(());
         }
         // Delete watched file in Hidden mode
-        KeyCode::Char('d')
+        KeyCode::Char('x')
             if key.modifiers == KeyModifiers::NONE && app.tab().mode == DiffMode::Hidden =>
         {
             if let Some(idx) = app.tab().selected_watched {
@@ -575,7 +673,9 @@ fn handle_normal_input(
             return Ok(());
         }
         // Delete focused comment (after J/K jump) — only if deletable
-        KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => {
+        KeyCode::Char('x')
+            if key.modifiers == KeyModifiers::NONE && app.tab().focused_comment_id.is_some() =>
+        {
             if let Some(ref id) = app.tab().focused_comment_id.clone() {
                 if let Some(comment) = app.tab().ai.find_comment(id) {
                     if comment.can_delete() {
@@ -602,6 +702,9 @@ fn handle_normal_input(
         }
         // Cleanup AI sidecar files
         KeyCode::Char('z') if key.modifiers == KeyModifiers::NONE => {
+            if app.tab().is_remote() {
+                return Ok(());
+            }
             let count = app
                 .tab()
                 .ai
@@ -612,6 +715,9 @@ fn handle_normal_input(
             return Ok(());
         }
         KeyCode::Char('Z') => {
+            if app.tab().is_remote() {
+                return Ok(());
+            }
             let count = app.tab().ai.review.as_ref().map_or(0, |r| r.files.len());
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
             return Ok(());
@@ -743,7 +849,7 @@ fn handle_normal_input(
 
         // Push current branch to remote (Staged mode only)
         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if app.tab().mode == DiffMode::Staged {
+            if app.tab().mode == DiffMode::Staged && !app.tab().is_remote() {
                 app.input_mode = InputMode::Confirm(ConfirmAction::Push);
             }
             return Ok(());
@@ -853,10 +959,18 @@ fn handle_normal_input(
 
         // Expand / collapse context lines for current file
         KeyCode::Char('+') | KeyCode::Char('=') => {
+            if app.tab().is_remote() {
+                app.notify("Context expansion not available in remote mode");
+                return Ok(());
+            }
             app.tab_mut().expand_context()?;
             return Ok(());
         }
         KeyCode::Char('-') => {
+            if app.tab().is_remote() {
+                app.notify("Context expansion not available in remote mode");
+                return Ok(());
+            }
             app.tab_mut().collapse_context()?;
             return Ok(());
         }
@@ -874,8 +988,12 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Stage/unstage file (or update snapshot for watched files) — not meaningful in History
-        KeyCode::Char('s') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
+        // Stage/unstage file (or update snapshot for watched files) — not meaningful in History or remote mode
+        KeyCode::Char('s')
+            if mode != DiffMode::History
+                && !app.tab().is_remote()
+                && key.modifiers == KeyModifiers::NONE =>
+        {
             if app.tab().selected_watched.is_some() {
                 // Update snapshot for watched file
                 if app.tab().watched_config.diff_mode == "snapshot" {
@@ -892,15 +1010,17 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Toggle reviewed — review tracking is per-branch, not meaningful in History
-        KeyCode::Char(' ') if mode != DiffMode::History => {
-            app.toggle_reviewed()?;
+        // Toggle unreviewed-only filter — not meaningful in History
+        KeyCode::Char(' ')
+            if mode != DiffMode::History && key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            app.toggle_unreviewed_filter();
             return Ok(());
         }
 
-        // Toggle unreviewed-only filter — not meaningful in History
-        KeyCode::Char('u') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
-            app.toggle_unreviewed_filter();
+        // Toggle reviewed — review tracking is per-branch, not meaningful in History
+        KeyCode::Char(' ') if mode != DiffMode::History => {
+            app.toggle_reviewed()?;
             return Ok(());
         }
 
@@ -1014,14 +1134,20 @@ fn handle_normal_input(
         }
 
         // Scroll — routes to panel when panel is focused
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             if app.tab().panel_focus && app.tab().panel.is_some() {
                 app.tab_mut().panel_scroll_down(10);
             } else {
                 app.tab_mut().scroll_down(10);
             }
         }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             if app.tab().panel_focus && app.tab().panel.is_some() {
                 app.tab_mut().panel_scroll_up(10);
             } else {
@@ -1084,10 +1210,16 @@ fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         // Scroll — routes to focused column's scroll offset
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             ai_review_scroll(app, 10, true);
         }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             ai_review_scroll(app, 10, false);
         }
         KeyCode::PageDown => ai_review_scroll(app, 20, true),
@@ -1141,10 +1273,16 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
 
         // Scroll
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             app.tab_mut().history_scroll_down(10);
         }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
             app.tab_mut().history_scroll_up(10);
         }
         KeyCode::PageDown => app.tab_mut().history_scroll_down(20),
@@ -1372,30 +1510,62 @@ fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
 fn sync_github_comments(app: &mut App) -> Result<()> {
     let tab = app.tab();
     let repo_root = tab.repo_root.clone();
+    let explicit_pr_number = tab.pr_number;
+    let is_remote = tab.is_remote();
+    let remote_repo = tab.remote_repo.clone();
 
-    let pr_info = github::get_pr_info(&repo_root);
-    let pr_info = match pr_info {
-        Ok(info) => info,
-        Err(_) => {
-            app.notify("No PR found for current branch");
+    let (owner, repo_name, pr_number) = if is_remote {
+        if let (Some(ref slug), Some(n)) = (&remote_repo, explicit_pr_number) {
+            let parts: Vec<&str> = slug.split('/').collect();
+            if parts.len() == 2 {
+                (parts[0].to_string(), parts[1].to_string(), n)
+            } else {
+                app.notify("Invalid remote repo slug");
+                return Ok(());
+            }
+        } else {
+            app.notify("No PR info for remote mode");
             return Ok(());
+        }
+    } else {
+        let pr_info = github::get_pr_info(&repo_root);
+        let pr_info = match pr_info {
+            Ok(info) => info,
+            Err(_) => {
+                app.notify("No PR found for current branch");
+                return Ok(());
+            }
+        };
+        // If we're in no-checkout PR review mode, override the PR number
+        if let Some(n) = explicit_pr_number {
+            (pr_info.0, pr_info.1, n)
+        } else {
+            pr_info
         }
     };
 
-    let (owner, repo_name, pr_number) = pr_info;
-
-    let gh_comments = match github::gh_pr_comments(&owner, &repo_name, pr_number, &repo_root) {
-        Ok(c) => c,
-        Err(e) => {
-            app.notify(&format!("GitHub sync error: {}", e));
-            return Ok(());
+    let gh_comments = if is_remote {
+        match github::gh_pr_comments_remote(&owner, &repo_name, pr_number) {
+            Ok(c) => c,
+            Err(e) => {
+                app.notify(&format!("GitHub sync error: {}", e));
+                return Ok(());
+            }
+        }
+    } else {
+        match github::gh_pr_comments(&owner, &repo_name, pr_number, &repo_root) {
+            Ok(c) => c,
+            Err(e) => {
+                app.notify(&format!("GitHub sync error: {}", e));
+                return Ok(());
+            }
         }
     };
 
-    // Load existing .er/github-comments.json
-    // TODO(risk:minor): path is built by string concatenation; use Path::join to handle
-    // trailing slashes and avoid subtle path construction bugs.
-    let comments_path = format!("{}/.er/github-comments.json", repo_root);
+    // Load existing github-comments.json (uses cache dir in remote mode)
+    let comments_dir = app.tab().comments_dir();
+    let _ = std::fs::create_dir_all(&comments_dir);
+    let comments_path = app.tab().github_comments_path();
     let diff_hash = tab.branch_diff_hash.clone();
     let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
         Ok(content) => {
@@ -1547,7 +1717,9 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     gc.comments = local_unpushed;
     gc.comments.extend(github_entries);
 
-    std::fs::create_dir_all(format!("{}/.er", repo_root))?;
+    if !is_remote {
+        std::fs::create_dir_all(format!("{}/.er", repo_root))?;
+    }
     let json = serde_json::to_string_pretty(&gc)?;
     let tmp_path = format!("{}.tmp", comments_path);
     // TODO(risk:medium): if fs::write succeeds but fs::rename fails (e.g. permissions error),
@@ -1556,10 +1728,23 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
     std::fs::write(&tmp_path, &json)?;
     std::fs::rename(&tmp_path, &comments_path)?;
 
-    app.tab_mut().reload_ai_state();
+    if is_remote {
+        app.tab_mut().reload_remote_comments();
+    } else {
+        app.tab_mut().reload_ai_state();
+    }
 
     // Refresh PR overview data (CI checks + reviewer status)
-    if let Some(pr_data) = github::gh_pr_overview(&repo_root) {
+    let pr_number_for_overview = app.tab().pr_number;
+    if is_remote {
+        if let Some(pr_data) = github::gh_pr_overview_remote(
+            &owner,
+            &repo_name,
+            pr_number_for_overview.unwrap_or(pr_number),
+        ) {
+            app.tab_mut().pr_data = Some(pr_data);
+        }
+    } else if let Some(pr_data) = github::gh_pr_overview(&repo_root, pr_number_for_overview) {
         app.tab_mut().pr_data = Some(pr_data);
     }
 
@@ -1574,17 +1759,40 @@ fn sync_github_comments(app: &mut App) -> Result<()> {
 fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     let tab = app.tab();
     let repo_root = tab.repo_root.clone();
+    let explicit_pr_number = tab.pr_number;
+    let is_remote = tab.is_remote();
+    let remote_repo = tab.remote_repo.clone();
 
-    let pr_info = match github::get_pr_info(&repo_root) {
-        Ok(info) => info,
-        Err(_) => {
-            app.notify("No PR found for current branch");
+    let (owner, repo_name, pr_number) = if is_remote {
+        if let (Some(ref slug), Some(n)) = (&remote_repo, explicit_pr_number) {
+            let parts: Vec<&str> = slug.split('/').collect();
+            if parts.len() == 2 {
+                (parts[0].to_string(), parts[1].to_string(), n)
+            } else {
+                app.notify("Invalid remote repo slug");
+                return Ok(());
+            }
+        } else {
+            app.notify("No PR info for remote mode");
             return Ok(());
         }
+    } else {
+        let pr_info = match github::get_pr_info(&repo_root) {
+            Ok(info) => info,
+            Err(_) => {
+                app.notify("No PR found for current branch");
+                return Ok(());
+            }
+        };
+        // If we're in no-checkout PR review mode, override the PR number
+        if let Some(n) = explicit_pr_number {
+            (pr_info.0, pr_info.1, n)
+        } else {
+            pr_info
+        }
     };
-    let (owner, repo_name, pr_number) = pr_info;
 
-    let comments_path = format!("{}/.er/github-comments.json", repo_root);
+    let comments_path = app.tab().github_comments_path();
     let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
         Ok(content) => match serde_json::from_str(&content) {
             Ok(gc) => gc,
@@ -1616,15 +1824,26 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
             // TODO(risk:minor): push errors are counted but the error message is discarded.
             // The user sees "N failed" with no indication of which comments failed or why
             // (e.g. outdated commit SHA, deleted file, rate limit). Retain errors for display.
-            match github::gh_pr_push_comment(
-                &owner,
-                &repo_name,
-                pr_number,
-                path,
-                line,
-                &comment.comment,
-                &repo_root,
-            ) {
+            match if is_remote {
+                github::gh_pr_push_comment_remote(
+                    &owner,
+                    &repo_name,
+                    pr_number,
+                    path,
+                    line,
+                    &comment.comment,
+                )
+            } else {
+                github::gh_pr_push_comment(
+                    &owner,
+                    &repo_name,
+                    pr_number,
+                    path,
+                    line,
+                    &comment.comment,
+                    &repo_root,
+                )
+            } {
                 Ok(github_id) => {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                         c.github_id = Some(github_id);
@@ -1657,14 +1876,24 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
                 .and_then(|c| c.github_id);
 
             if let Some(parent_gh_id) = parent_gh_id {
-                match github::gh_pr_reply_comment(
-                    &owner,
-                    &repo_name,
-                    pr_number,
-                    parent_gh_id,
-                    &comment.comment,
-                    &repo_root,
-                ) {
+                match if is_remote {
+                    github::gh_pr_reply_comment_remote(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        parent_gh_id,
+                        &comment.comment,
+                    )
+                } else {
+                    github::gh_pr_reply_comment(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        parent_gh_id,
+                        &comment.comment,
+                        &repo_root,
+                    )
+                } {
                     Ok(github_id) => {
                         if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
                             c.github_id = Some(github_id);
@@ -1686,7 +1915,11 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     let tmp_path = format!("{}.tmp", comments_path);
     std::fs::write(&tmp_path, &json)?;
     std::fs::rename(&tmp_path, &comments_path)?;
-    app.tab_mut().reload_ai_state();
+    if is_remote {
+        app.tab_mut().reload_remote_comments();
+    } else {
+        app.tab_mut().reload_ai_state();
+    }
 
     if failed > 0 {
         app.notify(&format!("Pushed {} comments ({} failed)", pushed, failed));
@@ -1793,7 +2026,7 @@ mod tests {
         assert!(!app.should_quit);
     }
 
-    // ── Ctrl+d vs bare d ──
+    // ── d scrolls down (bare and Ctrl+d) ──
 
     #[test]
     fn ctrl_d_scrolls_diff_when_no_focused_comment() {
@@ -1813,6 +2046,23 @@ mod tests {
     }
 
     #[test]
+    fn bare_d_scrolls_diff_when_no_focused_comment() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        assert_eq!(app.tab().diff_scroll, 0);
+        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert_eq!(
+            app.tab().diff_scroll,
+            10,
+            "bare d must scroll diff down by 10"
+        );
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "bare d must not change input_mode"
+        );
+    }
+
+    #[test]
     fn ctrl_d_does_not_trigger_delete_confirm_even_when_comment_focused() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         app.tab_mut().focused_comment_id = Some("q-123".to_string());
@@ -1826,7 +2076,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_d_triggers_delete_confirm_when_comment_focused() {
+    fn bare_x_triggers_delete_confirm_when_comment_focused() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         // Add a question to AI state so find_comment + can_delete succeeds
         app.tab_mut().ai.questions = Some(crate::ai::ErQuestions {
@@ -1853,29 +2103,30 @@ mod tests {
             }],
         });
         app.tab_mut().focused_comment_id = Some("q-abc".to_string());
-        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        send_key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         assert_eq!(
             app.input_mode,
             InputMode::Confirm(ConfirmAction::DeleteComment {
                 comment_id: "q-abc".to_string()
             }),
-            "bare d with focused comment must enter Confirm(DeleteComment)"
+            "bare x with focused comment must enter Confirm(DeleteComment)"
         );
     }
 
     #[test]
-    fn bare_d_does_nothing_when_no_comment_focused() {
+    fn bare_x_closes_tab_when_no_comment_focused() {
         let mut app = make_app(vec![make_file_with_hunk()]);
-        // focused_comment_id is None by default
-        send_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        // focused_comment_id is None by default — x falls through to close_tab
+        // With only one tab, close_tab is a no-op (doesn't crash)
+        send_key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         assert_eq!(
             app.input_mode,
             InputMode::Normal,
-            "bare d with no focused comment must stay in Normal mode"
+            "bare x with no focused comment must stay in Normal mode"
         );
     }
 
-    // ── Ctrl+u vs bare u ──
+    // ── u scrolls up (bare and Ctrl+u) ──
 
     #[test]
     fn ctrl_u_scrolls_diff_up() {
@@ -1886,6 +2137,18 @@ mod tests {
             app.tab().diff_scroll,
             10,
             "Ctrl+u must scroll diff up by 10"
+        );
+    }
+
+    #[test]
+    fn bare_u_scrolls_diff_up() {
+        let mut app = make_app(vec![make_file_with_hunk()]);
+        app.tab_mut().diff_scroll = 20;
+        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(
+            app.tab().diff_scroll,
+            10,
+            "bare u must scroll diff up by 10"
         );
     }
 
@@ -1901,25 +2164,25 @@ mod tests {
     }
 
     #[test]
-    fn bare_u_toggles_unreviewed_filter_on() {
+    fn shift_space_toggles_unreviewed_filter_on() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         assert!(!app.tab().show_unreviewed_only);
-        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        send_key(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
         assert!(
             app.tab().show_unreviewed_only,
-            "bare u must toggle show_unreviewed_only to true"
+            "Shift+Space must toggle show_unreviewed_only to true"
         );
     }
 
     #[test]
-    fn bare_u_does_not_scroll_diff() {
+    fn shift_space_does_not_scroll_diff() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         app.tab_mut().diff_scroll = 20;
-        send_key(&mut app, KeyCode::Char('u'), KeyModifiers::NONE);
+        send_key(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
         assert_eq!(
             app.tab().diff_scroll,
             20,
-            "bare u must not change diff_scroll"
+            "Shift+Space must not change diff_scroll"
         );
     }
 

@@ -207,12 +207,19 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
 
 // ── Diff ──
 
-/// Get the raw diff output from git for a given mode
-pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
+/// Get the raw diff output from git for a given mode.
+/// `head_ref` overrides the "HEAD" ref used in branch diffs (for no-checkout PR review).
+pub fn git_diff_raw(
+    mode: &str,
+    base: &str,
+    repo_root: &str,
+    head_ref: Option<&str>,
+) -> Result<String> {
     if base.starts_with('-') {
         anyhow::bail!("Invalid base branch: {}", base);
     }
-    let merge_base_ref = format!("{}...HEAD", base);
+    let head = head_ref.unwrap_or("HEAD");
+    let merge_base_ref = format!("{}...{}", base, head);
     let args: Vec<&str> = match mode {
         "branch" => vec![
             "diff",
@@ -279,14 +286,17 @@ pub fn git_diff_raw(mode: &str, base: &str, repo_root: &str) -> Result<String> {
 
 /// Get the raw diff output for a single file.
 /// `context_lines` overrides the default `--unified=3` context (pass `None` for default).
+/// `head_ref` overrides the "HEAD" ref used in branch diffs (for no-checkout PR review).
 pub fn git_diff_raw_file(
     mode: &str,
     base: &str,
     repo_root: &str,
     path: &str,
     context_lines: Option<usize>,
+    head_ref: Option<&str>,
 ) -> Result<String> {
-    let merge_base_ref = format!("{}...HEAD", base);
+    let head = head_ref.unwrap_or("HEAD");
+    let merge_base_ref = format!("{}...{}", base, head);
     let unified_arg = format!("--unified={}", context_lines.unwrap_or(3));
     let mut args: Vec<&str> = match mode {
         "branch" => vec![
