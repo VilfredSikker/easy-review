@@ -40,15 +40,15 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     let mode_style = |mode: DiffMode, current: DiffMode| {
         if mode == current {
             ratatui::style::Style::default()
-                .fg(styles::BG)
-                .bg(styles::BLUE)
+                .fg(styles::BG())
+                .bg(styles::BLUE())
                 .add_modifier(ratatui::style::Modifier::BOLD)
         } else {
-            ratatui::style::Style::default().fg(styles::MUTED)
+            ratatui::style::Style::default().fg(styles::MUTED())
         }
     };
 
-    let panel_bg = ratatui::style::Style::default().bg(styles::PANEL);
+    let panel_bg = ratatui::style::Style::default().bg(styles::PANEL());
     let has_tabs = app.tabs.len() > 1;
 
     // Split area into rows
@@ -72,20 +72,20 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
                 tab_spans.push(Span::styled(
                     label,
                     ratatui::style::Style::default()
-                        .fg(styles::BRIGHT)
-                        .bg(styles::BLUE)
+                        .fg(styles::BRIGHT())
+                        .bg(styles::BLUE())
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ));
             } else {
                 tab_spans.push(Span::styled(
                     label,
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::DIM()),
                 ));
             }
             if i < app.tabs.len() - 1 {
                 tab_spans.push(Span::styled(
                     " │ ",
-                    ratatui::style::Style::default().fg(styles::BORDER),
+                    ratatui::style::Style::default().fg(styles::BORDER()),
                 ));
             }
         }
@@ -100,25 +100,25 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             format!(" {}", repo_name),
             ratatui::style::Style::default()
-                .fg(styles::CYAN)
+                .fg(styles::CYAN())
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
-        Span::styled(" · ", ratatui::style::Style::default().fg(styles::BORDER)),
+        Span::styled(" · ", ratatui::style::Style::default().fg(styles::BORDER())),
         Span::styled(
             &tab.current_branch,
-            ratatui::style::Style::default().fg(styles::GREEN),
+            ratatui::style::Style::default().fg(styles::GREEN()),
         ),
     ];
     if tab.mode == DiffMode::Branch || tab.mode == DiffMode::History {
         info_spans.push(Span::styled(
             format!(" (vs {})", tab.base_branch),
-            ratatui::style::Style::default().fg(styles::DIM),
+            ratatui::style::Style::default().fg(styles::DIM()),
         ));
     }
     if tab.mode == DiffMode::Conflicts && tab.merge_active {
         info_spans.push(Span::styled(
             " [merge in progress]",
-            ratatui::style::Style::default().fg(styles::ORANGE),
+            ratatui::style::Style::default().fg(styles::ORANGE()),
         ));
     }
     // In History mode, show selected commit info
@@ -127,7 +127,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             if let Some(commit) = history.commits.get(history.selected_commit) {
                 info_spans.push(Span::styled(
                     format!(" · {} · {}", commit.short_hash, commit.relative_date),
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::DIM()),
                 ));
             }
         }
@@ -201,8 +201,8 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         modes.push(Span::styled(
             " m RECENT ",
             ratatui::style::Style::default()
-                .fg(styles::BG)
-                .bg(styles::YELLOW)
+                .fg(styles::BG())
+                .bg(styles::YELLOW())
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
@@ -229,15 +229,15 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             right.push(Span::styled(
                 " AI ON ",
                 ratatui::style::Style::default()
-                    .fg(styles::BG)
-                    .bg(styles::ORANGE)
+                    .fg(styles::BG())
+                    .bg(styles::ORANGE())
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ));
         } else {
             right.push(Span::styled(
                 " AI OFF ",
                 ratatui::style::Style::default()
-                    .fg(styles::MUTED)
+                    .fg(styles::MUTED())
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ));
         }
@@ -252,12 +252,12 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         };
         let panel_style = if tab.panel_focus {
             ratatui::style::Style::default()
-                .fg(styles::BG)
-                .bg(styles::BLUE)
+                .fg(styles::BG())
+                .bg(styles::BLUE())
                 .add_modifier(ratatui::style::Modifier::BOLD)
         } else {
             ratatui::style::Style::default()
-                .fg(styles::BLUE)
+                .fg(styles::BLUE())
                 .add_modifier(ratatui::style::Modifier::BOLD)
         };
         right.push(Span::styled(panel_label, panel_style));
@@ -274,15 +274,15 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             right.push(Span::styled(
                 unresolved_label,
                 ratatui::style::Style::default()
-                    .fg(styles::BG)
-                    .bg(styles::ORANGE)
+                    .fg(styles::BG())
+                    .bg(styles::ORANGE())
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ));
             // Show total merge file count in dimmer style
             if total > unresolved {
                 right.push(Span::styled(
                     format!(" / {} ", total),
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::MUTED()),
                 ));
             }
         } else {
@@ -290,14 +290,14 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             right.push(Span::styled(
                 " MERGE ",
                 ratatui::style::Style::default()
-                    .fg(styles::BG)
-                    .bg(styles::GREEN)
+                    .fg(styles::BG())
+                    .bg(styles::GREEN())
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ));
             if total > 0 {
                 right.push(Span::styled(
                     format!(" {} files ", total),
-                    ratatui::style::Style::default().fg(styles::MUTED),
+                    ratatui::style::Style::default().fg(styles::MUTED()),
                 ));
             }
         }
@@ -308,18 +308,18 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     if let Some((f_reviewed, f_total)) = tab.filtered_reviewed_count() {
         right.push(Span::styled(
             format!("{}/{}", f_reviewed, f_total),
-            ratatui::style::Style::default().fg(styles::YELLOW),
+            ratatui::style::Style::default().fg(styles::YELLOW()),
         ));
         right.push(Span::styled(
             " · ",
-            ratatui::style::Style::default().fg(styles::MUTED),
+            ratatui::style::Style::default().fg(styles::MUTED()),
         ));
     }
     let (reviewed, total) = tab.reviewed_count();
     if total > 0 {
         right.push(Span::styled(
             format!("{}/{} reviewed", reviewed, total),
-            ratatui::style::Style::default().fg(styles::BLUE),
+            ratatui::style::Style::default().fg(styles::BLUE()),
         ));
     }
     if app.watching {
@@ -329,7 +329,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         right.push(Span::styled(
             "\u{25cf} WATCHING",
             ratatui::style::Style::default()
-                .fg(styles::GREEN)
+                .fg(styles::GREEN())
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
@@ -353,7 +353,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         right.push(Span::styled(
             mem_label,
-            ratatui::style::Style::default().fg(styles::DIM),
+            ratatui::style::Style::default().fg(styles::DIM()),
         ));
     }
 
@@ -677,15 +677,15 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
             if hint.key.is_empty() {
                 // Indicator style (search, unreviewed)
                 if hint.label.contains("search") {
-                    ratatui::style::Style::default().fg(styles::YELLOW)
+                    ratatui::style::Style::default().fg(styles::YELLOW())
                 } else {
-                    ratatui::style::Style::default().fg(styles::PURPLE)
+                    ratatui::style::Style::default().fg(styles::PURPLE())
                 }
             } else if hint.key == "F:" {
                 // Filter expression indicator — yellow accent
-                ratatui::style::Style::default().fg(styles::YELLOW)
+                ratatui::style::Style::default().fg(styles::YELLOW())
             } else {
-                ratatui::style::Style::default().fg(styles::DIM)
+                ratatui::style::Style::default().fg(styles::DIM())
             },
         ));
         current_w += hw;
@@ -718,7 +718,7 @@ pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
 /// Render the bottom keybinding hints bar
 pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
     let tab = app.tab();
-    let panel_bg = ratatui::style::Style::default().bg(styles::PANEL);
+    let panel_bg = ratatui::style::Style::default().bg(styles::PANEL());
 
     match &app.input_mode {
         InputMode::Confirm(action) => {
@@ -739,13 +739,13 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(
                     " ⚠ ",
                     ratatui::style::Style::default()
-                        .fg(styles::BG)
-                        .bg(styles::YELLOW)
+                        .fg(styles::BG())
+                        .bg(styles::YELLOW())
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(" {} ", prompt),
-                    ratatui::style::Style::default().fg(styles::YELLOW),
+                    ratatui::style::Style::default().fg(styles::YELLOW()),
                 ),
             ];
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
@@ -759,17 +759,17 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 (
                     "reply",
                     if is_question {
-                        styles::YELLOW
+                        styles::YELLOW()
                     } else {
-                        styles::CYAN
+                        styles::CYAN()
                     },
                 )
             } else if is_finding_reply {
-                ("response", styles::CYAN)
+                ("response", styles::CYAN())
             } else if is_question {
-                ("question", styles::YELLOW)
+                ("question", styles::YELLOW())
             } else {
-                ("comment", styles::CYAN)
+                ("comment", styles::CYAN())
             };
             let file_short = tab
                 .comment_file
@@ -785,24 +785,30 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(
                     format!(" {} ", label),
                     ratatui::style::Style::default()
-                        .fg(styles::BG)
+                        .fg(styles::BG())
                         .bg(accent)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(" {} ", target_label),
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::DIM()),
                 ),
                 Span::styled(
                     tab.comment_input.to_string(),
-                    ratatui::style::Style::default().fg(styles::TEXT),
+                    ratatui::style::Style::default().fg(styles::TEXT()),
                 ),
                 Span::styled("█", ratatui::style::Style::default().fg(accent)),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
-                Span::styled(" send  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled(
+                    " send  ",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
                 Span::styled("Esc", styles::key_hint_style()),
-                Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled(
+                    " cancel",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
             ];
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
             f.render_widget(bar, area);
@@ -812,20 +818,26 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(
                     " filter ",
                     ratatui::style::Style::default()
-                        .fg(styles::BG)
-                        .bg(styles::YELLOW)
+                        .fg(styles::BG())
+                        .bg(styles::YELLOW())
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(" {}", tab.filter_input),
-                    ratatui::style::Style::default().fg(styles::TEXT),
+                    ratatui::style::Style::default().fg(styles::TEXT()),
                 ),
-                Span::styled("█", ratatui::style::Style::default().fg(styles::YELLOW)),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::YELLOW())),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
-                Span::styled(" apply  ", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled(
+                    " apply  ",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
                 Span::styled("Esc", styles::key_hint_style()),
-                Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled(
+                    " cancel",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
             ];
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
             f.render_widget(bar, area);
@@ -835,17 +847,20 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(" /", styles::key_hint_style()),
                 Span::styled(
                     format!(" {}", tab.search_query),
-                    ratatui::style::Style::default().fg(styles::TEXT),
+                    ratatui::style::Style::default().fg(styles::TEXT()),
                 ),
-                Span::styled("█", ratatui::style::Style::default().fg(styles::BLUE)),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::BLUE())),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
                 Span::styled(
                     " confirm  ",
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::DIM()),
                 ),
                 Span::styled("Esc", styles::key_hint_style()),
-                Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled(
+                    " cancel",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
             ];
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
             f.render_widget(bar, area);
@@ -855,23 +870,26 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled(
                     " commit ",
                     ratatui::style::Style::default()
-                        .fg(styles::BG)
-                        .bg(styles::GREEN)
+                        .fg(styles::BG())
+                        .bg(styles::GREEN())
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(" {}", tab.commit_input),
-                    ratatui::style::Style::default().fg(styles::TEXT),
+                    ratatui::style::Style::default().fg(styles::TEXT()),
                 ),
-                Span::styled("█", ratatui::style::Style::default().fg(styles::GREEN)),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::GREEN())),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
                 Span::styled(
                     " commit  ",
-                    ratatui::style::Style::default().fg(styles::DIM),
+                    ratatui::style::Style::default().fg(styles::DIM()),
                 ),
                 Span::styled("Esc", styles::key_hint_style()),
-                Span::styled(" cancel", ratatui::style::Style::default().fg(styles::DIM)),
+                Span::styled(
+                    " cancel",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
             ];
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
             f.render_widget(bar, area);
@@ -925,14 +943,14 @@ pub fn render_watch_notification(f: &mut Frame, area: Rect, message: &str) {
     };
 
     let notif = Paragraph::new(Line::from(vec![
-        Span::styled(" ● ", ratatui::style::Style::default().fg(styles::GREEN)),
-        Span::styled(message, ratatui::style::Style::default().fg(styles::TEXT)),
+        Span::styled(" ● ", ratatui::style::Style::default().fg(styles::GREEN())),
+        Span::styled(message, ratatui::style::Style::default().fg(styles::TEXT())),
         Span::raw(" "),
     ]))
     .style(
         ratatui::style::Style::default()
-            .bg(styles::PANEL)
-            .fg(styles::TEXT),
+            .bg(styles::PANEL())
+            .fg(styles::TEXT()),
     );
 
     f.render_widget(notif, notif_area);

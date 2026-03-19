@@ -1,205 +1,284 @@
 use ratatui::style::{Color, Modifier, Style};
 
-// ── Background colors (cool blue undertone — matches mockup aesthetic) ──
-pub const BG: Color = Color::Rgb(11, 11, 15);
-pub const SURFACE: Color = Color::Rgb(19, 19, 26);
-pub const PANEL: Color = Color::Rgb(26, 26, 36);
-pub const BORDER: Color = Color::Rgb(42, 42, 58);
+// ── Background colors ──
+#[allow(non_snake_case)]
+pub fn BG() -> Color {
+    super::themes::current().bg
+}
+#[allow(non_snake_case)]
+pub fn SURFACE() -> Color {
+    super::themes::current().surface
+}
+#[allow(non_snake_case)]
+pub fn PANEL() -> Color {
+    super::themes::current().panel
+}
+#[allow(non_snake_case)]
+pub fn BORDER() -> Color {
+    super::themes::current().border
+}
 
-// ── Text colors (lavender-tinted grays for depth) ──
-pub const TEXT: Color = Color::Rgb(228, 228, 239);
-pub const DIM: Color = Color::Rgb(136, 136, 160);
-pub const MUTED: Color = Color::Rgb(85, 85, 106);
-pub const BRIGHT: Color = Color::Rgb(232, 232, 242);
+// ── Text colors ──
+#[allow(non_snake_case)]
+pub fn TEXT() -> Color {
+    super::themes::current().text
+}
+#[allow(non_snake_case)]
+pub fn DIM() -> Color {
+    super::themes::current().text_dim
+}
+#[allow(non_snake_case)]
+pub fn MUTED() -> Color {
+    super::themes::current().text_muted
+}
+#[allow(non_snake_case)]
+pub fn BRIGHT() -> Color {
+    super::themes::current().text_bright
+}
 
 // ── Accent colors ──
-pub const BLUE: Color = Color::Rgb(96, 165, 250);
-pub const CYAN: Color = Color::Rgb(34, 211, 238);
-pub const GREEN: Color = Color::Rgb(74, 222, 128);
-pub const YELLOW: Color = Color::Rgb(250, 204, 21);
-pub const RED: Color = Color::Rgb(248, 113, 113);
-pub const RED_TEXT: Color = RED;
-pub const PURPLE: Color = Color::Rgb(167, 139, 250);
+#[allow(non_snake_case)]
+pub fn BLUE() -> Color {
+    super::themes::current().blue
+}
+#[allow(non_snake_case)]
+pub fn CYAN() -> Color {
+    super::themes::current().cyan
+}
+#[allow(non_snake_case)]
+pub fn GREEN() -> Color {
+    super::themes::current().green
+}
+#[allow(non_snake_case)]
+pub fn YELLOW() -> Color {
+    super::themes::current().yellow
+}
+#[allow(non_snake_case)]
+pub fn RED() -> Color {
+    super::themes::current().red
+}
+#[allow(non_snake_case)]
+pub fn RED_TEXT() -> Color {
+    RED()
+}
+#[allow(non_snake_case)]
+pub fn PURPLE() -> Color {
+    super::themes::current().purple
+}
 
-// ── Diff colors (subtle tinted backgrounds, vivid text) ──
-pub const ADD_BG: Color = Color::Rgb(16, 36, 28);
-pub const ADD_TEXT: Color = Color::Rgb(74, 222, 128);
-pub const DEL_BG: Color = Color::Rgb(42, 16, 22);
-pub const DEL_TEXT: Color = Color::Rgb(248, 113, 113);
-pub const HUNK_BG: Color = Color::Rgb(22, 22, 42);
+// ── AI overlay colors ──
+#[allow(non_snake_case)]
+pub fn ORANGE() -> Color {
+    super::themes::current().orange
+}
+
+// ── Diff colors ──
+#[allow(non_snake_case)]
+pub fn ADD_BG() -> Color {
+    super::themes::current().add_bg
+}
+#[allow(non_snake_case)]
+pub fn ADD_TEXT() -> Color {
+    super::themes::current().add_text
+}
+#[allow(non_snake_case)]
+pub fn DEL_BG() -> Color {
+    super::themes::current().del_bg
+}
+#[allow(non_snake_case)]
+pub fn DEL_TEXT() -> Color {
+    super::themes::current().del_text
+}
+#[allow(non_snake_case)]
+pub fn HUNK_BG() -> Color {
+    super::themes::current().hunk_bg
+}
+
+// ── Interactive colors ──
+#[allow(non_snake_case)]
+pub fn LINE_CURSOR_BG() -> Color {
+    super::themes::current().line_cursor_bg
+}
+#[allow(non_snake_case)]
+pub fn FINDING_BG() -> Color {
+    super::themes::current().finding_bg
+}
+#[allow(non_snake_case)]
+pub fn FINDING_FOCUS_BG() -> Color {
+    super::themes::current().finding_focus_bg
+}
+#[allow(non_snake_case)]
+pub fn COMMENT_BG() -> Color {
+    super::themes::current().comment_bg
+}
+#[allow(non_snake_case)]
+pub fn INLINE_COMMENT_BG() -> Color {
+    super::themes::current().inline_comment_bg
+}
+#[allow(non_snake_case)]
+pub fn COMMENT_FOCUS_BG() -> Color {
+    super::themes::current().comment_focus_bg
+}
+
+// ── Status colors ──
+#[allow(non_snake_case)]
+pub fn STALE() -> Color {
+    super::themes::current().stale
+}
+#[allow(non_snake_case)]
+pub fn WATCHED_TEXT() -> Color {
+    super::themes::current().watched_text
+}
+#[allow(non_snake_case)]
+pub fn WATCHED_MUTED() -> Color {
+    super::themes::current().watched_muted
+}
+#[allow(non_snake_case)]
+pub fn WATCHED_BG() -> Color {
+    super::themes::current().watched_bg
+}
+#[allow(non_snake_case)]
+pub fn UNMERGED() -> Color {
+    super::themes::current().unmerged
+}
+#[allow(non_snake_case)]
+pub fn RELOCATED_INDICATOR() -> Color {
+    super::themes::current().relocated_indicator
+}
+#[allow(non_snake_case)]
+pub fn LOST_INDICATOR() -> Color {
+    super::themes::current().lost_indicator
+}
 
 // ── Composed styles ──
 
 pub fn default_style() -> Style {
-    Style::default().fg(TEXT).bg(BG)
+    Style::default().fg(TEXT()).bg(BG())
 }
 
 pub fn surface_style() -> Style {
-    Style::default().fg(TEXT).bg(SURFACE)
+    Style::default().fg(TEXT()).bg(SURFACE())
 }
 
 #[allow(dead_code)]
 pub fn dim_style() -> Style {
-    Style::default().fg(DIM)
+    Style::default().fg(DIM())
 }
 
 pub fn selected_style() -> Style {
-    Style::default().fg(PURPLE).bg(Color::Rgb(30, 24, 48))
+    Style::default()
+        .fg(PURPLE())
+        .bg(super::themes::current().selected_bg)
 }
 
 pub fn add_style() -> Style {
-    Style::default().fg(ADD_TEXT).bg(ADD_BG)
+    Style::default().fg(ADD_TEXT()).bg(ADD_BG())
 }
 
 pub fn del_style() -> Style {
-    Style::default().fg(DEL_TEXT).bg(DEL_BG)
+    Style::default().fg(DEL_TEXT()).bg(DEL_BG())
 }
 
 pub fn hunk_header_style() -> Style {
-    Style::default().fg(PURPLE).bg(HUNK_BG)
+    Style::default().fg(PURPLE()).bg(HUNK_BG())
 }
 
 pub fn key_hint_style() -> Style {
-    Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+    Style::default().fg(TEXT()).add_modifier(Modifier::BOLD)
 }
 
 pub fn status_added() -> Style {
-    Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+    Style::default().fg(GREEN()).add_modifier(Modifier::BOLD)
 }
 
 pub fn status_deleted() -> Style {
-    Style::default().fg(RED).add_modifier(Modifier::BOLD)
+    Style::default().fg(RED()).add_modifier(Modifier::BOLD)
 }
 
 pub fn status_modified() -> Style {
-    Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)
+    Style::default().fg(YELLOW()).add_modifier(Modifier::BOLD)
 }
 
-/// Unmerged (conflict) file indicator color — warm orange
-pub const UNMERGED: Color = Color::Rgb(255, 140, 0);
-
 pub fn status_unmerged() -> Style {
-    Style::default().fg(UNMERGED).add_modifier(Modifier::BOLD)
+    Style::default().fg(UNMERGED()).add_modifier(Modifier::BOLD)
 }
 
 pub fn status_resolved() -> Style {
-    Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
+    Style::default().fg(GREEN()).add_modifier(Modifier::BOLD)
 }
-
-// ── AI overlay colors ──
-
-pub const ORANGE: Color = Color::Rgb(251, 146, 60);
-
-/// Stale indicator color (dimmed yellow)
-pub const STALE: Color = Color::Rgb(180, 160, 40);
-
-/// AI finding banner background (warm tint against cool bg for contrast)
-pub const FINDING_BG: Color = Color::Rgb(36, 28, 18);
-
-/// AI finding banner background when focused (brighter warm tint)
-pub const FINDING_FOCUS_BG: Color = Color::Rgb(50, 38, 22);
 
 /// Risk dot styles
 pub fn risk_high() -> Style {
-    Style::default().fg(RED).add_modifier(Modifier::BOLD)
+    Style::default().fg(RED()).add_modifier(Modifier::BOLD)
 }
 
 pub fn risk_medium() -> Style {
-    Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+    Style::default().fg(ORANGE()).add_modifier(Modifier::BOLD)
 }
 
 pub fn risk_low() -> Style {
-    Style::default().fg(YELLOW)
+    Style::default().fg(YELLOW())
 }
 
 #[allow(dead_code)]
 pub fn risk_info() -> Style {
-    Style::default().fg(BLUE)
+    Style::default().fg(BLUE())
 }
-
-/// Line cursor background (subtle purple tint to match selection theme)
-pub const LINE_CURSOR_BG: Color = Color::Rgb(36, 28, 52);
 
 /// Line cursor styles — brighter bg to show selected line
 pub fn line_cursor() -> Style {
-    Style::default().fg(TEXT).bg(LINE_CURSOR_BG)
+    Style::default().fg(TEXT()).bg(LINE_CURSOR_BG())
 }
 
 pub fn line_cursor_add() -> Style {
-    Style::default().fg(ADD_TEXT).bg(LINE_CURSOR_BG)
+    Style::default().fg(ADD_TEXT()).bg(LINE_CURSOR_BG())
 }
 
 pub fn line_cursor_del() -> Style {
-    Style::default().fg(DEL_TEXT).bg(LINE_CURSOR_BG)
+    Style::default().fg(DEL_TEXT()).bg(LINE_CURSOR_BG())
 }
-
-/// Human comment background (cool tint to distinguish from AI findings)
-pub const COMMENT_BG: Color = Color::Rgb(18, 28, 38);
-
-/// Inline line-comment background (slightly lighter for visual distinction)
-pub const INLINE_COMMENT_BG: Color = Color::Rgb(22, 32, 42);
-
-/// Focused comment background (brighter to clearly show selection)
-pub const COMMENT_FOCUS_BG: Color = Color::Rgb(35, 50, 70);
 
 /// Human comment style
 #[allow(dead_code)]
 pub fn comment_style() -> Style {
-    Style::default().fg(CYAN).bg(COMMENT_BG)
+    Style::default().fg(CYAN()).bg(COMMENT_BG())
 }
 
 /// Inline line-comment style
 #[allow(dead_code)]
 pub fn inline_comment_style() -> Style {
-    Style::default().fg(CYAN).bg(INLINE_COMMENT_BG)
+    Style::default().fg(CYAN()).bg(INLINE_COMMENT_BG())
 }
 
 /// Focused comment style
 #[allow(dead_code)]
 pub fn comment_focus_style() -> Style {
-    Style::default().fg(CYAN).bg(COMMENT_FOCUS_BG)
+    Style::default().fg(CYAN()).bg(COMMENT_FOCUS_BG())
 }
 
 /// Stale warning style
 pub fn stale_style() -> Style {
-    Style::default().fg(STALE)
+    Style::default().fg(STALE())
 }
-
-/// Relocated comment indicator color (soft green)
-pub const RELOCATED_INDICATOR: Color = Color::Rgb(100, 200, 150);
-
-/// Lost comment indicator color (dimmed red)
-pub const LOST_INDICATOR: Color = Color::Rgb(180, 100, 100);
-
-// ── Watched file colors ──
-
-/// Watched file text color (cool blue to distinguish from diff files)
-pub const WATCHED_TEXT: Color = Color::Rgb(120, 160, 220);
-
-/// Watched file separator/muted color
-pub const WATCHED_MUTED: Color = Color::Rgb(70, 85, 110);
-
-/// Watched file background for content view
-pub const WATCHED_BG: Color = Color::Rgb(14, 16, 24);
 
 /// Watched file content line style
 pub fn watched_line_style() -> Style {
-    Style::default().fg(TEXT).bg(WATCHED_BG)
+    Style::default().fg(TEXT()).bg(WATCHED_BG())
 }
 
 /// Watched file gutter style
 pub fn watched_gutter_style() -> Style {
-    Style::default().fg(DIM).bg(WATCHED_BG)
+    Style::default().fg(DIM()).bg(WATCHED_BG())
 }
 
 // ── Split diff view styles ──
 
 /// Focused pane border in split diff view
 pub fn split_border_focused() -> Style {
-    Style::default().fg(BLUE)
+    Style::default().fg(BLUE())
 }
 
 /// Inactive pane border in split diff view
 pub fn split_border_inactive() -> Style {
-    Style::default().fg(BORDER)
+    Style::default().fg(BORDER())
 }

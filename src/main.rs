@@ -52,6 +52,9 @@ fn main() -> Result<()> {
     // Init app state (detects repo, branch, base branch, runs initial diff)
     let mut app = App::new_with_args(&cli.paths)?;
 
+    // Initialize theme from config
+    ui::themes::set_theme_by_name(&app.config.display.theme);
+
     // Handle --pr flag: override the first tab's base branch
     if let Some(pr_number) = cli.pr {
         github::ensure_gh_installed()?;
