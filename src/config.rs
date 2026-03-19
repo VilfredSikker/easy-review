@@ -57,6 +57,10 @@ fn default_diff_mode() -> String {
     "content".to_string()
 }
 
+fn default_theme() -> String {
+    "ocean-depth".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeatureFlags {
     #[serde(default = "default_true")]
@@ -108,6 +112,8 @@ pub struct DisplayConfig {
     /// Auto-expand context for files with ≤ this many diff lines (0 to disable)
     #[serde(default = "default_auto_context_threshold")]
     pub auto_context_threshold: usize,
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 /// [hints] section — toggle visibility of key hint groups in the bottom bar
@@ -188,6 +194,7 @@ impl Default for DisplayConfig {
             wrap_lines: false,
             split_diff: false,
             auto_context_threshold: default_auto_context_threshold(),
+            theme: default_theme(),
         }
     }
 }
@@ -296,6 +303,12 @@ pub enum SettingsItem {
         label: String,
         get: fn(&ErConfig) -> String,
     },
+    StringCycle {
+        label: String,
+        options: &'static [&'static str],
+        get: fn(&ErConfig) -> String,
+        set: fn(&mut ErConfig, String),
+    },
 }
 
 /// Build the list of settings items for the settings overlay.
@@ -333,6 +346,12 @@ pub fn settings_items() -> Vec<SettingsItem> {
             set: |c, v| c.features.view_hidden = v,
         },
         SettingsItem::SectionHeader("Display".into()),
+        SettingsItem::StringCycle {
+            label: "Theme".into(),
+            options: &["ocean-depth", "moonlight", "daybreak", "high-contrast"],
+            get: |c| c.display.theme.clone(),
+            set: |c, v| c.display.theme = v,
+        },
         SettingsItem::BoolToggle {
             label: "Line numbers".into(),
             get: |c| c.display.line_numbers,
@@ -640,6 +659,7 @@ mod tests {
                 wrap_lines: true,
                 split_diff: true,
                 auto_context_threshold: 100,
+                theme: "moonlight".into(),
             },
             agent: AgentConfig {
                 command: "my-agent".into(),

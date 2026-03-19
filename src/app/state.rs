@@ -4153,14 +4153,27 @@ impl App {
         });
     }
 
-    /// Toggle the currently selected boolean setting
+    /// Toggle the currently selected boolean setting, or cycle a StringCycle item
     pub fn settings_toggle(&mut self) {
         let items = config::settings_items();
         if let Some(OverlayData::Settings { selected, .. }) = &self.overlay {
             let idx = *selected;
-            if let Some(config::SettingsItem::BoolToggle { get, set, .. }) = items.get(idx) {
-                let current = get(&self.config);
-                set(&mut self.config, !current);
+            match items.get(idx) {
+                Some(config::SettingsItem::BoolToggle { get, set, .. }) => {
+                    let current = get(&self.config);
+                    set(&mut self.config, !current);
+                }
+                Some(config::SettingsItem::StringCycle {
+                    options, get, set, ..
+                }) => {
+                    let current = get(&self.config);
+                    let pos = options.iter().position(|&o| o == current).unwrap_or(0);
+                    let next = options[(pos + 1) % options.len()];
+                    set(&mut self.config, next.to_string());
+                    // Apply theme change immediately
+                    crate::ui::themes::set_theme_by_name(&self.config.display.theme);
+                }
+                _ => {}
             }
         }
     }
@@ -4179,6 +4192,8 @@ impl App {
     pub fn settings_cancel(&mut self) {
         if let Some(OverlayData::Settings { saved_config, .. }) = self.overlay.take() {
             self.config = *saved_config;
+            // Revert theme to saved config
+            crate::ui::themes::set_theme_by_name(&self.config.display.theme);
         }
     }
 
@@ -4293,12 +4308,13 @@ impl App {
             let items = config::settings_items();
             if let Some(item) = items.get(*selected) {
                 match item {
-                    config::SettingsItem::BoolToggle { .. } => {
+                    config::SettingsItem::BoolToggle { .. }
+                    | config::SettingsItem::StringCycle { .. } => {
                         self.settings_toggle();
                         return Ok(());
                     }
                     _ => {
-                        // Non-toggleable item — treat Enter as Save
+                        // Non-interactive item — treat Enter as Save
                         self.settings_save();
                         return Ok(());
                     }

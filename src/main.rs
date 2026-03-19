@@ -111,6 +111,9 @@ fn main() -> Result<()> {
     // Init app state (detects repo, branch, base branch, runs initial diff)
     let mut app = App::new_with_args(&cli.paths)?;
 
+    // Initialize theme from config
+    ui::themes::set_theme_by_name(&app.config.display.theme);
+
     // Handle --pr flag: fetch PR head ref and diff against it without checkout
     if let Some(pr_number) = cli.pr {
         github::ensure_gh_installed()?;

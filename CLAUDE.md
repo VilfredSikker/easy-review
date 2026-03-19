@@ -116,3 +116,23 @@ v1.4 with `.er/` directory migration, auto-unmark reviewed, post-commit diff vie
 **v1.4 (current):** `.er/` directory migration — all sidecar files moved from scattered repo-root dotfiles into `.er/` (single `.gitignore` entry). Auto-unmark reviewed files when diff changes (prevents stale reviewed state). Jump to next unreviewed file (`U`). Git push from TUI (`Ctrl+P` in staged mode). Post-commit diff view (shows just-committed diff after committing). Cleanup commands (`z` to clean current file artifacts, `Z` to clean all). Sticky file path header in diff view. Lazy comment index (`CommentIndexData`) for fast per-file comment lookup. LRU eviction for syntax highlight cache (replaces full eviction on overflow). Mtime cache to reduce `stat` calls during polling. `er-questions` standalone redesign. History mode key deduplication.
 
 **v2:** Split diff mode, review heatmap on exit, blame-aware findings, diff bookmarks. Multi-worktree tabs (Tab/Shift+Tab to cycle), per-worktree state, cross-worktree watch notifications.
+
+## Design Context
+
+**Brand personality:** Sharp, Focused, Fast. No decoration — every pixel earns its place.
+
+**Theme system (planned):** Introducing multiple themes (dark, light, variants). All colors should flow through a theme abstraction — components reference semantic tokens, not hex values. Full design context in `.impeccable.md`.
+
+**Semantic color tokens:**
+- Background: `bg`, `surface`, `panel`, `border`
+- Text: `text.primary`, `text.bright`, `text.dim`, `text.muted`
+- Diff: `diff.add.bg/text`, `diff.del.bg/text`, `diff.hunk.bg`
+- Accent: `accent.action` (blue), `accent.info` (cyan), `accent.success` (green), `accent.warning` (yellow), `accent.error` (red), `accent.selection` (purple), `accent.emphasis` (orange)
+- Interactive: `cursor.bg`, `focus.bg`, `comment.bg`, `finding.bg`
+
+**Design principles:**
+1. Information density over whitespace
+2. Semantic color, not decorative color
+3. Contrast creates hierarchy (bright/normal/dim + accents)
+4. Theme-ready architecture (semantic tokens, not hardcoded hex)
+5. Speed is a feature (never trade performance for aesthetics)

@@ -38,6 +38,8 @@ pub struct Highlighter {
     cache: HashMap<u64, Vec<CachedSpan>>,
     /// Monotonic generation counter for LRU eviction tracking
     gen: u64,
+    /// Last syntect theme name used — cache is invalidated when this changes
+    current_syntect_theme: String,
 }
 
 /// Maximum cache entries before LRU eviction
@@ -47,11 +49,13 @@ const EVICT_COUNT: usize = MAX_CACHE_SIZE / 4;
 
 impl Highlighter {
     pub fn new() -> Self {
+        let initial_theme = super::themes::current().syntect_theme.clone();
         Highlighter {
             syntax_set: two_face::syntax::extra_newlines(),
             theme_set: ThemeSet::load_defaults(),
             cache: HashMap::new(),
             gen: 0,
+            current_syntect_theme: initial_theme,
         }
     }
 
@@ -67,6 +71,13 @@ impl Highlighter {
         filename: &str,
         base_style: Style,
     ) -> Vec<Span<'a>> {
+        // Invalidate cache if the syntect theme has changed
+        let theme_name = super::themes::current().syntect_theme.clone();
+        if theme_name != self.current_syntect_theme {
+            self.cache.clear();
+            self.current_syntect_theme = theme_name.clone();
+        }
+
         let key = cache_key(line, filename);
 
         // Check cache — Rc::clone is a pointer bump, not a heap allocation
@@ -94,7 +105,12 @@ impl Highlighter {
             })
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
 
-        let theme = &self.theme_set.themes["base16-ocean.dark"];
+        let theme = self
+            .theme_set
+            .themes
+            .get(&theme_name)
+            .or_else(|| self.theme_set.themes.get("base16-ocean.dark"))
+            .unwrap_or_else(|| self.theme_set.themes.values().next().unwrap());
         let mut highlighter = HighlightLines::new(syntax, theme);
 
         let input = if line.ends_with('\n') {
