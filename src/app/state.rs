@@ -623,6 +623,7 @@ pub struct FileTreeCache {
     show_unreviewed_only: bool,
     file_count: usize,
     reviewed_count: usize,
+    filter_expr: String,
 }
 
 /// Lightweight memory tracking
@@ -1121,8 +1122,22 @@ impl TabState {
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         self.ai = ai::load_ai_state(&self.repo_root, &self.branch_diff_hash);
-        // Finding IDs may change after review reload — clear stale reference
-        self.focused_finding_id = None;
+        // Only clear focused finding if it no longer exists in the reloaded data
+        if let Some(ref fid) = self.focused_finding_id {
+            let still_exists = self
+                .ai
+                .review
+                .as_ref()
+                .map(|r| {
+                    r.files
+                        .values()
+                        .any(|fr| fr.findings.iter().any(|f| f.id == *fid))
+                })
+                .unwrap_or(false);
+            if !still_exists {
+                self.focused_finding_id = None;
+            }
+        }
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
         if self.ai.is_stale {
             self.ai.stale_files = prev_stale_files;
@@ -1296,17 +1311,15 @@ impl TabState {
             false
         };
 
-        // TODO(risk:medium): write errors are silently discarded here (let _ = ...). If the disk is full
-        // or the directory is read-only, the relocation update is lost without any user notification.
-        // The next refresh will re-relocate the same comments, but any intermediate "relocated" state is
-        // dropped, and the user has no idea the write failed.
         // Write back to disk if anything changed
         if questions_changed {
             if let Some(ref qs) = self.ai.questions {
                 let path = format!("{}/.er/questions.json", repo_root);
                 if let Ok(json) = serde_json::to_string_pretty(qs) {
                     let tmp = format!("{}.tmp", path);
-                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                    if let Err(e) = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path)) {
+                        eprintln!("er: failed to write relocated questions: {}", e);
+                    }
                 }
             }
         }
@@ -1315,7 +1328,9 @@ impl TabState {
                 let path = format!("{}/.er/github-comments.json", repo_root);
                 if let Ok(json) = serde_json::to_string_pretty(gc) {
                     let tmp = format!("{}.tmp", path);
-                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                    if let Err(e) = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path)) {
+                        eprintln!("er: failed to write relocated comments: {}", e);
+                    }
                 }
             }
         }
@@ -2356,6 +2371,7 @@ impl TabState {
                     || cache.show_unreviewed_only != self.show_unreviewed_only
                     || cache.file_count != self.files.len()
                     || cache.reviewed_count != reviewed_count
+                    || cache.filter_expr != self.filter_expr
             }
             None => true,
         };
@@ -2372,6 +2388,7 @@ impl TabState {
                 show_unreviewed_only: self.show_unreviewed_only,
                 file_count: self.files.len(),
                 reviewed_count,
+                filter_expr: self.filter_expr.clone(),
             });
             visible
         } else {
@@ -3132,6 +3149,9 @@ impl TabState {
         // Restore view preferences
         self.show_unreviewed_only = session.show_unreviewed_only;
         self.sort_by_mtime = session.sort_by_mtime;
+
+        // Rebuild hunk offsets for the restored file selection
+        self.rebuild_hunk_offsets();
 
         // Restore comment draft if non-empty
         if !session.comment_draft.is_empty() {

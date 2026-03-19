@@ -160,6 +160,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     // Debounce state for file watcher refreshes
     let mut pending_refresh = false;
     let mut refresh_deadline = Instant::now();
+    let mut refresh_max_deadline = Instant::now();
     let mut pending_file_count = 0usize;
 
     // Session auto-save: debounced at ~2 seconds
@@ -213,12 +214,16 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         // Drain all pending events each tick to avoid accumulation under rapid changes.
         while let Ok(WatchEvent::FilesChanged(paths)) = watch_rx.try_recv() {
             pending_file_count += paths.len();
+            if !pending_refresh {
+                // First event in this batch — set both soft and hard deadlines
+                refresh_max_deadline = Instant::now() + Duration::from_millis(2000);
+            }
             pending_refresh = true;
             refresh_deadline = Instant::now() + Duration::from_millis(200);
         }
 
-        // Execute debounced refresh when deadline passes
-        if pending_refresh && Instant::now() >= refresh_deadline {
+        // Execute debounced refresh when soft deadline passes OR hard deadline reached
+        if pending_refresh && (Instant::now() >= refresh_deadline || Instant::now() >= refresh_max_deadline) {
             pending_refresh = false;
             let count = pending_file_count;
             pending_file_count = 0;
