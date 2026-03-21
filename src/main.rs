@@ -322,6 +322,9 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         // Poll background commands for completion
         app.check_commands();
 
+        // Drain agent log entries from background threads
+        app.drain_agent_log();
+
         // Rescan watched files (every 50 ticks ≈ 5s)
         if !app.tab().is_remote() && app.ai_poll_counter.is_multiple_of(50) {
             app.tab_mut().refresh_watched_files();
@@ -363,21 +366,79 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 }
 
 fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    // Settings overlay has additional keybindings
-    if matches!(app.overlay, Some(app::OverlayData::Settings { .. })) {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
-            KeyCode::Char(' ') | KeyCode::Enter => {
-                // Space and Enter both toggle the current item
-                app.settings_toggle();
+    // Config hub overlay — handles inline string editing
+    if matches!(app.overlay, Some(app::OverlayData::ConfigHub { .. })) {
+        let is_editing = matches!(
+            &app.overlay,
+            Some(app::OverlayData::ConfigHub {
+                editing: Some(_),
+                ..
+            })
+        );
+
+        if is_editing {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if let Some(app::OverlayData::ConfigHub {
+                        editing: Some(ref mut edit),
+                        ..
+                    }) = &mut app.overlay
+                    {
+                        edit.buffer.insert(edit.cursor_pos, c);
+                        edit.cursor_pos += 1;
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(app::OverlayData::ConfigHub {
+                        editing: Some(ref mut edit),
+                        ..
+                    }) = &mut app.overlay
+                    {
+                        if edit.cursor_pos > 0 {
+                            edit.cursor_pos -= 1;
+                            edit.buffer.remove(edit.cursor_pos);
+                        }
+                    }
+                }
+                KeyCode::Left => {
+                    if let Some(app::OverlayData::ConfigHub {
+                        editing: Some(ref mut edit),
+                        ..
+                    }) = &mut app.overlay
+                    {
+                        edit.cursor_pos = edit.cursor_pos.saturating_sub(1);
+                    }
+                }
+                KeyCode::Right => {
+                    if let Some(app::OverlayData::ConfigHub {
+                        editing: Some(ref mut edit),
+                        ..
+                    }) = &mut app.overlay
+                    {
+                        if edit.cursor_pos < edit.buffer.len() {
+                            edit.cursor_pos += 1;
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    app.config_hub_confirm_edit();
+                }
+                KeyCode::Esc => {
+                    app.config_hub_cancel_edit();
+                }
+                _ => {}
             }
-            KeyCode::Char('s') => {
-                // Save settings to disk
-                app.settings_save();
+        } else {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+                KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+                KeyCode::Enter | KeyCode::Char(' ') => app.config_hub_activate(),
+                KeyCode::Char('d') => app.config_hub_delete_selected(),
+                KeyCode::Char('s') => app.config_hub_save_local(),
+                KeyCode::Char('S') => app.config_hub_save_global(),
+                KeyCode::Esc | KeyCode::Char('q') => app.config_hub_cancel(),
+                _ => {}
             }
-            KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
-            _ => {}
         }
         return Ok(());
     }
@@ -521,13 +582,25 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
         }
         HubAction::OpenPrInBrowser => {
             let repo_root = app.tab().repo_root.clone();
-            let _ = std::process::Command::new("gh")
-                .args(["pr", "view", "--web"])
-                .current_dir(&repo_root)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            app.notify("Opening PR in browser...");
+            if let Some(pr_number) = app.tab().pr_number {
+                let mut args = vec![
+                    "pr".to_string(),
+                    "view".to_string(),
+                    pr_number.to_string(),
+                    "--web".to_string(),
+                ];
+                if let Some(ref slug) = app.tab().remote_repo {
+                    args.push("-R".to_string());
+                    args.push(slug.clone());
+                }
+                let _ = std::process::Command::new("gh")
+                    .args(&args)
+                    .current_dir(&repo_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                app.notify("Opening PR in browser...");
+            }
         }
     }
     Ok(())
@@ -825,9 +898,9 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Open settings overlay
+        // Open config hub overlay
         KeyCode::Char(',') => {
-            app.open_settings();
+            app.open_config_hub();
             return Ok(());
         }
 
@@ -2048,6 +2121,7 @@ mod tests {
     // ── Test helpers ──
 
     fn make_app(files: Vec<DiffFile>) -> App {
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
         App {
             tabs: vec![TabState::new_for_test(files)],
             active_tab: 0,
@@ -2063,6 +2137,10 @@ mod tests {
             config: ErConfig::default(),
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            log_tx,
+            log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
             pending_hub_action: None,
         }
     }

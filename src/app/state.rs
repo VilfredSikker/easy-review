@@ -174,6 +174,14 @@ pub enum SplitSide {
 
 // ── Overlay types ──
 
+/// Inline editing state for the config hub (StringEdit / ListAdd items)
+#[derive(Debug, Clone)]
+pub struct ConfigEditState {
+    pub item_index: usize,
+    pub buffer: String,
+    pub cursor_pos: usize,
+}
+
 /// A directory entry for the filesystem browser
 #[derive(Debug, Clone)]
 pub struct DirEntry {
@@ -194,11 +202,6 @@ pub enum OverlayData {
         entries: Vec<DirEntry>,
         selected: usize,
     },
-    Settings {
-        selected: usize,
-        /// Snapshot of config at overlay open time, for Cancel revert
-        saved_config: Box<ErConfig>,
-    },
     FilterHistory {
         history: Vec<String>,
         selected: usize,
@@ -208,6 +211,12 @@ pub enum OverlayData {
         kind: HubKind,
         items: Vec<HubItem>,
         selected: usize,
+    },
+    ConfigHub {
+        items: Vec<config::ConfigItem>,
+        selected: usize,
+        saved_config: Box<ErConfig>,
+        editing: Option<ConfigEditState>,
     },
 }
 
@@ -1699,7 +1708,7 @@ impl TabState {
         self.layers.show_ai_findings = !self.layers.show_ai_findings;
     }
 
-    /// Cycle panel: None → FileDetail → AiSummary (if AI data) → PrOverview (if PR live) → None
+    /// Cycle panel: None → FileDetail → AiSummary (if AI data) → PrOverview (if PR live) → SymbolRefs (if symbols) → AgentLog → None
     pub fn toggle_panel(&mut self) {
         let has_ai = self.layers.show_ai_findings && self.ai.has_data();
         let has_pr = self.pr_data.is_some();
@@ -1710,25 +1719,30 @@ impl TabState {
                     Some(PanelContent::AiSummary)
                 } else if has_pr {
                     Some(PanelContent::PrOverview)
+                } else if self.symbol_refs.is_some() {
+                    Some(PanelContent::SymbolRefs)
                 } else {
-                    None
+                    Some(PanelContent::AgentLog)
                 }
             }
             Some(PanelContent::AiSummary) => {
                 if has_pr {
                     Some(PanelContent::PrOverview)
+                } else if self.symbol_refs.is_some() {
+                    Some(PanelContent::SymbolRefs)
                 } else {
-                    None
+                    Some(PanelContent::AgentLog)
                 }
             }
             Some(PanelContent::PrOverview) => {
                 if self.symbol_refs.is_some() {
                     Some(PanelContent::SymbolRefs)
                 } else {
-                    None
+                    Some(PanelContent::AgentLog)
                 }
             }
-            Some(PanelContent::SymbolRefs) => None,
+            Some(PanelContent::SymbolRefs) => Some(PanelContent::AgentLog),
+            Some(PanelContent::AgentLog) => None,
         };
         self.panel_scroll = 0;
         if self.panel.is_none() {
@@ -1736,13 +1750,14 @@ impl TabState {
         }
     }
 
-    /// Cycle panel in reverse: None → SymbolRefs → PrOverview → AiSummary → FileDetail → None
+    /// Cycle panel in reverse: None → AgentLog → SymbolRefs → PrOverview → AiSummary → FileDetail → None
     pub fn toggle_panel_reverse(&mut self) {
         let has_ai = self.layers.show_ai_findings && self.ai.has_data();
         let has_pr = self.pr_data.is_some();
         let has_sym = self.symbol_refs.is_some();
         self.panel = match self.panel {
-            None => {
+            None => Some(PanelContent::AgentLog),
+            Some(PanelContent::AgentLog) => {
                 if has_sym {
                     Some(PanelContent::SymbolRefs)
                 } else if has_pr {
@@ -3540,6 +3555,21 @@ pub enum CommandStatus {
     Failed(String),
 }
 
+#[derive(Debug, Clone)]
+pub enum AgentLogSource {
+    Stdout,
+    Stderr,
+    Status,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentLogEntry {
+    pub timestamp: std::time::Instant,
+    pub command_name: String,
+    pub source: AgentLogSource,
+    pub text: String,
+}
+
 pub struct App {
     /// Open tabs (one per repo)
     pub tabs: Vec<TabState>,
@@ -3582,6 +3612,18 @@ pub struct App {
 
     /// Status of each named command (keyed by command name like "summary", "test", etc.)
     pub command_status: std::collections::HashMap<String, CommandStatus>,
+
+    /// Sender for streaming agent log entries from background threads
+    pub log_tx: std::sync::mpsc::Sender<AgentLogEntry>,
+
+    /// Receiver for agent log entries (drained each tick by drain_agent_log)
+    pub log_rx: std::sync::mpsc::Receiver<AgentLogEntry>,
+
+    /// Accumulated agent log entries (capped at 5000)
+    pub agent_log: std::collections::VecDeque<AgentLogEntry>,
+
+    /// Whether the agent log panel auto-scrolls to the latest entry
+    pub agent_log_auto_scroll: bool,
 
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
@@ -3645,6 +3687,7 @@ impl App {
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
 
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
         Ok(App {
             tabs,
             active_tab: 0,
@@ -3660,6 +3703,10 @@ impl App {
             config: er_config,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            log_tx,
+            log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
             pending_hub_action: None,
         })
     }
@@ -3670,6 +3717,7 @@ impl App {
             tab.pr_data = Some(data);
         }
         let er_config = crate::config::ErConfig::default();
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -3685,6 +3733,10 @@ impl App {
             config: er_config,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            log_tx,
+            log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
             pending_hub_action: None,
         }
     }
@@ -4648,64 +4700,204 @@ impl App {
         });
     }
 
-    // ── Overlay: Settings ──
-
-    /// Open the settings overlay
-    pub fn open_settings(&mut self) {
-        let items = config::settings_items();
-        // Find the first selectable (non-header) item
+    pub fn open_config_hub(&mut self) {
+        let items = config::config_hub_items(&self.config);
         let first_selectable = items
             .iter()
-            .position(|item| !matches!(item, config::SettingsItem::SectionHeader(_)))
+            .position(|item| !matches!(item, config::ConfigItem::SectionHeader(_)))
             .unwrap_or(0);
-
-        self.overlay = Some(OverlayData::Settings {
+        self.overlay = Some(OverlayData::ConfigHub {
+            items,
             selected: first_selectable,
             saved_config: Box::new(self.config.clone()),
+            editing: None,
         });
     }
 
-    /// Toggle the currently selected boolean setting, or cycle a StringCycle item
-    pub fn settings_toggle(&mut self) {
-        let items = config::settings_items();
-        if let Some(OverlayData::Settings { selected, .. }) = &self.overlay {
-            let idx = *selected;
-            match items.get(idx) {
-                Some(config::SettingsItem::BoolToggle { get, set, .. }) => {
-                    let current = get(&self.config);
-                    set(&mut self.config, !current);
+    /// Toggle/cycle/activate the currently selected config hub item
+    pub fn config_hub_activate(&mut self) {
+        let (idx, config_ref) = match &self.overlay {
+            Some(OverlayData::ConfigHub {
+                selected,
+                editing: None,
+                ..
+            }) => (*selected, &self.config as *const ErConfig),
+            _ => return,
+        };
+        // Safety: we only use config_ref for reading before mutating via self.config
+        let items = config::config_hub_items(unsafe { &*config_ref });
+        match items.get(idx) {
+            Some(config::ConfigItem::BoolToggle { get, set, .. }) => {
+                let current = get(&self.config);
+                set(&mut self.config, !current);
+                self.config_hub_rebuild_items();
+            }
+            Some(config::ConfigItem::StringCycle {
+                options, get, set, ..
+            }) => {
+                let current = get(&self.config);
+                let pos = options.iter().position(|&o| o == current).unwrap_or(0);
+                let next = options[(pos + 1) % options.len()];
+                set(&mut self.config, next.to_string());
+                // Apply theme change immediately if this was the theme item
+                crate::ui::themes::set_theme_by_name(&self.config.display.theme);
+                self.config_hub_rebuild_items();
+            }
+            Some(config::ConfigItem::NumberEdit {
+                get, set, min, max, ..
+            }) => {
+                let current = get(&self.config);
+                let min = *min;
+                let max = *max;
+                let next = if current >= max { min } else { current + 1 };
+                set(&mut self.config, next);
+                self.config_hub_rebuild_items();
+            }
+            Some(config::ConfigItem::StringEdit { get, .. }) => {
+                let current = get(&self.config);
+                let cursor = current.len();
+                if let Some(OverlayData::ConfigHub {
+                    editing, selected, ..
+                }) = &mut self.overlay
+                {
+                    *editing = Some(ConfigEditState {
+                        item_index: *selected,
+                        buffer: current,
+                        cursor_pos: cursor,
+                    });
                 }
-                Some(config::SettingsItem::StringCycle {
-                    options, get, set, ..
-                }) => {
-                    let current = get(&self.config);
-                    let pos = options.iter().position(|&o| o == current).unwrap_or(0);
-                    let next = options[(pos + 1) % options.len()];
-                    set(&mut self.config, next.to_string());
-                    // Apply theme change immediately
-                    crate::ui::themes::set_theme_by_name(&self.config.display.theme);
+            }
+            Some(config::ConfigItem::ListAdd { .. }) => {
+                if let Some(OverlayData::ConfigHub {
+                    editing, selected, ..
+                }) = &mut self.overlay
+                {
+                    *editing = Some(ConfigEditState {
+                        item_index: *selected,
+                        buffer: String::new(),
+                        cursor_pos: 0,
+                    });
                 }
-                _ => {}
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply the editing buffer to the config and close the inline edit
+    pub fn config_hub_confirm_edit(&mut self) {
+        let (item_idx, buffer) = match &self.overlay {
+            Some(OverlayData::ConfigHub {
+                editing: Some(edit),
+                ..
+            }) => (edit.item_index, edit.buffer.clone()),
+            _ => return,
+        };
+
+        // Clear editing first
+        if let Some(OverlayData::ConfigHub { editing, .. }) = &mut self.overlay {
+            *editing = None;
+        }
+
+        let items = config::config_hub_items(&self.config);
+        match items.get(item_idx) {
+            Some(config::ConfigItem::StringEdit { set, .. }) => {
+                set(&mut self.config, buffer);
+            }
+            Some(config::ConfigItem::ListAdd { .. }) => {
+                if !buffer.trim().is_empty() {
+                    self.config.watched.paths.push(buffer.trim().to_string());
+                }
+            }
+            _ => {}
+        }
+
+        self.config_hub_rebuild_items();
+    }
+
+    /// Cancel inline editing without applying the buffer
+    pub fn config_hub_cancel_edit(&mut self) {
+        if let Some(OverlayData::ConfigHub { editing, .. }) = &mut self.overlay {
+            *editing = None;
+        }
+    }
+
+    /// Delete the currently selected ListEntry from watched paths
+    pub fn config_hub_delete_selected(&mut self) {
+        let idx = match &self.overlay {
+            Some(OverlayData::ConfigHub { selected, .. }) => *selected,
+            _ => return,
+        };
+
+        let items = config::config_hub_items(&self.config);
+        if let Some(config::ConfigItem::ListEntry { index, .. }) = items.get(idx) {
+            let path_idx = *index;
+            if path_idx < self.config.watched.paths.len() {
+                self.config.watched.paths.remove(path_idx);
+                self.config_hub_rebuild_items();
             }
         }
     }
 
-    /// Save settings to disk and close the overlay
-    pub fn settings_save(&mut self) {
+    /// Save config to the repo-local `.er-config.toml` and close the hub
+    pub fn config_hub_save_local(&mut self) {
+        let repo_root = self.tab().repo_root.clone();
+        if let Err(e) = config::save_config_local(&self.config, &repo_root) {
+            self.notify(&format!("Failed to save: {}", e));
+        } else {
+            self.notify("Config saved to .er-config.toml");
+            self.overlay = None;
+        }
+    }
+
+    /// Save config to the global config file and close the hub
+    pub fn config_hub_save_global(&mut self) {
         if let Err(e) = config::save_config(&self.config) {
             self.notify(&format!("Failed to save: {}", e));
         } else {
-            self.notify("Settings saved");
+            self.notify("Config saved globally");
+            self.overlay = None;
         }
-        self.overlay = None;
     }
 
-    /// Revert settings to the saved snapshot and close the overlay
-    pub fn settings_cancel(&mut self) {
-        if let Some(OverlayData::Settings { saved_config, .. }) = self.overlay.take() {
+    /// Revert config to the saved snapshot and close the hub
+    pub fn config_hub_cancel(&mut self) {
+        if let Some(OverlayData::ConfigHub { saved_config, .. }) = self.overlay.take() {
             self.config = *saved_config;
-            // Revert theme to saved config
             crate::ui::themes::set_theme_by_name(&self.config.display.theme);
+        }
+    }
+
+    /// Rebuild the config hub items list (e.g. after watched paths change) and clamp selection
+    pub fn config_hub_rebuild_items(&mut self) {
+        if let Some(OverlayData::ConfigHub {
+            items,
+            selected,
+            editing,
+            ..
+        }) = &mut self.overlay
+        {
+            *items = config::config_hub_items(&self.config);
+            // Clamp selected to valid range, skip headers
+            let len = items.len();
+            if *selected >= len {
+                *selected = len.saturating_sub(1);
+            }
+            // Skip headers at the clamped position
+            while *selected < len
+                && matches!(items[*selected], config::ConfigItem::SectionHeader(_))
+            {
+                *selected += 1;
+                if *selected >= len {
+                    *selected = len.saturating_sub(1);
+                    break;
+                }
+            }
+            // Also clear editing if item index is now out of range
+            if let Some(ref ed) = editing {
+                if ed.item_index >= len {
+                    *editing = None;
+                }
+            }
         }
     }
 
@@ -4726,20 +4918,6 @@ impl App {
             }) => {
                 if *selected + 1 < entries.len() {
                     *selected += 1;
-                }
-            }
-            Some(OverlayData::Settings { selected, .. }) => {
-                let items = config::settings_items();
-                // Skip section headers when navigating down
-                let mut next = *selected + 1;
-                while next < items.len() {
-                    if !matches!(items[next], config::SettingsItem::SectionHeader(_)) {
-                        break;
-                    }
-                    next += 1;
-                }
-                if next < items.len() {
-                    *selected = next;
                 }
             }
             // `selected` indexes presets (0..preset_count) then history (preset_count..);
@@ -4768,6 +4946,27 @@ impl App {
                     *selected = next;
                 }
             }
+            Some(OverlayData::ConfigHub {
+                items,
+                selected,
+                editing,
+                ..
+            }) => {
+                // Don't navigate while editing
+                if editing.is_some() {
+                    return;
+                }
+                let mut next = *selected + 1;
+                while next < items.len() {
+                    if !matches!(items[next], config::ConfigItem::SectionHeader(_)) {
+                        break;
+                    }
+                    next += 1;
+                }
+                if next < items.len() {
+                    *selected = next;
+                }
+            }
             None => {}
         }
     }
@@ -4779,20 +4978,6 @@ impl App {
             | Some(OverlayData::FilterHistory { selected, .. }) => {
                 if *selected > 0 {
                     *selected -= 1;
-                }
-            }
-            Some(OverlayData::Settings { selected, .. }) => {
-                let items = config::settings_items();
-                // Skip section headers when navigating up
-                if *selected > 0 {
-                    let mut prev = *selected - 1;
-                    while prev > 0 && matches!(items[prev], config::SettingsItem::SectionHeader(_))
-                    {
-                        prev -= 1;
-                    }
-                    if !matches!(items[prev], config::SettingsItem::SectionHeader(_)) {
-                        *selected = prev;
-                    }
                 }
             }
             Some(OverlayData::ModalHub {
@@ -4809,32 +4994,32 @@ impl App {
                     }
                 }
             }
+            Some(OverlayData::ConfigHub {
+                items,
+                selected,
+                editing,
+                ..
+            }) => {
+                // Don't navigate while editing
+                if editing.is_some() {
+                    return;
+                }
+                if *selected > 0 {
+                    let mut prev = *selected - 1;
+                    while prev > 0 && matches!(items[prev], config::ConfigItem::SectionHeader(_)) {
+                        prev -= 1;
+                    }
+                    if !matches!(items[prev], config::ConfigItem::SectionHeader(_)) {
+                        *selected = prev;
+                    }
+                }
+            }
             None => {}
         }
     }
 
     /// Handle Enter in an overlay — opens selection in a new tab or saves settings
     pub fn overlay_select(&mut self) -> Result<()> {
-        // Settings overlay: Enter on a toggle item toggles it; otherwise treat as Save
-        if let Some(OverlayData::Settings { selected, .. }) = &self.overlay {
-            let items = config::settings_items();
-            if let Some(item) = items.get(*selected) {
-                match item {
-                    config::SettingsItem::BoolToggle { .. }
-                    | config::SettingsItem::StringCycle { .. } => {
-                        self.settings_toggle();
-                        return Ok(());
-                    }
-                    _ => {
-                        // Non-interactive item — treat Enter as Save
-                        self.settings_save();
-                        return Ok(());
-                    }
-                }
-            }
-            return Ok(());
-        }
-
         let overlay = match self.overlay.take() {
             Some(o) => o,
             None => return Ok(()),
@@ -4897,9 +5082,6 @@ impl App {
                     });
                 }
             }
-            OverlayData::Settings { .. } => {
-                // Already handled above
-            }
             OverlayData::ModalHub {
                 items, selected, ..
             } => {
@@ -4914,6 +5096,9 @@ impl App {
                         self.notify(&item.description);
                     }
                 }
+            }
+            OverlayData::ConfigHub { .. } => {
+                // ConfigHub enter is handled directly in handle_overlay_input
             }
         }
         Ok(())
@@ -4938,10 +5123,10 @@ impl App {
         }
     }
 
-    /// Close the overlay (reverts settings changes if in Settings overlay)
+    /// Close the overlay (reverts settings changes if in ConfigHub overlay)
     pub fn overlay_close(&mut self) {
-        if matches!(self.overlay, Some(OverlayData::Settings { .. })) {
-            self.settings_cancel();
+        if matches!(self.overlay, Some(OverlayData::ConfigHub { .. })) {
+            self.config_hub_cancel();
         } else {
             self.overlay = None;
         }
@@ -6464,15 +6649,12 @@ impl App {
 
     /// Returns a list of (name, status_label, is_running) for agent commands
     /// that should show a persistent status indicator in the top bar.
-    /// Only tracks "review" and "questions" commands.
     pub fn agent_statuses(&self) -> Vec<(&str, &str, bool)> {
-        let mut result = Vec::new();
-        for name in &["review", "questions"] {
-            if let Some(CommandStatus::Running) = self.command_status.get(*name) {
-                result.push((*name, "running…", true));
-            }
-        }
-        result
+        self.command_status
+            .iter()
+            .filter(|(_, status)| matches!(status, CommandStatus::Running))
+            .map(|(name, _)| (name.as_str(), "running", true))
+            .collect()
     }
 
     /// Spawn a shell command in the background under the given name.
@@ -6504,20 +6686,75 @@ impl App {
         let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
         let name_owned = name.to_string();
 
+        // Send status log entry before spawning
+        let _ = self.log_tx.send(AgentLogEntry {
+            timestamp: std::time::Instant::now(),
+            command_name: name.to_string(),
+            source: AgentLogSource::Status,
+            text: format!("{} started", name),
+        });
+
+        let log_tx = self.log_tx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
-                let output = std::process::Command::new("sh")
+                let mut child = std::process::Command::new("sh")
                     .args(["-c", &cmd])
                     .current_dir(&repo_root)
-                    .stdout(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
-                    .output()
+                    .spawn()
                     .with_context(|| format!("Failed to run {}", name_owned))?;
 
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("{} failed: {}", name_owned, stderr.trim());
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+
+                let log_tx_out = log_tx.clone();
+                let cmd_name_out = name_owned.clone();
+                let stdout_handle = std::thread::spawn(move || {
+                    if let Some(pipe) = stdout {
+                        use std::io::BufRead;
+                        let reader = std::io::BufReader::new(pipe);
+                        for line in reader.lines().map_while(Result::ok) {
+                            let _ = log_tx_out.send(AgentLogEntry {
+                                timestamp: std::time::Instant::now(),
+                                command_name: cmd_name_out.clone(),
+                                source: AgentLogSource::Stdout,
+                                text: line,
+                            });
+                        }
+                    }
+                });
+
+                let log_tx_err = log_tx.clone();
+                let cmd_name_err = name_owned.clone();
+                let mut stderr_lines: Vec<String> = Vec::new();
+                let stderr_handle = std::thread::spawn(move || -> Vec<String> {
+                    if let Some(pipe) = stderr {
+                        use std::io::BufRead;
+                        let reader = std::io::BufReader::new(pipe);
+                        for line in reader.lines().map_while(Result::ok) {
+                            let _ = log_tx_err.send(AgentLogEntry {
+                                timestamp: std::time::Instant::now(),
+                                command_name: cmd_name_err.clone(),
+                                source: AgentLogSource::Stderr,
+                                text: line.clone(),
+                            });
+                            stderr_lines.push(line);
+                        }
+                    }
+                    stderr_lines
+                });
+
+                let status = child
+                    .wait()
+                    .with_context(|| format!("Failed to wait for {}", name_owned))?;
+                let _ = stdout_handle.join();
+                let accumulated_stderr = stderr_handle.join().unwrap_or_default();
+
+                if !status.success() {
+                    let stderr_text = accumulated_stderr.join("\n");
+                    anyhow::bail!("{} failed: {}", name_owned, stderr_text.trim());
                 }
 
                 // Summary-specific: optionally push to PR body
@@ -6542,6 +6779,27 @@ impl App {
         Ok(())
     }
 
+    /// Drain all pending agent log entries from the channel into `agent_log`.
+    /// Called each tick. Auto-scrolls the AgentLog panel when new entries arrive.
+    pub fn drain_agent_log(&mut self) {
+        let mut received = false;
+        while let Ok(entry) = self.log_rx.try_recv() {
+            self.agent_log.push_back(entry);
+            received = true;
+            if self.agent_log.len() > 5000 {
+                self.agent_log.pop_front();
+            }
+        }
+        if received && self.agent_log_auto_scroll {
+            if let Some(panel) = self.tab().panel {
+                if panel == crate::ai::PanelContent::AgentLog {
+                    // Set panel_scroll to a large value — rendering will clamp it
+                    self.tab_mut().panel_scroll = self.agent_log.len().saturating_sub(1) as u16;
+                }
+            }
+        }
+    }
+
     /// Poll all running commands for completion (called from event loop).
     pub fn check_commands(&mut self) {
         let names: Vec<String> = self.command_rx.keys().cloned().collect();
@@ -6564,6 +6822,12 @@ impl App {
                     Ok(()) => {
                         self.command_status
                             .insert(name.clone(), CommandStatus::Done);
+                        let _ = self.log_tx.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: name.clone(),
+                            source: AgentLogSource::Status,
+                            text: format!("{} completed", name),
+                        });
                         // Force AI reload for commands that write .er/ files
                         if name == "summary" || name == "review" || name == "questions" {
                             self.tab_mut().last_ai_check = None;
@@ -6575,6 +6839,12 @@ impl App {
                         let msg = format!("{}", e);
                         self.command_status
                             .insert(name.clone(), CommandStatus::Failed(msg.clone()));
+                        let _ = self.log_tx.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: name.clone(),
+                            source: AgentLogSource::Status,
+                            text: format!("{} failed: {}", name, msg),
+                        });
                         // Truncate long error messages to fit status bar (safe for multi-byte UTF-8)
                         let short = if msg.len() > 80 {
                             let boundary = msg
@@ -6615,6 +6885,15 @@ impl App {
         let name_owned = name.to_string();
         let prompt_owned = prompt.to_string();
 
+        // Send status log entry before spawning
+        let _ = self.log_tx.send(AgentLogEntry {
+            timestamp: std::time::Instant::now(),
+            command_name: name.to_string(),
+            source: AgentLogSource::Status,
+            text: format!("{} started", name),
+        });
+
+        let log_tx = self.log_tx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
@@ -6625,6 +6904,21 @@ impl App {
                     .iter()
                     .map(|a| a.replace("{prompt}", &prompt_owned))
                     .collect();
+
+                // Auto-inject --output-format stream-json for claude commands so the
+                // agent log panel can show real-time tool calls and progress. This is
+                // injected here (not in config defaults) so user configs that override
+                // agent.args still get streaming without manual changes.
+                if (agent_cmd.ends_with("claude") || agent_cmd == "claude")
+                    && !agent_args.iter().any(|a| a == "--output-format")
+                {
+                    // --verbose is required when combining --print with stream-json
+                    if !agent_args.iter().any(|a| a == "--verbose") {
+                        agent_args.push("--verbose".to_string());
+                    }
+                    agent_args.push("--output-format".to_string());
+                    agent_args.push("stream-json".to_string());
+                }
 
                 // Grant the agent targeted tool permissions without blanket
                 // --dangerously-skip-permissions. The prompt is fully controlled by er.
@@ -6637,29 +6931,85 @@ impl App {
                 // In remote mode, run from the cache dir so relative paths resolve there.
                 // The agent fetches the diff via `gh` — no local repo access needed.
                 let work_dir = if is_remote { &er_dir_path } else { &repo_root };
-                let output = std::process::Command::new(&agent_cmd)
+                let mut child = std::process::Command::new(&agent_cmd)
                     .args(&agent_args)
                     .current_dir(work_dir)
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
-                    .output()
+                    .spawn()
                     .with_context(|| format!("Failed to run {} ({})", name_owned, agent_cmd))?;
 
-                // Write debug log with stdout + stderr
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+
+                // Accumulate stdout for debug log while also streaming to agent log.
+                // When output is stream-json (default for claude), parse events into
+                // human-readable log entries. Falls back to raw lines for other formats.
+                let log_tx_out = log_tx.clone();
+                let cmd_name_out = name_owned.clone();
+                let stdout_handle = std::thread::spawn(move || -> Vec<String> {
+                    let mut lines: Vec<String> = Vec::new();
+                    if let Some(pipe) = stdout {
+                        use std::io::BufRead;
+                        let reader = std::io::BufReader::new(pipe);
+                        for line in reader.lines().map_while(Result::ok) {
+                            lines.push(line.clone());
+                            // Try to parse as stream-json event
+                            let display = parse_stream_json_line(&line);
+                            if let Some(text) = display {
+                                let _ = log_tx_out.send(AgentLogEntry {
+                                    timestamp: std::time::Instant::now(),
+                                    command_name: cmd_name_out.clone(),
+                                    source: AgentLogSource::Stdout,
+                                    text,
+                                });
+                            }
+                            // Skip lines that parse to None (noise like empty results)
+                        }
+                    }
+                    lines
+                });
+
+                // Accumulate stderr for debug log while also streaming to agent log
+                let log_tx_err = log_tx.clone();
+                let cmd_name_err = name_owned.clone();
+                let stderr_handle = std::thread::spawn(move || -> Vec<String> {
+                    let mut lines: Vec<String> = Vec::new();
+                    if let Some(pipe) = stderr {
+                        use std::io::BufRead;
+                        let reader = std::io::BufReader::new(pipe);
+                        for line in reader.lines().map_while(Result::ok) {
+                            let _ = log_tx_err.send(AgentLogEntry {
+                                timestamp: std::time::Instant::now(),
+                                command_name: cmd_name_err.clone(),
+                                source: AgentLogSource::Stderr,
+                                text: line.clone(),
+                            });
+                            lines.push(line);
+                        }
+                    }
+                    lines
+                });
+
+                let status = child.wait().with_context(|| {
+                    format!("Failed to wait for {} ({})", name_owned, agent_cmd)
+                })?;
+                let stdout_lines = stdout_handle.join().unwrap_or_default();
+                let stderr_lines = stderr_handle.join().unwrap_or_default();
+
+                // Write debug log with accumulated stdout + stderr
                 let debug_content = format!(
                     "=== {} agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
                     name_owned,
                     agent_cmd,
                     agent_args.join(" "),
-                    output.status.code().map_or("signal".to_string(), |c| c.to_string()),
-                    stdout,
-                    stderr,
+                    status.code().map_or("signal".to_string(), |c| c.to_string()),
+                    stdout_lines.join("\n"),
+                    stderr_lines.join("\n"),
                 );
                 let _ = std::fs::write(&debug_path, &debug_content);
 
-                if !output.status.success() {
+                if !status.success() {
                     anyhow::bail!("{} failed (see .er/debug-{}.log)", name_owned, name_owned);
                 }
 
@@ -6683,6 +7033,96 @@ impl App {
                 self.watch_message_ticks = 0;
             }
         }
+    }
+}
+
+/// Parse a Claude Code `--output-format stream-json` line into a human-readable string.
+/// Returns `None` for events that should be suppressed (noise).
+fn parse_stream_json_line(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let obj = v.as_object()?;
+
+    match obj.get("type")?.as_str()? {
+        "assistant" => {
+            // Assistant message — extract text content
+            let message = obj.get("message")?.as_object()?;
+            match message.get("type")?.as_str()? {
+                "text" => {
+                    let text = message.get("text")?.as_str()?;
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+                    Some(trimmed.to_string())
+                }
+                "tool_use" => {
+                    let tool = message.get("name")?.as_str().unwrap_or("tool");
+                    let input = message.get("input").and_then(|i| i.as_object());
+                    // Show key details based on tool type
+                    let detail = match tool {
+                        "Read" => input
+                            .and_then(|i| i.get("file_path"))
+                            .and_then(|p| p.as_str())
+                            .map(shorten_path)
+                            .unwrap_or_default(),
+                        "Write" | "Edit" => input
+                            .and_then(|i| i.get("file_path"))
+                            .and_then(|p| p.as_str())
+                            .map(shorten_path)
+                            .unwrap_or_default(),
+                        "Bash" => input
+                            .and_then(|i| i.get("command"))
+                            .and_then(|c| c.as_str())
+                            .map(|c| truncate_str(c, 60))
+                            .unwrap_or_default(),
+                        "Glob" | "Grep" => input
+                            .and_then(|i| i.get("pattern"))
+                            .and_then(|p| p.as_str())
+                            .map(|p| truncate_str(p, 40))
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    if detail.is_empty() {
+                        Some(format!("→ {}", tool))
+                    } else {
+                        Some(format!("→ {} {}", tool, detail))
+                    }
+                }
+                _ => None,
+            }
+        }
+        "tool_result" | "result" => {
+            // Tool results are verbose — skip them to reduce noise
+            None
+        }
+        "system" => {
+            // System events (cost, session info) — show selectively
+            let message = obj.get("message")?.as_str()?;
+            if message.contains("cost") || message.contains("token") {
+                Some(format!("⊘ {}", message))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn shorten_path(path: &str) -> String {
+    // Show last 2 components for readability
+    let parts: Vec<&str> = path.rsplit('/').take(2).collect();
+    if parts.len() == 2 {
+        format!("{}/{}", parts[1], parts[0])
+    } else {
+        parts[0].to_string()
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max])
     }
 }
 
@@ -7682,8 +8122,8 @@ mod tests {
         let mut tab = make_test_tab(vec![]);
         tab.panel = Some(crate::ai::PanelContent::FileDetail);
         tab.toggle_panel();
-        // No AI data, no PR data: FileDetail → None (both skipped)
-        assert_eq!(tab.panel, None);
+        // No AI data, no PR data, no SymbolRefs: FileDetail → AgentLog (AI and PR skipped)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AgentLog));
     }
 
     #[test]
@@ -7713,8 +8153,8 @@ mod tests {
         tab.ai.summary = Some("summary".to_string());
         tab.panel = Some(crate::ai::PanelContent::AiSummary);
         tab.toggle_panel();
-        // AiSummary → None (no PR available)
-        assert_eq!(tab.panel, None);
+        // AiSummary → AgentLog (no PR available, no SymbolRefs)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AgentLog));
     }
 
     #[test]
@@ -7747,15 +8187,15 @@ mod tests {
         assert_eq!(tab.panel_scroll, 0);
 
         tab.panel_scroll = 10;
-        tab.toggle_panel(); // FileDetail → None (no AI or PR data)
+        tab.toggle_panel(); // FileDetail → AgentLog (no AI or PR data)
         assert_eq!(tab.panel_scroll, 0);
     }
 
     #[test]
     fn toggle_panel_sets_panel_focus_false_when_closing() {
         let mut tab = make_test_tab(vec![]);
-        // PrOverview → None closes the panel and clears focus
-        tab.panel = Some(crate::ai::PanelContent::PrOverview);
+        // AgentLog → None closes the panel and clears focus
+        tab.panel = Some(crate::ai::PanelContent::AgentLog);
         tab.panel_focus = true;
         tab.toggle_panel();
         assert!(!tab.panel_focus);
@@ -7778,7 +8218,9 @@ mod tests {
         assert_eq!(tab.panel, None);
         tab.toggle_panel(); // None → FileDetail
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
-        tab.toggle_panel(); // FileDetail → None (no AI, no PR)
+        tab.toggle_panel(); // FileDetail → AgentLog (no AI, no PR, no SymbolRefs)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AgentLog));
+        tab.toggle_panel(); // AgentLog → None
         assert_eq!(tab.panel, None);
     }
 
@@ -7792,7 +8234,9 @@ mod tests {
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
         tab.toggle_panel(); // FileDetail → AiSummary (AI present)
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
-        tab.toggle_panel(); // AiSummary → None (no PR)
+        tab.toggle_panel(); // AiSummary → AgentLog (no PR, no SymbolRefs)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AgentLog));
+        tab.toggle_panel(); // AgentLog → None
         assert_eq!(tab.panel, None);
     }
 
@@ -7820,7 +8264,9 @@ mod tests {
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
         tab.toggle_panel(); // AiSummary → PrOverview
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
-        tab.toggle_panel(); // PrOverview → None
+        tab.toggle_panel(); // PrOverview → AgentLog (no SymbolRefs)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AgentLog));
+        tab.toggle_panel(); // AgentLog → None
         assert_eq!(tab.panel, None);
     }
 
@@ -7830,7 +8276,9 @@ mod tests {
     fn toggle_panel_reverse_full_cycle_no_ai_no_pr() {
         let mut tab = make_test_tab(vec![]);
         assert_eq!(tab.panel, None);
-        tab.toggle_panel_reverse(); // None → FileDetail (no sym, no PR, no AI)
+        tab.toggle_panel_reverse(); // None → AgentLog (always available, last in forward cycle)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AgentLog));
+        tab.toggle_panel_reverse(); // AgentLog → FileDetail (no sym, no PR, no AI)
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
         tab.toggle_panel_reverse(); // FileDetail → None
         assert_eq!(tab.panel, None);
@@ -7842,7 +8290,9 @@ mod tests {
         tab.ai.summary = Some("summary".to_string());
         tab.layers.show_ai_findings = true;
         assert_eq!(tab.panel, None);
-        tab.toggle_panel_reverse(); // None → AiSummary (no sym, no PR, has AI)
+        tab.toggle_panel_reverse(); // None → AgentLog (always last in forward cycle)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AgentLog));
+        tab.toggle_panel_reverse(); // AgentLog → AiSummary (no sym, no PR, has AI)
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
         tab.toggle_panel_reverse(); // AiSummary → FileDetail
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
@@ -7868,7 +8318,9 @@ mod tests {
             reviewers: vec![],
         });
         assert_eq!(tab.panel, None);
-        tab.toggle_panel_reverse(); // None → PrOverview (no sym, has PR)
+        tab.toggle_panel_reverse(); // None → AgentLog (always last in forward cycle)
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AgentLog));
+        tab.toggle_panel_reverse(); // AgentLog → PrOverview (no sym, has PR)
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::PrOverview));
         tab.toggle_panel_reverse(); // PrOverview → AiSummary
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::AiSummary));
@@ -7881,7 +8333,10 @@ mod tests {
     #[test]
     fn toggle_panel_reverse_skips_unavailable_panels() {
         let mut tab = make_test_tab(vec![]);
-        // No AI, no PR: reverse from None goes straight to FileDetail
+        // No AI, no PR: reverse from None goes to AgentLog (always available)
+        tab.toggle_panel_reverse();
+        assert_eq!(tab.panel, Some(crate::ai::PanelContent::AgentLog));
+        // AgentLog → FileDetail (no sym, no PR, no AI)
         tab.toggle_panel_reverse();
         assert_eq!(tab.panel, Some(crate::ai::PanelContent::FileDetail));
     }
@@ -7912,9 +8367,10 @@ mod tests {
         let mut tab = make_test_tab(vec![]);
         tab.panel_scroll = 10;
         tab.panel_focus = true;
-        tab.toggle_panel_reverse(); // None → FileDetail
+        tab.toggle_panel_reverse(); // None → AgentLog
         assert_eq!(tab.panel_scroll, 0);
         // panel_focus stays true when panel is open
+        tab.toggle_panel_reverse(); // AgentLog → FileDetail (no sym, no PR, no AI)
         tab.toggle_panel_reverse(); // FileDetail → None
         assert!(!tab.panel_focus);
     }
@@ -8111,6 +8567,7 @@ mod tests {
     // ── get_line_anchor ──
 
     fn make_test_app(tab: TabState) -> App {
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -8126,6 +8583,10 @@ mod tests {
             config: ErConfig::default(),
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            log_tx,
+            log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
             pending_hub_action: None,
         }
     }

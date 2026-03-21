@@ -73,11 +73,13 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
         status_bar::render_watch_notification(f, f.area(), msg);
     }
 
-    // Popup overlay (worktree picker, directory browser, settings)
+    // Popup overlay (worktree picker, directory browser, config hub)
     if let Some(ref overlay_data) = app.overlay {
         match overlay_data {
-            OverlayData::Settings { selected, .. } => {
-                settings::render_settings(f, f.area(), app, *selected);
+            OverlayData::ConfigHub {
+                selected, editing, ..
+            } => {
+                settings::render_config_hub(f, f.area(), app, *selected, editing);
             }
             _ => {
                 overlay::render_overlay(f, f.area(), overlay_data);

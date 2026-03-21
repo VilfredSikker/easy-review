@@ -9,7 +9,7 @@ use super::styles;
 use crate::app::{DirEntry, HubItem, HubKind, OverlayData, Worktree};
 
 /// Render the active overlay on top of the main UI
-/// Note: Settings overlay is rendered separately in ui/mod.rs since it needs App access.
+/// Note: ConfigHub overlay is rendered separately in ui/mod.rs since it needs App access.
 pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
     match overlay {
         OverlayData::WorktreePicker {
@@ -25,7 +25,7 @@ pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
         } => {
             render_directory_browser(f, area, current_path, entries, *selected);
         }
-        OverlayData::Settings { .. } => {
+        OverlayData::ConfigHub { .. } => {
             // Handled in ui/mod.rs draw()
         }
         OverlayData::FilterHistory {

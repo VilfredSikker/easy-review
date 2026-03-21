@@ -161,7 +161,13 @@ fn default_agent_args() -> Vec<String> {
     // to receive user input. If a user overrides `agent.args` in their config and omits
     // {prompt}, the prompt is silently dropped and the agent runs with no meaningful input.
     // Validate that {prompt} appears in args when loading config.
-    vec!["--print".into(), "-p".into(), "{prompt}".into()]
+    vec![
+        "--print".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "-p".into(),
+        "{prompt}".into(),
+    ]
 }
 
 impl Default for FeatureFlags {
@@ -310,167 +316,267 @@ pub fn save_config(config: &ErConfig) -> Result<()> {
     Ok(())
 }
 
-/// Settings item types for the settings overlay UI.
-#[derive(Debug, Clone)]
-pub enum SettingsItem {
+/// Config hub item types for the enhanced config hub UI.
+#[derive(Clone)]
+pub enum ConfigItem {
     SectionHeader(String),
     BoolToggle {
         label: String,
+        description: String,
         get: fn(&ErConfig) -> bool,
         set: fn(&mut ErConfig, bool),
     },
-    NumberEdit {
-        label: String,
-        get: fn(&ErConfig) -> u8,
-        #[allow(dead_code)]
-        set: fn(&mut ErConfig, u8),
-    },
-    StringDisplay {
-        label: String,
-        get: fn(&ErConfig) -> String,
-    },
     StringCycle {
         label: String,
+        description: String,
         options: &'static [&'static str],
         get: fn(&ErConfig) -> String,
         set: fn(&mut ErConfig, String),
     },
+    StringEdit {
+        label: String,
+        description: String,
+        placeholder: String,
+        get: fn(&ErConfig) -> String,
+        set: fn(&mut ErConfig, String),
+    },
+    NumberEdit {
+        label: String,
+        description: String,
+        min: u8,
+        max: u8,
+        get: fn(&ErConfig) -> u8,
+        set: fn(&mut ErConfig, u8),
+    },
+    ListEntry {
+        label: String,
+        index: usize,
+    },
+    ListAdd {
+        label: String,
+        section: String,
+    },
 }
 
-/// Build the list of settings items for the settings overlay.
-pub fn settings_items() -> Vec<SettingsItem> {
-    vec![
-        SettingsItem::SectionHeader("Views".into()),
-        SettingsItem::BoolToggle {
+impl std::fmt::Debug for ConfigItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigItem::SectionHeader(s) => write!(f, "SectionHeader({:?})", s),
+            ConfigItem::BoolToggle { label, .. } => write!(f, "BoolToggle({:?})", label),
+            ConfigItem::StringCycle { label, .. } => write!(f, "StringCycle({:?})", label),
+            ConfigItem::StringEdit { label, .. } => write!(f, "StringEdit({:?})", label),
+            ConfigItem::NumberEdit { label, .. } => write!(f, "NumberEdit({:?})", label),
+            ConfigItem::ListEntry { label, index } => {
+                write!(f, "ListEntry({:?}, {})", label, index)
+            }
+            ConfigItem::ListAdd { label, section } => {
+                write!(f, "ListAdd({:?}, {:?})", label, section)
+            }
+        }
+    }
+}
+
+/// Build the list of config hub items for the config hub overlay.
+pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
+    let mut items: Vec<ConfigItem> = vec![
+        // ── Views ──
+        ConfigItem::SectionHeader("Views".into()),
+        ConfigItem::BoolToggle {
             label: "Branch diff (1)".into(),
+            description: "Show branch diff mode".into(),
             get: |c| c.features.view_branch,
             set: |c, v| c.features.view_branch = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Unstaged changes (2)".into(),
+            description: "Show unstaged changes mode".into(),
             get: |c| c.features.view_unstaged,
             set: |c, v| c.features.view_unstaged = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Staged changes (3)".into(),
+            description: "Show staged changes mode".into(),
             get: |c| c.features.view_staged,
             set: |c, v| c.features.view_staged = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "History (4)".into(),
+            description: "Show commit history mode".into(),
             get: |c| c.features.view_history,
             set: |c, v| c.features.view_history = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Conflicts (5)".into(),
+            description: "Show merge conflicts mode".into(),
             get: |c| c.features.view_conflicts,
             set: |c, v| c.features.view_conflicts = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Hidden files (6)".into(),
+            description: "Show hidden files mode".into(),
             get: |c| c.features.view_hidden,
             set: |c, v| c.features.view_hidden = v,
         },
-        SettingsItem::SectionHeader("Display".into()),
-        SettingsItem::StringCycle {
+        // ── Display ──
+        ConfigItem::SectionHeader("Display".into()),
+        ConfigItem::StringCycle {
             label: "Theme".into(),
+            description: "Color theme".into(),
             options: &["ocean-depth", "moonlight", "daybreak", "high-contrast"],
             get: |c| c.display.theme.clone(),
             set: |c, v| c.display.theme = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Line numbers".into(),
+            description: "Show line numbers in diff".into(),
             get: |c| c.display.line_numbers,
             set: |c, v| c.display.line_numbers = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Wrap lines".into(),
+            description: "Wrap long lines".into(),
             get: |c| c.display.wrap_lines,
             set: |c, v| c.display.wrap_lines = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Split diff".into(),
+            description: "Side-by-side diff view".into(),
             get: |c| c.display.split_diff,
             set: |c, v| c.display.split_diff = v,
         },
-        SettingsItem::NumberEdit {
+        ConfigItem::NumberEdit {
             label: "Tab width".into(),
+            description: "Spaces per tab stop".into(),
+            min: 1,
+            max: 16,
             get: |c| c.display.tab_width,
             set: |c, v| c.display.tab_width = v,
         },
-        SettingsItem::SectionHeader("Key Hints".into()),
-        SettingsItem::BoolToggle {
-            label: "Navigation (j/k, n/N, ␣, /)".into(),
+        // ── Key Hints ──
+        ConfigItem::SectionHeader("Key Hints".into()),
+        ConfigItem::BoolToggle {
+            label: "Navigation hints".into(),
+            description: "Show j/k, n/N, ␣, / hints".into(),
             get: |c| c.hints.navigation,
             set: |c, v| c.hints.navigation = v,
         },
-        SettingsItem::BoolToggle {
-            label: "Staging (s, c commit)".into(),
+        ConfigItem::BoolToggle {
+            label: "Staging hints".into(),
+            description: "Show s, c commit hints".into(),
             get: |c| c.hints.staging,
             set: |c, v| c.hints.staging = v,
         },
-        SettingsItem::BoolToggle {
-            label: "Comment actions (r, d)".into(),
+        ConfigItem::BoolToggle {
+            label: "Comment hints".into(),
+            description: "Show r, d comment action hints".into(),
             get: |c| c.hints.comments,
             set: |c, v| c.hints.comments = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Verbose hints".into(),
+            description: "Show all key hints".into(),
             get: |c| c.hints.verbose,
             set: |c, v| c.hints.verbose = v,
         },
-        SettingsItem::SectionHeader("Commands".into()),
-        SettingsItem::StringDisplay {
+        // ── Commands ──
+        ConfigItem::SectionHeader("Commands".into()),
+        ConfigItem::StringEdit {
             label: "Summary".into(),
-            get: |c| {
-                c.commands
-                    .summary
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
-            },
+            description: "Generate diff summary".into(),
+            placeholder: "e.g. claude -p 'Summarize: {diff}'".into(),
+            get: |c| c.commands.summary.clone().unwrap_or_default(),
+            set: |c, v| c.commands.summary = if v.is_empty() { None } else { Some(v) },
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::StringEdit {
+            label: "Test".into(),
+            description: "Run tests".into(),
+            placeholder: "e.g. cargo test".into(),
+            get: |c| c.commands.test.clone().unwrap_or_default(),
+            set: |c, v| c.commands.test = if v.is_empty() { None } else { Some(v) },
+        },
+        ConfigItem::StringEdit {
+            label: "Lint".into(),
+            description: "Run linter".into(),
+            placeholder: "e.g. cargo clippy".into(),
+            get: |c| c.commands.lint.clone().unwrap_or_default(),
+            set: |c, v| c.commands.lint = if v.is_empty() { None } else { Some(v) },
+        },
+        ConfigItem::StringEdit {
+            label: "Typecheck".into(),
+            description: "Run type checker".into(),
+            placeholder: "e.g. tsc --noEmit".into(),
+            get: |c| c.commands.typecheck.clone().unwrap_or_default(),
+            set: |c, v| c.commands.typecheck = if v.is_empty() { None } else { Some(v) },
+        },
+        ConfigItem::StringEdit {
+            label: "Security".into(),
+            description: "Run security scan".into(),
+            placeholder: "e.g. cargo audit".into(),
+            get: |c| c.commands.security.clone().unwrap_or_default(),
+            set: |c, v| c.commands.security = if v.is_empty() { None } else { Some(v) },
+        },
+        ConfigItem::BoolToggle {
             label: "Push summary to PR body".into(),
+            description: "Auto-push summary to GitHub PR".into(),
             get: |c| c.summary.push_to_pr,
             set: |c, v| c.summary.push_to_pr = v,
         },
-        SettingsItem::StringDisplay {
-            label: "Test".into(),
-            get: |c| {
-                c.commands
-                    .test
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
+        // ── Agent ──
+        ConfigItem::SectionHeader("Agent".into()),
+        ConfigItem::StringEdit {
+            label: "Command".into(),
+            description: "Agent executable".into(),
+            placeholder: "e.g. claude".into(),
+            get: |c| c.agent.command.clone(),
+            set: |c, v| {
+                if !v.is_empty() {
+                    c.agent.command = v
+                }
             },
         },
-        SettingsItem::StringDisplay {
-            label: "Lint".into(),
-            get: |c| {
-                c.commands
-                    .lint
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
-            },
+        ConfigItem::StringEdit {
+            label: "Args".into(),
+            description: "Agent arguments (space-separated)".into(),
+            placeholder: "e.g. --print -p {prompt}".into(),
+            get: |c| c.agent.args.join(" "),
+            set: |c, v| c.agent.args = v.split_whitespace().map(|s| s.to_string()).collect(),
         },
-        SettingsItem::StringDisplay {
-            label: "Type check".into(),
-            get: |c| {
-                c.commands
-                    .typecheck
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
-            },
+        // ── Watched Paths ──
+        ConfigItem::SectionHeader("Watched Paths".into()),
+        ConfigItem::StringCycle {
+            label: "Diff mode".into(),
+            description: "How to diff watched files".into(),
+            options: &["content", "snapshot"],
+            get: |c| c.watched.diff_mode.clone(),
+            set: |c, v| c.watched.diff_mode = v,
         },
-        SettingsItem::StringDisplay {
-            label: "Security".into(),
-            get: |c| {
-                c.commands
-                    .security
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
-            },
-        },
-    ]
+    ];
+
+    // One ListEntry per watched path
+    for (i, path) in config.watched.paths.iter().enumerate() {
+        items.push(ConfigItem::ListEntry {
+            label: path.clone(),
+            index: i,
+        });
+    }
+
+    items.push(ConfigItem::ListAdd {
+        label: "Add pattern...".into(),
+        section: "watched".into(),
+    });
+
+    items
+}
+
+/// Save config to the repo-local `.er-config.toml` (atomic tmp+rename).
+pub fn save_config_local(config: &ErConfig, repo_root: &str) -> Result<()> {
+    let dir = std::path::Path::new(repo_root);
+    let path = dir.join(".er-config.toml");
+    let tmp_path = dir.join(".er-config.toml.tmp");
+    let content = toml::to_string_pretty(config)?;
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, &path)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -702,80 +808,5 @@ mod tests {
         assert!(restored.display.wrap_lines);
         assert_eq!(restored.agent.command, "my-agent");
         assert_eq!(restored.agent.args, vec!["--flag"]);
-    }
-
-    // ── settings_items ──
-
-    #[test]
-    fn settings_items_returns_expected_count() {
-        let items = settings_items();
-        // Count non-header items (BoolToggle, NumberEdit, StringDisplay)
-        let toggleable: Vec<_> = items
-            .iter()
-            .filter(|i| !matches!(i, SettingsItem::SectionHeader(_)))
-            .collect();
-        assert!(
-            toggleable.len() >= 14,
-            "Expected at least 14 toggleable items, got {}",
-            toggleable.len()
-        );
-        assert!(
-            items.len() >= 18,
-            "Expected at least 18 total items, got {}",
-            items.len()
-        );
-    }
-
-    #[test]
-    fn settings_items_bool_toggle_get_set_read_write_correct_fields() {
-        let mut config = ErConfig::default();
-
-        let items = settings_items();
-        // Find the "Branch diff" toggle and verify it reads/writes view_branch
-        let branch_toggle = items.iter().find(|i| match i {
-            SettingsItem::BoolToggle { label, .. } => label.contains("Branch"),
-            _ => false,
-        });
-        if let Some(SettingsItem::BoolToggle { get, set, .. }) = branch_toggle {
-            assert!(get(&config));
-            set(&mut config, false);
-            assert!(!config.features.view_branch);
-            assert!(!get(&config));
-        } else {
-            panic!("Branch diff toggle not found");
-        }
-
-        // Verify line_numbers toggle
-        let line_num_toggle = items.iter().find(|i| match i {
-            SettingsItem::BoolToggle { label, .. } => label.contains("Line numbers"),
-            _ => false,
-        });
-        if let Some(SettingsItem::BoolToggle { get, set, .. }) = line_num_toggle {
-            assert!(get(&config));
-            set(&mut config, false);
-            assert!(!config.display.line_numbers);
-        } else {
-            panic!("Line numbers toggle not found");
-        }
-    }
-
-    #[test]
-    fn settings_items_section_headers_present_in_correct_order() {
-        let items = settings_items();
-        let headers: Vec<&str> = items
-            .iter()
-            .filter_map(|i| match i {
-                SettingsItem::SectionHeader(title) => Some(title.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(headers.contains(&"Views"));
-        assert!(headers.contains(&"Display"));
-        assert!(headers.contains(&"Key Hints"));
-        assert!(headers.contains(&"Commands"));
-        // Views should come before Display
-        let views_pos = headers.iter().position(|h| *h == "Views").unwrap();
-        let display_pos = headers.iter().position(|h| *h == "Display").unwrap();
-        assert!(views_pos < display_pos);
     }
 }
