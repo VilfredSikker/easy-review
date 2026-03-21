@@ -7044,51 +7044,59 @@ fn parse_stream_json_line(line: &str) -> Option<String> {
 
     match obj.get("type")?.as_str()? {
         "assistant" => {
-            // Assistant message — extract text content
+            // Assistant message — content is in message.content[] array
             let message = obj.get("message")?.as_object()?;
-            match message.get("type")?.as_str()? {
-                "text" => {
-                    let text = message.get("text")?.as_str()?;
-                    let trimmed = text.trim();
-                    if trimmed.is_empty() {
-                        return None;
+            let content = message.get("content")?.as_array()?;
+            let mut parts: Vec<String> = Vec::new();
+            for item in content {
+                let item_obj = item.as_object()?;
+                match item_obj.get("type")?.as_str()? {
+                    "text" => {
+                        let text = item_obj.get("text")?.as_str()?;
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            parts.push(truncate_str(trimmed, 120));
+                        }
                     }
-                    Some(trimmed.to_string())
-                }
-                "tool_use" => {
-                    let tool = message.get("name")?.as_str().unwrap_or("tool");
-                    let input = message.get("input").and_then(|i| i.as_object());
-                    // Show key details based on tool type
-                    let detail = match tool {
-                        "Read" => input
-                            .and_then(|i| i.get("file_path"))
-                            .and_then(|p| p.as_str())
-                            .map(shorten_path)
-                            .unwrap_or_default(),
-                        "Write" | "Edit" => input
-                            .and_then(|i| i.get("file_path"))
-                            .and_then(|p| p.as_str())
-                            .map(shorten_path)
-                            .unwrap_or_default(),
-                        "Bash" => input
-                            .and_then(|i| i.get("command"))
-                            .and_then(|c| c.as_str())
-                            .map(|c| truncate_str(c, 60))
-                            .unwrap_or_default(),
-                        "Glob" | "Grep" => input
-                            .and_then(|i| i.get("pattern"))
-                            .and_then(|p| p.as_str())
-                            .map(|p| truncate_str(p, 40))
-                            .unwrap_or_default(),
-                        _ => String::new(),
-                    };
-                    if detail.is_empty() {
-                        Some(format!("→ {}", tool))
-                    } else {
-                        Some(format!("→ {} {}", tool, detail))
+                    "tool_use" => {
+                        let tool = item_obj.get("name")?.as_str().unwrap_or("tool");
+                        let input = item_obj.get("input").and_then(|i| i.as_object());
+                        let detail = match tool {
+                            "Read" => input
+                                .and_then(|i| i.get("file_path"))
+                                .and_then(|p| p.as_str())
+                                .map(shorten_path)
+                                .unwrap_or_default(),
+                            "Write" | "Edit" => input
+                                .and_then(|i| i.get("file_path"))
+                                .and_then(|p| p.as_str())
+                                .map(shorten_path)
+                                .unwrap_or_default(),
+                            "Bash" => input
+                                .and_then(|i| i.get("command"))
+                                .and_then(|c| c.as_str())
+                                .map(|c| truncate_str(c, 60))
+                                .unwrap_or_default(),
+                            "Glob" | "Grep" => input
+                                .and_then(|i| i.get("pattern"))
+                                .and_then(|p| p.as_str())
+                                .map(|p| truncate_str(p, 40))
+                                .unwrap_or_default(),
+                            _ => String::new(),
+                        };
+                        if detail.is_empty() {
+                            parts.push(format!("→ {}", tool));
+                        } else {
+                            parts.push(format!("→ {} {}", tool, detail));
+                        }
                     }
+                    _ => {} // skip thinking, signatures, etc.
                 }
-                _ => None,
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("  "))
             }
         }
         "tool_result" | "result" => {
@@ -7096,10 +7104,15 @@ fn parse_stream_json_line(line: &str) -> Option<String> {
             None
         }
         "system" => {
-            // System events (cost, session info) — show selectively
-            let message = obj.get("message")?.as_str()?;
-            if message.contains("cost") || message.contains("token") {
-                Some(format!("⊘ {}", message))
+            // System events — show cost/usage subtypes, skip hooks and noise
+            let subtype = obj.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+            if subtype.contains("cost") || subtype.contains("usage") || subtype.contains("result") {
+                // Try to extract a message field, fall back to subtype
+                let text = obj
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or(subtype);
+                Some(format!("⊘ {}", text))
             } else {
                 None
             }

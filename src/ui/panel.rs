@@ -1088,7 +1088,7 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, app: &'a crate::a
         )));
         lines.push(Line::from(""));
         for wrapped in word_wrap(
-            "Run a command from the AI hub (o) to see live output here",
+            "Run a command from the AI hub (a) to see live output here",
             max_w,
         ) {
             lines.push(Line::from(Span::styled(
