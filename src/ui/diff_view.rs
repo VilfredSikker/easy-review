@@ -13,6 +13,30 @@ use crate::app::{App, DiffMode, SplitSide};
 use crate::config::ErConfig;
 use crate::git::LineType;
 
+/// Expand tab characters to spaces based on configured tab width.
+/// Uses column-aware expansion (tabs align to tab stops, not fixed width).
+fn expand_tabs(line: &str, tab_width: u8) -> String {
+    if !line.contains('\t') {
+        return line.to_string();
+    }
+    let tw = tab_width as usize;
+    let mut result = String::with_capacity(line.len() + 16);
+    let mut col = 0;
+    for ch in line.chars() {
+        if ch == '\t' {
+            let spaces = tw - (col % tw);
+            for _ in 0..spaces {
+                result.push(' ');
+            }
+            col += spaces;
+        } else {
+            result.push(ch);
+            col += 1;
+        }
+    }
+    result
+}
+
 /// Threshold (total diff lines) above which viewport-based rendering is used
 const VIRTUALIZE_THRESHOLD: usize = 200;
 
@@ -353,7 +377,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 // Wrap the content and emit multiple logical lines.
                 // Segments are owned Strings; highlight them and convert to Span<'static>
                 // so they can safely outlive the local `segments` Vec.
-                let segments = word_wrap(&diff_line.content, unified_wrap_width.max(1));
+                let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                let segments = word_wrap(&content, unified_wrap_width.max(1));
                 for (seg_idx, segment) in segments.iter().enumerate() {
                     if logical_line >= render_start && logical_line < render_end {
                         let mut spans: Vec<Span<'static>> = if seg_idx == 0 {
@@ -393,8 +418,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     if diff_line.content.is_empty() {
                         spans.push(Span::styled("", base_style));
                     } else {
-                        let highlighted =
-                            hl.highlight_line(&diff_line.content, &file.path, base_style);
+                        let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                        let highlighted: Vec<Span<'static>> = hl
+                            .highlight_line(&content, &file.path, base_style)
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style))
+                            .collect();
                         spans.extend(highlighted);
                     }
 
@@ -1017,7 +1046,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
                 // Segments are owned Strings; highlight them and convert to Span<'static>
                 // so they can safely outlive the local `segments` Vec.
-                let segments = word_wrap(&diff_line.content, split_wrap_width.max(1));
+                let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                let segments = word_wrap(&content, split_wrap_width.max(1));
                 for (seg_idx, segment) in segments.iter().enumerate() {
                     if logical_line >= render_start && logical_line < render_end {
                         let mut spans: Vec<Span<'static>> = if seg_idx == 0 {
@@ -1097,8 +1127,13 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         if diff_line.content.is_empty() {
                             spans.push(Span::styled("", base_style));
                         } else {
-                            let highlighted =
-                                hl.highlight_line(&diff_line.content, &file.path, base_style);
+                            let content =
+                                expand_tabs(&diff_line.content, app.config.display.tab_width);
+                            let highlighted: Vec<Span<'static>> = hl
+                                .highlight_line(&content, &file.path, base_style)
+                                .into_iter()
+                                .map(|s| Span::styled(s.content.into_owned(), s.style))
+                                .collect();
                             spans.extend(highlighted);
                         }
 
@@ -1519,7 +1554,12 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                 if diff_line.content.is_empty() {
                     spans.push(Span::styled("", base_style));
                 } else {
-                    let highlighted = hl.highlight_line(&diff_line.content, &file.path, base_style);
+                    let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                    let highlighted: Vec<Span<'static>> = hl
+                        .highlight_line(&content, &file.path, base_style)
+                        .into_iter()
+                        .map(|s| Span::styled(s.content.into_owned(), s.style))
+                        .collect();
                     spans.extend(highlighted);
                 }
 
@@ -2201,7 +2241,10 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                             let spans = vec![
                                 Span::styled(format!("{} {} │", old_num, new_num), gutter_style),
                                 Span::styled(prefix, base_style),
-                                Span::styled(diff_line.content.clone(), base_style),
+                                Span::styled(
+                                    expand_tabs(&diff_line.content, app.config.display.tab_width),
+                                    base_style,
+                                ),
                             ];
                             lines.push(Line::from(spans).style(base_style));
                         }
