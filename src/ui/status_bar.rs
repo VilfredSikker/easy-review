@@ -481,7 +481,7 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
 
     // Hub triggers
     hints.push(Hint::new("g", " git "));
-    hints.push(Hint::new("A", " ai "));
+    hints.push(Hint::new("a", " ai "));
     hints.push(Hint::new("?", " help "));
     hints.push(Hint::new("^q", " quit "));
 
@@ -560,14 +560,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
         }
         hints.push(Hint::new("p", " close panel "));
 
-        // PR-specific action
-        if tab.panel == Some(PanelContent::PrOverview) && tab.pr_data.is_some() {
-            hints.push(Hint::new("o", " open in browser "));
-        }
-
         // Hub triggers — always shown
         hints.push(Hint::new("g", " git "));
-        hints.push(Hint::new("A", " ai "));
+        hints.push(Hint::new("a", " ai "));
+        hints.push(Hint::new("o", " open "));
         hints.push(Hint::new("v", " verify "));
         hints.push(Hint::new("?", " help "));
         hints.push(Hint::new("^q", " quit "));
@@ -579,7 +575,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
                 hints.push(Hint::new("c", " comment "));
             }
             hints.push(Hint::new("f", " filter "));
-            hints.push(Hint::new("⇧Space", " unreviewed "));
+            hints.push(Hint::new("!", " unreviewed "));
         }
     } else {
         // Default normal mode — essential navigation only
@@ -617,7 +613,8 @@ fn build_hints(app: &App) -> Vec<Hint> {
 
         // Hub triggers — always shown
         hints.push(Hint::new("g", " git "));
-        hints.push(Hint::new("A", " ai "));
+        hints.push(Hint::new("a", " ai "));
+        hints.push(Hint::new("o", " open "));
         hints.push(Hint::new("v", " verify "));
         hints.push(Hint::new("?", " help "));
         hints.push(Hint::new("^q", " quit "));
@@ -631,11 +628,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("e", " edit "));
             hints.push(Hint::new("p", " panel "));
             hints.push(Hint::new("f", " filter "));
-            hints.push(Hint::new("⇧Space", " unreviewed "));
+            hints.push(Hint::new("!", " unreviewed "));
             hints.push(Hint::new("U", " next unreviewed "));
             hints.push(Hint::new("m", " recent "));
             if tab.ai.has_data() {
-                hints.push(Hint::new("a", " AI toggle "));
+                hints.push(Hint::new("A", " AI toggle "));
             }
             // Show comment navigation hints when current file has comments
             if let Some(file) = tab.files.get(tab.selected_file) {
@@ -738,7 +735,8 @@ pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
         | InputMode::Comment
         | InputMode::Confirm(_)
         | InputMode::Filter
-        | InputMode::Commit => 1,
+        | InputMode::Commit
+        | InputMode::RemoteUrl => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -773,6 +771,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                     "Clear previous AI answers before running? (y=clear n=keep Esc=cancel)"
                         .to_string()
                 }
+                ConfirmAction::ApprovePR => "Approve this PR on GitHub? (y/n)".to_string(),
             };
             let spans = vec![
                 Span::styled(
@@ -870,6 +869,35 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled("Enter", styles::key_hint_style()),
                 Span::styled(
                     " apply  ",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
+                Span::styled("Esc", styles::key_hint_style()),
+                Span::styled(
+                    " cancel",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
+        InputMode::RemoteUrl => {
+            let spans = vec![
+                Span::styled(
+                    " remote ",
+                    ratatui::style::Style::default()
+                        .fg(styles::BG())
+                        .bg(styles::CYAN())
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {}", app.remote_url_input),
+                    ratatui::style::Style::default().fg(styles::TEXT()),
+                ),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::CYAN())),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled("Enter", styles::key_hint_style()),
+                Span::styled(
+                    " open  ",
                     ratatui::style::Style::default().fg(styles::DIM()),
                 ),
                 Span::styled("Esc", styles::key_hint_style()),
@@ -1029,7 +1057,7 @@ mod tests {
             Hint::new("n/N", " hunks "),
             Hint::new("^q", " quit "),
             Hint::new("f", " filter "),
-            Hint::new("⇧Space", " unreviewed "),
+            Hint::new("!", " unreviewed "),
             Hint::new(",", " settings "),
         ];
         // Total width of all hints > 20 chars, so they should wrap

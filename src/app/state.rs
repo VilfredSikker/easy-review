@@ -133,21 +133,36 @@ pub enum InputMode {
     Confirm(ConfirmAction),
     Filter,
     Commit,
+    RemoteUrl,
 }
 
 /// Actions that require user confirmation (y/n)
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum ConfirmAction {
-    DeleteComment { comment_id: String },
-    DeleteWatchedFile { path: String },
+    DeleteComment {
+        comment_id: String,
+    },
+    DeleteWatchedFile {
+        path: String,
+    },
     Push,
-    CleanupQuestions { count: usize },
-    CleanupReviews { count: usize },
+    CleanupQuestions {
+        count: usize,
+    },
+    CleanupReviews {
+        count: usize,
+    },
     /// Confirm clearing previous review before running AI review
-    RunAgentReview { clear_previous: bool },
+    RunAgentReview {
+        clear_previous: bool,
+    },
     /// Confirm clearing previous answers before running AI questions
-    RunAgentQuestions { clear_previous: bool },
+    RunAgentQuestions {
+        clear_previous: bool,
+    },
+    /// Confirm approving the PR on GitHub
+    ApprovePR,
 }
 
 /// Which pane has focus in split diff view
@@ -203,6 +218,7 @@ pub enum HubKind {
     Ai,
     Verify,
     Help,
+    Open,
 }
 
 impl HubKind {
@@ -212,6 +228,7 @@ impl HubKind {
             HubKind::Ai => "AI",
             HubKind::Verify => "VERIFY",
             HubKind::Help => "HELP",
+            HubKind::Open => "OPEN",
         }
     }
 }
@@ -257,6 +274,13 @@ pub enum HubAction {
     PromptReview,
     /// Run AI question answering via configured agent command
     PromptQuestions,
+    /// Approve PR on GitHub
+    ApprovePR,
+    // Open hub actions
+    OpenDirectory,
+    OpenWorktree,
+    OpenRemoteUrl,
+    OpenPrInBrowser,
     // Help — no dispatch, just informational
 }
 
@@ -981,6 +1005,16 @@ impl TabState {
         self.remote_repo.is_some()
     }
 
+    /// Return the `.er/` directory path — uses comments_dir() in remote mode,
+    /// `{repo_root}/.er` in local mode.
+    pub fn er_dir(&self) -> String {
+        if self.is_remote() {
+            self.comments_dir()
+        } else {
+            format!("{}/.er", self.repo_root)
+        }
+    }
+
     /// Directory for storing comment files. In remote mode, uses `~/.cache/er/remote/`.
     /// In normal mode, uses `{repo_root}/.er/`.
     pub fn comments_dir(&self) -> String {
@@ -1396,7 +1430,8 @@ impl TabState {
     /// Reload AI state from .er-* files (preserving current nav state)
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
-        self.ai = ai::load_ai_state(&self.repo_root, &self.branch_diff_hash);
+        let er_dir = self.er_dir();
+        self.ai = ai::load_ai_state(&er_dir, &self.branch_diff_hash);
         // Finding IDs may change after review reload — clear stale reference
         self.focused_finding_id = None;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
@@ -1413,7 +1448,7 @@ impl TabState {
         // separately guard against the empty-list case, or it will index position 0 of an empty Vec.
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
         self.review_cursor = self.review_cursor.min(max_cursor);
-        self.last_ai_check = ai::latest_er_mtime(&self.repo_root);
+        self.last_ai_check = ai::latest_er_mtime(&er_dir);
     }
 
     /// Reload github comments from cache in remote mode.
@@ -1431,7 +1466,6 @@ impl TabState {
     /// Relocate all comments to their new positions after a diff change.
     fn relocate_all_comments(&mut self) {
         let current_hash = self.diff_hash.clone();
-        let repo_root = self.repo_root.clone();
 
         // Build rename map: old path → new path
         let rename_map: std::collections::HashMap<String, String> = self
@@ -1591,7 +1625,7 @@ impl TabState {
         // Write back to disk if anything changed
         if questions_changed {
             if let Some(ref qs) = self.ai.questions {
-                let path = format!("{}/.er/questions.json", repo_root);
+                let path = format!("{}/questions.json", self.er_dir());
                 if let Ok(json) = serde_json::to_string_pretty(qs) {
                     let tmp = format!("{}.tmp", path);
                     let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
@@ -1633,7 +1667,7 @@ impl TabState {
 
     /// Check if .er-* files have been updated since last load (called on tick)
     pub fn check_ai_files_changed(&mut self) -> bool {
-        let latest_mtime = ai::latest_er_mtime(&self.repo_root);
+        let latest_mtime = ai::latest_er_mtime(&self.er_dir());
 
         let should_reload = match latest_mtime {
             Some(t) => match self.last_ai_check {
@@ -3529,10 +3563,16 @@ pub struct App {
     pub watch_message: Option<String>,
 
     /// Ticks since last watch notification (for auto-clearing)
-    pub watch_message_ticks: u8,
+    pub watch_message_ticks: u16,
+
+    /// How many ticks the current notification should persist (default 20 ≈ 2s)
+    pub watch_message_max_ticks: u16,
 
     /// Counter for throttling AI file polling (check every 10 ticks ≈ 1s)
     pub ai_poll_counter: u16,
+
+    /// Input buffer for remote URL input mode
+    pub remote_url_input: String,
 
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
@@ -3614,7 +3654,9 @@ impl App {
             watching: false,
             watch_message: None,
             watch_message_ticks: 0,
+            watch_message_max_ticks: 20,
             ai_poll_counter: 0,
+            remote_url_input: String::new(),
             config: er_config,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
@@ -3637,12 +3679,43 @@ impl App {
             watching: false,
             watch_message: None,
             watch_message_ticks: 0,
+            watch_message_max_ticks: 20,
             ai_poll_counter: 0,
+            remote_url_input: String::new(),
             config: er_config,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             pending_hub_action: None,
         }
+    }
+
+    /// Open a remote PR as a new tab from a GitHub URL.
+    pub fn open_remote_url(&mut self, url: &str) -> Result<()> {
+        let pr_ref = crate::github::parse_github_pr_url(url)
+            .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL"))?;
+
+        // Check if this remote PR is already open
+        let slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
+        for (i, tab) in self.tabs.iter().enumerate() {
+            if tab.remote_repo.as_deref() == Some(&slug) && tab.pr_number == Some(pr_ref.number) {
+                self.active_tab = i;
+                self.notify(&format!("Switched to tab: {}", tab.tab_name()));
+                return Ok(());
+            }
+        }
+
+        let mut tab = TabState::new_remote(&pr_ref)?;
+        let pr_data =
+            crate::github::gh_pr_overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number);
+        if let Some(data) = pr_data {
+            tab.pr_data = Some(data);
+        }
+        tab.reload_remote_comments();
+        let name = tab.tab_name();
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+        self.notify(&format!("Opened remote: {}", name));
+        Ok(())
     }
 
     // ── Tab Accessors ──
@@ -3824,6 +3897,18 @@ impl App {
                 is_header: false,
                 enabled: true,
             },
+            HubItem {
+                label: "Approve PR".into(),
+                hint: "".into(),
+                description: if self.tab().pr_number.is_some() {
+                    "Submit approval review on GitHub".into()
+                } else {
+                    "No PR detected".into()
+                },
+                action: HubAction::ApprovePR,
+                is_header: false,
+                enabled: self.tab().pr_number.is_some(),
+            },
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Git,
@@ -3885,7 +3970,7 @@ impl App {
             },
             HubItem {
                 label: "Toggle AI findings".into(),
-                hint: "a".into(),
+                hint: "A".into(),
                 description: "Show/hide inline AI findings".into(),
                 action: HubAction::ToggleAiFindings,
                 is_header: false,
@@ -4007,6 +4092,7 @@ impl App {
     /// Open the Help modal hub (keybind reference)
     pub fn open_help_hub(&mut self) {
         let items = vec![
+            // ── Navigation ──
             HubItem {
                 label: "── Navigation ──".into(),
                 hint: "".into(),
@@ -4040,13 +4126,54 @@ impl App {
                 enabled: false,
             },
             HubItem {
-                label: "1-5".into(),
+                label: "Shift+↑/↓".into(),
                 hint: "".into(),
-                description: "Switch diff mode (Branch/Unstaged/Staged/History/Conflicts)".into(),
+                description: "Extend line selection".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
             },
+            HubItem {
+                label: "h / l".into(),
+                hint: "".into(),
+                description: "Scroll left / right".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "d / u".into(),
+                hint: "".into(),
+                description: "Scroll half page ↓ / ↑".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "PgDn / PgUp".into(),
+                hint: "".into(),
+                description: "Scroll full page ↓ / ↑".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Home".into(),
+                hint: "".into(),
+                description: "Reset horizontal scroll".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "1-6".into(),
+                hint: "".into(),
+                description: "Switch diff mode".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            // ── Review ──
             HubItem {
                 label: "── Review ──".into(),
                 hint: "".into(),
@@ -4064,6 +4191,22 @@ impl App {
                 enabled: false,
             },
             HubItem {
+                label: "Shift+Space".into(),
+                hint: "".into(),
+                description: "Show unreviewed only".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "U".into(),
+                hint: "".into(),
+                description: "Jump to next unreviewed file".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
                 label: "q".into(),
                 hint: "".into(),
                 description: "Add review question".into(),
@@ -4074,19 +4217,110 @@ impl App {
             HubItem {
                 label: "c".into(),
                 hint: "".into(),
-                description: "Add GitHub comment (or commit in Staged)".into(),
+                description: "Add GitHub comment".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
             },
             HubItem {
-                label: "r / d".into(),
+                label: "s".into(),
                 hint: "".into(),
-                description: "Reply to / delete focused comment".into(),
+                description: "Stage / unstage file".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
             },
+            HubItem {
+                label: "y".into(),
+                hint: "".into(),
+                description: "Yank hunk to clipboard".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            // ── Comments ──
+            HubItem {
+                label: "── Comments ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "J / K".into(),
+                hint: "".into(),
+                description: "Jump to prev / next comment".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Ctrl+J / K".into(),
+                hint: "".into(),
+                description: "Jump to prev / next AI finding".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "r".into(),
+                hint: "".into(),
+                description: "Reply to focused comment".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "x".into(),
+                hint: "".into(),
+                description: "Delete focused comment".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "e".into(),
+                hint: "".into(),
+                description: "Edit own comment / open in editor".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            // ── Layers ──
+            HubItem {
+                label: "── Layers ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "A".into(),
+                hint: "".into(),
+                description: "Toggle AI findings".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "C".into(),
+                hint: "".into(),
+                description: "Toggle GitHub comments".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Q".into(),
+                hint: "".into(),
+                description: "Toggle questions".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            // ── Tools ──
             HubItem {
                 label: "── Tools ──".into(),
                 hint: "".into(),
@@ -4104,21 +4338,111 @@ impl App {
                 enabled: false,
             },
             HubItem {
-                label: "e".into(),
+                label: "F".into(),
                 hint: "".into(),
-                description: "Open in editor".into(),
+                description: "Filter history".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
             },
             HubItem {
-                label: "p".into(),
+                label: "+ / -".into(),
                 hint: "".into(),
-                description: "Toggle context panel".into(),
+                description: "Expand / collapse context lines".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
             },
+            HubItem {
+                label: "Enter".into(),
+                hint: "".into(),
+                description: "Expand / collapse compacted file".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "m".into(),
+                hint: "".into(),
+                description: "Toggle mtime sort".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "R".into(),
+                hint: "".into(),
+                description: "Reload diff".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "w / W".into(),
+                hint: "".into(),
+                description: "Toggle watch / watched files".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "z / Z".into(),
+                hint: "".into(),
+                description: "Cleanup questions / all AI data".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            // ── Panels & Tabs ──
+            HubItem {
+                label: "── Panels & Tabs ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "p / P".into(),
+                hint: "".into(),
+                description: "Cycle context panel fwd / back".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Tab".into(),
+                hint: "".into(),
+                description: "Toggle panel focus / split side".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "] / [".into(),
+                hint: "".into(),
+                description: "Next / previous tab".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "x".into(),
+                hint: "".into(),
+                description: "Close tab".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "o".into(),
+                hint: "".into(),
+                description: "Open hub (browse, worktree, remote)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            // ── Modals ──
             HubItem {
                 label: "── Modals ──".into(),
                 hint: "".into(),
@@ -4136,7 +4460,7 @@ impl App {
                 enabled: false,
             },
             HubItem {
-                label: "A".into(),
+                label: "a".into(),
                 hint: "".into(),
                 description: "AI tools hub".into(),
                 action: HubAction::Noop,
@@ -4146,7 +4470,7 @@ impl App {
             HubItem {
                 label: "v".into(),
                 hint: "".into(),
-                description: "Verify hub (tests, lint)".into(),
+                description: "Verify hub".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -4157,6 +4481,82 @@ impl App {
                 description: "Settings".into(),
                 action: HubAction::Noop,
                 is_header: false,
+                enabled: false,
+            },
+            // ── Staged Mode ──
+            HubItem {
+                label: "── Staged Mode ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "c".into(),
+                hint: "".into(),
+                description: "Commit".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Ctrl+P".into(),
+                hint: "".into(),
+                description: "Push to remote".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            // ── PR Panel Focused ──
+            HubItem {
+                label: "── PR Panel Focused ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "o".into(),
+                hint: "".into(),
+                description: "Open PR in browser".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "G".into(),
+                hint: "".into(),
+                description: "Pull GitHub PR comments".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            // ── Hidden Mode ──
+            HubItem {
+                label: "── Hidden Mode ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "x".into(),
+                hint: "".into(),
+                description: "Delete watched file".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            // ── General ──
+            HubItem {
+                label: "".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
                 enabled: false,
             },
             HubItem {
@@ -4170,6 +4570,79 @@ impl App {
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Help,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// Open the Open modal hub (browse folders, switch worktree, remote PR, open in browser)
+    pub fn open_open_hub(&mut self) {
+        let repo_root = self.tab().repo_root.clone();
+        let has_worktrees = git::list_worktrees(&repo_root)
+            .map(|wts| wts.len() > 1)
+            .unwrap_or(false);
+        let has_pr = self.tab().pr_number.is_some();
+
+        let mut items = vec![
+            HubItem {
+                label: "── Navigate ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            },
+            HubItem {
+                label: "Browse folders".into(),
+                hint: "".into(),
+                description: "Open a local git repo".into(),
+                action: HubAction::OpenDirectory,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Switch worktree".into(),
+                hint: "".into(),
+                description: if has_worktrees {
+                    "Jump to another worktree".into()
+                } else {
+                    "No other worktrees".into()
+                },
+                action: HubAction::OpenWorktree,
+                is_header: false,
+                enabled: has_worktrees,
+            },
+            HubItem {
+                label: "Open remote PR".into(),
+                hint: "".into(),
+                description: "Review a GitHub PR by URL".into(),
+                action: HubAction::OpenRemoteUrl,
+                is_header: false,
+                enabled: true,
+            },
+        ];
+
+        if has_pr {
+            items.push(HubItem {
+                label: "── Current PR ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            });
+            items.push(HubItem {
+                label: "Open PR in browser".into(),
+                hint: "".into(),
+                description: "View on GitHub".into(),
+                action: HubAction::OpenPrInBrowser,
+                is_header: false,
+                enabled: true,
+            });
+        }
+
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Open,
             items,
             selected: 0,
         });
@@ -4431,9 +4904,14 @@ impl App {
                 items, selected, ..
             } => {
                 if let Some(item) = items.get(selected) {
-                    if item.enabled && !item.is_header && item.action != HubAction::Noop {
+                    if item.is_header || item.action == HubAction::Noop {
+                        // Headers and noops — do nothing
+                    } else if item.enabled {
                         // Store action, close overlay, then caller dispatches
                         self.pending_hub_action = Some(item.action.clone());
+                    } else if !item.description.is_empty() {
+                        // Disabled item — show why via notification
+                        self.notify(&item.description);
                     }
                 }
             }
@@ -4869,6 +5347,7 @@ impl App {
     /// Submit a personal review question to .er-questions.json
     fn submit_question(&mut self, text: String) -> Result<()> {
         let tab = self.tab();
+        let er_dir = tab.er_dir();
         let repo_root = tab.repo_root.clone();
         let mut diff_hash = tab.branch_diff_hash.clone();
         let base_branch = tab.base_branch.clone();
@@ -4880,7 +5359,8 @@ impl App {
 
         // Compute branch_diff_hash on-demand when not yet set (e.g., non-Branch mode with no AI data).
         // Without this, questions would always be marked stale because the hash would be empty.
-        if diff_hash.is_empty() {
+        // Skip in remote mode — git_diff_raw requires a local git repo.
+        if diff_hash.is_empty() && !self.tab().is_remote() {
             if let Ok(br) = git::git_diff_raw(
                 "branch",
                 &base_branch,
@@ -4894,8 +5374,8 @@ impl App {
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
-        // Load or create .er/questions.json
-        let questions_path = format!("{}/.er/questions.json", repo_root);
+        // Load or create questions.json
+        let questions_path = format!("{}/questions.json", er_dir);
         let mut questions: ai::ErQuestions = match std::fs::read_to_string(&questions_path) {
             Ok(content) => match serde_json::from_str(&content) {
                 Ok(qs) => qs,
@@ -4953,7 +5433,7 @@ impl App {
         });
 
         // Write atomically
-        std::fs::create_dir_all(format!("{}/.er", repo_root))?;
+        std::fs::create_dir_all(&er_dir)?;
         let json = serde_json::to_string_pretty(&questions)?;
         let tmp_path = format!("{}.tmp", questions_path);
         std::fs::write(&tmp_path, json)?;
@@ -5146,7 +5626,7 @@ impl App {
     /// Update an existing comment in-place: new text, re-anchored to current position
     fn update_comment(&mut self, comment_id: String, new_text: String) -> Result<()> {
         let tab = self.tab();
-        let repo_root = tab.repo_root.clone();
+        let er_dir = tab.er_dir();
         let hunk_index = tab.comment_hunk;
         let comment_line_num = tab.comment_line_num;
 
@@ -5154,7 +5634,7 @@ impl App {
         let diff_hash = self.tab().diff_hash.clone();
 
         if comment_id.starts_with("q-") {
-            let path = format!("{}/.er/questions.json", repo_root);
+            let path = format!("{}/questions.json", er_dir);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
                     if let Some(q) = qs.questions.iter_mut().find(|q| q.id == comment_id) {
@@ -5553,15 +6033,15 @@ impl App {
 
     /// Execute comment deletion after confirmation
     pub fn confirm_delete_comment(&mut self, comment_id: &str) -> Result<()> {
-        let tab = self.tab();
-        let repo_root = tab.repo_root.clone();
+        let er_dir = self.tab().er_dir();
+        let repo_root = self.tab().repo_root.clone();
 
         // Determine which file this comment lives in
         let is_question = comment_id.starts_with("q-");
 
         if is_question {
-            // Delete from .er/questions.json
-            let path = format!("{}/.er/questions.json", repo_root);
+            // Delete from questions.json
+            let path = format!("{}/questions.json", er_dir);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 if let Ok(mut qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
                     qs.questions.retain(|q| {
@@ -5917,9 +6397,70 @@ impl App {
     pub fn notify(&mut self, msg: &str) {
         self.watch_message = Some(msg.to_string());
         self.watch_message_ticks = 0;
+        self.watch_message_max_ticks = 20; // ~2s
+    }
+
+    /// Like notify but persists for ~5 seconds — for important results.
+    pub fn notify_long(&mut self, msg: &str) {
+        self.watch_message = Some(msg.to_string());
+        self.watch_message_ticks = 0;
+        self.watch_message_max_ticks = 50; // ~5s
     }
 
     // ── Background Commands ──
+
+    /// Build a human-readable summary after an agent command completes.
+    /// Reads the output files to report what was produced.
+    fn agent_completion_summary(&self, name: &str) -> String {
+        let er_dir = std::path::PathBuf::from(self.tab().er_dir());
+
+        match name {
+            "review" => {
+                let review_path = er_dir.join("review.json");
+                if let Ok(content) = std::fs::read_to_string(&review_path) {
+                    if let Ok(review) = serde_json::from_str::<ai::ErReview>(&content) {
+                        let file_count = review.files.len();
+                        let finding_count: usize =
+                            review.files.values().map(|f| f.findings.len()).sum();
+                        format!(
+                            "Review done — {} file{}, {} finding{}",
+                            file_count,
+                            if file_count == 1 { "" } else { "s" },
+                            finding_count,
+                            if finding_count == 1 { "" } else { "s" },
+                        )
+                    } else {
+                        "Review done — review.json written but could not be parsed".into()
+                    }
+                } else {
+                    "Review done — but no .er/review.json found (agent may lack permissions)".into()
+                }
+            }
+            "questions" => {
+                let questions_path = er_dir.join("questions.json");
+                if let Ok(content) = std::fs::read_to_string(&questions_path) {
+                    if let Ok(qs) = serde_json::from_str::<ai::ErQuestions>(&content) {
+                        let answered = qs
+                            .questions
+                            .iter()
+                            .filter(|q| q.in_reply_to.is_some())
+                            .count();
+                        let total = qs
+                            .questions
+                            .iter()
+                            .filter(|q| q.in_reply_to.is_none())
+                            .count();
+                        format!("Questions done — {} of {} answered", answered, total)
+                    } else {
+                        "Questions done — questions.json written but could not be parsed".into()
+                    }
+                } else {
+                    "Questions done — but no .er/questions.json found".into()
+                }
+            }
+            _ => format!("{} done", name),
+        }
+    }
 
     /// Returns a list of (name, status_label, is_running) for agent commands
     /// that should show a persistent status indicator in the top bar.
@@ -5927,14 +6468,8 @@ impl App {
     pub fn agent_statuses(&self) -> Vec<(&str, &str, bool)> {
         let mut result = Vec::new();
         for name in &["review", "questions"] {
-            if let Some(status) = self.command_status.get(*name) {
-                match status {
-                    CommandStatus::Running => {
-                        result.push((*name, "running…", true));
-                    }
-                    // Done/Failed are shown via the notification system, not the badge
-                    _ => {}
-                }
+            if let Some(CommandStatus::Running) = self.command_status.get(*name) {
+                result.push((*name, "running…", true));
             }
         }
         result
@@ -6033,13 +6568,25 @@ impl App {
                         if name == "summary" || name == "review" || name == "questions" {
                             self.tab_mut().last_ai_check = None;
                         }
-                        self.notify(&format!("{} done", name));
+                        let msg = self.agent_completion_summary(&name);
+                        self.notify_long(&msg);
                     }
                     Err(e) => {
                         let msg = format!("{}", e);
                         self.command_status
                             .insert(name.clone(), CommandStatus::Failed(msg.clone()));
-                        self.notify(&format!("{} failed: {}", name, msg));
+                        // Truncate long error messages to fit status bar (safe for multi-byte UTF-8)
+                        let short = if msg.len() > 80 {
+                            let boundary = msg
+                                .char_indices()
+                                .nth(80)
+                                .map(|(i, _)| i)
+                                .unwrap_or(msg.len());
+                            format!("{}…", &msg[..boundary])
+                        } else {
+                            msg
+                        };
+                        self.notify_long(&format!("{} failed: {}", name, short));
                     }
                 }
             }
@@ -6057,11 +6604,13 @@ impl App {
         }
 
         let repo_root = self.tab().repo_root.clone();
+        let er_dir_path = self.tab().er_dir();
+        let is_remote = self.tab().is_remote();
         let agent_cmd = self.config.agent.command.clone();
+        let config_args = self.config.agent.args.clone();
 
         // Ensure .er/ directory exists
-        let er_dir = std::path::Path::new(&repo_root).join(".er");
-        std::fs::create_dir_all(&er_dir)?;
+        std::fs::create_dir_all(&er_dir_path)?;
 
         let name_owned = name.to_string();
         let prompt_owned = prompt.to_string();
@@ -6069,17 +6618,49 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
+                let debug_path =
+                    std::path::Path::new(&er_dir_path).join(format!("debug-{}.log", name_owned));
+
+                let mut agent_args: Vec<String> = config_args
+                    .iter()
+                    .map(|a| a.replace("{prompt}", &prompt_owned))
+                    .collect();
+
+                // Grant the agent targeted tool permissions without blanket
+                // --dangerously-skip-permissions. The prompt is fully controlled by er.
+                let allowed: &[&str] = &["Read", "Write", "Edit", "Bash(gh pr *)", "Bash(cp *)"];
+                for rule in allowed.iter().rev() {
+                    agent_args.insert(0, rule.to_string());
+                    agent_args.insert(0, "--allowedTools".to_string());
+                }
+
+                // In remote mode, run from the cache dir so relative paths resolve there.
+                // The agent fetches the diff via `gh` — no local repo access needed.
+                let work_dir = if is_remote { &er_dir_path } else { &repo_root };
                 let output = std::process::Command::new(&agent_cmd)
-                    .args(["-p", &prompt_owned])
-                    .current_dir(&repo_root)
-                    .stdout(std::process::Stdio::null())
+                    .args(&agent_args)
+                    .current_dir(work_dir)
+                    .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
                     .output()
                     .with_context(|| format!("Failed to run {} ({})", name_owned, agent_cmd))?;
 
+                // Write debug log with stdout + stderr
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let debug_content = format!(
+                    "=== {} agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
+                    name_owned,
+                    agent_cmd,
+                    agent_args.join(" "),
+                    output.status.code().map_or("signal".to_string(), |c| c.to_string()),
+                    stdout,
+                    stderr,
+                );
+                let _ = std::fs::write(&debug_path, &debug_content);
+
                 if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("{} failed: {}", name_owned, stderr.trim());
+                    anyhow::bail!("{} failed (see .er/debug-{}.log)", name_owned, name_owned);
                 }
 
                 Ok(())
@@ -6095,12 +6676,9 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        // TODO(risk:minor): watch_message_ticks is a u8 (max 255). If notify() is called without a
-        // subsequent tick draining it (e.g., during a long blocking git operation), ticks can overflow
-        // and wrap back to 0, causing the message to persist for another ~25 seconds unexpectedly.
         if self.watch_message.is_some() {
             self.watch_message_ticks += 1;
-            if self.watch_message_ticks > 20 {
+            if self.watch_message_ticks > self.watch_message_max_ticks {
                 self.watch_message = None;
                 self.watch_message_ticks = 0;
             }
@@ -6183,18 +6761,16 @@ pub(crate) fn chrono_now() -> String {
 }
 
 /// Delete personal questions sidecar files. Errors are ignored (files may not exist).
-pub fn cleanup_questions(repo_root: &str) {
-    let base = std::path::Path::new(repo_root).join(".er");
+pub fn cleanup_questions(er_dir: &str) {
+    let base = std::path::Path::new(er_dir);
     let _ = std::fs::remove_file(base.join("questions.json"));
     let _ = std::fs::remove_file(base.join("questions.prev.json"));
 }
 
 /// Remove AI-generated answers from questions.json, keeping human questions intact.
 /// Unmarks resolved status on questions whose answers are removed.
-pub fn cleanup_question_answers(repo_root: &str) {
-    let path = std::path::Path::new(repo_root)
-        .join(".er")
-        .join("questions.json");
+pub fn cleanup_question_answers(er_dir: &str) {
+    let path = std::path::Path::new(er_dir).join("questions.json");
     if let Ok(content) = std::fs::read_to_string(&path) {
         if let Ok(mut qs) = serde_json::from_str::<crate::ai::ErQuestions>(&content) {
             // Collect IDs of answers being removed (so we can un-resolve their parents)
@@ -6229,8 +6805,8 @@ pub fn cleanup_question_answers(repo_root: &str) {
 }
 
 /// Delete AI review sidecar files. Errors are ignored (files may not exist).
-pub fn cleanup_reviews(repo_root: &str) {
-    let base = std::path::Path::new(repo_root).join(".er");
+pub fn cleanup_reviews(er_dir: &str) {
+    let base = std::path::Path::new(er_dir);
     let _ = std::fs::remove_file(base.join("review.json"));
     let _ = std::fs::remove_file(base.join("order.json"));
     let _ = std::fs::remove_file(base.join("checklist.json"));
@@ -7544,7 +8120,9 @@ mod tests {
             watching: false,
             watch_message: None,
             watch_message_ticks: 0,
+            watch_message_max_ticks: 20,
             ai_poll_counter: 0,
+            remote_url_input: String::new(),
             config: ErConfig::default(),
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),

@@ -328,7 +328,7 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
     // For Help hub, use wider popup to fit descriptions
     let is_help = kind == HubKind::Help;
     let popup_width = if is_help {
-        60u16.min(area.width.saturating_sub(6))
+        70u16.min(area.width.saturating_sub(6))
     } else {
         55u16.min(area.width.saturating_sub(6))
     };
@@ -344,6 +344,7 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
         HubKind::Ai => styles::PURPLE(),
         HubKind::Verify => styles::YELLOW(),
         HubKind::Help => styles::CYAN(),
+        HubKind::Open => styles::BLUE(),
     };
 
     let list_items: Vec<ListItem> = items
@@ -428,5 +429,6 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
         .style(ratatui::style::Style::default().bg(styles::PANEL()));
 
     let list = List::new(list_items).block(block);
-    f.render_widget(list, popup);
+    let mut state = ratatui::widgets::ListState::default().with_selected(Some(selected));
+    f.render_stateful_widget(list, popup, &mut state);
 }

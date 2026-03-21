@@ -270,6 +270,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
                         InputMode::Confirm(_) => handle_confirm_input(app, key)?,
                         InputMode::Filter => handle_filter_input(app, key),
                         InputMode::Commit => handle_commit_input(app, key)?,
+                        InputMode::RemoteUrl => handle_remote_url_input(app, key)?,
                         InputMode::Normal => {
                             handle_normal_input(app, key, &watch_tx, &mut _watcher)?
                         }
@@ -314,10 +315,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 
         // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
         app.ai_poll_counter = app.ai_poll_counter.wrapping_add(1);
-        if !app.tab().is_remote()
-            && app.ai_poll_counter.is_multiple_of(10)
-            && app.tab_mut().check_ai_files_changed()
-        {
+        if app.ai_poll_counter.is_multiple_of(10) && app.tab_mut().check_ai_files_changed() {
             app.notify("✓ AI data refreshed");
         }
 
@@ -480,28 +478,25 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             let has_review = app.tab().ai.review.is_some();
             if has_review {
                 // Ask to clear previous review first
-                app.input_mode =
-                    InputMode::Confirm(ConfirmAction::RunAgentReview { clear_previous: true });
+                app.input_mode = InputMode::Confirm(ConfirmAction::RunAgentReview {
+                    clear_previous: true,
+                });
             } else {
                 // No previous review, run directly
-                let base = app.tab().base_branch.clone();
-                let scope = app.tab().mode.git_mode();
-                let prompt =
-                    crate::ai::prompts::build_review_prompt(&base, &scope);
-                app.spawn_agent_prompt("review", &prompt)?;
+                if let Some(prompt) = build_agent_review_prompt(app) {
+                    app.spawn_agent_prompt("review", &prompt)?;
+                }
             }
         }
+        HubAction::ApprovePR => {
+            app.input_mode = InputMode::Confirm(ConfirmAction::ApprovePR);
+        }
         HubAction::PromptQuestions => {
-            let has_answers = app
-                .tab()
-                .ai
-                .questions
-                .as_ref()
-                .is_some_and(|q| {
-                    q.questions
-                        .iter()
-                        .any(|q| q.in_reply_to.is_some() && q.author == "Claude")
-                });
+            let has_answers = app.tab().ai.questions.as_ref().is_some_and(|q| {
+                q.questions
+                    .iter()
+                    .any(|q| q.in_reply_to.is_some() && q.author == "Claude")
+            });
             if has_answers {
                 // Ask to clear previous answers first
                 app.input_mode = InputMode::Confirm(ConfirmAction::RunAgentQuestions {
@@ -509,10 +504,30 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                 });
             } else {
                 // No previous answers, run directly
-                let base = app.tab().base_branch.clone();
-                let prompt = crate::ai::prompts::build_questions_prompt(&base);
-                app.spawn_agent_prompt("questions", &prompt)?;
+                if let Some(prompt) = build_agent_questions_prompt(app) {
+                    app.spawn_agent_prompt("questions", &prompt)?;
+                }
             }
+        }
+        HubAction::OpenDirectory => {
+            app.open_directory_browser();
+        }
+        HubAction::OpenWorktree => {
+            app.open_worktree_picker()?;
+        }
+        HubAction::OpenRemoteUrl => {
+            app.remote_url_input.clear();
+            app.input_mode = InputMode::RemoteUrl;
+        }
+        HubAction::OpenPrInBrowser => {
+            let repo_root = app.tab().repo_root.clone();
+            let _ = std::process::Command::new("gh")
+                .args(["pr", "view", "--web"])
+                .current_dir(&repo_root)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            app.notify("Opening PR in browser...");
         }
     }
     Ok(())
@@ -535,11 +550,7 @@ fn handle_normal_input(
 
         // Personal question on current line (q)
         KeyCode::Char('q') => {
-            if app.tab().is_remote() {
-                app.notify("Questions not available in remote mode");
-            } else {
-                app.start_comment(crate::ai::CommentType::Question);
-            }
+            app.start_comment(crate::ai::CommentType::Question);
             return Ok(());
         }
 
@@ -737,23 +748,8 @@ fn handle_normal_input(
         }
 
         // Repo overlays
-        KeyCode::Char('t') => {
-            app.open_worktree_picker()?;
-            return Ok(());
-        }
         KeyCode::Char('o') => {
-            if app.tab().panel == Some(PanelContent::PrOverview) && app.tab().pr_data.is_some() {
-                let repo_root = app.tab().repo_root.clone();
-                let _ = std::process::Command::new("gh")
-                    .args(["pr", "view", "--web"])
-                    .current_dir(&repo_root)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-                app.notify("Opening PR in browser...");
-            } else {
-                app.open_directory_browser();
-            }
+            app.open_open_hub();
             return Ok(());
         }
 
@@ -835,8 +831,8 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Toggle AI findings layer (a)
-        KeyCode::Char('a') => {
+        // Toggle AI findings layer (A)
+        KeyCode::Char('A') => {
             app.tab_mut().toggle_layer_ai();
             let on = app.tab().layers.show_ai_findings;
             app.notify(if on {
@@ -924,8 +920,8 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // AI modal hub (A)
-        KeyCode::Char('A') => {
+        // AI modal hub (a)
+        KeyCode::Char('a') => {
             app.open_ai_hub();
             return Ok(());
         }
@@ -1011,9 +1007,7 @@ fn handle_normal_input(
         }
 
         // Toggle unreviewed-only filter — not meaningful in History
-        KeyCode::Char(' ')
-            if mode != DiffMode::History && key.modifiers.contains(KeyModifiers::SHIFT) =>
-        {
+        KeyCode::Char('!') if mode != DiffMode::History => {
             app.toggle_unreviewed_filter();
             return Ok(());
         }
@@ -1358,6 +1352,34 @@ fn handle_filter_input(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_remote_url_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Enter => {
+            let url = app.remote_url_input.clone();
+            app.input_mode = InputMode::Normal;
+            if url.trim().is_empty() {
+                return Ok(());
+            }
+            if let Err(e) = app.open_remote_url(url.trim()) {
+                app.notify(&format!("Failed: {}", e));
+            }
+            app.remote_url_input.clear();
+        }
+        KeyCode::Esc => {
+            app.remote_url_input.clear();
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Char(c) => {
+            app.remote_url_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.remote_url_input.pop();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Enter => {
@@ -1407,8 +1429,8 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             } else if let InputMode::Confirm(ConfirmAction::CleanupQuestions { .. }) = action {
                 app.input_mode = InputMode::Normal;
-                let repo_root = app.tab().repo_root.clone();
-                cleanup_questions(&repo_root);
+                let er_dir = app.tab().er_dir();
+                cleanup_questions(&er_dir);
                 app.tab_mut().reload_ai_state();
                 app.notify("Questions cleared");
             } else if let InputMode::Confirm(ConfirmAction::DeleteWatchedFile { ref path }) = action
@@ -1435,46 +1457,53 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             } else if let InputMode::Confirm(ConfirmAction::CleanupReviews { .. }) = action {
                 app.input_mode = InputMode::Normal;
-                let repo_root = app.tab().repo_root.clone();
-                cleanup_reviews(&repo_root);
+                let er_dir = app.tab().er_dir();
+                cleanup_reviews(&er_dir);
                 app.tab_mut().reload_ai_state();
                 app.notify("Review cleared");
             } else if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = action {
                 // User said "yes" to clearing previous review — clear, then run
                 app.input_mode = InputMode::Normal;
-                let repo_root = app.tab().repo_root.clone();
-                cleanup_reviews(&repo_root);
+                let er_dir = app.tab().er_dir();
+                cleanup_reviews(&er_dir);
                 app.tab_mut().reload_ai_state();
-                let base = app.tab().base_branch.clone();
-                let scope = app.tab().mode.git_mode();
-                let prompt = crate::ai::prompts::build_review_prompt(&base, &scope);
-                app.spawn_agent_prompt("review", &prompt)?;
+                if let Some(prompt) = build_agent_review_prompt(app) {
+                    app.spawn_agent_prompt("review", &prompt)?;
+                }
             } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) = action {
                 // User said "yes" to clearing previous answers — clear answers, then run
                 app.input_mode = InputMode::Normal;
-                let repo_root = app.tab().repo_root.clone();
-                cleanup_question_answers(&repo_root);
+                let er_dir = app.tab().er_dir();
+                cleanup_question_answers(&er_dir);
                 app.tab_mut().reload_ai_state();
-                let base = app.tab().base_branch.clone();
-                let prompt = crate::ai::prompts::build_questions_prompt(&base);
-                app.spawn_agent_prompt("questions", &prompt)?;
+                if let Some(prompt) = build_agent_questions_prompt(app) {
+                    app.spawn_agent_prompt("questions", &prompt)?;
+                }
+            } else if let InputMode::Confirm(ConfirmAction::ApprovePR) = action {
+                app.input_mode = InputMode::Normal;
+                let repo_root = app.tab().repo_root.clone();
+                let remote = app.tab().remote_repo.clone();
+                let pr = app.tab().pr_number;
+                match crate::github::gh_pr_approve(&repo_root, remote.as_deref(), pr) {
+                    Ok(()) => app.notify("PR approved"),
+                    Err(e) => app.notify(&format!("Approve failed: {}", e)),
+                }
             }
         }
         KeyCode::Char('n') => {
             // For agent prompts, 'n' = keep previous data but still run
             if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = &app.input_mode {
                 app.input_mode = InputMode::Normal;
-                let base = app.tab().base_branch.clone();
-                let scope = app.tab().mode.git_mode();
-                let prompt = crate::ai::prompts::build_review_prompt(&base, &scope);
-                app.spawn_agent_prompt("review", &prompt)?;
+                if let Some(prompt) = build_agent_review_prompt(app) {
+                    app.spawn_agent_prompt("review", &prompt)?;
+                }
             } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) =
                 &app.input_mode
             {
                 app.input_mode = InputMode::Normal;
-                let base = app.tab().base_branch.clone();
-                let prompt = crate::ai::prompts::build_questions_prompt(&base);
-                app.spawn_agent_prompt("questions", &prompt)?;
+                if let Some(prompt) = build_agent_questions_prompt(app) {
+                    app.spawn_agent_prompt("questions", &prompt)?;
+                }
             } else {
                 app.cancel_confirm();
             }
@@ -1504,6 +1533,80 @@ fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Build the review agent prompt, using remote mode if applicable.
+fn build_agent_review_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    if tab.is_remote() {
+        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
+            (Some(ref s), Some(n)) => (s.clone(), n),
+            _ => {
+                app.notify("Remote mode missing repo or PR number");
+                return None;
+            }
+        };
+        let parts: Vec<&str> = slug.split('/').collect();
+        if parts.len() != 2 {
+            app.notify(&format!("Invalid remote repo slug: {}", slug));
+            return None;
+        }
+        let output_dir = app.tab().er_dir();
+        return Some(crate::ai::prompts::build_review_prompt_remote(
+            parts[0],
+            parts[1],
+            pr_number,
+            &output_dir,
+        ));
+    }
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
+            crate::ai::prompts::build_review_prompt(&base, mode.git_mode()),
+        ),
+        _ => {
+            app.notify("AI review not available in this mode");
+            None
+        }
+    }
+}
+
+/// Build the questions agent prompt, using remote mode if applicable.
+fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    if tab.is_remote() {
+        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
+            (Some(ref s), Some(n)) => (s.clone(), n),
+            _ => {
+                app.notify("Remote mode missing repo or PR number");
+                return None;
+            }
+        };
+        let parts: Vec<&str> = slug.split('/').collect();
+        if parts.len() != 2 {
+            app.notify(&format!("Invalid remote repo slug: {}", slug));
+            return None;
+        }
+        let output_dir = app.tab().er_dir();
+        return Some(crate::ai::prompts::build_questions_prompt_remote(
+            parts[0],
+            parts[1],
+            pr_number,
+            &output_dir,
+        ));
+    }
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
+            crate::ai::prompts::build_questions_prompt(&base, mode.git_mode()),
+        ),
+        _ => {
+            app.notify("AI questions not available in this mode");
+            None
+        }
+    }
 }
 
 /// Sync GitHub PR comments (pull)
@@ -1954,7 +2057,9 @@ mod tests {
             watching: false,
             watch_message: None,
             watch_message_ticks: 0,
+            watch_message_max_ticks: 20,
             ai_poll_counter: 0,
+            remote_url_input: String::new(),
             config: ErConfig::default(),
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
@@ -2164,26 +2269,22 @@ mod tests {
     }
 
     #[test]
-    fn shift_space_toggles_unreviewed_filter_on() {
+    fn bang_toggles_unreviewed_filter_on() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         assert!(!app.tab().show_unreviewed_only);
-        send_key(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
+        send_key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
         assert!(
             app.tab().show_unreviewed_only,
-            "Shift+Space must toggle show_unreviewed_only to true"
+            "! must toggle show_unreviewed_only to true"
         );
     }
 
     #[test]
-    fn shift_space_does_not_scroll_diff() {
+    fn bang_does_not_scroll_diff() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         app.tab_mut().diff_scroll = 20;
-        send_key(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
-        assert_eq!(
-            app.tab().diff_scroll,
-            20,
-            "Shift+Space must not change diff_scroll"
-        );
+        send_key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
+        assert_eq!(app.tab().diff_scroll, 20, "! must not change diff_scroll");
     }
 
     // ── Ctrl+j vs bare j (panel not focused) ──

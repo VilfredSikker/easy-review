@@ -89,12 +89,12 @@ pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
     hashes
 }
 
-/// Load all .er-* files from a repo root and check staleness against current diff hash
-pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
+/// Load all .er-* files from the er_dir and check staleness against current diff hash
+pub fn load_ai_state(er_dir: &str, current_diff_hash: &str) -> AiState {
     let mut state = AiState::default();
 
     // Load .er/review.json
-    let review_path = Path::new(repo_root).join(".er").join("review.json");
+    let review_path = Path::new(er_dir).join("review.json");
     if let Ok(content) = read_sidecar(&review_path) {
         // TODO(risk:minor): Deserialization errors are silently swallowed (`Err(_) => {}`).
         // A malformed sidecar will appear as if the file doesn't exist; there is no
@@ -106,7 +106,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     }
 
     // Load .er/order.json
-    let order_path = Path::new(repo_root).join(".er").join("order.json");
+    let order_path = Path::new(er_dir).join("order.json");
     if let Ok(content) = read_sidecar(&order_path) {
         if let Ok(order) = serde_json::from_str::<ErOrder>(&content) {
             // Check staleness against review hash or independently
@@ -122,7 +122,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     }
 
     // Load .er/summary.md
-    let summary_path = Path::new(repo_root).join(".er").join("summary.md");
+    let summary_path = Path::new(er_dir).join("summary.md");
     if let Ok(content) = read_sidecar(&summary_path) {
         if !content.trim().is_empty() {
             state.summary = Some(content);
@@ -130,7 +130,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     }
 
     // Load .er/checklist.json
-    let checklist_path = Path::new(repo_root).join(".er").join("checklist.json");
+    let checklist_path = Path::new(er_dir).join("checklist.json");
     if let Ok(content) = read_sidecar(&checklist_path) {
         if let Ok(checklist) = serde_json::from_str::<ErChecklist>(&content) {
             if !state.is_stale && checklist.diff_hash != current_diff_hash {
@@ -141,7 +141,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     }
 
     // Load .er/questions.json (personal review questions)
-    let questions_path = Path::new(repo_root).join(".er").join("questions.json");
+    let questions_path = Path::new(er_dir).join("questions.json");
     if let Ok(content) = read_sidecar(&questions_path) {
         if let Ok(questions) = serde_json::from_str::<ErQuestions>(&content) {
             state.questions = Some(questions);
@@ -149,9 +149,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     }
 
     // Load .er/github-comments.json (GitHub PR comments)
-    let gh_comments_path = Path::new(repo_root)
-        .join(".er")
-        .join("github-comments.json");
+    let gh_comments_path = Path::new(er_dir).join("github-comments.json");
     if let Ok(content) = read_sidecar(&gh_comments_path) {
         if let Ok(gh_comments) = serde_json::from_str::<ErGitHubComments>(&content) {
             state.github_comments = Some(gh_comments);
@@ -165,7 +163,7 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
     // is loaded even though the new files are now present, potentially causing duplicate
     // comments to be shown via the Legacy fallback path in the query methods.
     if state.questions.is_none() && state.github_comments.is_none() {
-        let feedback_path = Path::new(repo_root).join(".er").join("feedback.json");
+        let feedback_path = Path::new(er_dir).join("feedback.json");
         if let Ok(content) = read_sidecar(&feedback_path) {
             if let Ok(feedback) = serde_json::from_str::<ErFeedback>(&content) {
                 state.feedback = Some(feedback);
@@ -183,8 +181,8 @@ pub fn load_ai_state(repo_root: &str, current_diff_hash: &str) -> AiState {
 // `load_ai_state` reads a newer version, or vice-versa (it shows "changed" but by the
 // time `load_ai_state` runs the file is already overwritten again with identical content).
 // The impact is a missed or spurious reload — incorrect data displayed until the next tick.
-pub fn latest_er_mtime(repo_root: &str) -> Option<std::time::SystemTime> {
-    let er_dir = Path::new(repo_root).join(".er");
+pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
+    let er_dir = Path::new(er_dir);
     let files = [
         "review.json",
         "order.json",

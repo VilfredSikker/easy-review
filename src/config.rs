@@ -189,11 +189,7 @@ impl Default for AgentConfig {
 impl AgentConfig {
     /// Human-readable name for the agent (derived from command basename).
     pub fn display_name(&self) -> String {
-        let basename = self
-            .command
-            .rsplit('/')
-            .next()
-            .unwrap_or(&self.command);
+        let basename = self.command.rsplit('/').next().unwrap_or(&self.command);
         // Capitalize first letter
         let mut chars = basename.chars();
         match chars.next() {
@@ -237,8 +233,19 @@ impl ErConfig {
 /// Merging is deep: individual fields within sections (e.g. `[features]`) override independently.
 pub fn load_config(repo_root: &str) -> ErConfig {
     let local_path = format!("{repo_root}/.er-config.toml");
-    let global_path =
-        dirs::config_dir().map(|d| d.join("er/config.toml").to_string_lossy().to_string());
+    // Prefer XDG (~/.config/er/config.toml), fall back to dirs::config_dir()
+    let global_path = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(|xdg| format!("{xdg}/er/config.toml"))
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| format!("{h}/.config/er/config.toml"))
+        })
+        .filter(|p| std::path::Path::new(p).exists())
+        .or_else(|| {
+            dirs::config_dir().map(|d| d.join("er/config.toml").to_string_lossy().to_string())
+        });
 
     let global_table = global_path
         .and_then(|p| std::fs::read_to_string(p).ok())
@@ -247,12 +254,6 @@ pub fn load_config(repo_root: &str) -> ErConfig {
     let local_table = std::fs::read_to_string(&local_path)
         .ok()
         .and_then(|c| c.parse::<toml::Table>().ok());
-
-    eprintln!(
-        "DEBUG: global_table.is_some()={}, local_table.is_some()={}",
-        global_table.is_some(),
-        local_table.is_some()
-    );
     let user_table = match (global_table, local_table) {
         (Some(mut global), Some(local)) => {
             deep_merge(&mut global, local);
@@ -287,9 +288,17 @@ fn deep_merge(
 
 /// Save config to the global config dir (~/.config/er/config.toml).
 pub fn save_config(config: &ErConfig) -> Result<()> {
-    let dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
-        .join("er");
+    let dir = std::env::var("XDG_CONFIG_HOME")
+        .map(|xdg| std::path::PathBuf::from(format!("{xdg}/er")))
+        .or_else(|_| {
+            std::env::var("HOME").map(|h| std::path::PathBuf::from(format!("{h}/.config/er")))
+        })
+        .or_else(|_| {
+            dirs::config_dir()
+                .map(|d| d.join("er"))
+                .ok_or(std::env::VarError::NotPresent)
+        })
+        .map_err(|_| anyhow::anyhow!("Could not determine config directory"))?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
     let content = toml::to_string_pretty(config)?;

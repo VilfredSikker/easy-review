@@ -633,6 +633,29 @@ pub fn gh_pr_edit_body(repo_root: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
+/// Approve a PR via `gh pr review --approve`.
+/// Uses `--repo` and PR number when reviewing a remote PR.
+pub fn gh_pr_approve(
+    repo_root: &str,
+    remote_repo: Option<&str>,
+    pr_number: Option<u64>,
+) -> Result<()> {
+    let mut cmd = Command::new("gh");
+    cmd.args(["pr", "review", "--approve"]);
+    if let (Some(slug), Some(n)) = (remote_repo, pr_number) {
+        cmd.args(["--repo", slug, &n.to_string()]);
+    }
+    cmd.current_dir(repo_root);
+    let output = cmd
+        .output()
+        .context("Failed to run gh pr review --approve")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr approve failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
 /// Fetch PR overview data: title, body, state, author, branches, reviewers.
 /// If `pr_number` is Some, fetches that specific PR; otherwise auto-detects from current branch.
 pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {

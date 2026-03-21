@@ -1,0 +1,68 @@
+# er — example configuration
+#
+# Place this file at:
+#   Per-repo:  .er-config.toml       (highest priority)
+#   Global:    ~/.config/er/config.toml
+#
+# Per-repo overrides global. Merging is deep: individual fields within
+# sections override independently, so you only need to specify what you
+# want to change.
+
+# ── Views ──────────────────────────────────────────────────────────────
+# Toggle which diff views are available (keys 1-6).
+[features]
+view_branch   = true   # Branch diff (1)
+view_unstaged = true   # Unstaged changes (2)
+view_staged   = true   # Staged changes (3)
+view_history  = true   # Commit history (4)
+view_conflicts = true  # Merge conflicts (5)
+view_hidden   = true   # Hidden/ignored files (6)
+
+# ── Display ────────────────────────────────────────────────────────────
+[display]
+theme        = "ocean-depth"  # ocean-depth | moonlight | daybreak | high-contrast
+line_numbers = true
+wrap_lines   = false
+split_diff   = false
+tab_width    = 4
+auto_context_threshold = 50   # Auto-expand full context for files with <= N diff lines (0 to disable)
+
+# ── Key Hints ──────────────────────────────────────────────────────────
+# Toggle hint groups shown in the bottom status bar.
+[hints]
+navigation = true    # j/k, n/N, Space, /
+comments   = true    # r, d
+staging    = true    # s, c commit
+verbose    = false   # Show all keybindings (more detail)
+
+# ── Agent ──────────────────────────────────────────────────────────────
+# The AI agent used for review commands. {prompt} is replaced with user input.
+[agent]
+command = "claude"
+args    = ["--print", "-p", "{prompt}"]
+
+# ── Summary ────────────────────────────────────────────────────────────
+# Diff summary / changelog generation (AI hub).
+[summary]
+# command    = "claude"                             # Defaults to agent.command
+# args       = ["--print", "-p", "{diff}"]          # {diff} is replaced with the raw diff
+push_to_pr = false                                  # Auto-push summary to GitHub PR body
+
+# ── Watched Files ──────────────────────────────────────────────────────
+# Glob patterns for git-ignored paths to monitor (e.g. AI sync folders).
+# Visible via W key. Patterns are matched against the repo root.
+[watched]
+paths     = []            # e.g. [".work/**/*", ".er/**/*"]
+diff_mode = "content"     # "content" (show file contents) or "snapshot" (diff against saved baseline)
+
+# ── Commands ───────────────────────────────────────────────────────────
+# Shell commands for the hub actions. Run via `sh -c`.
+# Placeholders: {base} (base branch), {branch} (current branch),
+#               {repo} (repo root), {output} (default output path).
+# Leave unset to disable the action in the UI.
+[commands]
+# summary   = "claude --print -p 'Summarize this diff: {base}...{branch}'"
+# test      = "cargo test"
+# lint      = "cargo clippy"
+# typecheck = "cargo check"
+# security  = "cargo audit"
