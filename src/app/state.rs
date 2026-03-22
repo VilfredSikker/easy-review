@@ -6929,15 +6929,18 @@ impl App {
                 // agent log panel can show real-time tool calls and progress. This is
                 // injected here (not in config defaults) so user configs that override
                 // agent.args still get streaming without manual changes.
-                if (agent_cmd.ends_with("claude") || agent_cmd == "claude")
-                    && !agent_args.iter().any(|a| a == "--output-format")
-                {
+                if agent_cmd.ends_with("claude") || agent_cmd == "claude" {
+                    if !agent_args.iter().any(|a| a == "--output-format") {
+                        agent_args.push("--output-format".to_string());
+                        agent_args.push("stream-json".to_string());
+                    }
                     // --verbose is required when combining --print with stream-json
-                    if !agent_args.iter().any(|a| a == "--verbose") {
+                    let has_print = agent_args.iter().any(|a| a == "--print");
+                    let has_stream = agent_args.iter().any(|a| a == "stream-json");
+                    let has_verbose = agent_args.iter().any(|a| a == "--verbose");
+                    if has_print && has_stream && !has_verbose {
                         agent_args.push("--verbose".to_string());
                     }
-                    agent_args.push("--output-format".to_string());
-                    agent_args.push("stream-json".to_string());
                 }
 
                 // Grant the agent targeted tool permissions without blanket
