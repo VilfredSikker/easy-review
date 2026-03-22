@@ -207,8 +207,18 @@ fn main() -> Result<()> {
 
     // Print resume hint if multiple tabs were open
     if app.tabs.len() > 1 {
-        let paths: Vec<&str> = app.tabs.iter().map(|t| t.repo_root.as_str()).collect();
-        eprintln!("\x1b[2mer {}\x1b[0m", paths.join(" "));
+        let args: Vec<String> = app
+            .tabs
+            .iter()
+            .map(|t| {
+                if let (Some(slug), Some(n)) = (&t.remote_repo, t.pr_number) {
+                    format!("https://github.com/{}/pull/{}", slug, n)
+                } else {
+                    t.repo_root.clone()
+                }
+            })
+            .collect();
+        eprintln!("\x1b[2mer {}\x1b[0m", args.join(" "));
     }
 
     Ok(())
@@ -385,7 +395,7 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     }) = &mut app.overlay
                     {
                         edit.buffer.insert(edit.cursor_pos, c);
-                        edit.cursor_pos += 1;
+                        edit.cursor_pos += c.len_utf8();
                     }
                 }
                 KeyCode::Backspace => {
@@ -395,7 +405,13 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     }) = &mut app.overlay
                     {
                         if edit.cursor_pos > 0 {
-                            edit.cursor_pos -= 1;
+                            // Find the char boundary before cursor_pos
+                            let prev_boundary = edit.buffer[..edit.cursor_pos]
+                                .char_indices()
+                                .last()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                            edit.cursor_pos = prev_boundary;
                             edit.buffer.remove(edit.cursor_pos);
                         }
                     }
@@ -406,7 +422,14 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                         ..
                     }) = &mut app.overlay
                     {
-                        edit.cursor_pos = edit.cursor_pos.saturating_sub(1);
+                        if edit.cursor_pos > 0 {
+                            let prev_boundary = edit.buffer[..edit.cursor_pos]
+                                .char_indices()
+                                .last()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                            edit.cursor_pos = prev_boundary;
+                        }
                     }
                 }
                 KeyCode::Right => {
@@ -416,7 +439,11 @@ fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     }) = &mut app.overlay
                     {
                         if edit.cursor_pos < edit.buffer.len() {
-                            edit.cursor_pos += 1;
+                            let next_char = edit.buffer[edit.cursor_pos..]
+                                .chars()
+                                .next()
+                                .unwrap_or('\0');
+                            edit.cursor_pos += next_char.len_utf8();
                         }
                     }
                 }
@@ -593,12 +620,17 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                     args.push("-R".to_string());
                     args.push(slug.clone());
                 }
-                let _ = std::process::Command::new("gh")
+                if let Ok(mut child) = std::process::Command::new("gh")
                     .args(&args)
                     .current_dir(&repo_root)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
-                    .spawn();
+                    .spawn()
+                {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
                 app.notify("Opening PR in browser...");
             }
         }
@@ -857,6 +889,7 @@ fn handle_normal_input(
         match key.code {
             KeyCode::Char('k') | KeyCode::Down => {
                 app.tab_mut().panel_scroll_down(1);
+                app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
                 return Ok(());
             }
             KeyCode::Char('j') | KeyCode::Up => {
@@ -1207,6 +1240,7 @@ fn handle_normal_input(
         {
             if app.tab().panel_focus && app.tab().panel.is_some() {
                 app.tab_mut().panel_scroll_down(10);
+                app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
             } else {
                 app.tab_mut().scroll_down(10);
             }
@@ -1224,6 +1258,7 @@ fn handle_normal_input(
         KeyCode::PageDown => {
             if app.tab().panel_focus && app.tab().panel.is_some() {
                 app.tab_mut().panel_scroll_down(20);
+                app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
             } else {
                 app.tab_mut().scroll_down(20);
             }
@@ -1364,7 +1399,9 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
 fn ai_review_scroll(app: &mut App, amount: u16, down: bool) {
     let tab = app.tab_mut();
     if down {
-        tab.panel_scroll = tab.panel_scroll.saturating_add(amount);
+        // Cap at 4096 — panel content is never this long and ratatui does not
+        // clamp scroll internally (it renders blank lines past the content end).
+        tab.panel_scroll = tab.panel_scroll.saturating_add(amount).min(4096);
     } else {
         tab.panel_scroll = tab.panel_scroll.saturating_sub(amount);
     }
@@ -1564,7 +1601,10 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('n') => {
-            // For agent prompts, 'n' = keep previous data but still run
+            app.cancel_confirm();
+        }
+        KeyCode::Char('k') => {
+            // For agent prompts, 'k' = keep previous data but still run
             if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = &app.input_mode {
                 app.input_mode = InputMode::Normal;
                 if let Some(prompt) = build_agent_review_prompt(app) {
@@ -1577,8 +1617,6 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 if let Some(prompt) = build_agent_questions_prompt(app) {
                     app.spawn_agent_prompt("questions", &prompt)?;
                 }
-            } else {
-                app.cancel_confirm();
             }
         }
         KeyCode::Esc => {

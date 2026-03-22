@@ -275,6 +275,51 @@ pub fn load_config(repo_root: &str) -> ErConfig {
         .unwrap_or_default()
 }
 
+/// Split a string into args respecting single and double quotes.
+/// Unquoted segments are split on whitespace. Quoted segments preserve
+/// inner whitespace and strip the outer quotes.
+///
+/// Examples:
+///   `--print -p {prompt}`         → ["--print", "-p", "{prompt}"]
+///   `--print -p "hello world"`    → ["--print", "-p", "hello world"]
+///   `--flag 'it'\''s quoted'`     → ["--flag", "it's quoted"]
+pub fn split_shell_args(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut chars = s.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '\\' if in_double || !in_single => {
+                // Backslash escapes the next character
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            c if c.is_ascii_whitespace() && !in_single && !in_double => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
 /// Recursively merge `overlay` into `base`. Overlay values win; nested tables are merged recursively.
 fn deep_merge(
     base: &mut toml::map::Map<String, toml::Value>,
@@ -307,12 +352,10 @@ pub fn save_config(config: &ErConfig) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("Could not determine config directory"))?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
+    let tmp_path = dir.join("config.toml.tmp");
     let content = toml::to_string_pretty(config)?;
-    // TODO(risk:high): write is non-atomic — if the process is killed mid-write (e.g. Ctrl+C
-    // during save) the config file is left with partial content and becomes unreadable on next
-    // launch (silently falls back to defaults, losing all user settings). Write to a .tmp file
-    // and rename atomically, the same pattern used for .er-github-comments.json.
-    std::fs::write(path, content)?;
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
@@ -539,7 +582,7 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             description: "Agent arguments (space-separated)".into(),
             placeholder: "e.g. --print -p {prompt}".into(),
             get: |c| c.agent.args.join(" "),
-            set: |c, v| c.agent.args = v.split_whitespace().map(|s| s.to_string()).collect(),
+            set: |c, v| c.agent.args = split_shell_args(&v),
         },
         // ── Watched Paths ──
         ConfigItem::SectionHeader("Watched Paths".into()),
@@ -808,5 +851,274 @@ mod tests {
         assert!(restored.display.wrap_lines);
         assert_eq!(restored.agent.command, "my-agent");
         assert_eq!(restored.agent.args, vec!["--flag"]);
+    }
+
+    // ── split_shell_args ──
+
+    #[test]
+    fn split_shell_args_simple() {
+        assert_eq!(
+            split_shell_args("--print -p {prompt}"),
+            vec!["--print", "-p", "{prompt}"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_double_quotes() {
+        assert_eq!(
+            split_shell_args(r#"--print -p "hello world""#),
+            vec!["--print", "-p", "hello world"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_single_quotes() {
+        assert_eq!(
+            split_shell_args("--print -p 'hello world'"),
+            vec!["--print", "-p", "hello world"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_escaped_quote_in_double() {
+        assert_eq!(
+            split_shell_args(r#"--flag "it\"s here""#),
+            vec!["--flag", r#"it"s here"#]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_backslash_outside_quotes() {
+        assert_eq!(
+            split_shell_args(r"--flag hello\ world"),
+            vec!["--flag", "hello world"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_empty_string() {
+        assert!(split_shell_args("").is_empty());
+    }
+
+    #[test]
+    fn split_shell_args_only_whitespace() {
+        assert!(split_shell_args("   ").is_empty());
+    }
+
+    #[test]
+    fn split_shell_args_mixed_quotes() {
+        assert_eq!(
+            split_shell_args(r#"--a 'single' --b "double" --c plain"#),
+            vec!["--a", "single", "--b", "double", "--c", "plain"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_adjacent_quoted_segments() {
+        // 'hello'" "'world' should join into "hello world"
+        assert_eq!(split_shell_args("'hello'\" \"'world'"), vec!["hello world"]);
+    }
+
+    #[test]
+    fn split_shell_args_prompt_placeholder() {
+        // The default agent args pattern
+        assert_eq!(
+            split_shell_args("--print --output-format stream-json -p {prompt}"),
+            vec![
+                "--print",
+                "--output-format",
+                "stream-json",
+                "-p",
+                "{prompt}"
+            ]
+        );
+    }
+
+    // ── config_hub_items ──
+
+    #[test]
+    fn config_hub_items_returns_expected_sections_and_count() {
+        let config = ErConfig::default();
+        let items = config_hub_items(&config);
+        // Count non-header items
+        let toggleable: Vec<_> = items
+            .iter()
+            .filter(|i| !matches!(i, ConfigItem::SectionHeader(_)))
+            .collect();
+        assert!(
+            toggleable.len() >= 18,
+            "Expected at least 18 interactive items, got {}",
+            toggleable.len()
+        );
+        assert!(
+            items.len() >= 22,
+            "Expected at least 22 total items (with headers), got {}",
+            items.len()
+        );
+    }
+
+    #[test]
+    fn config_hub_items_section_headers_present_in_correct_order() {
+        let config = ErConfig::default();
+        let items = config_hub_items(&config);
+        let headers: Vec<&str> = items
+            .iter()
+            .filter_map(|i| match i {
+                ConfigItem::SectionHeader(title) => Some(title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(headers.contains(&"Views"));
+        assert!(headers.contains(&"Display"));
+        assert!(headers.contains(&"Key Hints"));
+        assert!(headers.contains(&"Commands"));
+        assert!(headers.contains(&"Agent"));
+        assert!(headers.contains(&"Watched Paths"));
+        // Views should come before Display
+        let views_pos = headers.iter().position(|h| *h == "Views").unwrap();
+        let display_pos = headers.iter().position(|h| *h == "Display").unwrap();
+        assert!(views_pos < display_pos);
+    }
+
+    #[test]
+    fn config_hub_items_bool_toggle_get_set_round_trip() {
+        let mut config = ErConfig::default();
+        let items = config_hub_items(&config);
+
+        // Find the "Branch diff" toggle
+        let branch_toggle = items.iter().find(|i| match i {
+            ConfigItem::BoolToggle { label, .. } => label.contains("Branch"),
+            _ => false,
+        });
+        if let Some(ConfigItem::BoolToggle { get, set, .. }) = branch_toggle {
+            assert!(get(&config));
+            set(&mut config, false);
+            assert!(!config.features.view_branch);
+            assert!(!get(&config));
+        } else {
+            panic!("Branch diff toggle not found");
+        }
+    }
+
+    #[test]
+    fn config_hub_items_string_cycle_get_set_round_trip() {
+        let mut config = ErConfig::default();
+        let items = config_hub_items(&config);
+
+        let theme_cycle = items.iter().find(|i| match i {
+            ConfigItem::StringCycle { label, .. } => label == "Theme",
+            _ => false,
+        });
+        if let Some(ConfigItem::StringCycle {
+            get, set, options, ..
+        }) = theme_cycle
+        {
+            assert_eq!(get(&config), "ocean-depth");
+            set(&mut config, options[1].to_string());
+            assert_eq!(get(&config), options[1]);
+        } else {
+            panic!("Theme cycle not found");
+        }
+    }
+
+    #[test]
+    fn config_hub_items_string_edit_get_set_round_trip() {
+        let mut config = ErConfig::default();
+        let items = config_hub_items(&config);
+
+        let cmd_edit = items.iter().find(|i| match i {
+            ConfigItem::StringEdit { label, .. } => label == "Command",
+            _ => false,
+        });
+        if let Some(ConfigItem::StringEdit { get, set, .. }) = cmd_edit {
+            assert_eq!(get(&config), "claude");
+            set(&mut config, "my-agent".to_string());
+            assert_eq!(config.agent.command, "my-agent");
+        } else {
+            panic!("Agent command edit not found");
+        }
+    }
+
+    #[test]
+    fn config_hub_items_number_edit_get_set_round_trip() {
+        let mut config = ErConfig::default();
+        let items = config_hub_items(&config);
+
+        let tab_width = items.iter().find(|i| match i {
+            ConfigItem::NumberEdit { label, .. } => label == "Tab width",
+            _ => false,
+        });
+        if let Some(ConfigItem::NumberEdit {
+            get, set, min, max, ..
+        }) = tab_width
+        {
+            assert_eq!(get(&config), 4);
+            assert_eq!(*min, 1);
+            assert_eq!(*max, 16);
+            set(&mut config, 8);
+            assert_eq!(config.display.tab_width, 8);
+        } else {
+            panic!("Tab width number edit not found");
+        }
+    }
+
+    #[test]
+    fn config_hub_items_watched_paths_generate_list_entries() {
+        let mut config = ErConfig::default();
+        config.watched.paths = vec![".work/**".to_string(), "logs/*.log".to_string()];
+        let items = config_hub_items(&config);
+
+        let list_entries: Vec<_> = items
+            .iter()
+            .filter(|i| matches!(i, ConfigItem::ListEntry { .. }))
+            .collect();
+        assert_eq!(list_entries.len(), 2);
+        if let ConfigItem::ListEntry { label, index } = &list_entries[0] {
+            assert_eq!(label, ".work/**");
+            assert_eq!(*index, 0);
+        }
+        if let ConfigItem::ListEntry { label, index } = &list_entries[1] {
+            assert_eq!(label, "logs/*.log");
+            assert_eq!(*index, 1);
+        }
+    }
+
+    #[test]
+    fn config_hub_items_includes_list_add_for_watched() {
+        let config = ErConfig::default();
+        let items = config_hub_items(&config);
+        let has_add = items
+            .iter()
+            .any(|i| matches!(i, ConfigItem::ListAdd { .. }));
+        assert!(has_add, "Should include a ListAdd item for watched paths");
+    }
+
+    // ── AgentConfig::display_name ──
+
+    #[test]
+    fn agent_display_name_capitalizes_basename() {
+        let agent = AgentConfig {
+            command: "claude".into(),
+            args: vec![],
+        };
+        assert_eq!(agent.display_name(), "Claude");
+    }
+
+    #[test]
+    fn agent_display_name_extracts_basename_from_path() {
+        let agent = AgentConfig {
+            command: "/usr/local/bin/claude".into(),
+            args: vec![],
+        };
+        assert_eq!(agent.display_name(), "Claude");
+    }
+
+    #[test]
+    fn agent_display_name_empty_command_returns_ai() {
+        let agent = AgentConfig {
+            command: "".into(),
+            args: vec![],
+        };
+        assert_eq!(agent.display_name(), "AI");
     }
 }

@@ -2848,7 +2848,10 @@ impl TabState {
             Err(_) => vec![],
         };
 
-        let history = self.history.as_mut().unwrap();
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
         history.diff_cache.insert(hash, files.clone());
         history.commit_files = files;
         history.selected_file = 0;
@@ -3042,7 +3045,10 @@ impl TabState {
         let new_commits =
             git::git_log_branch(&self.base_branch, &self.repo_root, 50, skip).unwrap_or_default();
 
-        let history = self.history.as_mut().unwrap();
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
         if new_commits.is_empty() {
             history.all_loaded = true;
         } else {
@@ -4693,10 +4699,14 @@ impl App {
             });
         }
 
+        let first_selectable = items
+            .iter()
+            .position(|item| !item.is_header && item.enabled)
+            .unwrap_or(0);
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Open,
             items,
-            selected: 0,
+            selected: first_selectable,
         });
     }
 
@@ -4716,25 +4726,27 @@ impl App {
 
     /// Toggle/cycle/activate the currently selected config hub item
     pub fn config_hub_activate(&mut self) {
-        let (idx, config_ref) = match &self.overlay {
+        let idx = match &self.overlay {
             Some(OverlayData::ConfigHub {
                 selected,
                 editing: None,
                 ..
-            }) => (*selected, &self.config as *const ErConfig),
+            }) => *selected,
             _ => return,
         };
-        // Safety: we only use config_ref for reading before mutating via self.config
-        let items = config::config_hub_items(unsafe { &*config_ref });
-        match items.get(idx) {
-            Some(config::ConfigItem::BoolToggle { get, set, .. }) => {
+        let items = config::config_hub_items(&self.config);
+        let Some(item) = items.into_iter().nth(idx) else {
+            return;
+        };
+        match item {
+            config::ConfigItem::BoolToggle { get, set, .. } => {
                 let current = get(&self.config);
                 set(&mut self.config, !current);
                 self.config_hub_rebuild_items();
             }
-            Some(config::ConfigItem::StringCycle {
+            config::ConfigItem::StringCycle {
                 options, get, set, ..
-            }) => {
+            } => {
                 let current = get(&self.config);
                 let pos = options.iter().position(|&o| o == current).unwrap_or(0);
                 let next = options[(pos + 1) % options.len()];
@@ -4743,17 +4755,15 @@ impl App {
                 crate::ui::themes::set_theme_by_name(&self.config.display.theme);
                 self.config_hub_rebuild_items();
             }
-            Some(config::ConfigItem::NumberEdit {
+            config::ConfigItem::NumberEdit {
                 get, set, min, max, ..
-            }) => {
+            } => {
                 let current = get(&self.config);
-                let min = *min;
-                let max = *max;
                 let next = if current >= max { min } else { current + 1 };
                 set(&mut self.config, next);
                 self.config_hub_rebuild_items();
             }
-            Some(config::ConfigItem::StringEdit { get, .. }) => {
+            config::ConfigItem::StringEdit { get, .. } => {
                 let current = get(&self.config);
                 let cursor = current.len();
                 if let Some(OverlayData::ConfigHub {
@@ -4767,7 +4777,7 @@ impl App {
                     });
                 }
             }
-            Some(config::ConfigItem::ListAdd { .. }) => {
+            config::ConfigItem::ListAdd { .. } => {
                 if let Some(OverlayData::ConfigHub {
                     editing, selected, ..
                 }) = &mut self.overlay
@@ -6672,12 +6682,18 @@ impl App {
         let branch = tab.current_branch.clone();
         let output_path = format!("{}/.er/summary.md", repo_root);
 
-        // Substitute placeholders
+        // Substitute placeholders — sanitize values for safe shell interpolation
         let cmd = shell_cmd
-            .replace("{base}", &base)
-            .replace("{branch}", &branch)
-            .replace("{repo}", &repo_root)
-            .replace("{output}", &output_path);
+            .replace("{base}", &crate::ai::prompts::sanitize_for_shell(&base))
+            .replace("{branch}", &crate::ai::prompts::sanitize_for_shell(&branch))
+            .replace(
+                "{repo}",
+                &crate::ai::prompts::sanitize_for_shell(&repo_root),
+            )
+            .replace(
+                "{output}",
+                &crate::ai::prompts::sanitize_for_shell(&output_path),
+            );
 
         // Ensure .er/ directory exists
         let er_dir = std::path::Path::new(&repo_root).join(".er");
@@ -6794,7 +6810,11 @@ impl App {
             if let Some(panel) = self.tab().panel {
                 if panel == crate::ai::PanelContent::AgentLog {
                     // Set panel_scroll to a large value — rendering will clamp it
-                    self.tab_mut().panel_scroll = self.agent_log.len().saturating_sub(1) as u16;
+                    self.tab_mut().panel_scroll =
+                        self.agent_log
+                            .len()
+                            .saturating_sub(1)
+                            .min(u16::MAX as usize) as u16;
                 }
             }
         }
@@ -6922,7 +6942,17 @@ impl App {
 
                 // Grant the agent targeted tool permissions without blanket
                 // --dangerously-skip-permissions. The prompt is fully controlled by er.
-                let allowed: &[&str] = &["Read", "Write", "Edit", "Bash(gh pr *)", "Bash(cp *)"];
+                let allowed: &[&str] = &[
+                    "Read",
+                    "Write",
+                    "Edit",
+                    "Bash(gh pr *)",
+                    "Bash(cp .er/*)",
+                    "Bash(git diff*)",
+                    "Bash(shasum*)",
+                    "Bash(sha256sum*)",
+                    "Bash(mkdir*)",
+                ];
                 for rule in allowed.iter().rev() {
                     agent_args.insert(0, rule.to_string());
                     agent_args.insert(0, "--allowedTools".to_string());
@@ -7049,17 +7079,30 @@ fn parse_stream_json_line(line: &str) -> Option<String> {
             let content = message.get("content")?.as_array()?;
             let mut parts: Vec<String> = Vec::new();
             for item in content {
-                let item_obj = item.as_object()?;
-                match item_obj.get("type")?.as_str()? {
+                let item_obj = match item.as_object() {
+                    Some(o) => o,
+                    None => continue,
+                };
+                let item_type = match item_obj.get("type").and_then(|t| t.as_str()) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                match item_type {
                     "text" => {
-                        let text = item_obj.get("text")?.as_str()?;
+                        let text = match item_obj.get("text").and_then(|t| t.as_str()) {
+                            Some(t) => t,
+                            None => continue,
+                        };
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
                             parts.push(truncate_str(trimmed, 120));
                         }
                     }
                     "tool_use" => {
-                        let tool = item_obj.get("name")?.as_str().unwrap_or("tool");
+                        let tool = item_obj
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("tool");
                         let input = item_obj.get("input").and_then(|i| i.as_object());
                         let detail = match tool {
                             "Read" => input
@@ -7132,10 +7175,11 @@ fn shorten_path(path: &str) -> String {
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max])
+        let boundary = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
+        format!("{}…", &s[..boundary])
     }
 }
 
@@ -7251,7 +7295,10 @@ pub fn cleanup_question_answers(er_dir: &str) {
             }
 
             if let Ok(json) = serde_json::to_string_pretty(&qs) {
-                let _ = std::fs::write(&path, json);
+                let tmp = path.with_extension("json.tmp");
+                if std::fs::write(&tmp, json).is_ok() {
+                    let _ = std::fs::rename(&tmp, &path);
+                }
             }
         }
     }
@@ -9178,5 +9225,178 @@ mod tests {
         // Reload should not panic even when the cache dir doesn't exist
         tab.reload_remote_comments();
         assert!(tab.ai.github_comments.is_none());
+    }
+
+    // ── truncate_str (multi-byte UTF-8 regression) ──
+
+    #[test]
+    fn truncate_str_emoji_does_not_panic() {
+        // Emoji are multi-byte (4 bytes each). Slicing at byte offset would panic.
+        let s = "hello 🎉🎊🎈 world";
+        let result = truncate_str(s, 8);
+        // Should get 8 chars + ellipsis, no panic
+        assert_eq!(result, "hello 🎉🎊…");
+    }
+
+    #[test]
+    fn truncate_str_cjk_chars() {
+        let s = "你好世界测试";
+        let result = truncate_str(s, 4);
+        assert_eq!(result, "你好世界…");
+    }
+
+    #[test]
+    fn truncate_str_mixed_ascii_and_multibyte() {
+        let s = "café résumé";
+        let result = truncate_str(s, 5);
+        assert_eq!(result, "café …");
+    }
+
+    #[test]
+    fn truncate_str_exact_multibyte_boundary() {
+        let s = "🎉🎊"; // 2 emoji, each 4 bytes
+        let result = truncate_str(s, 2);
+        // Exactly at limit, no truncation needed
+        assert_eq!(result, "🎉🎊");
+    }
+
+    #[test]
+    fn truncate_str_single_emoji_within_limit() {
+        let s = "🎉";
+        let result = truncate_str(s, 5);
+        assert_eq!(result, "🎉");
+    }
+
+    // ── parse_stream_json_line ──
+
+    #[test]
+    fn parse_stream_json_assistant_text_event() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Analyzing the diff..."}]}}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(result, Some("Analyzing the diff...".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_json_assistant_tool_use_read() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/home/user/project/src/main.rs"}}]}}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(result, Some("→ Read src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_json_assistant_tool_use_bash() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff main"}}]}}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(result, Some("→ Bash git diff main".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_json_assistant_tool_use_write() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/tmp/project/.er/review.json"}}]}}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(result, Some("→ Write .er/review.json".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_json_assistant_tool_use_glob() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Glob","input":{"pattern":"**/*.rs"}}]}}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(result, Some("→ Glob **/*.rs".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_json_assistant_tool_use_unknown_tool() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"CustomTool","input":{}}]}}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(result, Some("→ CustomTool".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_json_tool_result_suppressed() {
+        let line = r#"{"type":"tool_result","content":"some output"}"#;
+        assert_eq!(parse_stream_json_line(line), None);
+    }
+
+    #[test]
+    fn parse_stream_json_result_suppressed() {
+        let line = r#"{"type":"result","result":"done"}"#;
+        assert_eq!(parse_stream_json_line(line), None);
+    }
+
+    #[test]
+    fn parse_stream_json_system_cost_event() {
+        let line = r#"{"type":"system","subtype":"cost","message":"$0.05 used"}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(result, Some("⊘ $0.05 used".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_json_system_usage_event() {
+        let line = r#"{"type":"system","subtype":"usage","message":"1000 tokens"}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(result, Some("⊘ 1000 tokens".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_json_system_hook_suppressed() {
+        let line = r#"{"type":"system","subtype":"hook"}"#;
+        assert_eq!(parse_stream_json_line(line), None);
+    }
+
+    #[test]
+    fn parse_stream_json_malformed_json_returns_none() {
+        assert_eq!(parse_stream_json_line("not json at all"), None);
+        assert_eq!(parse_stream_json_line("{invalid}"), None);
+        assert_eq!(parse_stream_json_line(""), None);
+    }
+
+    #[test]
+    fn parse_stream_json_empty_content_array_returns_none() {
+        let line = r#"{"type":"assistant","message":{"content":[]}}"#;
+        assert_eq!(parse_stream_json_line(line), None);
+    }
+
+    #[test]
+    fn parse_stream_json_whitespace_only_text_skipped() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"   "}]}}"#;
+        assert_eq!(parse_stream_json_line(line), None);
+    }
+
+    #[test]
+    fn parse_stream_json_multiple_content_items_joined() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Reading file"},{"type":"tool_use","name":"Read","input":{"file_path":"/src/lib.rs"}}]}}"#;
+        let result = parse_stream_json_line(line);
+        assert_eq!(result, Some("Reading file  → Read src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn parse_stream_json_unknown_type_returns_none() {
+        let line = r#"{"type":"unknown_event","data":"something"}"#;
+        assert_eq!(parse_stream_json_line(line), None);
+    }
+
+    // ── shorten_path ──
+
+    #[test]
+    fn shorten_path_multiple_components() {
+        assert_eq!(
+            shorten_path("/home/user/project/src/main.rs"),
+            "src/main.rs"
+        );
+    }
+
+    #[test]
+    fn shorten_path_two_components() {
+        assert_eq!(shorten_path("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn shorten_path_single_component() {
+        assert_eq!(shorten_path("main.rs"), "main.rs");
+    }
+
+    #[test]
+    fn shorten_path_deeply_nested() {
+        assert_eq!(shorten_path("/a/b/c/d/e/f.rs"), "e/f.rs");
     }
 }

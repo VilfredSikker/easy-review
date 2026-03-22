@@ -39,7 +39,7 @@ verbose    = false   # Show all keybindings (more detail)
 # The AI agent used for review commands. {prompt} is replaced with user input.
 [agent]
 command = "claude"
-args    = ["--print", "-p", "{prompt}"]
+args    = ["--print", "--output-format", "stream-json", "-p", "{prompt}"]
 
 # ── Summary ────────────────────────────────────────────────────────────
 # Diff summary / changelog generation (AI hub).

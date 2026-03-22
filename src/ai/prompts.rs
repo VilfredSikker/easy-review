@@ -3,6 +3,20 @@
 /// These replicate the logic from the external Claude Code skills
 /// (`/er-review`, `/er-questions`) so the TUI can invoke them directly
 /// via the configured agent command without requiring skill files.
+/// Returns true if the value contains only characters safe for shell interpolation.
+/// Allows alphanumeric, dots, underscores, hyphens, colons, slashes, and @.
+#[cfg(test)]
+fn is_safe_shell_value(s: &str) -> bool {
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@'))
+}
+
+/// Wraps a value in single quotes and escapes any embedded single quotes.
+/// This makes the value safe to embed inside a shell command string.
+pub fn sanitize_for_shell(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Build the review prompt with repo context substituted.
 ///
 /// The prompt instructs the agent to:
@@ -10,10 +24,13 @@
 /// 2. Analyse all files
 /// 3. Write `.er/review.json`, `.er/order.json`, `.er/checklist.json`, `.er/summary.md`
 pub fn build_review_prompt(base_branch: &str, scope: &str) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch);
+    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
+    let base_branch = base_branch.replace('{', "{{").replace('}', "}}");
     let diff_args = match scope {
         "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
         "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
-        _ => format!("{base_branch} --unified=3 --no-color --no-ext-diff"),
+        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
     };
 
     format!(
@@ -127,10 +144,12 @@ Do NOT read individual source files — the diff contains everything needed."#
 /// 3. Answer each unresolved question
 /// 4. Write updated `.er/questions.json`
 pub fn build_questions_prompt(base_branch: &str, scope: &str) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch);
+    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
     let diff_args = match scope {
         "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
         "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
-        _ => format!("{base_branch} --unified=3 --no-color --no-ext-diff"),
+        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
     };
 
     format!(
@@ -188,14 +207,24 @@ pub fn build_review_prompt_remote(
     pr_number: u64,
     output_dir: &str,
 ) -> String {
+    let safe_owner = sanitize_for_shell(owner)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_repo = sanitize_for_shell(repo)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    // pr_number is u64 — inherently numeric, no sanitization needed
     format!(
-        r#"You are a code reviewer. Perform a thorough review of the GitHub PR diff and write results to `{output_dir}/`.
+        r#"You are a code reviewer. Perform a thorough review of the GitHub PR diff and write results to `{safe_output_dir}/`.
 
 ## Instructions
 
-1. Run: `gh pr diff {pr_number} --repo {owner}/{repo} > {output_dir}/diff-tmp && (sha256sum {output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {output_dir}/diff-tmp)`
+1. Run: `gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
    - Save the SHA-256 hash as `diff_hash`
-2. Read `{output_dir}/diff-tmp` to get the full diff
+2. Read `{safe_output_dir}/diff-tmp` to get the full diff
 3. Analyse every changed file and hunk. For each file determine:
    - `risk`: "high" | "medium" | "low" | "info"
    - `risk_reason`: why this risk level
@@ -203,7 +232,7 @@ pub fn build_review_prompt_remote(
    - `findings`: array of issues found (max 3-4 per file)
 4. Write these four files:
 
-### `{output_dir}/review.json`
+### `{safe_output_dir}/review.json`
 ```json
 {{
   "version": 1,
@@ -237,7 +266,7 @@ pub fn build_review_prompt_remote(
 }}
 ```
 
-### `{output_dir}/order.json`
+### `{safe_output_dir}/order.json`
 ```json
 {{
   "version": 1,
@@ -251,7 +280,7 @@ pub fn build_review_prompt_remote(
 }}
 ```
 
-### `{output_dir}/checklist.json`
+### `{safe_output_dir}/checklist.json`
 ```json
 {{
   "version": 1,
@@ -269,7 +298,7 @@ pub fn build_review_prompt_remote(
 }}
 ```
 
-### `{output_dir}/summary.md`
+### `{safe_output_dir}/summary.md`
 A 3-5 paragraph markdown summary of the overall changes.
 
 ## Guidelines
@@ -282,7 +311,7 @@ A 3-5 paragraph markdown summary of the overall changes.
 - Max 3-4 findings per file, max 15 total.
 - The checklist should be things the reviewer should manually verify.
 - Categories: security, logic, performance, correctness, error-handling, style, testing.
-- Ensure `{output_dir}/` directory exists before writing: `mkdir -p {output_dir}`
+- Ensure `{safe_output_dir}/` directory exists before writing: `mkdir -p {safe_output_dir}`
 
 ## Speed
 
@@ -304,15 +333,25 @@ pub fn build_questions_prompt_remote(
     pr_number: u64,
     output_dir: &str,
 ) -> String {
+    let safe_owner = sanitize_for_shell(owner)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_repo = sanitize_for_shell(repo)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    // pr_number is u64 — inherently numeric, no sanitization needed
     format!(
         r#"You are answering code review questions. Read the questions file and the PR diff, then provide answers.
 
 ## Instructions
 
-1. Read `{output_dir}/questions.json`
+1. Read `{safe_output_dir}/questions.json`
    - If it doesn't exist or has no unresolved questions: print "No questions to answer" and stop.
-2. Run: `gh pr diff {pr_number} --repo {owner}/{repo} > {output_dir}/diff-tmp`
-3. Read `{output_dir}/diff-tmp` to get the full diff context
+2. Run: `gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp`
+3. Read `{safe_output_dir}/diff-tmp` to get the full diff context
 4. For each question where `resolved == false` and no existing reply (no entry with `in_reply_to` == that question's `id`):
    a. Locate the relevant code in the diff (using `file`, `hunk_index`, `line_start`)
    b. Write a thoughtful answer as a NEW entry appended to the `questions` array:
@@ -331,8 +370,8 @@ pub fn build_questions_prompt_remote(
       }}
       ```
    c. Set the original question's `resolved` field to `true`
-5. Write the updated `{output_dir}/questions.json`
-6. Back up: `cp {output_dir}/questions.json {output_dir}/questions.prev.json`
+5. Write the updated `{safe_output_dir}/questions.json`
+6. Back up: `cp {safe_output_dir}/questions.json {safe_output_dir}/questions.prev.json`
 
 ## Answer Quality
 
@@ -345,4 +384,152 @@ pub fn build_questions_prompt_remote(
 
 Target: complete in under 60 seconds. Read the diff once, answer all questions in-context."#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── sanitize_for_shell ──
+
+    #[test]
+    fn sanitize_empty_string() {
+        assert_eq!(sanitize_for_shell(""), "''");
+    }
+
+    #[test]
+    fn sanitize_plain_value_wraps_in_single_quotes() {
+        assert_eq!(sanitize_for_shell("main"), "'main'");
+    }
+
+    #[test]
+    fn sanitize_embedded_single_quote_escaped() {
+        assert_eq!(sanitize_for_shell("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn sanitize_multiple_single_quotes() {
+        assert_eq!(sanitize_for_shell("a'b'c"), "'a'\\''b'\\''c'");
+    }
+
+    #[test]
+    fn sanitize_special_shell_chars_are_inert_inside_single_quotes() {
+        let result = sanitize_for_shell("main; rm -rf /");
+        assert_eq!(result, "'main; rm -rf /'");
+    }
+
+    #[test]
+    fn sanitize_braces_preserved() {
+        assert_eq!(sanitize_for_shell("feature/{foo}"), "'feature/{foo}'");
+    }
+
+    #[test]
+    fn sanitize_backticks_and_dollar() {
+        let result = sanitize_for_shell("`whoami` $HOME");
+        assert_eq!(result, "'`whoami` $HOME'");
+    }
+
+    // ── is_safe_shell_value ──
+
+    #[test]
+    fn safe_shell_value_alphanumeric() {
+        assert!(is_safe_shell_value("main"));
+        assert!(is_safe_shell_value("feature123"));
+    }
+
+    #[test]
+    fn safe_shell_value_allowed_special_chars() {
+        assert!(is_safe_shell_value("feature/branch-name"));
+        assert!(is_safe_shell_value("user@host:path"));
+        assert!(is_safe_shell_value("v1.2.3"));
+        assert!(is_safe_shell_value("a_b"));
+    }
+
+    #[test]
+    fn safe_shell_value_rejects_dangerous_chars() {
+        assert!(!is_safe_shell_value("main; rm -rf /"));
+        assert!(!is_safe_shell_value("$(whoami)"));
+        assert!(!is_safe_shell_value("`id`"));
+        assert!(!is_safe_shell_value("a b"));
+        assert!(!is_safe_shell_value("a'b"));
+    }
+
+    #[test]
+    fn safe_shell_value_empty_is_safe() {
+        assert!(is_safe_shell_value(""));
+    }
+
+    // ── build_review_prompt ──
+
+    #[test]
+    fn review_prompt_branch_scope_includes_base_branch() {
+        let prompt = build_review_prompt("main", "branch");
+        assert!(
+            prompt.contains("'main'"),
+            "should include sanitized base branch"
+        );
+        assert!(prompt.contains("--unified=3 --no-color --no-ext-diff"));
+        assert!(!prompt.contains("--staged"));
+    }
+
+    #[test]
+    fn review_prompt_staged_scope_uses_staged_flag() {
+        let prompt = build_review_prompt("main", "staged");
+        assert!(prompt.contains("--staged --unified=3 --no-color --no-ext-diff"));
+    }
+
+    #[test]
+    fn review_prompt_unstaged_scope_no_base_branch() {
+        let prompt = build_review_prompt("main", "unstaged");
+        assert!(prompt.contains("--unified=3 --no-color --no-ext-diff"));
+        assert!(!prompt.contains("'main' --unified"));
+        assert!(!prompt.contains("--staged"));
+    }
+
+    #[test]
+    fn review_prompt_dangerous_branch_name_sanitized() {
+        let prompt = build_review_prompt("main; rm -rf /", "branch");
+        assert!(prompt.contains("'main; rm -rf /'"));
+        assert!(!prompt.contains("main; rm -rf / --unified"));
+    }
+
+    // ── build_questions_prompt ──
+
+    #[test]
+    fn questions_prompt_branch_scope_includes_base() {
+        let prompt = build_questions_prompt("develop", "branch");
+        assert!(prompt.contains("'develop'"));
+    }
+
+    #[test]
+    fn questions_prompt_staged_scope() {
+        let prompt = build_questions_prompt("main", "staged");
+        assert!(prompt.contains("--staged"));
+    }
+
+    // ── build_review_prompt_remote ──
+
+    #[test]
+    fn remote_review_prompt_uses_gh_pr_diff() {
+        let prompt = build_review_prompt_remote("owner", "repo", 42, "/tmp/er-cache");
+        assert!(prompt.contains("gh pr diff 42"));
+        assert!(prompt.contains("'owner'/'repo'"));
+        assert!(prompt.contains("'/tmp/er-cache'"));
+    }
+
+    #[test]
+    fn remote_review_prompt_sanitizes_owner_repo() {
+        let prompt = build_review_prompt_remote("own'er", "re;po", 1, "/tmp/out");
+        assert!(prompt.contains("'own'\\''er'"));
+        assert!(prompt.contains("'re;po'"));
+    }
+
+    // ── build_questions_prompt_remote ──
+
+    #[test]
+    fn remote_questions_prompt_uses_gh_pr_diff() {
+        let prompt = build_questions_prompt_remote("owner", "repo", 10, "/tmp/cache");
+        assert!(prompt.contains("gh pr diff 10"));
+        assert!(prompt.contains("'owner'/'repo'"));
+    }
 }

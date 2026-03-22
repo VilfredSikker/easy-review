@@ -187,17 +187,23 @@ fn render_directory_browser(
         })
         .collect();
 
-    // Shorten path for title if too long
+    // Shorten path for title if too long, using char counts to avoid UTF-8 byte-boundary panics.
     let max_title_width = popup_width.saturating_sub(20) as usize;
-    // TODO(risk:high): current_path[current_path.len() - max_title_width..] is a byte-index
-    // slice into a UTF-8 string. If the slice boundary falls inside a multi-byte character
-    // this panics with a byte-boundary panic. Use current_path.char_indices() to find a
-    // safe split point, or use the chars-based truncation pattern used elsewhere (e.g.
-    // chars().rev().take(max_title_width).collect::<String>() reversed).
-    let title_path = if current_path.len() > max_title_width {
-        format!("…{}", &current_path[current_path.len() - max_title_width..])
-    } else {
-        current_path.to_string()
+    let title_path = {
+        let char_count = current_path.chars().count();
+        if char_count > max_title_width {
+            let suffix: String = current_path
+                .chars()
+                .rev()
+                .take(max_title_width)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            format!("…{suffix}")
+        } else {
+            current_path.to_string()
+        }
     };
 
     let block = Block::default()

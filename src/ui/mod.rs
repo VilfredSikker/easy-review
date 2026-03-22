@@ -20,16 +20,22 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
 
     let bottom_height = status_bar::bottom_bar_height(app, f.area().width);
 
-    // TODO(risk:medium): if top_height + bottom_height >= f.area().height, the Min(1) main
-    // content constraint becomes degenerate (zero rows). Ratatui does not panic here but the
-    // diff/file-tree renderers will receive a zero-height Rect and may render nothing or produce
-    // empty viewports, masking content silently. Guard or clamp.
+    let total_height = f.area().height;
+    let min_content: u16 = 3;
+    let mut top = top_height;
+    let mut bottom = bottom_height;
+    if top + bottom + min_content > total_height {
+        bottom = bottom.min(1);
+        if top + bottom + min_content > total_height {
+            top = top.min(1);
+        }
+    }
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(top_height),    // top bar (dynamic rows)
-            Constraint::Min(1),                // main content
-            Constraint::Length(bottom_height), // bottom bar (dynamic rows)
+            Constraint::Length(top),    // top bar (dynamic rows)
+            Constraint::Min(1),         // main content
+            Constraint::Length(bottom), // bottom bar (dynamic rows)
         ])
         .split(f.area());
 

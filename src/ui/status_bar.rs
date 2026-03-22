@@ -766,10 +766,10 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                     format!("Clear {} review file(s)? (y/n)", count)
                 }
                 ConfirmAction::RunAgentReview { .. } => {
-                    "Clear previous review before running? (y=clear n=keep Esc=cancel)".to_string()
+                    "Clear previous review before running? (y=clear k=keep Esc=cancel)".to_string()
                 }
                 ConfirmAction::RunAgentQuestions { .. } => {
-                    "Clear previous AI answers before running? (y=clear n=keep Esc=cancel)"
+                    "Clear previous AI answers before running? (y=clear k=keep Esc=cancel)"
                         .to_string()
                 }
                 ConfirmAction::ApprovePR => "Approve this PR on GitHub? (y/n)".to_string(),
@@ -993,13 +993,8 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
 
 /// Render watch notification overlay
 pub fn render_watch_notification(f: &mut Frame, area: Rect, message: &str) {
-    // TODO(risk:medium): message.len() counts bytes, not display columns. A message with
-    // multi-byte UTF-8 characters will produce a notif_width that is too large, causing
-    // the notification to be placed too far left or clipped. Use message.chars().count()
-    // (or a unicode-width crate) for the width calculation.
-    // TODO(risk:medium): if message is long enough that notif_width overflows u16 the
-    // addition wraps silently. Cap message length or use saturating arithmetic.
-    let notif_width = message.len() as u16 + 4;
+    let char_count = message.chars().count().min(u16::MAX as usize - 4);
+    let notif_width = char_count as u16 + 4;
     let notif_x = area.x + area.width.saturating_sub(notif_width + 2);
     let notif_y = area.y + 2;
 
