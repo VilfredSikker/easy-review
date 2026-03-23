@@ -133,7 +133,7 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
         PanelContent::AiSummary => render_ai_summary(&mut lines, area, tab),
         PanelContent::PrOverview => render_pr_overview(&mut lines, area, tab),
         PanelContent::SymbolRefs => render_symbol_refs(&mut lines, area, tab),
-        PanelContent::AgentLog => render_agent_log(&mut lines, area, app),
+        PanelContent::AgentLog => render_agent_log(&mut lines, area, tab),
     }
 
     let border_style = if tab.panel_focus {
@@ -810,22 +810,14 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
     }
     lines.push(Line::from(""));
 
-    // Body (first few lines, truncated)
+    // Body (full, scrollable via panel_scroll)
     if !pr.body.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             " ─── Description ───",
             Style::default().fg(styles::BORDER()),
         )]));
         lines.push(Line::from(""));
-        let mut shown = 0;
         for line in pr.body.lines() {
-            if shown >= 8 {
-                lines.push(Line::from(vec![Span::styled(
-                    " [scroll for more]",
-                    Style::default().fg(styles::MUTED()),
-                )]));
-                break;
-            }
             if line.is_empty() {
                 lines.push(Line::from(""));
             } else {
@@ -834,7 +826,6 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
                         format!(" {}", wrapped),
                         Style::default().fg(styles::TEXT()),
                     )]));
-                    shown += 1;
                 }
             }
         }
@@ -1053,13 +1044,13 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
 
 // ── AgentLog ──
 
-fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, app: &'a crate::app::App) {
+fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::app::TabState) {
     use crate::app::{AgentLogSource, CommandStatus};
 
     let max_w = area.width.saturating_sub(4) as usize; // panel padding + border
 
     // Header
-    let running_count = app
+    let running_count = tab
         .command_status
         .values()
         .filter(|s| matches!(s, CommandStatus::Running))
@@ -1081,7 +1072,7 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, app: &'a crate::a
     lines.push(Line::from(header_spans));
     lines.push(Line::from(""));
 
-    if app.agent_log.is_empty() {
+    if tab.agent_log.is_empty() {
         lines.push(Line::from(Span::styled(
             "No agent output yet",
             Style::default().fg(styles::MUTED()),
@@ -1100,9 +1091,9 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, app: &'a crate::a
     }
 
     // Calculate relative timestamps from first entry
-    let first_ts = app.agent_log.front().map(|e| e.timestamp);
+    let first_ts = tab.agent_log.front().map(|e| e.timestamp);
 
-    for entry in app.agent_log.iter() {
+    for entry in tab.agent_log.iter() {
         let elapsed = first_ts
             .map(|first| entry.timestamp.duration_since(first))
             .unwrap_or_default();

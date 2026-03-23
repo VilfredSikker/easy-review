@@ -523,6 +523,25 @@ pub struct TabState {
     /// Remote repo slug (e.g. "owner/repo") when reviewing a PR without a local clone.
     /// When Some, git operations are disabled and diffs come from `gh pr diff --repo`.
     pub remote_repo: Option<String>,
+
+    // ── Agent log state (per-tab) ──
+    /// Receivers for running background commands (keyed by command name)
+    pub command_rx: std::collections::HashMap<String, std::sync::mpsc::Receiver<Result<()>>>,
+
+    /// Status of each named command (keyed by command name like "summary", "test", etc.)
+    pub command_status: std::collections::HashMap<String, CommandStatus>,
+
+    /// Sender for streaming agent log entries from background threads
+    pub log_tx: std::sync::mpsc::Sender<AgentLogEntry>,
+
+    /// Receiver for agent log entries (drained each tick by drain_agent_log)
+    pub log_rx: std::sync::mpsc::Receiver<AgentLogEntry>,
+
+    /// Accumulated agent log entries (capped at 5000)
+    pub agent_log: std::collections::VecDeque<AgentLogEntry>,
+
+    /// Whether the agent log panel auto-scrolls to the latest entry
+    pub agent_log_auto_scroll: bool,
 }
 
 /// A single reference to a symbol (file + line)
@@ -710,6 +729,7 @@ impl TabState {
     /// Uses `gh pr diff --repo` instead of local git operations.
     pub fn new_remote(pr_ref: &crate::github::PrRef) -> Result<Self> {
         let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
+        let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
 
         // Get metadata (base/head branch names)
         let (base_branch, head_branch) =
@@ -829,6 +849,12 @@ impl TabState {
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: Some(repo_slug),
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
+            log_tx: agent_log_tx,
+            log_rx: agent_log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
         };
 
         // Build hunk offsets for initial selection
@@ -840,6 +866,7 @@ impl TabState {
     }
 
     fn new_inner(repo_root: String, current_branch: String, base_branch: String) -> Result<Self> {
+        let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         let reviewed = Self::load_reviewed_files(&repo_root);
         let er_config = config::load_config(&repo_root);
         let watched_config = er_config.watched.clone();
@@ -919,6 +946,12 @@ impl TabState {
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
+            log_tx: agent_log_tx,
+            log_rx: agent_log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
         };
 
         tab.refresh_diff()?;
@@ -934,6 +967,7 @@ impl TabState {
         use crate::config::WatchedConfig;
         use crate::git::CompactionConfig;
         use std::collections::HashSet;
+        let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         TabState {
             mode: DiffMode::Branch,
             base_branch: "main".to_string(),
@@ -1007,6 +1041,12 @@ impl TabState {
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
+            log_tx: agent_log_tx,
+            log_rx: agent_log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
         }
     }
 
@@ -1036,12 +1076,26 @@ impl TabState {
     /// Short name for display in tab bar (last path component)
     pub fn tab_name(&self) -> String {
         if let Some(ref slug) = self.remote_repo {
-            return slug.clone();
+            let repo = slug.split('/').next_back().unwrap_or(slug);
+            if let Some(pr_num) = self.pr_number {
+                return format!("{}#{}", repo, pr_num);
+            }
+            return repo.to_string();
         }
         std::path::Path::new(&self.repo_root)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| self.repo_root.clone())
+    }
+
+    /// Returns a list of (name, status_label, is_running) for agent commands
+    /// that should show a persistent status indicator in the top bar.
+    pub fn agent_statuses(&self) -> Vec<(&str, &str, bool)> {
+        self.command_status
+            .iter()
+            .filter(|(_, status)| matches!(status, CommandStatus::Running))
+            .map(|(name, _)| (name.as_str(), "running", true))
+            .collect()
     }
 
     /// Whether this tab is reviewing a remote PR (no local git repo).
@@ -3648,24 +3702,6 @@ pub struct App {
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
 
-    /// Receivers for running background commands (keyed by command name)
-    pub command_rx: std::collections::HashMap<String, std::sync::mpsc::Receiver<Result<()>>>,
-
-    /// Status of each named command (keyed by command name like "summary", "test", etc.)
-    pub command_status: std::collections::HashMap<String, CommandStatus>,
-
-    /// Sender for streaming agent log entries from background threads
-    pub log_tx: std::sync::mpsc::Sender<AgentLogEntry>,
-
-    /// Receiver for agent log entries (drained each tick by drain_agent_log)
-    pub log_rx: std::sync::mpsc::Receiver<AgentLogEntry>,
-
-    /// Accumulated agent log entries (capped at 5000)
-    pub agent_log: std::collections::VecDeque<AgentLogEntry>,
-
-    /// Whether the agent log panel auto-scrolls to the latest entry
-    pub agent_log_auto_scroll: bool,
-
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
 
@@ -3731,7 +3767,6 @@ impl App {
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
 
-        let (log_tx, log_rx) = std::sync::mpsc::channel();
         Ok(App {
             tabs,
             active_tab: 0,
@@ -3745,12 +3780,6 @@ impl App {
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
-            command_rx: std::collections::HashMap::new(),
-            command_status: std::collections::HashMap::new(),
-            log_tx,
-            log_rx,
-            agent_log: std::collections::VecDeque::new(),
-            agent_log_auto_scroll: true,
             pending_hub_action: None,
             last_terminal_width: 0,
         })
@@ -3762,7 +3791,6 @@ impl App {
             tab.pr_data = Some(data);
         }
         let er_config = crate::config::ErConfig::default();
-        let (log_tx, log_rx) = std::sync::mpsc::channel();
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -3776,12 +3804,6 @@ impl App {
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
-            command_rx: std::collections::HashMap::new(),
-            command_status: std::collections::HashMap::new(),
-            log_tx,
-            log_rx,
-            agent_log: std::collections::VecDeque::new(),
-            agent_log_auto_scroll: true,
             pending_hub_action: None,
             last_terminal_width: 0,
         }
@@ -6662,8 +6684,8 @@ impl App {
 
     /// Build a human-readable summary after an agent command completes.
     /// Reads the output files to report what was produced.
-    fn agent_completion_summary(&self, name: &str) -> String {
-        let er_dir = std::path::PathBuf::from(self.tab().er_dir());
+    fn agent_completion_summary_for(tab: &TabState, name: &str) -> String {
+        let er_dir = std::path::PathBuf::from(tab.er_dir());
 
         match name {
             "review" => {
@@ -6713,21 +6735,11 @@ impl App {
         }
     }
 
-    /// Returns a list of (name, status_label, is_running) for agent commands
-    /// that should show a persistent status indicator in the top bar.
-    pub fn agent_statuses(&self) -> Vec<(&str, &str, bool)> {
-        self.command_status
-            .iter()
-            .filter(|(_, status)| matches!(status, CommandStatus::Running))
-            .map(|(name, _)| (name.as_str(), "running", true))
-            .collect()
-    }
-
     /// Spawn a shell command in the background under the given name.
     /// The command string is run via `sh -c` in the repo root.
     /// Placeholders {base}, {branch}, {repo}, {output} are substituted.
     pub fn spawn_command(&mut self, name: &str, shell_cmd: &str) -> Result<()> {
-        if self.command_status.get(name) == Some(&CommandStatus::Running) {
+        if self.tab().command_status.get(name) == Some(&CommandStatus::Running) {
             self.notify(&format!("{} already running", name));
             return Ok(());
         }
@@ -6759,14 +6771,14 @@ impl App {
         let name_owned = name.to_string();
 
         // Send status log entry before spawning
-        let _ = self.log_tx.send(AgentLogEntry {
+        let _ = self.tab().log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
             command_name: name.to_string(),
             source: AgentLogSource::Status,
             text: format!("{} started", name),
         });
 
-        let log_tx = self.log_tx.clone();
+        let log_tx = self.tab().log_tx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
@@ -6844,8 +6856,9 @@ impl App {
             let _ = tx.send(result);
         });
 
-        self.command_rx.insert(name.to_string(), rx);
-        self.command_status
+        self.tab_mut().command_rx.insert(name.to_string(), rx);
+        self.tab_mut()
+            .command_status
             .insert(name.to_string(), CommandStatus::Running);
         self.notify(&format!("{} started...", name));
         Ok(())
@@ -6854,23 +6867,21 @@ impl App {
     /// Drain all pending agent log entries from the channel into `agent_log`.
     /// Called each tick. Auto-scrolls the AgentLog panel when new entries arrive.
     pub fn drain_agent_log(&mut self) {
-        let mut received = false;
-        while let Ok(entry) = self.log_rx.try_recv() {
-            self.agent_log.push_back(entry);
-            received = true;
-            if self.agent_log.len() > 5000 {
-                self.agent_log.pop_front();
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            let mut received = false;
+            while let Ok(entry) = tab.log_rx.try_recv() {
+                tab.agent_log.push_back(entry);
+                received = true;
+                if tab.agent_log.len() > 5000 {
+                    tab.agent_log.pop_front();
+                }
             }
-        }
-        if received && self.agent_log_auto_scroll {
-            if let Some(panel) = self.tab().panel {
-                if panel == crate::ai::PanelContent::AgentLog {
-                    // Set panel_scroll to a large value — rendering will clamp it
-                    self.tab_mut().panel_scroll =
-                        self.agent_log
-                            .len()
-                            .saturating_sub(1)
-                            .min(u16::MAX as usize) as u16;
+            if received && i == self.active_tab && tab.agent_log_auto_scroll {
+                if let Some(panel) = tab.panel {
+                    if panel == crate::ai::PanelContent::AgentLog {
+                        tab.panel_scroll =
+                            tab.agent_log.len().saturating_sub(1).min(u16::MAX as usize) as u16;
+                    }
                 }
             }
         }
@@ -6878,64 +6889,73 @@ impl App {
 
     /// Poll all running commands for completion (called from event loop).
     pub fn check_commands(&mut self) {
-        let names: Vec<String> = self.command_rx.keys().cloned().collect();
-        for name in names {
-            let result = if let Some(rx) = self.command_rx.get(&name) {
-                match rx.try_recv() {
-                    Ok(ok_or_err) => Some(ok_or_err),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        Some(Err(anyhow::anyhow!("{} thread crashed", name)))
-                    }
-                }
-            } else {
-                None
-            };
+        // Collect completions per tab to avoid borrow conflicts with notify_long
+        let mut notifications: Vec<String> = Vec::new();
 
-            if let Some(result) = result {
-                self.command_rx.remove(&name);
-                match result {
-                    Ok(()) => {
-                        self.command_status
-                            .insert(name.clone(), CommandStatus::Done);
-                        let _ = self.log_tx.send(AgentLogEntry {
-                            timestamp: std::time::Instant::now(),
-                            command_name: name.clone(),
-                            source: AgentLogSource::Status,
-                            text: format!("{} completed", name),
-                        });
-                        // Force AI reload for commands that write .er/ files
-                        if name == "summary" || name == "review" || name == "questions" {
-                            self.tab_mut().last_ai_check = None;
+        for tab in self.tabs.iter_mut() {
+            let names: Vec<String> = tab.command_rx.keys().cloned().collect();
+            for name in names {
+                let result = if let Some(rx) = tab.command_rx.get(&name) {
+                    match rx.try_recv() {
+                        Ok(ok_or_err) => Some(ok_or_err),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            Some(Err(anyhow::anyhow!("{} thread crashed", name)))
                         }
-                        let msg = self.agent_completion_summary(&name);
-                        self.notify_long(&msg);
                     }
-                    Err(e) => {
-                        let msg = format!("{}", e);
-                        self.command_status
-                            .insert(name.clone(), CommandStatus::Failed(msg.clone()));
-                        let _ = self.log_tx.send(AgentLogEntry {
-                            timestamp: std::time::Instant::now(),
-                            command_name: name.clone(),
-                            source: AgentLogSource::Status,
-                            text: format!("{} failed: {}", name, msg),
-                        });
-                        // Truncate long error messages to fit status bar (safe for multi-byte UTF-8)
-                        let short = if msg.len() > 80 {
-                            let boundary = msg
-                                .char_indices()
-                                .nth(80)
-                                .map(|(i, _)| i)
-                                .unwrap_or(msg.len());
-                            format!("{}…", &msg[..boundary])
-                        } else {
-                            msg
-                        };
-                        self.notify_long(&format!("{} failed: {}", name, short));
+                } else {
+                    None
+                };
+
+                if let Some(result) = result {
+                    tab.command_rx.remove(&name);
+                    match result {
+                        Ok(()) => {
+                            tab.command_status.insert(name.clone(), CommandStatus::Done);
+                            let _ = tab.log_tx.send(AgentLogEntry {
+                                timestamp: std::time::Instant::now(),
+                                command_name: name.clone(),
+                                source: AgentLogSource::Status,
+                                text: format!("{} completed", name),
+                            });
+                            // Force AI reload for commands that write .er/ files
+                            if name == "summary" || name == "review" || name == "questions" {
+                                tab.last_ai_check = None;
+                            }
+                            let msg = Self::agent_completion_summary_for(tab, &name);
+                            notifications.push(msg);
+                        }
+                        Err(e) => {
+                            let msg = format!("{}", e);
+                            tab.command_status
+                                .insert(name.clone(), CommandStatus::Failed(msg.clone()));
+                            let _ = tab.log_tx.send(AgentLogEntry {
+                                timestamp: std::time::Instant::now(),
+                                command_name: name.clone(),
+                                source: AgentLogSource::Status,
+                                text: format!("{} failed: {}", name, msg),
+                            });
+                            // Truncate long error messages to fit status bar (safe for multi-byte UTF-8)
+                            let short = if msg.len() > 80 {
+                                let boundary = msg
+                                    .char_indices()
+                                    .nth(80)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(msg.len());
+                                format!("{}…", &msg[..boundary])
+                            } else {
+                                msg
+                            };
+                            notifications.push(format!("{} failed: {}", name, short));
+                        }
                     }
                 }
             }
+        }
+
+        // Apply notifications after the tab iteration loop (avoids borrow conflict)
+        for msg in notifications {
+            self.notify_long(&msg);
         }
     }
     /// Spawn the configured agent command with a pre-built prompt.
@@ -6944,7 +6964,7 @@ impl App {
     /// for non-interactive agentic execution. The agent is expected to read
     /// the diff and write `.er/` files directly.
     pub fn spawn_agent_prompt(&mut self, name: &str, prompt: &str) -> Result<()> {
-        if self.command_status.get(name) == Some(&CommandStatus::Running) {
+        if self.tab().command_status.get(name) == Some(&CommandStatus::Running) {
             self.notify(&format!("{} already running", name));
             return Ok(());
         }
@@ -6962,14 +6982,14 @@ impl App {
         let prompt_owned = prompt.to_string();
 
         // Send status log entry before spawning
-        let _ = self.log_tx.send(AgentLogEntry {
+        let _ = self.tab().log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
             command_name: name.to_string(),
             source: AgentLogSource::Status,
             text: format!("{} started", name),
         });
 
-        let log_tx = self.log_tx.clone();
+        let log_tx = self.tab().log_tx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
@@ -7107,8 +7127,9 @@ impl App {
             let _ = tx.send(result);
         });
 
-        self.command_rx.insert(name.to_string(), rx);
-        self.command_status
+        self.tab_mut().command_rx.insert(name.to_string(), rx);
+        self.tab_mut()
+            .command_status
             .insert(name.to_string(), CommandStatus::Running);
         self.notify(&format!("{} started...", name));
         Ok(())
@@ -7390,6 +7411,7 @@ mod tests {
 
     fn make_test_tab(files: Vec<DiffFile>) -> TabState {
         use crate::ai::{InlineLayers, ReviewFocus};
+        let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         TabState {
             mode: DiffMode::Branch,
             base_branch: "main".to_string(),
@@ -7463,6 +7485,12 @@ mod tests {
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
+            log_tx: agent_log_tx,
+            log_rx: agent_log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
         }
     }
 
@@ -8688,7 +8716,6 @@ mod tests {
     // ── get_line_anchor ──
 
     fn make_test_app(tab: TabState) -> App {
-        let (log_tx, log_rx) = std::sync::mpsc::channel();
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -8702,12 +8729,6 @@ mod tests {
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
-            command_rx: std::collections::HashMap::new(),
-            command_status: std::collections::HashMap::new(),
-            log_tx,
-            log_rx,
-            agent_log: std::collections::VecDeque::new(),
-            agent_log_auto_scroll: true,
             pending_hub_action: None,
             last_terminal_width: 0,
         }
@@ -9141,10 +9162,18 @@ mod tests {
     }
 
     #[test]
-    fn tab_name_returns_slug_in_remote_mode() {
+    fn tab_name_returns_repo_name_in_remote_mode() {
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("owner/repo".to_string());
-        assert_eq!(tab.tab_name(), "owner/repo");
+        assert_eq!(tab.tab_name(), "repo");
+    }
+
+    #[test]
+    fn tab_name_includes_pr_number_in_remote_mode() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.pr_number = Some(154);
+        assert_eq!(tab.tab_name(), "repo#154");
     }
 
     #[test]

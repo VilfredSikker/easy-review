@@ -2208,7 +2208,6 @@ mod tests {
     // ── Test helpers ──
 
     fn make_app(files: Vec<DiffFile>) -> App {
-        let (log_tx, log_rx) = std::sync::mpsc::channel();
         App {
             tabs: vec![TabState::new_for_test(files)],
             active_tab: 0,
@@ -2222,12 +2221,6 @@ mod tests {
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
-            command_rx: std::collections::HashMap::new(),
-            command_status: std::collections::HashMap::new(),
-            log_tx,
-            log_rx,
-            agent_log: std::collections::VecDeque::new(),
-            agent_log_auto_scroll: true,
             pending_hub_action: None,
             last_terminal_width: 0,
         }

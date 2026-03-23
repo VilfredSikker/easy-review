@@ -95,10 +95,15 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // ── Branch info row: repo · branch (vs base) ──
-    let repo_name = tab.tab_name();
+    // For remote tabs, show full owner/repo slug; tab_name() is compact for the tab bar
+    let repo_label = tab
+        .remote_repo
+        .as_deref()
+        .unwrap_or(&tab.tab_name())
+        .to_string();
     let mut info_spans: Vec<Span> = vec![
         Span::styled(
-            format!(" {}", repo_name),
+            format!(" {}", repo_label),
             ratatui::style::Style::default()
                 .fg(styles::CYAN())
                 .add_modifier(ratatui::style::Modifier::BOLD),
@@ -225,7 +230,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     let mut right: Vec<Span> = Vec::new();
 
     // Agent command status badges (persistent while running)
-    for (name, _label, _is_running) in app.agent_statuses() {
+    for (name, _label, _is_running) in tab.agent_statuses() {
         let display_name = match name {
             "review" => "Review",
             "questions" => "Questions",
