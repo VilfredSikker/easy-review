@@ -344,6 +344,12 @@ pub struct TabState {
     /// Whether keyboard focus is on the panel (vs diff view)
     pub panel_focus: bool,
 
+    /// Width of the file tree panel in columns (resizable with </>)
+    pub file_tree_width: u16,
+
+    /// Width of the side panel in columns (resizable with {/})
+    pub panel_width: u16,
+
     /// ID of the comment/question currently highlighted by J/K jumping
     pub focused_comment_id: Option<String>,
 
@@ -769,6 +775,8 @@ impl TabState {
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
+            file_tree_width: 32,
+            panel_width: 40,
             focused_comment_id: None,
             focused_finding_id: None,
             user_expanded: HashSet::new(),
@@ -857,6 +865,8 @@ impl TabState {
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
+            file_tree_width: 32,
+            panel_width: 40,
             focused_comment_id: None,
             focused_finding_id: None,
             user_expanded: HashSet::new(),
@@ -943,6 +953,8 @@ impl TabState {
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
+            file_tree_width: 32,
+            panel_width: 40,
             focused_comment_id: None,
             focused_finding_id: None,
             user_expanded: HashSet::new(),
@@ -995,6 +1007,29 @@ impl TabState {
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
+        }
+    }
+
+    /// Resize the file tree panel by `delta` columns, enforcing min/max and diff minimum.
+    pub fn resize_file_tree(&mut self, delta: i16, terminal_width: u16) {
+        let new_width = (self.file_tree_width as i16 + delta).clamp(16, 60) as u16;
+        let panel_w = if self.panel.is_some() {
+            self.panel_width
+        } else {
+            0
+        };
+        let diff_remaining = terminal_width.saturating_sub(new_width + panel_w);
+        if diff_remaining >= 20 {
+            self.file_tree_width = new_width;
+        }
+    }
+
+    /// Resize the side panel by `delta` columns, enforcing min/max and diff minimum.
+    pub fn resize_panel(&mut self, delta: i16, terminal_width: u16) {
+        let new_width = (self.panel_width as i16 + delta).clamp(24, 80) as u16;
+        let diff_remaining = terminal_width.saturating_sub(self.file_tree_width + new_width);
+        if diff_remaining >= 20 {
+            self.panel_width = new_width;
         }
     }
 
@@ -3633,6 +3668,9 @@ pub struct App {
 
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
+
+    /// Last known terminal width (updated each tick for resize calculations)
+    pub last_terminal_width: u16,
 }
 
 impl App {
@@ -3714,6 +3752,7 @@ impl App {
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
             pending_hub_action: None,
+            last_terminal_width: 0,
         })
     }
 
@@ -3744,6 +3783,7 @@ impl App {
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
             pending_hub_action: None,
+            last_terminal_width: 0,
         }
     }
 
@@ -4496,6 +4536,22 @@ impl App {
                 label: "o".into(),
                 hint: "".into(),
                 description: "Open hub (browse, worktree, remote)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "< / >".into(),
+                hint: "".into(),
+                description: "Shrink / grow file tree width".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "{ / }".into(),
+                hint: "".into(),
+                description: "Shrink / grow side panel width".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -7353,6 +7409,8 @@ mod tests {
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
+            file_tree_width: 32,
+            panel_width: 40,
             focused_comment_id: None,
             focused_finding_id: None,
             user_expanded: HashSet::new(),
@@ -8651,6 +8709,7 @@ mod tests {
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
             pending_hub_action: None,
+            last_terminal_width: 0,
         }
     }
 

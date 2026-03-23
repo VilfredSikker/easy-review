@@ -44,14 +44,14 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
 
     // Main content — layout depends on panel state
     let tab = app.tab();
-    if tab.panel.is_some() && outer[1].width >= 102 {
+    if tab.panel.is_some() && outer[1].width >= (tab.file_tree_width + tab.panel_width + 20) {
         // 3-col layout: file_tree + diff + panel
         let main_area = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(32),
-                Constraint::Min(30),
-                Constraint::Length(40),
+                Constraint::Length(tab.file_tree_width),
+                Constraint::Min(20),
+                Constraint::Length(tab.panel_width),
             ])
             .split(outer[1]);
         file_tree::render(f, main_area[0], app);
@@ -61,7 +61,7 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
         // 2-col layout: file_tree + diff
         let main_area = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(32), Constraint::Min(1)])
+            .constraints([Constraint::Length(tab.file_tree_width), Constraint::Min(1)])
             .split(outer[1]);
         file_tree::render(f, main_area[0], app);
         if app.split_diff_active(&app.config) {

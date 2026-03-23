@@ -577,6 +577,8 @@ fn build_hints(app: &App) -> Vec<Hint> {
             }
             hints.push(Hint::new("f", " filter "));
             hints.push(Hint::new("!", " unreviewed "));
+            hints.push(Hint::new("</>", " tree w "));
+            hints.push(Hint::new("{/}", " panel w "));
         }
     } else {
         // Default normal mode — essential navigation only

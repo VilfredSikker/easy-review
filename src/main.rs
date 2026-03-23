@@ -63,24 +63,29 @@ fn main() -> Result<()> {
         }
     }
 
-    // Remote mode: review PR from GitHub API without local clone
+    // Remote mode: review PR(s) from GitHub API without local clone
     if cli.remote {
         github::ensure_gh_installed()?;
-        let url = cli
+        let urls: Vec<&String> = cli
             .paths
             .iter()
-            .find(|p| github::is_github_pr_url(p))
-            .unwrap();
-        let pr_ref = github::parse_github_pr_url(url)
-            .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", url))?;
+            .filter(|p| github::is_github_pr_url(p))
+            .collect();
 
+        let first_url = urls[0];
+        let pr_ref = github::parse_github_pr_url(first_url)
+            .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", first_url))?;
         let tab = app::TabState::new_remote(&pr_ref)?;
         let pr_data = github::gh_pr_overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number);
-
         let mut app = App::new_remote(tab, pr_data);
-
-        // Load any cached comments from previous remote sessions
         app.tab_mut().reload_remote_comments();
+
+        // Open additional remote PR tabs
+        for url in &urls[1..] {
+            if let Err(e) = app.open_remote_url(url) {
+                eprintln!("Warning: failed to open {}: {}", url, e);
+            }
+        }
 
         // Apply --filter flag if provided
         if let Some(ref filter_expr) = cli.filter {
@@ -104,6 +109,9 @@ fn main() -> Result<()> {
         if let Err(err) = result {
             eprintln!("Error: {:?}", err);
         }
+
+        // Print resume hint for remote sessions
+        print_resume_hint(&app);
 
         return Ok(());
     }
@@ -205,8 +213,16 @@ fn main() -> Result<()> {
         eprintln!("Error: {:?}", err);
     }
 
-    // Print resume hint if multiple tabs were open
-    if app.tabs.len() > 1 {
+    print_resume_hint(&app);
+
+    Ok(())
+}
+
+/// Print a dim `er <args>` hint so the user can quickly reopen the same session.
+fn print_resume_hint(app: &App) {
+    let has_remote = app.tabs.iter().any(|t| t.remote_repo.is_some());
+    if app.tabs.len() > 1 || has_remote {
+        let has_local = app.tabs.iter().any(|t| t.remote_repo.is_none());
         let args: Vec<String> = app
             .tabs
             .iter()
@@ -218,10 +234,14 @@ fn main() -> Result<()> {
                 }
             })
             .collect();
-        eprintln!("\x1b[2mer {}\x1b[0m", args.join(" "));
+        // Add --remote flag when all tabs are remote
+        let prefix = if has_remote && !has_local {
+            "er --remote"
+        } else {
+            "er"
+        };
+        eprintln!("\x1b[2m{} {}\x1b[0m", prefix, args.join(" "));
     }
-
-    Ok(())
 }
 
 fn run_app<B: Backend<Error: Send + Sync + 'static>>(
@@ -264,6 +284,11 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     };
 
     loop {
+        // Update terminal width for resize calculations
+        if let Ok(size) = terminal.size() {
+            app.last_terminal_width = size.width;
+        }
+
         // Draw
         terminal.draw(|f| ui::draw(f, app, hl))?;
 
@@ -874,6 +899,30 @@ fn handle_normal_input(
                     app.notify("Watched files hidden");
                 }
             }
+            return Ok(());
+        }
+
+        // Resize file tree panel (</>)
+        KeyCode::Char('<') => {
+            let w = app.last_terminal_width;
+            app.tab_mut().resize_file_tree(-2, w);
+            return Ok(());
+        }
+        KeyCode::Char('>') => {
+            let w = app.last_terminal_width;
+            app.tab_mut().resize_file_tree(2, w);
+            return Ok(());
+        }
+
+        // Resize side panel ({/})
+        KeyCode::Char('{') => {
+            let w = app.last_terminal_width;
+            app.tab_mut().resize_panel(-4, w);
+            return Ok(());
+        }
+        KeyCode::Char('}') => {
+            let w = app.last_terminal_width;
+            app.tab_mut().resize_panel(4, w);
             return Ok(());
         }
 
@@ -2180,6 +2229,7 @@ mod tests {
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
             pending_hub_action: None,
+            last_terminal_width: 0,
         }
     }
 

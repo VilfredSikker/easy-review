@@ -517,7 +517,7 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
         ConfigItem::BoolToggle {
             label: "Verbose hints".into(),
-            description: "Show all key hints".into(),
+            description: "Show all key hints (resize, filters, etc)".into(),
             get: |c| c.hints.verbose,
             set: |c, v| c.hints.verbose = v,
         },
