@@ -633,6 +633,29 @@ pub fn gh_pr_edit_body(repo_root: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
+/// Approve a PR via `gh pr review --approve`.
+/// Uses `--repo` and PR number when reviewing a remote PR.
+pub fn gh_pr_approve(
+    repo_root: &str,
+    remote_repo: Option<&str>,
+    pr_number: Option<u64>,
+) -> Result<()> {
+    let mut cmd = Command::new("gh");
+    cmd.args(["pr", "review", "--approve"]);
+    if let (Some(slug), Some(n)) = (remote_repo, pr_number) {
+        cmd.args(["--repo", slug, &n.to_string()]);
+    }
+    cmd.current_dir(repo_root);
+    let output = cmd
+        .output()
+        .context("Failed to run gh pr review --approve")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr approve failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
 /// Fetch PR overview data: title, body, state, author, branches, reviewers.
 /// If `pr_number` is Some, fetches that specific PR; otherwise auto-detects from current branch.
 pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
@@ -746,6 +769,8 @@ fn remote_matches_repo(remote: &str, owner: &str, repo: &str) -> bool {
 
 /// Get raw unified diff for a PR via `gh pr diff N --repo owner/repo`.
 /// Works without a local clone — uses GitHub API via gh CLI.
+/// Falls back to shallow clone + local git diff when the PR exceeds GitHub's
+/// API line limit (HTTP 406 / diff_too_large).
 pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String> {
     let repo_slug = format!("{}/{}", owner, repo);
     let output = Command::new("gh")
@@ -755,10 +780,92 @@ pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String>
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("406") || stderr.contains("too_large") {
+            return gh_pr_diff_via_clone(owner, repo, number);
+        }
         anyhow::bail!("Failed to get PR diff: {}", stderr.trim());
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Fallback for large PRs: shallow-clone the repo into a temp dir, fetch both
+/// refs, and produce the diff locally. The temp dir is cleaned up automatically.
+fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> {
+    let (base_ref, head_ref) = gh_pr_metadata_remote(owner, repo, number)?;
+    let repo_url = format!("https://github.com/{}/{}.git", owner, repo);
+    let tmp_dir = std::env::temp_dir().join(format!("er-remote-{}-{}-{}", owner, repo, number));
+    let tmp_path = tmp_dir
+        .to_str()
+        .context("Temp dir path is not valid UTF-8")?
+        .to_string();
+
+    // Clean up any previous failed attempt
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    // Shallow clone with only the two refs we need
+    let clone = Command::new("git")
+        .args([
+            "clone",
+            "--depth=1",
+            "--no-checkout",
+            "--filter=blob:none",
+            &repo_url,
+            &tmp_path,
+        ])
+        .output()
+        .context("Failed to shallow clone for large PR diff")?;
+
+    if !clone.status.success() {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let stderr = String::from_utf8_lossy(&clone.stderr);
+        anyhow::bail!("Shallow clone failed: {}", stderr.trim());
+    }
+
+    // Fetch the base and head refs
+    let fetch = Command::new("git")
+        .args([
+            "-C",
+            &tmp_path,
+            "fetch",
+            "--depth=1",
+            "origin",
+            &base_ref,
+            &head_ref,
+        ])
+        .output()
+        .context("Failed to fetch PR refs")?;
+
+    if !fetch.status.success() {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let stderr = String::from_utf8_lossy(&fetch.stderr);
+        anyhow::bail!("Failed to fetch PR refs: {}", stderr.trim());
+    }
+
+    // Generate the diff
+    let diff = Command::new("git")
+        .args([
+            "-C",
+            &tmp_path,
+            "diff",
+            &format!("origin/{}", base_ref),
+            &format!("origin/{}", head_ref),
+            "--unified=3",
+            "--no-color",
+            "--no-ext-diff",
+        ])
+        .output()
+        .context("Failed to generate diff from cloned repo")?;
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    if !diff.status.success() {
+        let stderr = String::from_utf8_lossy(&diff.stderr);
+        anyhow::bail!("git diff failed in cloned repo: {}", stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&diff.stdout).to_string())
 }
 
 /// Get PR metadata (base branch, head branch) via `gh pr view --repo`.

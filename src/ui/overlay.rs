@@ -9,7 +9,7 @@ use super::styles;
 use crate::app::{DirEntry, HubItem, HubKind, OverlayData, Worktree};
 
 /// Render the active overlay on top of the main UI
-/// Note: Settings overlay is rendered separately in ui/mod.rs since it needs App access.
+/// Note: ConfigHub overlay is rendered separately in ui/mod.rs since it needs App access.
 pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
     match overlay {
         OverlayData::WorktreePicker {
@@ -25,7 +25,7 @@ pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
         } => {
             render_directory_browser(f, area, current_path, entries, *selected);
         }
-        OverlayData::Settings { .. } => {
+        OverlayData::ConfigHub { .. } => {
             // Handled in ui/mod.rs draw()
         }
         OverlayData::FilterHistory {
@@ -187,17 +187,23 @@ fn render_directory_browser(
         })
         .collect();
 
-    // Shorten path for title if too long
+    // Shorten path for title if too long, using char counts to avoid UTF-8 byte-boundary panics.
     let max_title_width = popup_width.saturating_sub(20) as usize;
-    // TODO(risk:high): current_path[current_path.len() - max_title_width..] is a byte-index
-    // slice into a UTF-8 string. If the slice boundary falls inside a multi-byte character
-    // this panics with a byte-boundary panic. Use current_path.char_indices() to find a
-    // safe split point, or use the chars-based truncation pattern used elsewhere (e.g.
-    // chars().rev().take(max_title_width).collect::<String>() reversed).
-    let title_path = if current_path.len() > max_title_width {
-        format!("…{}", &current_path[current_path.len() - max_title_width..])
-    } else {
-        current_path.to_string()
+    let title_path = {
+        let char_count = current_path.chars().count();
+        if char_count > max_title_width {
+            let suffix: String = current_path
+                .chars()
+                .rev()
+                .take(max_title_width)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            format!("…{suffix}")
+        } else {
+            current_path.to_string()
+        }
     };
 
     let block = Block::default()
@@ -328,7 +334,7 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
     // For Help hub, use wider popup to fit descriptions
     let is_help = kind == HubKind::Help;
     let popup_width = if is_help {
-        60u16.min(area.width.saturating_sub(6))
+        70u16.min(area.width.saturating_sub(6))
     } else {
         55u16.min(area.width.saturating_sub(6))
     };
@@ -344,6 +350,7 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
         HubKind::Ai => styles::PURPLE(),
         HubKind::Verify => styles::YELLOW(),
         HubKind::Help => styles::CYAN(),
+        HubKind::Open => styles::BLUE(),
     };
 
     let list_items: Vec<ListItem> = items
@@ -428,5 +435,6 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
         .style(ratatui::style::Style::default().bg(styles::PANEL()));
 
     let list = List::new(list_items).block(block);
-    f.render_widget(list, popup);
+    let mut state = ratatui::widgets::ListState::default().with_selected(Some(selected));
+    f.render_stateful_widget(list, popup, &mut state);
 }

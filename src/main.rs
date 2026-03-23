@@ -9,8 +9,8 @@ mod watch;
 use crate::ai::{PanelContent, ReviewFocus};
 use anyhow::Result;
 use app::{
-    cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode, HubAction, InputMode,
-    SplitSide,
+    cleanup_question_answers, cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode,
+    HubAction, InputMode, SplitSide,
 };
 use clap::Parser;
 use crossterm::{
@@ -63,24 +63,29 @@ fn main() -> Result<()> {
         }
     }
 
-    // Remote mode: review PR from GitHub API without local clone
+    // Remote mode: review PR(s) from GitHub API without local clone
     if cli.remote {
         github::ensure_gh_installed()?;
-        let url = cli
+        let urls: Vec<&String> = cli
             .paths
             .iter()
-            .find(|p| github::is_github_pr_url(p))
-            .unwrap();
-        let pr_ref = github::parse_github_pr_url(url)
-            .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", url))?;
+            .filter(|p| github::is_github_pr_url(p))
+            .collect();
 
+        let first_url = urls[0];
+        let pr_ref = github::parse_github_pr_url(first_url)
+            .ok_or_else(|| anyhow::anyhow!("Invalid GitHub PR URL: {}", first_url))?;
         let tab = app::TabState::new_remote(&pr_ref)?;
         let pr_data = github::gh_pr_overview_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number);
-
         let mut app = App::new_remote(tab, pr_data);
-
-        // Load any cached comments from previous remote sessions
         app.tab_mut().reload_remote_comments();
+
+        // Open additional remote PR tabs
+        for url in &urls[1..] {
+            if let Err(e) = app.open_remote_url(url) {
+                eprintln!("Warning: failed to open {}: {}", url, e);
+            }
+        }
 
         // Apply --filter flag if provided
         if let Some(ref filter_expr) = cli.filter {
@@ -104,6 +109,9 @@ fn main() -> Result<()> {
         if let Err(err) = result {
             eprintln!("Error: {:?}", err);
         }
+
+        // Print resume hint for remote sessions
+        print_resume_hint(&app);
 
         return Ok(());
     }
@@ -205,13 +213,35 @@ fn main() -> Result<()> {
         eprintln!("Error: {:?}", err);
     }
 
-    // Print resume hint if multiple tabs were open
-    if app.tabs.len() > 1 {
-        let paths: Vec<&str> = app.tabs.iter().map(|t| t.repo_root.as_str()).collect();
-        eprintln!("\x1b[2mer {}\x1b[0m", paths.join(" "));
-    }
+    print_resume_hint(&app);
 
     Ok(())
+}
+
+/// Print a dim `er <args>` hint so the user can quickly reopen the same session.
+fn print_resume_hint(app: &App) {
+    let has_remote = app.tabs.iter().any(|t| t.remote_repo.is_some());
+    if app.tabs.len() > 1 || has_remote {
+        let has_local = app.tabs.iter().any(|t| t.remote_repo.is_none());
+        let args: Vec<String> = app
+            .tabs
+            .iter()
+            .map(|t| {
+                if let (Some(slug), Some(n)) = (&t.remote_repo, t.pr_number) {
+                    format!("https://github.com/{}/pull/{}", slug, n)
+                } else {
+                    t.repo_root.clone()
+                }
+            })
+            .collect();
+        // Add --remote flag when all tabs are remote
+        let prefix = if has_remote && !has_local {
+            "er --remote"
+        } else {
+            "er"
+        };
+        eprintln!("\x1b[2m{} {}\x1b[0m", prefix, args.join(" "));
+    }
 }
 
 fn run_app<B: Backend<Error: Send + Sync + 'static>>(
@@ -254,6 +284,11 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     };
 
     loop {
+        // Update terminal width for resize calculations
+        if let Ok(size) = terminal.size() {
+            app.last_terminal_width = size.width;
+        }
+
         // Draw
         terminal.draw(|f| ui::draw(f, app, hl))?;
 
@@ -270,6 +305,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
                         InputMode::Confirm(_) => handle_confirm_input(app, key)?,
                         InputMode::Filter => handle_filter_input(app, key),
                         InputMode::Commit => handle_commit_input(app, key)?,
+                        InputMode::RemoteUrl => handle_remote_url_input(app, key)?,
                         InputMode::Normal => {
                             handle_normal_input(app, key, &watch_tx, &mut _watcher)?
                         }
@@ -314,15 +350,15 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 
         // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
         app.ai_poll_counter = app.ai_poll_counter.wrapping_add(1);
-        if !app.tab().is_remote()
-            && app.ai_poll_counter.is_multiple_of(10)
-            && app.tab_mut().check_ai_files_changed()
-        {
+        if app.ai_poll_counter.is_multiple_of(10) && app.tab_mut().check_ai_files_changed() {
             app.notify("✓ AI data refreshed");
         }
 
         // Poll background commands for completion
         app.check_commands();
+
+        // Drain agent log entries from background threads
+        app.drain_agent_log();
 
         // Rescan watched files (every 50 ticks ≈ 5s)
         if !app.tab().is_remote() && app.ai_poll_counter.is_multiple_of(50) {
@@ -365,21 +401,96 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 }
 
 fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
-    // Settings overlay has additional keybindings
-    if matches!(app.overlay, Some(app::OverlayData::Settings { .. })) {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
-            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
-            KeyCode::Char(' ') | KeyCode::Enter => {
-                // Space and Enter both toggle the current item
-                app.settings_toggle();
+    // Config hub overlay — handles inline string editing
+    if matches!(app.overlay, Some(app::OverlayData::ConfigHub { .. })) {
+        let is_editing = matches!(
+            &app.overlay,
+            Some(app::OverlayData::ConfigHub {
+                editing: Some(_),
+                ..
+            })
+        );
+
+        if is_editing {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if let Some(app::OverlayData::ConfigHub {
+                        editing: Some(ref mut edit),
+                        ..
+                    }) = &mut app.overlay
+                    {
+                        edit.buffer.insert(edit.cursor_pos, c);
+                        edit.cursor_pos += c.len_utf8();
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(app::OverlayData::ConfigHub {
+                        editing: Some(ref mut edit),
+                        ..
+                    }) = &mut app.overlay
+                    {
+                        if edit.cursor_pos > 0 {
+                            // Find the char boundary before cursor_pos
+                            let prev_boundary = edit.buffer[..edit.cursor_pos]
+                                .char_indices()
+                                .last()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                            edit.cursor_pos = prev_boundary;
+                            edit.buffer.remove(edit.cursor_pos);
+                        }
+                    }
+                }
+                KeyCode::Left => {
+                    if let Some(app::OverlayData::ConfigHub {
+                        editing: Some(ref mut edit),
+                        ..
+                    }) = &mut app.overlay
+                    {
+                        if edit.cursor_pos > 0 {
+                            let prev_boundary = edit.buffer[..edit.cursor_pos]
+                                .char_indices()
+                                .last()
+                                .map(|(i, _)| i)
+                                .unwrap_or(0);
+                            edit.cursor_pos = prev_boundary;
+                        }
+                    }
+                }
+                KeyCode::Right => {
+                    if let Some(app::OverlayData::ConfigHub {
+                        editing: Some(ref mut edit),
+                        ..
+                    }) = &mut app.overlay
+                    {
+                        if edit.cursor_pos < edit.buffer.len() {
+                            let next_char = edit.buffer[edit.cursor_pos..]
+                                .chars()
+                                .next()
+                                .unwrap_or('\0');
+                            edit.cursor_pos += next_char.len_utf8();
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    app.config_hub_confirm_edit();
+                }
+                KeyCode::Esc => {
+                    app.config_hub_cancel_edit();
+                }
+                _ => {}
             }
-            KeyCode::Char('s') => {
-                // Save settings to disk
-                app.settings_save();
+        } else {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+                KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+                KeyCode::Enter | KeyCode::Char(' ') => app.config_hub_activate(),
+                KeyCode::Char('d') => app.config_hub_delete_selected(),
+                KeyCode::Char('s') => app.config_hub_save_local(),
+                KeyCode::Char('S') => app.config_hub_save_global(),
+                KeyCode::Esc | KeyCode::Char('q') => app.config_hub_cancel(),
+                _ => {}
             }
-            KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
-            _ => {}
         }
         return Ok(());
     }
@@ -476,6 +587,78 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                 app.notify(&format!("{}: not configured", name));
             }
         }
+        HubAction::PromptReview => {
+            let has_review = app.tab().ai.review.is_some();
+            if has_review {
+                // Ask to clear previous review first
+                app.input_mode = InputMode::Confirm(ConfirmAction::RunAgentReview {
+                    clear_previous: true,
+                });
+            } else {
+                // No previous review, run directly
+                if let Some(prompt) = build_agent_review_prompt(app) {
+                    app.spawn_agent_prompt("review", &prompt)?;
+                }
+            }
+        }
+        HubAction::ApprovePR => {
+            app.input_mode = InputMode::Confirm(ConfirmAction::ApprovePR);
+        }
+        HubAction::PromptQuestions => {
+            let has_answers = app.tab().ai.questions.as_ref().is_some_and(|q| {
+                q.questions
+                    .iter()
+                    .any(|q| q.in_reply_to.is_some() && q.author == "Claude")
+            });
+            if has_answers {
+                // Ask to clear previous answers first
+                app.input_mode = InputMode::Confirm(ConfirmAction::RunAgentQuestions {
+                    clear_previous: true,
+                });
+            } else {
+                // No previous answers, run directly
+                if let Some(prompt) = build_agent_questions_prompt(app) {
+                    app.spawn_agent_prompt("questions", &prompt)?;
+                }
+            }
+        }
+        HubAction::OpenDirectory => {
+            app.open_directory_browser();
+        }
+        HubAction::OpenWorktree => {
+            app.open_worktree_picker()?;
+        }
+        HubAction::OpenRemoteUrl => {
+            app.remote_url_input.clear();
+            app.input_mode = InputMode::RemoteUrl;
+        }
+        HubAction::OpenPrInBrowser => {
+            let repo_root = app.tab().repo_root.clone();
+            if let Some(pr_number) = app.tab().pr_number {
+                let mut args = vec![
+                    "pr".to_string(),
+                    "view".to_string(),
+                    pr_number.to_string(),
+                    "--web".to_string(),
+                ];
+                if let Some(ref slug) = app.tab().remote_repo {
+                    args.push("-R".to_string());
+                    args.push(slug.clone());
+                }
+                if let Ok(mut child) = std::process::Command::new("gh")
+                    .args(&args)
+                    .current_dir(&repo_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
+                app.notify("Opening PR in browser...");
+            }
+        }
     }
     Ok(())
 }
@@ -497,11 +680,7 @@ fn handle_normal_input(
 
         // Personal question on current line (q)
         KeyCode::Char('q') => {
-            if app.tab().is_remote() {
-                app.notify("Questions not available in remote mode");
-            } else {
-                app.start_comment(crate::ai::CommentType::Question);
-            }
+            app.start_comment(crate::ai::CommentType::Question);
             return Ok(());
         }
 
@@ -699,23 +878,8 @@ fn handle_normal_input(
         }
 
         // Repo overlays
-        KeyCode::Char('t') => {
-            app.open_worktree_picker()?;
-            return Ok(());
-        }
         KeyCode::Char('o') => {
-            if app.tab().panel == Some(PanelContent::PrOverview) && app.tab().pr_data.is_some() {
-                let repo_root = app.tab().repo_root.clone();
-                let _ = std::process::Command::new("gh")
-                    .args(["pr", "view", "--web"])
-                    .current_dir(&repo_root)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-                app.notify("Opening PR in browser...");
-            } else {
-                app.open_directory_browser();
-            }
+            app.open_open_hub();
             return Ok(());
         }
 
@@ -738,6 +902,30 @@ fn handle_normal_input(
             return Ok(());
         }
 
+        // Resize file tree panel (</>)
+        KeyCode::Char('<') => {
+            let w = app.last_terminal_width;
+            app.tab_mut().resize_file_tree(-2, w);
+            return Ok(());
+        }
+        KeyCode::Char('>') => {
+            let w = app.last_terminal_width;
+            app.tab_mut().resize_file_tree(2, w);
+            return Ok(());
+        }
+
+        // Resize side panel ({/})
+        KeyCode::Char('{') => {
+            let w = app.last_terminal_width;
+            app.tab_mut().resize_panel(-4, w);
+            return Ok(());
+        }
+        KeyCode::Char('}') => {
+            let w = app.last_terminal_width;
+            app.tab_mut().resize_panel(4, w);
+            return Ok(());
+        }
+
         _ => {}
     }
 
@@ -750,6 +938,7 @@ fn handle_normal_input(
         match key.code {
             KeyCode::Char('k') | KeyCode::Down => {
                 app.tab_mut().panel_scroll_down(1);
+                app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
                 return Ok(());
             }
             KeyCode::Char('j') | KeyCode::Up => {
@@ -791,14 +980,14 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Open settings overlay
+        // Open config hub overlay
         KeyCode::Char(',') => {
-            app.open_settings();
+            app.open_config_hub();
             return Ok(());
         }
 
-        // Toggle AI findings layer (a)
-        KeyCode::Char('a') => {
+        // Toggle AI findings layer (A)
+        KeyCode::Char('A') => {
             app.tab_mut().toggle_layer_ai();
             let on = app.tab().layers.show_ai_findings;
             app.notify(if on {
@@ -886,8 +1075,8 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // AI modal hub (A)
-        KeyCode::Char('A') => {
+        // AI modal hub (a)
+        KeyCode::Char('a') => {
             app.open_ai_hub();
             return Ok(());
         }
@@ -973,9 +1162,7 @@ fn handle_normal_input(
         }
 
         // Toggle unreviewed-only filter — not meaningful in History
-        KeyCode::Char(' ')
-            if mode != DiffMode::History && key.modifiers.contains(KeyModifiers::SHIFT) =>
-        {
+        KeyCode::Char('!') if mode != DiffMode::History => {
             app.toggle_unreviewed_filter();
             return Ok(());
         }
@@ -1102,6 +1289,7 @@ fn handle_normal_input(
         {
             if app.tab().panel_focus && app.tab().panel.is_some() {
                 app.tab_mut().panel_scroll_down(10);
+                app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
             } else {
                 app.tab_mut().scroll_down(10);
             }
@@ -1119,6 +1307,7 @@ fn handle_normal_input(
         KeyCode::PageDown => {
             if app.tab().panel_focus && app.tab().panel.is_some() {
                 app.tab_mut().panel_scroll_down(20);
+                app.tab_mut().panel_scroll = app.tab().panel_scroll.min(4096);
             } else {
                 app.tab_mut().scroll_down(20);
             }
@@ -1259,7 +1448,9 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
 fn ai_review_scroll(app: &mut App, amount: u16, down: bool) {
     let tab = app.tab_mut();
     if down {
-        tab.panel_scroll = tab.panel_scroll.saturating_add(amount);
+        // Cap at 4096 — panel content is never this long and ratatui does not
+        // clamp scroll internally (it renders blank lines past the content end).
+        tab.panel_scroll = tab.panel_scroll.saturating_add(amount).min(4096);
     } else {
         tab.panel_scroll = tab.panel_scroll.saturating_sub(amount);
     }
@@ -1320,6 +1511,34 @@ fn handle_filter_input(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_remote_url_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Enter => {
+            let url = app.remote_url_input.clone();
+            app.input_mode = InputMode::Normal;
+            if url.trim().is_empty() {
+                return Ok(());
+            }
+            if let Err(e) = app.open_remote_url(url.trim()) {
+                app.notify(&format!("Failed: {}", e));
+            }
+            app.remote_url_input.clear();
+        }
+        KeyCode::Esc => {
+            app.remote_url_input.clear();
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Char(c) => {
+            app.remote_url_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.remote_url_input.pop();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Enter => {
@@ -1369,8 +1588,8 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             } else if let InputMode::Confirm(ConfirmAction::CleanupQuestions { .. }) = action {
                 app.input_mode = InputMode::Normal;
-                let repo_root = app.tab().repo_root.clone();
-                cleanup_questions(&repo_root);
+                let er_dir = app.tab().er_dir();
+                cleanup_questions(&er_dir);
                 app.tab_mut().reload_ai_state();
                 app.notify("Questions cleared");
             } else if let InputMode::Confirm(ConfirmAction::DeleteWatchedFile { ref path }) = action
@@ -1397,13 +1616,59 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             } else if let InputMode::Confirm(ConfirmAction::CleanupReviews { .. }) = action {
                 app.input_mode = InputMode::Normal;
-                let repo_root = app.tab().repo_root.clone();
-                cleanup_reviews(&repo_root);
+                let er_dir = app.tab().er_dir();
+                cleanup_reviews(&er_dir);
                 app.tab_mut().reload_ai_state();
                 app.notify("Review cleared");
+            } else if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = action {
+                // User said "yes" to clearing previous review — clear, then run
+                app.input_mode = InputMode::Normal;
+                let er_dir = app.tab().er_dir();
+                cleanup_reviews(&er_dir);
+                app.tab_mut().reload_ai_state();
+                if let Some(prompt) = build_agent_review_prompt(app) {
+                    app.spawn_agent_prompt("review", &prompt)?;
+                }
+            } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) = action {
+                // User said "yes" to clearing previous answers — clear answers, then run
+                app.input_mode = InputMode::Normal;
+                let er_dir = app.tab().er_dir();
+                cleanup_question_answers(&er_dir);
+                app.tab_mut().reload_ai_state();
+                if let Some(prompt) = build_agent_questions_prompt(app) {
+                    app.spawn_agent_prompt("questions", &prompt)?;
+                }
+            } else if let InputMode::Confirm(ConfirmAction::ApprovePR) = action {
+                app.input_mode = InputMode::Normal;
+                let repo_root = app.tab().repo_root.clone();
+                let remote = app.tab().remote_repo.clone();
+                let pr = app.tab().pr_number;
+                match crate::github::gh_pr_approve(&repo_root, remote.as_deref(), pr) {
+                    Ok(()) => app.notify("PR approved"),
+                    Err(e) => app.notify(&format!("Approve failed: {}", e)),
+                }
             }
         }
-        KeyCode::Char('n') | KeyCode::Esc => {
+        KeyCode::Char('n') => {
+            app.cancel_confirm();
+        }
+        KeyCode::Char('k') => {
+            // For agent prompts, 'k' = keep previous data but still run
+            if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = &app.input_mode {
+                app.input_mode = InputMode::Normal;
+                if let Some(prompt) = build_agent_review_prompt(app) {
+                    app.spawn_agent_prompt("review", &prompt)?;
+                }
+            } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) =
+                &app.input_mode
+            {
+                app.input_mode = InputMode::Normal;
+                if let Some(prompt) = build_agent_questions_prompt(app) {
+                    app.spawn_agent_prompt("questions", &prompt)?;
+                }
+            }
+        }
+        KeyCode::Esc => {
             app.cancel_confirm();
         }
         _ => {} // Ignore all other keys in confirm mode
@@ -1428,6 +1693,80 @@ fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Build the review agent prompt, using remote mode if applicable.
+fn build_agent_review_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    if tab.is_remote() {
+        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
+            (Some(ref s), Some(n)) => (s.clone(), n),
+            _ => {
+                app.notify("Remote mode missing repo or PR number");
+                return None;
+            }
+        };
+        let parts: Vec<&str> = slug.split('/').collect();
+        if parts.len() != 2 {
+            app.notify(&format!("Invalid remote repo slug: {}", slug));
+            return None;
+        }
+        let output_dir = app.tab().er_dir();
+        return Some(crate::ai::prompts::build_review_prompt_remote(
+            parts[0],
+            parts[1],
+            pr_number,
+            &output_dir,
+        ));
+    }
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
+            crate::ai::prompts::build_review_prompt(&base, mode.git_mode()),
+        ),
+        _ => {
+            app.notify("AI review not available in this mode");
+            None
+        }
+    }
+}
+
+/// Build the questions agent prompt, using remote mode if applicable.
+fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    if tab.is_remote() {
+        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
+            (Some(ref s), Some(n)) => (s.clone(), n),
+            _ => {
+                app.notify("Remote mode missing repo or PR number");
+                return None;
+            }
+        };
+        let parts: Vec<&str> = slug.split('/').collect();
+        if parts.len() != 2 {
+            app.notify(&format!("Invalid remote repo slug: {}", slug));
+            return None;
+        }
+        let output_dir = app.tab().er_dir();
+        return Some(crate::ai::prompts::build_questions_prompt_remote(
+            parts[0],
+            parts[1],
+            pr_number,
+            &output_dir,
+        ));
+    }
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
+            crate::ai::prompts::build_questions_prompt(&base, mode.git_mode()),
+        ),
+        _ => {
+            app.notify("AI questions not available in this mode");
+            None
+        }
+    }
 }
 
 /// Sync GitHub PR comments (pull)
@@ -1869,6 +2208,7 @@ mod tests {
     // ── Test helpers ──
 
     fn make_app(files: Vec<DiffFile>) -> App {
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
         App {
             tabs: vec![TabState::new_for_test(files)],
             active_tab: 0,
@@ -1878,11 +2218,18 @@ mod tests {
             watching: false,
             watch_message: None,
             watch_message_ticks: 0,
+            watch_message_max_ticks: 20,
             ai_poll_counter: 0,
+            remote_url_input: String::new(),
             config: ErConfig::default(),
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            log_tx,
+            log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
             pending_hub_action: None,
+            last_terminal_width: 0,
         }
     }
 
@@ -2088,26 +2435,22 @@ mod tests {
     }
 
     #[test]
-    fn shift_space_toggles_unreviewed_filter_on() {
+    fn bang_toggles_unreviewed_filter_on() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         assert!(!app.tab().show_unreviewed_only);
-        send_key(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
+        send_key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
         assert!(
             app.tab().show_unreviewed_only,
-            "Shift+Space must toggle show_unreviewed_only to true"
+            "! must toggle show_unreviewed_only to true"
         );
     }
 
     #[test]
-    fn shift_space_does_not_scroll_diff() {
+    fn bang_does_not_scroll_diff() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         app.tab_mut().diff_scroll = 20;
-        send_key(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
-        assert_eq!(
-            app.tab().diff_scroll,
-            20,
-            "Shift+Space must not change diff_scroll"
-        );
+        send_key(&mut app, KeyCode::Char('!'), KeyModifiers::NONE);
+        assert_eq!(app.tab().diff_scroll, 20, "! must not change diff_scroll");
     }
 
     // ── Ctrl+j vs bare j (panel not focused) ──

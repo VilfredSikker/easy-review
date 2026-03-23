@@ -29,6 +29,7 @@ pub enum PanelContent {
     AiSummary,
     FileDetail,
     SymbolRefs,
+    AgentLog,
 }
 
 // ── .er-review.json ──
@@ -2121,6 +2122,7 @@ mod tests {
         assert_eq!(PanelContent::FileDetail, PanelContent::FileDetail);
         assert_eq!(PanelContent::AiSummary, PanelContent::AiSummary);
         assert_eq!(PanelContent::PrOverview, PanelContent::PrOverview);
+        assert_eq!(PanelContent::AgentLog, PanelContent::AgentLog);
         assert_ne!(PanelContent::FileDetail, PanelContent::AiSummary);
         assert_ne!(PanelContent::AiSummary, PanelContent::PrOverview);
     }

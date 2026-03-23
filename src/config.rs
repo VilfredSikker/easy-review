@@ -161,7 +161,13 @@ fn default_agent_args() -> Vec<String> {
     // to receive user input. If a user overrides `agent.args` in their config and omits
     // {prompt}, the prompt is silently dropped and the agent runs with no meaningful input.
     // Validate that {prompt} appears in args when loading config.
-    vec!["--print".into(), "-p".into(), "{prompt}".into()]
+    vec![
+        "--print".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "-p".into(),
+        "{prompt}".into(),
+    ]
 }
 
 impl Default for FeatureFlags {
@@ -182,6 +188,19 @@ impl Default for AgentConfig {
         Self {
             command: default_agent_cmd(),
             args: default_agent_args(),
+        }
+    }
+}
+
+impl AgentConfig {
+    /// Human-readable name for the agent (derived from command basename).
+    pub fn display_name(&self) -> String {
+        let basename = self.command.rsplit('/').next().unwrap_or(&self.command);
+        // Capitalize first letter
+        let mut chars = basename.chars();
+        match chars.next() {
+            Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+            None => "AI".to_string(),
         }
     }
 }
@@ -220,8 +239,19 @@ impl ErConfig {
 /// Merging is deep: individual fields within sections (e.g. `[features]`) override independently.
 pub fn load_config(repo_root: &str) -> ErConfig {
     let local_path = format!("{repo_root}/.er-config.toml");
-    let global_path =
-        dirs::config_dir().map(|d| d.join("er/config.toml").to_string_lossy().to_string());
+    // Prefer XDG (~/.config/er/config.toml), fall back to dirs::config_dir()
+    let global_path = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(|xdg| format!("{xdg}/er/config.toml"))
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| format!("{h}/.config/er/config.toml"))
+        })
+        .filter(|p| std::path::Path::new(p).exists())
+        .or_else(|| {
+            dirs::config_dir().map(|d| d.join("er/config.toml").to_string_lossy().to_string())
+        });
 
     let global_table = global_path
         .and_then(|p| std::fs::read_to_string(p).ok())
@@ -230,12 +260,6 @@ pub fn load_config(repo_root: &str) -> ErConfig {
     let local_table = std::fs::read_to_string(&local_path)
         .ok()
         .and_then(|c| c.parse::<toml::Table>().ok());
-
-    eprintln!(
-        "DEBUG: global_table.is_some()={}, local_table.is_some()={}",
-        global_table.is_some(),
-        local_table.is_some()
-    );
     let user_table = match (global_table, local_table) {
         (Some(mut global), Some(local)) => {
             deep_merge(&mut global, local);
@@ -249,6 +273,51 @@ pub fn load_config(repo_root: &str) -> ErConfig {
     toml::Value::Table(user_table)
         .try_into()
         .unwrap_or_default()
+}
+
+/// Split a string into args respecting single and double quotes.
+/// Unquoted segments are split on whitespace. Quoted segments preserve
+/// inner whitespace and strip the outer quotes.
+///
+/// Examples:
+///   `--print -p {prompt}`         → ["--print", "-p", "{prompt}"]
+///   `--print -p "hello world"`    → ["--print", "-p", "hello world"]
+///   `--flag 'it'\''s quoted'`     → ["--flag", "it's quoted"]
+pub fn split_shell_args(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut chars = s.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '\\' if in_double || !in_single => {
+                // Backslash escapes the next character
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            c if c.is_ascii_whitespace() && !in_single && !in_double => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
 }
 
 /// Recursively merge `overlay` into `base`. Overlay values win; nested tables are merged recursively.
@@ -270,181 +339,287 @@ fn deep_merge(
 
 /// Save config to the global config dir (~/.config/er/config.toml).
 pub fn save_config(config: &ErConfig) -> Result<()> {
-    let dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
-        .join("er");
+    let dir = std::env::var("XDG_CONFIG_HOME")
+        .map(|xdg| std::path::PathBuf::from(format!("{xdg}/er")))
+        .or_else(|_| {
+            std::env::var("HOME").map(|h| std::path::PathBuf::from(format!("{h}/.config/er")))
+        })
+        .or_else(|_| {
+            dirs::config_dir()
+                .map(|d| d.join("er"))
+                .ok_or(std::env::VarError::NotPresent)
+        })
+        .map_err(|_| anyhow::anyhow!("Could not determine config directory"))?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
+    let tmp_path = dir.join("config.toml.tmp");
     let content = toml::to_string_pretty(config)?;
-    // TODO(risk:high): write is non-atomic — if the process is killed mid-write (e.g. Ctrl+C
-    // during save) the config file is left with partial content and becomes unreadable on next
-    // launch (silently falls back to defaults, losing all user settings). Write to a .tmp file
-    // and rename atomically, the same pattern used for .er-github-comments.json.
-    std::fs::write(path, content)?;
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
-/// Settings item types for the settings overlay UI.
-#[derive(Debug, Clone)]
-pub enum SettingsItem {
+/// Config hub item types for the enhanced config hub UI.
+#[derive(Clone)]
+pub enum ConfigItem {
     SectionHeader(String),
     BoolToggle {
         label: String,
+        description: String,
         get: fn(&ErConfig) -> bool,
         set: fn(&mut ErConfig, bool),
     },
-    NumberEdit {
-        label: String,
-        get: fn(&ErConfig) -> u8,
-        #[allow(dead_code)]
-        set: fn(&mut ErConfig, u8),
-    },
-    StringDisplay {
-        label: String,
-        get: fn(&ErConfig) -> String,
-    },
     StringCycle {
         label: String,
+        description: String,
         options: &'static [&'static str],
         get: fn(&ErConfig) -> String,
         set: fn(&mut ErConfig, String),
     },
+    StringEdit {
+        label: String,
+        description: String,
+        placeholder: String,
+        get: fn(&ErConfig) -> String,
+        set: fn(&mut ErConfig, String),
+    },
+    NumberEdit {
+        label: String,
+        description: String,
+        min: u8,
+        max: u8,
+        get: fn(&ErConfig) -> u8,
+        set: fn(&mut ErConfig, u8),
+    },
+    ListEntry {
+        label: String,
+        index: usize,
+    },
+    ListAdd {
+        label: String,
+        section: String,
+    },
 }
 
-/// Build the list of settings items for the settings overlay.
-pub fn settings_items() -> Vec<SettingsItem> {
-    vec![
-        SettingsItem::SectionHeader("Views".into()),
-        SettingsItem::BoolToggle {
+impl std::fmt::Debug for ConfigItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigItem::SectionHeader(s) => write!(f, "SectionHeader({:?})", s),
+            ConfigItem::BoolToggle { label, .. } => write!(f, "BoolToggle({:?})", label),
+            ConfigItem::StringCycle { label, .. } => write!(f, "StringCycle({:?})", label),
+            ConfigItem::StringEdit { label, .. } => write!(f, "StringEdit({:?})", label),
+            ConfigItem::NumberEdit { label, .. } => write!(f, "NumberEdit({:?})", label),
+            ConfigItem::ListEntry { label, index } => {
+                write!(f, "ListEntry({:?}, {})", label, index)
+            }
+            ConfigItem::ListAdd { label, section } => {
+                write!(f, "ListAdd({:?}, {:?})", label, section)
+            }
+        }
+    }
+}
+
+/// Build the list of config hub items for the config hub overlay.
+pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
+    let mut items: Vec<ConfigItem> = vec![
+        // ── Views ──
+        ConfigItem::SectionHeader("Views".into()),
+        ConfigItem::BoolToggle {
             label: "Branch diff (1)".into(),
+            description: "Show branch diff mode".into(),
             get: |c| c.features.view_branch,
             set: |c, v| c.features.view_branch = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Unstaged changes (2)".into(),
+            description: "Show unstaged changes mode".into(),
             get: |c| c.features.view_unstaged,
             set: |c, v| c.features.view_unstaged = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Staged changes (3)".into(),
+            description: "Show staged changes mode".into(),
             get: |c| c.features.view_staged,
             set: |c, v| c.features.view_staged = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "History (4)".into(),
+            description: "Show commit history mode".into(),
             get: |c| c.features.view_history,
             set: |c, v| c.features.view_history = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Conflicts (5)".into(),
+            description: "Show merge conflicts mode".into(),
             get: |c| c.features.view_conflicts,
             set: |c, v| c.features.view_conflicts = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Hidden files (6)".into(),
+            description: "Show hidden files mode".into(),
             get: |c| c.features.view_hidden,
             set: |c, v| c.features.view_hidden = v,
         },
-        SettingsItem::SectionHeader("Display".into()),
-        SettingsItem::StringCycle {
+        // ── Display ──
+        ConfigItem::SectionHeader("Display".into()),
+        ConfigItem::StringCycle {
             label: "Theme".into(),
+            description: "Color theme".into(),
             options: &["ocean-depth", "moonlight", "daybreak", "high-contrast"],
             get: |c| c.display.theme.clone(),
             set: |c, v| c.display.theme = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Line numbers".into(),
+            description: "Show line numbers in diff".into(),
             get: |c| c.display.line_numbers,
             set: |c, v| c.display.line_numbers = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Wrap lines".into(),
+            description: "Wrap long lines".into(),
             get: |c| c.display.wrap_lines,
             set: |c, v| c.display.wrap_lines = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Split diff".into(),
+            description: "Side-by-side diff view".into(),
             get: |c| c.display.split_diff,
             set: |c, v| c.display.split_diff = v,
         },
-        SettingsItem::NumberEdit {
+        ConfigItem::NumberEdit {
             label: "Tab width".into(),
+            description: "Spaces per tab stop".into(),
+            min: 1,
+            max: 16,
             get: |c| c.display.tab_width,
             set: |c, v| c.display.tab_width = v,
         },
-        SettingsItem::SectionHeader("Key Hints".into()),
-        SettingsItem::BoolToggle {
-            label: "Navigation (j/k, n/N, ␣, /)".into(),
+        // ── Key Hints ──
+        ConfigItem::SectionHeader("Key Hints".into()),
+        ConfigItem::BoolToggle {
+            label: "Navigation hints".into(),
+            description: "Show j/k, n/N, ␣, / hints".into(),
             get: |c| c.hints.navigation,
             set: |c, v| c.hints.navigation = v,
         },
-        SettingsItem::BoolToggle {
-            label: "Staging (s, c commit)".into(),
+        ConfigItem::BoolToggle {
+            label: "Staging hints".into(),
+            description: "Show s, c commit hints".into(),
             get: |c| c.hints.staging,
             set: |c, v| c.hints.staging = v,
         },
-        SettingsItem::BoolToggle {
-            label: "Comment actions (r, d)".into(),
+        ConfigItem::BoolToggle {
+            label: "Comment hints".into(),
+            description: "Show r, d comment action hints".into(),
             get: |c| c.hints.comments,
             set: |c, v| c.hints.comments = v,
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::BoolToggle {
             label: "Verbose hints".into(),
+            description: "Show all key hints (resize, filters, etc)".into(),
             get: |c| c.hints.verbose,
             set: |c, v| c.hints.verbose = v,
         },
-        SettingsItem::SectionHeader("Commands".into()),
-        SettingsItem::StringDisplay {
+        // ── Commands ──
+        ConfigItem::SectionHeader("Commands".into()),
+        ConfigItem::StringEdit {
             label: "Summary".into(),
-            get: |c| {
-                c.commands
-                    .summary
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
-            },
+            description: "Generate diff summary".into(),
+            placeholder: "e.g. claude -p 'Summarize: {diff}'".into(),
+            get: |c| c.commands.summary.clone().unwrap_or_default(),
+            set: |c, v| c.commands.summary = if v.is_empty() { None } else { Some(v) },
         },
-        SettingsItem::BoolToggle {
+        ConfigItem::StringEdit {
+            label: "Test".into(),
+            description: "Run tests".into(),
+            placeholder: "e.g. cargo test".into(),
+            get: |c| c.commands.test.clone().unwrap_or_default(),
+            set: |c, v| c.commands.test = if v.is_empty() { None } else { Some(v) },
+        },
+        ConfigItem::StringEdit {
+            label: "Lint".into(),
+            description: "Run linter".into(),
+            placeholder: "e.g. cargo clippy".into(),
+            get: |c| c.commands.lint.clone().unwrap_or_default(),
+            set: |c, v| c.commands.lint = if v.is_empty() { None } else { Some(v) },
+        },
+        ConfigItem::StringEdit {
+            label: "Typecheck".into(),
+            description: "Run type checker".into(),
+            placeholder: "e.g. tsc --noEmit".into(),
+            get: |c| c.commands.typecheck.clone().unwrap_or_default(),
+            set: |c, v| c.commands.typecheck = if v.is_empty() { None } else { Some(v) },
+        },
+        ConfigItem::StringEdit {
+            label: "Security".into(),
+            description: "Run security scan".into(),
+            placeholder: "e.g. cargo audit".into(),
+            get: |c| c.commands.security.clone().unwrap_or_default(),
+            set: |c, v| c.commands.security = if v.is_empty() { None } else { Some(v) },
+        },
+        ConfigItem::BoolToggle {
             label: "Push summary to PR body".into(),
+            description: "Auto-push summary to GitHub PR".into(),
             get: |c| c.summary.push_to_pr,
             set: |c, v| c.summary.push_to_pr = v,
         },
-        SettingsItem::StringDisplay {
-            label: "Test".into(),
-            get: |c| {
-                c.commands
-                    .test
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
+        // ── Agent ──
+        ConfigItem::SectionHeader("Agent".into()),
+        ConfigItem::StringEdit {
+            label: "Command".into(),
+            description: "Agent executable".into(),
+            placeholder: "e.g. claude".into(),
+            get: |c| c.agent.command.clone(),
+            set: |c, v| {
+                if !v.is_empty() {
+                    c.agent.command = v
+                }
             },
         },
-        SettingsItem::StringDisplay {
-            label: "Lint".into(),
-            get: |c| {
-                c.commands
-                    .lint
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
-            },
+        ConfigItem::StringEdit {
+            label: "Args".into(),
+            description: "Agent arguments (space-separated)".into(),
+            placeholder: "e.g. --print -p {prompt}".into(),
+            get: |c| c.agent.args.join(" "),
+            set: |c, v| c.agent.args = split_shell_args(&v),
         },
-        SettingsItem::StringDisplay {
-            label: "Type check".into(),
-            get: |c| {
-                c.commands
-                    .typecheck
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
-            },
+        // ── Watched Paths ──
+        ConfigItem::SectionHeader("Watched Paths".into()),
+        ConfigItem::StringCycle {
+            label: "Diff mode".into(),
+            description: "How to diff watched files".into(),
+            options: &["content", "snapshot"],
+            get: |c| c.watched.diff_mode.clone(),
+            set: |c, v| c.watched.diff_mode = v,
         },
-        SettingsItem::StringDisplay {
-            label: "Security".into(),
-            get: |c| {
-                c.commands
-                    .security
-                    .clone()
-                    .unwrap_or_else(|| "not configured".into())
-            },
-        },
-    ]
+    ];
+
+    // One ListEntry per watched path
+    for (i, path) in config.watched.paths.iter().enumerate() {
+        items.push(ConfigItem::ListEntry {
+            label: path.clone(),
+            index: i,
+        });
+    }
+
+    items.push(ConfigItem::ListAdd {
+        label: "Add pattern...".into(),
+        section: "watched".into(),
+    });
+
+    items
+}
+
+/// Save config to the repo-local `.er-config.toml` (atomic tmp+rename).
+pub fn save_config_local(config: &ErConfig, repo_root: &str) -> Result<()> {
+    let dir = std::path::Path::new(repo_root);
+    let path = dir.join(".er-config.toml");
+    let tmp_path = dir.join(".er-config.toml.tmp");
+    let content = toml::to_string_pretty(config)?;
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, &path)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -678,68 +853,118 @@ mod tests {
         assert_eq!(restored.agent.args, vec!["--flag"]);
     }
 
-    // ── settings_items ──
+    // ── split_shell_args ──
 
     #[test]
-    fn settings_items_returns_expected_count() {
-        let items = settings_items();
-        // Count non-header items (BoolToggle, NumberEdit, StringDisplay)
+    fn split_shell_args_simple() {
+        assert_eq!(
+            split_shell_args("--print -p {prompt}"),
+            vec!["--print", "-p", "{prompt}"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_double_quotes() {
+        assert_eq!(
+            split_shell_args(r#"--print -p "hello world""#),
+            vec!["--print", "-p", "hello world"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_single_quotes() {
+        assert_eq!(
+            split_shell_args("--print -p 'hello world'"),
+            vec!["--print", "-p", "hello world"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_escaped_quote_in_double() {
+        assert_eq!(
+            split_shell_args(r#"--flag "it\"s here""#),
+            vec!["--flag", r#"it"s here"#]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_backslash_outside_quotes() {
+        assert_eq!(
+            split_shell_args(r"--flag hello\ world"),
+            vec!["--flag", "hello world"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_empty_string() {
+        assert!(split_shell_args("").is_empty());
+    }
+
+    #[test]
+    fn split_shell_args_only_whitespace() {
+        assert!(split_shell_args("   ").is_empty());
+    }
+
+    #[test]
+    fn split_shell_args_mixed_quotes() {
+        assert_eq!(
+            split_shell_args(r#"--a 'single' --b "double" --c plain"#),
+            vec!["--a", "single", "--b", "double", "--c", "plain"]
+        );
+    }
+
+    #[test]
+    fn split_shell_args_adjacent_quoted_segments() {
+        // 'hello'" "'world' should join into "hello world"
+        assert_eq!(split_shell_args("'hello'\" \"'world'"), vec!["hello world"]);
+    }
+
+    #[test]
+    fn split_shell_args_prompt_placeholder() {
+        // The default agent args pattern
+        assert_eq!(
+            split_shell_args("--print --output-format stream-json -p {prompt}"),
+            vec![
+                "--print",
+                "--output-format",
+                "stream-json",
+                "-p",
+                "{prompt}"
+            ]
+        );
+    }
+
+    // ── config_hub_items ──
+
+    #[test]
+    fn config_hub_items_returns_expected_sections_and_count() {
+        let config = ErConfig::default();
+        let items = config_hub_items(&config);
+        // Count non-header items
         let toggleable: Vec<_> = items
             .iter()
-            .filter(|i| !matches!(i, SettingsItem::SectionHeader(_)))
+            .filter(|i| !matches!(i, ConfigItem::SectionHeader(_)))
             .collect();
         assert!(
-            toggleable.len() >= 14,
-            "Expected at least 14 toggleable items, got {}",
+            toggleable.len() >= 18,
+            "Expected at least 18 interactive items, got {}",
             toggleable.len()
         );
         assert!(
-            items.len() >= 18,
-            "Expected at least 18 total items, got {}",
+            items.len() >= 22,
+            "Expected at least 22 total items (with headers), got {}",
             items.len()
         );
     }
 
     #[test]
-    fn settings_items_bool_toggle_get_set_read_write_correct_fields() {
-        let mut config = ErConfig::default();
-
-        let items = settings_items();
-        // Find the "Branch diff" toggle and verify it reads/writes view_branch
-        let branch_toggle = items.iter().find(|i| match i {
-            SettingsItem::BoolToggle { label, .. } => label.contains("Branch"),
-            _ => false,
-        });
-        if let Some(SettingsItem::BoolToggle { get, set, .. }) = branch_toggle {
-            assert!(get(&config));
-            set(&mut config, false);
-            assert!(!config.features.view_branch);
-            assert!(!get(&config));
-        } else {
-            panic!("Branch diff toggle not found");
-        }
-
-        // Verify line_numbers toggle
-        let line_num_toggle = items.iter().find(|i| match i {
-            SettingsItem::BoolToggle { label, .. } => label.contains("Line numbers"),
-            _ => false,
-        });
-        if let Some(SettingsItem::BoolToggle { get, set, .. }) = line_num_toggle {
-            assert!(get(&config));
-            set(&mut config, false);
-            assert!(!config.display.line_numbers);
-        } else {
-            panic!("Line numbers toggle not found");
-        }
-    }
-
-    #[test]
-    fn settings_items_section_headers_present_in_correct_order() {
-        let items = settings_items();
+    fn config_hub_items_section_headers_present_in_correct_order() {
+        let config = ErConfig::default();
+        let items = config_hub_items(&config);
         let headers: Vec<&str> = items
             .iter()
             .filter_map(|i| match i {
-                SettingsItem::SectionHeader(title) => Some(title.as_str()),
+                ConfigItem::SectionHeader(title) => Some(title.as_str()),
                 _ => None,
             })
             .collect();
@@ -747,9 +972,153 @@ mod tests {
         assert!(headers.contains(&"Display"));
         assert!(headers.contains(&"Key Hints"));
         assert!(headers.contains(&"Commands"));
+        assert!(headers.contains(&"Agent"));
+        assert!(headers.contains(&"Watched Paths"));
         // Views should come before Display
         let views_pos = headers.iter().position(|h| *h == "Views").unwrap();
         let display_pos = headers.iter().position(|h| *h == "Display").unwrap();
         assert!(views_pos < display_pos);
+    }
+
+    #[test]
+    fn config_hub_items_bool_toggle_get_set_round_trip() {
+        let mut config = ErConfig::default();
+        let items = config_hub_items(&config);
+
+        // Find the "Branch diff" toggle
+        let branch_toggle = items.iter().find(|i| match i {
+            ConfigItem::BoolToggle { label, .. } => label.contains("Branch"),
+            _ => false,
+        });
+        if let Some(ConfigItem::BoolToggle { get, set, .. }) = branch_toggle {
+            assert!(get(&config));
+            set(&mut config, false);
+            assert!(!config.features.view_branch);
+            assert!(!get(&config));
+        } else {
+            panic!("Branch diff toggle not found");
+        }
+    }
+
+    #[test]
+    fn config_hub_items_string_cycle_get_set_round_trip() {
+        let mut config = ErConfig::default();
+        let items = config_hub_items(&config);
+
+        let theme_cycle = items.iter().find(|i| match i {
+            ConfigItem::StringCycle { label, .. } => label == "Theme",
+            _ => false,
+        });
+        if let Some(ConfigItem::StringCycle {
+            get, set, options, ..
+        }) = theme_cycle
+        {
+            assert_eq!(get(&config), "ocean-depth");
+            set(&mut config, options[1].to_string());
+            assert_eq!(get(&config), options[1]);
+        } else {
+            panic!("Theme cycle not found");
+        }
+    }
+
+    #[test]
+    fn config_hub_items_string_edit_get_set_round_trip() {
+        let mut config = ErConfig::default();
+        let items = config_hub_items(&config);
+
+        let cmd_edit = items.iter().find(|i| match i {
+            ConfigItem::StringEdit { label, .. } => label == "Command",
+            _ => false,
+        });
+        if let Some(ConfigItem::StringEdit { get, set, .. }) = cmd_edit {
+            assert_eq!(get(&config), "claude");
+            set(&mut config, "my-agent".to_string());
+            assert_eq!(config.agent.command, "my-agent");
+        } else {
+            panic!("Agent command edit not found");
+        }
+    }
+
+    #[test]
+    fn config_hub_items_number_edit_get_set_round_trip() {
+        let mut config = ErConfig::default();
+        let items = config_hub_items(&config);
+
+        let tab_width = items.iter().find(|i| match i {
+            ConfigItem::NumberEdit { label, .. } => label == "Tab width",
+            _ => false,
+        });
+        if let Some(ConfigItem::NumberEdit {
+            get, set, min, max, ..
+        }) = tab_width
+        {
+            assert_eq!(get(&config), 4);
+            assert_eq!(*min, 1);
+            assert_eq!(*max, 16);
+            set(&mut config, 8);
+            assert_eq!(config.display.tab_width, 8);
+        } else {
+            panic!("Tab width number edit not found");
+        }
+    }
+
+    #[test]
+    fn config_hub_items_watched_paths_generate_list_entries() {
+        let mut config = ErConfig::default();
+        config.watched.paths = vec![".work/**".to_string(), "logs/*.log".to_string()];
+        let items = config_hub_items(&config);
+
+        let list_entries: Vec<_> = items
+            .iter()
+            .filter(|i| matches!(i, ConfigItem::ListEntry { .. }))
+            .collect();
+        assert_eq!(list_entries.len(), 2);
+        if let ConfigItem::ListEntry { label, index } = &list_entries[0] {
+            assert_eq!(label, ".work/**");
+            assert_eq!(*index, 0);
+        }
+        if let ConfigItem::ListEntry { label, index } = &list_entries[1] {
+            assert_eq!(label, "logs/*.log");
+            assert_eq!(*index, 1);
+        }
+    }
+
+    #[test]
+    fn config_hub_items_includes_list_add_for_watched() {
+        let config = ErConfig::default();
+        let items = config_hub_items(&config);
+        let has_add = items
+            .iter()
+            .any(|i| matches!(i, ConfigItem::ListAdd { .. }));
+        assert!(has_add, "Should include a ListAdd item for watched paths");
+    }
+
+    // ── AgentConfig::display_name ──
+
+    #[test]
+    fn agent_display_name_capitalizes_basename() {
+        let agent = AgentConfig {
+            command: "claude".into(),
+            args: vec![],
+        };
+        assert_eq!(agent.display_name(), "Claude");
+    }
+
+    #[test]
+    fn agent_display_name_extracts_basename_from_path() {
+        let agent = AgentConfig {
+            command: "/usr/local/bin/claude".into(),
+            args: vec![],
+        };
+        assert_eq!(agent.display_name(), "Claude");
+    }
+
+    #[test]
+    fn agent_display_name_empty_command_returns_ai() {
+        let agent = AgentConfig {
+            command: "".into(),
+            args: vec![],
+        };
+        assert_eq!(agent.display_name(), "AI");
     }
 }

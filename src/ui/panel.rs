@@ -106,6 +106,17 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
         tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED())));
     }
 
+    let log_style = if content == PanelContent::AgentLog {
+        Style::default()
+            .fg(styles::PURPLE())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(styles::DIM())
+    };
+    tab_spans.push(Span::styled(" [", Style::default().fg(styles::MUTED())));
+    tab_spans.push(Span::styled("Log", log_style));
+    tab_spans.push(Span::styled("]", Style::default().fg(styles::MUTED())));
+
     lines.push(Line::from(tab_spans));
     // TODO(risk:minor): area.width.saturating_sub(2) as usize allocates a string of up
     // to ~65533 "─" (3 bytes each UTF-8) = ~192 KB per frame when the panel is very wide.
@@ -122,6 +133,7 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
         PanelContent::AiSummary => render_ai_summary(&mut lines, area, tab),
         PanelContent::PrOverview => render_pr_overview(&mut lines, area, tab),
         PanelContent::SymbolRefs => render_symbol_refs(&mut lines, area, tab),
+        PanelContent::AgentLog => render_agent_log(&mut lines, area, app),
     }
 
     let border_style = if tab.panel_focus {
@@ -1036,6 +1048,114 @@ fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
             " No references found",
             Style::default().fg(styles::MUTED()),
         )]));
+    }
+}
+
+// ── AgentLog ──
+
+fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, app: &'a crate::app::App) {
+    use crate::app::{AgentLogSource, CommandStatus};
+
+    let max_w = area.width.saturating_sub(4) as usize; // panel padding + border
+
+    // Header
+    let running_count = app
+        .command_status
+        .values()
+        .filter(|s| matches!(s, CommandStatus::Running))
+        .count();
+
+    let mut header_spans = vec![Span::styled(
+        "Agent Log",
+        Style::default()
+            .fg(styles::BRIGHT())
+            .add_modifier(Modifier::BOLD),
+    )];
+    if running_count > 0 {
+        header_spans.push(Span::raw(" "));
+        header_spans.push(Span::styled(
+            format!("{} running", running_count),
+            Style::default().fg(styles::CYAN()),
+        ));
+    }
+    lines.push(Line::from(header_spans));
+    lines.push(Line::from(""));
+
+    if app.agent_log.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No agent output yet",
+            Style::default().fg(styles::MUTED()),
+        )));
+        lines.push(Line::from(""));
+        for wrapped in word_wrap(
+            "Run a command from the AI hub (a) to see live output here",
+            max_w,
+        ) {
+            lines.push(Line::from(Span::styled(
+                format!(" {}", wrapped),
+                Style::default().fg(styles::DIM()),
+            )));
+        }
+        return;
+    }
+
+    // Calculate relative timestamps from first entry
+    let first_ts = app.agent_log.front().map(|e| e.timestamp);
+
+    for entry in app.agent_log.iter() {
+        let elapsed = first_ts
+            .map(|first| entry.timestamp.duration_since(first))
+            .unwrap_or_default();
+        let secs = elapsed.as_secs();
+        let time_str = if secs < 60 {
+            format!("+{}s", secs)
+        } else {
+            format!("+{}m{}s", secs / 60, secs % 60)
+        };
+
+        let time_style = Style::default().fg(styles::MUTED());
+        let name_style = match entry.command_name.as_str() {
+            "review" => Style::default().fg(styles::ORANGE()),
+            "questions" => Style::default().fg(styles::YELLOW()),
+            _ => Style::default().fg(styles::BLUE()),
+        };
+        let text_style = match entry.source {
+            AgentLogSource::Stdout => Style::default().fg(styles::TEXT()),
+            AgentLogSource::Stderr => Style::default().fg(styles::DIM()),
+            AgentLogSource::Status => Style::default().fg(styles::CYAN()),
+        };
+
+        // Prefix: "[  +0s] [review] " — calculate its width for wrapping
+        let prefix = format!("[{:>6}] [{}] ", time_str, entry.command_name);
+        let prefix_len = prefix.len();
+        let text_width = max_w.saturating_sub(prefix_len);
+
+        if text_width == 0 || entry.text.len() <= text_width {
+            // Fits on one line
+            lines.push(Line::from(vec![
+                Span::styled(format!("[{:>6}] ", time_str), time_style),
+                Span::styled(format!("[{}] ", entry.command_name), name_style),
+                Span::styled(entry.text.clone(), text_style),
+            ]));
+        } else {
+            // Wrap long text — first line has prefix, continuation lines are indented
+            let wrapped = word_wrap(&entry.text, text_width);
+            for (i, segment) in wrapped.iter().enumerate() {
+                if i == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("[{:>6}] ", time_str), time_style),
+                        Span::styled(format!("[{}] ", entry.command_name), name_style),
+                        Span::styled(segment.clone(), text_style),
+                    ]));
+                } else {
+                    // Indent continuation to align with text start
+                    lines.push(Line::from(vec![
+                        Span::styled(" ".repeat(prefix_len), Style::default()),
+                        Span::styled(segment.clone(), text_style),
+                    ]));
+                }
+            }
+        }
     }
 }
 

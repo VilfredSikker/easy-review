@@ -1,4 +1,5 @@
 mod loader;
+pub mod prompts;
 mod relocate;
 mod review;
 

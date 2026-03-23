@@ -224,6 +224,23 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let mut right: Vec<Span> = Vec::new();
 
+    // Agent command status badges (persistent while running)
+    for (name, _label, _is_running) in app.agent_statuses() {
+        let display_name = match name {
+            "review" => "Review",
+            "questions" => "Questions",
+            _ => name,
+        };
+        right.push(Span::styled(
+            format!(" ◐ {} running… ", display_name),
+            ratatui::style::Style::default()
+                .fg(styles::BG())
+                .bg(styles::CYAN())
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+        right.push(Span::raw("  "));
+    }
+
     // AI badge + panel label
     if tab.ai.has_data() {
         if tab.ai.is_stale {
@@ -264,6 +281,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             PanelContent::AiSummary => " AI Summary ",
             PanelContent::PrOverview => " PR Overview ",
             PanelContent::SymbolRefs => " Symbol Refs ",
+            PanelContent::AgentLog => " Agent Log ",
         };
         let panel_style = if tab.panel_focus {
             ratatui::style::Style::default()
@@ -464,7 +482,7 @@ fn build_history_hints(app: &App) -> Vec<Hint> {
 
     // Hub triggers
     hints.push(Hint::new("g", " git "));
-    hints.push(Hint::new("A", " ai "));
+    hints.push(Hint::new("a", " ai "));
     hints.push(Hint::new("?", " help "));
     hints.push(Hint::new("^q", " quit "));
 
@@ -543,14 +561,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
         }
         hints.push(Hint::new("p", " close panel "));
 
-        // PR-specific action
-        if tab.panel == Some(PanelContent::PrOverview) && tab.pr_data.is_some() {
-            hints.push(Hint::new("o", " open in browser "));
-        }
-
         // Hub triggers — always shown
         hints.push(Hint::new("g", " git "));
-        hints.push(Hint::new("A", " ai "));
+        hints.push(Hint::new("a", " ai "));
+        hints.push(Hint::new("o", " open "));
         hints.push(Hint::new("v", " verify "));
         hints.push(Hint::new("?", " help "));
         hints.push(Hint::new("^q", " quit "));
@@ -562,7 +576,9 @@ fn build_hints(app: &App) -> Vec<Hint> {
                 hints.push(Hint::new("c", " comment "));
             }
             hints.push(Hint::new("f", " filter "));
-            hints.push(Hint::new("⇧Space", " unreviewed "));
+            hints.push(Hint::new("!", " unreviewed "));
+            hints.push(Hint::new("</>", " tree w "));
+            hints.push(Hint::new("{/}", " panel w "));
         }
     } else {
         // Default normal mode — essential navigation only
@@ -600,7 +616,8 @@ fn build_hints(app: &App) -> Vec<Hint> {
 
         // Hub triggers — always shown
         hints.push(Hint::new("g", " git "));
-        hints.push(Hint::new("A", " ai "));
+        hints.push(Hint::new("a", " ai "));
+        hints.push(Hint::new("o", " open "));
         hints.push(Hint::new("v", " verify "));
         hints.push(Hint::new("?", " help "));
         hints.push(Hint::new("^q", " quit "));
@@ -614,11 +631,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("e", " edit "));
             hints.push(Hint::new("p", " panel "));
             hints.push(Hint::new("f", " filter "));
-            hints.push(Hint::new("⇧Space", " unreviewed "));
+            hints.push(Hint::new("!", " unreviewed "));
             hints.push(Hint::new("U", " next unreviewed "));
             hints.push(Hint::new("m", " recent "));
             if tab.ai.has_data() {
-                hints.push(Hint::new("a", " AI toggle "));
+                hints.push(Hint::new("A", " AI toggle "));
             }
             // Show comment navigation hints when current file has comments
             if let Some(file) = tab.files.get(tab.selected_file) {
@@ -721,7 +738,8 @@ pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
         | InputMode::Comment
         | InputMode::Confirm(_)
         | InputMode::Filter
-        | InputMode::Commit => 1,
+        | InputMode::Commit
+        | InputMode::RemoteUrl => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -749,6 +767,14 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 ConfirmAction::CleanupReviews { count } => {
                     format!("Clear {} review file(s)? (y/n)", count)
                 }
+                ConfirmAction::RunAgentReview { .. } => {
+                    "Clear previous review before running? (y=clear k=keep Esc=cancel)".to_string()
+                }
+                ConfirmAction::RunAgentQuestions { .. } => {
+                    "Clear previous AI answers before running? (y=clear k=keep Esc=cancel)"
+                        .to_string()
+                }
+                ConfirmAction::ApprovePR => "Approve this PR on GitHub? (y/n)".to_string(),
             };
             let spans = vec![
                 Span::styled(
@@ -857,6 +883,35 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
             f.render_widget(bar, area);
         }
+        InputMode::RemoteUrl => {
+            let spans = vec![
+                Span::styled(
+                    " remote ",
+                    ratatui::style::Style::default()
+                        .fg(styles::BG())
+                        .bg(styles::CYAN())
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {}", app.remote_url_input),
+                    ratatui::style::Style::default().fg(styles::TEXT()),
+                ),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::CYAN())),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled("Enter", styles::key_hint_style()),
+                Span::styled(
+                    " open  ",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
+                Span::styled("Esc", styles::key_hint_style()),
+                Span::styled(
+                    " cancel",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
         InputMode::Search => {
             let spans = vec![
                 Span::styled(" /", styles::key_hint_style()),
@@ -940,13 +995,8 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
 
 /// Render watch notification overlay
 pub fn render_watch_notification(f: &mut Frame, area: Rect, message: &str) {
-    // TODO(risk:medium): message.len() counts bytes, not display columns. A message with
-    // multi-byte UTF-8 characters will produce a notif_width that is too large, causing
-    // the notification to be placed too far left or clipped. Use message.chars().count()
-    // (or a unicode-width crate) for the width calculation.
-    // TODO(risk:medium): if message is long enough that notif_width overflows u16 the
-    // addition wraps silently. Cap message length or use saturating arithmetic.
-    let notif_width = message.len() as u16 + 4;
+    let char_count = message.chars().count().min(u16::MAX as usize - 4);
+    let notif_width = char_count as u16 + 4;
     let notif_x = area.x + area.width.saturating_sub(notif_width + 2);
     let notif_y = area.y + 2;
 
@@ -1005,7 +1055,7 @@ mod tests {
             Hint::new("n/N", " hunks "),
             Hint::new("^q", " quit "),
             Hint::new("f", " filter "),
-            Hint::new("⇧Space", " unreviewed "),
+            Hint::new("!", " unreviewed "),
             Hint::new(",", " settings "),
         ];
         // Total width of all hints > 20 chars, so they should wrap
