@@ -39,6 +39,31 @@ pub struct ReviewerStatus {
     pub state: String,
 }
 
+/// Deduplicate reviewers by login from the reviews array.
+/// APPROVED and CHANGES_REQUESTED are "decisive" — a later COMMENTED review
+/// does not downgrade them (matches GitHub's displayed review state).
+fn deduplicate_reviewers(reviews_arr: &[serde_json::Value]) -> Vec<ReviewerStatus> {
+    let mut reviewer_map: HashMap<String, String> = HashMap::new();
+    for r in reviews_arr {
+        if let Some(login) = r["author"]["login"].as_str() {
+            let state = r["state"].as_str().unwrap_or("PENDING").to_string();
+            if let Some(existing) = reviewer_map.get(login) {
+                // Don't let COMMENTED overwrite a decisive review state
+                if (existing == "APPROVED" || existing == "CHANGES_REQUESTED")
+                    && state == "COMMENTED"
+                {
+                    continue;
+                }
+            }
+            reviewer_map.insert(login.to_string(), state);
+        }
+    }
+    reviewer_map
+        .into_iter()
+        .map(|(login, state)| ReviewerStatus { login, state })
+        .collect()
+}
+
 /// GitHub review comment from the API
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -692,19 +717,8 @@ pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverv
     let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
     let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
 
-    // Deduplicate reviewers by login, keeping the latest state
     let reviewers: Vec<ReviewerStatus> = if let Some(reviews_arr) = v["reviews"].as_array() {
-        let mut reviewer_map: HashMap<String, String> = HashMap::new();
-        for r in reviews_arr {
-            if let Some(login) = r["author"]["login"].as_str() {
-                let state = r["state"].as_str().unwrap_or("PENDING").to_string();
-                reviewer_map.insert(login.to_string(), state);
-            }
-        }
-        reviewer_map
-            .into_iter()
-            .map(|(login, state)| ReviewerStatus { login, state })
-            .collect()
+        deduplicate_reviewers(reviews_arr)
     } else {
         Vec::new()
     };
@@ -934,18 +948,7 @@ pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrO
     let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
 
     let reviewers: Vec<ReviewerStatus> = if let Some(reviews_arr) = v["reviews"].as_array() {
-        let mut reviewer_map: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        for r in reviews_arr {
-            if let Some(login) = r["author"]["login"].as_str() {
-                let state = r["state"].as_str().unwrap_or("PENDING").to_string();
-                reviewer_map.insert(login.to_string(), state);
-            }
-        }
-        reviewer_map
-            .into_iter()
-            .map(|(login, state)| ReviewerStatus { login, state })
-            .collect()
+        deduplicate_reviewers(reviews_arr)
     } else {
         Vec::new()
     };
