@@ -780,6 +780,9 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                         .to_string()
                 }
                 ConfirmAction::ApprovePR => "Approve this PR on GitHub? (y/n)".to_string(),
+                ConfirmAction::PushComments => {
+                    "Push as: (r) Review  (i) Individual  (Esc) Cancel".to_string()
+                }
             };
             let spans = vec![
                 Span::styled(

@@ -525,7 +525,10 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             sync_github_comments(app)?;
         }
         HubAction::PushCommentsToGitHub => {
-            push_all_comments_to_github(app)?;
+            app.input_mode = InputMode::Confirm(ConfirmAction::PushComments);
+        }
+        HubAction::CommentOnPR => {
+            app.start_general_comment();
         }
         HubAction::RefreshDiff => {
             app.tab_mut().refresh_diff()?;
@@ -1649,6 +1652,18 @@ fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             }
         }
+        KeyCode::Char('r') => {
+            if let InputMode::Confirm(ConfirmAction::PushComments) = &app.input_mode {
+                app.input_mode = InputMode::Normal;
+                push_comments_as_review(app)?;
+            }
+        }
+        KeyCode::Char('i') => {
+            if let InputMode::Confirm(ConfirmAction::PushComments) = &app.input_mode {
+                app.input_mode = InputMode::Normal;
+                push_all_comments_to_github(app)?;
+            }
+        }
         KeyCode::Char('n') => {
             app.cancel_confirm();
         }
@@ -2078,6 +2093,38 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
     for cid in &comment_ids {
         let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
         if let Some(comment) = comment {
+            // General comments (empty file) route to the issues API
+            if comment.file.is_empty() {
+                match if is_remote {
+                    github::gh_pr_general_comment_remote(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        &comment.comment,
+                    )
+                } else {
+                    github::gh_pr_general_comment(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        &comment.comment,
+                        &repo_root,
+                    )
+                } {
+                    Ok(github_id) => {
+                        if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                            c.github_id = Some(github_id);
+                            c.synced = true;
+                        }
+                        pushed += 1;
+                    }
+                    Err(_) => {
+                        failed += 1;
+                    }
+                }
+                continue;
+            }
+
             let path = &comment.file;
             // TODO(risk:medium): a comment with no line_start (hunk-level comment) falls back
             // to line 1, silently attributing the GitHub comment to the wrong location. GitHub
@@ -2188,6 +2235,209 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
         app.notify(&format!("Pushed {} comments ({} failed)", pushed, failed));
     } else {
         app.notify(&format!("Pushed {} comments", pushed));
+    }
+    Ok(())
+}
+
+fn push_comments_as_review(app: &mut App) -> Result<()> {
+    let tab = app.tab();
+    let repo_root = tab.repo_root.clone();
+    let explicit_pr_number = tab.pr_number;
+    let is_remote = tab.is_remote();
+    let remote_repo = tab.remote_repo.clone();
+
+    let (owner, repo_name, pr_number) = if is_remote {
+        if let (Some(ref slug), Some(n)) = (&remote_repo, explicit_pr_number) {
+            let parts: Vec<&str> = slug.split('/').collect();
+            if parts.len() == 2 {
+                (parts[0].to_string(), parts[1].to_string(), n)
+            } else {
+                app.notify("Invalid remote repo slug");
+                return Ok(());
+            }
+        } else {
+            app.notify("No PR info for remote mode");
+            return Ok(());
+        }
+    } else {
+        let pr_info = match github::get_pr_info(&repo_root) {
+            Ok(info) => info,
+            Err(_) => {
+                app.notify("No PR found for current branch");
+                return Ok(());
+            }
+        };
+        if let Some(n) = explicit_pr_number {
+            (pr_info.0, pr_info.1, n)
+        } else {
+            pr_info
+        }
+    };
+
+    let comments_path = app.tab().github_comments_path();
+    let mut gc: crate::ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+        Ok(content) => match serde_json::from_str(&content) {
+            Ok(gc) => gc,
+            Err(_) => return Ok(()),
+        },
+        Err(_) => return Ok(()),
+    };
+
+    let mut pushed = 0u32;
+    let mut failed = 0u32;
+
+    // Collect unsynced parent line comments (non-empty file) for the review batch
+    let line_comment_ids: Vec<String> = gc
+        .comments
+        .iter()
+        .filter(|c| {
+            c.source == "local" && !c.synced && c.in_reply_to.is_none() && !c.file.is_empty()
+        })
+        .map(|c| c.id.clone())
+        .collect();
+
+    // Collect unsynced general comments (empty file) for individual posting
+    let general_comment_ids: Vec<String> = gc
+        .comments
+        .iter()
+        .filter(|c| {
+            c.source == "local" && !c.synced && c.in_reply_to.is_none() && c.file.is_empty()
+        })
+        .map(|c| c.id.clone())
+        .collect();
+
+    // Submit line comments as a single review batch
+    if !line_comment_ids.is_empty() {
+        let batch: Vec<(String, usize, String)> = line_comment_ids
+            .iter()
+            .filter_map(|cid| gc.comments.iter().find(|c| c.id == *cid))
+            .map(|c| (c.file.clone(), c.line_start.unwrap_or(1), c.comment.clone()))
+            .collect();
+
+        let result = if is_remote {
+            github::gh_pr_submit_review_remote(&owner, &repo_name, pr_number, &batch)
+        } else {
+            github::gh_pr_submit_review(&owner, &repo_name, pr_number, &batch, &repo_root)
+        };
+
+        match result {
+            Ok(()) => {
+                for cid in &line_comment_ids {
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                        c.synced = true;
+                        // Review API doesn't return individual comment IDs
+                    }
+                }
+                pushed += line_comment_ids.len() as u32;
+            }
+            Err(e) => {
+                app.notify(&format!("Review submit failed: {}", e));
+                failed += line_comment_ids.len() as u32;
+            }
+        }
+    }
+
+    // Post general comments individually (review API doesn't support them)
+    for cid in &general_comment_ids {
+        let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
+        if let Some(comment) = comment {
+            match if is_remote {
+                github::gh_pr_general_comment_remote(
+                    &owner,
+                    &repo_name,
+                    pr_number,
+                    &comment.comment,
+                )
+            } else {
+                github::gh_pr_general_comment(
+                    &owner,
+                    &repo_name,
+                    pr_number,
+                    &comment.comment,
+                    &repo_root,
+                )
+            } {
+                Ok(github_id) => {
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                        c.github_id = Some(github_id);
+                        c.synced = true;
+                    }
+                    pushed += 1;
+                }
+                Err(_) => {
+                    failed += 1;
+                }
+            }
+        }
+    }
+
+    // Push replies individually (review API doesn't support threading)
+    let reply_ids: Vec<String> = gc
+        .comments
+        .iter()
+        .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.is_some())
+        .map(|c| c.id.clone())
+        .collect();
+
+    for cid in &reply_ids {
+        let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
+        if let Some(comment) = comment {
+            let parent_gh_id = comment
+                .in_reply_to
+                .as_ref()
+                .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
+                .and_then(|c| c.github_id);
+
+            if let Some(parent_gh_id) = parent_gh_id {
+                match if is_remote {
+                    github::gh_pr_reply_comment_remote(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        parent_gh_id,
+                        &comment.comment,
+                    )
+                } else {
+                    github::gh_pr_reply_comment(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        parent_gh_id,
+                        &comment.comment,
+                        &repo_root,
+                    )
+                } {
+                    Ok(github_id) => {
+                        if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                            c.github_id = Some(github_id);
+                            c.synced = true;
+                        }
+                        pushed += 1;
+                    }
+                    Err(_) => {
+                        failed += 1;
+                    }
+                }
+            } else {
+                failed += 1;
+            }
+        }
+    }
+
+    let json = serde_json::to_string_pretty(&gc)?;
+    let tmp_path = format!("{}.tmp", comments_path);
+    std::fs::write(&tmp_path, &json)?;
+    std::fs::rename(&tmp_path, &comments_path)?;
+    if is_remote {
+        app.tab_mut().reload_remote_comments();
+    } else {
+        app.tab_mut().reload_ai_state();
+    }
+
+    if failed > 0 {
+        app.notify(&format!("Review: pushed {} ({} failed)", pushed, failed));
+    } else {
+        app.notify(&format!("Review: pushed {}", pushed));
     }
     Ok(())
 }

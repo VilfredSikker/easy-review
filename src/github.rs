@@ -1092,6 +1092,231 @@ pub fn gh_pr_push_comment_remote(
     Ok(resp.id)
 }
 
+/// Submit a batch PR review with multiple comments in one API call.
+/// `comments` is a slice of (path, line, body). Marks all included comments as synced
+/// (no individual comment IDs are returned by the review API).
+pub fn gh_pr_submit_review(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    comments: &[(String, usize, String)],
+    repo_root: &str,
+) -> Result<()> {
+    // Fetch the head commit SHA
+    let sha_output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr.to_string(),
+            "--json",
+            "headRefOid",
+            "--jq",
+            ".headRefOid",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to get PR head SHA")?;
+
+    if !sha_output.status.success() {
+        let stderr = String::from_utf8_lossy(&sha_output.stderr);
+        anyhow::bail!("Failed to get HEAD SHA: {}", stderr.trim());
+    }
+
+    let commit_id = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+    if commit_id.is_empty() {
+        anyhow::bail!("Failed to get HEAD SHA: empty output");
+    }
+
+    // Build the review JSON payload
+    let comment_values: Vec<serde_json::Value> = comments
+        .iter()
+        .map(|(path, line, body)| {
+            serde_json::json!({
+                "path": path,
+                "line": line,
+                "side": "RIGHT",
+                "body": body
+            })
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "commit_id": commit_id,
+        "event": "COMMENT",
+        "body": "",
+        "comments": comment_values
+    });
+
+    // Write to temp file and pass via --input
+    let tmp_path = format!("/tmp/er_review_payload_{}.json", std::process::id());
+    std::fs::write(&tmp_path, serde_json::to_string(&payload)?)
+        .context("Failed to write review payload")?;
+
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &format!("repos/{}/{}/pulls/{}/reviews", owner, repo, pr),
+            "--input",
+            &tmp_path,
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to submit PR review")?;
+
+    let _ = std::fs::remove_file(&tmp_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to submit review: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+/// Submit a batch PR review with multiple comments on a remote PR (no local repo required).
+pub fn gh_pr_submit_review_remote(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    comments: &[(String, usize, String)],
+) -> Result<()> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let sha_output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "headRefOid",
+            "--jq",
+            ".headRefOid",
+        ])
+        .output()
+        .context("Failed to get PR head SHA")?;
+
+    if !sha_output.status.success() {
+        let stderr = String::from_utf8_lossy(&sha_output.stderr);
+        anyhow::bail!("Failed to get HEAD SHA: {}", stderr.trim());
+    }
+
+    let commit_id = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+    if commit_id.is_empty() {
+        anyhow::bail!("Failed to get HEAD SHA: empty output");
+    }
+
+    let comment_values: Vec<serde_json::Value> = comments
+        .iter()
+        .map(|(path, line, body)| {
+            serde_json::json!({
+                "path": path,
+                "line": line,
+                "side": "RIGHT",
+                "body": body
+            })
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "commit_id": commit_id,
+        "event": "COMMENT",
+        "body": "",
+        "comments": comment_values
+    });
+
+    let tmp_path = format!("/tmp/er_review_payload_{}.json", std::process::id());
+    std::fs::write(&tmp_path, serde_json::to_string(&payload)?)
+        .context("Failed to write review payload")?;
+
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &format!("repos/{}/{}/pulls/{}/reviews", owner, repo, pr),
+            "--input",
+            &tmp_path,
+        ])
+        .output()
+        .context("Failed to submit PR review")?;
+
+    let _ = std::fs::remove_file(&tmp_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to submit review: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
+/// Post a general comment on a PR (not attached to any file/line).
+/// Uses the Issues API — PRs are issues in GitHub.
+pub fn gh_pr_general_comment(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    body: &str,
+    repo_root: &str,
+) -> Result<u64> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &format!("repos/{}/{}/issues/{}/comments", owner, repo, pr),
+            "-f",
+            &format!("body={}", body),
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to post general PR comment")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to post general comment: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resp: CreateCommentResponse =
+        serde_json::from_str(&stdout).context("Failed to parse general comment response")?;
+
+    Ok(resp.id)
+}
+
+/// Post a general comment on a remote PR (no local repo required).
+pub fn gh_pr_general_comment_remote(owner: &str, repo: &str, pr: u64, body: &str) -> Result<u64> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "POST",
+            &format!("repos/{}/{}/issues/{}/comments", owner, repo, pr),
+            "-f",
+            &format!("body={}", body),
+        ])
+        .output()
+        .context("Failed to post general PR comment")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to post general comment: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resp: CreateCommentResponse =
+        serde_json::from_str(&stdout).context("Failed to parse general comment response")?;
+
+    Ok(resp.id)
+}
+
 /// Push a reply to an existing review comment on a remote PR.
 pub fn gh_pr_reply_comment_remote(
     owner: &str,

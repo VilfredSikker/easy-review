@@ -904,6 +904,50 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
         }
         lines.push(Line::from(""));
     }
+
+    // General PR comments (those with empty file field)
+    let general_comments: Vec<_> = tab
+        .ai
+        .github_comments
+        .as_ref()
+        .map(|gc| {
+            gc.comments
+                .iter()
+                .filter(|c| c.file.is_empty() && c.in_reply_to.is_none())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if !general_comments.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            " ─── Comments ───",
+            Style::default().fg(styles::BORDER()),
+        )]));
+        lines.push(Line::from(""));
+        for c in &general_comments {
+            let author_style = if c.source == "local" && !c.synced {
+                Style::default().fg(styles::CYAN())
+            } else {
+                Style::default().fg(styles::DIM())
+            };
+            lines.push(Line::from(vec![Span::styled(
+                format!(" @{}:", c.author),
+                author_style,
+            )]));
+            for wrapped in word_wrap(&c.comment, max_w.saturating_sub(2)) {
+                let text_style = if c.stale {
+                    Style::default().fg(styles::STALE())
+                } else {
+                    Style::default().fg(styles::TEXT())
+                };
+                lines.push(Line::from(vec![Span::styled(
+                    format!("   {}", wrapped),
+                    text_style,
+                )]));
+            }
+            lines.push(Line::from(""));
+        }
+    }
 }
 
 // ── SymbolRefs ──

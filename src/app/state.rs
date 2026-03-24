@@ -163,6 +163,8 @@ pub enum ConfirmAction {
     },
     /// Confirm approving the PR on GitHub
     ApprovePR,
+    /// Choose how to push comments: as review or individually
+    PushComments,
 }
 
 /// Which pane has focus in split diff view
@@ -285,6 +287,8 @@ pub enum HubAction {
     PromptQuestions,
     /// Approve PR on GitHub
     ApprovePR,
+    /// Post a general comment on the PR (not attached to a file/line)
+    CommentOnPR,
     // Open hub actions
     OpenDirectory,
     OpenWorktree,
@@ -4019,6 +4023,14 @@ impl App {
                 enabled: true,
             },
             HubItem {
+                label: "Comment on PR".into(),
+                hint: "".into(),
+                description: "Post a general comment on the PR (not attached to a line)".into(),
+                action: HubAction::CommentOnPR,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
                 label: "Approve PR".into(),
                 hint: "".into(),
                 description: if self.tab().pr_number.is_some() {
@@ -5456,6 +5468,20 @@ impl App {
         tab.comment_reply_to = None;
         tab.comment_finding_ref = None;
         tab.comment_type = comment_type;
+        self.input_mode = InputMode::Comment;
+    }
+
+    /// Start typing a general PR comment (not attached to any file/line)
+    pub fn start_general_comment(&mut self) {
+        let tab = self.tab_mut();
+        tab.comment_input.clear();
+        tab.comment_file = String::new();
+        tab.comment_hunk = 0;
+        tab.comment_line_num = None;
+        tab.comment_reply_to = None;
+        tab.comment_finding_ref = None;
+        tab.comment_type = CommentType::GitHubComment;
+        tab.comment_edit_id = None;
         self.input_mode = InputMode::Comment;
     }
 
