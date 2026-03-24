@@ -1490,15 +1490,16 @@ impl TabState {
         if let Some(ref path) = prev_path {
             if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
                 self.selected_file = idx;
-                // Restore hunk/line if the file still has enough hunks
+                // Restore hunk/line/scroll within the same file
                 if prev_hunk < self.total_hunks() {
                     self.current_hunk = prev_hunk;
                     self.current_line = prev_line;
-                    self.diff_scroll = prev_scroll;
                 } else {
                     self.clamp_hunk();
-                    self.scroll_to_current_hunk();
                 }
+                // Always restore scroll position when the file is unchanged —
+                // even if hunks shifted, the user's viewport is still meaningful.
+                self.diff_scroll = prev_scroll;
             } else {
                 // File disappeared from diff — clamp index
                 if self.selected_file >= self.files.len() {
