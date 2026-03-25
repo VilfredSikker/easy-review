@@ -662,6 +662,18 @@ fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                 app.notify("Opening PR in browser...");
             }
         }
+        HubAction::CopyFullFile => {
+            app.copy_full_file()?;
+        }
+        HubAction::CopyFilePath => {
+            app.copy_file_path()?;
+        }
+        HubAction::CopyHunk => {
+            app.yank_hunk()?;
+        }
+        HubAction::CopyLine => {
+            app.copy_line()?;
+        }
     }
     Ok(())
 }
@@ -1182,9 +1194,9 @@ fn handle_normal_input(
             return Ok(());
         }
 
-        // Yank hunk — yank_hunk uses tab().files directly, not mode-aware
+        // Copy hub — offers full file, path, hunk, or line copy options
         KeyCode::Char('y') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
-            app.yank_hunk()?;
+            app.open_copy_hub();
             return Ok(());
         }
 

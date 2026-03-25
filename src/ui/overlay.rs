@@ -351,6 +351,7 @@ fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, items: &[HubItem],
         HubKind::Verify => styles::YELLOW(),
         HubKind::Help => styles::CYAN(),
         HubKind::Open => styles::BLUE(),
+        HubKind::Copy => styles::CYAN(),
     };
 
     let list_items: Vec<ListItem> = items

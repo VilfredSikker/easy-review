@@ -230,6 +230,7 @@ pub enum HubKind {
     Verify,
     Help,
     Open,
+    Copy,
 }
 
 impl HubKind {
@@ -240,6 +241,7 @@ impl HubKind {
             HubKind::Verify => "VERIFY",
             HubKind::Help => "HELP",
             HubKind::Open => "OPEN",
+            HubKind::Copy => "COPY",
         }
     }
 }
@@ -294,6 +296,11 @@ pub enum HubAction {
     OpenWorktree,
     OpenRemoteUrl,
     OpenPrInBrowser,
+    // Copy hub actions
+    CopyFullFile,
+    CopyFilePath,
+    CopyHunk,
+    CopyLine,
     // Help — no dispatch, just informational
 }
 
@@ -4222,6 +4229,51 @@ impl App {
         });
     }
 
+    /// Open the Copy modal hub — copy file, path, hunk, or line to clipboard
+    pub fn open_copy_hub(&mut self) {
+        let has_file = !self.tab().files.is_empty();
+        let has_line = has_file && self.tab().current_line.is_some();
+        let items = vec![
+            HubItem {
+                label: "Full file diff".into(),
+                hint: "".into(),
+                description: "Copy all hunks for selected file".into(),
+                action: HubAction::CopyFullFile,
+                is_header: false,
+                enabled: has_file,
+            },
+            HubItem {
+                label: "File path".into(),
+                hint: "".into(),
+                description: "Copy file path to clipboard".into(),
+                action: HubAction::CopyFilePath,
+                is_header: false,
+                enabled: has_file,
+            },
+            HubItem {
+                label: "Hunk".into(),
+                hint: "".into(),
+                description: "Copy current hunk".into(),
+                action: HubAction::CopyHunk,
+                is_header: false,
+                enabled: has_file,
+            },
+            HubItem {
+                label: "Line".into(),
+                hint: "".into(),
+                description: "Copy current line content".into(),
+                action: HubAction::CopyLine,
+                is_header: false,
+                enabled: has_line,
+            },
+        ];
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Copy,
+            items,
+            selected: 0,
+        });
+    }
+
     /// Open the Help modal hub (keybind reference)
     pub fn open_help_hub(&mut self) {
         let items = vec![
@@ -6549,6 +6601,58 @@ impl App {
         let text = self.tab().files[si].hunks[hi].to_text();
         Self::copy_to_clipboard(&text)?;
         self.notify("Hunk copied to clipboard");
+        Ok(())
+    }
+
+    /// Copy all hunks for the selected file in unified diff format
+    pub fn copy_full_file(&mut self) -> Result<()> {
+        let tab = self.tab();
+        if let Some(file) = tab.selected_diff_file() {
+            let mut text = format!("--- a/{}\n+++ b/{}\n", file.path, file.path);
+            for hunk in &file.hunks {
+                text.push_str(&hunk.to_text());
+                text.push('\n');
+            }
+            let count = file.hunks.len();
+            Self::copy_to_clipboard(&text)?;
+            self.notify(&format!("Copied full file diff ({} hunks)", count));
+        } else {
+            self.notify("No file selected");
+        }
+        Ok(())
+    }
+
+    /// Copy the selected file's path to clipboard
+    pub fn copy_file_path(&mut self) -> Result<()> {
+        let tab = self.tab();
+        if let Some(file) = tab.selected_diff_file() {
+            let path = file.path.clone();
+            Self::copy_to_clipboard(&path)?;
+            self.notify(&format!("Copied: {}", path));
+        } else {
+            self.notify("No file selected");
+        }
+        Ok(())
+    }
+
+    /// Copy the current line's content to clipboard (requires line-level navigation)
+    pub fn copy_line(&mut self) -> Result<()> {
+        let tab = self.tab();
+        if let Some(file) = tab.selected_diff_file() {
+            if let Some(line_idx) = tab.current_line {
+                if let Some(hunk) = file.hunks.get(tab.current_hunk) {
+                    if let Some(line) = hunk.lines.get(line_idx) {
+                        let content = line.content.clone();
+                        Self::copy_to_clipboard(&content)?;
+                        self.notify("Line copied to clipboard");
+                        return Ok(());
+                    }
+                }
+            }
+            self.notify("No line selected — use arrow keys to enter line navigation");
+        } else {
+            self.notify("No file selected");
+        }
         Ok(())
     }
 
