@@ -851,9 +851,14 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
         // outside the repository root. The glob crate does not restrict matches to a subtree.
         // After glob expansion, each matched path should be checked to confirm it is still
         // beneath `repo_root` using `path.starts_with(repo_root)` after canonicalization.
-        // If pattern ends with "**", append "/*" so the glob crate matches files
-        // inside directories (Rust glob's "**" alone only yields directory entries).
-        let normalized = if pattern.ends_with("**") {
+        // Normalize patterns so they match files recursively:
+        // - "dir/**" → "dir/**/*" (glob's ** alone yields directories)
+        // - "dir/*"  → "dir/**/*" (user likely wants all files under dir)
+        let normalized = if pattern.ends_with("/**") {
+            format!("{}/*", pattern)
+        } else if pattern.ends_with("/*") {
+            format!("{}*/*", pattern) // dir/* → dir/**/*
+        } else if pattern.ends_with("**") {
             format!("{}/*", pattern)
         } else {
             pattern.clone()

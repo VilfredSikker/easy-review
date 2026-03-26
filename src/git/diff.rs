@@ -14,6 +14,8 @@ pub enum LineType {
     Context,
     Add,
     Delete,
+    /// A folded run of context lines. Carries the count of hidden lines.
+    Fold(usize),
 }
 
 /// A diff hunk with header and lines
@@ -40,6 +42,7 @@ impl DiffHunk {
                 LineType::Add => "+",
                 LineType::Delete => "-",
                 LineType::Context => " ",
+                LineType::Fold(_) => continue,
             };
             text.push_str(prefix);
             text.push_str(&line.content);
@@ -364,6 +367,12 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
         files.push(file);
     }
 
+    for file in &mut files {
+        for hunk in &mut file.hunks {
+            fold_context_lines(&mut hunk.lines, 3);
+        }
+    }
+
     files
 }
 
@@ -413,6 +422,57 @@ fn parse_range(s: &str) -> Option<(usize, usize)> {
     } else {
         Some((s.parse().ok()?, 1))
     }
+}
+
+// ── Context Folding ──
+
+/// Collapse long runs of consecutive context lines within a hunk.
+/// Keeps `keep` lines before and after each change; replaces the middle with a Fold marker.
+/// No-op when a run has `keep * 2` or fewer context lines.
+pub fn fold_context_lines(lines: &mut Vec<DiffLine>, keep: usize) {
+    let min_foldable = keep * 2 + 1;
+    let mut result: Vec<DiffLine> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        if matches!(lines[i].line_type, LineType::Context) {
+            // Find the end of this context run
+            let run_start = i;
+            while i < lines.len() && matches!(lines[i].line_type, LineType::Context) {
+                i += 1;
+            }
+            let run_end = i;
+            let run_len = run_end - run_start;
+
+            if run_len >= min_foldable {
+                // Keep first `keep` lines
+                for line in &lines[run_start..run_start + keep] {
+                    result.push(line.clone());
+                }
+                // Insert fold marker
+                let hidden = run_len - keep * 2;
+                result.push(DiffLine {
+                    line_type: LineType::Fold(hidden),
+                    content: String::new(),
+                    old_num: None,
+                    new_num: None,
+                });
+                // Keep last `keep` lines
+                for line in &lines[run_end - keep..run_end] {
+                    result.push(line.clone());
+                }
+            } else {
+                for line in &lines[run_start..run_end] {
+                    result.push(line.clone());
+                }
+            }
+        } else {
+            result.push(lines[i].clone());
+            i += 1;
+        }
+    }
+
+    *lines = result;
 }
 
 // ── Compaction ──
@@ -1287,5 +1347,88 @@ index aaa..bbb 100644
         assert_eq!(file.dels, 3);
         assert_eq!(file.raw_hunk_count, 2);
         assert!(file.hunks.is_empty());
+    }
+
+    // ── fold_context_lines ──
+
+    fn make_context(n: usize) -> Vec<DiffLine> {
+        (0..n)
+            .map(|i| DiffLine {
+                line_type: LineType::Context,
+                content: format!("ctx {}", i),
+                old_num: Some(i + 1),
+                new_num: Some(i + 1),
+            })
+            .collect()
+    }
+
+    fn make_change() -> DiffLine {
+        DiffLine {
+            line_type: LineType::Add,
+            content: "change".to_string(),
+            old_num: None,
+            new_num: Some(99),
+        }
+    }
+
+    #[test]
+    fn fold_short_run_is_noop() {
+        // 6 context lines: exactly keep*2, should NOT fold
+        let mut lines = make_context(6);
+        fold_context_lines(&mut lines, 3);
+        assert_eq!(lines.len(), 6);
+        assert!(lines.iter().all(|l| l.line_type == LineType::Context));
+    }
+
+    #[test]
+    fn fold_long_run_replaces_middle() {
+        // 10 context lines: should keep 3, fold 4, keep 3 → 7 output lines
+        let mut lines = make_context(10);
+        fold_context_lines(&mut lines, 3);
+        assert_eq!(lines.len(), 7);
+        assert_eq!(lines[0].line_type, LineType::Context);
+        assert_eq!(lines[1].line_type, LineType::Context);
+        assert_eq!(lines[2].line_type, LineType::Context);
+        assert_eq!(lines[3].line_type, LineType::Fold(4));
+        assert_eq!(lines[4].line_type, LineType::Context);
+        assert_eq!(lines[5].line_type, LineType::Context);
+        assert_eq!(lines[6].line_type, LineType::Context);
+    }
+
+    #[test]
+    fn fold_context_between_changes() {
+        // change, 10 context, change → fold the middle context
+        let mut lines = vec![make_change()];
+        lines.extend(make_context(10));
+        lines.push(make_change());
+        fold_context_lines(&mut lines, 3);
+        // 1 change + 3 ctx + fold(4) + 3 ctx + 1 change = 9
+        assert_eq!(lines.len(), 9);
+        assert_eq!(lines[0].line_type, LineType::Add);
+        assert_eq!(lines[4].line_type, LineType::Fold(4));
+        assert_eq!(lines[8].line_type, LineType::Add);
+    }
+
+    #[test]
+    fn fold_preserves_line_content_at_edges() {
+        let mut lines = make_context(10);
+        fold_context_lines(&mut lines, 3);
+        // First 3 context lines should have their original content
+        assert_eq!(lines[0].content, "ctx 0");
+        assert_eq!(lines[1].content, "ctx 1");
+        assert_eq!(lines[2].content, "ctx 2");
+        // Last 3 context lines (originally indices 7, 8, 9)
+        assert_eq!(lines[4].content, "ctx 7");
+        assert_eq!(lines[5].content, "ctx 8");
+        assert_eq!(lines[6].content, "ctx 9");
+    }
+
+    #[test]
+    fn fold_minimum_foldable_run() {
+        // 7 context lines: exactly keep*2+1, should fold 1 line
+        let mut lines = make_context(7);
+        fold_context_lines(&mut lines, 3);
+        assert_eq!(lines.len(), 7); // 3 + fold(1) + 3
+        assert_eq!(lines[3].line_type, LineType::Fold(1));
     }
 }

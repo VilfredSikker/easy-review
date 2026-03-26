@@ -332,6 +332,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
         // Hunk lines
         for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+            // Fold lines are rendered as a single "··· N lines ···" indicator.
+            if let LineType::Fold(hidden) = diff_line.line_type {
+                if logical_line >= render_start && logical_line < render_end {
+                    let fold_text = format!(" ··· {} lines ···", hidden);
+                    let fold_style = ratatui::style::Style::default().fg(styles::MUTED());
+                    lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                }
+                logical_line += 1;
+                continue;
+            }
+
             let is_selected_line = is_current && tab.active_current_line() == Some(line_idx);
 
             let old_num = diff_line
@@ -348,12 +359,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     LineType::Add => ("+", styles::line_cursor_add()),
                     LineType::Delete => ("-", styles::line_cursor_del()),
                     LineType::Context => (" ", styles::line_cursor()),
+                    LineType::Fold(_) => unreachable!(),
                 }
             } else {
                 match diff_line.line_type {
                     LineType::Add => ("+", styles::add_style()),
                     LineType::Delete => ("-", styles::del_style()),
                     LineType::Context => (" ", styles::default_style()),
+                    LineType::Fold(_) => unreachable!(),
                 }
             };
 
@@ -370,6 +383,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         .fg(styles::DIM())
                         .bg(styles::DEL_BG()),
                     LineType::Context => ratatui::style::Style::default().fg(styles::DIM()),
+                    LineType::Fold(_) => unreachable!(),
                 }
             };
 
@@ -995,11 +1009,29 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
         // Hunk lines
         for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+            // Fold lines span both sides; render on New side only, blank on Old side.
+            if let LineType::Fold(hidden) = diff_line.line_type {
+                if logical_line >= render_start && logical_line < render_end {
+                    if side == SplitSide::New {
+                        let fold_text = format!(" ··· {} lines ···", hidden);
+                        let fold_style = ratatui::style::Style::default().fg(styles::MUTED());
+                        lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                    } else {
+                        lines.push(
+                            Line::from("").style(ratatui::style::Style::default().bg(styles::BG())),
+                        );
+                    }
+                }
+                logical_line += 1;
+                continue;
+            }
+
             // Determine if this side should show content or a blank padding line
             let show_content = match diff_line.line_type {
                 LineType::Context => true,
                 LineType::Add => side == SplitSide::New,
                 LineType::Delete => side == SplitSide::Old,
+                LineType::Fold(_) => unreachable!(),
             };
 
             if show_content && wrap_lines && !diff_line.content.is_empty() {
@@ -1019,12 +1051,14 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         LineType::Add => ("+", styles::line_cursor_add()),
                         LineType::Delete => ("-", styles::line_cursor_del()),
                         LineType::Context => (" ", styles::line_cursor()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 } else {
                     match diff_line.line_type {
                         LineType::Add => ("+", styles::add_style()),
                         LineType::Delete => ("-", styles::del_style()),
                         LineType::Context => (" ", styles::default_style()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 };
 
@@ -1041,6 +1075,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                             .fg(styles::DIM())
                             .bg(styles::DEL_BG()),
                         LineType::Context => ratatui::style::Style::default().fg(styles::DIM()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 };
 
@@ -1092,12 +1127,14 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                                 LineType::Add => ("+", styles::line_cursor_add()),
                                 LineType::Delete => ("-", styles::line_cursor_del()),
                                 LineType::Context => (" ", styles::line_cursor()),
+                                LineType::Fold(_) => unreachable!(),
                             }
                         } else {
                             match diff_line.line_type {
                                 LineType::Add => ("+", styles::add_style()),
                                 LineType::Delete => ("-", styles::del_style()),
                                 LineType::Context => (" ", styles::default_style()),
+                                LineType::Fold(_) => unreachable!(),
                             }
                         };
 
@@ -1116,6 +1153,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                                 LineType::Context => {
                                     ratatui::style::Style::default().fg(styles::DIM())
                                 }
+                                LineType::Fold(_) => unreachable!(),
                             }
                         };
 
@@ -1144,6 +1182,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                             LineType::Add => styles::ADD_BG(),
                             LineType::Delete => styles::DEL_BG(),
                             LineType::Context => styles::BG(),
+                            LineType::Fold(_) => unreachable!(),
                         };
                         lines.push(
                             Line::from(Span::styled(
@@ -1162,7 +1201,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             let comment_side = match diff_line.line_type {
                 LineType::Add => SplitSide::New,
                 LineType::Delete => SplitSide::Old,
-                LineType::Context => SplitSide::New,
+                LineType::Context | LineType::Fold(_) => SplitSide::New,
             };
             if side == comment_side {
                 if let Some(new_line_num) = diff_line.new_num {
@@ -1505,6 +1544,13 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 
             // Hunk lines
             for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+                if let LineType::Fold(hidden) = diff_line.line_type {
+                    let fold_text = format!(" ··· {} lines ···", hidden);
+                    let fold_style = ratatui::style::Style::default().fg(styles::MUTED());
+                    lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                    continue;
+                }
+
                 let is_selected_line = is_current_hunk && history.current_line == Some(line_idx);
 
                 let old_num = diff_line
@@ -1521,12 +1567,14 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                         LineType::Add => ("+", styles::line_cursor_add()),
                         LineType::Delete => ("-", styles::line_cursor_del()),
                         LineType::Context => (" ", styles::line_cursor()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 } else {
                     match diff_line.line_type {
                         LineType::Add => ("+", styles::add_style()),
                         LineType::Delete => ("-", styles::del_style()),
                         LineType::Context => (" ", styles::default_style()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 };
 
@@ -1543,6 +1591,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                             .fg(styles::DIM())
                             .bg(styles::DEL_BG()),
                         LineType::Context => ratatui::style::Style::default().fg(styles::DIM()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 };
 
@@ -2213,10 +2262,19 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                         );
 
                         for diff_line in &hunk.lines {
+                            if let LineType::Fold(hidden) = diff_line.line_type {
+                                let fold_text = format!(" ··· {} lines ···", hidden);
+                                let fold_style =
+                                    ratatui::style::Style::default().fg(styles::MUTED());
+                                lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                                continue;
+                            }
+
                             let (prefix, base_style) = match diff_line.line_type {
                                 LineType::Add => ("+", styles::add_style()),
                                 LineType::Delete => ("-", styles::del_style()),
                                 LineType::Context => (" ", styles::default_style()),
+                                LineType::Fold(_) => unreachable!(),
                             };
                             let gutter_style = match diff_line.line_type {
                                 LineType::Add => ratatui::style::Style::default()
@@ -2228,6 +2286,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                                 LineType::Context => {
                                     ratatui::style::Style::default().fg(styles::DIM())
                                 }
+                                LineType::Fold(_) => unreachable!(),
                             };
                             let old_num = diff_line
                                 .old_num

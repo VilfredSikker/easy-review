@@ -2307,6 +2307,15 @@ impl TabState {
         }
     }
 
+    /// Returns true if the line at `idx` in the current hunk is a Fold marker.
+    fn is_fold_line(&self, idx: usize) -> bool {
+        self.selected_diff_file()
+            .and_then(|f| f.hunks.get(self.current_hunk))
+            .and_then(|h| h.lines.get(idx))
+            .map(|l| matches!(l.line_type, crate::git::LineType::Fold(_)))
+            .unwrap_or(false)
+    }
+
     /// Move to the next line within the current hunk (arrow down)
     pub fn next_line(&mut self) {
         self.selection_anchor = None;
@@ -2316,13 +2325,33 @@ impl TabState {
         }
         match self.current_line {
             None => {
-                self.current_line = Some(0);
+                // Find the first non-Fold line
+                let mut idx = 0;
+                while idx < total_lines && self.is_fold_line(idx) {
+                    idx += 1;
+                }
+                self.current_line = if idx < total_lines { Some(idx) } else { None };
                 self.scroll_to_current_hunk();
             }
             Some(line) => {
                 if line + 1 < total_lines {
-                    self.current_line = Some(line + 1);
-                    self.scroll_to_current_hunk();
+                    // Skip Fold lines forward
+                    let mut next = line + 1;
+                    while next < total_lines && self.is_fold_line(next) {
+                        next += 1;
+                    }
+                    if next < total_lines {
+                        self.current_line = Some(next);
+                        self.scroll_to_current_hunk();
+                    } else {
+                        // Reached end of hunk — move to next hunk
+                        let total_hunks = self.total_hunks();
+                        if self.current_hunk + 1 < total_hunks {
+                            self.current_hunk += 1;
+                            self.current_line = Some(0);
+                            self.scroll_to_current_hunk();
+                        }
+                    }
                 } else {
                     let total_hunks = self.total_hunks();
                     if self.current_hunk + 1 < total_hunks {
@@ -2340,10 +2369,18 @@ impl TabState {
         self.selection_anchor = None;
         match self.current_line {
             None => {
-                // Enter line mode at the last line of the current hunk
+                // Enter line mode at the last non-Fold line of the current hunk
                 let count = self.current_hunk_line_count();
                 if count > 0 {
-                    self.current_line = Some(count - 1);
+                    let mut idx = count - 1;
+                    while idx > 0 && self.is_fold_line(idx) {
+                        idx -= 1;
+                    }
+                    self.current_line = if !self.is_fold_line(idx) {
+                        Some(idx)
+                    } else {
+                        None
+                    };
                     self.scroll_to_current_hunk();
                 }
             }
@@ -2351,14 +2388,36 @@ impl TabState {
                 if self.current_hunk > 0 {
                     self.current_hunk -= 1;
                     let count = self.current_hunk_line_count();
-                    self.current_line = if count > 0 { Some(count - 1) } else { None };
+                    if count > 0 {
+                        let mut idx = count - 1;
+                        while idx > 0 && self.is_fold_line(idx) {
+                            idx -= 1;
+                        }
+                        self.current_line = if !self.is_fold_line(idx) {
+                            Some(idx)
+                        } else {
+                            None
+                        };
+                    } else {
+                        self.current_line = None;
+                    }
                     self.scroll_to_current_hunk();
                 } else {
                     self.current_line = None;
                 }
             }
             Some(line) => {
-                self.current_line = Some(line - 1);
+                // Skip Fold lines backward
+                let mut prev = line - 1;
+                while prev > 0 && self.is_fold_line(prev) {
+                    prev -= 1;
+                }
+                self.current_line = if !self.is_fold_line(prev) {
+                    Some(prev)
+                } else {
+                    // All lines above are Folds — exit line mode
+                    None
+                };
                 self.scroll_to_current_hunk();
             }
         }
@@ -4997,6 +5056,9 @@ impl App {
         if let Err(e) = config::save_config_local(&self.config, &repo_root) {
             self.notify(&format!("Failed to save: {}", e));
         } else {
+            // Sync watched config to active tab so W key sees updated paths
+            self.tab_mut().watched_config = self.config.watched.clone();
+            self.tab_mut().refresh_watched_files();
             self.notify("Config saved to .er-config.toml");
             self.overlay = None;
         }
@@ -5007,6 +5069,9 @@ impl App {
         if let Err(e) = config::save_config(&self.config) {
             self.notify(&format!("Failed to save: {}", e));
         } else {
+            // Sync watched config to active tab so W key sees updated paths
+            self.tab_mut().watched_config = self.config.watched.clone();
+            self.tab_mut().refresh_watched_files();
             self.notify("Config saved globally");
             self.overlay = None;
         }
@@ -6732,6 +6797,7 @@ impl App {
                 crate::git::LineType::Add => "+",
                 crate::git::LineType::Delete => "-",
                 crate::git::LineType::Context => " ",
+                crate::git::LineType::Fold(_) => continue,
             };
             text.push_str(&format!("{}{}\n", prefix, line.content));
         }
