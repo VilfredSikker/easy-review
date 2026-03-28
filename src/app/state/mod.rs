@@ -299,6 +299,10 @@ pub enum HubAction {
     PromptReview,
     /// Run AI question answering via configured agent command
     PromptQuestions,
+    /// Run quiz generation via configured agent command
+    PromptQuiz,
+    /// Run quiz answer review via configured agent command
+    PromptQuizReview,
     /// Approve PR on GitHub
     ApprovePR,
     /// Post a general comment on the PR (not attached to a file/line)
@@ -3065,6 +3069,10 @@ impl App {
     pub fn open_ai_hub(&mut self) {
         let has_ai = self.tab().ai.has_data();
         let has_review = self.tab().ai.review.is_some();
+        let has_quiz = self.tab().ai.quiz.is_some();
+        let has_quiz_answers = std::path::Path::new(&self.tab().repo_root)
+            .join(".er/quiz-answers.json")
+            .exists();
         let has_questions = self
             .tab()
             .ai
@@ -3103,6 +3111,30 @@ impl App {
                 action: HubAction::PromptQuestions,
                 is_header: false,
                 enabled: has_unresolved_questions,
+            },
+            HubItem {
+                label: format!("Generate quiz ({})", agent_name),
+                hint: "".into(),
+                description: if has_quiz {
+                    "Regenerate quiz questions from diff + review".into()
+                } else {
+                    "Generate comprehension quiz from current diff".into()
+                },
+                action: HubAction::PromptQuiz,
+                is_header: false,
+                enabled: has_review,
+            },
+            HubItem {
+                label: format!("Review quiz answers ({})", agent_name),
+                hint: "".into(),
+                description: if has_quiz_answers {
+                    "Get AI feedback on your quiz answers".into()
+                } else {
+                    "No quiz answers to review — take the quiz first (key 8)".into()
+                },
+                action: HubAction::PromptQuizReview,
+                is_header: false,
+                enabled: has_quiz_answers,
             },
             HubItem {
                 label: "Copy context to clipboard".into(),

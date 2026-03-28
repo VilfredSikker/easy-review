@@ -238,6 +238,16 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 }
             }
         }
+        HubAction::PromptQuiz => {
+            if let Some(prompt) = build_agent_quiz_prompt(app) {
+                app.spawn_agent_prompt("quiz", &prompt)?;
+            }
+        }
+        HubAction::PromptQuizReview => {
+            if let Some(prompt) = build_agent_quiz_review_prompt(app) {
+                app.spawn_agent_prompt("quiz-review", &prompt)?;
+            }
+        }
         HubAction::OpenDirectory => {
             app.open_directory_browser();
         }
@@ -611,6 +621,52 @@ pub(super) fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
         ),
         _ => {
             app.notify("AI questions not available in this mode");
+            None
+        }
+    }
+}
+
+/// Build the quiz generation agent prompt.
+pub(super) fn build_agent_quiz_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    let er_dir = tab.er_dir();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => Some(
+            format!("/er-quiz {} {} --output {}", mode.git_mode(), base, er_dir),
+        ),
+        _ => {
+            app.notify("Quiz generation not available in this mode");
+            None
+        }
+    }
+}
+
+/// Build the quiz answer review agent prompt.
+pub(super) fn build_agent_quiz_review_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    let er_dir = tab.er_dir();
+    let answers_path = format!("{}/quiz-answers.json", er_dir);
+    if !std::path::Path::new(&answers_path).exists() {
+        app.notify("No quiz answers found — take the quiz first (key 8)");
+        return None;
+    }
+    match mode {
+        DiffMode::Branch
+        | DiffMode::Unstaged
+        | DiffMode::Staged
+        | DiffMode::Wizard
+        | DiffMode::Quiz => Some(format!(
+            "/er-quiz-review {} {} --output {}",
+            mode.git_mode(),
+            base,
+            er_dir
+        )),
+        _ => {
+            app.notify("Quiz review not available in this mode");
             None
         }
     }
