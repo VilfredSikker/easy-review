@@ -1,3 +1,5 @@
+use super::comments::{ErFeedback, ErGitHubComments, ErQuestions};
+use super::quiz::ErQuiz;
 use super::review::*;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
