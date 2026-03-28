@@ -53,8 +53,10 @@ Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
 ## Guidelines
 
 - The summary should be useful to someone who hasn't read the diff yet
-- Focus on *what matters*, not on listing every file that changed
+- Focus on breaking changes, logic changes, and security implications (P0/P1)
+- **Do not mention** cosmetic changes (naming, formatting, import reordering, file moves) unless they are the only changes in the diff
 - If there are human comments in feedback, incorporate their insights
 - Keep it under 30 lines — it's rendered in a TUI
 - The diff_hash is NOT stored in the markdown file (it's the only .er/ file without one)
 - Write in second person: "You should review..." not "The reviewer should..."
+- See `skills/REVIEW_PHILOSOPHY.md` for what counts as P0/P1 vs cosmetic

@@ -617,6 +617,62 @@ struct CommentIndexData {
     file_comment_counts: HashMap<String, (usize, usize)>,
 }
 
+// ── .er/quiz.json ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErQuiz {
+    pub version: u32,
+    pub diff_hash: String,
+    #[serde(default)]
+    pub questions: Vec<QuizQuestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuizQuestion {
+    pub id: String,
+    #[serde(default = "default_quiz_level")]
+    pub level: u8,
+    #[serde(default)]
+    pub category: String,
+    pub text: String,
+    #[serde(default)]
+    pub options: Option<Vec<QuizOption>>,
+    #[serde(default)]
+    pub freeform: bool,
+    #[serde(default)]
+    pub expected_reasoning: String,
+    #[serde(default)]
+    pub explanation: String,
+    #[serde(default)]
+    pub related_file: String,
+    pub related_hunk: Option<usize>,
+    #[serde(default)]
+    pub related_lines: Option<(usize, usize)>,
+}
+
+fn default_quiz_level() -> u8 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuizOption {
+    pub label: char,
+    pub text: String,
+    #[serde(default)]
+    pub is_correct: bool,
+}
+
+impl ErQuiz {
+    /// Get questions related to a specific file
+    #[allow(dead_code)]
+    pub fn questions_for_file(&self, file: &str) -> Vec<&QuizQuestion> {
+        self.questions
+            .iter()
+            .filter(|q| q.related_file == file)
+            .collect()
+    }
+}
+
 // ── Aggregate AI state for a tab ──
 
 /// All loaded AI data for a single repo tab
@@ -631,6 +687,8 @@ pub struct AiState {
     pub github_comments: Option<ErGitHubComments>,
     /// Legacy feedback (kept for migration, not used for new comments)
     pub feedback: Option<ErFeedback>,
+    /// Quiz questions (.er/quiz.json)
+    pub quiz: Option<ErQuiz>,
     /// Whether the loaded data matches the current diff
     pub is_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
@@ -650,6 +708,7 @@ impl Default for AiState {
             questions: None,
             github_comments: None,
             feedback: None,
+            quiz: None,
             is_stale: false,
             stale_files: HashSet::new(),
             comment_index: RefCell::new(None),
@@ -2546,5 +2605,106 @@ mod tests {
         assert_eq!(ordered.len(), 1);
         assert_eq!(ordered[0].1, Some(0));
         assert_eq!(ordered[0].3, "f_some");
+    }
+
+    // ── ErQuiz / QuizQuestion ──
+
+    fn make_quiz_json() -> &'static str {
+        r#"{
+          "version": 1,
+          "diff_hash": "abc123",
+          "questions": [
+            {
+              "id": "q1",
+              "level": 2,
+              "category": "design-decisions",
+              "text": "Why was HS256 changed to RS256?",
+              "options": [
+                {"label": "A", "text": "Performance", "is_correct": false},
+                {"label": "B", "text": "Key separation", "is_correct": true},
+                {"label": "C", "text": "Shorter tokens", "is_correct": false},
+                {"label": "D", "text": "Compatibility", "is_correct": false}
+              ],
+              "freeform": false,
+              "explanation": "RS256 uses asymmetric keys...",
+              "related_file": "src/auth.rs",
+              "related_hunk": 0,
+              "related_lines": [10, 15]
+            },
+            {
+              "id": "q2",
+              "level": 3,
+              "category": "impact-risk",
+              "text": "What risks does this algorithm change introduce?",
+              "freeform": true,
+              "expected_reasoning": "Key management complexity...",
+              "explanation": "Moving to RS256 requires...",
+              "related_file": "src/auth.rs"
+            }
+          ]
+        }"#
+    }
+
+    #[test]
+    fn test_quiz_deserialize() {
+        let quiz: ErQuiz = serde_json::from_str(make_quiz_json()).unwrap();
+        assert_eq!(quiz.version, 1);
+        assert_eq!(quiz.diff_hash, "abc123");
+        assert_eq!(quiz.questions.len(), 2);
+    }
+
+    #[test]
+    fn test_quiz_question_mc() {
+        let quiz: ErQuiz = serde_json::from_str(make_quiz_json()).unwrap();
+        let q = &quiz.questions[0];
+        assert_eq!(q.id, "q1");
+        assert_eq!(q.level, 2);
+        assert_eq!(q.category, "design-decisions");
+        assert!(!q.freeform);
+        let options = q.options.as_ref().unwrap();
+        assert_eq!(options.len(), 4);
+        let correct: Vec<_> = options.iter().filter(|o| o.is_correct).collect();
+        assert_eq!(correct.len(), 1);
+        assert_eq!(correct[0].label, 'B');
+        assert_eq!(q.related_file, "src/auth.rs");
+        assert_eq!(q.related_hunk, Some(0));
+        assert_eq!(q.related_lines, Some((10, 15)));
+    }
+
+    #[test]
+    fn test_quiz_question_freeform() {
+        let quiz: ErQuiz = serde_json::from_str(make_quiz_json()).unwrap();
+        let q = &quiz.questions[1];
+        assert_eq!(q.id, "q2");
+        assert!(q.freeform);
+        assert!(q.options.is_none());
+        assert!(!q.expected_reasoning.is_empty());
+        assert_eq!(q.related_file, "src/auth.rs");
+        assert_eq!(q.related_hunk, None);
+    }
+
+    #[test]
+    fn test_quiz_option_defaults() {
+        let json = r#"{
+          "version": 1,
+          "diff_hash": "x",
+          "questions": [{
+            "id": "q3",
+            "text": "Minimal question",
+            "options": [{"label": "A", "text": "Option A"}]
+          }]
+        }"#;
+        let quiz: ErQuiz = serde_json::from_str(json).unwrap();
+        let opts = quiz.questions[0].options.as_ref().unwrap();
+        assert!(!opts[0].is_correct, "is_correct should default to false");
+    }
+
+    #[test]
+    fn test_questions_for_file() {
+        let quiz: ErQuiz = serde_json::from_str(make_quiz_json()).unwrap();
+        let auth_qs = quiz.questions_for_file("src/auth.rs");
+        assert_eq!(auth_qs.len(), 2);
+        let other_qs = quiz.questions_for_file("src/other.rs");
+        assert!(other_qs.is_empty());
     }
 }

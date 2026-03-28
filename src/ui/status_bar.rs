@@ -216,6 +216,19 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             mode_style(DiffMode::Hidden, tab.mode),
         ));
     }
+    if app.config.features.view_wizard && show_all_modes && tab.ai.review.is_some() {
+        modes.push(Span::raw(" "));
+        modes.push(Span::styled(" 7 ", mode_style(DiffMode::Wizard, tab.mode)));
+        modes.push(Span::styled(
+            " WIZARD ",
+            mode_style(DiffMode::Wizard, tab.mode),
+        ));
+    }
+    if app.config.features.view_quiz && show_all_modes {
+        modes.push(Span::raw(" "));
+        modes.push(Span::styled(" 8 ", mode_style(DiffMode::Quiz, tab.mode)));
+        modes.push(Span::styled(" QUIZ ", mode_style(DiffMode::Quiz, tab.mode)));
+    }
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(
@@ -300,6 +313,105 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         };
         right.push(Span::styled(panel_label, panel_style));
         right.push(Span::raw("  "));
+    }
+
+    // Wizard mode: show risk summary + progress
+    if tab.mode == DiffMode::Wizard {
+        if let Some(ref wizard) = tab.wizard {
+            // Count files by risk level
+            let mut high = 0usize;
+            let mut med = 0usize;
+            let mut low = 0usize;
+            if let Some(ref review) = tab.ai.review {
+                for path in &wizard.ordered_files {
+                    if let Some(fr) = review.files.get(path) {
+                        match fr.risk {
+                            crate::ai::RiskLevel::High => high += 1,
+                            crate::ai::RiskLevel::Medium => med += 1,
+                            crate::ai::RiskLevel::Low => low += 1,
+                            crate::ai::RiskLevel::Info => {}
+                        }
+                    }
+                }
+            }
+            if high > 0 {
+                right.push(Span::styled(
+                    format!(" \u{25cf} HIGH({}) ", high),
+                    ratatui::style::Style::default().fg(styles::RED_TEXT()),
+                ));
+            }
+            if med > 0 {
+                right.push(Span::styled(
+                    format!(" \u{25cf} MED({}) ", med),
+                    ratatui::style::Style::default().fg(styles::ORANGE()),
+                ));
+            }
+            if low > 0 {
+                right.push(Span::styled(
+                    format!(" \u{25cf} LOW({}) ", low),
+                    ratatui::style::Style::default().fg(styles::YELLOW()),
+                ));
+            }
+            if wizard.hidden_count > 0 {
+                right.push(Span::styled(
+                    format!(" {} hidden ", wizard.hidden_count),
+                    ratatui::style::Style::default().fg(styles::MUTED()),
+                ));
+            }
+            right.push(Span::styled(
+                format!(
+                    " {}/{} reviewed ",
+                    wizard.completed.len(),
+                    wizard.ordered_files.len()
+                ),
+                ratatui::style::Style::default().fg(styles::BLUE()),
+            ));
+            right.push(Span::raw(" "));
+        }
+    }
+
+    // Quiz mode: show score and progress
+    if tab.mode == DiffMode::Quiz {
+        if let Some(ref quiz) = tab.quiz {
+            let (correct, attempted) = quiz.score;
+            let total = quiz.questions.len();
+            let visible = tab.quiz_visible_indices().len();
+            let pct = if attempted > 0 {
+                (correct * 100) / attempted
+            } else {
+                0
+            };
+            let current_num = tab
+                .quiz_visible_indices()
+                .iter()
+                .position(|&i| i == quiz.current)
+                .unwrap_or(0)
+                + 1;
+
+            right.push(Span::styled(
+                format!(" Score: {}/{} ({}%) ", correct, attempted, pct),
+                ratatui::style::Style::default().fg(styles::CYAN()),
+            ));
+            right.push(Span::styled(
+                format!(" Q {} of {} ", current_num, visible),
+                ratatui::style::Style::default().fg(styles::BLUE()),
+            ));
+            let level_label = match quiz.filter_level {
+                None => "All".to_string(),
+                Some(l) => format!("L{}", l),
+            };
+            right.push(Span::styled(
+                format!(" Level: {} ", level_label),
+                ratatui::style::Style::default().fg(styles::DIM()),
+            ));
+            if total != visible {
+                right.push(Span::styled(
+                    format!(" ({}  filtered) ", total - visible),
+                    ratatui::style::Style::default().fg(styles::MUTED()),
+                ));
+            }
+            right.push(Span::raw(" "));
+        }
     }
 
     // Show conflict status badge when in Conflicts mode

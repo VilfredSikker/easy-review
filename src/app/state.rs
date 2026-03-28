@@ -36,6 +36,8 @@ pub enum DiffMode {
     History,
     Conflicts,
     Hidden,
+    Wizard,
+    Quiz,
 }
 
 impl DiffMode {
@@ -48,6 +50,8 @@ impl DiffMode {
             DiffMode::History => "HISTORY",
             DiffMode::Conflicts => "CONFLICTS",
             DiffMode::Hidden => "HIDDEN",
+            DiffMode::Wizard => "WIZARD",
+            DiffMode::Quiz => "QUIZ",
         }
     }
 
@@ -59,6 +63,9 @@ impl DiffMode {
             DiffMode::History => "history",
             DiffMode::Conflicts => "conflicts",
             DiffMode::Hidden => "hidden",
+            // Wizard and Quiz reuse branch diff data
+            DiffMode::Wizard => "branch",
+            DiffMode::Quiz => "branch",
         }
     }
 }
@@ -553,6 +560,12 @@ pub struct TabState {
 
     /// Whether the agent log panel auto-scrolls to the latest entry
     pub agent_log_auto_scroll: bool,
+
+    /// Wizard mode state (only populated when mode == Wizard)
+    pub wizard: Option<WizardState>,
+
+    /// Quiz mode state (only populated when mode == Quiz)
+    pub quiz: Option<QuizState>,
 }
 
 /// A single reference to a symbol (file + line)
@@ -570,6 +583,54 @@ pub struct SymbolRefsState {
     pub in_diff: Vec<SymbolRefEntry>,
     pub external: Vec<SymbolRefEntry>,
     pub cursor: usize,
+}
+
+/// State for the review wizard mode
+pub struct WizardState {
+    /// File paths in review order (filtered: Info with no findings excluded)
+    pub ordered_files: Vec<String>,
+    /// Index into ordered_files (which file is currently selected)
+    pub current_step: usize,
+    /// Files marked reviewed in wizard mode
+    pub completed: HashSet<String>,
+    /// Number of files hidden (Info risk with no findings)
+    pub hidden_count: usize,
+    /// Whether to show hidden Info files
+    pub show_hidden: bool,
+}
+
+/// State for review quiz mode
+pub struct QuizState {
+    /// All questions from the quiz (unfiltered)
+    pub questions: Vec<crate::ai::QuizQuestion>,
+    /// Index of the currently selected question
+    pub current: usize,
+    /// Answers keyed by question id
+    pub answers: HashMap<String, QuizAnswer>,
+    /// (correct, attempted) score
+    pub score: (usize, usize),
+    /// Filter by difficulty level (None = all)
+    pub filter_level: Option<u8>,
+    /// Filter by category (None = all)
+    pub filter_category: Option<String>,
+    /// Whether in freeform text input mode
+    pub input_mode: QuizInputMode,
+    /// Text buffer for freeform answer
+    pub input_buffer: String,
+    /// Whether to show the explanation for the current question
+    pub show_explanation: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum QuizAnswer {
+    Choice(char),
+    Freeform(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuizInputMode {
+    Navigating,
+    AnsweringFreeform,
 }
 
 // ── Session Persistence ──
@@ -866,6 +927,8 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
+            wizard: None,
+            quiz: None,
         };
 
         // Build hunk offsets for initial selection
@@ -963,6 +1026,8 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
+            wizard: None,
+            quiz: None,
         };
 
         tab.refresh_diff()?;
@@ -1058,6 +1123,8 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
+            wizard: None,
+            quiz: None,
         }
     }
 
@@ -1997,7 +2064,10 @@ impl TabState {
 
         // Phase 1: Apply filter rules
         if !self.filter_rules.is_empty() {
-            visible.retain(|(_, f)| super::filter::apply_filter(&self.filter_rules, f));
+            let review = self.ai.review.as_ref();
+            visible.retain(|(_, f)| {
+                super::filter::apply_filter_with_review(&self.filter_rules, f, review)
+            });
         }
 
         // Phase 2: Apply search query (uses pre-lowercased query to avoid per-call allocation)
@@ -3332,6 +3402,23 @@ impl TabState {
                 if !self.watched_files.is_empty() {
                     self.selected_watched = Some(0);
                 }
+            } else if mode == DiffMode::Wizard {
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selected_watched = None;
+                self.diff_scroll = 0;
+                // In wizard mode, reuse the branch diff but build wizard state
+                let _ = self.refresh_diff_mode_switch();
+                self.enter_wizard_mode();
+                // Auto-open context panel
+                self.panel = Some(crate::ai::PanelContent::AiSummary);
+            } else if mode == DiffMode::Quiz {
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selected_watched = None;
+                self.diff_scroll = 0;
+                let _ = self.refresh_diff_mode_switch();
+                self.enter_quiz_mode();
             } else {
                 self.current_hunk = 0;
                 self.current_line = None;
@@ -3358,6 +3445,361 @@ impl TabState {
                 self.scroll_to_current_hunk();
             }
         }
+    }
+
+    /// Initialize wizard state from AI review data.
+    /// Builds ordered file list, filters Info files with no findings, sets hidden_count.
+    pub fn enter_wizard_mode(&mut self) {
+        // Build ordered list from ErOrder if available, else use diff file order
+        let ordered: Vec<String> = if let Some(ref order) = self.ai.order {
+            order.order.iter().map(|e| e.path.clone()).collect()
+        } else {
+            self.files.iter().map(|f| f.path.clone()).collect()
+        };
+
+        // Filter: exclude Info-risk files with no findings (hide them)
+        let mut visible_files: Vec<String> = Vec::new();
+        let mut hidden_count = 0usize;
+
+        for path in &ordered {
+            let should_hide = if let Some(ref review) = self.ai.review {
+                if let Some(fr) = review.files.get(path) {
+                    fr.risk == crate::ai::RiskLevel::Info && fr.findings.is_empty()
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if should_hide {
+                hidden_count += 1;
+            } else {
+                visible_files.push(path.clone());
+            }
+        }
+
+        // Also include files in diff that weren't in the order list
+        for file in &self.files {
+            if !ordered.contains(&file.path) {
+                visible_files.push(file.path.clone());
+            }
+        }
+
+        // Set selected_file to first wizard file
+        if let Some(first) = visible_files.first() {
+            if let Some(idx) = self.files.iter().position(|f| &f.path == first) {
+                self.selected_file = idx;
+            }
+        }
+
+        self.wizard = Some(WizardState {
+            ordered_files: visible_files,
+            current_step: 0,
+            completed: HashSet::new(),
+            hidden_count,
+            show_hidden: false,
+        });
+    }
+
+    /// Mark the current wizard file as reviewed and advance to the next unreviewed file.
+    pub fn wizard_mark_reviewed(&mut self) {
+        let wizard = match self.wizard.as_mut() {
+            Some(w) => w,
+            None => return,
+        };
+
+        if wizard.current_step < wizard.ordered_files.len() {
+            let path = wizard.ordered_files[wizard.current_step].clone();
+            wizard.completed.insert(path.clone());
+            // Also mark in the main reviewed map
+            let hash = self
+                .current_per_file_hashes
+                .get(&path)
+                .cloned()
+                .unwrap_or_default();
+            self.reviewed.insert(path, hash);
+        }
+
+        self.wizard_next_unreviewed();
+    }
+
+    /// Advance to the next unreviewed file in wizard order.
+    pub fn wizard_next_unreviewed(&mut self) {
+        let wizard = match self.wizard.as_mut() {
+            Some(w) => w,
+            None => return,
+        };
+
+        let len = wizard.ordered_files.len();
+        if len == 0 {
+            return;
+        }
+
+        // Find next unreviewed file after current_step
+        let start = (wizard.current_step + 1) % len;
+        for i in 0..len {
+            let idx = (start + i) % len;
+            let path = &wizard.ordered_files[idx];
+            if !wizard.completed.contains(path) {
+                wizard.current_step = idx;
+                // Update selected_file to match
+                if let Some(file_idx) = self.files.iter().position(|f| &f.path == path) {
+                    self.selected_file = file_idx;
+                    self.current_hunk = 0;
+                    self.diff_scroll = 0;
+                }
+                return;
+            }
+        }
+        // All reviewed — stay at current
+    }
+
+    // ── Quiz Mode ──
+
+    /// Initialize quiz state from loaded quiz data.
+    pub fn enter_quiz_mode(&mut self) {
+        let questions = match &self.ai.quiz {
+            Some(q) => q.questions.clone(),
+            None => return,
+        };
+
+        // Select the first question's related file in the diff view
+        if let Some(first) = questions.first() {
+            if !first.related_file.is_empty() {
+                if let Some(idx) = self.files.iter().position(|f| f.path == first.related_file) {
+                    self.selected_file = idx;
+                    if let Some(hunk) = first.related_hunk {
+                        if hunk < self.total_hunks() {
+                            self.current_hunk = hunk;
+                        }
+                    }
+                    self.diff_scroll = 0;
+                    self.scroll_to_current_hunk();
+                }
+            }
+        }
+
+        self.quiz = Some(QuizState {
+            questions,
+            current: 0,
+            answers: HashMap::new(),
+            score: (0, 0),
+            filter_level: None,
+            filter_category: None,
+            input_mode: QuizInputMode::Navigating,
+            input_buffer: String::new(),
+            show_explanation: false,
+        });
+    }
+
+    /// Get the filtered question indices based on current filter settings.
+    pub fn quiz_visible_indices(&self) -> Vec<usize> {
+        let quiz = match &self.quiz {
+            Some(q) => q,
+            None => return Vec::new(),
+        };
+        quiz.questions
+            .iter()
+            .enumerate()
+            .filter(|(_, q)| {
+                if let Some(level) = quiz.filter_level {
+                    if q.level != level {
+                        return false;
+                    }
+                }
+                if let Some(ref cat) = quiz.filter_category {
+                    if &q.category != cat {
+                        return false;
+                    }
+                }
+                true
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Navigate to next question (within filtered list).
+    pub fn quiz_next(&mut self) {
+        let visible = self.quiz_visible_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let quiz = match &self.quiz {
+            Some(q) => q,
+            None => return,
+        };
+        let current_pos = visible.iter().position(|&i| i == quiz.current);
+        let next_pos = match current_pos {
+            Some(p) if p + 1 < visible.len() => p + 1,
+            _ => 0,
+        };
+        let next_idx = visible[next_pos];
+        if let Some(q) = self.quiz.as_mut() {
+            q.current = next_idx;
+            q.show_explanation = false;
+        }
+        self.quiz_sync_diff_view();
+    }
+
+    /// Navigate to previous question (within filtered list).
+    pub fn quiz_prev(&mut self) {
+        let visible = self.quiz_visible_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let quiz = match &self.quiz {
+            Some(q) => q,
+            None => return,
+        };
+        let current_pos = visible.iter().position(|&i| i == quiz.current);
+        let prev_pos = match current_pos {
+            Some(0) | None => visible.len().saturating_sub(1),
+            Some(p) => p - 1,
+        };
+        let prev_idx = visible[prev_pos];
+        if let Some(q) = self.quiz.as_mut() {
+            q.current = prev_idx;
+            q.show_explanation = false;
+        }
+        self.quiz_sync_diff_view();
+    }
+
+    /// Answer a multiple-choice question. Returns true if correct.
+    pub fn quiz_answer_mc(&mut self, label: char) -> bool {
+        let quiz = match self.quiz.as_mut() {
+            Some(q) => q,
+            None => return false,
+        };
+        let current_idx = quiz.current;
+        // Only answer if not already answered
+        if quiz.answers.contains_key(&quiz.questions[current_idx].id) {
+            return false;
+        }
+        let question = &quiz.questions[current_idx];
+        let is_correct = question
+            .options
+            .as_ref()
+            .and_then(|opts| opts.iter().find(|o| o.label == label))
+            .map(|o| o.is_correct)
+            .unwrap_or(false);
+
+        let id = question.id.clone();
+        quiz.answers.insert(id, QuizAnswer::Choice(label));
+        quiz.score.1 += 1;
+        if is_correct {
+            quiz.score.0 += 1;
+        }
+        quiz.show_explanation = true;
+        is_correct
+    }
+
+    /// Submit the freeform answer from input_buffer.
+    pub fn quiz_submit_freeform(&mut self) {
+        let quiz = match self.quiz.as_mut() {
+            Some(q) => q,
+            None => return,
+        };
+        let current_idx = quiz.current;
+        if quiz.answers.contains_key(&quiz.questions[current_idx].id) {
+            return;
+        }
+        let text = quiz.input_buffer.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let id = quiz.questions[current_idx].id.clone();
+        quiz.answers.insert(id, QuizAnswer::Freeform(text));
+        quiz.score.1 += 1;
+        quiz.input_buffer.clear();
+        quiz.input_mode = QuizInputMode::Navigating;
+        quiz.show_explanation = true;
+    }
+
+    /// Set level filter (None = all levels).
+    pub fn quiz_filter_level(&mut self, level: Option<u8>) {
+        if let Some(q) = self.quiz.as_mut() {
+            q.filter_level = level;
+            // Re-snap current to first visible
+            let visible = self.quiz_visible_indices();
+            if let Some(q) = self.quiz.as_mut() {
+                if !visible.is_empty() && !visible.contains(&q.current) {
+                    q.current = visible[0];
+                    q.show_explanation = false;
+                }
+            }
+            self.quiz_sync_diff_view();
+        }
+    }
+
+    /// Sync the diff view to the related file/hunk of the current question.
+    fn quiz_sync_diff_view(&mut self) {
+        let (file, hunk) = match &self.quiz {
+            Some(q) => {
+                if let Some(question) = q.questions.get(q.current) {
+                    (question.related_file.clone(), question.related_hunk)
+                } else {
+                    return;
+                }
+            }
+            None => return,
+        };
+        if file.is_empty() {
+            return;
+        }
+        if let Some(idx) = self.files.iter().position(|f| f.path == file) {
+            self.selected_file = idx;
+            if let Some(h) = hunk {
+                if h < self.total_hunks() {
+                    self.current_hunk = h;
+                } else {
+                    self.current_hunk = 0;
+                }
+            } else {
+                self.current_hunk = 0;
+            }
+            self.diff_scroll = 0;
+            self.scroll_to_current_hunk();
+        }
+    }
+
+    /// Write answers to .er/quiz-answers.json atomically.
+    pub fn quiz_save_answers(&self) -> Result<()> {
+        let quiz = match &self.quiz {
+            Some(q) => q,
+            None => return Ok(()),
+        };
+        let er_dir = self.er_dir();
+        std::fs::create_dir_all(&er_dir)?;
+
+        let answers_json: Vec<serde_json::Value> = quiz
+            .answers
+            .iter()
+            .map(|(id, answer)| match answer {
+                QuizAnswer::Choice(c) => serde_json::json!({
+                    "question_id": id,
+                    "answer_type": "choice",
+                    "value": c.to_string()
+                }),
+                QuizAnswer::Freeform(text) => serde_json::json!({
+                    "question_id": id,
+                    "answer_type": "freeform",
+                    "value": text
+                }),
+            })
+            .collect();
+
+        let payload = serde_json::json!({
+            "version": 1,
+            "diff_hash": self.branch_diff_hash,
+            "answers": answers_json
+        });
+
+        let json = serde_json::to_string_pretty(&payload)?;
+        let path = format!("{}/quiz-answers.json", er_dir);
+        let tmp_path = format!("{}.tmp", path);
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
     }
 
     // ── Watched Files ──
@@ -3511,8 +3953,9 @@ impl TabState {
             return None;
         }
         let (mut total, mut reviewed) = (0, 0);
+        let review = self.ai.review.as_ref();
         for f in &self.files {
-            if super::filter::apply_filter(&self.filter_rules, f) {
+            if super::filter::apply_filter_with_review(&self.filter_rules, f, review) {
                 total += 1;
                 if self.reviewed.contains_key(&f.path) {
                     reviewed += 1;
@@ -5408,7 +5851,7 @@ impl App {
                 git::git_stage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Resolved: {}", file_path));
             }
-            DiffMode::History | DiffMode::Hidden => {
+            DiffMode::History | DiffMode::Hidden | DiffMode::Wizard | DiffMode::Quiz => {
                 self.notify("Staging not available in this mode");
                 return Ok(());
             }
@@ -7688,6 +8131,8 @@ mod tests {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
+            wizard: None,
+            quiz: None,
         }
     }
 
@@ -9686,5 +10131,165 @@ mod tests {
     #[test]
     fn shorten_path_deeply_nested() {
         assert_eq!(shorten_path("/a/b/c/d/e/f.rs"), "e/f.rs");
+    }
+
+    // ── WizardState ──
+
+    fn make_quiz_question(id: &str, file: &str, freeform: bool) -> crate::ai::QuizQuestion {
+        crate::ai::QuizQuestion {
+            id: id.to_string(),
+            level: 1,
+            category: "design-decisions".to_string(),
+            text: format!("Question {}", id),
+            options: if freeform {
+                None
+            } else {
+                Some(vec![crate::ai::QuizOption {
+                    label: 'A',
+                    text: "Option A".to_string(),
+                    is_correct: true,
+                }])
+            },
+            freeform,
+            expected_reasoning: String::new(),
+            explanation: "Explanation".to_string(),
+            related_file: file.to_string(),
+            related_hunk: None,
+            related_lines: None,
+        }
+    }
+
+    #[test]
+    fn test_wizard_state_creation() {
+        let state = WizardState {
+            ordered_files: vec!["a.rs".to_string(), "b.rs".to_string()],
+            current_step: 0,
+            completed: HashSet::new(),
+            hidden_count: 1,
+            show_hidden: false,
+        };
+        assert_eq!(state.ordered_files.len(), 2);
+        assert_eq!(state.current_step, 0);
+        assert_eq!(state.hidden_count, 1);
+        assert!(!state.show_hidden);
+        assert!(state.completed.is_empty());
+    }
+
+    #[test]
+    fn test_wizard_mark_reviewed() {
+        use crate::git::{DiffHunk, DiffLine, LineType};
+
+        let file_a = make_file(
+            "a.rs",
+            vec![DiffHunk {
+                header: "@@ -1,1 +1,1 @@".to_string(),
+                lines: vec![DiffLine {
+                    line_type: LineType::Context,
+                    content: "fn main() {}".to_string(),
+                    old_num: Some(1),
+                    new_num: Some(1),
+                }],
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+            }],
+            1,
+            0,
+        );
+        let mut tab = make_test_tab(vec![file_a]);
+        tab.wizard = Some(WizardState {
+            ordered_files: vec!["a.rs".to_string()],
+            current_step: 0,
+            completed: HashSet::new(),
+            hidden_count: 0,
+            show_hidden: false,
+        });
+
+        tab.wizard_mark_reviewed();
+
+        let wizard = tab.wizard.as_ref().unwrap();
+        assert!(wizard.completed.contains("a.rs"));
+    }
+
+    // ── QuizState ──
+
+    #[test]
+    fn test_quiz_answer_mc() {
+        let questions = vec![make_quiz_question("q1", "src/auth.rs", false)];
+        let mut quiz = QuizState {
+            questions,
+            current: 0,
+            answers: HashMap::new(),
+            score: (0, 0),
+            filter_level: None,
+            filter_category: None,
+            input_mode: QuizInputMode::Navigating,
+            input_buffer: String::new(),
+            show_explanation: false,
+        };
+
+        let question = &quiz.questions[0];
+        let opts = question.options.as_ref().unwrap();
+        let label = opts.iter().find(|o| o.is_correct).unwrap().label;
+        let id = question.id.clone();
+        quiz.answers.insert(id.clone(), QuizAnswer::Choice(label));
+        quiz.score.1 += 1;
+        quiz.score.0 += 1;
+
+        assert_eq!(quiz.score, (1, 1));
+        assert!(matches!(quiz.answers[&id], QuizAnswer::Choice('A')));
+    }
+
+    #[test]
+    fn test_quiz_state_initial_score() {
+        let quiz = QuizState {
+            questions: vec![
+                make_quiz_question("q1", "a.rs", false),
+                make_quiz_question("q2", "b.rs", true),
+            ],
+            current: 0,
+            answers: HashMap::new(),
+            score: (0, 0),
+            filter_level: None,
+            filter_category: None,
+            input_mode: QuizInputMode::Navigating,
+            input_buffer: String::new(),
+            show_explanation: false,
+        };
+
+        assert_eq!(quiz.score, (0, 0));
+        assert_eq!(quiz.questions.len(), 2);
+        assert_eq!(quiz.input_mode, QuizInputMode::Navigating);
+    }
+
+    #[test]
+    fn test_quiz_freeform_answer() {
+        let questions = vec![make_quiz_question("q1", "src/auth.rs", true)];
+        let mut quiz = QuizState {
+            questions,
+            current: 0,
+            answers: HashMap::new(),
+            score: (0, 0),
+            filter_level: None,
+            filter_category: None,
+            input_mode: QuizInputMode::AnsweringFreeform,
+            input_buffer: "My answer about risk".to_string(),
+            show_explanation: false,
+        };
+
+        let text = quiz.input_buffer.trim().to_string();
+        let id = quiz.questions[0].id.clone();
+        quiz.answers.insert(id.clone(), QuizAnswer::Freeform(text));
+        quiz.score.1 += 1;
+        quiz.input_buffer.clear();
+        quiz.input_mode = QuizInputMode::Navigating;
+        quiz.show_explanation = true;
+
+        assert_eq!(quiz.score, (0, 1));
+        assert!(quiz.input_buffer.is_empty());
+        assert_eq!(quiz.input_mode, QuizInputMode::Navigating);
+        assert!(quiz.show_explanation);
+        assert!(matches!(quiz.answers[&id], QuizAnswer::Freeform(_)));
     }
 }

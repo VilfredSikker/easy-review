@@ -1,3 +1,4 @@
+use crate::ai::{ErReview, RiskLevel};
 use crate::git::{DiffFile, FileStatus};
 use glob::{MatchOptions, Pattern};
 
@@ -32,6 +33,10 @@ pub enum FilterRule {
         op: SizeOp,
         threshold: usize,
     },
+    Risk {
+        include: bool,
+        levels: Vec<RiskLevel>,
+    },
 }
 
 pub struct FilterPreset {
@@ -56,6 +61,10 @@ pub const FILTER_PRESETS: &[FilterPreset] = &[
         name: "docs",
         expr: "*.md,*.txt,*.rst",
     },
+    FilterPreset {
+        name: "review",
+        expr: "-risk:info",
+    },
 ];
 
 impl FilterRule {
@@ -64,6 +73,7 @@ impl FilterRule {
             FilterRule::Glob { include, .. } => *include,
             FilterRule::Status { include, .. } => *include,
             FilterRule::Size { include, .. } => *include,
+            FilterRule::Risk { include, .. } => *include,
         }
     }
 }
@@ -99,6 +109,12 @@ pub fn parse_filter_expr(expr: &str) -> Vec<FilterRule> {
             continue;
         }
 
+        // Try risk: risk:high,medium,low,info
+        if let Some(rule) = try_parse_risk(include, body) {
+            rules.push(rule);
+            continue;
+        }
+
         // Try status keywords
         if let Some(rule) = try_parse_status(include, body) {
             rules.push(rule);
@@ -112,6 +128,24 @@ pub fn parse_filter_expr(expr: &str) -> Vec<FilterRule> {
         // Invalid globs silently skipped
     }
     rules
+}
+
+fn try_parse_risk(include: bool, body: &str) -> Option<FilterRule> {
+    let rest = body.strip_prefix("risk:")?;
+    let levels: Vec<RiskLevel> = rest
+        .split(',')
+        .filter_map(|s| match s.trim().to_lowercase().as_str() {
+            "high" => Some(RiskLevel::High),
+            "medium" | "med" => Some(RiskLevel::Medium),
+            "low" => Some(RiskLevel::Low),
+            "info" => Some(RiskLevel::Info),
+            _ => None,
+        })
+        .collect();
+    if levels.is_empty() {
+        return None;
+    }
+    Some(FilterRule::Risk { include, levels })
 }
 
 fn try_parse_size(include: bool, body: &str) -> Option<FilterRule> {
@@ -156,6 +190,9 @@ const MATCH_OPTIONS: MatchOptions = MatchOptions {
 };
 
 /// Apply filter rules to a file. Returns true if the file should be visible.
+/// Note: Risk rules are evaluated without review data (always include). Use
+/// `apply_filter_with_review` when review data is available.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_filter(rules: &[FilterRule], file: &DiffFile) -> bool {
     if rules.is_empty() {
         return true;
@@ -185,6 +222,51 @@ pub fn apply_filter(rules: &[FilterRule], file: &DiffFile) -> bool {
     !excluded
 }
 
+/// Apply filter rules to a file with optional review data for risk filtering.
+pub fn apply_filter_with_review(
+    rules: &[FilterRule],
+    file: &DiffFile,
+    review: Option<&ErReview>,
+) -> bool {
+    if rules.is_empty() {
+        return true;
+    }
+
+    let has_includes = rules.iter().any(|r| r.is_include());
+
+    let included = if has_includes {
+        rules
+            .iter()
+            .any(|r| r.is_include() && matches_rule_with_review(r, file, review))
+    } else {
+        true
+    };
+
+    if !included {
+        return false;
+    }
+
+    let excluded = rules
+        .iter()
+        .any(|r| !r.is_include() && matches_rule_with_review(r, file, review));
+
+    !excluded
+}
+
+fn matches_rule_with_review(rule: &FilterRule, file: &DiffFile, review: Option<&ErReview>) -> bool {
+    match rule {
+        FilterRule::Risk { levels, .. } => {
+            if let Some(review) = review {
+                if let Some(fr) = review.files.get(&file.path) {
+                    return levels.contains(&fr.risk);
+                }
+            }
+            false
+        }
+        _ => matches_rule(rule, file),
+    }
+}
+
 fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
     match rule {
         FilterRule::Glob { pattern, .. } => pattern.matches_with(&file.path, MATCH_OPTIONS),
@@ -195,6 +277,11 @@ fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
                 SizeOp::GreaterThan => changed > *threshold,
                 SizeOp::LessThan => changed < *threshold,
             }
+        }
+        FilterRule::Risk { levels, .. } => {
+            // Without review data, risk rules can't be evaluated — include the file
+            let _ = levels;
+            true
         }
     }
 }
@@ -531,5 +618,104 @@ mod tests {
         let exactly_10 = make_file("exact.rs", FileStatus::Modified, 5, 5); // 10 changes
                                                                             // > 10 means strictly greater, 10 does NOT pass
         assert!(!apply_filter(&rules, &exactly_10));
+    }
+
+    // ── Risk filter tests ──
+
+    #[test]
+    fn test_parse_risk_filter() {
+        // risk: accepts multiple levels within the same token via "risk:high medium"
+        // but the top-level parser splits on ',', so each risk level is a separate token.
+        // "+risk:high" produces one Risk rule with [High].
+        let rules = parse_filter_expr("+risk:high");
+        assert_eq!(rules.len(), 1);
+        match &rules[0] {
+            FilterRule::Risk { include, levels } => {
+                assert!(*include);
+                assert_eq!(levels.len(), 1);
+                assert!(levels.contains(&RiskLevel::High));
+            }
+            _ => panic!("expected Risk rule"),
+        }
+    }
+
+    #[test]
+    fn test_parse_risk_filter_exclude() {
+        let rules = parse_filter_expr("-risk:info");
+        assert_eq!(rules.len(), 1);
+        match &rules[0] {
+            FilterRule::Risk { include, levels } => {
+                assert!(!*include);
+                assert_eq!(levels.len(), 1);
+                assert!(levels.contains(&RiskLevel::Info));
+            }
+            _ => panic!("expected Risk rule"),
+        }
+    }
+
+    #[test]
+    fn test_parse_risk_filter_single() {
+        let rules = parse_filter_expr("+risk:high");
+        assert_eq!(rules.len(), 1);
+        match &rules[0] {
+            FilterRule::Risk { include, levels } => {
+                assert!(*include);
+                assert_eq!(levels.len(), 1);
+                assert!(levels.contains(&RiskLevel::High));
+            }
+            _ => panic!("expected Risk rule"),
+        }
+    }
+
+    #[test]
+    fn test_risk_filter_preset() {
+        let review_preset = FILTER_PRESETS.iter().find(|p| p.name == "review");
+        assert!(review_preset.is_some(), "review preset should exist");
+        let preset = review_preset.unwrap();
+        let rules = parse_filter_expr(preset.expr);
+        assert_eq!(rules.len(), 1);
+        assert!(matches!(&rules[0], FilterRule::Risk { include: false, .. }));
+    }
+
+    #[test]
+    fn test_parse_risk_med_alias() {
+        // "med" should be an alias for Medium
+        let rules = parse_filter_expr("+risk:med");
+        assert_eq!(rules.len(), 1);
+        match &rules[0] {
+            FilterRule::Risk { levels, .. } => {
+                assert!(levels.contains(&RiskLevel::Medium));
+            }
+            _ => panic!("expected Risk rule"),
+        }
+    }
+
+    #[test]
+    fn test_parse_risk_all_levels() {
+        // Each level is a separate token in a comma-separated expression.
+        // Four separate risk:* tokens produce four Risk rules.
+        let _rules = parse_filter_expr("+risk:high +risk:medium +risk:low +risk:info");
+        // top-level splits on space too? No — only on comma. So this is one segment.
+        // Use four separate segments with commas:
+        let rules = parse_filter_expr("+risk:high, +risk:medium, +risk:low, +risk:info");
+        assert_eq!(rules.len(), 4);
+        for rule in &rules {
+            assert!(matches!(rule, FilterRule::Risk { include: true, .. }));
+        }
+    }
+
+    #[test]
+    fn test_parse_risk_unknown_level_skipped() {
+        // "risk:critical" strips the prefix to "critical" but that's not a known level →
+        // try_parse_risk returns None (empty levels), falls through to glob pattern "risk:critical"
+        // which is a valid (if unusual) glob. The rule count will be 1 as a Glob, not Risk.
+        let rules = parse_filter_expr("+risk:critical");
+        // The important check: no Risk rule is produced
+        for rule in &rules {
+            assert!(
+                !matches!(rule, FilterRule::Risk { .. }),
+                "should not produce a Risk rule for unknown level"
+            );
+        }
     }
 }

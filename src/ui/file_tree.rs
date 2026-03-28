@@ -38,6 +38,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // Wizard mode: render wizard file list
+    if tab.mode == DiffMode::Wizard && tab.wizard.is_some() {
+        render_wizard_list(f, area, app);
+        return;
+    }
+
     // Conflicts mode uses the standard file tree (falls through below)
 
     let visible = tab.visible_files();
@@ -491,6 +497,134 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             title,
             ratatui::style::Style::default().fg(styles::MUTED()),
+        ))
+        .borders(Borders::RIGHT)
+        .border_style(ratatui::style::Style::default().fg(styles::BORDER()))
+        .style(ratatui::style::Style::default().bg(styles::SURFACE()))
+        .padding(Padding::new(0, 0, 0, 0));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
+}
+
+/// Render the wizard file list (left panel in Wizard mode)
+fn render_wizard_list(f: &mut Frame, area: Rect, app: &App) {
+    let tab = app.tab();
+    let wizard = match &tab.wizard {
+        Some(w) => w,
+        None => return,
+    };
+
+    let completed = wizard.completed.len();
+    let total = wizard.ordered_files.len();
+    let progress = format!("{}/{} reviewed", completed, total);
+    let title = format!(" WIZARD — {} ", progress);
+
+    let viewport_height = area.height.saturating_sub(2) as usize;
+
+    let selected_pos = wizard
+        .current_step
+        .min(wizard.ordered_files.len().saturating_sub(1));
+
+    let file_scroll =
+        if wizard.ordered_files.len() <= viewport_height || selected_pos < viewport_height / 2 {
+            0
+        } else if selected_pos
+            > wizard
+                .ordered_files
+                .len()
+                .saturating_sub(viewport_height / 2)
+        {
+            wizard.ordered_files.len().saturating_sub(viewport_height)
+        } else {
+            selected_pos.saturating_sub(viewport_height / 2)
+        };
+
+    let viewport_end = (file_scroll + viewport_height).min(wizard.ordered_files.len());
+
+    let mut items: Vec<ListItem> = wizard.ordered_files[file_scroll..viewport_end]
+        .iter()
+        .enumerate()
+        .map(|(rel_idx, path)| {
+            let abs_idx = file_scroll + rel_idx;
+            let is_selected = abs_idx == wizard.current_step;
+            let is_completed = wizard.completed.contains(path);
+
+            // Risk dot from AI review
+            let risk_dot = if let Some(ref review) = tab.ai.review {
+                if let Some(fr) = review.files.get(path) {
+                    let dot_style = match fr.risk {
+                        RiskLevel::High => styles::risk_high(),
+                        RiskLevel::Medium => styles::risk_medium(),
+                        RiskLevel::Low => styles::risk_low(),
+                        RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE()),
+                    };
+                    Span::styled(format!("{} ", fr.risk.symbol()), dot_style)
+                } else {
+                    Span::styled("  ", ratatui::style::Style::default())
+                }
+            } else {
+                Span::styled("  ", ratatui::style::Style::default())
+            };
+
+            let checkmark = if is_completed { "\u{2713} " } else { "  " };
+            let path_width = (area.width as usize).saturating_sub(8).max(1);
+            let short_path = shorten_path(path, path_width);
+
+            let line_style = if is_selected {
+                styles::selected_style()
+            } else if is_completed {
+                ratatui::style::Style::default()
+                    .fg(styles::DIM())
+                    .bg(styles::SURFACE())
+            } else {
+                styles::surface_style()
+            };
+
+            let spans = vec![
+                Span::styled(
+                    format!(" {}", checkmark),
+                    if is_completed {
+                        ratatui::style::Style::default().fg(styles::GREEN())
+                    } else {
+                        ratatui::style::Style::default().fg(styles::DIM())
+                    },
+                ),
+                risk_dot,
+                Span::styled(
+                    short_path,
+                    if is_selected {
+                        styles::selected_style()
+                    } else if is_completed {
+                        ratatui::style::Style::default().fg(styles::DIM())
+                    } else {
+                        ratatui::style::Style::default().fg(styles::TEXT())
+                    },
+                ),
+            ];
+            ListItem::new(Line::from(spans)).style(line_style)
+        })
+        .collect();
+
+    // Hidden files separator
+    if wizard.hidden_count > 0 {
+        let sep_label = format!(
+            " \u{2500}\u{2500} Info ({}) \u{2500}\u{2500}",
+            wizard.hidden_count
+        );
+        items.push(
+            ListItem::new(Line::from(Span::styled(
+                sep_label,
+                ratatui::style::Style::default().fg(styles::MUTED()),
+            )))
+            .style(styles::surface_style()),
+        );
+    }
+
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            ratatui::style::Style::default().fg(styles::CYAN()),
         ))
         .borders(Borders::RIGHT)
         .border_style(ratatui::style::Style::default().fg(styles::BORDER()))

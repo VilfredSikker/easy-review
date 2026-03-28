@@ -988,6 +988,82 @@ pub fn diff_watched_file_snapshot(repo_root: &str, rel_path: &str) -> Result<Opt
     Ok(Some(raw))
 }
 
+// ── Symbol References ──
+
+/// A single match from `git grep`
+#[derive(Debug, Clone)]
+pub struct GrepMatch {
+    pub file: String,
+    pub line_num: usize,
+    pub line_content: String,
+}
+
+/// Search for symbol references in the repository using `git grep`.
+/// Returns matches from common source file types.
+pub fn git_grep_symbol(repo_root: &str, symbol: &str) -> Result<Vec<GrepMatch>> {
+    if symbol.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let output = Command::new("git")
+        .args([
+            "grep",
+            "-n",
+            "--no-color",
+            symbol,
+            "--",
+            "*.rs",
+            "*.ts",
+            "*.tsx",
+            "*.js",
+            "*.jsx",
+            "*.py",
+            "*.go",
+            "*.java",
+            "*.rb",
+            "*.swift",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git grep")?;
+
+    // Exit code 1 = no matches (not an error), exit code 0 = matches found
+    // Exit code 2+ = error
+    if output.status.code() == Some(2) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git grep failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut matches = Vec::new();
+
+    for line in stdout.lines() {
+        // Format: file:line_num:content
+        let mut parts = line.splitn(3, ':');
+        let file = match parts.next() {
+            Some(f) => f.to_string(),
+            None => continue,
+        };
+        let line_num_str = match parts.next() {
+            Some(n) => n,
+            None => continue,
+        };
+        let content = match parts.next() {
+            Some(c) => c.to_string(),
+            None => continue,
+        };
+        if let Ok(line_num) = line_num_str.parse::<usize>() {
+            matches.push(GrepMatch {
+                file,
+                line_num,
+                line_content: content,
+            });
+        }
+    }
+
+    Ok(matches)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

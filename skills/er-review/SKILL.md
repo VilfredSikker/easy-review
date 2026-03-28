@@ -136,7 +136,7 @@ IN-CONTEXT ANALYSIS (zero tool calls):
   {
     "id": "f-<n>",
     "severity": "high|medium|low|info",
-    "category": "security|logic|performance|correctness|error-handling|style|testing",
+    "category": "security|logic|performance|correctness|error-handling|testing",
     "title": "Short title (max 60 chars)",
     "description": "What the issue is and why it matters",
     "hunk_index": <0-based index into the file's hunks>,
@@ -285,14 +285,35 @@ For diffs >100KB or >20 files, apply these shortcuts to stay under 90 seconds:
 - **Don't read the full diff if >200KB**: use `git diff --stat` output + per-file hashes to identify which files changed, then read only high-risk files individually.
 - **Incremental reviews should be fast**: if ≤3 files changed, the review should complete in <60 seconds. Don't regenerate the full summary/checklist/order — patch the existing ones.
 
+## Review philosophy
+
+See `skills/REVIEW_PHILOSOPHY.md` for the full reference. Key points:
+
+**Severity = P0/P1/P2 (maps to high/medium/low):**
+- `high` (P0) — breaks things or security risk. Must fix before merge.
+- `medium` (P1) — observable gap: missing edge case, logic error, shallow test. Should fix.
+- `low` (P2) — minor quality issue. Nice to fix, not blocking.
+- `info` — observation only, no finding needed.
+
+**Finding categories** (remove `style` — it is never a valid category):
+- `security`, `logic`, `performance`, `correctness`, `error-handling`, `testing`
+
+**What NOT to flag:**
+- Naming, formatting, whitespace, import order, file moves, comment phrasing, style preferences
+- Files with only cosmetic changes → mark `risk: "info"`, zero findings
+
+**Test quality (P1 focus):**
+- Assertions that only check existence (`is_some()`, `toBeDefined()`) → P1 finding
+- Missing negative tests for changed behavior → P1 finding
+- Suggest specific values to assert, not just "add assertions"
+
 ## Guidelines
 
 - Be specific. "Check error handling" is bad. "Handle the `None` case in `parse_token()` at line 42" is good.
 - Pin findings to hunks using `hunk_index` (0-based). If a finding spans hunks, pick the most relevant one.
-- Risk levels should be meaningful: `high` = likely bug or security issue, `medium` = code smell or missing edge case, `low` = style or minor improvement, `info` = observation.
 - Keep titles under 60 characters — they render inline in the TUI.
 - The `suggestion` field should be actionable — what to change, not just what's wrong.
-- Don't generate more than 3-4 findings per file unless it's genuinely that problematic.
+- Don't generate more than 3 findings per file unless it's genuinely that problematic.
 - The checklist should be things the reviewer should manually verify, not things Claude already checked.
 
 ## .gitignore

@@ -35,11 +35,19 @@ Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
 
 - Items should be things a human reviewer needs to **manually verify** — not things Claude already checked
 - Each item should be specific and actionable: "Confirm the rate limiter config handles burst traffic" not "Check performance"
+- **P0/P1 only**: only generate checklist items for high/medium risk concerns. Never generate items about naming, formatting, style, import order, or file moves.
 - Link items to findings where relevant via `related_findings`
 - Link items to files where relevant via `related_files`
-- Categories: `correctness`, `security`, `testing`, `compatibility`, `performance`, `documentation`
+- Categories: `correctness`, `security`, `testing`, `compatibility`, `performance`
 - Target 4-8 items for most PRs. More for large or risky changes.
 - Pre-check items that are clearly fine (e.g., "No secrets in diff" → checked: true)
+
+**Test quality items** — include when test files are modified:
+- "Verify tests for `<function>` assert actual values, not just that the result exists"
+- "Confirm there is a negative test for `<changed behavior>` (what should fail or return error)"
+- These are P1 concerns and belong on the checklist.
+
+See `skills/REVIEW_PHILOSOPHY.md` for the full list of what to flag and what not to flag.
 
 ## Output schema
 
@@ -63,6 +71,7 @@ Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
 ## Guidelines
 
 - Don't duplicate findings as checklist items. Findings say what's wrong; checklist items say what to verify.
-- Order items by importance (most critical first)
+- Order items by importance (most critical first, P0 before P1)
 - The `checked` field defaults to false — the human checks things off in `er`
 - If regenerating an existing checklist, preserve `checked` state for items that haven't changed
+- No items about naming, formatting, style, or cosmetic changes

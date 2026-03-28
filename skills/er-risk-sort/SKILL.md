@@ -25,22 +25,27 @@ Run as `/er-risk-sort`.
 
 ## Sorting strategy
 
-1. **Risk-first**: high → medium → low → info
+Sort order: **P0 → P1 → P2 → cosmetic/info last**
+
+1. **Risk-first**: high (P0) → medium (P1) → low (P2) → info
 2. **Within same risk**: more findings first
-3. **Group adjacency**: keep related files together even if different risk levels
+3. **Cosmetic files last**: files with only renames, formatting changes, import reordering, or `risk: "info"` and zero findings go to the bottom of the order
+4. **Group adjacency**: keep related files together even if different risk levels
    - A test file should follow its implementation file
    - Config changes should be near the code that uses them
-4. **Logical flow**: if file A calls file B, review A first
+5. **Logical flow**: if file A calls file B, review A first
 
 ## Output
 
 Updated `.er/order.json` with:
 - `order` array sorted by the above criteria
 - `groups` map with meaningful labels (e.g., "Core Logic", "API Layer", "Tests", "Config")
-- Each group gets a color: red (high-risk group), yellow (medium), green (low), blue (info)
+- Each group gets a color: red (high/P0 group), yellow (medium/P1), green (low/P2), blue (info/cosmetic)
 
 ## Guidelines
 
 - Use the review data (summaries, findings, related_files) to understand relationships — do NOT read source files
 - Keep the group count reasonable (3-6 groups for most PRs)
 - The `reason` field should tell the reviewer *why* this file matters in context
+- Files with only renames or formatting (no findings, cosmetic `risk: "info"`) get reason: "Cosmetic only — review last"
+- See `skills/REVIEW_PHILOSOPHY.md` for severity definitions

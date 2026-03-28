@@ -482,7 +482,190 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate:
 
 // ── AiSummary ──
 
+/// Render wizard context panel: risk level, summary, findings, and symbol refs for the current file.
+fn render_wizard_context<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::app::TabState) {
+    let max_w = area.width.saturating_sub(4) as usize;
+
+    // Current file path
+    let file_path = if let Some(ref wizard) = tab.wizard {
+        wizard
+            .ordered_files
+            .get(wizard.current_step)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        tab.selected_diff_file()
+            .map(|f| f.path.clone())
+            .unwrap_or_default()
+    };
+
+    if file_path.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            " No file selected",
+            Style::default().fg(styles::MUTED()),
+        )]));
+        return;
+    }
+
+    // Progress indicator
+    if let Some(ref wizard) = tab.wizard {
+        let completed = wizard.completed.len();
+        let total = wizard.ordered_files.len();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" Step {}/{}", wizard.current_step + 1, total),
+                Style::default().fg(styles::CYAN()),
+            ),
+            Span::styled(
+                format!("  ({} reviewed)", completed),
+                Style::default().fg(styles::MUTED()),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    // File path
+    for wrapped in word_wrap(&file_path, max_w) {
+        lines.push(Line::from(vec![Span::styled(
+            format!(" {}", wrapped),
+            Style::default()
+                .fg(styles::TEXT())
+                .add_modifier(Modifier::BOLD),
+        )]));
+    }
+    lines.push(Line::from(""));
+
+    // Risk level + reason + summary from review data
+    if let Some(ref review) = tab.ai.review {
+        if let Some(fr) = review.files.get(&file_path) {
+            let risk_style = match fr.risk {
+                RiskLevel::High => styles::risk_high(),
+                RiskLevel::Medium => styles::risk_medium(),
+                RiskLevel::Low => styles::risk_low(),
+                RiskLevel::Info => Style::default().fg(styles::BLUE()),
+            };
+            let risk_label = match fr.risk {
+                RiskLevel::High => "HIGH RISK",
+                RiskLevel::Medium => "MEDIUM RISK",
+                RiskLevel::Low => "LOW RISK",
+                RiskLevel::Info => "INFO",
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {} ", fr.risk.symbol()), risk_style),
+                Span::styled(risk_label, risk_style),
+            ]));
+
+            if !fr.risk_reason.is_empty() {
+                for wrapped in word_wrap(&fr.risk_reason, max_w) {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(" {}", wrapped),
+                        Style::default().fg(styles::DIM()),
+                    )]));
+                }
+            }
+
+            if !fr.summary.is_empty() {
+                lines.push(Line::from(""));
+                for wrapped in word_wrap(&fr.summary, max_w) {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(" {}", wrapped),
+                        Style::default().fg(styles::TEXT()),
+                    )]));
+                }
+            }
+
+            // Findings
+            if !fr.findings.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![Span::styled(
+                    " ─── Findings ───",
+                    Style::default().fg(styles::BORDER()),
+                )]));
+                for finding in &fr.findings {
+                    lines.push(Line::from(""));
+                    let sev_style = match finding.severity {
+                        RiskLevel::High => styles::risk_high(),
+                        RiskLevel::Medium => styles::risk_medium(),
+                        RiskLevel::Low => styles::risk_low(),
+                        RiskLevel::Info => Style::default().fg(styles::BLUE()),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!(" {} ", finding.severity.symbol()), sev_style),
+                        Span::styled(
+                            finding.title.clone(),
+                            Style::default()
+                                .fg(styles::BRIGHT())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                    if !finding.description.is_empty() {
+                        for wrapped in word_wrap(&finding.description, max_w) {
+                            lines.push(Line::from(vec![Span::styled(
+                                format!("   {}", wrapped),
+                                Style::default().fg(styles::TEXT()),
+                            )]));
+                        }
+                    }
+                }
+            }
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                " No AI review for this file",
+                Style::default().fg(styles::MUTED()),
+            )]));
+        }
+    } else {
+        lines.push(Line::from(vec![Span::styled(
+            " No AI review loaded",
+            Style::default().fg(styles::MUTED()),
+        )]));
+    }
+
+    // Symbol references
+    if let Some(ref refs) = tab.symbol_refs {
+        if !refs.in_diff.is_empty() || !refs.external.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![Span::styled(
+                format!(" ─── References: {} ───", refs.symbol),
+                Style::default().fg(styles::BORDER()),
+            )]));
+            if !refs.in_diff.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    " In diff:",
+                    Style::default().fg(styles::CYAN()),
+                )]));
+                for r in refs.in_diff.iter().take(5) {
+                    let entry = shorten_path(&r.file, max_w.saturating_sub(6));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  {}:{}", entry, r.line_num),
+                        Style::default().fg(styles::DIM()),
+                    )]));
+                }
+            }
+            if !refs.external.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    " External:",
+                    Style::default().fg(styles::BLUE()),
+                )]));
+                for r in refs.external.iter().take(5) {
+                    let entry = shorten_path(&r.file, max_w.saturating_sub(6));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  {}:{}", entry, r.line_num),
+                        Style::default().fg(styles::DIM()),
+                    )]));
+                }
+            }
+        }
+    }
+}
+
 fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a crate::app::TabState) {
+    // In wizard mode, show per-file context instead of the global summary
+    if tab.mode == crate::app::DiffMode::Wizard {
+        render_wizard_context(lines, area, tab);
+        return;
+    }
+
     let ai_stale = tab.ai.is_stale;
     let stale_tag = if ai_stale { " [stale]" } else { "" };
 

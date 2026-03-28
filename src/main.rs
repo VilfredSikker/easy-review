@@ -732,6 +732,30 @@ fn handle_normal_input(
             app.tab_mut().set_mode(DiffMode::Hidden);
             return Ok(());
         }
+        KeyCode::Char('7')
+            if app.config.features.view_wizard
+                && !app.tab().is_remote()
+                && app.tab().ai.review.is_some() =>
+        {
+            app.tab_mut().set_mode(DiffMode::Wizard);
+            return Ok(());
+        }
+        KeyCode::Char('7') if app.config.features.view_wizard && !app.tab().is_remote() => {
+            app.notify("Wizard requires .er/review.json — run /er-review first");
+            return Ok(());
+        }
+        KeyCode::Char('8')
+            if app.config.features.view_quiz
+                && !app.tab().is_remote()
+                && app.tab().ai.quiz.is_some() =>
+        {
+            app.tab_mut().set_mode(DiffMode::Quiz);
+            return Ok(());
+        }
+        KeyCode::Char('8') if app.config.features.view_quiz && !app.tab().is_remote() => {
+            app.notify("Quiz requires .er/quiz.json — run /er-quiz first");
+            return Ok(());
+        }
         // Toggle mtime sort (works in any mode)
         KeyCode::Char('m') => {
             let tab = app.tab_mut();
@@ -843,6 +867,12 @@ fn handle_normal_input(
             }
             return Ok(());
         }
+        // Wizard mode: 'r' looks up symbol references for word under cursor
+        KeyCode::Char('r') if app.tab().mode == DiffMode::Wizard => {
+            lookup_wizard_symbol_refs(app);
+            return Ok(());
+        }
+
         // Reply to focused comment/question or finding
         KeyCode::Char('r') => {
             if let Some(id) = app.tab().focused_comment_id.clone() {
@@ -1182,6 +1212,20 @@ fn handle_normal_input(
             return Ok(());
         }
 
+        // Wizard mode: Space marks reviewed and advances to next unreviewed file
+        KeyCode::Char(' ') if mode == DiffMode::Wizard => {
+            app.tab_mut().wizard_mark_reviewed();
+            return Ok(());
+        }
+
+        // Wizard mode: 'i' toggles showing hidden Info files
+        KeyCode::Char('i') if mode == DiffMode::Wizard => {
+            if let Some(ref mut wizard) = app.tab_mut().wizard {
+                wizard.show_hidden = !wizard.show_hidden;
+            }
+            return Ok(());
+        }
+
         // Toggle reviewed — review tracking is per-branch, not meaningful in History
         KeyCode::Char(' ') if mode != DiffMode::History => {
             app.toggle_reviewed()?;
@@ -1206,6 +1250,11 @@ fn handle_normal_input(
     // ── History mode: route to dedicated handler (pure navigation only) ──
     if mode == DiffMode::History {
         return handle_history_input(app, key);
+    }
+
+    // ── Quiz mode: route to dedicated handler ──
+    if mode == DiffMode::Quiz {
+        return handle_quiz_input(app, key);
     }
 
     // ── Non-History navigation keys ──
@@ -1456,6 +1505,245 @@ fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
 
         _ => {}
     }
+    Ok(())
+}
+
+/// Look up symbol references for the word under the cursor in wizard mode.
+/// Builds a SymbolRefsState from git grep, splitting results into in_diff vs external.
+fn lookup_wizard_symbol_refs(app: &mut App) {
+    // Extract symbol: use the current selected file's first identifier found in the
+    // current line content, or fall back to filename-based heuristic.
+    // For now use a simple heuristic: extract the identifier at the current diff line.
+    let symbol = {
+        let tab = app.tab();
+        let file = tab.selected_diff_file();
+        if let Some(file) = file {
+            // Get current line content
+            let hunk = file.hunks.get(tab.current_hunk);
+            let content = if let Some(h) = hunk {
+                if let Some(line_idx) = tab.current_line {
+                    h.lines.get(line_idx).map(|l| l.content.as_str())
+                } else {
+                    h.lines.first().map(|l| l.content.as_str())
+                }
+            } else {
+                None
+            };
+
+            // Extract first word (identifier) from line
+            if let Some(line) = content {
+                let trimmed = line.trim_start_matches(['+', '-', ' ']);
+                // Find first Rust/TS-like identifier: letter/underscore followed by word chars
+                trimmed
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .find(|s| {
+                        !s.is_empty()
+                            && s.chars()
+                                .next()
+                                .is_some_and(|c| c.is_alphabetic() || c == '_')
+                    })
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    };
+
+    if symbol.is_empty() {
+        app.notify("No symbol found under cursor");
+        return;
+    }
+
+    let repo_root = app.tab().repo_root.clone();
+    let diff_paths: std::collections::HashSet<String> =
+        app.tab().files.iter().map(|f| f.path.clone()).collect();
+
+    match crate::git::git_grep_symbol(&repo_root, &symbol) {
+        Ok(matches) => {
+            if matches.is_empty() {
+                app.notify(&format!("No references found for '{}'", symbol));
+                return;
+            }
+            let mut in_diff = Vec::new();
+            let mut external = Vec::new();
+
+            for m in matches {
+                let entry = crate::app::SymbolRefEntry {
+                    file: m.file.clone(),
+                    line_num: m.line_num,
+                    line_content: m.line_content,
+                };
+                if diff_paths.contains(&m.file) {
+                    in_diff.push(entry);
+                } else {
+                    external.push(entry);
+                }
+            }
+
+            let total = in_diff.len() + external.len();
+            app.tab_mut().symbol_refs = Some(crate::app::SymbolRefsState {
+                symbol: symbol.clone(),
+                in_diff,
+                external,
+                cursor: 0,
+            });
+            app.tab_mut().panel = Some(PanelContent::SymbolRefs);
+            app.notify(&format!("Found {} references to '{}'", total, symbol));
+        }
+        Err(e) => {
+            app.notify(&format!("git grep failed: {}", e));
+        }
+    }
+}
+
+/// Handle key input in Quiz mode.
+fn handle_quiz_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    use app::QuizInputMode;
+
+    // Check if we're in freeform input mode
+    let in_freeform = app
+        .tab()
+        .quiz
+        .as_ref()
+        .map(|q| q.input_mode == QuizInputMode::AnsweringFreeform)
+        .unwrap_or(false);
+
+    if in_freeform {
+        match key.code {
+            KeyCode::Enter => {
+                app.tab_mut().quiz_submit_freeform();
+                let _ = app.tab().quiz_save_answers();
+            }
+            KeyCode::Esc => {
+                if let Some(q) = app.tab_mut().quiz.as_mut() {
+                    q.input_mode = QuizInputMode::Navigating;
+                    q.input_buffer.clear();
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(q) = app.tab_mut().quiz.as_mut() {
+                    q.input_buffer.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(q) = app.tab_mut().quiz.as_mut() {
+                    q.input_buffer.push(c);
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        // Navigation
+        KeyCode::Char('j') | KeyCode::Char('n') => {
+            app.tab_mut().quiz_next();
+        }
+        KeyCode::Char('k') | KeyCode::Char('N') => {
+            app.tab_mut().quiz_prev();
+        }
+
+        // MC answers (A-D, case insensitive)
+        KeyCode::Char(c @ 'a'..='d') | KeyCode::Char(c @ 'A'..='D') => {
+            let label = c.to_ascii_uppercase();
+            let is_mc = app
+                .tab()
+                .quiz
+                .as_ref()
+                .and_then(|q| q.questions.get(q.current))
+                .map(|q| q.options.is_some() && !q.freeform)
+                .unwrap_or(false);
+            if is_mc {
+                let correct = app.tab_mut().quiz_answer_mc(label);
+                let _ = app.tab().quiz_save_answers();
+                if correct {
+                    app.notify("Correct!");
+                } else {
+                    app.notify("Incorrect — see explanation below");
+                }
+            }
+        }
+
+        // Enter to start freeform input (or cycle to next if already answered)
+        KeyCode::Enter => {
+            let is_freeform = app
+                .tab()
+                .quiz
+                .as_ref()
+                .and_then(|q| q.questions.get(q.current))
+                .map(|q| q.freeform)
+                .unwrap_or(false);
+            let already_answered = app
+                .tab()
+                .quiz
+                .as_ref()
+                .map(|q| {
+                    let id = q
+                        .questions
+                        .get(q.current)
+                        .map(|x| x.id.as_str())
+                        .unwrap_or("");
+                    q.answers.contains_key(id)
+                })
+                .unwrap_or(false);
+            if is_freeform && !already_answered {
+                if let Some(q) = app.tab_mut().quiz.as_mut() {
+                    q.input_mode = QuizInputMode::AnsweringFreeform;
+                }
+            }
+        }
+
+        // Level filters
+        KeyCode::Char('1') if key.modifiers == KeyModifiers::NONE => {
+            let current_filter = app.tab().quiz.as_ref().and_then(|q| q.filter_level);
+            let new_filter = if current_filter == Some(1) {
+                None
+            } else {
+                Some(1)
+            };
+            app.tab_mut().quiz_filter_level(new_filter);
+        }
+        KeyCode::Char('2') if key.modifiers == KeyModifiers::NONE => {
+            let current_filter = app.tab().quiz.as_ref().and_then(|q| q.filter_level);
+            let new_filter = if current_filter == Some(2) {
+                None
+            } else {
+                Some(2)
+            };
+            app.tab_mut().quiz_filter_level(new_filter);
+        }
+        KeyCode::Char('3') if key.modifiers == KeyModifiers::NONE => {
+            let current_filter = app.tab().quiz.as_ref().and_then(|q| q.filter_level);
+            let new_filter = if current_filter == Some(3) {
+                None
+            } else {
+                Some(3)
+            };
+            app.tab_mut().quiz_filter_level(new_filter);
+        }
+        KeyCode::Char('0') => {
+            app.tab_mut().quiz_filter_level(None);
+        }
+
+        // Toggle explanation
+        KeyCode::Char('e') => {
+            if let Some(q) = app.tab_mut().quiz.as_mut() {
+                q.show_explanation = !q.show_explanation;
+            }
+        }
+
+        // Exit quiz mode — go back to Branch
+        KeyCode::Esc => {
+            app.tab_mut().set_mode(DiffMode::Branch);
+        }
+
+        _ => {}
+    }
+
     Ok(())
 }
 
