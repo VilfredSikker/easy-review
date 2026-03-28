@@ -197,7 +197,10 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             mode_style(DiffMode::History, tab.mode),
         ));
     }
-    if app.config.features.view_conflicts && show_all_modes {
+    if app.config.features.view_conflicts
+        && show_all_modes
+        && crate::git::is_merge_in_progress(&tab.repo_root)
+    {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(
             " 5 ",
@@ -208,7 +211,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             mode_style(DiffMode::Conflicts, tab.mode),
         ));
     }
-    if app.config.features.view_hidden && show_all_modes {
+    if app.config.features.view_hidden && show_all_modes && !tab.watched_config.paths.is_empty() {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(" 6 ", mode_style(DiffMode::Hidden, tab.mode)));
         modes.push(Span::styled(
@@ -224,7 +227,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             mode_style(DiffMode::Wizard, tab.mode),
         ));
     }
-    if app.config.features.view_quiz && show_all_modes {
+    if app.config.features.view_quiz && show_all_modes && tab.ai.quiz.is_some() {
         modes.push(Span::raw(" "));
         modes.push(Span::styled(" 8 ", mode_style(DiffMode::Quiz, tab.mode)));
         modes.push(Span::styled(" QUIZ ", mode_style(DiffMode::Quiz, tab.mode)));
