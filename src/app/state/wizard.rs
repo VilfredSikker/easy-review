@@ -31,8 +31,6 @@ impl TabState {
             ordered_files: visible_files,
             current_step: 0,
             completed: HashSet::new(),
-            hidden_count: 0,
-            show_hidden: false,
         });
     }
 

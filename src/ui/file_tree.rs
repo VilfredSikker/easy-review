@@ -542,7 +542,7 @@ fn render_wizard_list(f: &mut Frame, area: Rect, app: &App) {
 
     let viewport_end = (file_scroll + viewport_height).min(wizard.ordered_files.len());
 
-    let mut items: Vec<ListItem> = wizard.ordered_files[file_scroll..viewport_end]
+    let items: Vec<ListItem> = wizard.ordered_files[file_scroll..viewport_end]
         .iter()
         .enumerate()
         .map(|(rel_idx, path)| {
@@ -553,7 +553,7 @@ fn render_wizard_list(f: &mut Frame, area: Rect, app: &App) {
             // Importance indicator from wizard tour data
             let importance_dot = if let Some(ref wizard_data) = tab.ai.wizard {
                 if let Some(entry) = wizard_data.tour.iter().find(|e| &e.path == path) {
-                    match entry.importance.as_str() {
+                    match entry.importance.to_lowercase().as_str() {
                         "fundamental" => Span::styled(
                             "◆ ",
                             ratatui::style::Style::default().fg(styles::CYAN()),
@@ -613,20 +613,7 @@ fn render_wizard_list(f: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    // Hidden files separator
-    if wizard.hidden_count > 0 {
-        let sep_label = format!(
-            " \u{2500}\u{2500} Info ({}) \u{2500}\u{2500}",
-            wizard.hidden_count
-        );
-        items.push(
-            ListItem::new(Line::from(Span::styled(
-                sep_label,
-                ratatui::style::Style::default().fg(styles::MUTED()),
-            )))
-            .style(styles::surface_style()),
-        );
-    }
+    // Non-tour files are appended at the end (no separator needed — they're just dimmed)
 
     let block = Block::default()
         .title(Span::styled(

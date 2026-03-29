@@ -596,18 +596,14 @@ pub struct SymbolRefsState {
     pub cursor: usize,
 }
 
-/// State for the review wizard mode
+/// State for the wizard tour mode
 pub struct WizardState {
-    /// File paths in review order (filtered: Info with no findings excluded)
+    /// File paths in tour order (fundamental → important → supporting → rest)
     pub ordered_files: Vec<String>,
     /// Index into ordered_files (which file is currently selected)
     pub current_step: usize,
     /// Files marked reviewed in wizard mode
     pub completed: HashSet<String>,
-    /// Number of files hidden (Info risk with no findings)
-    pub hidden_count: usize,
-    /// Whether to show hidden Info files
-    pub show_hidden: bool,
 }
 
 /// State for review quiz mode
@@ -1208,10 +1204,7 @@ impl TabState {
         if config.features.view_history && !self.is_remote() {
             modes.push(DiffMode::History);
         }
-        if config.features.view_conflicts
-            && !self.is_remote()
-            && crate::git::is_merge_in_progress(&self.repo_root)
-        {
+        if config.features.view_conflicts && !self.is_remote() && self.merge_active {
             modes.push(DiffMode::Conflicts);
         }
         if config.features.view_hidden && !self.is_remote() && !self.watched_config.paths.is_empty()
@@ -6969,13 +6962,9 @@ mod tests {
             ordered_files: vec!["a.rs".to_string(), "b.rs".to_string()],
             current_step: 0,
             completed: HashSet::new(),
-            hidden_count: 1,
-            show_hidden: false,
         };
         assert_eq!(state.ordered_files.len(), 2);
         assert_eq!(state.current_step, 0);
-        assert_eq!(state.hidden_count, 1);
-        assert!(!state.show_hidden);
         assert!(state.completed.is_empty());
     }
 
@@ -7006,8 +6995,6 @@ mod tests {
             ordered_files: vec!["a.rs".to_string()],
             current_step: 0,
             completed: HashSet::new(),
-            hidden_count: 0,
-            show_hidden: false,
         });
 
         tab.wizard_mark_reviewed();

@@ -37,13 +37,6 @@ pub fn handle_normal_input(
             let visible = app.tab().visible_modes(&app.config);
             if let Some(&mode) = visible.get(idx) {
                 app.tab_mut().set_mode(mode);
-            } else if !app.tab().is_remote() {
-                // Show helpful messages for modes that need data files
-                if app.config.features.view_wizard && app.tab().ai.wizard.is_none() {
-                    app.notify("Wizard requires .er/wizard.json — run /er-wizard first");
-                } else if app.config.features.view_quiz && app.tab().ai.quiz.is_none() {
-                    app.notify("Quiz requires .er/quiz.json — run /er-quiz first");
-                }
             }
             return Ok(());
         }
@@ -509,11 +502,8 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
-        // Wizard mode: 'i' toggles showing hidden Info files
+        // Wizard mode: 'i' reserved (was toggle hidden Info files, now unused)
         KeyCode::Char('i') if mode == DiffMode::Wizard => {
-            if let Some(ref mut wizard) = app.tab_mut().wizard {
-                wizard.show_hidden = !wizard.show_hidden;
-            }
             return Ok(());
         }
 
