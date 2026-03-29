@@ -2,37 +2,20 @@ use super::*;
 
 impl TabState {
     pub fn enter_wizard_mode(&mut self) {
-        // Build ordered list from ErOrder if available, else use diff file order
-        let ordered: Vec<String> = if let Some(ref order) = self.ai.order {
-            order.order.iter().map(|e| e.path.clone()).collect()
-        } else {
-            self.files.iter().map(|f| f.path.clone()).collect()
+        let wizard_data = match &self.ai.wizard {
+            Some(w) => w,
+            None => return,
         };
 
-        // Filter: exclude Info-risk files with no findings (hide them)
-        let mut visible_files: Vec<String> = Vec::new();
-        let mut hidden_count = 0usize;
+        // Use tour entries for ordered file list
+        let ordered: Vec<String> = wizard_data.tour.iter().map(|e| e.path.clone()).collect();
 
-        for path in &ordered {
-            let should_hide = if let Some(ref review) = self.ai.review {
-                if let Some(fr) = review.files.get(path) {
-                    fr.risk == crate::ai::RiskLevel::Info && fr.findings.is_empty()
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if should_hide {
-                hidden_count += 1;
-            } else {
-                visible_files.push(path.clone());
-            }
-        }
+        // All tour files are visible (wizard curates its own list — no risk-based hiding)
+        let mut visible_files = ordered.clone();
 
-        // Also include files in diff that weren't in the order list
+        // Append files in diff not covered by the tour
         for file in &self.files {
-            if !ordered.contains(&file.path) {
+            if !visible_files.contains(&file.path) {
                 visible_files.push(file.path.clone());
             }
         }
@@ -48,7 +31,7 @@ impl TabState {
             ordered_files: visible_files,
             current_step: 0,
             completed: HashSet::new(),
-            hidden_count,
+            hidden_count: 0,
             show_hidden: false,
         });
     }

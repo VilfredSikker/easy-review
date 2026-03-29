@@ -467,8 +467,8 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             set: |c, v| c.features.view_hidden = v,
         },
         ConfigItem::BoolToggle {
-            label: "Review Wizard (7)".into(),
-            description: "Show guided AI review wizard mode".into(),
+            label: "Change Tour (7)".into(),
+            description: "Show guided tour of important changes".into(),
             get: |c| c.features.view_wizard,
             set: |c, v| c.features.view_wizard = v,
         },

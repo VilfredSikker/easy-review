@@ -222,6 +222,33 @@ struct CommentIndexData {
     file_comment_counts: HashMap<String, (usize, usize)>,
 }
 
+// ── .er/wizard.json ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErWizard {
+    pub version: u32,
+    pub diff_hash: String,
+    #[serde(default)]
+    pub tour: Vec<WizardTourEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WizardTourEntry {
+    pub path: String,
+    /// Importance level: "fundamental", "important", or "supporting"
+    #[serde(default)]
+    pub importance: String,
+    /// What changed and why it matters
+    #[serde(default)]
+    pub summary: String,
+    /// Bullet points of key changes in this file
+    #[serde(default)]
+    pub key_changes: Vec<String>,
+    /// Other files related to this change
+    #[serde(default)]
+    pub related_files: Vec<String>,
+}
+
 // ── Aggregate AI state for a tab ──
 
 /// All loaded AI data for a single repo tab
@@ -238,6 +265,8 @@ pub struct AiState {
     pub feedback: Option<ErFeedback>,
     /// Quiz questions (.er/quiz.json)
     pub quiz: Option<ErQuiz>,
+    /// Wizard tour data (.er/wizard.json)
+    pub wizard: Option<ErWizard>,
     /// Whether the loaded data matches the current diff
     pub is_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
@@ -258,6 +287,7 @@ impl Default for AiState {
             github_comments: None,
             feedback: None,
             quiz: None,
+            wizard: None,
             is_stale: false,
             stale_files: HashSet::new(),
             comment_index: RefCell::new(None),

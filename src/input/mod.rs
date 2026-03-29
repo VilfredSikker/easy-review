@@ -248,6 +248,11 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 app.spawn_agent_prompt("quiz-review", &prompt)?;
             }
         }
+        HubAction::PromptWizard => {
+            if let Some(prompt) = build_agent_wizard_prompt(app) {
+                app.spawn_agent_prompt("wizard", &prompt)?;
+            }
+        }
         HubAction::OpenDirectory => {
             app.open_directory_browser();
         }
@@ -667,6 +672,23 @@ pub(super) fn build_agent_quiz_review_prompt(app: &mut App) -> Option<String> {
         )),
         _ => {
             app.notify("Quiz review not available in this mode");
+            None
+        }
+    }
+}
+
+/// Build the wizard tour generation agent prompt.
+pub(super) fn build_agent_wizard_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    let er_dir = tab.er_dir();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => Some(
+            format!("/er-wizard {} {} --output {}", mode.git_mode(), base, er_dir),
+        ),
+        _ => {
+            app.notify("Wizard generation not available in this mode");
             None
         }
     }

@@ -31,61 +31,20 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
-        // Mode switching (gated by feature flags)
-        KeyCode::Char('1') if app.config.features.view_branch => {
-            app.tab_mut().set_mode(DiffMode::Branch);
-            return Ok(());
-        }
-        KeyCode::Char('2')
-            if app.config.features.view_unstaged
-                && app.tab().pr_head_ref.is_none()
-                && !app.tab().is_remote() =>
-        {
-            app.tab_mut().set_mode(DiffMode::Unstaged);
-            return Ok(());
-        }
-        KeyCode::Char('3')
-            if app.config.features.view_staged
-                && app.tab().pr_head_ref.is_none()
-                && !app.tab().is_remote() =>
-        {
-            app.tab_mut().set_mode(DiffMode::Staged);
-            return Ok(());
-        }
-        KeyCode::Char('4') if app.config.features.view_history && !app.tab().is_remote() => {
-            app.tab_mut().set_mode(DiffMode::History);
-            return Ok(());
-        }
-        KeyCode::Char('5') if app.config.features.view_conflicts && !app.tab().is_remote() => {
-            app.tab_mut().set_mode(DiffMode::Conflicts);
-            return Ok(());
-        }
-        KeyCode::Char('6') if app.config.features.view_hidden && !app.tab().is_remote() => {
-            app.tab_mut().set_mode(DiffMode::Hidden);
-            return Ok(());
-        }
-        KeyCode::Char('7')
-            if app.config.features.view_wizard
-                && !app.tab().is_remote()
-                && app.tab().ai.review.is_some() =>
-        {
-            app.tab_mut().set_mode(DiffMode::Wizard);
-            return Ok(());
-        }
-        KeyCode::Char('7') if app.config.features.view_wizard && !app.tab().is_remote() => {
-            app.notify("Wizard requires .er/review.json — run /er-review first");
-            return Ok(());
-        }
-        KeyCode::Char('8')
-            if app.config.features.view_quiz
-                && !app.tab().is_remote()
-                && app.tab().ai.quiz.is_some() =>
-        {
-            app.tab_mut().set_mode(DiffMode::Quiz);
-            return Ok(());
-        }
-        KeyCode::Char('8') if app.config.features.view_quiz && !app.tab().is_remote() => {
-            app.notify("Quiz requires .er/quiz.json — run /er-quiz first");
+        // Mode switching — dynamic tab numbers based on visible modes
+        KeyCode::Char(c @ '1'..='9') => {
+            let idx = (c as usize) - ('1' as usize);
+            let visible = app.tab().visible_modes(&app.config);
+            if let Some(&mode) = visible.get(idx) {
+                app.tab_mut().set_mode(mode);
+            } else if !app.tab().is_remote() {
+                // Show helpful messages for modes that need data files
+                if app.config.features.view_wizard && app.tab().ai.wizard.is_none() {
+                    app.notify("Wizard requires .er/wizard.json — run /er-wizard first");
+                } else if app.config.features.view_quiz && app.tab().ai.quiz.is_none() {
+                    app.notify("Quiz requires .er/quiz.json — run /er-quiz first");
+                }
+            }
             return Ok(());
         }
         // Toggle mtime sort (works in any mode)

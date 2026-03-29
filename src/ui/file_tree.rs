@@ -550,16 +550,23 @@ fn render_wizard_list(f: &mut Frame, area: Rect, app: &App) {
             let is_selected = abs_idx == wizard.current_step;
             let is_completed = wizard.completed.contains(path);
 
-            // Risk dot from AI review
-            let risk_dot = if let Some(ref review) = tab.ai.review {
-                if let Some(fr) = review.files.get(path) {
-                    let dot_style = match fr.risk {
-                        RiskLevel::High => styles::risk_high(),
-                        RiskLevel::Medium => styles::risk_medium(),
-                        RiskLevel::Low => styles::risk_low(),
-                        RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE()),
-                    };
-                    Span::styled(format!("{} ", fr.risk.symbol()), dot_style)
+            // Importance indicator from wizard tour data
+            let importance_dot = if let Some(ref wizard_data) = tab.ai.wizard {
+                if let Some(entry) = wizard_data.tour.iter().find(|e| &e.path == path) {
+                    match entry.importance.as_str() {
+                        "fundamental" => Span::styled(
+                            "◆ ",
+                            ratatui::style::Style::default().fg(styles::CYAN()),
+                        ),
+                        "important" => Span::styled(
+                            "◇ ",
+                            ratatui::style::Style::default().fg(styles::YELLOW()),
+                        ),
+                        _ => Span::styled(
+                            "· ",
+                            ratatui::style::Style::default().fg(styles::DIM()),
+                        ),
+                    }
                 } else {
                     Span::styled("  ", ratatui::style::Style::default())
                 }
@@ -590,7 +597,7 @@ fn render_wizard_list(f: &mut Frame, area: Rect, app: &App) {
                         ratatui::style::Style::default().fg(styles::DIM())
                     },
                 ),
-                risk_dot,
+                importance_dot,
                 Span::styled(
                     short_path,
                     if is_selected {

@@ -535,38 +535,27 @@ fn render_wizard_context<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a cra
     }
     lines.push(Line::from(""));
 
-    // Risk level + reason + summary from review data
-    if let Some(ref review) = tab.ai.review {
-        if let Some(fr) = review.files.get(&file_path) {
-            let risk_style = match fr.risk {
-                RiskLevel::High => styles::risk_high(),
-                RiskLevel::Medium => styles::risk_medium(),
-                RiskLevel::Low => styles::risk_low(),
-                RiskLevel::Info => Style::default().fg(styles::BLUE()),
-            };
-            let risk_label = match fr.risk {
-                RiskLevel::High => "HIGH RISK",
-                RiskLevel::Medium => "MEDIUM RISK",
-                RiskLevel::Low => "LOW RISK",
-                RiskLevel::Info => "INFO",
+    // Tour data from wizard.json
+    if let Some(ref wizard_data) = tab.ai.wizard {
+        if let Some(entry) = wizard_data.tour.iter().find(|e| e.path == file_path) {
+            // Importance indicator
+            let (importance_symbol, importance_style) = match entry.importance.as_str() {
+                "fundamental" => ("◆", Style::default().fg(styles::CYAN()).add_modifier(Modifier::BOLD)),
+                "important" => ("◇", Style::default().fg(styles::YELLOW())),
+                _ => ("·", Style::default().fg(styles::DIM())),
             };
             lines.push(Line::from(vec![
-                Span::styled(format!(" {} ", fr.risk.symbol()), risk_style),
-                Span::styled(risk_label, risk_style),
+                Span::styled(format!(" {} ", importance_symbol), importance_style),
+                Span::styled(
+                    entry.importance.to_uppercase(),
+                    importance_style,
+                ),
             ]));
 
-            if !fr.risk_reason.is_empty() {
-                for wrapped in word_wrap(&fr.risk_reason, max_w) {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!(" {}", wrapped),
-                        Style::default().fg(styles::DIM()),
-                    )]));
-                }
-            }
-
-            if !fr.summary.is_empty() {
+            // Summary
+            if !entry.summary.is_empty() {
                 lines.push(Line::from(""));
-                for wrapped in word_wrap(&fr.summary, max_w) {
+                for wrapped in word_wrap(&entry.summary, max_w) {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {}", wrapped),
                         Style::default().fg(styles::TEXT()),
@@ -574,49 +563,47 @@ fn render_wizard_context<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a cra
                 }
             }
 
-            // Findings
-            if !fr.findings.is_empty() {
+            // Key changes
+            if !entry.key_changes.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
-                    " ─── Findings ───",
+                    " ─── Key Changes ───",
                     Style::default().fg(styles::BORDER()),
                 )]));
-                for finding in &fr.findings {
+                for change in &entry.key_changes {
                     lines.push(Line::from(""));
-                    let sev_style = match finding.severity {
-                        RiskLevel::High => styles::risk_high(),
-                        RiskLevel::Medium => styles::risk_medium(),
-                        RiskLevel::Low => styles::risk_low(),
-                        RiskLevel::Info => Style::default().fg(styles::BLUE()),
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(format!(" {} ", finding.severity.symbol()), sev_style),
-                        Span::styled(
-                            finding.title.clone(),
-                            Style::default()
-                                .fg(styles::BRIGHT())
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
-                    if !finding.description.is_empty() {
-                        for wrapped in word_wrap(&finding.description, max_w) {
-                            lines.push(Line::from(vec![Span::styled(
-                                format!("   {}", wrapped),
-                                Style::default().fg(styles::TEXT()),
-                            )]));
-                        }
+                    for wrapped in word_wrap(change, max_w.saturating_sub(4)) {
+                        lines.push(Line::from(vec![Span::styled(
+                            format!("   • {}", wrapped),
+                            Style::default().fg(styles::TEXT()),
+                        )]));
                     }
+                }
+            }
+
+            // Related files
+            if !entry.related_files.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![Span::styled(
+                    " ─── Related Files ───",
+                    Style::default().fg(styles::BORDER()),
+                )]));
+                for rf in &entry.related_files {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  → {}", rf),
+                        Style::default().fg(styles::DIM()),
+                    )]));
                 }
             }
         } else {
             lines.push(Line::from(vec![Span::styled(
-                " No AI review for this file",
+                " Not in wizard tour",
                 Style::default().fg(styles::MUTED()),
             )]));
         }
     } else {
         lines.push(Line::from(vec![Span::styled(
-            " No AI review loaded",
+            " No wizard data loaded",
             Style::default().fg(styles::MUTED()),
         )]));
     }

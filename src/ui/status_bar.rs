@@ -156,81 +156,29 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     row_idx += 1;
 
     // ── Modes row: modes (left) + reviewed (right) ──
-    let show_all_modes = !tab.is_remote();
     let mut modes: Vec<Span> = vec![Span::raw(" ")];
-    if app.config.features.view_branch {
-        modes.push(Span::styled(" 1 ", mode_style(DiffMode::Branch, tab.mode)));
-        modes.push(Span::styled(
-            " BRANCH ",
-            mode_style(DiffMode::Branch, tab.mode),
-        ));
-        modes.push(Span::raw(" "));
-    }
-    if app.config.features.view_unstaged && show_all_modes {
-        modes.push(Span::styled(
-            " 2 ",
-            mode_style(DiffMode::Unstaged, tab.mode),
-        ));
-        modes.push(Span::styled(
-            " UNSTAGED ",
-            mode_style(DiffMode::Unstaged, tab.mode),
-        ));
-        modes.push(Span::raw(" "));
-    }
-    if app.config.features.view_staged && show_all_modes {
-        modes.push(Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)));
-        let staged_label = if tab.mode == DiffMode::Staged && tab.committed_unpushed {
-            " COMMITTED "
-        } else {
-            " STAGED "
+    let visible = tab.visible_modes(&app.config);
+    for (i, &vmode) in visible.iter().enumerate() {
+        let num = format!(" {} ", i + 1);
+        let label = match vmode {
+            DiffMode::Branch => " BRANCH ",
+            DiffMode::Unstaged => " UNSTAGED ",
+            DiffMode::Staged => {
+                if tab.mode == DiffMode::Staged && tab.committed_unpushed {
+                    " COMMITTED "
+                } else {
+                    " STAGED "
+                }
+            }
+            DiffMode::History => " HISTORY ",
+            DiffMode::Conflicts => " CONFLICTS ",
+            DiffMode::Hidden => " HIDDEN ",
+            DiffMode::Wizard => " WIZARD ",
+            DiffMode::Quiz => " QUIZ ",
         };
-        modes.push(Span::styled(
-            staged_label,
-            mode_style(DiffMode::Staged, tab.mode),
-        ));
+        modes.push(Span::styled(num, mode_style(vmode, tab.mode)));
+        modes.push(Span::styled(label, mode_style(vmode, tab.mode)));
         modes.push(Span::raw(" "));
-    }
-    if app.config.features.view_history && show_all_modes {
-        modes.push(Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)));
-        modes.push(Span::styled(
-            " HISTORY ",
-            mode_style(DiffMode::History, tab.mode),
-        ));
-    }
-    if app.config.features.view_conflicts
-        && show_all_modes
-        && crate::git::is_merge_in_progress(&tab.repo_root)
-    {
-        modes.push(Span::raw(" "));
-        modes.push(Span::styled(
-            " 5 ",
-            mode_style(DiffMode::Conflicts, tab.mode),
-        ));
-        modes.push(Span::styled(
-            " CONFLICTS ",
-            mode_style(DiffMode::Conflicts, tab.mode),
-        ));
-    }
-    if app.config.features.view_hidden && show_all_modes && !tab.watched_config.paths.is_empty() {
-        modes.push(Span::raw(" "));
-        modes.push(Span::styled(" 6 ", mode_style(DiffMode::Hidden, tab.mode)));
-        modes.push(Span::styled(
-            " HIDDEN ",
-            mode_style(DiffMode::Hidden, tab.mode),
-        ));
-    }
-    if app.config.features.view_wizard && show_all_modes && tab.ai.review.is_some() {
-        modes.push(Span::raw(" "));
-        modes.push(Span::styled(" 7 ", mode_style(DiffMode::Wizard, tab.mode)));
-        modes.push(Span::styled(
-            " WIZARD ",
-            mode_style(DiffMode::Wizard, tab.mode),
-        ));
-    }
-    if app.config.features.view_quiz && show_all_modes && tab.ai.quiz.is_some() {
-        modes.push(Span::raw(" "));
-        modes.push(Span::styled(" 8 ", mode_style(DiffMode::Quiz, tab.mode)));
-        modes.push(Span::styled(" QUIZ ", mode_style(DiffMode::Quiz, tab.mode)));
     }
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
@@ -318,47 +266,38 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         right.push(Span::raw("  "));
     }
 
-    // Wizard mode: show risk summary + progress
+    // Wizard mode: show importance summary + progress
     if tab.mode == DiffMode::Wizard {
         if let Some(ref wizard) = tab.wizard {
-            // Count files by risk level
-            let mut high = 0usize;
-            let mut med = 0usize;
-            let mut low = 0usize;
-            if let Some(ref review) = tab.ai.review {
-                for path in &wizard.ordered_files {
-                    if let Some(fr) = review.files.get(path) {
-                        match fr.risk {
-                            crate::ai::RiskLevel::High => high += 1,
-                            crate::ai::RiskLevel::Medium => med += 1,
-                            crate::ai::RiskLevel::Low => low += 1,
-                            crate::ai::RiskLevel::Info => {}
-                        }
+            // Count files by importance from wizard tour data
+            let mut fundamental = 0usize;
+            let mut important = 0usize;
+            let mut supporting = 0usize;
+            if let Some(ref wizard_data) = tab.ai.wizard {
+                for entry in &wizard_data.tour {
+                    match entry.importance.as_str() {
+                        "fundamental" => fundamental += 1,
+                        "important" => important += 1,
+                        _ => supporting += 1,
                     }
                 }
             }
-            if high > 0 {
+            if fundamental > 0 {
                 right.push(Span::styled(
-                    format!(" \u{25cf} HIGH({}) ", high),
-                    ratatui::style::Style::default().fg(styles::RED_TEXT()),
+                    format!(" \u{25c6} CORE({}) ", fundamental),
+                    ratatui::style::Style::default().fg(styles::CYAN()),
                 ));
             }
-            if med > 0 {
+            if important > 0 {
                 right.push(Span::styled(
-                    format!(" \u{25cf} MED({}) ", med),
-                    ratatui::style::Style::default().fg(styles::ORANGE()),
-                ));
-            }
-            if low > 0 {
-                right.push(Span::styled(
-                    format!(" \u{25cf} LOW({}) ", low),
+                    format!(" \u{25c7} KEY({}) ", important),
                     ratatui::style::Style::default().fg(styles::YELLOW()),
                 ));
             }
-            if wizard.hidden_count > 0 {
+            if supporting > 0 {
                 right.push(Span::styled(
-                    format!(" {} hidden ", wizard.hidden_count),
-                    ratatui::style::Style::default().fg(styles::MUTED()),
+                    format!(" \u{00b7} OTHER({}) ", supporting),
+                    ratatui::style::Style::default().fg(styles::DIM()),
                 ));
             }
             right.push(Span::styled(

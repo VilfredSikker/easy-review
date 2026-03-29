@@ -303,6 +303,8 @@ pub enum HubAction {
     PromptQuiz,
     /// Run quiz answer review via configured agent command
     PromptQuizReview,
+    /// Run wizard tour generation via configured agent command
+    PromptWizard,
     /// Approve PR on GitHub
     ApprovePR,
     /// Post a general comment on the PR (not attached to a file/line)
@@ -1188,6 +1190,41 @@ impl TabState {
     /// Whether this tab is reviewing a remote PR (no local git repo).
     pub fn is_remote(&self) -> bool {
         self.remote_repo.is_some()
+    }
+
+    /// Return the list of DiffMode tabs currently visible, based on feature flags,
+    /// remote status, and data availability. Used for dynamic tab numbering.
+    pub fn visible_modes(&self, config: &crate::config::ErConfig) -> Vec<DiffMode> {
+        let mut modes = Vec::new();
+        if config.features.view_branch {
+            modes.push(DiffMode::Branch);
+        }
+        if config.features.view_unstaged && !self.is_remote() && self.pr_head_ref.is_none() {
+            modes.push(DiffMode::Unstaged);
+        }
+        if config.features.view_staged && !self.is_remote() && self.pr_head_ref.is_none() {
+            modes.push(DiffMode::Staged);
+        }
+        if config.features.view_history && !self.is_remote() {
+            modes.push(DiffMode::History);
+        }
+        if config.features.view_conflicts
+            && !self.is_remote()
+            && crate::git::is_merge_in_progress(&self.repo_root)
+        {
+            modes.push(DiffMode::Conflicts);
+        }
+        if config.features.view_hidden && !self.is_remote() && !self.watched_config.paths.is_empty()
+        {
+            modes.push(DiffMode::Hidden);
+        }
+        if config.features.view_wizard && !self.is_remote() && self.ai.wizard.is_some() {
+            modes.push(DiffMode::Wizard);
+        }
+        if config.features.view_quiz && !self.is_remote() && self.ai.quiz.is_some() {
+            modes.push(DiffMode::Quiz);
+        }
+        modes
     }
 
     /// Return the `.er/` directory path — uses comments_dir() in remote mode,
@@ -3116,13 +3153,25 @@ impl App {
                 label: format!("Generate quiz ({})", agent_name),
                 hint: "".into(),
                 description: if has_quiz {
-                    "Regenerate quiz questions from diff + review".into()
+                    "Regenerate quiz questions from current diff".into()
                 } else {
                     "Generate comprehension quiz from current diff".into()
                 },
                 action: HubAction::PromptQuiz,
                 is_header: false,
-                enabled: has_review,
+                enabled: true,
+            },
+            HubItem {
+                label: format!("Generate wizard tour ({})", agent_name),
+                hint: "".into(),
+                description: if self.tab().ai.wizard.is_some() {
+                    "Regenerate guided tour of changes".into()
+                } else {
+                    "Generate guided tour of important changes".into()
+                },
+                action: HubAction::PromptWizard,
+                is_header: false,
+                enabled: true,
             },
             HubItem {
                 label: format!("Review quiz answers ({})", agent_name),

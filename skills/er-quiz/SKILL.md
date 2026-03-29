@@ -18,13 +18,13 @@ Optional base branch follows the scope: `/er-quiz branch develop`.
 ## What it does
 
 1. Reads the current diff (same command as `/er-review`)
-2. Reads `.er/review.json` if it exists (for risk/findings context)
-3. Generates quiz questions about P0/P1 changes only
+2. Optionally reads `.er/review.json` if it exists (for additional risk/findings context — not required)
+3. Generates quiz questions about significant changes in the diff
 4. Writes `.er/quiz.json`
 
 ## Review philosophy
 
-See `skills/REVIEW_PHILOSOPHY.md`. Questions ONLY about P0/P1 changes:
+See `skills/REVIEW_PHILOSOPHY.md`. Focus questions on significant changes (if `.er/review.json` exists, prioritize P0/P1; otherwise, identify significant changes from the diff directly):
 
 **Question categories:**
 - `breaking-changes` — API or contract changes that break callers
@@ -44,7 +44,7 @@ See `skills/REVIEW_PHILOSOPHY.md`. Questions ONLY about P0/P1 changes:
 **Target: ≤6 tool calls, ≤45 seconds.**
 
 - TOOL CALL 1: Bash — capture diff + hash (same as er-review step 1)
-- TOOL CALL 2: Read `.er/review.json` (if exists — skip if missing)
+- TOOL CALL 2: Read `.er/review.json` (optional — skip if missing, quiz works without it)
 - TOOL CALL 3: Read `.er/diff-tmp` (full diff into context)
 - IN-CONTEXT: Generate questions — zero tool calls
 - TOOL CALL 4: Write `.er/quiz.json`
@@ -126,4 +126,5 @@ Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
 - The explanation should teach something, not just restate the correct answer
 - For MC, the wrong options should reflect real misunderstandings, not obviously absurd answers
 - If `.er/review.json` exists, align question categories with the actual findings (ask about what was flagged)
-- If no P0/P1 changes exist in the diff, produce a minimal quiz (2-3 questions) or skip and print "No significant changes to quiz about"
+- If `.er/review.json` does not exist, identify significant changes directly from the diff (structural changes, new logic, error handling, API changes)
+- If the diff contains only trivial changes, produce a minimal quiz (2-3 questions) or skip and print "No significant changes to quiz about"
