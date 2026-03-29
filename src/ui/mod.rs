@@ -3,6 +3,7 @@ mod file_tree;
 pub mod highlight;
 mod overlay;
 pub mod panel;
+pub mod quiz;
 mod settings;
 mod status_bar;
 mod styles;
@@ -42,9 +43,39 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
     // Top bar
     status_bar::render_top_bar(f, outer[0], app);
 
-    // Main content — layout depends on panel state
+    // Main content — layout depends on mode and panel state
     let tab = app.tab();
-    if tab.panel.is_some() && outer[1].width >= (tab.file_tree_width + tab.panel_width + 20) {
+    let is_wizard = tab.mode == crate::app::DiffMode::Wizard;
+    let is_quiz = tab.mode == crate::app::DiffMode::Quiz;
+
+    if is_quiz {
+        // Quiz 3-col layout: question list (24) | diff view | question panel (40)
+        let quiz_list_width: u16 = 24;
+        let quiz_panel_width: u16 = 40;
+        if outer[1].width >= (quiz_list_width + quiz_panel_width + 20) {
+            let main_area = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(quiz_list_width),
+                    Constraint::Min(20),
+                    Constraint::Length(quiz_panel_width),
+                ])
+                .split(outer[1]);
+            quiz::render_quiz_list(f, main_area[0], app);
+            diff_view::render(f, main_area[1], app, hl);
+            quiz::render_quiz_question(f, main_area[2], app);
+        } else {
+            // Narrow: just list + question panel, no diff
+            let main_area = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(quiz_list_width), Constraint::Min(1)])
+                .split(outer[1]);
+            quiz::render_quiz_list(f, main_area[0], app);
+            quiz::render_quiz_question(f, main_area[1], app);
+        }
+    } else if (tab.panel.is_some() || is_wizard)
+        && outer[1].width >= (tab.file_tree_width + tab.panel_width + 20)
+    {
         // 3-col layout: file_tree + diff + panel
         let main_area = Layout::default()
             .direction(Direction::Horizontal)

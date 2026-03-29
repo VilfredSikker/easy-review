@@ -1,3 +1,10 @@
 /target
 .DS_Store
 .work/
+
+# Override global gitignore for project-level Claude Code commands
+!.claude/
+.claude/*
+!.claude/commands/
+!.claude/commands/*.md
+!.claude/settings.json

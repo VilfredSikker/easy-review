@@ -95,10 +95,15 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // ── Branch info row: repo · branch (vs base) ──
-    let repo_name = tab.tab_name();
+    // For remote tabs, show full owner/repo slug; tab_name() is compact for the tab bar
+    let repo_label = tab
+        .remote_repo
+        .as_deref()
+        .unwrap_or(&tab.tab_name())
+        .to_string();
     let mut info_spans: Vec<Span> = vec![
         Span::styled(
-            format!(" {}", repo_name),
+            format!(" {}", repo_label),
             ratatui::style::Style::default()
                 .fg(styles::CYAN())
                 .add_modifier(ratatui::style::Modifier::BOLD),
@@ -151,65 +156,29 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     row_idx += 1;
 
     // ── Modes row: modes (left) + reviewed (right) ──
-    let show_all_modes = !tab.is_remote();
     let mut modes: Vec<Span> = vec![Span::raw(" ")];
-    if app.config.features.view_branch {
-        modes.push(Span::styled(" 1 ", mode_style(DiffMode::Branch, tab.mode)));
-        modes.push(Span::styled(
-            " BRANCH ",
-            mode_style(DiffMode::Branch, tab.mode),
-        ));
-        modes.push(Span::raw(" "));
-    }
-    if app.config.features.view_unstaged && show_all_modes {
-        modes.push(Span::styled(
-            " 2 ",
-            mode_style(DiffMode::Unstaged, tab.mode),
-        ));
-        modes.push(Span::styled(
-            " UNSTAGED ",
-            mode_style(DiffMode::Unstaged, tab.mode),
-        ));
-        modes.push(Span::raw(" "));
-    }
-    if app.config.features.view_staged && show_all_modes {
-        modes.push(Span::styled(" 3 ", mode_style(DiffMode::Staged, tab.mode)));
-        let staged_label = if tab.mode == DiffMode::Staged && tab.committed_unpushed {
-            " COMMITTED "
-        } else {
-            " STAGED "
+    let visible = tab.visible_modes(&app.config);
+    for (i, &vmode) in visible.iter().enumerate() {
+        let num = format!(" {} ", i + 1);
+        let label = match vmode {
+            DiffMode::Branch => " BRANCH ",
+            DiffMode::Unstaged => " UNSTAGED ",
+            DiffMode::Staged => {
+                if tab.mode == DiffMode::Staged && tab.committed_unpushed {
+                    " COMMITTED "
+                } else {
+                    " STAGED "
+                }
+            }
+            DiffMode::History => " HISTORY ",
+            DiffMode::Conflicts => " CONFLICTS ",
+            DiffMode::Hidden => " HIDDEN ",
+            DiffMode::Wizard => " WIZARD ",
+            DiffMode::Quiz => " QUIZ ",
         };
-        modes.push(Span::styled(
-            staged_label,
-            mode_style(DiffMode::Staged, tab.mode),
-        ));
+        modes.push(Span::styled(num, mode_style(vmode, tab.mode)));
+        modes.push(Span::styled(label, mode_style(vmode, tab.mode)));
         modes.push(Span::raw(" "));
-    }
-    if app.config.features.view_history && show_all_modes {
-        modes.push(Span::styled(" 4 ", mode_style(DiffMode::History, tab.mode)));
-        modes.push(Span::styled(
-            " HISTORY ",
-            mode_style(DiffMode::History, tab.mode),
-        ));
-    }
-    if app.config.features.view_conflicts && show_all_modes {
-        modes.push(Span::raw(" "));
-        modes.push(Span::styled(
-            " 5 ",
-            mode_style(DiffMode::Conflicts, tab.mode),
-        ));
-        modes.push(Span::styled(
-            " CONFLICTS ",
-            mode_style(DiffMode::Conflicts, tab.mode),
-        ));
-    }
-    if app.config.features.view_hidden && show_all_modes {
-        modes.push(Span::raw(" "));
-        modes.push(Span::styled(" 6 ", mode_style(DiffMode::Hidden, tab.mode)));
-        modes.push(Span::styled(
-            " HIDDEN ",
-            mode_style(DiffMode::Hidden, tab.mode),
-        ));
     }
     if tab.sort_by_mtime {
         modes.push(Span::raw(" "));
@@ -225,7 +194,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
     let mut right: Vec<Span> = Vec::new();
 
     // Agent command status badges (persistent while running)
-    for (name, _label, _is_running) in app.agent_statuses() {
+    for (name, _label, _is_running) in tab.agent_statuses() {
         let display_name = match name {
             "review" => "Review",
             "questions" => "Questions",
@@ -295,6 +264,96 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         };
         right.push(Span::styled(panel_label, panel_style));
         right.push(Span::raw("  "));
+    }
+
+    // Wizard mode: show importance summary + progress
+    if tab.mode == DiffMode::Wizard {
+        if let Some(ref wizard) = tab.wizard {
+            // Count files by importance from wizard tour data
+            let mut fundamental = 0usize;
+            let mut important = 0usize;
+            let mut supporting = 0usize;
+            if let Some(ref wizard_data) = tab.ai.wizard {
+                for entry in &wizard_data.tour {
+                    match entry.importance.as_str() {
+                        "fundamental" => fundamental += 1,
+                        "important" => important += 1,
+                        _ => supporting += 1,
+                    }
+                }
+            }
+            if fundamental > 0 {
+                right.push(Span::styled(
+                    format!(" \u{25c6} CORE({}) ", fundamental),
+                    ratatui::style::Style::default().fg(styles::CYAN()),
+                ));
+            }
+            if important > 0 {
+                right.push(Span::styled(
+                    format!(" \u{25c7} KEY({}) ", important),
+                    ratatui::style::Style::default().fg(styles::YELLOW()),
+                ));
+            }
+            if supporting > 0 {
+                right.push(Span::styled(
+                    format!(" \u{00b7} OTHER({}) ", supporting),
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ));
+            }
+            right.push(Span::styled(
+                format!(
+                    " {}/{} reviewed ",
+                    wizard.completed.len(),
+                    wizard.ordered_files.len()
+                ),
+                ratatui::style::Style::default().fg(styles::BLUE()),
+            ));
+            right.push(Span::raw(" "));
+        }
+    }
+
+    // Quiz mode: show score and progress
+    if tab.mode == DiffMode::Quiz {
+        if let Some(ref quiz) = tab.quiz {
+            let (correct, attempted) = quiz.score;
+            let total = quiz.questions.len();
+            let visible = tab.quiz_visible_indices().len();
+            let pct = if attempted > 0 {
+                (correct * 100) / attempted
+            } else {
+                0
+            };
+            let current_num = tab
+                .quiz_visible_indices()
+                .iter()
+                .position(|&i| i == quiz.current)
+                .unwrap_or(0)
+                + 1;
+
+            right.push(Span::styled(
+                format!(" Score: {}/{} ({}%) ", correct, attempted, pct),
+                ratatui::style::Style::default().fg(styles::CYAN()),
+            ));
+            right.push(Span::styled(
+                format!(" Q {} of {} ", current_num, visible),
+                ratatui::style::Style::default().fg(styles::BLUE()),
+            ));
+            let level_label = match quiz.filter_level {
+                None => "All".to_string(),
+                Some(l) => format!("L{}", l),
+            };
+            right.push(Span::styled(
+                format!(" Level: {} ", level_label),
+                ratatui::style::Style::default().fg(styles::DIM()),
+            ));
+            if total != visible {
+                right.push(Span::styled(
+                    format!(" ({}  filtered) ", total - visible),
+                    ratatui::style::Style::default().fg(styles::MUTED()),
+                ));
+            }
+            right.push(Span::raw(" "));
+        }
     }
 
     // Show conflict status badge when in Conflicts mode
@@ -775,6 +834,9 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                         .to_string()
                 }
                 ConfirmAction::ApprovePR => "Approve this PR on GitHub? (y/n)".to_string(),
+                ConfirmAction::PushComments => {
+                    "Push as: (r) Review  (i) Individual  (Esc) Cancel".to_string()
+                }
             };
             let spans = vec![
                 Span::styled(

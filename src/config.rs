@@ -75,6 +75,10 @@ pub struct FeatureFlags {
     pub view_conflicts: bool,
     #[serde(default = "default_true")]
     pub view_hidden: bool,
+    #[serde(default = "default_true")]
+    pub view_wizard: bool,
+    #[serde(default = "default_true")]
+    pub view_quiz: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +183,8 @@ impl Default for FeatureFlags {
             view_history: true,
             view_conflicts: true,
             view_hidden: true,
+            view_wizard: true,
+            view_quiz: true,
         }
     }
 }
@@ -459,6 +465,18 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             description: "Show hidden files mode".into(),
             get: |c| c.features.view_hidden,
             set: |c, v| c.features.view_hidden = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Change Tour (7)".into(),
+            description: "Show guided tour of important changes".into(),
+            get: |c| c.features.view_wizard,
+            set: |c, v| c.features.view_wizard = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Review Quiz (8)".into(),
+            description: "Show comprehension quiz mode".into(),
+            get: |c| c.features.view_quiz,
+            set: |c, v| c.features.view_quiz = v,
         },
         // ── Display ──
         ConfigItem::SectionHeader("Display".into()),
@@ -827,6 +845,8 @@ mod tests {
                 view_history: true,
                 view_conflicts: false,
                 view_hidden: true,
+                view_wizard: false,
+                view_quiz: true,
             },
             display: DisplayConfig {
                 tab_width: 8,
