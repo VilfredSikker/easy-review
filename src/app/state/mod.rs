@@ -1211,7 +1211,7 @@ impl TabState {
         {
             modes.push(DiffMode::Hidden);
         }
-        if config.features.view_wizard && !self.is_remote() && self.ai.wizard.is_some() {
+        if config.features.view_wizard && !self.is_remote() && self.ai.review.is_some() {
             modes.push(DiffMode::Wizard);
         }
         if config.features.view_quiz && !self.is_remote() && self.ai.quiz.is_some() {
