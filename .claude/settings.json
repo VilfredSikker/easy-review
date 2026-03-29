@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(gh pr diff*)",
+      "Bash(mkdir -p .er*)",
+      "Bash(shasum *)",
+      "Bash(sha256sum *)",
+      "Bash(cp .er/*)",
+      "Read(.er/*)",
+      "Write(.er/*)",
+      "Edit(.er/*)"
+    ]
+  }
+}
