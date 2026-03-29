@@ -1558,7 +1558,12 @@ impl App {
                                 text: format!("{} completed", name),
                             });
                             // Force AI reload for commands that write .er/ files
-                            if name == "summary" || name == "review" || name == "questions" {
+                            if name == "summary"
+                                || name == "review"
+                                || name == "questions"
+                                || name == "quiz"
+                                || name == "wizard"
+                            {
                                 tab.last_ai_check = None;
                             }
                             let msg = Self::agent_completion_summary_for(tab, &name);
