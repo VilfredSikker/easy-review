@@ -684,9 +684,14 @@ pub(super) fn build_agent_wizard_prompt(app: &mut App) -> Option<String> {
     let base = tab.base_branch.clone();
     let er_dir = tab.er_dir();
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => Some(
-            format!("/er-wizard {} {} --output {}", mode.git_mode(), base, er_dir),
-        ),
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => {
+            Some(format!(
+                "/er-wizard {} {} --output {}",
+                mode.git_mode(),
+                base,
+                er_dir
+            ))
+        }
         _ => {
             app.notify("Wizard generation not available in this mode");
             None

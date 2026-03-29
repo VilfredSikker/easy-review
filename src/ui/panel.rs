@@ -539,17 +539,20 @@ fn render_wizard_context<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a cra
     if let Some(ref wizard_data) = tab.ai.wizard {
         if let Some(entry) = wizard_data.tour.iter().find(|e| e.path == file_path) {
             // Importance indicator
-            let (importance_symbol, importance_style) = match entry.importance.to_lowercase().as_str() {
-                "fundamental" => ("◆", Style::default().fg(styles::CYAN()).add_modifier(Modifier::BOLD)),
-                "important" => ("◇", Style::default().fg(styles::YELLOW())),
-                _ => ("·", Style::default().fg(styles::DIM())),
-            };
+            let (importance_symbol, importance_style) =
+                match entry.importance.to_lowercase().as_str() {
+                    "fundamental" => (
+                        "◆",
+                        Style::default()
+                            .fg(styles::CYAN())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    "important" => ("◇", Style::default().fg(styles::YELLOW())),
+                    _ => ("·", Style::default().fg(styles::DIM())),
+                };
             lines.push(Line::from(vec![
                 Span::styled(format!(" {} ", importance_symbol), importance_style),
-                Span::styled(
-                    entry.importance.to_uppercase(),
-                    importance_style,
-                ),
+                Span::styled(entry.importance.to_uppercase(), importance_style),
             ]));
 
             // Summary
