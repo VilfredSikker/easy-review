@@ -1,8 +1,8 @@
 # Issues & Pull Requests — vilfredsikker/easy-review
 
 ---
+
 ## ISSUES
----
 
 ### Issue #12 [OPEN]
 **Title:** Automatically release new versions to `brew`
@@ -151,7 +151,7 @@ go = { command = "gopls", args = ["serve"] }
 
 ---
 
-### Issue #21 [OPEN]
+### Issue #21 [OPEN] | Labels: enhancement
 **Title:** Agent Review Trigger — trigger AI review from inside ER
 **URL:** https://github.com/VilfredSikker/easy-review/issues/21
 **Description:**
@@ -210,7 +210,7 @@ Template variables are expanded before execution. This means any agent tool work
 
 ---
 
-### Issue #22 [OPEN]
+### Issue #22 [OPEN] | Labels: enhancement
 **Title:** Multi-Agent Arena (er-arena) — run N agents in parallel
 **URL:** https://github.com/VilfredSikker/easy-review/issues/22
 **Description:**
@@ -289,7 +289,7 @@ args = ["{repo_root}", "--base", "{base_branch}"]
 
 ---
 
-### Issue #23 [OPEN]
+### Issue #23 [OPEN] | Labels: enhancement
 **Title:** Archwatch Integration — launch dependency graph from ER
 **URL:** https://github.com/VilfredSikker/easy-review/issues/23
 **Description:**
@@ -346,7 +346,7 @@ This mode is tracked separately and depends on the shared crate extraction.
 
 ---
 
-### Issue #24 [OPEN]
+### Issue #24 [OPEN] | Labels: enhancement
 **Title:** Verification Pipeline — run lint/test/security checks from ER
 **URL:** https://github.com/VilfredSikker/easy-review/issues/24
 **Description:**
@@ -426,7 +426,7 @@ blocking = false               # advisory only
 
 ---
 
-### Issue #25 [CLOSED]
+### Issue #25 [CLOSED] | Labels: enhancement
 **Title:** Review Session Persistence — survive ER restarts
 **URL:** https://github.com/VilfredSikker/easy-review/issues/25
 **Description:**
@@ -496,7 +496,7 @@ Persist the review session to a `.er-session.json` file keyed by diff hash. When
 
 ---
 
-### Issue #26 [OPEN]
+### Issue #26 [OPEN] | Labels: enhancement
 **Title:** Diff Summary / Changelog Generation — generate PR descriptions from ER
 **URL:** https://github.com/VilfredSikker/easy-review/issues/26
 **Description:**
@@ -551,7 +551,7 @@ Or reuse the main agent command with a different prompt template, selectable via
 
 ---
 
-### Issue #27 [OPEN]
+### Issue #27 [OPEN] | Labels: enhancement
 **Title:** Inline Spec Coverage Indicators — show spec requirement coverage per file
 **URL:** https://github.com/VilfredSikker/easy-review/issues/27
 **Description:**
@@ -616,7 +616,7 @@ search_dirs = [".", "specs/", "../specs/"]
 
 ---
 
-### Issue #28 [OPEN]
+### Issue #28 [OPEN] | Labels: enhancement
 **Title:** Review Approval Workflow — one-key ship-it action
 **URL:** https://github.com/VilfredSikker/easy-review/issues/28
 **Description:**
@@ -683,7 +683,7 @@ require_no_high_severity = true
 
 ---
 
-### Issue #29 [OPEN]
+### Issue #29 [OPEN] | Labels: enhancement
 **Title:** Custom Annotation Layers — pluggable inline overlays for any tool
 **URL:** https://github.com/VilfredSikker/easy-review/issues/29
 **Description:**
@@ -774,7 +774,7 @@ Any tool can write `.er-annotations.json`:
 
 ---
 
-### Issue #30 [CLOSED]
+### Issue #30 [CLOSED] | Labels: enhancement
 **Title:** Modal Hub Architecture — consolidate keybinds into contextual popups
 **URL:** https://github.com/VilfredSikker/easy-review/issues/30
 **Description:**
@@ -992,9 +992,8 @@ Allow users to override the default colors used in the TUI through a theme-confi
 
 
 ## PULL REQUESTS
----
 
-### PR #1 [MERGED]
+### PR #1 [CLOSED]
 **Title:** add landingpage
 **Branch:** `landing-page` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/1
@@ -1003,7 +1002,7 @@ Allow users to override the default colors used in the TUI through a theme-confi
 
 ---
 
-### PR #2 [MERGED]
+### PR #2 [CLOSED]
 **Title:** Improve diff view contrast with full-width backgrounds
 **Branch:** `ui-contrasts` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/2
@@ -1012,7 +1011,7 @@ Allow users to override the default colors used in the TUI through a theme-confi
 
 **The problem:** Diff line backgrounds (green for added, red for removed) only colored the text area, leaving the gutter and trailing space as dark background. The colors themselves were also too subtle — hard to distinguish at a glance.
 
-**Why it matters:** The whole point of `er` is fast code review. If add/delete lines don't visually pop, scanning diffs is slow.
+**Why it matters:** The whole point of `er` is fast code review. If add/delete lines don&#39;t visually pop, scanning diffs is slow.
 
 **The fix:** Three small changes — bolder background colors, backgrounds that stretch the full line width (gutter to right edge), and gutter line numbers that inherit the diff background color.
 
@@ -1033,14 +1032,14 @@ Allow users to override the default colors used in the TUI through a theme-confi
 
 ---
 
-### PR #3 [MERGED]
+### PR #3 [CLOSED]
 **Title:** Add PR base hint, filter presets, and filtered reviewed count
 **Branch:** `pr-hint-and-filter-reviewed` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/3
 **Description:**
 ## In plain terms
 
-**The problem:** Running `er` on a manually checked-out PR branch picks `main` as the base via the fallback chain, even if the PR targets `develop`. This shows a different (larger) diff than `er --pr N`. Also, the reviewed counter ignores active filters, so you can't track progress within a filtered subset of files.
+**The problem:** Running `er` on a manually checked-out PR branch picks `main` as the base via the fallback chain, even if the PR targets `develop`. This shows a different (larger) diff than `er --pr N`. Also, the reviewed counter ignores active filters, so you can&#39;t track progress within a filtered subset of files.
 
 **Why it matters:** Users expect the same diff whether they run `er` or `er --pr N` on the same branch. And when filtering to focus on e.g. `*.rs` files, the reviewed counter should reflect that scope.
 
@@ -1049,7 +1048,7 @@ Allow users to override the default colors used in the TUI through a theme-confi
 2. Filter history overlay (`F` key) now includes built-in presets (frontend, backend, config, docs)
 3. Status bar shows both filtered reviewed count (yellow) and total reviewed count (blue) when a filter is active
 
-**TL;DR:** `er` now tells you when you're looking at the wrong diff base, offers quick filter presets, and tracks review progress per-filter.
+**TL;DR:** `er` now tells you when you&#39;re looking at the wrong diff base, offers quick filter presets, and tracks review progress per-filter.
 
 ## Changes
 
@@ -1074,7 +1073,7 @@ Allow users to override the default colors used in the TUI through a theme-confi
 
 ---
 
-### PR #4 [MERGED]
+### PR #4 [CLOSED]
 **Title:** Add Recent mode (key 4) — sort branch diff files by mtime
 **Branch:** `claude/add-recent-diff-mode-xR529` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/4
@@ -1084,10 +1083,10 @@ filesystem modification time (newest first), surfacing actively worked-on
 files at the top. Shares diff data, AI state, and reviewed status with
 Branch mode.
 
-- Add DiffMode::Recent variant with git_mode() returning "branch"
+- Add DiffMode::Recent variant with git_mode() returning &#34;branch&#34;
 - Sort files by mtime in refresh_diff_impl() for Recent mode
 - Preserve file selection by path when switching between modes
-- Show relative time column (e.g. "2m ago") in file tree for Recent mode
+- Show relative time column (e.g. &#34;2m ago&#34;) in file tree for Recent mode
 - Add key 4 binding and RECENT tab in status bar
 - Update all DiffMode::Branch checks to include Recent where appropriate
 
@@ -1095,7 +1094,7 @@ https://claude.ai/code/session_01UiN2bvcqY5j1CrVAMZZN48
 
 ---
 
-### PR #5 [MERGED]
+### PR #5 [CLOSED]
 **Title:** Add settings overlay UI with persistent configuration
 **Branch:** `claude/add-settings-system-lkscI` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/5
@@ -1126,7 +1125,7 @@ This PR adds a settings overlay UI that allows users to view and modify applicat
 
 - **Input handling** (`src/main.rs`):
   - Dedicated keybinding handler for settings overlay with j/k/Space/Enter/s/Esc support
-  - Remapped `Shift+S` from "stage current hunk" to "open settings" (stage hunk moved to `Ctrl+S`)
+  - Remapped `Shift+S` from &#34;stage current hunk&#34; to &#34;open settings&#34; (stage hunk moved to `Ctrl+S`)
 
 - **UI integration** (`src/ui/mod.rs`):
   - Settings overlay rendered separately from other overlays since it needs App access
@@ -1140,7 +1139,7 @@ This PR adds a settings overlay UI that allows users to view and modify applicat
 
 - Settings changes are held in memory and only persisted when explicitly saved (s key)
 - Pressing Escape reverts to the snapshot taken when the overlay was opened
-- Config is loaded once at app startup from the first tab's repo root
+- Config is loaded once at app startup from the first tab&#39;s repo root
 - Section headers are non-selectable and automatically skipped during navigation
 - Boolean toggles show visual feedback with [x] or [ ] checkboxes
 
@@ -1148,13 +1147,13 @@ https://claude.ai/code/session_01RQvRJbaeRZhGDpcy9SVwbg
 
 ---
 
-### PR #6 [MERGED]
+### PR #6 [CLOSED]
 **Title:** Add watched files feature for git-ignored paths
 **Branch:** `claude/watched-ignored-files-Qhm27` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/6
 **Description:**
 ## Summary
-This PR introduces a "watched files" feature that allows users to opt-in to viewing and tracking git-ignored files through a `.er-config.toml` configuration file. Users can monitor changes to ignored files using either content mode (full file display) or snapshot mode (diff against a saved snapshot).
+This PR introduces a &#34;watched files&#34; feature that allows users to opt-in to viewing and tracking git-ignored files through a `.er-config.toml` configuration file. Users can monitor changes to ignored files using either content mode (full file display) or snapshot mode (diff against a saved snapshot).
 
 ## Key Changes
 
@@ -1178,7 +1177,7 @@ This PR introduces a "watched files" feature that allows users to opt-in to view
 
 - Watched files are sorted by modification time (most recent first)
 - Files not in `.gitignore` are flagged with a warning indicator (⚠)
-- Large files (>10MB) and files with >10,000 lines are truncated in content mode
+- Large files (&gt;10MB) and files with &gt;10,000 lines are truncated in content mode
 - Snapshot diffs use unified format with 3-line context
 - Navigation seamlessly transitions between diff files and watched files sections
 - Configuration reloading and watched file refresh are available as public methods for future extensibility
@@ -1187,7 +1186,7 @@ https://claude.ai/code/session_01SxuZSfVJkJmhW7PmKBYNfT
 
 ---
 
-### PR #7 [MERGED]
+### PR #7 [CLOSED]
 **Title:** Mtime sort toggle, watch-by-default, and position persistence
 **Branch:** `claude/add-recent-diff-mode-xR529` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/7
@@ -1227,7 +1226,7 @@ https://claude.ai/code/session_01SxuZSfVJkJmhW7PmKBYNfT
 
 ---
 
-### PR #8 [MERGED]
+### PR #8 [CLOSED]
 **Title:** enhance comment system: GitHub sync, replies, deletion, inline rendering
 **Branch:** `claude/enhance-comment-system-F6ioh` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/8
@@ -1273,7 +1272,7 @@ https://claude.ai/code/session_01RgoqJ1GWaDrrpzSoqTQS3K
 
 ---
 
-### PR #9 [MERGED]
+### PR #9 [CLOSED]
 **Title:** Add commit history view mode (key 4)
 **Branch:** `claude/add-commit-history-view-8Lj2Y` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/9
@@ -1290,7 +1289,7 @@ Features:
 - Lazy loading: fetches 50 more commits when scrolling past end
 - Search: filter commits by subject, hash, or author with /
 - Merge commit detection with visual indicator
-- Status bar shows "4 HISTORY" mode with commit info
+- Status bar shows &#34;4 HISTORY&#34; mode with commit info
 - Edge cases: empty history, root commits, detached HEAD fallback
 
 Files changed:
@@ -1305,7 +1304,7 @@ https://claude.ai/code/session_01V8QxYehENo1xkM31L26Frz
 
 ---
 
-### PR #10 [MERGED]
+### PR #10 [CLOSED]
 **Title:** feat: add large diff performance optimizations
 **Branch:** `claude/large-diff-performance-7HSUQ` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/10
@@ -1319,7 +1318,7 @@ and 10,000+ lines:
 - Compacted files show summary with add/del counts, expandable via Enter
 - Memory freed by clearing hunks on compacted files
 
-**Deduplicated git calls & debounced refresh (§5):**
+**Deduplicated git calls &amp; debounced refresh (§5):**
 - Reduce git diff calls from 3 to max 2 per refresh by reusing raw output
 - Debounce file watcher refreshes (200ms) to batch rapid changes
 - Fast hash (DefaultHasher) for internal change detection on watch events
@@ -1349,7 +1348,7 @@ and 10,000+ lines:
 **Syntax highlighting cache (§2):**
 - Hash-keyed cache (content + filename) avoids re-highlighting
 - 10K entry cache with full eviction on overflow
-- High hit rate since most lines don't change between frames
+- High hit rate since most lines don&#39;t change between frames
 
 **Large file warnings (§6):**
 - Files above 2000 lines show warning indicator in title bar
@@ -1364,14 +1363,14 @@ https://claude.ai/code/session_01HNWxbPE14Nmr4pDTcox7U4
 
 ---
 
-### PR #11 [MERGED]
+### PR #11 [CLOSED]
 **Title:** UI refactor: replace ViewMode with InlineLayers + PanelContent system
 **Branch:** `agent-terminal-panel` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/11
 **Description:**
 ## In plain terms
 
-Right now the UI has 4 discrete view modes that you cycle through with `v`/`V`. Comments are only visible when AI data is loaded. There's no way to jump between comments across files.
+Right now the UI has 4 discrete view modes that you cycle through with `v`/`V`. Comments are only visible when AI data is loaded. There&#39;s no way to jump between comments across files.
 
 After this PR: comments are always visible inline, mode switching is gone, and `J`/`K` let you jump between all comments across every file.
 
@@ -1435,7 +1434,7 @@ After this PR: comments are always visible inline, mode switching is gone, and `
 
 ---
 
-### PR #13 [MERGED]
+### PR #13 [CLOSED]
 **Title:** Add CI workflow for build, test, lint, and format checks
 **Branch:** `claude/setup-ci-checks-NE60R` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/13
@@ -1468,7 +1467,7 @@ https://claude.ai/code/session_011R45ZB9PLujYG4kxNdkcbs
 
 ---
 
-### PR #15 [MERGED]
+### PR #15 [CLOSED]
 **Title:** Fix CI formatting and clippy checks
 **Branch:** `claude/fix-ci-formatting-checks-RnxSG` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/15
@@ -1484,7 +1483,7 @@ https://claude.ai/code/session_01RjKPZAbxdqx4bC2QJTawqh
 
 ---
 
-### PR #16 [MERGED]
+### PR #16 [CLOSED]
 **Title:** Add test coverage analysis with prioritized improvement areas
 **Branch:** `claude/analyze-test-coverage-P8sLN` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/16
@@ -1498,14 +1497,14 @@ https://claude.ai/code/session_011eLe5b48oSNmwPjvQ8igMz
 
 ---
 
-### PR #17 [MERGED]
+### PR #17 [CLOSED]
 **Title:** Hidden view mode, dynamic tabs, and history split diff
 **Branch:** `hidden-view` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/17
 **Description:**
 ## Summary
 
-Right now `er` shows all mode tabs (Branch, Unstaged, Staged, History, Conflicts) regardless of whether they have content — you get dead tabs when the working tree is clean, when there's no merge, etc. Watched files are toggled via `W` as an embedded section, mixing them into the regular file list without a dedicated navigation context. Split diff doesn't work in History mode. All of this adds friction to the review flow.
+Right now `er` shows all mode tabs (Branch, Unstaged, Staged, History, Conflicts) regardless of whether they have content — you get dead tabs when the working tree is clean, when there&#39;s no merge, etc. Watched files are toggled via `W` as an embedded section, mixing them into the regular file list without a dedicated navigation context. Split diff doesn&#39;t work in History mode. All of this adds friction to the review flow.
 
 This PR fixes that by making tabs content-aware, giving watched files their own mode, and extending split diff to History.
 
@@ -1513,7 +1512,7 @@ This PR fixes that by making tabs content-aware, giving watched files their own 
 
 - **Content-gated dynamic tabs** — tabs only appear when they have data. Unstaged/Staged disappear when the tree is clean, Conflicts when not merging, Hidden when no watched files are configured. Number keys (`1`-`9`) dynamically map to visible tabs instead of fixed positions.
 - **Hidden mode** (`DiffMode::Hidden`) — a dedicated full-screen view for watched files. No git diff runs; watched files are the entire content. Has its own input handling (j/k navigation, `/` search), its own file tree renderer, and its own status bar hints.
-- **History split diff** — side-by-side view for commit diffs with synchronized scrolling, sticky file headers, and file N/M indicators. Falls back to unified view on narrow terminals (<60 cols).
+- **History split diff** — side-by-side view for commit diffs with synchronized scrolling, sticky file headers, and file N/M indicators. Falls back to unified view on narrow terminals (&lt;60 cols).
 - **Config path fix** — `load_config`/`save_config` now use `~/.config/er/` consistently (was hitting `~/Library/Application Support/` on macOS via `dirs::config_dir()`).
 - **New feature flags** — `view_hidden` and `watched_in_all_tabs` in settings overlay.
 - **Syntax highlight improvements** and AI loader enhancements.
@@ -1534,7 +1533,7 @@ This PR fixes that by making tabs content-aware, giving watched files their own 
 
 ---
 
-### PR #19 [MERGED]
+### PR #19 [CLOSED]
 **Title:** Feature/v1.4 review quality
 **Branch:** `feature/v1.4-review-quality` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/19
@@ -1543,7 +1542,7 @@ Description
 
 ---
 
-### PR #20 [MERGED]
+### PR #20 [CLOSED]
 **Title:** fixes across the app
 **Branch:** `fixes` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/20
@@ -1552,7 +1551,7 @@ Description
 
 ---
 
-### PR #31 [MERGED]
+### PR #31 [CLOSED]
 **Title:** Add Modal Hub Architecture — consolidate keybinds into contextual popups
 **Branch:** `claude/add-dark-mode-Xdiqy` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/31
@@ -1597,22 +1596,22 @@ Implements a complete review approval workflow that allows users to approve and 
 - **New `gh_pr_approve()` function** (`github.rs`): Wraps `gh pr review --approve` CLI command
 - **UI enhancements** (`status_bar.rs`):
   - Approval readiness indicator in top bar showing NOT READY/PARTIAL/READY status with color coding
-  - New "g" keybinding hint for approval action
+  - New &#34;g&#34; keybinding hint for approval action
   - Confirmation prompt for approval action in bottom bar
 - **Settings integration** (`config.rs`): Added approval section to settings UI with toggles for all approval configuration options
 
 ## Implementation Details
 
-- The approval readiness check is non-blocking: if not all checks pass, users receive a notification showing progress (e.g., "2/4 checks passed") but can still force approval via settings
+- The approval readiness check is non-blocking: if not all checks pass, users receive a notification showing progress (e.g., &#34;2/4 checks passed&#34;) but can still force approval via settings
 - The workflow integrates with existing git and GitHub operations, reusing established patterns for error handling and user feedback
-- Configuration defaults are conservative: only "all reviewed" and "no questions" checks are enabled by default
-- The approval action is added to the normal input handler (KeyCode::Char('g')) and follows the existing confirm/cancel pattern
+- Configuration defaults are conservative: only &#34;all reviewed&#34; and &#34;no questions&#34; checks are enabled by default
+- The approval action is added to the normal input handler (KeyCode::Char(&#39;g&#39;)) and follows the existing confirm/cancel pattern
 
 https://claude.ai/code/session_01S148KJbJ9qFQ7DjgeQayPb
 
 ---
 
-### PR #33 [MERGED]
+### PR #33 [CLOSED]
 **Title:** Add session persistence to restore review progress across restarts
 **Branch:** `claude/move-er-files-folder-5pZ5O` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/33
@@ -1656,7 +1655,7 @@ https://claude.ai/code/session_015r26c3Gpu3yojamJbMxcNS
 
 ---
 
-### PR #34 [MERGED]
+### PR #34 [CLOSED]
 **Title:** Add comprehensive test coverage for config, UI, and state modules
 **Branch:** `claude/fix-analysis-findings-Q8vGG` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/34
@@ -1732,7 +1731,7 @@ This PR adds integration with Archwatch, a dependency graph visualization tool, 
 
 - **Configuration support** (`src/config.rs`):
   - New `ArchwatchConfig` struct with configurable binary path, port, and auto-launch option
-  - Sensible defaults: binary="archwatch", port=3210, auto_launch=false
+  - Sensible defaults: binary=&#34;archwatch&#34;, port=3210, auto_launch=false
   - Settings UI integration for Archwatch configuration
 
 - **User interaction** (`src/main.rs`):
@@ -1754,7 +1753,7 @@ https://claude.ai/code/session_01YPiRmiF5iK649ff66yFGgj
 
 ---
 
-### PR #36 [MERGED]
+### PR #36 [CLOSED]
 **Title:** changes to settings, keymap hints
 **Branch:** `changes-to-settings` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/36
@@ -1763,7 +1762,7 @@ https://claude.ai/code/session_01YPiRmiF5iK649ff66yFGgj
 
 ---
 
-### PR #38 [MERGED]
+### PR #38 [CLOSED]
 **Title:** fix scroll
 **Branch:** `split-view-old-diff-on-new-files` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/38
@@ -1772,7 +1771,7 @@ https://claude.ai/code/session_01YPiRmiF5iK649ff66yFGgj
 
 ---
 
-### PR #39 [MERGED]
+### PR #39 [CLOSED]
 **Title:** Add background summary agent for generating diff summaries
 **Branch:** `claude/update-er-file-paths-75GHc` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/39
@@ -1807,7 +1806,7 @@ Adds a background agent system to generate `.er/summary.md` files containing con
 
 - Agent runs in a separate thread with `std::sync::mpsc::channel()` for non-blocking communication
 - Prompt includes base branch and output path information
-- `.er/` directory is created automatically if it doesn't exist
+- `.er/` directory is created automatically if it doesn&#39;t exist
 - Agent stderr is captured and displayed in notifications on failure
 - Successful completion triggers AI state reload to pick up the new summary
 - Thread crash is detected via `TryRecvError::Disconnected`
@@ -1816,7 +1815,7 @@ https://claude.ai/code/session_01ViV3DvrQrykLDP9DWmgDYs
 
 ---
 
-### PR #40 [MERGED]
+### PR #40 [CLOSED]
 **Title:** Add per-file context line expansion/collapse with auto-expand
 **Branch:** `claude/expand-lines-around-changes-7c99s` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/40
@@ -1833,12 +1832,12 @@ This PR adds the ability to dynamically adjust the number of context lines shown
   - `collapse_context()`: Steps back through decreasing levels
   - `maybe_auto_expand_context()`: Automatically expands to full context for files with ≤ threshold diff lines
 
-- **Git diff refactoring**: Modified `git_diff_raw_file()` to accept an optional `context_lines` parameter, allowing custom `--unified=N` values. Added `refetch_file_with_context()` to re-fetch a file's diff with a specific context level.
+- **Git diff refactoring**: Modified `git_diff_raw_file()` to accept an optional `context_lines` parameter, allowing custom `--unified=N` values. Added `refetch_file_with_context()` to re-fetch a file&#39;s diff with a specific context level.
 
 - **UI enhancements**:
-  - Display context level in diff view title (e.g., "[context: 10]" or "[full context]")
-  - Show gap indicators between hunks with line counts (e.g., "··· 42 lines hidden (+/- to expand) ···")
-  - Added "+/-" hint to status bar
+  - Display context level in diff view title (e.g., &#34;[context: 10]&#34; or &#34;[full context]&#34;)
+  - Show gap indicators between hunks with line counts (e.g., &#34;··· 42 lines hidden (+/- to expand) ···&#34;)
+  - Added &#34;+/-&#34; hint to status bar
 
 - **Configuration**: Added `auto_context_threshold` config option (default: 50 lines) to control automatic context expansion behavior.
 
@@ -1859,7 +1858,7 @@ https://claude.ai/code/session_01NW8Ubb1JNstkmhaNc47RJT
 
 ---
 
-### PR #41 [MERGED]
+### PR #41 [CLOSED]
 **Title:** feat: one-command install via curl + CI release workflow
 **Branch:** `easy-install` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/41
@@ -1880,7 +1879,7 @@ https://claude.ai/code/session_01NW8Ubb1JNstkmhaNc47RJT
 
 ---
 
-### PR #42 [MERGED]
+### PR #42 [CLOSED]
 **Title:** Update marketing page and remove flaky tests
 **Branch:** `update-marketing-page` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/42
@@ -1898,7 +1897,7 @@ https://claude.ai/code/session_01NW8Ubb1JNstkmhaNc47RJT
 
 ---
 
-### PR #43 [MERGED]
+### PR #43 [CLOSED]
 **Title:** Fix review navigation, panel improvements, delete watched files
 **Branch:** `fix-review-navigation` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/43
@@ -1914,13 +1913,13 @@ https://claude.ai/code/session_01NW8Ubb1JNstkmhaNc47RJT
 ## Test plan
 - [x] `cargo test` — 390 tests pass
 - [x] `cargo build` — clean compile
-- [ ] Manual: `er` → navigate findings with Ctrl+J/K → verify scroll lands on the finding's line
+- [ ] Manual: `er` → navigate findings with Ctrl+J/K → verify scroll lands on the finding&#39;s line
 - [ ] Manual: `er` → `6` → select watched file → `d` → confirm with `y` → file deleted
 - [ ] Manual: `er` → open panel (`p`) → cycle to PR overview → verify CI checks and reviewers render
 
 ---
 
-### PR #44 [MERGED]
+### PR #44 [CLOSED]
 **Title:** Update README for first release
 **Branch:** `first-release` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/44
@@ -1936,35 +1935,35 @@ https://claude.ai/code/session_01NW8Ubb1JNstkmhaNc47RJT
 
 ---
 
-### PR #47 [MERGED]
+### PR #47 [CLOSED]
 **Title:** feat: no-checkout PR review
 **Branch:** `no-checkout-pr-review` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/47
 **Description:**
 ## In plain terms
 
-**Problem:** Running `er --pr N` or `er <github-url>` calls `gh pr checkout`, which switches your local branch. If you have uncommitted work or just want to glance at a PR, this is disruptive.
+**Problem:** Running `er --pr N` or `er ` calls `gh pr checkout`, which switches your local branch. If you have uncommitted work or just want to glance at a PR, this is disruptive.
 
 **Why it matters:** Developers using AI coding tools often have work-in-progress on their current branch. Forcing a checkout to review a PR creates friction — you have to stash, switch, review, switch back, pop.
 
-**The fix:** Fetch the PR's head commit to a local ref (`refs/er/pr/N/head`) and diff against it, leaving the working tree completely untouched. No branch switch, no stash needed.
+**The fix:** Fetch the PR&#39;s head commit to a local ref (`refs/er/pr/N/head`) and diff against it, leaving the working tree completely untouched. No branch switch, no stash needed.
 
 **TL;DR:** Review any PR without leaving your current branch.
 
 ## Changes
 
 - **`src/github.rs`** — Added `fetch_pr_head()` (fetches PR head to local ref) and `gh_pr_head_branch_name()`. Modified `gh_pr_overview()` to accept explicit PR number instead of auto-detecting from branch.
-- **`src/git/status.rs`** — Added `head_ref: Option<&str>` param to `git_diff_raw()` and `git_diff_raw_file()` so diffs can target the fetched ref instead of HEAD.
+- **`src/git/status.rs`** — Added `head_ref: Option&lt;&amp;str&gt;` param to `git_diff_raw()` and `git_diff_raw_file()` so diffs can target the fetched ref instead of HEAD.
 - **`src/git/diff.rs`** — Forwarded `head_ref` through `expand_compacted_file()` and `refetch_file_with_context()`.
 - **`src/app/state.rs`** — Added `pr_head_ref` and `pr_number` fields to `TabState`. Replaced `gh_pr_checkout` with `fetch_pr_head` in PR URL handler. Threaded `pr_head_ref` through all diff call sites.
 - **`src/main.rs`** — Updated `--pr` handler to fetch instead of checkout. Locked Unstaged/Staged mode switches (keys `2`/`3`) during PR review. Passed explicit `pr_number` to overview and comment sync functions.
 - **`src/ui/status_bar.rs`** — Shows `[PR #N]` indicator in cyan when reviewing a PR.
-- **`src/ui/panel.rs`** — Fixed UTF-8 string offset for `" → "` arrow in path display.
+- **`src/ui/panel.rs`** — Fixed UTF-8 string offset for `&#34; → &#34;` arrow in path display.
 
 ## Test plan
 
-- [ ] `er --pr <N>` from a different branch — diff shows correctly, `git branch` confirms no checkout happened
-- [ ] `er <github-pr-url>` — same verification
+- [ ] `er --pr ` from a different branch — diff shows correctly, `git branch` confirms no checkout happened
+- [ ] `er ` — same verification
 - [ ] Keys `2`/`3` (Unstaged/Staged) are no-ops during PR review
 - [ ] Comment pull/push (`G`/`P`) works against the correct PR
 - [ ] Compacted file expand (`Enter`) fetches correctly using PR ref
@@ -1973,7 +1972,7 @@ https://claude.ai/code/session_01NW8Ubb1JNstkmhaNc47RJT
 
 ---
 
-### PR #48 [MERGED]
+### PR #48 [CLOSED]
 **Title:** feat: theme system + no-checkout PR review
 **Branch:** `new-design-update-and-themes` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/48
@@ -1990,8 +1989,8 @@ https://claude.ai/code/session_01NW8Ubb1JNstkmhaNc47RJT
 - [x] Clippy clean (`cargo clippy`)
 - [ ] Manual: launch `er`, press `S`, cycle Theme setting, verify colors update live
 - [ ] Manual: restart `er`, verify theme persists from config
-- [ ] Manual: test `er --pr <N>` reviews without branch checkout
-- [ ] Manual: test `er --remote <PR_URL>` for remote review
+- [ ] Manual: test `er --pr ` reviews without branch checkout
+- [ ] Manual: test `er --remote ` for remote review
 
 ---
 
@@ -2022,7 +2021,7 @@ https://claude.ai/code/session_01P3o3RhdDmHuhET5cPQY3iU
 
 ---
 
-### PR #50 [MERGED]
+### PR #50 [CLOSED]
 **Title:** feat: guided AI agent prompting, Config Hub, and hardening
 **Branch:** `claude/plan-issue-45-52KoH` → `main`
 **URL:** https://github.com/VilfredSikker/easy-review/pull/50
@@ -2031,7 +2030,7 @@ https://claude.ai/code/session_01P3o3RhdDmHuhET5cPQY3iU
 
 **The problem:** Running AI reviews from `er` required external Claude Code skill files installed separately. Settings were a simple toggle overlay with no way to edit strings or manage lists.
 
-**Why it matters:** The external skill dependency made setup harder and the config UI couldn't handle the new agent settings (command path, args, prompt templates).
+**Why it matters:** The external skill dependency made setup harder and the config UI couldn&#39;t handle the new agent settings (command path, args, prompt templates).
 
 **The fix:** Embed prompt templates directly in the binary, replace the Settings overlay with a full Config Hub (inline editing, list management, local/global save), add a unified Open hub, and harden the codebase against shell injection, UTF-8 panics, and crash-inducing unwraps.
 
