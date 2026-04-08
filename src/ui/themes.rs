@@ -306,15 +306,15 @@ pub fn tokyo_night() -> Theme {
     Theme {
         name: "tokyo-night".to_string(),
 
-        bg: Color::Rgb(26, 27, 38),       // #1a1b26
-        surface: Color::Rgb(22, 22, 30),   // #16161e (bg_dark)
-        panel: Color::Rgb(31, 35, 53),     // #1f2335 (bg_float — slightly lighter for panels)
-        border: Color::Rgb(41, 46, 66),    // #292e42 (bg_highlight)
+        bg: Color::Rgb(26, 27, 38),      // #1a1b26
+        surface: Color::Rgb(22, 22, 30), // #16161e (bg_dark)
+        panel: Color::Rgb(31, 35, 53),   // #1f2335 (bg_float — slightly lighter for panels)
+        border: Color::Rgb(41, 46, 66),  // #292e42 (bg_highlight)
 
-        text: Color::Rgb(192, 202, 245),   // #c0caf5 (fg)
+        text: Color::Rgb(192, 202, 245),        // #c0caf5 (fg)
         text_bright: Color::Rgb(169, 177, 214), // #a9b1d6 (fg_dark — brighter in context)
-        text_dim: Color::Rgb(84, 92, 126), // #545c7e (dark3)
-        text_muted: Color::Rgb(86, 95, 137), // #565f89 (comment)
+        text_dim: Color::Rgb(84, 92, 126),      // #545c7e (dark3)
+        text_muted: Color::Rgb(86, 95, 137),    // #565f89 (comment)
 
         blue: Color::Rgb(122, 162, 247),   // #7aa2f7
         cyan: Color::Rgb(125, 207, 255),   // #7dcfff
@@ -324,11 +324,11 @@ pub fn tokyo_night() -> Theme {
         purple: Color::Rgb(187, 154, 247), // #bb9af7
         orange: Color::Rgb(255, 158, 100), // #ff9e64
 
-        add_bg: Color::Rgb(36, 62, 74),   // #243e4a (diff.add)
+        add_bg: Color::Rgb(36, 62, 74),      // #243e4a (diff.add)
         add_text: Color::Rgb(158, 206, 106), // #9ece6a (green)
-        del_bg: Color::Rgb(74, 39, 47),   // #4a272f (diff.delete)
+        del_bg: Color::Rgb(74, 39, 47),      // #4a272f (diff.delete)
         del_text: Color::Rgb(247, 118, 142), // #f7768e (red)
-        hunk_bg: Color::Rgb(31, 34, 49),  // #1f2231 (diff.change)
+        hunk_bg: Color::Rgb(31, 34, 49),     // #1f2231 (diff.change)
 
         line_cursor_bg: Color::Rgb(40, 52, 87), // #283457 (bg_visual)
         selected_bg: Color::Rgb(41, 46, 66),    // #292e42 (bg_highlight)
@@ -338,11 +338,11 @@ pub fn tokyo_night() -> Theme {
         inline_comment_bg: Color::Rgb(36, 40, 58), // slightly lighter
         comment_focus_bg: Color::Rgb(46, 60, 100), // #2e3c64 (bg_visual area)
 
-        stale: Color::Rgb(224, 175, 104),       // #e0af68 (yellow/warning)
+        stale: Color::Rgb(224, 175, 104), // #e0af68 (yellow/warning)
         watched_text: Color::Rgb(122, 162, 247), // #7aa2f7 (blue)
-        watched_muted: Color::Rgb(57, 75, 112),  // #394b70 (blue7)
-        watched_bg: Color::Rgb(22, 22, 30),      // #16161e (bg_dark)
-        unmerged: Color::Rgb(255, 158, 100),     // #ff9e64 (orange)
+        watched_muted: Color::Rgb(57, 75, 112), // #394b70 (blue7)
+        watched_bg: Color::Rgb(22, 22, 30), // #16161e (bg_dark)
+        unmerged: Color::Rgb(255, 158, 100), // #ff9e64 (orange)
         relocated_indicator: Color::Rgb(115, 218, 202), // #73daca (green1)
         lost_indicator: Color::Rgb(219, 75, 75), // #db4b4b (red1)
 
@@ -356,15 +356,15 @@ pub fn tokyo_night_storm() -> Theme {
     Theme {
         name: "tokyo-night-storm".to_string(),
 
-        bg: Color::Rgb(36, 40, 59),       // #24283b
-        surface: Color::Rgb(31, 35, 53),   // #1f2335 (bg_dark)
-        panel: Color::Rgb(31, 35, 53),     // #1f2335 (bg_float)
-        border: Color::Rgb(41, 46, 66),    // #292e42 (bg_highlight)
+        bg: Color::Rgb(36, 40, 59),      // #24283b
+        surface: Color::Rgb(31, 35, 53), // #1f2335 (bg_dark)
+        panel: Color::Rgb(31, 35, 53),   // #1f2335 (bg_float)
+        border: Color::Rgb(41, 46, 66),  // #292e42 (bg_highlight)
 
-        text: Color::Rgb(192, 202, 245),   // #c0caf5 (fg)
+        text: Color::Rgb(192, 202, 245),        // #c0caf5 (fg)
         text_bright: Color::Rgb(169, 177, 214), // #a9b1d6 (fg_dark)
-        text_dim: Color::Rgb(84, 92, 126), // #545c7e (dark3)
-        text_muted: Color::Rgb(86, 95, 137), // #565f89 (comment)
+        text_dim: Color::Rgb(84, 92, 126),      // #545c7e (dark3)
+        text_muted: Color::Rgb(86, 95, 137),    // #565f89 (comment)
 
         blue: Color::Rgb(122, 162, 247),   // #7aa2f7
         cyan: Color::Rgb(125, 207, 255),   // #7dcfff
@@ -374,27 +374,27 @@ pub fn tokyo_night_storm() -> Theme {
         purple: Color::Rgb(187, 154, 247), // #bb9af7
         orange: Color::Rgb(255, 158, 100), // #ff9e64
 
-        add_bg: Color::Rgb(43, 72, 90),   // #2b485a (diff.add)
+        add_bg: Color::Rgb(43, 72, 90),      // #2b485a (diff.add)
         add_text: Color::Rgb(158, 206, 106), // #9ece6a (green)
-        del_bg: Color::Rgb(82, 49, 63),   // #52313f (diff.delete)
+        del_bg: Color::Rgb(82, 49, 63),      // #52313f (diff.delete)
         del_text: Color::Rgb(247, 118, 142), // #f7768e (red)
-        hunk_bg: Color::Rgb(39, 45, 67),  // #272d43 (diff.change)
+        hunk_bg: Color::Rgb(39, 45, 67),     // #272d43 (diff.change)
 
         line_cursor_bg: Color::Rgb(46, 60, 100), // #2e3c64 (bg_visual)
         selected_bg: Color::Rgb(41, 46, 66),     // #292e42 (bg_highlight)
-        finding_bg: Color::Rgb(52, 44, 30),       // warm tint on bg
+        finding_bg: Color::Rgb(52, 44, 30),      // warm tint on bg
         finding_focus_bg: Color::Rgb(64, 54, 34), // brighter warm tint
-        comment_bg: Color::Rgb(31, 35, 53),       // #1f2335 (bg_float)
+        comment_bg: Color::Rgb(31, 35, 53),      // #1f2335 (bg_float)
         inline_comment_bg: Color::Rgb(36, 40, 58), // slightly lighter
         comment_focus_bg: Color::Rgb(46, 60, 100), // #2e3c64 (bg_visual area)
 
-        stale: Color::Rgb(224, 175, 104),        // #e0af68 (yellow/warning)
-        watched_text: Color::Rgb(122, 162, 247),  // #7aa2f7 (blue)
-        watched_muted: Color::Rgb(57, 75, 112),   // #394b70 (blue7)
-        watched_bg: Color::Rgb(31, 35, 53),       // #1f2335 (bg_dark)
-        unmerged: Color::Rgb(255, 158, 100),      // #ff9e64 (orange)
+        stale: Color::Rgb(224, 175, 104), // #e0af68 (yellow/warning)
+        watched_text: Color::Rgb(122, 162, 247), // #7aa2f7 (blue)
+        watched_muted: Color::Rgb(57, 75, 112), // #394b70 (blue7)
+        watched_bg: Color::Rgb(31, 35, 53), // #1f2335 (bg_dark)
+        unmerged: Color::Rgb(255, 158, 100), // #ff9e64 (orange)
         relocated_indicator: Color::Rgb(115, 218, 202), // #73daca (green1)
-        lost_indicator: Color::Rgb(219, 75, 75),  // #db4b4b (red1)
+        lost_indicator: Color::Rgb(219, 75, 75), // #db4b4b (red1)
 
         syntect_theme: "base16-ocean.dark".to_string(),
     }
@@ -406,15 +406,15 @@ pub fn tokyo_night_moon() -> Theme {
     Theme {
         name: "tokyo-night-moon".to_string(),
 
-        bg: Color::Rgb(34, 36, 54),       // #222436
-        surface: Color::Rgb(30, 32, 48),   // #1e2030 (bg_dark)
-        panel: Color::Rgb(30, 32, 48),     // #1e2030 (bg_float)
-        border: Color::Rgb(47, 51, 77),    // #2f334d (bg_highlight)
+        bg: Color::Rgb(34, 36, 54),      // #222436
+        surface: Color::Rgb(30, 32, 48), // #1e2030 (bg_dark)
+        panel: Color::Rgb(30, 32, 48),   // #1e2030 (bg_float)
+        border: Color::Rgb(47, 51, 77),  // #2f334d (bg_highlight)
 
-        text: Color::Rgb(200, 211, 245),   // #c8d3f5 (fg)
+        text: Color::Rgb(200, 211, 245),        // #c8d3f5 (fg)
         text_bright: Color::Rgb(130, 139, 184), // #828bb8 (fg_dark)
-        text_dim: Color::Rgb(99, 109, 166), // #636da6 (comment)
-        text_muted: Color::Rgb(99, 109, 166), // #636da6 (comment)
+        text_dim: Color::Rgb(99, 109, 166),     // #636da6 (comment)
+        text_muted: Color::Rgb(99, 109, 166),   // #636da6 (comment)
 
         blue: Color::Rgb(130, 170, 255),   // #82aaff
         cyan: Color::Rgb(134, 225, 252),   // #86e1fc
@@ -424,27 +424,27 @@ pub fn tokyo_night_moon() -> Theme {
         purple: Color::Rgb(192, 153, 255), // #c099ff
         orange: Color::Rgb(255, 150, 108), // #ff966c
 
-        add_bg: Color::Rgb(42, 69, 86),   // #2a4556 (diff.add)
+        add_bg: Color::Rgb(42, 69, 86),      // #2a4556 (diff.add)
         add_text: Color::Rgb(195, 232, 141), // #c3e88d (green)
-        del_bg: Color::Rgb(75, 42, 61),   // #4b2a3d (diff.delete)
+        del_bg: Color::Rgb(75, 42, 61),      // #4b2a3d (diff.delete)
         del_text: Color::Rgb(255, 117, 127), // #ff757f (red)
-        hunk_bg: Color::Rgb(37, 42, 63),  // #252a3f (diff.change)
+        hunk_bg: Color::Rgb(37, 42, 63),     // #252a3f (diff.change)
 
         line_cursor_bg: Color::Rgb(45, 63, 118), // #2d3f76 (bg_visual)
         selected_bg: Color::Rgb(47, 51, 77),     // #2f334d (bg_highlight)
-        finding_bg: Color::Rgb(54, 46, 30),       // warm tint on bg
+        finding_bg: Color::Rgb(54, 46, 30),      // warm tint on bg
         finding_focus_bg: Color::Rgb(66, 56, 34), // brighter warm tint
-        comment_bg: Color::Rgb(30, 32, 48),       // #1e2030 (bg_float)
+        comment_bg: Color::Rgb(30, 32, 48),      // #1e2030 (bg_float)
         inline_comment_bg: Color::Rgb(35, 38, 56), // slightly lighter
         comment_focus_bg: Color::Rgb(45, 63, 118), // #2d3f76 (bg_visual area)
 
-        stale: Color::Rgb(255, 199, 119),        // #ffc777 (yellow/warning)
-        watched_text: Color::Rgb(130, 170, 255),  // #82aaff (blue)
-        watched_muted: Color::Rgb(57, 75, 112),   // #394b70 (blue7)
-        watched_bg: Color::Rgb(30, 32, 48),       // #1e2030 (bg_dark)
-        unmerged: Color::Rgb(255, 150, 108),      // #ff966c (orange)
+        stale: Color::Rgb(255, 199, 119), // #ffc777 (yellow/warning)
+        watched_text: Color::Rgb(130, 170, 255), // #82aaff (blue)
+        watched_muted: Color::Rgb(57, 75, 112), // #394b70 (blue7)
+        watched_bg: Color::Rgb(30, 32, 48), // #1e2030 (bg_dark)
+        unmerged: Color::Rgb(255, 150, 108), // #ff966c (orange)
         relocated_indicator: Color::Rgb(79, 214, 190), // #4fd6be (green1/teal)
-        lost_indicator: Color::Rgb(197, 59, 83),  // #c53b53 (red1)
+        lost_indicator: Color::Rgb(197, 59, 83), // #c53b53 (red1)
 
         syntect_theme: "base16-ocean.dark".to_string(),
     }
@@ -456,45 +456,45 @@ pub fn tokyo_night_day() -> Theme {
     Theme {
         name: "tokyo-night-day".to_string(),
 
-        bg: Color::Rgb(225, 226, 231),     // #e1e2e7
+        bg: Color::Rgb(225, 226, 231),      // #e1e2e7
         surface: Color::Rgb(208, 213, 227), // #d0d5e3 (bg_dark)
         panel: Color::Rgb(208, 213, 227),   // #d0d5e3 (bg_float)
         border: Color::Rgb(196, 200, 218),  // #c4c8da (bg_highlight)
 
-        text: Color::Rgb(55, 96, 191),     // #3760bf (fg)
-        text_bright: Color::Rgb(52, 58, 79), // #343a4f (strong text)
-        text_dim: Color::Rgb(137, 144, 179), // #8990b3 (dark3)
+        text: Color::Rgb(55, 96, 191),         // #3760bf (fg)
+        text_bright: Color::Rgb(52, 58, 79),   // #343a4f (strong text)
+        text_dim: Color::Rgb(137, 144, 179),   // #8990b3 (dark3)
         text_muted: Color::Rgb(132, 140, 181), // #848cb5 (comment)
 
-        blue: Color::Rgb(46, 125, 233),    // #2e7de9
-        cyan: Color::Rgb(0, 113, 151),     // #007197
-        green: Color::Rgb(88, 117, 57),    // #587539
-        yellow: Color::Rgb(140, 108, 62),  // #8c6c3e
-        red: Color::Rgb(245, 42, 101),     // #f52a65
-        purple: Color::Rgb(152, 84, 241),  // #9854f1
-        orange: Color::Rgb(177, 92, 0),    // #b15c00
+        blue: Color::Rgb(46, 125, 233),   // #2e7de9
+        cyan: Color::Rgb(0, 113, 151),    // #007197
+        green: Color::Rgb(88, 117, 57),   // #587539
+        yellow: Color::Rgb(140, 108, 62), // #8c6c3e
+        red: Color::Rgb(245, 42, 101),    // #f52a65
+        purple: Color::Rgb(152, 84, 241), // #9854f1
+        orange: Color::Rgb(177, 92, 0),   // #b15c00
 
-        add_bg: Color::Rgb(183, 206, 213), // #b7ced5 (diff.add)
-        add_text: Color::Rgb(88, 117, 57), // #587539 (green)
-        del_bg: Color::Rgb(218, 186, 190), // #dababe (diff.delete)
+        add_bg: Color::Rgb(183, 206, 213),  // #b7ced5 (diff.add)
+        add_text: Color::Rgb(88, 117, 57),  // #587539 (green)
+        del_bg: Color::Rgb(218, 186, 190),  // #dababe (diff.delete)
         del_text: Color::Rgb(245, 42, 101), // #f52a65 (red)
         hunk_bg: Color::Rgb(213, 217, 228), // #d5d9e4 (diff.change)
 
         line_cursor_bg: Color::Rgb(180, 186, 210), // lighter visual selection
         selected_bg: Color::Rgb(196, 200, 218),    // #c4c8da (bg_highlight)
-        finding_bg: Color::Rgb(240, 228, 200),      // warm tint for findings
+        finding_bg: Color::Rgb(240, 228, 200),     // warm tint for findings
         finding_focus_bg: Color::Rgb(235, 220, 188), // brighter warm tint
-        comment_bg: Color::Rgb(208, 213, 227),      // #d0d5e3 (bg_float)
+        comment_bg: Color::Rgb(208, 213, 227),     // #d0d5e3 (bg_float)
         inline_comment_bg: Color::Rgb(200, 206, 222), // slightly darker
         comment_focus_bg: Color::Rgb(180, 190, 215), // focused comment
 
-        stale: Color::Rgb(140, 108, 62),          // #8c6c3e (yellow/warning)
-        watched_text: Color::Rgb(46, 125, 233),    // #2e7de9 (blue)
-        watched_muted: Color::Rgb(168, 174, 203),  // #a8aecb (fg_gutter)
-        watched_bg: Color::Rgb(208, 213, 227),     // #d0d5e3 (bg_dark)
-        unmerged: Color::Rgb(177, 92, 0),          // #b15c00 (orange)
+        stale: Color::Rgb(140, 108, 62), // #8c6c3e (yellow/warning)
+        watched_text: Color::Rgb(46, 125, 233), // #2e7de9 (blue)
+        watched_muted: Color::Rgb(168, 174, 203), // #a8aecb (fg_gutter)
+        watched_bg: Color::Rgb(208, 213, 227), // #d0d5e3 (bg_dark)
+        unmerged: Color::Rgb(177, 92, 0), // #b15c00 (orange)
         relocated_indicator: Color::Rgb(17, 140, 116), // #118c74 (teal)
-        lost_indicator: Color::Rgb(198, 67, 67),   // #c64343 (error)
+        lost_indicator: Color::Rgb(198, 67, 67), // #c64343 (error)
 
         syntect_theme: "base16-ocean.light".to_string(),
     }
