@@ -465,7 +465,16 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         ConfigItem::StringCycle {
             label: "Theme".into(),
             description: "Color theme".into(),
-            options: &["ocean-depth", "moonlight", "daybreak", "high-contrast"],
+            options: &[
+                "ocean-depth",
+                "moonlight",
+                "daybreak",
+                "high-contrast",
+                "tokyo-night",
+                "tokyo-night-storm",
+                "tokyo-night-moon",
+                "tokyo-night-day",
+            ],
             get: |c| c.display.theme.clone(),
             set: |c, v| c.display.theme = v,
         },
