@@ -1888,6 +1888,8 @@ fn render_comment_lines(
 ) {
     let is_question = comment.comment_type() == CommentType::Question;
     let is_stale = comment.is_stale();
+    let anchor = comment.anchor_status();
+    let is_lost = anchor == "lost";
 
     let bg = if focused {
         styles::COMMENT_FOCUS_BG()
@@ -1909,17 +1911,158 @@ fn render_comment_lines(
     let icon = if is_question { "❓" } else { "💬" };
     let author = comment.author();
 
+    if inline {
+        // ── GitHub-style inline block ──
+
+        // Top label: "  ╭─ 💬 R33 ────────────────────────────────"
+        let line_label = if let Some(ln) = comment.line_start() {
+            format!("  \u{256d}\u{2500} {} R{}  ", icon, ln)
+        } else {
+            format!("  \u{256d}\u{2500} {}  ", icon)
+        };
+        // emoji occupies 2 columns; estimate display width conservatively
+        let label_cols = line_label.chars().count() + 1;
+        let fill_len = (width as usize).saturating_sub(label_cols);
+        lines.push(
+            Line::from(vec![
+                Span::styled(
+                    line_label,
+                    ratatui::style::Style::default().fg(accent).bg(bg),
+                ),
+                Span::styled(
+                    "\u{2500}".repeat(fill_len),
+                    ratatui::style::Style::default().fg(styles::BORDER()).bg(bg),
+                ),
+            ])
+            .style(ratatui::style::Style::default().bg(bg)),
+        );
+
+        // Author line: "  │  VilfredSikker  14:30:00  [badges]"
+        let bar = if focused {
+            "  \u{25b8}\u{2502}  "
+        } else {
+            "  \u{2502}  "
+        };
+        let mut author_spans = vec![
+            Span::styled(
+                bar,
+                ratatui::style::Style::default()
+                    .fg(if focused { styles::PURPLE() } else { accent })
+                    .bg(bg),
+            ),
+            Span::styled(
+                author.to_string(),
+                ratatui::style::Style::default()
+                    .fg(accent)
+                    .bg(bg)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+        ];
+        let ts = comment.timestamp();
+        if !ts.is_empty() {
+            let time_part = ts.split('T').nth(1).unwrap_or("").trim_end_matches('Z');
+            author_spans.push(Span::styled(
+                format!("  {}", time_part),
+                ratatui::style::Style::default().fg(styles::DIM()).bg(bg),
+            ));
+        }
+        if anchor == "relocated" {
+            author_spans.push(Span::styled(
+                "  \u{21aa} moved",
+                ratatui::style::Style::default()
+                    .fg(styles::RELOCATED_INDICATOR())
+                    .bg(bg),
+            ));
+        } else if is_lost {
+            author_spans.push(Span::styled(
+                "  ? lost",
+                ratatui::style::Style::default()
+                    .fg(styles::LOST_INDICATOR())
+                    .bg(bg),
+            ));
+        }
+        if is_stale {
+            author_spans.push(Span::styled(
+                "  \u{26a0} stale",
+                ratatui::style::Style::default().fg(styles::STALE()).bg(bg),
+            ));
+        }
+        if comment.is_resolved() {
+            author_spans.push(Span::styled(
+                "  \u{2713} resolved",
+                ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
+            ));
+        }
+        if comment.comment_type() == CommentType::GitHubComment {
+            if comment.is_synced() {
+                author_spans.push(Span::styled(
+                    "  \u{2191} synced",
+                    ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
+                ));
+            } else {
+                author_spans.push(Span::styled(
+                    "  \u{2191} local",
+                    ratatui::style::Style::default().fg(styles::DIM()).bg(bg),
+                ));
+            }
+        }
+        if focused {
+            author_spans.push(Span::styled(
+                "  \u{25c6}",
+                ratatui::style::Style::default()
+                    .fg(styles::PURPLE())
+                    .bg(bg)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+        }
+        lines.push(Line::from(author_spans).style(ratatui::style::Style::default().bg(bg)));
+
+        // Text lines: "  │   text..."
+        let bar_style = ratatui::style::Style::default().fg(accent).bg(bg);
+        let indent_str = "  \u{2502}  ";
+        let max_len = (width as usize).saturating_sub(indent_str.len() + 2);
+        let text = comment.text();
+        let text_fg = if is_stale || is_lost {
+            styles::DIM()
+        } else {
+            styles::TEXT()
+        };
+        for wrapped in word_wrap(text, max_len) {
+            lines.push(
+                Line::from(vec![
+                    Span::styled(indent_str, bar_style),
+                    Span::styled(
+                        format!("  {}", wrapped),
+                        ratatui::style::Style::default().fg(text_fg).bg(bg),
+                    ),
+                ])
+                .style(ratatui::style::Style::default().bg(bg)),
+            );
+        }
+
+        // Bottom border: "  ╰──────────────────────────────────────────"
+        let bottom_fill = (width as usize).saturating_sub(3);
+        lines.push(
+            Line::from(vec![
+                Span::styled(
+                    "  \u{2570}",
+                    ratatui::style::Style::default().fg(accent).bg(bg),
+                ),
+                Span::styled(
+                    "\u{2500}".repeat(bottom_fill),
+                    ratatui::style::Style::default().fg(styles::BORDER()).bg(bg),
+                ),
+            ])
+            .style(ratatui::style::Style::default().bg(bg)),
+        );
+        return;
+    }
+
+    // ── Non-inline (panel / hunk-level) style ──
     let mut header_spans = vec![
         Span::styled(
             if focused {
-                // Bright left marker when focused
-                if inline {
-                    format!("  ▸  {} ", icon)
-                } else {
-                    format!("▸ {} ", icon)
-                }
-            } else if inline {
-                format!("     {} ", icon)
+                format!("\u{25b8} {} ", icon)
             } else {
                 format!("  {} ", icon)
             },
@@ -1947,7 +2090,6 @@ fn render_comment_lines(
     }
 
     // Relocated/lost anchor indicators
-    let anchor = comment.anchor_status();
     if anchor == "relocated" {
         header_spans.push(Span::styled(
             "  \u{21aa} moved",
@@ -1955,7 +2097,7 @@ fn render_comment_lines(
                 .fg(styles::RELOCATED_INDICATOR())
                 .bg(bg),
         ));
-    } else if anchor == "lost" {
+    } else if is_lost {
         header_spans.push(Span::styled(
             "  ? lost",
             ratatui::style::Style::default()
@@ -1983,12 +2125,12 @@ fn render_comment_lines(
     // Synced indicator (GitHub comments only)
     if comment.is_synced() {
         header_spans.push(Span::styled(
-            "  ↑ synced",
+            "  \u{2191} synced",
             ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
         ));
     } else if comment.comment_type() == CommentType::GitHubComment {
         header_spans.push(Span::styled(
-            "  ↑ local",
+            "  \u{2191} local",
             ratatui::style::Style::default().fg(styles::DIM()).bg(bg),
         ));
     }
@@ -1996,7 +2138,7 @@ fn render_comment_lines(
     // Focus indicator
     if focused {
         header_spans.push(Span::styled(
-            "  ◆ focused",
+            "  \u{25c6} focused",
             ratatui::style::Style::default()
                 .fg(styles::PURPLE())
                 .bg(bg)
@@ -2006,21 +2148,18 @@ fn render_comment_lines(
 
     lines.push(Line::from(header_spans).style(ratatui::style::Style::default().bg(bg)));
 
-    // Comment text — split by lines first so paragraph breaks and bullet points are preserved
-    let indent: usize = if inline { 8 } else { 6 };
-    let max_len = width.saturating_sub(indent as u16) as usize;
+    // Comment text
+    let max_len = width.saturating_sub(8) as usize;
     let text = comment.text();
-    let is_lost = anchor == "lost";
     let text_fg = if is_stale || is_lost {
         styles::DIM()
     } else {
         styles::TEXT()
     };
-    let padding = " ".repeat(indent.saturating_sub(2));
     for wrapped in word_wrap(text, max_len) {
         lines.push(
             Line::from(vec![Span::styled(
-                format!("  {}{}", padding, wrapped),
+                format!("      {}", wrapped),
                 ratatui::style::Style::default().fg(text_fg).bg(bg),
             )])
             .style(ratatui::style::Style::default().bg(bg)),
