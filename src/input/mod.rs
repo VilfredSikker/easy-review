@@ -1,7 +1,7 @@
 use crate::app;
 use crate::app::{
-    cleanup_question_answers, cleanup_questions, cleanup_reviews, App, ConfirmAction, DiffMode,
-    HubAction, InputMode,
+    cleanup_question_answers, cleanup_questions, cleanup_reviews, AiActionKind, App,
+    ConfirmAction, DiffMode, HubAction, InputMode,
 };
 use crate::{git, github};
 use anyhow::Result;
@@ -183,6 +183,15 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 "Questions: hidden"
             });
         }
+        HubAction::ToggleHideResolved => {
+            app.tab_mut().toggle_hide_resolved();
+            let on = app.tab().layers.hide_resolved;
+            app.notify(if on {
+                "Resolved: hidden"
+            } else {
+                "Resolved: visible"
+            });
+        }
         HubAction::CleanupQuestions => {
             let count = app
                 .tab()
@@ -201,6 +210,45 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 app.spawn_command(&name, &cmd)?;
             } else {
                 app.notify(&format!("{}: not configured", name));
+            }
+        }
+        HubAction::ConfigureAiSelection => {
+            app.open_ai_provider_picker(None);
+        }
+        HubAction::RunAiAction(action) => {
+            execute_ai_action(app, action)?;
+        }
+        HubAction::SelectAiProvider {
+            action,
+            provider_id,
+        } => {
+            if let Some(provider) = app.config.ai_hub.providers.get(&provider_id) {
+                if provider.models.len() > 1 {
+                    app.open_ai_model_picker(provider_id, action);
+                } else {
+                    app.current_ai_provider = Some(provider_id.clone());
+                    app.current_ai_model = provider.models.first().map(|m| m.id.clone());
+                    if let Some(action) = action {
+                        execute_ai_action(app, action)?;
+                    } else {
+                        app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
+                    }
+                }
+            } else {
+                app.notify("Unknown AI provider");
+            }
+        }
+        HubAction::SelectAiModel {
+            action,
+            provider_id,
+            model_id,
+        } => {
+            app.current_ai_provider = Some(provider_id);
+            app.current_ai_model = Some(model_id);
+            if let Some(action) = action {
+                execute_ai_action(app, action)?;
+            } else {
+                app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
             }
         }
         HubAction::PromptReview => {
@@ -306,6 +354,24 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
     Ok(())
 }
 
+fn execute_ai_action(app: &mut App, action: AiActionKind) -> Result<()> {
+    app.sync_ai_selection();
+
+    match action {
+        AiActionKind::Review => dispatch_hub_action(app, HubAction::PromptReview),
+        AiActionKind::Questions => dispatch_hub_action(app, HubAction::PromptQuestions),
+        AiActionKind::Quiz => dispatch_hub_action(app, HubAction::PromptQuiz),
+        AiActionKind::QuizReview => dispatch_hub_action(app, HubAction::PromptQuizReview),
+        AiActionKind::Wizard => dispatch_hub_action(app, HubAction::PromptWizard),
+        AiActionKind::Summary => {
+            if let Some(prompt) = build_agent_summary_prompt(app) {
+                app.spawn_agent_prompt("summary", &prompt)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 pub fn handle_search_input(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Enter | KeyCode::Esc => {
@@ -391,13 +457,19 @@ pub fn handle_remote_url_input(app: &mut App, key: KeyEvent) -> Result<()> {
 
 pub fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            // Shift+Enter inserts a newline
+            app.tab_mut().comment_textarea.insert_newline();
+        }
         KeyCode::Enter => {
             app.submit_comment()?;
         }
         KeyCode::Esc => {
             app.cancel_comment();
         }
-        // Scroll the diff view while composing a comment
+        KeyCode::Tab | KeyCode::BackTab => {
+            app.pause_comment();
+        }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.tab_mut().scroll_down(10);
         }
@@ -406,13 +478,13 @@ pub fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::PageDown => app.tab_mut().scroll_down(20),
         KeyCode::PageUp => app.tab_mut().scroll_up(20),
-        KeyCode::Char(c) => {
-            app.tab_mut().comment_input.push(c);
+        _ => {
+            // Delegate to textarea (arrows, chars, backspace, etc.)
+            // But intercept Enter so it doesn't insert newlines via the default handler
+            if key.code != KeyCode::Enter {
+                app.tab_mut().comment_textarea.input(key);
+            }
         }
-        KeyCode::Backspace => {
-            app.tab_mut().comment_input.pop();
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -631,16 +703,52 @@ pub(super) fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
     }
 }
 
+/// Build the summary generation agent prompt, using remote mode if applicable.
+pub(super) fn build_agent_summary_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    if tab.is_remote() {
+        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
+            (Some(ref s), Some(n)) => (s.clone(), n),
+            _ => {
+                app.notify("Remote mode missing repo or PR number");
+                return None;
+            }
+        };
+        let parts: Vec<&str> = slug.split('/').collect();
+        if parts.len() != 2 {
+            app.notify(&format!("Invalid remote repo slug: {}", slug));
+            return None;
+        }
+        let output_dir = app.tab().er_dir();
+        return Some(crate::ai::prompts::build_summary_prompt_remote(
+            parts[0],
+            parts[1],
+            pr_number,
+            &output_dir,
+        ));
+    }
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
+            crate::ai::prompts::build_summary_prompt(&base, mode.git_mode()),
+        ),
+        _ => {
+            app.notify("Summary generation not available in this mode");
+            None
+        }
+    }
+}
+
 /// Build the quiz generation agent prompt.
 pub(super) fn build_agent_quiz_prompt(app: &mut App) -> Option<String> {
     let tab = app.tab();
     let mode = tab.mode;
     let base = tab.base_branch.clone();
-    let er_dir = tab.er_dir();
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => Some(
-            format!("/er-quiz {} {} --output {}", mode.git_mode(), base, er_dir),
-        ),
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => {
+            Some(crate::ai::prompts::build_quiz_prompt(&base, mode.git_mode()))
+        }
         _ => {
             app.notify("Quiz generation not available in this mode");
             None
@@ -652,7 +760,6 @@ pub(super) fn build_agent_quiz_prompt(app: &mut App) -> Option<String> {
 pub(super) fn build_agent_quiz_review_prompt(app: &mut App) -> Option<String> {
     let tab = app.tab();
     let mode = tab.mode;
-    let base = tab.base_branch.clone();
     let er_dir = tab.er_dir();
     let answers_path = format!("{}/quiz-answers.json", er_dir);
     if !std::path::Path::new(&answers_path).exists() {
@@ -664,12 +771,7 @@ pub(super) fn build_agent_quiz_review_prompt(app: &mut App) -> Option<String> {
         | DiffMode::Unstaged
         | DiffMode::Staged
         | DiffMode::Wizard
-        | DiffMode::Quiz => Some(format!(
-            "/er-quiz-review {} {} --output {}",
-            mode.git_mode(),
-            base,
-            er_dir
-        )),
+        | DiffMode::Quiz => Some(crate::ai::prompts::build_quiz_review_prompt()),
         _ => {
             app.notify("Quiz review not available in this mode");
             None
@@ -680,16 +782,34 @@ pub(super) fn build_agent_quiz_review_prompt(app: &mut App) -> Option<String> {
 /// Build the wizard tour generation agent prompt.
 pub(super) fn build_agent_wizard_prompt(app: &mut App) -> Option<String> {
     let tab = app.tab();
+    if tab.is_remote() {
+        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
+            (Some(ref s), Some(n)) => (s.clone(), n),
+            _ => {
+                app.notify("Remote mode missing repo or PR number");
+                return None;
+            }
+        };
+        let parts: Vec<&str> = slug.split('/').collect();
+        if parts.len() != 2 {
+            app.notify(&format!("Invalid remote repo slug: {}", slug));
+            return None;
+        }
+        let output_dir = app.tab().er_dir();
+        return Some(crate::ai::prompts::build_wizard_prompt_remote(
+            parts[0],
+            parts[1],
+            pr_number,
+            &output_dir,
+        ));
+    }
     let mode = tab.mode;
     let base = tab.base_branch.clone();
-    let er_dir = tab.er_dir();
     match mode {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => {
-            Some(format!(
-                "/er-wizard {} {} --output {}",
+            Some(crate::ai::prompts::build_wizard_prompt(
+                &base,
                 mode.git_mode(),
-                base,
-                er_dir
             ))
         }
         _ => {
@@ -753,6 +873,15 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
                 return Ok(());
             }
         }
+    };
+
+    // Fetch review thread resolution status
+    let resolved_map = if is_remote {
+        github::gh_pr_review_threads_remote(&owner, &repo_name, pr_number)
+            .unwrap_or_default()
+    } else {
+        github::gh_pr_review_threads(&owner, &repo_name, pr_number, &repo_root)
+            .unwrap_or_default()
     };
 
     // Load existing github-comments.json (uses cache dir in remote mode)
@@ -889,7 +1018,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
             line_content: anchor_line_content,
             comment: gh.body.clone(),
             in_reply_to,
-            resolved: false,
+            resolved: resolved_map.get(&gh.id).copied().unwrap_or(false),
             source: "github".to_string(),
             github_id: Some(gh.id),
             author: gh.user.login.clone(),

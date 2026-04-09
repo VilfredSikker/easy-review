@@ -10,6 +10,7 @@ pub struct InlineLayers {
     pub show_questions: bool,
     pub show_github_comments: bool,
     pub show_ai_findings: bool,
+    pub hide_resolved: bool,
 }
 
 impl Default for InlineLayers {
@@ -18,6 +19,7 @@ impl Default for InlineLayers {
             show_questions: true,
             show_github_comments: true,
             show_ai_findings: false,
+            hide_resolved: false,
         }
     }
 }

@@ -227,6 +227,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             if !visible {
                 continue;
             }
+            if tab.layers.hide_resolved && comment.is_resolved() {
+                continue;
+            }
             let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
             let pre_len = lines.len();
             render_comment_lines(&mut lines, comment, area.width, false, is_focused);
@@ -304,6 +307,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     }
                 };
                 if !visible {
+                    continue;
+                }
+                if tab.layers.hide_resolved && comment.is_resolved() {
                     continue;
                 }
                 let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
@@ -459,6 +465,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     if !visible {
                         continue;
                     }
+                    if tab.layers.hide_resolved && comment.is_resolved() {
+                        continue;
+                    }
                     let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
                     let pre_len = lines.len();
                     render_comment_lines(&mut lines, comment, area.width, true, is_focused);
@@ -518,6 +527,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                             if !tab.layers.show_github_comments {
                                 continue;
                             }
+                            if tab.layers.hide_resolved && fc.is_resolved() {
+                                continue;
+                            }
                             let is_focused = tab.focused_comment_id.as_deref() == Some(fc.id());
                             let pre_len = lines.len();
                             render_reply_lines(&mut lines, fc, area.width, false, is_focused);
@@ -566,6 +578,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     if !tab.layers.show_github_comments {
                         continue;
                     }
+                    if tab.layers.hide_resolved && fc.is_resolved() {
+                        continue;
+                    }
                     let is_focused = tab.focused_comment_id.as_deref() == Some(fc.id());
                     let pre_len = lines.len();
                     render_reply_lines(&mut lines, fc, area.width, false, is_focused);
@@ -611,6 +626,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         && q.anchor_status == "lost"
                         && q.hunk_index.is_some_and(|hi| hi >= num_hunks)
                         && tab.layers.show_questions
+                        && !(tab.layers.hide_resolved && q.resolved)
                     {
                         v.push(CommentRef::Question(q));
                     }
@@ -623,6 +639,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         && c.in_reply_to.is_none()
                         && c.hunk_index.is_some_and(|hi| hi >= num_hunks)
                         && tab.layers.show_github_comments
+                        && !(tab.layers.hide_resolved && c.resolved)
                     {
                         v.push(CommentRef::GitHubComment(c));
                     }
@@ -916,6 +933,9 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             if !visible {
                 continue;
             }
+            if tab.layers.hide_resolved && comment.is_resolved() {
+                continue;
+            }
             let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
             let pre_len = lines.len();
             render_comment_lines(&mut lines, comment, inner.width, false, is_focused);
@@ -990,6 +1010,9 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     }
                 };
                 if !visible {
+                    continue;
+                }
+                if tab.layers.hide_resolved && comment.is_resolved() {
                     continue;
                 }
                 let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
@@ -1223,6 +1246,9 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                             }
                         };
                         if !visible {
+                            continue;
+                        }
+                        if tab.layers.hide_resolved && comment.is_resolved() {
                             continue;
                         }
                         let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
@@ -1943,6 +1969,14 @@ fn render_comment_lines(
         header_spans.push(Span::styled(
             "  \u{26a0} stale",
             ratatui::style::Style::default().fg(styles::STALE()).bg(bg),
+        ));
+    }
+
+    // Resolved indicator
+    if comment.is_resolved() {
+        header_spans.push(Span::styled(
+            "  \u{2713} resolved",
+            ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
         ));
     }
 

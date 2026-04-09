@@ -12,7 +12,7 @@ impl App {
             Some(f) => f.path.clone(),
             None => return,
         };
-        tab.comment_input.clear();
+        tab.comment_textarea = TextArea::default();
         tab.comment_file = file_path;
         tab.comment_hunk = tab.current_hunk;
         tab.comment_line_num = if split_active {
@@ -29,7 +29,7 @@ impl App {
     /// Start typing a general PR comment (not attached to any file/line)
     pub fn start_general_comment(&mut self) {
         let tab = self.tab_mut();
-        tab.comment_input.clear();
+        tab.comment_textarea = TextArea::default();
         tab.comment_file = String::new();
         tab.comment_hunk = 0;
         tab.comment_line_num = None;
@@ -69,7 +69,7 @@ impl App {
             Some(f) => f.path.clone(),
             None => return,
         };
-        tab.comment_input = text;
+        tab.comment_textarea = TextArea::new(vec![text]);
         tab.comment_file = file_path;
         tab.comment_hunk = tab.current_hunk;
         tab.comment_line_num = tab.current_line_number();
@@ -118,7 +118,7 @@ impl App {
         };
 
         let tab = self.tab_mut();
-        tab.comment_input.clear();
+        tab.comment_textarea = TextArea::default();
         tab.comment_file = file;
         tab.comment_hunk = hunk_index;
         tab.comment_line_num = line_start;
@@ -167,7 +167,7 @@ impl App {
         };
 
         let tab = self.tab_mut();
-        tab.comment_input.clear();
+        tab.comment_textarea = TextArea::default();
         tab.comment_file = file;
         tab.comment_hunk = hunk_index;
         tab.comment_line_num = line_start;
@@ -181,7 +181,7 @@ impl App {
     /// Submit the current comment/question to the appropriate file
     pub fn submit_comment(&mut self) -> Result<()> {
         let tab = self.tab();
-        let text = tab.comment_input.trim().to_string();
+        let text = tab.comment_text();
         if text.is_empty() {
             self.input_mode = InputMode::Normal;
             return Ok(());
@@ -294,7 +294,7 @@ impl App {
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &questions_path)?;
 
-        self.tab_mut().comment_input.clear();
+        self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
         self.tab_mut().reload_ai_state();
         let label = if is_reply { "Reply" } else { "Question" };
@@ -389,7 +389,7 @@ impl App {
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &comments_path)?;
 
-        self.tab_mut().comment_input.clear();
+        self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
         let is_remote = self.tab().is_remote();
         if !is_remote {
@@ -477,9 +477,28 @@ impl App {
 
     /// Cancel comment input
     pub fn cancel_comment(&mut self) {
-        self.tab_mut().comment_input.clear();
+        self.tab_mut().comment_textarea = TextArea::default();
         self.tab_mut().comment_edit_id = None;
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Check if there is a non-empty comment draft that is paused (not actively being edited)
+    pub fn has_comment_draft(&self) -> bool {
+        let lines = self.tab().comment_textarea.lines();
+        let has_text = lines.len() > 1 || !lines[0].is_empty();
+        has_text && self.input_mode != InputMode::Comment
+    }
+
+    /// Pause comment editing — return to normal mode but keep the draft
+    pub fn pause_comment(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Resume editing a paused comment draft
+    pub fn resume_comment(&mut self) {
+        if self.has_comment_draft() {
+            self.input_mode = InputMode::Comment;
+        }
     }
 
     /// Update an existing comment in-place: new text, re-anchored to current position
@@ -540,7 +559,7 @@ impl App {
             }
         }
 
-        self.tab_mut().comment_input.clear();
+        self.tab_mut().comment_textarea = TextArea::default();
         self.tab_mut().comment_edit_id = None;
         self.input_mode = InputMode::Normal;
         self.tab_mut().reload_ai_state();
@@ -1616,8 +1635,36 @@ impl App {
         let repo_root = self.tab().repo_root.clone();
         let er_dir_path = self.tab().er_dir();
         let is_remote = self.tab().is_remote();
-        let agent_cmd = self.config.agent.command.clone();
-        let config_args = self.config.agent.args.clone();
+        self.sync_ai_selection();
+
+        let (agent_cmd, config_args, is_claude_compatible) = if let Some(provider_id) = self
+            .config
+            .ai_hub
+            .resolve_provider_id(self.current_ai_provider.as_deref())
+        {
+            let provider = self
+                .config
+                .ai_hub
+                .providers
+                .get(&provider_id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
+            let mut args = provider.args.clone();
+            if let Some(model_id) = self
+                .config
+                .ai_hub
+                .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
+            {
+                if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
+                    args.extend(model.args.clone());
+                }
+            }
+            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
+            (provider.command.clone(), args, is_claude)
+        } else {
+            let cmd = self.config.agent.command.clone();
+            let is_claude = cmd.ends_with("claude") || cmd == "claude";
+            (cmd, self.config.agent.args.clone(), is_claude)
+        };
 
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
@@ -1649,7 +1696,7 @@ impl App {
                 // agent log panel can show real-time tool calls and progress. This is
                 // injected here (not in config defaults) so user configs that override
                 // agent.args still get streaming without manual changes.
-                if agent_cmd.ends_with("claude") || agent_cmd == "claude" {
+                if is_claude_compatible {
                     if !agent_args.iter().any(|a| a == "--output-format") {
                         agent_args.push("--output-format".to_string());
                         agent_args.push("stream-json".to_string());
@@ -1665,20 +1712,22 @@ impl App {
 
                 // Grant the agent targeted tool permissions without blanket
                 // --dangerously-skip-permissions. The prompt is fully controlled by er.
-                let allowed: &[&str] = &[
-                    "Read",
-                    "Write",
-                    "Edit",
-                    "Bash(gh pr *)",
-                    "Bash(cp .er/*)",
-                    "Bash(git diff*)",
-                    "Bash(shasum*)",
-                    "Bash(sha256sum*)",
-                    "Bash(mkdir*)",
-                ];
-                for rule in allowed.iter().rev() {
-                    agent_args.insert(0, rule.to_string());
-                    agent_args.insert(0, "--allowedTools".to_string());
+                if is_claude_compatible {
+                    let allowed: &[&str] = &[
+                        "Read",
+                        "Write",
+                        "Edit",
+                        "Bash(gh pr *)",
+                        "Bash(cp .er/*)",
+                        "Bash(git diff*)",
+                        "Bash(shasum*)",
+                        "Bash(sha256sum*)",
+                        "Bash(mkdir*)",
+                    ];
+                    for rule in allowed.iter().rev() {
+                        agent_args.insert(0, rule.to_string());
+                        agent_args.insert(0, "--allowedTools".to_string());
+                    }
                 }
 
                 // In remote mode, run from the cache dir so relative paths resolve there.
@@ -1708,8 +1757,12 @@ impl App {
                         for line in reader.lines().map_while(Result::ok) {
                             lines.push(line.clone());
                             // Try to parse as stream-json event
-                            let display = parse_stream_json_line(&line);
-                            if let Some(text) = display {
+                            let display = if is_claude_compatible {
+                                parse_stream_json_line(&line)
+                            } else {
+                                Some(truncate_str(line.trim(), 120))
+                            };
+                            if let Some(text) = display.filter(|text| !text.is_empty()) {
                                 let _ = log_tx_out.send(AgentLogEntry {
                                     timestamp: std::time::Instant::now(),
                                     command_name: cmd_name_out.clone(),

@@ -4,6 +4,7 @@ pub(super) mod quiz;
 pub(super) mod wizard;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
+use tui_textarea::TextArea;
 use crate::config::{self, ErConfig, WatchedConfig};
 use crate::git::{
     self, CommitInfo, CompactionConfig, DiffFile, DiffFileHeader, WatchedFile, Worktree,
@@ -234,11 +235,26 @@ pub enum OverlayData {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiActionKind {
+    Review,
+    Questions,
+    Quiz,
+    QuizReview,
+    Wizard,
+    Summary,
+}
+
+impl AiActionKind {
+}
+
 /// Which modal hub is open
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HubKind {
     Git,
     Ai,
+    AiProvider,
+    AiModel,
     Verify,
     Help,
     Open,
@@ -250,6 +266,8 @@ impl HubKind {
         match self {
             HubKind::Git => "GIT",
             HubKind::Ai => "AI",
+            HubKind::AiProvider => "AI PROVIDER",
+            HubKind::AiModel => "AI MODEL",
             HubKind::Verify => "VERIFY",
             HubKind::Help => "HELP",
             HubKind::Open => "OPEN",
@@ -291,10 +309,26 @@ pub enum HubAction {
     ToggleAiFindings,
     ToggleComments,
     ToggleQuestions,
+    ToggleHideResolved,
     CleanupQuestions,
     CleanupReviews,
     /// Run a named command from [commands] config (e.g. "summary", "test", "lint")
     RunCommand(String),
+    /// Update the AI provider/model selection without running an action
+    ConfigureAiSelection,
+    /// Start an AI action through the provider/model selection flow
+    RunAiAction(AiActionKind),
+    /// Pick a provider, optionally continuing to an action
+    SelectAiProvider {
+        action: Option<AiActionKind>,
+        provider_id: String,
+    },
+    /// Pick a model, optionally continuing to an action
+    SelectAiModel {
+        action: Option<AiActionKind>,
+        provider_id: String,
+        model_id: String,
+    },
     /// Run AI review via configured agent command
     PromptReview,
     /// Run AI question answering via configured agent command
@@ -446,8 +480,8 @@ pub struct TabState {
     pub filter_history: Vec<String>,
 
     // ── Comment input state ──
-    /// Text buffer for the comment being typed
-    pub comment_input: String,
+    /// Multi-line text area for the comment being typed
+    pub comment_textarea: TextArea<'static>,
 
     /// File path the comment targets
     pub comment_file: String,
@@ -790,6 +824,11 @@ pub struct MemoryBudget {
 }
 
 impl TabState {
+    /// Get the comment text from the textarea, joined and trimmed
+    pub fn comment_text(&self) -> String {
+        self.comment_textarea.lines().join("\n").trim().to_string()
+    }
+
     /// Create a new tab for a given repo root
     pub fn new(repo_root: String) -> Result<Self> {
         let current_branch = git::get_current_branch_in(&repo_root)?;
@@ -896,7 +935,7 @@ impl TabState {
             diff_hash: diff_hash.clone(),
             branch_diff_hash: diff_hash,
             last_ai_check: None,
-            comment_input: String::new(),
+            comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
             comment_reply_to: None,
@@ -995,7 +1034,7 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
-            comment_input: String::new(),
+            comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
             comment_reply_to: None,
@@ -1092,7 +1131,7 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
-            comment_input: String::new(),
+            comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
             comment_reply_to: None,
@@ -1211,10 +1250,10 @@ impl TabState {
         {
             modes.push(DiffMode::Hidden);
         }
-        if config.features.view_wizard && !self.is_remote() && self.ai.review.is_some() {
+        if config.features.view_wizard && self.ai.wizard.is_some() {
             modes.push(DiffMode::Wizard);
         }
-        if config.features.view_quiz && !self.is_remote() && self.ai.quiz.is_some() {
+        if config.features.view_quiz && self.ai.quiz.is_some() {
             modes.push(DiffMode::Quiz);
         }
         modes
@@ -1911,6 +1950,10 @@ impl TabState {
         self.layers.show_github_comments = !self.layers.show_github_comments;
     }
 
+    pub fn toggle_hide_resolved(&mut self) {
+        self.layers.hide_resolved = !self.layers.hide_resolved;
+    }
+
     pub fn toggle_layer_ai(&mut self) {
         self.layers.show_ai_findings = !self.layers.show_ai_findings;
     }
@@ -2592,7 +2635,7 @@ impl TabState {
             filter_history: self.filter_history.clone(),
             show_unreviewed_only: self.show_unreviewed_only,
             sort_by_mtime: self.sort_by_mtime,
-            comment_draft: self.comment_input.clone(),
+            comment_draft: self.comment_text(),
             comment_draft_file: self.comment_file.clone(),
             comment_draft_hunk: self.comment_hunk,
             comment_draft_line: self.comment_line_num,
@@ -2664,7 +2707,7 @@ impl TabState {
 
         // Restore comment draft if non-empty
         if !session.comment_draft.is_empty() {
-            self.comment_input = session.comment_draft;
+            self.comment_textarea = TextArea::new(vec![session.comment_draft]);
             self.comment_file = session.comment_draft_file;
             self.comment_hunk = session.comment_draft_hunk;
             self.comment_line_num = session.comment_draft_line;
@@ -2752,6 +2795,12 @@ pub struct App {
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
 
+    /// Session-local AI Hub provider selection
+    pub current_ai_provider: Option<String>,
+
+    /// Session-local AI Hub model selection
+    pub current_ai_model: Option<String>,
+
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
 
@@ -2760,6 +2809,14 @@ pub struct App {
 }
 
 impl App {
+    fn initial_ai_selection(config: &ErConfig) -> (Option<String>, Option<String>) {
+        let provider = config.ai_hub.resolve_provider_id(None);
+        let model = provider
+            .as_deref()
+            .and_then(|provider_id| config.ai_hub.resolve_model_id(provider_id, None));
+        (provider, model)
+    }
+
     /// Create the app from CLI path arguments.
     /// If no paths provided, uses current directory.
     pub fn new_with_args(paths: &[String]) -> Result<Self> {
@@ -2816,6 +2873,7 @@ impl App {
         // Load config from the first tab's repo root
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
+        let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
 
         Ok(App {
             tabs,
@@ -2830,6 +2888,8 @@ impl App {
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
+            current_ai_provider,
+            current_ai_model,
             pending_hub_action: None,
             last_terminal_width: 0,
         })
@@ -2841,6 +2901,7 @@ impl App {
             tab.pr_data = Some(data);
         }
         let er_config = crate::config::ErConfig::default();
+        let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -2854,9 +2915,157 @@ impl App {
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
+            current_ai_provider,
+            current_ai_model,
             pending_hub_action: None,
             last_terminal_width: 0,
         }
+    }
+
+    pub fn sync_ai_selection(&mut self) {
+        let provider = self
+            .config
+            .ai_hub
+            .resolve_provider_id(self.current_ai_provider.as_deref());
+        let model = provider
+            .as_deref()
+            .and_then(|provider_id| {
+                self.config
+                    .ai_hub
+                    .resolve_model_id(provider_id, self.current_ai_model.as_deref())
+            });
+        self.current_ai_provider = provider;
+        self.current_ai_model = model;
+    }
+
+    pub fn active_ai_selection_label(&self) -> String {
+        if let Some(provider_id) = self
+            .config
+            .ai_hub
+            .resolve_provider_id(self.current_ai_provider.as_deref())
+        {
+            if let Some(provider) = self.config.ai_hub.providers.get(&provider_id) {
+                let provider_label = provider.display_name(&provider_id);
+                let model_label = self
+                    .config
+                    .ai_hub
+                    .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
+                    .and_then(|model_id| {
+                        provider
+                            .models
+                            .iter()
+                            .find(|m| m.id == model_id)
+                            .map(|m| m.display_name())
+                    });
+                return match model_label {
+                    Some(model) => format!("{provider_label} / {model}"),
+                    None => provider_label,
+                };
+            }
+        }
+
+        self.config.agent.display_name()
+    }
+
+    pub fn open_ai_provider_picker(&mut self, action: Option<AiActionKind>) {
+        if !self.config.ai_hub.has_presets() {
+            if let Some(action) = action {
+                self.pending_hub_action = Some(HubAction::RunAiAction(action));
+            } else {
+                self.notify("No [ai_hub] providers configured");
+            }
+            return;
+        }
+
+        let selected_provider = self
+            .config
+            .ai_hub
+            .resolve_provider_id(self.current_ai_provider.as_deref());
+        let provider_ids = self.config.ai_hub.provider_ids();
+        let mut selected = 0usize;
+        let items = provider_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, provider_id)| {
+                let provider = self.config.ai_hub.providers.get(provider_id)?;
+                if selected_provider.as_deref() == Some(provider_id.as_str()) {
+                    selected = idx;
+                }
+                let label = provider.display_name(provider_id);
+                let model_summary = if provider.models.is_empty() {
+                    "no model presets".to_string()
+                } else {
+                    format!("{} model{}", provider.models.len(), if provider.models.len() == 1 { "" } else { "s" })
+                };
+                Some(HubItem {
+                    label,
+                    hint: "".into(),
+                    description: model_summary,
+                    action: HubAction::SelectAiProvider {
+                        action: action.clone(),
+                        provider_id: provider_id.clone(),
+                    },
+                    is_header: false,
+                    enabled: true,
+                })
+            })
+            .collect();
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::AiProvider,
+            items,
+            selected,
+        });
+    }
+
+    pub fn open_ai_model_picker(&mut self, provider_id: String, action: Option<AiActionKind>) {
+        let Some(provider) = self.config.ai_hub.providers.get(&provider_id) else {
+            self.notify("Unknown AI provider");
+            return;
+        };
+
+        if provider.models.is_empty() {
+            self.current_ai_provider = Some(provider_id);
+            self.current_ai_model = None;
+            if let Some(action) = action {
+                self.pending_hub_action = Some(HubAction::RunAiAction(action));
+            } else {
+                self.notify(&format!("AI target: {}", self.active_ai_selection_label()));
+            }
+            return;
+        }
+
+        let resolved_model = self
+            .config
+            .ai_hub
+            .resolve_model_id(&provider_id, self.current_ai_model.as_deref());
+        let mut selected = 0usize;
+        let items = provider
+            .models
+            .iter()
+            .enumerate()
+            .map(|(idx, model)| {
+                if resolved_model.as_deref() == Some(model.id.as_str()) {
+                    selected = idx;
+                }
+                HubItem {
+                    label: model.display_name(),
+                    hint: "".into(),
+                    description: model.id.clone(),
+                    action: HubAction::SelectAiModel {
+                        action: action.clone(),
+                        provider_id: provider_id.clone(),
+                        model_id: model.id.clone(),
+                    },
+                    is_header: false,
+                    enabled: true,
+                }
+            })
+            .collect();
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::AiModel,
+            items,
+            selected,
+        });
     }
 
     /// Open a remote PR as a new tab from a GitHub URL.
@@ -3115,68 +3324,75 @@ impl App {
             .questions
             .as_ref()
             .is_some_and(|q| q.questions.iter().any(|q| !q.resolved));
-        let summary_configured = self.config.commands.summary.is_some();
-        let agent_name = self.config.agent.display_name();
+        let selection_label = self.active_ai_selection_label();
         let items = vec![
             HubItem {
-                label: format!("Review work ({})", agent_name),
+                label: "Review work".into(),
                 hint: "".into(),
                 description: if has_review {
-                    "Run AI review (will ask to clear previous)".into()
+                    format!("Run AI review via {selection_label} (will ask to clear previous)")
                 } else {
-                    "Run AI code review on current diff".into()
+                    format!("Run AI code review on current diff via {selection_label}")
                 },
-                action: HubAction::PromptReview,
+                action: HubAction::RunAiAction(AiActionKind::Review),
                 is_header: false,
                 enabled: true,
             },
             HubItem {
-                label: format!("Answer questions ({})", agent_name),
+                label: "Answer questions".into(),
                 hint: "".into(),
                 description: if has_unresolved_questions {
-                    "Answer unresolved questions via AI".into()
+                    format!("Answer unresolved questions via {selection_label}")
                 } else {
                     "No unresolved questions".into()
                 },
-                action: HubAction::PromptQuestions,
+                action: HubAction::RunAiAction(AiActionKind::Questions),
                 is_header: false,
                 enabled: has_unresolved_questions,
             },
             HubItem {
-                label: format!("Generate quiz ({})", agent_name),
+                label: "Generate quiz".into(),
                 hint: "".into(),
                 description: if has_quiz {
-                    "Regenerate quiz questions from current diff".into()
+                    format!("Regenerate quiz questions via {selection_label}")
                 } else {
-                    "Generate comprehension quiz from current diff".into()
+                    format!("Generate comprehension quiz via {selection_label}")
                 },
-                action: HubAction::PromptQuiz,
+                action: HubAction::RunAiAction(AiActionKind::Quiz),
                 is_header: false,
                 enabled: true,
             },
             HubItem {
-                label: format!("Generate wizard tour ({})", agent_name),
+                label: "Generate wizard tour".into(),
                 hint: "".into(),
                 description: if self.tab().ai.wizard.is_some() {
-                    "Regenerate guided tour of changes".into()
+                    format!("Regenerate guided tour via {selection_label}")
                 } else {
-                    "Generate guided tour of important changes".into()
+                    format!("Generate guided tour via {selection_label}")
                 },
-                action: HubAction::PromptWizard,
+                action: HubAction::RunAiAction(AiActionKind::Wizard),
                 is_header: false,
                 enabled: true,
             },
             HubItem {
-                label: format!("Review quiz answers ({})", agent_name),
+                label: "Review quiz answers".into(),
                 hint: "".into(),
                 description: if has_quiz_answers {
-                    "Get AI feedback on your quiz answers".into()
+                    format!("Get feedback on quiz answers via {selection_label}")
                 } else {
                     "No quiz answers to review — take the quiz first (key 8)".into()
                 },
-                action: HubAction::PromptQuizReview,
+                action: HubAction::RunAiAction(AiActionKind::QuizReview),
                 is_header: false,
                 enabled: has_quiz_answers,
+            },
+            HubItem {
+                label: "Change agent/model".into(),
+                hint: "".into(),
+                description: format!("Current: {selection_label}"),
+                action: HubAction::ConfigureAiSelection,
+                is_header: false,
+                enabled: self.config.ai_hub.has_presets(),
             },
             HubItem {
                 label: "Copy context to clipboard".into(),
@@ -3211,16 +3427,20 @@ impl App {
                 enabled: true,
             },
             HubItem {
+                label: "Hide resolved".into(),
+                hint: "X".into(),
+                description: "Toggle hiding resolved comments".into(),
+                action: HubAction::ToggleHideResolved,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
                 label: "Generate summary".into(),
                 hint: "".into(),
-                description: if summary_configured {
-                    self.config.commands.summary.as_deref().unwrap().to_string()
-                } else {
-                    "set [commands] summary in .er-config.toml".into()
-                },
-                action: HubAction::RunCommand("summary".into()),
+                description: format!("Generate summary via {selection_label}"),
+                action: HubAction::RunAiAction(AiActionKind::Summary),
                 is_header: false,
-                enabled: summary_configured,
+                enabled: true,
             },
             HubItem {
                 label: "Cleanup questions".into(),
@@ -4890,7 +5110,7 @@ mod tests {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
-            comment_input: String::new(),
+            comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
             comment_reply_to: None,
@@ -6168,6 +6388,8 @@ mod tests {
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
+            current_ai_provider: None,
+            current_ai_model: None,
             pending_hub_action: None,
             last_terminal_width: 0,
         }
@@ -6568,7 +6790,7 @@ mod tests {
         let mut app = make_test_app(tab);
         app.start_edit_comment("q-123-0");
         assert!(matches!(app.input_mode, InputMode::Comment));
-        assert_eq!(app.tab().comment_input, "Why is this here?");
+        assert_eq!(app.tab().comment_text(), "Why is this here?");
         assert_eq!(app.tab().comment_edit_id, Some("q-123-0".to_string()));
     }
 
@@ -7082,5 +7304,89 @@ mod tests {
         assert_eq!(quiz.input_mode, QuizInputMode::Navigating);
         assert!(quiz.show_explanation);
         assert!(matches!(quiz.answers[&id], QuizAnswer::Freeform(_)));
+    }
+
+    // ── textarea comment system ──
+
+    #[test]
+    fn comment_text_empty_textarea() {
+        let tab = TabState::new_for_test(vec![]);
+        assert_eq!(tab.comment_text(), "");
+    }
+
+    #[test]
+    fn comment_text_single_line() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.comment_textarea = TextArea::new(vec!["hello world".to_string()]);
+        assert_eq!(tab.comment_text(), "hello world");
+    }
+
+    #[test]
+    fn comment_text_multi_line_joins_with_newline() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.comment_textarea = TextArea::new(vec![
+            "line one".to_string(),
+            "line two".to_string(),
+        ]);
+        assert_eq!(tab.comment_text(), "line one\nline two");
+    }
+
+    #[test]
+    fn has_comment_draft_false_when_empty() {
+        let app = make_test_app(TabState::new_for_test(vec![]));
+        assert!(!app.has_comment_draft());
+    }
+
+    #[test]
+    fn has_comment_draft_false_when_in_comment_mode() {
+        let mut app = make_test_app(TabState::new_for_test(vec![]));
+        app.tab_mut().comment_textarea = TextArea::new(vec!["draft".to_string()]);
+        app.input_mode = InputMode::Comment;
+        assert!(!app.has_comment_draft());
+    }
+
+    #[test]
+    fn has_comment_draft_true_when_paused() {
+        let mut app = make_test_app(TabState::new_for_test(vec![]));
+        app.tab_mut().comment_textarea = TextArea::new(vec!["draft".to_string()]);
+        app.input_mode = InputMode::Normal;
+        assert!(app.has_comment_draft());
+    }
+
+    #[test]
+    fn pause_comment_preserves_text_and_switches_to_normal() {
+        let mut app = make_test_app(TabState::new_for_test(vec![]));
+        app.tab_mut().comment_textarea = TextArea::new(vec!["my comment".to_string()]);
+        app.input_mode = InputMode::Comment;
+        app.pause_comment();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tab().comment_text(), "my comment");
+    }
+
+    #[test]
+    fn resume_comment_restores_comment_mode() {
+        let mut app = make_test_app(TabState::new_for_test(vec![]));
+        app.tab_mut().comment_textarea = TextArea::new(vec!["draft".to_string()]);
+        app.input_mode = InputMode::Normal;
+        app.resume_comment();
+        assert_eq!(app.input_mode, InputMode::Comment);
+    }
+
+    #[test]
+    fn resume_comment_noop_when_no_draft() {
+        let mut app = make_test_app(TabState::new_for_test(vec![]));
+        app.input_mode = InputMode::Normal;
+        app.resume_comment();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn cancel_comment_clears_textarea() {
+        let mut app = make_test_app(TabState::new_for_test(vec![]));
+        app.tab_mut().comment_textarea = TextArea::new(vec!["will be cleared".to_string()]);
+        app.input_mode = InputMode::Comment;
+        app.cancel_comment();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tab().comment_text(), "");
     }
 }

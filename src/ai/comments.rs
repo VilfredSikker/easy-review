@@ -94,7 +94,6 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    #[allow(dead_code)]
     pub fn is_resolved(&self) -> bool {
         match self {
             CommentRef::Question(q) => q.resolved,

@@ -244,6 +244,16 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         right.push(Span::raw("  "));
     }
+    if app.config.ai_hub.has_presets() {
+        right.push(Span::styled(
+            format!(" {} ", app.active_ai_selection_label()),
+            ratatui::style::Style::default()
+                .fg(styles::BG())
+                .bg(styles::PURPLE())
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+        right.push(Span::raw("  "));
+    }
     if let Some(panel) = tab.panel {
         let panel_label = match panel {
             PanelContent::FileDetail => " File Detail ",
@@ -607,6 +617,10 @@ fn build_hints(app: &App) -> Vec<Hint> {
 
     let mut hints: Vec<Hint> = Vec::new();
 
+    if app.has_comment_draft() {
+        hints.insert(0, Hint::new("Tab", " resume draft "));
+    }
+
     if tab.panel.is_some() {
         // Context: panel open — show panel controls
         if h.navigation {
@@ -619,6 +633,22 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("Tab", " focus panel "));
         }
         hints.push(Hint::new("p", " close panel "));
+
+        // Context-sensitive: focused comment actions (panel open)
+        if h.comments {
+            if let Some(ref fid) = tab.focused_comment_id {
+                if let Some(comment) = tab.ai.find_comment(fid) {
+                    if comment.can_reply() {
+                        hints.push(Hint::new("r", " reply "));
+                    }
+                    if comment.can_delete() {
+                        hints.push(Hint::new("x", " delete "));
+                    }
+                }
+            } else if tab.focused_finding_id.is_some() {
+                hints.push(Hint::new("r", " reply "));
+            }
+        }
 
         // Hub triggers — always shown
         hints.push(Hint::new("g", " git "));
@@ -793,8 +823,8 @@ fn pack_hint_lines(hints: &[Hint], width: usize) -> Vec<Line<'static>> {
 /// Calculate how many rows the bottom bar needs
 pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
     match &app.input_mode {
+        InputMode::Comment => 5,
         InputMode::Search
-        | InputMode::Comment
         | InputMode::Confirm(_)
         | InputMode::Filter
         | InputMode::Commit
@@ -884,7 +914,18 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 format!("{}:h{}", file_short, tab.comment_hunk + 1)
             };
-            let spans = vec![
+
+            // Split: 1 row header, rest textarea
+            let rows = ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints([
+                    ratatui::layout::Constraint::Length(1),
+                    ratatui::layout::Constraint::Min(1),
+                ])
+                .split(area);
+
+            // Header row
+            let header_spans = vec![
                 Span::styled(
                     format!(" {} ", label),
                     ratatui::style::Style::default()
@@ -896,15 +937,20 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                     format!(" {} ", target_label),
                     ratatui::style::Style::default().fg(styles::DIM()),
                 ),
-                Span::styled(
-                    tab.comment_input.to_string(),
-                    ratatui::style::Style::default().fg(styles::TEXT()),
-                ),
-                Span::styled("█", ratatui::style::Style::default().fg(accent)),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
                 Span::styled(
                     " send  ",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
+                Span::styled("S+Enter", styles::key_hint_style()),
+                Span::styled(
+                    " newline  ",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
+                Span::styled("Tab", styles::key_hint_style()),
+                Span::styled(
+                    " pause  ",
                     ratatui::style::Style::default().fg(styles::DIM()),
                 ),
                 Span::styled("Esc", styles::key_hint_style()),
@@ -913,8 +959,11 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::DIM()),
                 ),
             ];
-            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
-            f.render_widget(bar, area);
+            let header = Paragraph::new(Line::from(header_spans)).style(panel_bg);
+            f.render_widget(header, rows[0]);
+
+            // Textarea
+            f.render_widget(&tab.comment_textarea, rows[1]);
         }
         InputMode::Filter => {
             let spans = vec![

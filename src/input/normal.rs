@@ -341,8 +341,12 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
-        // Tab: in History mode only toggle panel focus; in other modes also handle split pane
+        // Tab: resume comment draft, or toggle split/panel focus
         KeyCode::Tab => {
+            if app.has_comment_draft() {
+                app.resume_comment();
+                return Ok(());
+            }
             if mode != DiffMode::History && app.split_diff_active(&app.config.clone()) {
                 let tab = app.tab_mut();
                 tab.split_focus = match tab.split_focus {
@@ -388,6 +392,18 @@ pub fn handle_normal_input(
                 "Questions: visible"
             } else {
                 "Questions: hidden"
+            });
+            return Ok(());
+        }
+
+        // Toggle hide resolved comments (X)
+        KeyCode::Char('X') => {
+            app.tab_mut().toggle_hide_resolved();
+            let on = app.tab().layers.hide_resolved;
+            app.notify(if on {
+                "Resolved: hidden"
+            } else {
+                "Resolved: visible"
             });
             return Ok(());
         }
@@ -536,6 +552,25 @@ pub fn handle_normal_input(
     // ── Quiz mode: route to dedicated handler ──
     if mode == DiffMode::Quiz {
         return handle_quiz_input(app, key);
+    }
+
+    // ── Wizard mode: navigate in wizard order ──
+    if mode == DiffMode::Wizard && app.tab().wizard.is_some() {
+        match key.code {
+            KeyCode::Char('j') => {
+                app.tab_mut().wizard_prev_file();
+                let threshold = app.config.display.auto_context_threshold;
+                app.tab_mut().maybe_auto_expand_context(threshold);
+                return Ok(());
+            }
+            KeyCode::Char('k') => {
+                app.tab_mut().wizard_next_file();
+                let threshold = app.config.display.auto_context_threshold;
+                app.tab_mut().maybe_auto_expand_context(threshold);
+                return Ok(());
+            }
+            _ => {}
+        }
     }
 
     // ── Non-History navigation keys ──

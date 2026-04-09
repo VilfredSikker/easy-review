@@ -41,6 +41,42 @@ verbose    = false   # Show all keybindings (more detail)
 command = "claude"
 args    = ["--print", "--output-format", "stream-json", "-p", "{prompt}"]
 
+# Optional AI Hub presets for choosing provider/model at runtime.
+# If omitted, AI Hub falls back to the single [agent] config above.
+[ai_hub]
+default_provider = "claude"
+default_model = "sonnet-4.6"
+
+[ai_hub.providers.claude]
+label = "Claude"
+command = "claude"
+args = ["--print", "-p", "{prompt}"]
+
+[[ai_hub.providers.claude.models]]
+id = "sonnet-4.6"
+label = "Sonnet 4.6"
+args = ["--model", "claude-sonnet-4-6"]
+
+[[ai_hub.providers.claude.models]]
+id = "opus-4.6"
+label = "Opus 4.6"
+args = ["--model", "claude-opus-4-6"]
+
+[ai_hub.providers.codex]
+label = "Codex"
+command = "codex"
+args = ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "{prompt}"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.4"
+label = "GPT-5.4"
+args = ["--model", "gpt-5.4"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.3-codex"
+label = "GPT-5.3 Codex"
+args = ["--model", "gpt-5.3-codex"]
+
 # ── Summary ────────────────────────────────────────────────────────────
 # Diff summary / changelog generation (AI hub).
 [summary]

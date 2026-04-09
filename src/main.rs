@@ -426,6 +426,8 @@ mod tests {
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
+            current_ai_provider: None,
+            current_ai_model: None,
             pending_hub_action: None,
             last_terminal_width: 0,
         }

@@ -1022,6 +1022,125 @@ pub fn gh_pr_comments_remote(owner: &str, repo: &str, pr: u64) -> Result<Vec<Git
     Ok(all_comments)
 }
 
+// ── GraphQL review thread resolution ──
+
+/// Response from GraphQL review threads query
+#[derive(Debug, Deserialize)]
+struct ReviewThreadsResponse {
+    data: ReviewThreadsData,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewThreadsData {
+    repository: ReviewThreadsRepo,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewThreadsRepo {
+    pull_request: ReviewThreadsPr,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewThreadsPr {
+    review_threads: ReviewThreadsConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewThreadsConnection {
+    nodes: Vec<ReviewThread>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewThread {
+    is_resolved: bool,
+    comments: ReviewThreadComments,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewThreadComments {
+    nodes: Vec<ReviewThreadComment>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewThreadComment {
+    database_id: Option<u64>,
+}
+
+/// Fetch review thread resolution status for a PR (local repo).
+/// Returns a map of comment_id -> is_resolved for all comments in resolved threads.
+pub fn gh_pr_review_threads(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    repo_root: &str,
+) -> Result<HashMap<u64, bool>> {
+    let query = format!(
+        r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
+        owner, repo, pr
+    );
+
+    let output = Command::new("gh")
+        .args(["api", "graphql", "-f", &format!("query={}", query)])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to fetch review threads")?;
+
+    if !output.status.success() {
+        // Non-fatal: fall back to all-unresolved if GraphQL fails
+        return Ok(HashMap::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_review_threads_response(&stdout)
+}
+
+/// Fetch review thread resolution status for a remote PR (no local clone needed).
+pub fn gh_pr_review_threads_remote(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+) -> Result<HashMap<u64, bool>> {
+    let query = format!(
+        r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
+        owner, repo, pr
+    );
+
+    let output = Command::new("gh")
+        .args(["api", "graphql", "-f", &format!("query={}", query)])
+        .output()
+        .context("Failed to fetch review threads")?;
+
+    if !output.status.success() {
+        return Ok(HashMap::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_review_threads_response(&stdout)
+}
+
+/// Parse the GraphQL response into a comment_id -> is_resolved map
+fn parse_review_threads_response(json: &str) -> Result<HashMap<u64, bool>> {
+    let mut resolved_map = HashMap::new();
+    let response: ReviewThreadsResponse = match serde_json::from_str(json) {
+        Ok(r) => r,
+        Err(_) => return Ok(resolved_map),
+    };
+
+    for thread in &response.data.repository.pull_request.review_threads.nodes {
+        for comment in &thread.comments.nodes {
+            if let Some(id) = comment.database_id {
+                resolved_map.insert(id, thread.is_resolved);
+            }
+        }
+    }
+
+    Ok(resolved_map)
+}
+
 /// Push a new review comment to a remote PR (no local clone needed).
 pub fn gh_pr_push_comment_remote(
     owner: &str,

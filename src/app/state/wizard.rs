@@ -87,5 +87,65 @@ impl TabState {
         // All reviewed — stay at current
     }
 
+    /// Navigate to the next file in wizard order.
+    pub fn wizard_next_file(&mut self) {
+        let wizard = match self.wizard.as_mut() {
+            Some(w) => w,
+            None => return,
+        };
+        let len = wizard.ordered_files.len();
+        if len == 0 {
+            return;
+        }
+        wizard.current_step = if wizard.current_step + 1 >= len {
+            0
+        } else {
+            wizard.current_step + 1
+        };
+        let path = wizard.ordered_files[wizard.current_step].clone();
+        if let Some(idx) = self.files.iter().position(|f| f.path == path) {
+            self.selected_file = idx;
+            self.current_hunk = 0;
+            self.current_line = None;
+            self.selection_anchor = None;
+            self.diff_scroll = 0;
+            self.h_scroll = 0;
+            self.ensure_file_parsed();
+            self.rebuild_hunk_offsets();
+        }
+        self.focused_comment_id = None;
+        self.focused_finding_id = None;
+    }
+
+    /// Navigate to the previous file in wizard order.
+    pub fn wizard_prev_file(&mut self) {
+        let wizard = match self.wizard.as_mut() {
+            Some(w) => w,
+            None => return,
+        };
+        let len = wizard.ordered_files.len();
+        if len == 0 {
+            return;
+        }
+        wizard.current_step = if wizard.current_step == 0 {
+            len - 1
+        } else {
+            wizard.current_step - 1
+        };
+        let path = wizard.ordered_files[wizard.current_step].clone();
+        if let Some(idx) = self.files.iter().position(|f| f.path == path) {
+            self.selected_file = idx;
+            self.current_hunk = 0;
+            self.current_line = None;
+            self.selection_anchor = None;
+            self.diff_scroll = 0;
+            self.h_scroll = 0;
+            self.ensure_file_parsed();
+            self.rebuild_hunk_offsets();
+        }
+        self.focused_comment_id = None;
+        self.focused_finding_id = None;
+    }
+
     // ── Quiz Mode ──
 }
