@@ -269,18 +269,20 @@ impl AiHubConfig {
             .or_else(|| self.providers.keys().next().cloned())
     }
 
-    pub fn resolve_model_id(
-        &self,
-        provider_id: &str,
-        preferred: Option<&str>,
-    ) -> Option<String> {
+    pub fn resolve_model_id(&self, provider_id: &str, preferred: Option<&str>) -> Option<String> {
         let provider = self.providers.get(provider_id)?;
         if provider.models.is_empty() {
             return None;
         }
 
         preferred
-            .and_then(|id| provider.models.iter().any(|m| m.id == id).then(|| id.to_string()))
+            .and_then(|id| {
+                provider
+                    .models
+                    .iter()
+                    .any(|m| m.id == id)
+                    .then(|| id.to_string())
+            })
             .or_else(|| {
                 self.default_model.as_deref().and_then(|id| {
                     provider

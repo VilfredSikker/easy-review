@@ -126,9 +126,9 @@ pub fn ocean_depth() -> Theme {
         purple: Color::Rgb(167, 139, 250),
         orange: Color::Rgb(251, 146, 60),
 
-        add_bg: Color::Rgb(16, 36, 28),
+        add_bg: Color::Rgb(14, 27, 23),
         add_text: Color::Rgb(74, 222, 128),
-        del_bg: Color::Rgb(42, 16, 22),
+        del_bg: Color::Rgb(31, 14, 20),
         del_text: Color::Rgb(248, 113, 113),
         hunk_bg: Color::Rgb(22, 22, 42),
 
@@ -175,9 +175,9 @@ pub fn moonlight() -> Theme {
         purple: Color::Rgb(160, 140, 210),
         orange: Color::Rgb(210, 140, 80),
 
-        add_bg: Color::Rgb(18, 34, 26),
+        add_bg: Color::Rgb(17, 27, 23),
         add_text: Color::Rgb(100, 195, 130),
-        del_bg: Color::Rgb(38, 18, 22),
+        del_bg: Color::Rgb(30, 17, 21),
         del_text: Color::Rgb(210, 120, 120),
         hunk_bg: Color::Rgb(24, 24, 40),
 
@@ -223,9 +223,9 @@ pub fn daybreak() -> Theme {
         purple: Color::Rgb(124, 58, 237),
         orange: Color::Rgb(194, 88, 14),
 
-        add_bg: Color::Rgb(220, 252, 231),
+        add_bg: Color::Rgb(230, 251, 238),
         add_text: Color::Rgb(22, 163, 74),
-        del_bg: Color::Rgb(254, 226, 226),
+        del_bg: Color::Rgb(253, 234, 235),
         del_text: Color::Rgb(220, 38, 38),
         hunk_bg: Color::Rgb(226, 232, 248),
 
@@ -271,9 +271,9 @@ pub fn high_contrast() -> Theme {
         purple: Color::Rgb(190, 130, 255),
         orange: Color::Rgb(255, 140, 0),
 
-        add_bg: Color::Rgb(0, 40, 20),
+        add_bg: Color::Rgb(0, 26, 13),
         add_text: Color::Rgb(0, 255, 80),
-        del_bg: Color::Rgb(50, 0, 0),
+        del_bg: Color::Rgb(33, 0, 0),
         del_text: Color::Rgb(255, 50, 50),
         hunk_bg: Color::Rgb(0, 0, 40),
 
@@ -324,9 +324,9 @@ pub fn tokyo_night() -> Theme {
         purple: Color::Rgb(187, 154, 247), // #bb9af7
         orange: Color::Rgb(255, 158, 100), // #ff9e64
 
-        add_bg: Color::Rgb(36, 62, 74),      // #243e4a (diff.add)
+        add_bg: Color::Rgb(33, 50, 61),      // #243e4a toned down
         add_text: Color::Rgb(158, 206, 106), // #9ece6a (green)
-        del_bg: Color::Rgb(74, 39, 47),      // #4a272f (diff.delete)
+        del_bg: Color::Rgb(57, 35, 44),      // #4a272f toned down
         del_text: Color::Rgb(247, 118, 142), // #f7768e (red)
         hunk_bg: Color::Rgb(31, 34, 49),     // #1f2231 (diff.change)
 
@@ -374,9 +374,9 @@ pub fn tokyo_night_storm() -> Theme {
         purple: Color::Rgb(187, 154, 247), // #bb9af7
         orange: Color::Rgb(255, 158, 100), // #ff9e64
 
-        add_bg: Color::Rgb(43, 72, 90),      // #2b485a (diff.add)
+        add_bg: Color::Rgb(41, 61, 79),      // #2b485a toned down
         add_text: Color::Rgb(158, 206, 106), // #9ece6a (green)
-        del_bg: Color::Rgb(82, 49, 63),      // #52313f (diff.delete)
+        del_bg: Color::Rgb(66, 46, 62),      // #52313f toned down
         del_text: Color::Rgb(247, 118, 142), // #f7768e (red)
         hunk_bg: Color::Rgb(39, 45, 67),     // #272d43 (diff.change)
 
@@ -424,9 +424,9 @@ pub fn tokyo_night_moon() -> Theme {
         purple: Color::Rgb(192, 153, 255), // #c099ff
         orange: Color::Rgb(255, 150, 108), // #ff966c
 
-        add_bg: Color::Rgb(42, 69, 86),      // #2a4556 (diff.add)
+        add_bg: Color::Rgb(39, 57, 75),      // #2a4556 toned down
         add_text: Color::Rgb(195, 232, 141), // #c3e88d (green)
-        del_bg: Color::Rgb(75, 42, 61),      // #4b2a3d (diff.delete)
+        del_bg: Color::Rgb(61, 40, 59),      // #4b2a3d toned down
         del_text: Color::Rgb(255, 117, 127), // #ff757f (red)
         hunk_bg: Color::Rgb(37, 42, 63),     // #252a3f (diff.change)
 
@@ -474,9 +474,9 @@ pub fn tokyo_night_day() -> Theme {
         purple: Color::Rgb(152, 84, 241), // #9854f1
         orange: Color::Rgb(177, 92, 0),   // #b15c00
 
-        add_bg: Color::Rgb(183, 206, 213),  // #b7ced5 (diff.add)
+        add_bg: Color::Rgb(198, 213, 219),  // #b7ced5 toned down
         add_text: Color::Rgb(88, 117, 57),  // #587539 (green)
-        del_bg: Color::Rgb(218, 186, 190),  // #dababe (diff.delete)
+        del_bg: Color::Rgb(220, 200, 204),  // #dababe toned down
         del_text: Color::Rgb(245, 42, 101), // #f52a65 (red)
         hunk_bg: Color::Rgb(213, 217, 228), // #d5d9e4 (diff.change)
 
@@ -591,9 +591,9 @@ mod tests {
         assert_eq!(t.red, Color::Rgb(248, 113, 113));
         assert_eq!(t.purple, Color::Rgb(167, 139, 250));
         assert_eq!(t.orange, Color::Rgb(251, 146, 60));
-        assert_eq!(t.add_bg, Color::Rgb(16, 36, 28));
+        assert_eq!(t.add_bg, Color::Rgb(14, 27, 23));
         assert_eq!(t.add_text, Color::Rgb(74, 222, 128));
-        assert_eq!(t.del_bg, Color::Rgb(42, 16, 22));
+        assert_eq!(t.del_bg, Color::Rgb(31, 14, 20));
         assert_eq!(t.del_text, Color::Rgb(248, 113, 113));
         assert_eq!(t.hunk_bg, Color::Rgb(22, 22, 42));
         assert_eq!(t.line_cursor_bg, Color::Rgb(36, 28, 52));

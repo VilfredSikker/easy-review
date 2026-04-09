@@ -4,7 +4,6 @@ pub(super) mod quiz;
 pub(super) mod wizard;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
-use tui_textarea::TextArea;
 use crate::config::{self, ErConfig, WatchedConfig};
 use crate::git::{
     self, CommitInfo, CompactionConfig, DiffFile, DiffFileHeader, WatchedFile, Worktree,
@@ -17,6 +16,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[allow(unused_imports)]
 use std::time::Instant;
+use tui_textarea::TextArea;
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -245,8 +245,7 @@ pub enum AiActionKind {
     Summary,
 }
 
-impl AiActionKind {
-}
+impl AiActionKind {}
 
 /// Which modal hub is open
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2927,13 +2926,11 @@ impl App {
             .config
             .ai_hub
             .resolve_provider_id(self.current_ai_provider.as_deref());
-        let model = provider
-            .as_deref()
-            .and_then(|provider_id| {
-                self.config
-                    .ai_hub
-                    .resolve_model_id(provider_id, self.current_ai_model.as_deref())
-            });
+        let model = provider.as_deref().and_then(|provider_id| {
+            self.config
+                .ai_hub
+                .resolve_model_id(provider_id, self.current_ai_model.as_deref())
+        });
         self.current_ai_provider = provider;
         self.current_ai_model = model;
     }
@@ -2995,7 +2992,11 @@ impl App {
                 let model_summary = if provider.models.is_empty() {
                     "no model presets".to_string()
                 } else {
-                    format!("{} model{}", provider.models.len(), if provider.models.len() == 1 { "" } else { "s" })
+                    format!(
+                        "{} model{}",
+                        provider.models.len(),
+                        if provider.models.len() == 1 { "" } else { "s" }
+                    )
                 };
                 Some(HubItem {
                     label,
@@ -4229,6 +4230,43 @@ impl App {
                         cursor_pos: 0,
                     });
                 }
+            }
+            _ => {}
+        }
+    }
+
+    /// Cycle the currently selected config hub item backwards (Left arrow)
+    pub fn config_hub_activate_prev(&mut self) {
+        let idx = match &self.overlay {
+            Some(OverlayData::ConfigHub {
+                selected,
+                editing: None,
+                ..
+            }) => *selected,
+            _ => return,
+        };
+        let items = config::config_hub_items(&self.config);
+        let Some(item) = items.into_iter().nth(idx) else {
+            return;
+        };
+        match item {
+            config::ConfigItem::StringCycle {
+                options, get, set, ..
+            } => {
+                let current = get(&self.config);
+                let pos = options.iter().position(|&o| o == current).unwrap_or(0);
+                let prev = options[(pos + options.len() - 1) % options.len()];
+                set(&mut self.config, prev.to_string());
+                crate::ui::themes::set_theme_by_name(&self.config.display.theme);
+                self.config_hub_rebuild_items();
+            }
+            config::ConfigItem::NumberEdit {
+                get, set, min, max, ..
+            } => {
+                let current = get(&self.config);
+                let prev = if current <= min { max } else { current - 1 };
+                set(&mut self.config, prev);
+                self.config_hub_rebuild_items();
             }
             _ => {}
         }
@@ -7324,10 +7362,7 @@ mod tests {
     #[test]
     fn comment_text_multi_line_joins_with_newline() {
         let mut tab = TabState::new_for_test(vec![]);
-        tab.comment_textarea = TextArea::new(vec![
-            "line one".to_string(),
-            "line two".to_string(),
-        ]);
+        tab.comment_textarea = TextArea::new(vec!["line one".to_string(), "line two".to_string()]);
         assert_eq!(tab.comment_text(), "line one\nline two");
     }
 

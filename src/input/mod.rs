@@ -1,7 +1,7 @@
 use crate::app;
 use crate::app::{
-    cleanup_question_answers, cleanup_questions, cleanup_reviews, AiActionKind, App,
-    ConfirmAction, DiffMode, HubAction, InputMode,
+    cleanup_question_answers, cleanup_questions, cleanup_reviews, AiActionKind, App, ConfirmAction,
+    DiffMode, HubAction, InputMode,
 };
 use crate::{git, github};
 use anyhow::Result;
@@ -97,7 +97,8 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
                 KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
-                KeyCode::Enter | KeyCode::Char(' ') => app.config_hub_activate(),
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => app.config_hub_activate(),
+                KeyCode::Left => app.config_hub_activate_prev(),
                 KeyCode::Char('d') => app.config_hub_delete_selected(),
                 KeyCode::Char('s') => app.config_hub_save_local(),
                 KeyCode::Char('S') => app.config_hub_save_global(),
@@ -746,9 +747,9 @@ pub(super) fn build_agent_quiz_prompt(app: &mut App) -> Option<String> {
     let mode = tab.mode;
     let base = tab.base_branch.clone();
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => {
-            Some(crate::ai::prompts::build_quiz_prompt(&base, mode.git_mode()))
-        }
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => Some(
+            crate::ai::prompts::build_quiz_prompt(&base, mode.git_mode()),
+        ),
         _ => {
             app.notify("Quiz generation not available in this mode");
             None
@@ -806,12 +807,9 @@ pub(super) fn build_agent_wizard_prompt(app: &mut App) -> Option<String> {
     let mode = tab.mode;
     let base = tab.base_branch.clone();
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => {
-            Some(crate::ai::prompts::build_wizard_prompt(
-                &base,
-                mode.git_mode(),
-            ))
-        }
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::Wizard => Some(
+            crate::ai::prompts::build_wizard_prompt(&base, mode.git_mode()),
+        ),
         _ => {
             app.notify("Wizard generation not available in this mode");
             None
@@ -877,11 +875,9 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
 
     // Fetch review thread resolution status
     let resolved_map = if is_remote {
-        github::gh_pr_review_threads_remote(&owner, &repo_name, pr_number)
-            .unwrap_or_default()
+        github::gh_pr_review_threads_remote(&owner, &repo_name, pr_number).unwrap_or_default()
     } else {
-        github::gh_pr_review_threads(&owner, &repo_name, pr_number, &repo_root)
-            .unwrap_or_default()
+        github::gh_pr_review_threads(&owner, &repo_name, pr_number, &repo_root).unwrap_or_default()
     };
 
     // Load existing github-comments.json (uses cache dir in remote mode)
