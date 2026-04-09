@@ -1099,11 +1099,7 @@ pub fn gh_pr_review_threads(
 }
 
 /// Fetch review thread resolution status for a remote PR (no local clone needed).
-pub fn gh_pr_review_threads_remote(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-) -> Result<HashMap<u64, bool>> {
+pub fn gh_pr_review_threads_remote(owner: &str, repo: &str, pr: u64) -> Result<HashMap<u64, bool>> {
     let query = format!(
         r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
         owner, repo, pr

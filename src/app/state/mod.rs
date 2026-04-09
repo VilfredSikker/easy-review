@@ -4,7 +4,6 @@ pub(super) mod quiz;
 pub(super) mod wizard;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
-use tui_textarea::TextArea;
 use crate::config::{self, ErConfig, WatchedConfig};
 use crate::git::{
     self, CommitInfo, CompactionConfig, DiffFile, DiffFileHeader, WatchedFile, Worktree,
@@ -17,6 +16,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[allow(unused_imports)]
 use std::time::Instant;
+use tui_textarea::TextArea;
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -245,8 +245,7 @@ pub enum AiActionKind {
     Summary,
 }
 
-impl AiActionKind {
-}
+impl AiActionKind {}
 
 /// Which modal hub is open
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2927,13 +2926,11 @@ impl App {
             .config
             .ai_hub
             .resolve_provider_id(self.current_ai_provider.as_deref());
-        let model = provider
-            .as_deref()
-            .and_then(|provider_id| {
-                self.config
-                    .ai_hub
-                    .resolve_model_id(provider_id, self.current_ai_model.as_deref())
-            });
+        let model = provider.as_deref().and_then(|provider_id| {
+            self.config
+                .ai_hub
+                .resolve_model_id(provider_id, self.current_ai_model.as_deref())
+        });
         self.current_ai_provider = provider;
         self.current_ai_model = model;
     }
@@ -2995,7 +2992,11 @@ impl App {
                 let model_summary = if provider.models.is_empty() {
                     "no model presets".to_string()
                 } else {
-                    format!("{} model{}", provider.models.len(), if provider.models.len() == 1 { "" } else { "s" })
+                    format!(
+                        "{} model{}",
+                        provider.models.len(),
+                        if provider.models.len() == 1 { "" } else { "s" }
+                    )
                 };
                 Some(HubItem {
                     label,
@@ -7361,10 +7362,7 @@ mod tests {
     #[test]
     fn comment_text_multi_line_joins_with_newline() {
         let mut tab = TabState::new_for_test(vec![]);
-        tab.comment_textarea = TextArea::new(vec![
-            "line one".to_string(),
-            "line two".to_string(),
-        ]);
+        tab.comment_textarea = TextArea::new(vec!["line one".to_string(), "line two".to_string()]);
         assert_eq!(tab.comment_text(), "line one\nline two");
     }
 
