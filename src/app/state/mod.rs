@@ -4234,6 +4234,43 @@ impl App {
         }
     }
 
+    /// Cycle the currently selected config hub item backwards (Left arrow)
+    pub fn config_hub_activate_prev(&mut self) {
+        let idx = match &self.overlay {
+            Some(OverlayData::ConfigHub {
+                selected,
+                editing: None,
+                ..
+            }) => *selected,
+            _ => return,
+        };
+        let items = config::config_hub_items(&self.config);
+        let Some(item) = items.into_iter().nth(idx) else {
+            return;
+        };
+        match item {
+            config::ConfigItem::StringCycle {
+                options, get, set, ..
+            } => {
+                let current = get(&self.config);
+                let pos = options.iter().position(|&o| o == current).unwrap_or(0);
+                let prev = options[(pos + options.len() - 1) % options.len()];
+                set(&mut self.config, prev.to_string());
+                crate::ui::themes::set_theme_by_name(&self.config.display.theme);
+                self.config_hub_rebuild_items();
+            }
+            config::ConfigItem::NumberEdit {
+                get, set, min, max, ..
+            } => {
+                let current = get(&self.config);
+                let prev = if current <= min { max } else { current - 1 };
+                set(&mut self.config, prev);
+                self.config_hub_rebuild_items();
+            }
+            _ => {}
+        }
+    }
+
     /// Apply the editing buffer to the config and close the inline edit
     pub fn config_hub_confirm_edit(&mut self) {
         let (item_idx, buffer) = match &self.overlay {

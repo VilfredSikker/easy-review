@@ -97,7 +97,10 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
                 KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
-                KeyCode::Enter | KeyCode::Char(' ') => app.config_hub_activate(),
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => {
+                    app.config_hub_activate()
+                }
+                KeyCode::Left => app.config_hub_activate_prev(),
                 KeyCode::Char('d') => app.config_hub_delete_selected(),
                 KeyCode::Char('s') => app.config_hub_save_local(),
                 KeyCode::Char('S') => app.config_hub_save_global(),
