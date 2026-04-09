@@ -358,9 +358,14 @@ pub enum HubAction {
     CopyLine,
     // Help — no dispatch, just informational
     /// Select a package in the verify flow, then show that package's commands
-    SelectVerifyPackage { package_id: String },
+    SelectVerifyPackage {
+        package_id: String,
+    },
     /// Run a verify command scoped to a specific package
-    RunPackageCommand { command: String, package_id: String },
+    RunPackageCommand {
+        command: String,
+        package_id: String,
+    },
 }
 
 // ── Per-Tab State ──

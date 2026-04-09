@@ -331,7 +331,14 @@ fn render_filter_history(
 // Use the shared centered_rect from utils (deduplicated from overlay + settings)
 use super::utils::centered_rect;
 
-fn render_modal_hub(f: &mut Frame, area: Rect, kind: HubKind, title_override: Option<&str>, items: &[HubItem], selected: usize) {
+fn render_modal_hub(
+    f: &mut Frame,
+    area: Rect,
+    kind: HubKind,
+    title_override: Option<&str>,
+    items: &[HubItem],
+    selected: usize,
+) {
     // For Help hub, use wider popup to fit descriptions
     let is_help = kind == HubKind::Help;
     let popup_width = if is_help {
