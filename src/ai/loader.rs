@@ -1,3 +1,5 @@
+use super::comments::{ErFeedback, ErGitHubComments, ErQuestions};
+use super::quiz::ErQuiz;
 use super::review::*;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -156,6 +158,25 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
+    // Load .er/quiz.json
+    let quiz_path = Path::new(er_dir).join("quiz.json");
+    if let Ok(content) = read_sidecar(&quiz_path) {
+        if let Ok(quiz) = serde_json::from_str::<ErQuiz>(&content) {
+            state.quiz = Some(quiz);
+        }
+    }
+
+    // Load .er/wizard.json
+    let wizard_path = Path::new(er_dir).join("wizard.json");
+    if let Ok(content) = read_sidecar(&wizard_path) {
+        if let Ok(wizard) = serde_json::from_str::<ErWizard>(&content) {
+            if !state.is_stale && wizard.diff_hash != current_diff_hash {
+                state.is_stale = true;
+            }
+            state.wizard = Some(wizard);
+        }
+    }
+
     // Load legacy .er-feedback.json (only if new files don't exist — migration support)
     // TODO(risk:medium): TOCTOU window here: between the time `.er-questions.json` and
     // `.er-github-comments.json` were found to not exist (earlier reads) and this check,
@@ -191,6 +212,9 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
         "feedback.json",
         "questions.json",
         "github-comments.json",
+        "quiz.json",
+        "quiz-answers.json",
+        "wizard.json",
     ];
 
     files

@@ -227,6 +227,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             if !visible {
                 continue;
             }
+            if tab.layers.hide_resolved && comment.is_resolved() {
+                continue;
+            }
             let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
             let pre_len = lines.len();
             render_comment_lines(&mut lines, comment, area.width, false, is_focused);
@@ -306,6 +309,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 if !visible {
                     continue;
                 }
+                if tab.layers.hide_resolved && comment.is_resolved() {
+                    continue;
+                }
                 let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
                 let pre_len = lines.len();
                 render_comment_lines(&mut lines, comment, area.width, false, is_focused);
@@ -332,6 +338,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
         // Hunk lines
         for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+            // Fold lines are rendered as a single "··· N lines ···" indicator.
+            if let LineType::Fold(hidden) = diff_line.line_type {
+                if logical_line >= render_start && logical_line < render_end {
+                    let fold_text = format!(" ··· {} lines ···", hidden);
+                    let fold_style = ratatui::style::Style::default().fg(styles::MUTED());
+                    lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                }
+                logical_line += 1;
+                continue;
+            }
+
             let is_selected_line = is_current && tab.active_current_line() == Some(line_idx);
 
             let old_num = diff_line
@@ -348,12 +365,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     LineType::Add => ("+", styles::line_cursor_add()),
                     LineType::Delete => ("-", styles::line_cursor_del()),
                     LineType::Context => (" ", styles::line_cursor()),
+                    LineType::Fold(_) => unreachable!(),
                 }
             } else {
                 match diff_line.line_type {
                     LineType::Add => ("+", styles::add_style()),
                     LineType::Delete => ("-", styles::del_style()),
                     LineType::Context => (" ", styles::default_style()),
+                    LineType::Fold(_) => unreachable!(),
                 }
             };
 
@@ -370,6 +389,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         .fg(styles::DIM())
                         .bg(styles::DEL_BG()),
                     LineType::Context => ratatui::style::Style::default().fg(styles::DIM()),
+                    LineType::Fold(_) => unreachable!(),
                 }
             };
 
@@ -445,6 +465,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     if !visible {
                         continue;
                     }
+                    if tab.layers.hide_resolved && comment.is_resolved() {
+                        continue;
+                    }
                     let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
                     let pre_len = lines.len();
                     render_comment_lines(&mut lines, comment, area.width, true, is_focused);
@@ -479,7 +502,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         DiffMode::Unstaged | DiffMode::Staged => {
                             tab.ai.findings_for_line_by_range(&file.path, new_line_num)
                         }
-                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
+                        DiffMode::History
+                        | DiffMode::Conflicts
+                        | DiffMode::Hidden
+                        | DiffMode::Wizard
+                        | DiffMode::Quiz => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -498,6 +525,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         let finding_comments = tab.ai.comments_for_finding(&finding.id);
                         for fc in &finding_comments {
                             if !tab.layers.show_github_comments {
+                                continue;
+                            }
+                            if tab.layers.hide_resolved && fc.is_resolved() {
                                 continue;
                             }
                             let is_focused = tab.focused_comment_id.as_deref() == Some(fc.id());
@@ -526,7 +556,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![], // AI findings not shown in History/Conflicts/Hidden mode
+                DiffMode::History
+                | DiffMode::Conflicts
+                | DiffMode::Hidden
+                | DiffMode::Wizard
+                | DiffMode::Quiz => vec![], // AI findings not shown in these modes
             };
             for finding in &findings {
                 let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
@@ -542,6 +576,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 let finding_comments = tab.ai.comments_for_finding(&finding.id);
                 for fc in &finding_comments {
                     if !tab.layers.show_github_comments {
+                        continue;
+                    }
+                    if tab.layers.hide_resolved && fc.is_resolved() {
                         continue;
                     }
                     let is_focused = tab.focused_comment_id.as_deref() == Some(fc.id());
@@ -589,6 +626,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         && q.anchor_status == "lost"
                         && q.hunk_index.is_some_and(|hi| hi >= num_hunks)
                         && tab.layers.show_questions
+                        && !(tab.layers.hide_resolved && q.resolved)
                     {
                         v.push(CommentRef::Question(q));
                     }
@@ -601,6 +639,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         && c.in_reply_to.is_none()
                         && c.hunk_index.is_some_and(|hi| hi >= num_hunks)
                         && tab.layers.show_github_comments
+                        && !(tab.layers.hide_resolved && c.resolved)
                     {
                         v.push(CommentRef::GitHubComment(c));
                     }
@@ -894,6 +933,9 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             if !visible {
                 continue;
             }
+            if tab.layers.hide_resolved && comment.is_resolved() {
+                continue;
+            }
             let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
             let pre_len = lines.len();
             render_comment_lines(&mut lines, comment, inner.width, false, is_focused);
@@ -970,6 +1012,9 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 if !visible {
                     continue;
                 }
+                if tab.layers.hide_resolved && comment.is_resolved() {
+                    continue;
+                }
                 let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
                 let pre_len = lines.len();
                 render_comment_lines(&mut lines, comment, inner.width, false, is_focused);
@@ -995,11 +1040,29 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
         // Hunk lines
         for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+            // Fold lines span both sides; render on New side only, blank on Old side.
+            if let LineType::Fold(hidden) = diff_line.line_type {
+                if logical_line >= render_start && logical_line < render_end {
+                    if side == SplitSide::New {
+                        let fold_text = format!(" ··· {} lines ···", hidden);
+                        let fold_style = ratatui::style::Style::default().fg(styles::MUTED());
+                        lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                    } else {
+                        lines.push(
+                            Line::from("").style(ratatui::style::Style::default().bg(styles::BG())),
+                        );
+                    }
+                }
+                logical_line += 1;
+                continue;
+            }
+
             // Determine if this side should show content or a blank padding line
             let show_content = match diff_line.line_type {
                 LineType::Context => true,
                 LineType::Add => side == SplitSide::New,
                 LineType::Delete => side == SplitSide::Old,
+                LineType::Fold(_) => unreachable!(),
             };
 
             if show_content && wrap_lines && !diff_line.content.is_empty() {
@@ -1019,12 +1082,14 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         LineType::Add => ("+", styles::line_cursor_add()),
                         LineType::Delete => ("-", styles::line_cursor_del()),
                         LineType::Context => (" ", styles::line_cursor()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 } else {
                     match diff_line.line_type {
                         LineType::Add => ("+", styles::add_style()),
                         LineType::Delete => ("-", styles::del_style()),
                         LineType::Context => (" ", styles::default_style()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 };
 
@@ -1041,6 +1106,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                             .fg(styles::DIM())
                             .bg(styles::DEL_BG()),
                         LineType::Context => ratatui::style::Style::default().fg(styles::DIM()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 };
 
@@ -1092,12 +1158,14 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                                 LineType::Add => ("+", styles::line_cursor_add()),
                                 LineType::Delete => ("-", styles::line_cursor_del()),
                                 LineType::Context => (" ", styles::line_cursor()),
+                                LineType::Fold(_) => unreachable!(),
                             }
                         } else {
                             match diff_line.line_type {
                                 LineType::Add => ("+", styles::add_style()),
                                 LineType::Delete => ("-", styles::del_style()),
                                 LineType::Context => (" ", styles::default_style()),
+                                LineType::Fold(_) => unreachable!(),
                             }
                         };
 
@@ -1116,6 +1184,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                                 LineType::Context => {
                                     ratatui::style::Style::default().fg(styles::DIM())
                                 }
+                                LineType::Fold(_) => unreachable!(),
                             }
                         };
 
@@ -1144,6 +1213,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                             LineType::Add => styles::ADD_BG(),
                             LineType::Delete => styles::DEL_BG(),
                             LineType::Context => styles::BG(),
+                            LineType::Fold(_) => unreachable!(),
                         };
                         lines.push(
                             Line::from(Span::styled(
@@ -1162,7 +1232,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             let comment_side = match diff_line.line_type {
                 LineType::Add => SplitSide::New,
                 LineType::Delete => SplitSide::Old,
-                LineType::Context => SplitSide::New,
+                LineType::Context | LineType::Fold(_) => SplitSide::New,
             };
             if side == comment_side {
                 if let Some(new_line_num) = diff_line.new_num {
@@ -1176,6 +1246,9 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                             }
                         };
                         if !visible {
+                            continue;
+                        }
+                        if tab.layers.hide_resolved && comment.is_resolved() {
                             continue;
                         }
                         let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
@@ -1216,7 +1289,11 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         DiffMode::Unstaged | DiffMode::Staged => {
                             tab.ai.findings_for_line_by_range(&file.path, new_line_num)
                         }
-                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
+                        DiffMode::History
+                        | DiffMode::Conflicts
+                        | DiffMode::Hidden
+                        | DiffMode::Wizard
+                        | DiffMode::Quiz => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -1252,7 +1329,11 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
+                DiffMode::History
+                | DiffMode::Conflicts
+                | DiffMode::Hidden
+                | DiffMode::Wizard
+                | DiffMode::Quiz => vec![],
             };
             for finding in &findings {
                 let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
@@ -1505,6 +1586,13 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
 
             // Hunk lines
             for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+                if let LineType::Fold(hidden) = diff_line.line_type {
+                    let fold_text = format!(" ··· {} lines ···", hidden);
+                    let fold_style = ratatui::style::Style::default().fg(styles::MUTED());
+                    lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                    continue;
+                }
+
                 let is_selected_line = is_current_hunk && history.current_line == Some(line_idx);
 
                 let old_num = diff_line
@@ -1521,12 +1609,14 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                         LineType::Add => ("+", styles::line_cursor_add()),
                         LineType::Delete => ("-", styles::line_cursor_del()),
                         LineType::Context => (" ", styles::line_cursor()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 } else {
                     match diff_line.line_type {
                         LineType::Add => ("+", styles::add_style()),
                         LineType::Delete => ("-", styles::del_style()),
                         LineType::Context => (" ", styles::default_style()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 };
 
@@ -1543,6 +1633,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                             .fg(styles::DIM())
                             .bg(styles::DEL_BG()),
                         LineType::Context => ratatui::style::Style::default().fg(styles::DIM()),
+                        LineType::Fold(_) => unreachable!(),
                     }
                 };
 
@@ -1881,6 +1972,14 @@ fn render_comment_lines(
         ));
     }
 
+    // Resolved indicator
+    if comment.is_resolved() {
+        header_spans.push(Span::styled(
+            "  \u{2713} resolved",
+            ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
+        ));
+    }
+
     // Synced indicator (GitHub comments only)
     if comment.is_synced() {
         header_spans.push(Span::styled(
@@ -2213,10 +2312,19 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                         );
 
                         for diff_line in &hunk.lines {
+                            if let LineType::Fold(hidden) = diff_line.line_type {
+                                let fold_text = format!(" ··· {} lines ···", hidden);
+                                let fold_style =
+                                    ratatui::style::Style::default().fg(styles::MUTED());
+                                lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                                continue;
+                            }
+
                             let (prefix, base_style) = match diff_line.line_type {
                                 LineType::Add => ("+", styles::add_style()),
                                 LineType::Delete => ("-", styles::del_style()),
                                 LineType::Context => (" ", styles::default_style()),
+                                LineType::Fold(_) => unreachable!(),
                             };
                             let gutter_style = match diff_line.line_type {
                                 LineType::Add => ratatui::style::Style::default()
@@ -2228,6 +2336,7 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
                                 LineType::Context => {
                                     ratatui::style::Style::default().fg(styles::DIM())
                                 }
+                                LineType::Fold(_) => unreachable!(),
                             };
                             let old_num = diff_line
                                 .old_num

@@ -1,6 +1,6 @@
 [package]
 name = "easy-review"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Terminal-based git review tool for AI-assisted development"
 license = "MIT"
@@ -44,6 +44,7 @@ glob = "0.3"
 # Error handling
 anyhow = "1"
 two-face = "0.5.1"
+tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
 tempfile = "3"

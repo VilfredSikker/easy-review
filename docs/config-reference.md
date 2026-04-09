@@ -56,6 +56,42 @@ command = "claude"                      # Binary to invoke
 args = ["--print", "-p", "{prompt}"]    # Arguments ({prompt} is replaced)
 ```
 
+### `[ai_hub]`
+
+Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude and Codex without editing config mid-session. Selection is session-local; presets still come from TOML.
+
+```toml
+[ai_hub]
+default_provider = "claude"
+default_model = "sonnet-4.6"
+
+[ai_hub.providers.claude]
+label = "Claude"
+command = "claude"
+args = ["--print", "-p", "{prompt}"]
+
+[[ai_hub.providers.claude.models]]
+id = "sonnet-4.6"
+label = "Sonnet 4.6"
+args = ["--model", "claude-sonnet-4-6"]
+
+[ai_hub.providers.codex]
+label = "Codex"
+command = "codex"
+args = ["exec", "{prompt}"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.4"
+label = "GPT-5.4"
+args = ["--model", "gpt-5.4"]
+```
+
+Rules:
+- Provider `args` are the shared base arguments for that CLI.
+- Model `args` are appended after provider args.
+- If `[ai_hub]` is absent, `er` falls back to the single `[agent]` configuration.
+- The selected provider/model applies to AI Hub actions such as review, questions, quiz, wizard, and summary.
+
 ### `[watched]`
 
 Monitor git-ignored files (e.g., agent work directories, sidecar files). Watched files appear in the file tree alongside tracked changes.

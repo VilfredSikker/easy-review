@@ -10,6 +10,7 @@ pub struct InlineLayers {
     pub show_questions: bool,
     pub show_github_comments: bool,
     pub show_ai_findings: bool,
+    pub hide_resolved: bool,
 }
 
 impl Default for InlineLayers {
@@ -18,6 +19,7 @@ impl Default for InlineLayers {
             show_questions: true,
             show_github_comments: true,
             show_ai_findings: false,
+            hide_resolved: false,
         }
     }
 }
@@ -182,405 +184,10 @@ pub struct ChecklistItem {
     pub related_files: Vec<String>,
 }
 
-// ── Comment type discriminator ──
-
-/// Distinguishes between personal review questions and GitHub PR comments
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CommentType {
-    /// Personal internal question (stored in .er-questions.json)
-    Question,
-    /// GitHub PR comment (stored in .er-github-comments.json)
-    GitHubComment,
-}
-
-/// Type of navigable hint for unified J/K navigation
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum HintType {
-    Question,
-    GitHubComment,
-    Finding,
-}
-
-/// Unified reference to either a question, GitHub comment, or legacy comment.
-/// Used by query methods and UI rendering to handle both types uniformly.
-#[derive(Debug, Clone)]
-pub enum CommentRef<'a> {
-    Question(&'a ReviewQuestion),
-    GitHubComment(&'a GitHubReviewComment),
-    Legacy(&'a FeedbackComment),
-}
-
-impl<'a> CommentRef<'a> {
-    pub fn id(&self) -> &str {
-        match self {
-            CommentRef::Question(q) => &q.id,
-            CommentRef::GitHubComment(c) => &c.id,
-            CommentRef::Legacy(c) => &c.id,
-        }
-    }
-
-    pub fn comment_type(&self) -> CommentType {
-        match self {
-            CommentRef::Question(_) => CommentType::Question,
-            CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => CommentType::GitHubComment,
-        }
-    }
-
-    pub fn text(&self) -> &str {
-        match self {
-            CommentRef::Question(q) => &q.text,
-            CommentRef::GitHubComment(c) => &c.comment,
-            CommentRef::Legacy(c) => &c.comment,
-        }
-    }
-
-    pub fn author(&self) -> &str {
-        match self {
-            CommentRef::Question(q) => {
-                if q.author.is_empty() {
-                    "You"
-                } else {
-                    &q.author
-                }
-            }
-            CommentRef::GitHubComment(c) => {
-                if c.author.is_empty() {
-                    "You"
-                } else {
-                    &c.author
-                }
-            }
-            CommentRef::Legacy(c) => {
-                if c.author.is_empty() {
-                    "You"
-                } else {
-                    &c.author
-                }
-            }
-        }
-    }
-
-    pub fn timestamp(&self) -> &str {
-        match self {
-            CommentRef::Question(q) => &q.timestamp,
-            CommentRef::GitHubComment(c) => &c.timestamp,
-            CommentRef::Legacy(c) => &c.timestamp,
-        }
-    }
-
-    pub fn is_synced(&self) -> bool {
-        match self {
-            CommentRef::Question(_) => false,
-            CommentRef::GitHubComment(c) => c.synced,
-            CommentRef::Legacy(c) => c.synced,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn is_resolved(&self) -> bool {
-        match self {
-            CommentRef::Question(q) => q.resolved,
-            CommentRef::GitHubComment(c) => c.resolved,
-            CommentRef::Legacy(c) => c.resolved,
-        }
-    }
-
-    pub fn is_stale(&self) -> bool {
-        match self {
-            CommentRef::Question(q) => q.stale,
-            CommentRef::GitHubComment(c) => c.stale,
-            CommentRef::Legacy(_) => false,
-        }
-    }
-
-    pub fn in_reply_to(&self) -> Option<&str> {
-        match self {
-            CommentRef::Question(q) => q.in_reply_to.as_deref(),
-            CommentRef::GitHubComment(c) => c.in_reply_to.as_deref(),
-            CommentRef::Legacy(c) => c.in_reply_to.as_deref(),
-        }
-    }
-
-    /// Reference to an AI finding this comment responds to
-    #[allow(dead_code)]
-    pub fn finding_ref(&self) -> Option<&str> {
-        match self {
-            CommentRef::Question(_) => None,
-            CommentRef::GitHubComment(c) => c.finding_ref.as_deref(),
-            CommentRef::Legacy(_) => None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn file(&self) -> &str {
-        match self {
-            CommentRef::Question(q) => &q.file,
-            CommentRef::GitHubComment(c) => &c.file,
-            CommentRef::Legacy(c) => &c.file,
-        }
-    }
-
-    pub fn hunk_index(&self) -> Option<usize> {
-        match self {
-            CommentRef::Question(q) => q.hunk_index,
-            CommentRef::GitHubComment(c) => c.hunk_index,
-            CommentRef::Legacy(c) => c.hunk_index,
-        }
-    }
-
-    pub fn line_start(&self) -> Option<usize> {
-        match self {
-            CommentRef::Question(q) => q.line_start,
-            CommentRef::GitHubComment(c) => c.line_start,
-            CommentRef::Legacy(c) => c.line_start,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn anchor_status(&self) -> &str {
-        match self {
-            CommentRef::Question(q) => &q.anchor_status,
-            CommentRef::GitHubComment(c) => &c.anchor_status,
-            CommentRef::Legacy(_) => "original",
-        }
-    }
-
-    /// Whether this comment can be replied to (top-level comments/questions, not replies themselves)
-    pub fn can_reply(&self) -> bool {
-        match self {
-            CommentRef::Question(q) => q.in_reply_to.is_none(),
-            CommentRef::GitHubComment(c) => c.in_reply_to.is_none(),
-            CommentRef::Legacy(c) => c.in_reply_to.is_none(),
-        }
-    }
-
-    /// Whether this comment can be deleted by the user
-    #[allow(dead_code)]
-    pub fn can_delete(&self) -> bool {
-        match self {
-            CommentRef::Question(_) => true,
-            // TODO(risk:medium): Authorship check compares `c.author` (a display name from
-            // the JSON file) to the literal string "You". A GitHub comment whose author
-            // happens to be named "You", or a crafted sidecar that sets `author = "You"`,
-            // would allow the UI to offer deletion of a remote comment it does not own.
-            CommentRef::GitHubComment(c) => c.source != "github" || c.author == "You",
-            CommentRef::Legacy(c) => c.source != "github" || c.author == "You",
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn github_id(&self) -> Option<u64> {
-        match self {
-            CommentRef::Question(_) => None,
-            CommentRef::GitHubComment(c) => c.github_id,
-            CommentRef::Legacy(c) => c.github_id,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn source(&self) -> &str {
-        match self {
-            CommentRef::Question(_) => "local",
-            CommentRef::GitHubComment(c) => &c.source,
-            CommentRef::Legacy(c) => &c.source,
-        }
-    }
-}
-
-// ── .er-questions.json — personal review notes ──
-
-// TODO(risk:medium): No upper bound on `questions` vec. If an external tool writes
-// thousands of questions, every hunk render scans the full list (O(n) per hunk per frame).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErQuestions {
-    pub version: u32,
-    pub diff_hash: String,
-    #[serde(default)]
-    pub questions: Vec<ReviewQuestion>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReviewQuestion {
-    pub id: String,
-    #[serde(default)]
-    pub timestamp: String,
-    pub file: String,
-    pub hunk_index: Option<usize>,
-    pub line_start: Option<usize>,
-    #[serde(default)]
-    pub line_content: String,
-    pub text: String,
-    #[serde(default)]
-    pub resolved: bool,
-    /// Runtime-only staleness flag (not persisted)
-    #[serde(skip)]
-    pub stale: bool,
-    /// Up to 3 content lines before the target line in the same hunk
-    #[serde(default)]
-    pub context_before: Vec<String>,
-    /// Up to 3 content lines after the target line in the same hunk
-    #[serde(default)]
-    pub context_after: Vec<String>,
-    /// Old-side line number from diff at creation time
-    #[serde(default)]
-    pub old_line_start: Option<usize>,
-    /// Hunk header string at creation time
-    #[serde(default)]
-    pub hunk_header: String,
-    /// "original" | "relocated" | "lost"
-    #[serde(default = "default_anchor_status")]
-    // TODO(risk:minor): `anchor_status` is a free-form String from untrusted JSON, but code
-    // elsewhere pattern-matches on the string values "original"/"relocated"/"lost". An
-    // unexpected value silently falls through without warning.
-    pub anchor_status: String,
-    /// Diff hash when this comment was last relocated
-    #[serde(default)]
-    pub relocated_at_hash: String,
-    /// ID of the question this is a reply to (None = top-level question)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(default)]
-    pub in_reply_to: Option<String>,
-    /// Author display name (defaults to "You")
-    #[serde(default = "default_author")]
-    pub author: String,
-}
-
-// ── .er-github-comments.json — GitHub PR comments ──
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct GitHubSyncState {
-    #[serde(default)]
-    pub pr_number: Option<u64>,
-    #[serde(default)]
-    pub owner: String,
-    #[serde(default)]
-    pub repo: String,
-    #[serde(default)]
-    pub last_synced: String,
-}
-
-// TODO(risk:medium): No upper bound on `comments` vec. Repos with active review threads
-// can accumulate hundreds of entries; scanning all of them on every hunk render is O(n).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErGitHubComments {
-    pub version: u32,
-    pub diff_hash: String,
-    #[serde(default)]
-    pub github: Option<GitHubSyncState>,
-    #[serde(default)]
-    pub comments: Vec<GitHubReviewComment>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitHubReviewComment {
-    pub id: String,
-    #[serde(default)]
-    pub timestamp: String,
-    pub file: String,
-    pub hunk_index: Option<usize>,
-    pub line_start: Option<usize>,
-    pub line_end: Option<usize>,
-    #[serde(default)]
-    pub line_content: String,
-    pub comment: String,
-    #[serde(default)]
-    pub in_reply_to: Option<String>,
-    #[serde(default)]
-    pub resolved: bool,
-    /// "local" | "github"
-    #[serde(default = "default_source")]
-    pub source: String,
-    /// GitHub comment ID (for sync/dedup)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(default)]
-    pub github_id: Option<u64>,
-    /// Author display name ("You" for local, GitHub login for remote)
-    #[serde(default = "default_author")]
-    pub author: String,
-    /// Whether this comment was pushed to GitHub
-    #[serde(default)]
-    pub synced: bool,
-    /// Runtime-only staleness flag (not persisted)
-    #[serde(skip)]
-    pub stale: bool,
-    /// Up to 3 content lines before the target line in the same hunk
-    #[serde(default)]
-    pub context_before: Vec<String>,
-    /// Up to 3 content lines after the target line in the same hunk
-    #[serde(default)]
-    pub context_after: Vec<String>,
-    /// Old-side line number from diff at creation time
-    #[serde(default)]
-    pub old_line_start: Option<usize>,
-    /// Hunk header string at creation time
-    #[serde(default)]
-    pub hunk_header: String,
-    /// "original" | "relocated" | "lost"
-    #[serde(default = "default_anchor_status")]
-    pub anchor_status: String,
-    /// Diff hash when this comment was last relocated
-    #[serde(default)]
-    pub relocated_at_hash: String,
-    /// Optional reference to an AI finding this comment responds to
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(default)]
-    pub finding_ref: Option<String>,
-}
-
-fn default_source() -> String {
-    "local".to_string()
-}
-
-fn default_anchor_status() -> String {
-    "original".to_string()
-}
-
-fn default_author() -> String {
-    "You".to_string()
-}
-
-// ── Legacy .er-feedback.json (for migration) ──
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErFeedback {
-    pub version: u32,
-    pub diff_hash: String,
-    #[serde(default)]
-    pub github: Option<GitHubSyncState>,
-    #[serde(default)]
-    pub comments: Vec<FeedbackComment>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeedbackComment {
-    pub id: String,
-    #[serde(default)]
-    pub timestamp: String,
-    pub file: String,
-    pub hunk_index: Option<usize>,
-    pub line_start: Option<usize>,
-    pub line_end: Option<usize>,
-    #[serde(default)]
-    pub line_content: String,
-    pub comment: String,
-    #[serde(default)]
-    pub in_reply_to: Option<String>,
-    #[serde(default)]
-    pub resolved: bool,
-    /// "local" | "github"
-    #[serde(default = "default_source")]
-    pub source: String,
-    /// GitHub comment ID (for sync/dedup)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(default)]
-    pub github_id: Option<u64>,
-    /// Author display name ("You" for local, GitHub login for remote)
-    #[serde(default = "default_author")]
-    pub author: String,
-    /// Whether this comment was pushed to GitHub
-    #[serde(default)]
-    pub synced: bool,
-}
+// Comment types, question/GitHub comment data, and legacy feedback are in comments.rs.
+// Quiz data types are in quiz.rs.
+use super::comments::{CommentRef, ErFeedback, ErGitHubComments, ErQuestions, HintType};
+use super::quiz::ErQuiz;
 
 // ── AiReview navigation ──
 
@@ -617,6 +224,33 @@ struct CommentIndexData {
     file_comment_counts: HashMap<String, (usize, usize)>,
 }
 
+// ── .er/wizard.json ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErWizard {
+    pub version: u32,
+    pub diff_hash: String,
+    #[serde(default)]
+    pub tour: Vec<WizardTourEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WizardTourEntry {
+    pub path: String,
+    /// Importance level: "fundamental", "important", or "supporting"
+    #[serde(default)]
+    pub importance: String,
+    /// What changed and why it matters
+    #[serde(default)]
+    pub summary: String,
+    /// Bullet points of key changes in this file
+    #[serde(default)]
+    pub key_changes: Vec<String>,
+    /// Other files related to this change
+    #[serde(default)]
+    pub related_files: Vec<String>,
+}
+
 // ── Aggregate AI state for a tab ──
 
 /// All loaded AI data for a single repo tab
@@ -631,6 +265,10 @@ pub struct AiState {
     pub github_comments: Option<ErGitHubComments>,
     /// Legacy feedback (kept for migration, not used for new comments)
     pub feedback: Option<ErFeedback>,
+    /// Quiz questions (.er/quiz.json)
+    pub quiz: Option<ErQuiz>,
+    /// Wizard tour data (.er/wizard.json)
+    pub wizard: Option<ErWizard>,
     /// Whether the loaded data matches the current diff
     pub is_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
@@ -650,6 +288,8 @@ impl Default for AiState {
             questions: None,
             github_comments: None,
             feedback: None,
+            quiz: None,
+            wizard: None,
             is_stale: false,
             stale_files: HashSet::new(),
             comment_index: RefCell::new(None),
@@ -1378,6 +1018,7 @@ impl AiState {
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
+    use super::super::comments::{FeedbackComment, GitHubReviewComment, ReviewQuestion};
     use super::*;
     use std::collections::HashMap;
 
@@ -2546,5 +2187,106 @@ mod tests {
         assert_eq!(ordered.len(), 1);
         assert_eq!(ordered[0].1, Some(0));
         assert_eq!(ordered[0].3, "f_some");
+    }
+
+    // ── ErQuiz / QuizQuestion ──
+
+    fn make_quiz_json() -> &'static str {
+        r#"{
+          "version": 1,
+          "diff_hash": "abc123",
+          "questions": [
+            {
+              "id": "q1",
+              "level": 2,
+              "category": "design-decisions",
+              "text": "Why was HS256 changed to RS256?",
+              "options": [
+                {"label": "A", "text": "Performance", "is_correct": false},
+                {"label": "B", "text": "Key separation", "is_correct": true},
+                {"label": "C", "text": "Shorter tokens", "is_correct": false},
+                {"label": "D", "text": "Compatibility", "is_correct": false}
+              ],
+              "freeform": false,
+              "explanation": "RS256 uses asymmetric keys...",
+              "related_file": "src/auth.rs",
+              "related_hunk": 0,
+              "related_lines": [10, 15]
+            },
+            {
+              "id": "q2",
+              "level": 3,
+              "category": "impact-risk",
+              "text": "What risks does this algorithm change introduce?",
+              "freeform": true,
+              "expected_reasoning": "Key management complexity...",
+              "explanation": "Moving to RS256 requires...",
+              "related_file": "src/auth.rs"
+            }
+          ]
+        }"#
+    }
+
+    #[test]
+    fn test_quiz_deserialize() {
+        let quiz: ErQuiz = serde_json::from_str(make_quiz_json()).unwrap();
+        assert_eq!(quiz.version, 1);
+        assert_eq!(quiz.diff_hash, "abc123");
+        assert_eq!(quiz.questions.len(), 2);
+    }
+
+    #[test]
+    fn test_quiz_question_mc() {
+        let quiz: ErQuiz = serde_json::from_str(make_quiz_json()).unwrap();
+        let q = &quiz.questions[0];
+        assert_eq!(q.id, "q1");
+        assert_eq!(q.level, 2);
+        assert_eq!(q.category, "design-decisions");
+        assert!(!q.freeform);
+        let options = q.options.as_ref().unwrap();
+        assert_eq!(options.len(), 4);
+        let correct: Vec<_> = options.iter().filter(|o| o.is_correct).collect();
+        assert_eq!(correct.len(), 1);
+        assert_eq!(correct[0].label, 'B');
+        assert_eq!(q.related_file, "src/auth.rs");
+        assert_eq!(q.related_hunk, Some(0));
+        assert_eq!(q.related_lines, Some((10, 15)));
+    }
+
+    #[test]
+    fn test_quiz_question_freeform() {
+        let quiz: ErQuiz = serde_json::from_str(make_quiz_json()).unwrap();
+        let q = &quiz.questions[1];
+        assert_eq!(q.id, "q2");
+        assert!(q.freeform);
+        assert!(q.options.is_none());
+        assert!(!q.expected_reasoning.is_empty());
+        assert_eq!(q.related_file, "src/auth.rs");
+        assert_eq!(q.related_hunk, None);
+    }
+
+    #[test]
+    fn test_quiz_option_defaults() {
+        let json = r#"{
+          "version": 1,
+          "diff_hash": "x",
+          "questions": [{
+            "id": "q3",
+            "text": "Minimal question",
+            "options": [{"label": "A", "text": "Option A"}]
+          }]
+        }"#;
+        let quiz: ErQuiz = serde_json::from_str(json).unwrap();
+        let opts = quiz.questions[0].options.as_ref().unwrap();
+        assert!(!opts[0].is_correct, "is_correct should default to false");
+    }
+
+    #[test]
+    fn test_questions_for_file() {
+        let quiz: ErQuiz = serde_json::from_str(make_quiz_json()).unwrap();
+        let auth_qs = quiz.questions_for_file("src/auth.rs");
+        assert_eq!(auth_qs.len(), 2);
+        let other_qs = quiz.questions_for_file("src/other.rs");
+        assert!(other_qs.is_empty());
     }
 }

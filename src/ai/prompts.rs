@@ -195,6 +195,38 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
     )
 }
 
+/// Build the summary-only prompt with repo context substituted.
+pub fn build_summary_prompt(base_branch: &str, scope: &str) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch);
+    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
+    };
+
+    format!(
+        r#"Summarize the current git diff and write the result to `.er/summary.md`.
+
+## Instructions
+
+1. Ensure `.er/` exists: `mkdir -p .er`
+2. Run: `git diff {diff_args} > .er/diff-tmp`
+3. Read `.er/diff-tmp`
+4. Write `.er/summary.md` as 3-5 short markdown paragraphs covering:
+   - what changed
+   - the most important files or subsystems touched
+   - the main implementation risks or things a reviewer should pay attention to
+
+## Guidelines
+
+- Be concrete and reference actual changes from the diff.
+- Focus on behavior and review relevance, not commit-style fluff.
+- Do not write any other files.
+- Do NOT read individual source files — the diff contains everything needed."#
+    )
+}
+
 /// Build review prompt for remote mode (uses gh pr diff instead of git diff).
 ///
 /// The prompt instructs the agent to:
@@ -320,6 +352,171 @@ Do NOT read individual source files — the diff contains everything needed."#
     )
 }
 
+/// Build the summary-only prompt for remote mode (uses gh pr diff instead of git diff).
+pub fn build_summary_prompt_remote(
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    output_dir: &str,
+) -> String {
+    let safe_owner = sanitize_for_shell(owner)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_repo = sanitize_for_shell(repo)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+
+    format!(
+        r#"Summarize the current GitHub PR diff and write the result to `{safe_output_dir}/summary.md`.
+
+## Instructions
+
+1. Ensure the output dir exists: `mkdir -p {safe_output_dir}`
+2. Run: `gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp`
+3. Read `{safe_output_dir}/diff-tmp`
+4. Write `{safe_output_dir}/summary.md` as 3-5 short markdown paragraphs covering:
+   - what changed
+   - the most important files or subsystems touched
+   - the main implementation risks or review hotspots
+
+## Guidelines
+
+- Be concrete and grounded in the diff.
+- Do not write any other files.
+- Do NOT read individual source files — the diff contains everything needed."#
+    )
+}
+
+/// Build wizard tour prompt for remote mode (uses gh pr diff instead of git diff).
+///
+/// The prompt instructs the agent to:
+/// 1. Fetch the PR diff via `gh pr diff`
+/// 2. Analyse changes and build a guided tour
+/// 3. Write `output_dir/wizard.json`
+pub fn build_wizard_prompt_remote(
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    output_dir: &str,
+) -> String {
+    let safe_owner = sanitize_for_shell(owner)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_repo = sanitize_for_shell(repo)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    format!(
+        r#"You are generating a guided tour of the important changes in a GitHub PR. Read the diff and produce a wizard tour file.
+
+## Instructions
+
+1. Run: `mkdir -p {safe_output_dir} && gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
+   - Save the SHA-256 hash as `diff_hash`
+2. (Optional) Read `{safe_output_dir}/review.json` if it exists — for additional context, not required
+3. Read `{safe_output_dir}/diff-tmp` to get the full diff
+4. Analyse the changes and identify fundamental, important, and supporting files
+5. Write `{safe_output_dir}/wizard.json`
+
+### `{safe_output_dir}/wizard.json`
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256 from step 1>",
+  "tour": [
+    {{
+      "path": "src/auth.rs",
+      "importance": "fundamental",
+      "summary": "What changed and why (1-3 sentences)",
+      "key_changes": ["Specific change 1", "Specific change 2"],
+      "related_files": ["src/middleware.rs"]
+    }}
+  ]
+}}
+```
+
+## Importance levels
+
+| Level | Meaning |
+|-------|---------|
+| `fundamental` | Core change — the reason this PR exists |
+| `important` | Directly supports or enables the fundamental changes |
+| `supporting` | Completes the picture but not essential to understand first |
+
+## Tour design rules
+
+- **Include every file that matters** — don't skip files just because they're small
+- **Order by understanding flow** — fundamental changes first, then dependencies, then supporting
+- **Group related files** — if 3 files work together, put them adjacent in the tour
+- **Write clear summaries** — explain what changed AND why it matters
+- **Key changes as bullets** — concrete, specific (not vague)
+- **Link related files** — if file A calls into file B, note the relationship
+
+## Guidelines
+
+- Every tour entry should be anchored to actual diff content — no speculative entries
+- Summaries should teach the reader what to look for, not just describe line changes
+- If the diff is trivial, produce a minimal tour
+
+## Speed
+
+Target: complete in under 45 seconds. Read the diff once, analyse in-context, write the file."#
+    )
+}
+
+/// Build wizard tour prompt with repo context substituted.
+pub fn build_wizard_prompt(base_branch: &str, scope: &str) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch);
+    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
+    };
+
+    format!(
+        r#"You are generating a guided tour of the important changes in the current git diff.
+
+## Instructions
+
+1. Ensure `.er/` exists: `mkdir -p .er`
+2. Run: `git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)`
+   - Save the SHA-256 hash as `diff_hash`
+3. Optionally read `.er/review.json` if it exists for extra context
+4. Read `.er/diff-tmp`
+5. Write `.er/wizard.json`
+
+### `.er/wizard.json`
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256 from step 2>",
+  "tour": [
+    {{
+      "path": "src/auth.rs",
+      "importance": "fundamental",
+      "summary": "What changed and why it matters.",
+      "key_changes": ["Specific change 1", "Specific change 2"],
+      "related_files": ["src/middleware.rs"]
+    }}
+  ]
+}}
+```
+
+## Guidelines
+
+- Importance must be one of `fundamental`, `important`, or `supporting`.
+- Include every changed file that matters to understanding the diff.
+- Focus on understanding, not bug-finding.
+- Keep summaries concrete and grounded in actual changes."#
+    )
+}
+
 /// Build questions-answering prompt for remote mode (uses gh pr diff instead of git diff).
 ///
 /// The prompt instructs the agent to:
@@ -384,6 +581,111 @@ pub fn build_questions_prompt_remote(
 
 Target: complete in under 60 seconds. Read the diff once, answer all questions in-context."#
     )
+}
+
+/// Build quiz generation prompt with repo context substituted.
+pub fn build_quiz_prompt(base_branch: &str, scope: &str) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch);
+    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
+    };
+
+    format!(
+        r#"Generate a comprehension quiz for the current git diff and write `.er/quiz.json`.
+
+## Instructions
+
+1. Ensure `.er/` exists: `mkdir -p .er`
+2. Run: `git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)`
+   - Save the SHA-256 hash as `diff_hash`
+3. Optionally read `.er/review.json` if it exists
+4. Read `.er/diff-tmp`
+5. Write `.er/quiz.json`
+
+### `.er/quiz.json`
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256>",
+  "questions": [
+    {{
+      "id": "q1",
+      "level": 2,
+      "category": "correctness",
+      "text": "Why was this change made?",
+      "options": [
+        {{"label": "A", "text": "Option A", "is_correct": false}},
+        {{"label": "B", "text": "Option B", "is_correct": true}},
+        {{"label": "C", "text": "Option C", "is_correct": false}},
+        {{"label": "D", "text": "Option D", "is_correct": false}}
+      ],
+      "freeform": false,
+      "expected_reasoning": "",
+      "explanation": "Teach the concept behind the right answer.",
+      "related_file": "src/file.rs",
+      "related_hunk": 0,
+      "related_lines": [10, 20]
+    }}
+  ]
+}}
+```
+
+## Guidelines
+
+- Produce 2-6 questions depending on diff size.
+- Mix multiple-choice and freeform when the diff is non-trivial.
+- Use categories like `security`, `logic`, `performance`, `correctness`, `error-handling`, `testing`.
+- Anchor every question to a real diff change."#
+    )
+}
+
+/// Build quiz review prompt.
+pub fn build_quiz_review_prompt() -> String {
+    r#"Review quiz answers and write teaching feedback to `.er/quiz-feedback.json`.
+
+## Instructions
+
+1. Read `.er/quiz.json`
+   - If missing, print `No quiz found.` and stop.
+2. Read `.er/quiz-answers.json`
+   - If missing, print `No answers found.` and stop.
+3. Compute the SHA-256 of `.er/quiz.json` and save it as `quiz_hash`
+4. Evaluate each submitted answer against the corresponding question
+5. Write `.er/quiz-feedback.json`
+
+### `.er/quiz-feedback.json`
+```json
+{
+  "version": 1,
+  "quiz_hash": "<sha256 of quiz.json>",
+  "score": {
+    "correct": 2,
+    "partial": 1,
+    "total": 3,
+    "points": 2.5
+  },
+  "items": [
+    {
+      "question_id": "q1",
+      "answer_type": "choice",
+      "answer_given": "B",
+      "correct": true,
+      "feedback": "Short teaching feedback."
+    }
+  ]
+}
+```
+
+## Guidelines
+
+- Feedback should be 1-4 sentences per question.
+- For freeform answers, use `partial: true` and `points: 0.5` when the answer is partly right.
+- Ground feedback in the actual quiz content and expected reasoning.
+- Do not modify the quiz or answers files."#
+        .to_string()
 }
 
 #[cfg(test)]

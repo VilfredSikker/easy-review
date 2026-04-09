@@ -18,6 +18,8 @@ Data model and loader for AI-generated review files. The `.er-*` files are produ
 | `.er/order.json` | `ErOrder` | Suggested file review order with groupings |
 | `.er/summary.md` | (raw text) | Markdown summary of overall changes |
 | `.er/checklist.json` | `ErChecklist` | Review checklist items |
+| `.er/wizard.json` | `ErWizard` | Guided tour of important changes |
+| `.er/quiz.json` | `ErQuiz` | Comprehension quiz questions |
 | `.er/questions.json` | JSON | Personal review questions |
 | `.er/github-comments.json` | JSON | GitHub PR comments (two-way sync) |
 

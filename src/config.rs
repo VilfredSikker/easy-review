@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ErConfig {
@@ -17,6 +18,8 @@ pub struct ErConfig {
     pub hints: HintConfig,
     #[serde(default)]
     pub commands: CommandsConfig,
+    #[serde(default)]
+    pub ai_hub: AiHubConfig,
 }
 
 /// [commands] section — configurable shell commands for hub actions.
@@ -75,6 +78,10 @@ pub struct FeatureFlags {
     pub view_conflicts: bool,
     #[serde(default = "default_true")]
     pub view_hidden: bool,
+    #[serde(default = "default_true")]
+    pub view_wizard: bool,
+    #[serde(default = "default_true")]
+    pub view_quiz: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +89,37 @@ pub struct AgentConfig {
     #[serde(default = "default_agent_cmd")]
     pub command: String,
     #[serde(default = "default_agent_args")]
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AiHubConfig {
+    #[serde(default)]
+    pub default_provider: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub providers: BTreeMap<String, AiProviderConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AiProviderConfig {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default = "default_agent_cmd")]
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub models: Vec<AiModelConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AiModelConfig {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
     pub args: Vec<String>,
 }
 
@@ -179,6 +217,8 @@ impl Default for FeatureFlags {
             view_history: true,
             view_conflicts: true,
             view_hidden: true,
+            view_wizard: true,
+            view_quiz: true,
         }
     }
 }
@@ -202,6 +242,77 @@ impl AgentConfig {
             Some(c) => c.to_uppercase().to_string() + chars.as_str(),
             None => "AI".to_string(),
         }
+    }
+}
+
+impl AiHubConfig {
+    pub fn has_presets(&self) -> bool {
+        !self.providers.is_empty()
+    }
+
+    pub fn provider_ids(&self) -> Vec<String> {
+        self.providers.keys().cloned().collect()
+    }
+
+    pub fn resolve_provider_id(&self, preferred: Option<&str>) -> Option<String> {
+        if self.providers.is_empty() {
+            return None;
+        }
+
+        preferred
+            .and_then(|id| self.providers.contains_key(id).then(|| id.to_string()))
+            .or_else(|| {
+                self.default_provider
+                    .as_deref()
+                    .and_then(|id| self.providers.contains_key(id).then(|| id.to_string()))
+            })
+            .or_else(|| self.providers.keys().next().cloned())
+    }
+
+    pub fn resolve_model_id(
+        &self,
+        provider_id: &str,
+        preferred: Option<&str>,
+    ) -> Option<String> {
+        let provider = self.providers.get(provider_id)?;
+        if provider.models.is_empty() {
+            return None;
+        }
+
+        preferred
+            .and_then(|id| provider.models.iter().any(|m| m.id == id).then(|| id.to_string()))
+            .or_else(|| {
+                self.default_model.as_deref().and_then(|id| {
+                    provider
+                        .models
+                        .iter()
+                        .any(|m| m.id == id)
+                        .then(|| id.to_string())
+                })
+            })
+            .or_else(|| provider.models.first().map(|m| m.id.clone()))
+    }
+}
+
+impl AiProviderConfig {
+    pub fn display_name(&self, provider_id: &str) -> String {
+        self.label
+            .clone()
+            .unwrap_or_else(|| title_case(provider_id))
+    }
+}
+
+impl AiModelConfig {
+    pub fn display_name(&self) -> String {
+        self.label.clone().unwrap_or_else(|| self.id.clone())
+    }
+}
+
+fn title_case(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+        None => "AI".to_string(),
     }
 }
 
@@ -459,6 +570,18 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             description: "Show hidden files mode".into(),
             get: |c| c.features.view_hidden,
             set: |c, v| c.features.view_hidden = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Change Tour (7)".into(),
+            description: "Show guided tour of important changes".into(),
+            get: |c| c.features.view_wizard,
+            set: |c, v| c.features.view_wizard = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Review Quiz (8)".into(),
+            description: "Show comprehension quiz mode".into(),
+            get: |c| c.features.view_quiz,
+            set: |c, v| c.features.view_quiz = v,
         },
         // ── Display ──
         ConfigItem::SectionHeader("Display".into()),
@@ -787,6 +910,42 @@ mod tests {
     }
 
     #[test]
+    fn load_config_parses_ai_hub_presets() {
+        let dir = std::env::temp_dir().join("er_test_ai_hub_config");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join(".er-config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[ai_hub]
+default_provider = "codex"
+default_model = "gpt-5.4"
+
+[ai_hub.providers.codex]
+label = "Codex"
+command = "codex"
+args = ["exec", "{prompt}"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.4"
+label = "GPT-5.4"
+args = ["--model", "gpt-5.4"]
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(dir.to_str().unwrap());
+        assert_eq!(config.ai_hub.default_provider.as_deref(), Some("codex"));
+        assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.4"));
+        let codex = config.ai_hub.providers.get("codex").unwrap();
+        assert_eq!(codex.command, "codex");
+        assert_eq!(codex.models.len(), 1);
+        assert_eq!(codex.models[0].id, "gpt-5.4");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn load_config_malformed_toml_falls_back_to_defaults() {
         let dir = std::env::temp_dir().join("er_test_malformed_toml");
         let _ = std::fs::create_dir_all(&dir);
@@ -827,6 +986,38 @@ mod tests {
     }
 
     #[test]
+    fn ai_hub_resolve_provider_and_model_defaults() {
+        let mut config = ErConfig::default();
+        config.ai_hub.default_provider = Some("codex".into());
+        config.ai_hub.default_model = Some("gpt-5.4".into());
+        config.ai_hub.providers.insert(
+            "codex".into(),
+            AiProviderConfig {
+                label: Some("Codex".into()),
+                command: "codex".into(),
+                args: vec!["exec".into(), "{prompt}".into()],
+                models: vec![
+                    AiModelConfig {
+                        id: "gpt-5.4".into(),
+                        label: Some("GPT-5.4".into()),
+                        args: vec!["--model".into(), "gpt-5.4".into()],
+                    },
+                    AiModelConfig {
+                        id: "gpt-5.3-codex".into(),
+                        label: None,
+                        args: vec!["--model".into(), "gpt-5.3-codex".into()],
+                    },
+                ],
+            },
+        );
+
+        let provider_id = config.ai_hub.resolve_provider_id(None).unwrap();
+        let model_id = config.ai_hub.resolve_model_id(&provider_id, None).unwrap();
+        assert_eq!(provider_id, "codex");
+        assert_eq!(model_id, "gpt-5.4");
+    }
+
+    #[test]
     fn serde_roundtrip_preserves_all_fields() {
         let config = ErConfig {
             features: FeatureFlags {
@@ -836,6 +1027,8 @@ mod tests {
                 view_history: true,
                 view_conflicts: false,
                 view_hidden: true,
+                view_wizard: false,
+                view_quiz: true,
             },
             display: DisplayConfig {
                 tab_width: 8,
