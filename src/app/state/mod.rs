@@ -3586,66 +3586,74 @@ impl App {
 
     /// Open a package-specific verify hub showing that package's configured commands.
     pub fn open_package_commands_hub(&mut self, package_id: String) {
-        let pkg = match self.config.packages.items.get(&package_id) {
-            Some(p) => p.clone(),
+        let not_configured = "set in [packages] in .er-config.toml";
+        let fields = self.config.packages.items.get(&package_id).map(|p| {
+            (
+                p.label.as_deref().unwrap_or(&package_id).to_owned(),
+                p.test.clone(),
+                p.lint.clone(),
+                p.typecheck.clone(),
+                p.security.clone(),
+            )
+        });
+        let (label, test, lint, typecheck, security) = match fields {
+            Some(f) => f,
             None => {
                 self.notify(&format!("Package '{}' not found in config", package_id));
                 return;
             }
         };
-        let label = pkg.label.clone().unwrap_or_else(|| package_id.clone());
-        let not_configured = "not set for this package";
 
         let items = vec![
             HubItem {
                 label: "Run tests".into(),
                 hint: "".into(),
-                description: pkg.test.as_deref().unwrap_or(not_configured).to_string(),
+                description: test.as_deref().unwrap_or(not_configured).to_string(),
                 action: HubAction::RunPackageCommand {
                     command: "test".into(),
                     package_id: package_id.clone(),
                 },
                 is_header: false,
-                enabled: pkg.test.is_some(),
+                enabled: test.is_some(),
             },
             HubItem {
                 label: "Run linter".into(),
                 hint: "".into(),
-                description: pkg.lint.as_deref().unwrap_or(not_configured).to_string(),
+                description: lint.as_deref().unwrap_or(not_configured).to_string(),
                 action: HubAction::RunPackageCommand {
                     command: "lint".into(),
                     package_id: package_id.clone(),
                 },
                 is_header: false,
-                enabled: pkg.lint.is_some(),
+                enabled: lint.is_some(),
             },
             HubItem {
                 label: "Type check".into(),
                 hint: "".into(),
-                description: pkg.typecheck.as_deref().unwrap_or(not_configured).to_string(),
+                description: typecheck.as_deref().unwrap_or(not_configured).to_string(),
                 action: HubAction::RunPackageCommand {
                     command: "typecheck".into(),
                     package_id: package_id.clone(),
                 },
                 is_header: false,
-                enabled: pkg.typecheck.is_some(),
+                enabled: typecheck.is_some(),
             },
             HubItem {
                 label: "Security scan".into(),
                 hint: "".into(),
-                description: pkg.security.as_deref().unwrap_or(not_configured).to_string(),
+                description: security.as_deref().unwrap_or(not_configured).to_string(),
                 action: HubAction::RunPackageCommand {
                     command: "security".into(),
                     package_id: package_id.clone(),
                 },
                 is_header: false,
-                enabled: pkg.security.is_some(),
+                enabled: security.is_some(),
             },
         ];
 
         let selected = items
             .iter()
-            .position(|item| item.enabled)
+            .position(|item| !item.is_header && item.enabled)
             .or_else(|| items.iter().position(|item| !item.is_header))
             .unwrap_or(0);
 

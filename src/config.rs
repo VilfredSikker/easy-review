@@ -60,7 +60,6 @@ pub struct PackageConfig {
 }
 
 impl PackageConfig {
-    /// Number of commands configured for this package
     pub fn command_count(&self) -> usize {
         [&self.test, &self.lint, &self.typecheck, &self.security]
             .iter()
