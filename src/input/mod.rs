@@ -351,6 +351,15 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
         HubAction::CopyLine => {
             app.copy_line()?;
         }
+        HubAction::SelectVerifyPackage { package_id } => {
+            app.open_package_commands_hub(package_id);
+        }
+        HubAction::RunPackageCommand { command, package_id } => {
+            match app.config.resolve_package_command(&package_id, &command) {
+                Some(cmd) => app.spawn_command(&format!("{}/{}", package_id, command), &cmd)?,
+                None => app.notify(&format!("{}/{}: not configured", package_id, command)),
+            }
+        }
     }
     Ok(())
 }

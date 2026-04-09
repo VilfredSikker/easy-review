@@ -224,6 +224,8 @@ pub enum OverlayData {
     },
     ModalHub {
         kind: HubKind,
+        /// Optional title override (e.g. "VERIFY / frontend"). Uses kind.title() if None.
+        title: Option<String>,
         items: Vec<HubItem>,
         selected: usize,
     },
@@ -255,6 +257,7 @@ pub enum HubKind {
     AiProvider,
     AiModel,
     Verify,
+    VerifyPackage,
     Help,
     Open,
     Copy,
@@ -268,6 +271,7 @@ impl HubKind {
             HubKind::AiProvider => "AI PROVIDER",
             HubKind::AiModel => "AI MODEL",
             HubKind::Verify => "VERIFY",
+            HubKind::VerifyPackage => "VERIFY",
             HubKind::Help => "HELP",
             HubKind::Open => "OPEN",
             HubKind::Copy => "COPY",
@@ -353,6 +357,10 @@ pub enum HubAction {
     CopyHunk,
     CopyLine,
     // Help — no dispatch, just informational
+    /// Select a package in the verify flow, then show that package's commands
+    SelectVerifyPackage { package_id: String },
+    /// Run a verify command scoped to a specific package
+    RunPackageCommand { command: String, package_id: String },
 }
 
 // ── Per-Tab State ──
@@ -3013,6 +3021,7 @@ impl App {
             .collect();
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::AiProvider,
+            title: None,
             items,
             selected,
         });
@@ -3064,6 +3073,7 @@ impl App {
             .collect();
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::AiModel,
+            title: None,
             items,
             selected,
         });
@@ -3300,6 +3310,7 @@ impl App {
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Git,
+            title: None,
             items,
             selected: 0,
         });
@@ -3470,61 +3481,176 @@ impl App {
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Ai,
+            title: None,
             items,
             selected: 0,
         });
     }
 
-    /// Open the Verify modal hub — items enabled when configured in [commands]
+    /// Open the Verify modal hub — items enabled when configured in [commands].
+    /// When [packages] is configured, a packages section appears at the top for mono-repo use.
     pub fn open_verify_hub(&mut self) {
         let cmds = &self.config.commands;
         let not_configured = "set in [commands] in .er-config.toml";
+        let mut items: Vec<HubItem> = Vec::new();
+
+        // Packages section — only shown when [packages] is configured
+        if self.config.has_packages() {
+            items.push(HubItem {
+                label: "── Packages ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            });
+            for (package_id, pkg) in &self.config.packages.items {
+                let count = pkg.command_count();
+                items.push(HubItem {
+                    label: pkg.label.clone().unwrap_or_else(|| package_id.clone()),
+                    hint: package_id.clone(),
+                    description: format!("{} command(s) configured", count),
+                    action: HubAction::SelectVerifyPackage {
+                        package_id: package_id.clone(),
+                    },
+                    is_header: false,
+                    enabled: count > 0,
+                });
+            }
+            items.push(HubItem {
+                label: "── Global ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            });
+        }
+
+        items.push(HubItem {
+            label: "Run tests".into(),
+            hint: "".into(),
+            description: cmds.test.as_deref().unwrap_or(not_configured).to_string(),
+            action: HubAction::RunCommand("test".into()),
+            is_header: false,
+            enabled: cmds.test.is_some(),
+        });
+        items.push(HubItem {
+            label: "Run linter".into(),
+            hint: "".into(),
+            description: cmds.lint.as_deref().unwrap_or(not_configured).to_string(),
+            action: HubAction::RunCommand("lint".into()),
+            is_header: false,
+            enabled: cmds.lint.is_some(),
+        });
+        items.push(HubItem {
+            label: "Type check".into(),
+            hint: "".into(),
+            description: cmds
+                .typecheck
+                .as_deref()
+                .unwrap_or(not_configured)
+                .to_string(),
+            action: HubAction::RunCommand("typecheck".into()),
+            is_header: false,
+            enabled: cmds.typecheck.is_some(),
+        });
+        items.push(HubItem {
+            label: "Security scan".into(),
+            hint: "".into(),
+            description: cmds
+                .security
+                .as_deref()
+                .unwrap_or(not_configured)
+                .to_string(),
+            action: HubAction::RunCommand("security".into()),
+            is_header: false,
+            enabled: cmds.security.is_some(),
+        });
+
+        // Pre-select the first selectable item
+        let selected = items
+            .iter()
+            .position(|item| !item.is_header && item.enabled)
+            .unwrap_or(0);
+
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Verify,
+            title: None,
+            items,
+            selected,
+        });
+    }
+
+    /// Open a package-specific verify hub showing that package's configured commands.
+    pub fn open_package_commands_hub(&mut self, package_id: String) {
+        let pkg = match self.config.packages.items.get(&package_id) {
+            Some(p) => p.clone(),
+            None => {
+                self.notify(&format!("Package '{}' not found in config", package_id));
+                return;
+            }
+        };
+        let label = pkg.label.clone().unwrap_or_else(|| package_id.clone());
+        let not_configured = "not set for this package";
+
         let items = vec![
             HubItem {
                 label: "Run tests".into(),
                 hint: "".into(),
-                description: cmds.test.as_deref().unwrap_or(not_configured).to_string(),
-                action: HubAction::RunCommand("test".into()),
+                description: pkg.test.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunPackageCommand {
+                    command: "test".into(),
+                    package_id: package_id.clone(),
+                },
                 is_header: false,
-                enabled: cmds.test.is_some(),
+                enabled: pkg.test.is_some(),
             },
             HubItem {
                 label: "Run linter".into(),
                 hint: "".into(),
-                description: cmds.lint.as_deref().unwrap_or(not_configured).to_string(),
-                action: HubAction::RunCommand("lint".into()),
+                description: pkg.lint.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunPackageCommand {
+                    command: "lint".into(),
+                    package_id: package_id.clone(),
+                },
                 is_header: false,
-                enabled: cmds.lint.is_some(),
+                enabled: pkg.lint.is_some(),
             },
             HubItem {
                 label: "Type check".into(),
                 hint: "".into(),
-                description: cmds
-                    .typecheck
-                    .as_deref()
-                    .unwrap_or(not_configured)
-                    .to_string(),
-                action: HubAction::RunCommand("typecheck".into()),
+                description: pkg.typecheck.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunPackageCommand {
+                    command: "typecheck".into(),
+                    package_id: package_id.clone(),
+                },
                 is_header: false,
-                enabled: cmds.typecheck.is_some(),
+                enabled: pkg.typecheck.is_some(),
             },
             HubItem {
                 label: "Security scan".into(),
                 hint: "".into(),
-                description: cmds
-                    .security
-                    .as_deref()
-                    .unwrap_or(not_configured)
-                    .to_string(),
-                action: HubAction::RunCommand("security".into()),
+                description: pkg.security.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunPackageCommand {
+                    command: "security".into(),
+                    package_id: package_id.clone(),
+                },
                 is_header: false,
-                enabled: cmds.security.is_some(),
+                enabled: pkg.security.is_some(),
             },
         ];
+
+        let selected = items
+            .iter()
+            .position(|item| item.enabled)
+            .unwrap_or(0);
+
         self.overlay = Some(OverlayData::ModalHub {
-            kind: HubKind::Verify,
+            kind: HubKind::VerifyPackage,
+            title: Some(format!("VERIFY / {}", label)),
             items,
-            selected: 0,
+            selected,
         });
     }
 
@@ -3568,6 +3694,7 @@ impl App {
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Copy,
+            title: None,
             items,
             selected: 0,
         });
@@ -4070,6 +4197,7 @@ impl App {
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Help,
+            title: None,
             items,
             selected: 0,
         });
@@ -4147,6 +4275,7 @@ impl App {
             .unwrap_or(0);
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Open,
+            title: None,
             items,
             selected: first_selectable,
         });
