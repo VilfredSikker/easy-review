@@ -1094,16 +1094,26 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
                                 .collect(),
                         )
                     } else {
-                        // The GitHub line number doesn't map to a local DiffLine — this happens
-                        // when the PR base has drifted from our local base (main has advanced).
-                        // Extract content from diff_hunk so the relocation engine has real
-                        // content to search with instead of an empty string (which always → Lost).
-                        let (fallback_lc, fallback_ctx) = gh
-                            .diff_hunk
-                            .as_deref()
-                            .map(extract_anchor_from_diff_hunk)
-                            .unwrap_or_default();
-                        (fallback_lc, None, fallback_ctx, Vec::new())
+                        // The line number doesn't map to a local DiffLine — PR base has drifted.
+                        // Priority: 1) extract from diff_hunk content, 2) snap to the nearest
+                        // line in the hunk by new_num so the anchor is never blank.
+                        if let Some(dh) = gh.diff_hunk.as_deref() {
+                            let (fallback_lc, fallback_ctx) =
+                                extract_anchor_from_diff_hunk(dh);
+                            (fallback_lc, None, fallback_ctx, Vec::new())
+                        } else {
+                            let nearest = hunk
+                                .lines
+                                .iter()
+                                .filter_map(|l| l.new_num.map(|n| (n, l)))
+                                .min_by_key(|(n, _)| {
+                                    (*n as isize - line as isize).unsigned_abs()
+                                });
+                            let (lc, old_ln) = nearest
+                                .map(|(_, l)| (l.content.clone(), l.old_num))
+                                .unwrap_or_default();
+                            (lc, old_ln, Vec::new(), Vec::new())
+                        }
                     };
                     (
                         Some(i),
