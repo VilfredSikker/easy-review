@@ -1098,17 +1098,14 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
                         // Priority: 1) extract from diff_hunk content, 2) snap to the nearest
                         // line in the hunk by new_num so the anchor is never blank.
                         if let Some(dh) = gh.diff_hunk.as_deref() {
-                            let (fallback_lc, fallback_ctx) =
-                                extract_anchor_from_diff_hunk(dh);
+                            let (fallback_lc, fallback_ctx) = extract_anchor_from_diff_hunk(dh);
                             (fallback_lc, None, fallback_ctx, Vec::new())
                         } else {
                             let nearest = hunk
                                 .lines
                                 .iter()
                                 .filter_map(|l| l.new_num.map(|n| (n, l)))
-                                .min_by_key(|(n, _)| {
-                                    (*n as isize - line as isize).unsigned_abs()
-                                });
+                                .min_by_key(|(n, _)| (*n as isize - line as isize).unsigned_abs());
                             let (lc, old_ln) = nearest
                                 .map(|(_, l)| (l.content.clone(), l.old_num))
                                 .unwrap_or_default();
