@@ -4767,6 +4767,15 @@ impl App {
     pub fn overlay_close(&mut self) {
         if matches!(self.overlay, Some(OverlayData::ConfigHub { .. })) {
             self.config_hub_cancel();
+        } else if matches!(
+            self.overlay,
+            Some(OverlayData::ModalHub {
+                kind: HubKind::VerifyPackage,
+                ..
+            })
+        ) {
+            // Navigate back to the package picker instead of closing entirely.
+            self.open_verify_hub();
         } else {
             self.overlay = None;
         }
