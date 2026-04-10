@@ -1920,8 +1920,7 @@ fn render_comment_lines(
         } else {
             format!("  \u{256d}\u{2500} {}  ", icon)
         };
-        // emoji occupies 2 columns; estimate display width conservatively
-        let label_cols = line_label.chars().count() + 1;
+        let label_cols = Span::raw(&line_label).width();
         let fill_len = (width as usize).saturating_sub(label_cols);
         lines.push(
             Line::from(vec![

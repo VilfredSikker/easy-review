@@ -862,6 +862,9 @@ fn find_local_line_for_diff_hunk(diff_hunk: &str, file: &git::DiffFile) -> Optio
     let window: Vec<&str> = new_side_stripped[new_side_stripped.len() - window_size..].to_vec();
 
     // Slide the window across each hunk in our local diff to find a content match.
+    // Require a unique match — if the window appears more than once, fall back to gh.line
+    // to avoid silently anchoring to the wrong location in repetitive code.
+    let mut unique_match: Option<(usize, usize)> = None;
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
         let new_side_lines: Vec<(&str, Option<usize>)> = hunk
             .lines
@@ -880,13 +883,19 @@ fn find_local_line_for_diff_hunk(diff_hunk: &str, file: &git::DiffFile) -> Optio
                 .map(|(c, _)| *c)
                 .collect();
             if candidate == window {
-                // The last line of the window is the comment target.
                 let (_, local_new_num) = new_side_lines[i + window_size - 1];
                 if let Some(line_num) = local_new_num {
-                    return Some((hunk_idx, line_num));
+                    if unique_match.is_some() {
+                        // Ambiguous — two locations match the window; refuse to guess.
+                        return None;
+                    }
+                    unique_match = Some((hunk_idx, line_num));
                 }
             }
         }
+    }
+    if let Some(m) = unique_match {
+        return Some(m);
     }
 
     None
