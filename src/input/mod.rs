@@ -1008,17 +1008,25 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
     for gh in &gh_comments {
         let file_path = gh.path.clone().unwrap_or_default();
 
-        // Prefer content-based matching via diff_hunk (robust against line-number drift when
-        // main has advanced since the PR was filed). Fall back to gh.line if unavailable.
+        // Prefer content-based matching via diff_hunk — robust against line-number drift when
+        // main has advanced since the PR was filed.
+        //
+        // Fallback priority:
+        //   1. Content match (diff_hunk sliding window)
+        //   2. original_line — stable line from when the comment was first created; always
+        //      consistent with diff_hunk, never null even after the PR head is force-pushed
+        //   3. line — GitHub's current value, which GitHub nulls out when it considers the
+        //      comment outdated after a rebase
+        let stable_line = gh.original_line.or(gh.line);
         let resolved_line: Option<usize> = if let (Some(diff_hunk), Some(f)) = (
             &gh.diff_hunk,
             tab_files.iter().find(|f| f.path == file_path),
         ) {
             find_local_line_for_diff_hunk(diff_hunk, f)
                 .map(|(_, ln)| ln)
-                .or(gh.line)
+                .or(stable_line)
         } else {
-            gh.line
+            stable_line
         };
 
         let (
