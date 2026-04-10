@@ -224,6 +224,8 @@ pub enum OverlayData {
     },
     ModalHub {
         kind: HubKind,
+        /// Optional title override (e.g. "VERIFY / frontend"). Uses kind.title() if None.
+        title: Option<String>,
         items: Vec<HubItem>,
         selected: usize,
     },
@@ -255,6 +257,7 @@ pub enum HubKind {
     AiProvider,
     AiModel,
     Verify,
+    VerifyPackage,
     Help,
     Open,
     Copy,
@@ -268,6 +271,7 @@ impl HubKind {
             HubKind::AiProvider => "AI PROVIDER",
             HubKind::AiModel => "AI MODEL",
             HubKind::Verify => "VERIFY",
+            HubKind::VerifyPackage => "VERIFY",
             HubKind::Help => "HELP",
             HubKind::Open => "OPEN",
             HubKind::Copy => "COPY",
@@ -353,6 +357,15 @@ pub enum HubAction {
     CopyHunk,
     CopyLine,
     // Help — no dispatch, just informational
+    /// Select a package in the verify flow, then show that package's commands
+    SelectVerifyPackage {
+        package_id: String,
+    },
+    /// Run a verify command scoped to a specific package
+    RunPackageCommand {
+        command: String,
+        package_id: String,
+    },
 }
 
 // ── Per-Tab State ──
@@ -3013,6 +3026,7 @@ impl App {
             .collect();
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::AiProvider,
+            title: None,
             items,
             selected,
         });
@@ -3064,6 +3078,7 @@ impl App {
             .collect();
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::AiModel,
+            title: None,
             items,
             selected,
         });
@@ -3300,6 +3315,7 @@ impl App {
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Git,
+            title: None,
             items,
             selected: 0,
         });
@@ -3470,61 +3486,187 @@ impl App {
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Ai,
+            title: None,
             items,
             selected: 0,
         });
     }
 
-    /// Open the Verify modal hub — items enabled when configured in [commands]
+    /// Open the Verify modal hub — items enabled when configured in [commands].
+    /// When [packages] is configured, a packages section appears at the top for mono-repo use.
     pub fn open_verify_hub(&mut self) {
         let cmds = &self.config.commands;
         let not_configured = "set in [commands] in .er-config.toml";
+        let mut items: Vec<HubItem> = Vec::new();
+
+        // Packages section — only shown when [packages] is configured
+        if self.config.has_packages() {
+            items.push(HubItem {
+                label: "── Packages ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            });
+            for (package_id, pkg) in &self.config.packages.items {
+                let count = pkg.command_count();
+                items.push(HubItem {
+                    label: pkg.label.clone().unwrap_or_else(|| package_id.clone()),
+                    hint: package_id.clone(),
+                    description: format!("{} command(s) configured", count),
+                    action: HubAction::SelectVerifyPackage {
+                        package_id: package_id.clone(),
+                    },
+                    is_header: false,
+                    enabled: count > 0,
+                });
+            }
+            items.push(HubItem {
+                label: "── Global ──".into(),
+                hint: "".into(),
+                description: "".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
+            });
+        }
+
+        items.push(HubItem {
+            label: "Run tests".into(),
+            hint: "".into(),
+            description: cmds.test.as_deref().unwrap_or(not_configured).to_string(),
+            action: HubAction::RunCommand("test".into()),
+            is_header: false,
+            enabled: cmds.test.is_some(),
+        });
+        items.push(HubItem {
+            label: "Run linter".into(),
+            hint: "".into(),
+            description: cmds.lint.as_deref().unwrap_or(not_configured).to_string(),
+            action: HubAction::RunCommand("lint".into()),
+            is_header: false,
+            enabled: cmds.lint.is_some(),
+        });
+        items.push(HubItem {
+            label: "Type check".into(),
+            hint: "".into(),
+            description: cmds
+                .typecheck
+                .as_deref()
+                .unwrap_or(not_configured)
+                .to_string(),
+            action: HubAction::RunCommand("typecheck".into()),
+            is_header: false,
+            enabled: cmds.typecheck.is_some(),
+        });
+        items.push(HubItem {
+            label: "Security scan".into(),
+            hint: "".into(),
+            description: cmds
+                .security
+                .as_deref()
+                .unwrap_or(not_configured)
+                .to_string(),
+            action: HubAction::RunCommand("security".into()),
+            is_header: false,
+            enabled: cmds.security.is_some(),
+        });
+
+        // Pre-select the first enabled item, falling back to the first non-header row so
+        // the cursor never lands on a section header when nothing is enabled.
+        let selected = items
+            .iter()
+            .position(|item| !item.is_header && item.enabled)
+            .or_else(|| items.iter().position(|item| !item.is_header))
+            .unwrap_or(0);
+
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Verify,
+            title: None,
+            items,
+            selected,
+        });
+    }
+
+    /// Open a package-specific verify hub showing that package's configured commands.
+    pub fn open_package_commands_hub(&mut self, package_id: String) {
+        let not_configured = "set in [packages] in .er-config.toml";
+        let fields = self.config.packages.items.get(&package_id).map(|p| {
+            (
+                p.label.as_deref().unwrap_or(&package_id).to_owned(),
+                p.test.clone(),
+                p.lint.clone(),
+                p.typecheck.clone(),
+                p.security.clone(),
+            )
+        });
+        let (label, test, lint, typecheck, security) = match fields {
+            Some(f) => f,
+            None => {
+                self.notify(&format!("Package '{}' not found in config", package_id));
+                return;
+            }
+        };
+
         let items = vec![
             HubItem {
                 label: "Run tests".into(),
                 hint: "".into(),
-                description: cmds.test.as_deref().unwrap_or(not_configured).to_string(),
-                action: HubAction::RunCommand("test".into()),
+                description: test.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunPackageCommand {
+                    command: "test".into(),
+                    package_id: package_id.clone(),
+                },
                 is_header: false,
-                enabled: cmds.test.is_some(),
+                enabled: test.is_some(),
             },
             HubItem {
                 label: "Run linter".into(),
                 hint: "".into(),
-                description: cmds.lint.as_deref().unwrap_or(not_configured).to_string(),
-                action: HubAction::RunCommand("lint".into()),
+                description: lint.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunPackageCommand {
+                    command: "lint".into(),
+                    package_id: package_id.clone(),
+                },
                 is_header: false,
-                enabled: cmds.lint.is_some(),
+                enabled: lint.is_some(),
             },
             HubItem {
                 label: "Type check".into(),
                 hint: "".into(),
-                description: cmds
-                    .typecheck
-                    .as_deref()
-                    .unwrap_or(not_configured)
-                    .to_string(),
-                action: HubAction::RunCommand("typecheck".into()),
+                description: typecheck.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunPackageCommand {
+                    command: "typecheck".into(),
+                    package_id: package_id.clone(),
+                },
                 is_header: false,
-                enabled: cmds.typecheck.is_some(),
+                enabled: typecheck.is_some(),
             },
             HubItem {
                 label: "Security scan".into(),
                 hint: "".into(),
-                description: cmds
-                    .security
-                    .as_deref()
-                    .unwrap_or(not_configured)
-                    .to_string(),
-                action: HubAction::RunCommand("security".into()),
+                description: security.as_deref().unwrap_or(not_configured).to_string(),
+                action: HubAction::RunPackageCommand {
+                    command: "security".into(),
+                    package_id: package_id.clone(),
+                },
                 is_header: false,
-                enabled: cmds.security.is_some(),
+                enabled: security.is_some(),
             },
         ];
+
+        let selected = items
+            .iter()
+            .position(|item| !item.is_header && item.enabled)
+            .or_else(|| items.iter().position(|item| !item.is_header))
+            .unwrap_or(0);
+
         self.overlay = Some(OverlayData::ModalHub {
-            kind: HubKind::Verify,
+            kind: HubKind::VerifyPackage,
+            title: Some(format!("VERIFY / {}", label)),
             items,
-            selected: 0,
+            selected,
         });
     }
 
@@ -3568,6 +3710,7 @@ impl App {
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Copy,
+            title: None,
             items,
             selected: 0,
         });
@@ -4070,6 +4213,7 @@ impl App {
         ];
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Help,
+            title: None,
             items,
             selected: 0,
         });
@@ -4147,6 +4291,7 @@ impl App {
             .unwrap_or(0);
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Open,
+            title: None,
             items,
             selected: first_selectable,
         });
@@ -4622,6 +4767,15 @@ impl App {
     pub fn overlay_close(&mut self) {
         if matches!(self.overlay, Some(OverlayData::ConfigHub { .. })) {
             self.config_hub_cancel();
+        } else if matches!(
+            self.overlay,
+            Some(OverlayData::ModalHub {
+                kind: HubKind::VerifyPackage,
+                ..
+            })
+        ) {
+            // Navigate back to the package picker instead of closing entirely.
+            self.open_verify_hub();
         } else {
             self.overlay = None;
         }

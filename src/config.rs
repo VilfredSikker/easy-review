@@ -20,6 +20,8 @@ pub struct ErConfig {
     pub commands: CommandsConfig,
     #[serde(default)]
     pub ai_hub: AiHubConfig,
+    #[serde(default)]
+    pub packages: PackagesConfig,
 }
 
 /// [commands] section — configurable shell commands for hub actions.
@@ -43,6 +45,36 @@ pub struct CommandsConfig {
     /// Security scan (Verify hub)
     #[serde(default)]
     pub security: Option<String>,
+}
+
+/// Per-package command overrides for mono-repo setups.
+/// Each key under [packages] is a package ID with its own commands.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PackageConfig {
+    pub label: Option<String>,
+    pub test: Option<String>,
+    pub lint: Option<String>,
+    pub typecheck: Option<String>,
+    pub security: Option<String>,
+}
+
+impl PackageConfig {
+    pub fn command_count(&self) -> usize {
+        [&self.test, &self.lint, &self.typecheck, &self.security]
+            .iter()
+            .filter(|c| c.is_some())
+            .count()
+    }
+}
+
+/// [packages] section — per-package command definitions for mono-repos.
+/// Each key maps to a PackageConfig with its own test/lint/typecheck/security commands.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PackagesConfig {
+    #[serde(flatten)]
+    pub items: BTreeMap<String, PackageConfig>,
 }
 
 /// [watched] section configuration
@@ -342,6 +374,22 @@ impl ErConfig {
             "lint" => self.commands.lint.clone(),
             "typecheck" => self.commands.typecheck.clone(),
             "security" => self.commands.security.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn has_packages(&self) -> bool {
+        !self.packages.items.is_empty()
+    }
+
+    /// Resolve a command for a specific package. Returns None if package or command not configured.
+    pub fn resolve_package_command(&self, package_id: &str, command: &str) -> Option<String> {
+        let pkg = self.packages.items.get(package_id)?;
+        match command {
+            "test" => pkg.test.clone(),
+            "lint" => pkg.lint.clone(),
+            "typecheck" => pkg.typecheck.clone(),
+            "security" => pkg.security.clone(),
             _ => None,
         }
     }
