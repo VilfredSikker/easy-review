@@ -817,6 +817,81 @@ pub(super) fn build_agent_wizard_prompt(app: &mut App) -> Option<String> {
     }
 }
 
+/// Given a GitHub `diff_hunk` string, find the matching local line number in a file's diff.
+///
+/// GitHub's `line` field uses line numbers from the PR diff (against the PR base commit),
+/// which may differ from our local diff when `main` has advanced since the PR was filed.
+/// `diff_hunk` contains the actual diff text, so we can use content-based matching instead.
+///
+/// Returns `(hunk_index, local_line_start)` if a match is found.
+fn find_local_line_for_diff_hunk(diff_hunk: &str, file: &git::DiffFile) -> Option<(usize, usize)> {
+    // Parse diff_hunk lines: first line is the @@ header, rest are +/-/space content lines.
+    let hunk_lines: Vec<&str> = diff_hunk.lines().collect();
+    let content_lines: Vec<&str> = hunk_lines.iter().skip(1).copied().collect();
+    if content_lines.is_empty() {
+        return None;
+    }
+
+    // Strip the +/-/space prefix to get raw content (matching DiffLine.content which is pre-stripped).
+    let stripped: Vec<&str> = content_lines
+        .iter()
+        .map(|l| {
+            if l.starts_with('+') || l.starts_with('-') || l.starts_with(' ') {
+                &l[1..]
+            } else {
+                l
+            }
+        })
+        .collect();
+
+    // Use the last N lines as a sliding-window fingerprint.
+    // Skip deleted lines in the window — they won't appear on the new side of the diff.
+    let new_side_stripped: Vec<&str> = content_lines
+        .iter()
+        .zip(stripped.iter())
+        .filter(|(raw, _)| !raw.starts_with('-'))
+        .map(|(_, s)| *s)
+        .collect();
+
+    if new_side_stripped.is_empty() {
+        return None;
+    }
+
+    // Use a window of up to 4 lines ending at the target line (last line in the hunk).
+    let window_size = new_side_stripped.len().min(4);
+    let window: Vec<&str> = new_side_stripped[new_side_stripped.len() - window_size..].to_vec();
+
+    // Slide the window across each hunk in our local diff to find a content match.
+    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        let new_side_lines: Vec<(&str, Option<usize>)> = hunk
+            .lines
+            .iter()
+            .filter(|l| !matches!(l.line_type, git::LineType::Delete))
+            .map(|l| (l.content.as_str(), l.new_num))
+            .collect();
+
+        if new_side_lines.len() < window_size {
+            continue;
+        }
+
+        for i in 0..=(new_side_lines.len() - window_size) {
+            let candidate: Vec<&str> = new_side_lines[i..i + window_size]
+                .iter()
+                .map(|(c, _)| *c)
+                .collect();
+            if candidate == window {
+                // The last line of the window is the comment target.
+                let (_, local_new_num) = new_side_lines[i + window_size - 1];
+                if let Some(line_num) = local_new_num {
+                    return Some((hunk_idx, line_num));
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Sync GitHub PR comments (pull)
 pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
     let tab = app.tab();
@@ -924,6 +999,19 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
     for gh in &gh_comments {
         let file_path = gh.path.clone().unwrap_or_default();
 
+        // Prefer content-based matching via diff_hunk (robust against line-number drift when
+        // main has advanced since the PR was filed). Fall back to gh.line if unavailable.
+        let resolved_line: Option<usize> = if let (Some(diff_hunk), Some(f)) = (
+            &gh.diff_hunk,
+            tab_files.iter().find(|f| f.path == file_path),
+        ) {
+            find_local_line_for_diff_hunk(diff_hunk, f)
+                .map(|(_, ln)| ln)
+                .or(gh.line)
+        } else {
+            gh.line
+        };
+
         let (
             hunk_index,
             anchor_line_content,
@@ -931,7 +1019,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
             anchor_ctx_after,
             anchor_old_line,
             anchor_hunk_header,
-        ) = if let Some(line) = gh.line {
+        ) = if let Some(line) = resolved_line {
             if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
                 if let Some((i, hunk)) = f
                     .hunks
@@ -1009,7 +1097,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
             timestamp: gh.created_at.clone(),
             file: file_path,
             hunk_index,
-            line_start: gh.line,
+            line_start: resolved_line,
             line_end: None,
             line_content: anchor_line_content,
             comment: gh.body.clone(),
