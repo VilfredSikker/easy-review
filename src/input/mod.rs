@@ -827,6 +827,123 @@ pub(super) fn build_agent_wizard_prompt(app: &mut App) -> Option<String> {
     }
 }
 
+/// Extract the commented line content and preceding context from a GitHub `diff_hunk` string.
+///
+/// GitHub's diff_hunk ends at the commented line. The last non-deleted line is the target;
+/// the preceding non-deleted lines are context. Used as a fallback when the local DiffLine
+/// lookup fails (e.g. because the PR base has drifted from our local base).
+///
+/// Returns `(line_content, context_before)`.
+fn extract_anchor_from_diff_hunk(diff_hunk: &str) -> (String, Vec<String>) {
+    let new_side: Vec<&str> = diff_hunk
+        .lines()
+        .skip(1) // skip @@ header
+        .filter(|l| !l.starts_with('-'))
+        .map(|l| {
+            if l.starts_with('+') || l.starts_with(' ') {
+                &l[1..]
+            } else {
+                l
+            }
+        })
+        .collect();
+    let line_content = new_side.last().copied().unwrap_or("").to_string();
+    let ctx_start = new_side.len().saturating_sub(4);
+    let context_before: Vec<String> = if new_side.len() > 1 {
+        new_side[ctx_start..new_side.len() - 1]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (line_content, context_before)
+}
+
+/// Given a GitHub `diff_hunk` string, find the matching local line number in a file's diff.
+///
+/// GitHub's `line` field uses line numbers from the PR diff (against the PR base commit),
+/// which may differ from our local diff when `main` has advanced since the PR was filed.
+/// `diff_hunk` contains the actual diff text, so we can use content-based matching instead.
+///
+/// Returns `(hunk_index, local_line_start)` if a match is found.
+fn find_local_line_for_diff_hunk(diff_hunk: &str, file: &git::DiffFile) -> Option<(usize, usize)> {
+    // Parse diff_hunk lines: first line is the @@ header, rest are +/-/space content lines.
+    let hunk_lines: Vec<&str> = diff_hunk.lines().collect();
+    let content_lines: Vec<&str> = hunk_lines.iter().skip(1).copied().collect();
+    if content_lines.is_empty() {
+        return None;
+    }
+
+    // Strip the +/-/space prefix to get raw content (matching DiffLine.content which is pre-stripped).
+    let stripped: Vec<&str> = content_lines
+        .iter()
+        .map(|l| {
+            if l.starts_with('+') || l.starts_with('-') || l.starts_with(' ') {
+                &l[1..]
+            } else {
+                l
+            }
+        })
+        .collect();
+
+    // Use the last N lines as a sliding-window fingerprint.
+    // Skip deleted lines in the window — they won't appear on the new side of the diff.
+    let new_side_stripped: Vec<&str> = content_lines
+        .iter()
+        .zip(stripped.iter())
+        .filter(|(raw, _)| !raw.starts_with('-'))
+        .map(|(_, s)| *s)
+        .collect();
+
+    if new_side_stripped.is_empty() {
+        return None;
+    }
+
+    // Use a window of up to 4 lines ending at the target line (last line in the hunk).
+    let window_size = new_side_stripped.len().min(4);
+    let window: Vec<&str> = new_side_stripped[new_side_stripped.len() - window_size..].to_vec();
+
+    // Slide the window across each hunk in our local diff to find a content match.
+    // Require a unique match — if the window appears more than once, fall back to gh.line
+    // to avoid silently anchoring to the wrong location in repetitive code.
+    let mut unique_match: Option<(usize, usize)> = None;
+    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        let new_side_lines: Vec<(&str, Option<usize>)> = hunk
+            .lines
+            .iter()
+            .filter(|l| !matches!(l.line_type, git::LineType::Delete))
+            .map(|l| (l.content.as_str(), l.new_num))
+            .collect();
+
+        if new_side_lines.len() < window_size {
+            continue;
+        }
+
+        for i in 0..=(new_side_lines.len() - window_size) {
+            let candidate: Vec<&str> = new_side_lines[i..i + window_size]
+                .iter()
+                .map(|(c, _)| *c)
+                .collect();
+            if candidate == window {
+                let (_, local_new_num) = new_side_lines[i + window_size - 1];
+                if let Some(line_num) = local_new_num {
+                    if unique_match.is_some() {
+                        // Ambiguous — two locations match the window; refuse to guess.
+                        return None;
+                    }
+                    unique_match = Some((hunk_idx, line_num));
+                }
+            }
+        }
+    }
+    if let Some(m) = unique_match {
+        return Some(m);
+    }
+
+    None
+}
+
 /// Sync GitHub PR comments (pull)
 pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
     let tab = app.tab();
@@ -934,6 +1051,27 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
     for gh in &gh_comments {
         let file_path = gh.path.clone().unwrap_or_default();
 
+        // Prefer content-based matching via diff_hunk — robust against line-number drift when
+        // main has advanced since the PR was filed.
+        //
+        // Fallback priority:
+        //   1. Content match (diff_hunk sliding window)
+        //   2. original_line — stable line from when the comment was first created; always
+        //      consistent with diff_hunk, never null even after the PR head is force-pushed
+        //   3. line — GitHub's current value, which GitHub nulls out when it considers the
+        //      comment outdated after a rebase
+        let stable_line = gh.original_line.or(gh.line);
+        let resolved_line: Option<usize> = if let (Some(diff_hunk), Some(f)) = (
+            &gh.diff_hunk,
+            tab_files.iter().find(|f| f.path == file_path),
+        ) {
+            find_local_line_for_diff_hunk(diff_hunk, f)
+                .map(|(_, ln)| ln)
+                .or(stable_line)
+        } else {
+            stable_line
+        };
+
         let (
             hunk_index,
             anchor_line_content,
@@ -941,7 +1079,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
             anchor_ctx_after,
             anchor_old_line,
             anchor_hunk_header,
-        ) = if let Some(line) = gh.line {
+        ) = if let Some(line) = resolved_line {
             if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
                 if let Some((i, hunk)) = f
                     .hunks
@@ -950,28 +1088,39 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
                     .find(|(_, h)| line >= h.new_start && line < h.new_start + h.new_count)
                 {
                     let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
-                    let (lc, old_ln) = if let Some(idx) = target_idx {
-                        (hunk.lines[idx].content.clone(), hunk.lines[idx].old_num)
-                    } else {
-                        (String::new(), None)
-                    };
-                    let ctx_before: Vec<String> = if let Some(idx) = target_idx {
+                    let (lc, old_ln, ctx_before, ctx_after) = if let Some(idx) = target_idx {
                         let start = idx.saturating_sub(3);
-                        hunk.lines[start..idx]
-                            .iter()
-                            .map(|l| l.content.clone())
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                    let ctx_after: Vec<String> = if let Some(idx) = target_idx {
                         let end = (idx + 4).min(hunk.lines.len());
-                        hunk.lines[(idx + 1)..end]
-                            .iter()
-                            .map(|l| l.content.clone())
-                            .collect()
+                        (
+                            hunk.lines[idx].content.clone(),
+                            hunk.lines[idx].old_num,
+                            hunk.lines[start..idx]
+                                .iter()
+                                .map(|l| l.content.clone())
+                                .collect(),
+                            hunk.lines[(idx + 1)..end]
+                                .iter()
+                                .map(|l| l.content.clone())
+                                .collect(),
+                        )
                     } else {
-                        Vec::new()
+                        // The line number doesn't map to a local DiffLine — PR base has drifted.
+                        // Priority: 1) extract from diff_hunk content, 2) snap to the nearest
+                        // line in the hunk by new_num so the anchor is never blank.
+                        if let Some(dh) = gh.diff_hunk.as_deref() {
+                            let (fallback_lc, fallback_ctx) = extract_anchor_from_diff_hunk(dh);
+                            (fallback_lc, None, fallback_ctx, Vec::new())
+                        } else {
+                            let nearest = hunk
+                                .lines
+                                .iter()
+                                .filter_map(|l| l.new_num.map(|n| (n, l)))
+                                .min_by_key(|(n, _)| (*n as isize - line as isize).unsigned_abs());
+                            let (lc, old_ln) = nearest
+                                .map(|(_, l)| (l.content.clone(), l.old_num))
+                                .unwrap_or_default();
+                            (lc, old_ln, Vec::new(), Vec::new())
+                        }
                     };
                     (
                         Some(i),
@@ -1019,7 +1168,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
             timestamp: gh.created_at.clone(),
             file: file_path,
             hunk_index,
-            line_start: gh.line,
+            line_start: resolved_line,
             line_end: None,
             line_content: anchor_line_content,
             comment: gh.body.clone(),
