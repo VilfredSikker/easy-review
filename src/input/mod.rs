@@ -817,6 +817,39 @@ pub(super) fn build_agent_wizard_prompt(app: &mut App) -> Option<String> {
     }
 }
 
+/// Extract the commented line content and preceding context from a GitHub `diff_hunk` string.
+///
+/// GitHub's diff_hunk ends at the commented line. The last non-deleted line is the target;
+/// the preceding non-deleted lines are context. Used as a fallback when the local DiffLine
+/// lookup fails (e.g. because the PR base has drifted from our local base).
+///
+/// Returns `(line_content, context_before)`.
+fn extract_anchor_from_diff_hunk(diff_hunk: &str) -> (String, Vec<String>) {
+    let new_side: Vec<&str> = diff_hunk
+        .lines()
+        .skip(1) // skip @@ header
+        .filter(|l| !l.starts_with('-'))
+        .map(|l| {
+            if l.starts_with('+') || l.starts_with(' ') {
+                &l[1..]
+            } else {
+                l
+            }
+        })
+        .collect();
+    let line_content = new_side.last().copied().unwrap_or("").to_string();
+    let ctx_start = new_side.len().saturating_sub(4);
+    let context_before: Vec<String> = if new_side.len() > 1 {
+        new_side[ctx_start..new_side.len() - 1]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (line_content, context_before)
+}
+
 /// Given a GitHub `diff_hunk` string, find the matching local line number in a file's diff.
 ///
 /// GitHub's `line` field uses line numbers from the PR diff (against the PR base commit),
@@ -1045,28 +1078,32 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
                     .find(|(_, h)| line >= h.new_start && line < h.new_start + h.new_count)
                 {
                     let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
-                    let (lc, old_ln) = if let Some(idx) = target_idx {
-                        (hunk.lines[idx].content.clone(), hunk.lines[idx].old_num)
-                    } else {
-                        (String::new(), None)
-                    };
-                    let ctx_before: Vec<String> = if let Some(idx) = target_idx {
+                    let (lc, old_ln, ctx_before, ctx_after) = if let Some(idx) = target_idx {
                         let start = idx.saturating_sub(3);
-                        hunk.lines[start..idx]
-                            .iter()
-                            .map(|l| l.content.clone())
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                    let ctx_after: Vec<String> = if let Some(idx) = target_idx {
                         let end = (idx + 4).min(hunk.lines.len());
-                        hunk.lines[(idx + 1)..end]
-                            .iter()
-                            .map(|l| l.content.clone())
-                            .collect()
+                        (
+                            hunk.lines[idx].content.clone(),
+                            hunk.lines[idx].old_num,
+                            hunk.lines[start..idx]
+                                .iter()
+                                .map(|l| l.content.clone())
+                                .collect(),
+                            hunk.lines[(idx + 1)..end]
+                                .iter()
+                                .map(|l| l.content.clone())
+                                .collect(),
+                        )
                     } else {
-                        Vec::new()
+                        // The GitHub line number doesn't map to a local DiffLine — this happens
+                        // when the PR base has drifted from our local base (main has advanced).
+                        // Extract content from diff_hunk so the relocation engine has real
+                        // content to search with instead of an empty string (which always → Lost).
+                        let (fallback_lc, fallback_ctx) = gh
+                            .diff_hunk
+                            .as_deref()
+                            .map(extract_anchor_from_diff_hunk)
+                            .unwrap_or_default();
+                        (fallback_lc, None, fallback_ctx, Vec::new())
                     };
                     (
                         Some(i),
