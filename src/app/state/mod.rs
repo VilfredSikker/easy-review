@@ -3568,10 +3568,12 @@ impl App {
             enabled: cmds.security.is_some(),
         });
 
-        // Pre-select the first selectable item
+        // Pre-select the first enabled item, falling back to the first non-header row so
+        // the cursor never lands on a section header when nothing is enabled.
         let selected = items
             .iter()
             .position(|item| !item.is_header && item.enabled)
+            .or_else(|| items.iter().position(|item| !item.is_header))
             .unwrap_or(0);
 
         self.overlay = Some(OverlayData::ModalHub {
@@ -3644,6 +3646,7 @@ impl App {
         let selected = items
             .iter()
             .position(|item| item.enabled)
+            .or_else(|| items.iter().position(|item| !item.is_header))
             .unwrap_or(0);
 
         self.overlay = Some(OverlayData::ModalHub {
