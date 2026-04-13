@@ -129,12 +129,12 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
                 .bg(styles::PURPLE())
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
-        if !tab.gb_stacks.is_empty() {
+        if !tab.gb_branches.is_empty() {
             info_spans.push(Span::styled(
                 format!(
-                    " [stack {}/{}]",
-                    tab.gb_selected_stack + 1,
-                    tab.gb_stacks.len()
+                    " [{}/{}]",
+                    tab.gb_selected_branch + 1,
+                    tab.gb_branches.len()
                 ),
                 ratatui::style::Style::default().fg(styles::DIM()),
             ));

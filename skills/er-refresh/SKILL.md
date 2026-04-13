@@ -10,13 +10,13 @@ Run as `/er-refresh`.
 
 Before Step 1, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true:
 
-1. Extract `binary`, `selected_stack_id`, and `selected_branch` from the JSON
+1. Extract `binary`, `selected_branch_id`, and `selected_branch` from the JSON
 2. Set `ER_DIR` to `.er/stacks/<selected_branch>/` (create with `mkdir -p`)
 3. For the diff capture, use:
    ```
-   <binary> diff <selected_stack_id> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp && git rev-parse --short HEAD
+   scripts/er-gb-diff <binary> <selected_branch_id> <ER_DIR>/diff-tmp
    ```
-   instead of `git diff <base> ...`. The binary path from gb-context.json must be added to allowed first-words.
+   instead of `git diff <base> ...`. The helper script handles JSON parsing, unified diff reconstruction, shasum, and HEAD output. It matches the allowed `scripts/er-*` pattern.
 4. All `.er/` file reads and writes in this skill use `<ER_DIR>/` instead of `.er/`
    (e.g., `<ER_DIR>/review.json` instead of `.er/review.json`)
 5. The persistence cache path becomes `<ER_DIR>/reviews/<branch>/<commit>/`
@@ -71,14 +71,14 @@ Determine scope args from the review's diff_scope + base_branch:
 - "staged" → --staged --unified=3 --no-color --no-ext-diff
 
 If diff_scope is missing, default to "branch".
-(In GB mode, use `<binary> diff <selected_stack_id>` instead of git diff.)
+(In GB mode, use `scripts/er-gb-diff <binary> <selected_branch_id> <ER_DIR>/diff-tmp` instead of git diff.)
 
 TOOL CALL 2 — Bash (hash + per-file hashes):
   Normal mode:
     For branch scope: scripts/er-freshness-check.sh <base_branch>
     For unstaged/staged: git diff <scope-args> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp
   GB mode:
-    mkdir -p <ER_DIR> && <binary> diff <selected_stack_id> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp
+    mkdir -p <ER_DIR> && scripts/er-gb-diff <binary> <selected_branch_id> <ER_DIR>/diff-tmp
   → Get current diff_hash
 
 TOOL CALL 3 — Bash (per-file hashes):

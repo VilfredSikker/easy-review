@@ -128,6 +128,7 @@ pub struct GbContext {
     pub enabled: bool,
     pub binary: String,
     pub selected_stack_id: String,
+    pub selected_branch_id: String,
     pub selected_branch: String,
     pub stacks: Vec<GbContextStack>,
 }
@@ -165,11 +166,12 @@ pub fn gitbutler_status(binary: &Path, repo_root: &str) -> Result<GbStatus> {
     serde_json::from_str(&stdout).context("Failed to parse GitButler status JSON")
 }
 
-/// Run `but diff <target>` (without --json) and return raw unified diff text.
-/// If target is empty, shows all uncommitted changes.
+/// Run `but diff <target> --json` and reconstruct standard unified diff text.
+/// Target should be a branch CLI ID (e.g., "gi") for full branch diff,
+/// or empty for all uncommitted changes.
 pub fn gitbutler_diff_raw(binary: &Path, repo_root: &str, target: &str) -> Result<String> {
     let mut cmd = Command::new(binary);
-    cmd.arg("diff")
+    cmd.args(["diff", "--json"])
         .current_dir(repo_root)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -189,7 +191,78 @@ pub fn gitbutler_diff_raw(binary: &Path, repo_root: &str, target: &str) -> Resul
         anyhow::bail!("GitButler diff failed: {}", stderr.trim());
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diff_output: GbDiffOutput =
+        serde_json::from_str(&stdout).context("Failed to parse GitButler diff JSON")?;
+
+    Ok(reconstruct_unified_diff(&diff_output))
+}
+
+// ---------------------------------------------------------------------------
+// Serde structs — `but diff --json`
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct GbDiffOutput {
+    pub changes: Vec<GbFileChange>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GbFileChange {
+    pub path: String,
+    pub status: String,
+    pub diff: Option<GbDiffData>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GbDiffData {
+    pub hunks: Vec<GbHunk>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GbHunk {
+    pub diff: String,
+}
+
+/// Reconstruct standard unified diff text from GitButler JSON diff output.
+/// Each file gets a `diff --git` header, `---`/`+++` lines, and the hunk diffs.
+fn reconstruct_unified_diff(output: &GbDiffOutput) -> String {
+    let mut result = String::new();
+
+    for change in &output.changes {
+        let path = &change.path;
+        result.push_str(&format!("diff --git a/{path} b/{path}\n"));
+
+        match change.status.as_str() {
+            "added" => {
+                result.push_str("new file mode 100644\n");
+                result.push_str("--- /dev/null\n");
+                result.push_str(&format!("+++ b/{path}\n"));
+            }
+            "deleted" => {
+                result.push_str("deleted file mode 100644\n");
+                result.push_str(&format!("--- a/{path}\n"));
+                result.push_str("+++ /dev/null\n");
+            }
+            _ => {
+                result.push_str(&format!("--- a/{path}\n"));
+                result.push_str(&format!("+++ b/{path}\n"));
+            }
+        }
+
+        if let Some(ref diff_data) = change.diff {
+            for hunk in &diff_data.hunks {
+                result.push_str(&hunk.diff);
+                // Ensure each hunk ends with a newline
+                if !hunk.diff.ends_with('\n') {
+                    result.push('\n');
+                }
+            }
+        }
+    }
+
+    result
 }
 
 /// Run `but config --json` and extract target_branch.

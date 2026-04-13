@@ -23,13 +23,13 @@ If no base branch is given, detect main or master.
 
 Before Step 1, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true:
 
-1. Extract `binary`, `selected_stack_id`, and `selected_branch` from the JSON
+1. Extract `binary`, `selected_branch_id`, and `selected_branch` from the JSON
 2. Set `ER_DIR` to `.er/stacks/<selected_branch>/` (create with `mkdir -p`)
 3. For the diff capture, use:
    ```
-   <binary> diff <selected_stack_id> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp && git rev-parse --short HEAD
+   scripts/er-gb-diff <binary> <selected_branch_id> <ER_DIR>/diff-tmp
    ```
-   instead of `git diff <base> ...`. The binary path from gb-context.json must be added to allowed first-words.
+   instead of `git diff <base> ...`. The helper script handles JSON parsing, unified diff reconstruction, shasum, and HEAD output. It matches the allowed `scripts/er-*` pattern.
 4. All `.er/` file reads and writes in this skill use `<ER_DIR>/` instead of `.er/`
    (e.g., `<ER_DIR>/review.json` instead of `.er/review.json`)
 5. The persistence cache path becomes `<ER_DIR>/reviews/<branch>/<commit>/`
@@ -127,7 +127,7 @@ TOOL CALL 1 — Bash (all setup via helper script):
     For unstaged/staged scope (no base branch):
       git diff <scope-args> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp && git rev-parse --short HEAD && git branch --show-current
   GB mode:
-    mkdir -p <ER_DIR> && <binary> diff <selected_stack_id> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp && git rev-parse --short HEAD
+    mkdir -p <ER_DIR> && scripts/er-gb-diff <binary> <selected_branch_id> <ER_DIR>/diff-tmp
   → Captures: diff_hash, commit_hash, branch_name
 
 TOOL CALL 2 — Read <ER_DIR>/review.json (if it exists):
