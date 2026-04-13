@@ -51,6 +51,7 @@ pub fn find_gitbutler_binary() -> Option<PathBuf> {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct GbStatus {
     pub unassigned_changes: Vec<GbChange>,
     pub stacks: Vec<GbStack>,
@@ -60,6 +61,7 @@ pub struct GbStatus {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct GbStack {
     pub cli_id: String,
     pub assigned_changes: Vec<GbChange>,
@@ -68,6 +70,7 @@ pub struct GbStack {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct GbBranch {
     pub cli_id: String,
     pub name: String,
@@ -75,12 +78,12 @@ pub struct GbBranch {
     pub upstream_commits: Vec<GbCommit>,
     pub branch_status: String,
     pub review_id: Option<String>,
-    #[allow(dead_code)]
     pub ci: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct GbCommit {
     pub cli_id: String,
     pub commit_id: Option<String>,
@@ -90,12 +93,12 @@ pub struct GbCommit {
     pub author_email: String,
     pub conflicted: Option<bool>,
     pub review_id: Option<String>,
-    #[allow(dead_code)]
     pub changes: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct GbUpstream {
     pub behind: u64,
     pub latest_commit: GbCommit,
@@ -190,6 +193,7 @@ pub fn gitbutler_diff_raw(binary: &Path, repo_root: &str, target: &str) -> Resul
 }
 
 /// Run `but config --json` and extract target_branch.
+#[allow(dead_code)]
 pub fn gitbutler_target_branch(binary: &Path, repo_root: &str) -> Result<String> {
     let output = Command::new(binary)
         .args(["config", "--json"])
