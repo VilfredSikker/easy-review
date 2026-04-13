@@ -2,6 +2,7 @@ mod ai;
 mod app;
 mod config;
 mod git;
+mod gitbutler;
 mod github;
 mod input;
 mod ui;

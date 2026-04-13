@@ -196,13 +196,29 @@ pub fn handle_normal_input(
             app.close_tab();
             return Ok(());
         }
-        // Tab switching ([ / ])
+        // Stack cycling (GitButler) or tab switching ([ / ])
         KeyCode::Char(']') => {
-            app.next_tab();
+            if app.tab().gb_enabled && matches!(app.tab().mode, DiffMode::Branch) {
+                let tab = app.tab_mut();
+                if tab.gb_selected_stack + 1 < tab.gb_stacks.len() {
+                    tab.gb_selected_stack += 1;
+                    tab.refresh_diff()?;
+                }
+            } else {
+                app.next_tab();
+            }
             return Ok(());
         }
         KeyCode::Char('[') => {
-            app.prev_tab();
+            if app.tab().gb_enabled && matches!(app.tab().mode, DiffMode::Branch) {
+                let tab = app.tab_mut();
+                if tab.gb_selected_stack > 0 {
+                    tab.gb_selected_stack -= 1;
+                    tab.refresh_diff()?;
+                }
+            } else {
+                app.prev_tab();
+            }
             return Ok(());
         }
 

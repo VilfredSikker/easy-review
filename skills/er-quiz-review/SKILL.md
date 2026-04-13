@@ -22,6 +22,10 @@ See `skills/REVIEW_PHILOSOPHY.md`. Feedback should teach, not just grade:
 - Don't penalize for not knowing cosmetic/style details — only P0/P1 content counts
 - Tone: collegial, direct. "You missed that X also affects Y" not "Incorrect."
 
+## GitButler awareness
+
+Before reading any `.er/` files, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true, extract `selected_branch` and set `ER_DIR` to `.er/stacks/<selected_branch>/`. All `.er/` file reads and writes use `<ER_DIR>/` instead of `.er/`. If `.er/gb-context.json` does not exist, use `.er/` as normal.
+
 ## Speed budget
 
 **Target: ≤5 tool calls, ≤30 seconds.**

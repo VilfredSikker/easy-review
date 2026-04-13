@@ -101,6 +101,13 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         .as_deref()
         .unwrap_or(&tab.tab_name())
         .to_string();
+    // When GitButler is active, show virtual branch name instead of gitbutler/workspace
+    let branch_display = if tab.gb_enabled {
+        tab.gb_current_branch_name()
+            .unwrap_or_else(|| tab.current_branch.clone())
+    } else {
+        tab.current_branch.clone()
+    };
     let mut info_spans: Vec<Span> = vec![
         Span::styled(
             format!(" {}", repo_label),
@@ -110,10 +117,29 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::styled(" · ", ratatui::style::Style::default().fg(styles::BORDER())),
         Span::styled(
-            &tab.current_branch,
+            branch_display,
             ratatui::style::Style::default().fg(styles::GREEN()),
         ),
     ];
+    if tab.gb_enabled {
+        info_spans.push(Span::styled(
+            " [GB]",
+            ratatui::style::Style::default()
+                .fg(styles::BG())
+                .bg(styles::PURPLE())
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+        if !tab.gb_stacks.is_empty() {
+            info_spans.push(Span::styled(
+                format!(
+                    " [stack {}/{}]",
+                    tab.gb_selected_stack + 1,
+                    tab.gb_stacks.len()
+                ),
+                ratatui::style::Style::default().fg(styles::DIM()),
+            ));
+        }
+    }
     if let Some(pr_num) = tab.pr_number {
         info_spans.push(Span::styled(
             format!(" [PR #{}]", pr_num),

@@ -623,6 +623,19 @@ pub struct TabState {
 
     /// Quiz mode state (only populated when mode == Quiz)
     pub quiz: Option<QuizState>,
+
+    // ── GitButler integration ──
+    /// Whether this repo is GitButler-managed and the binary was found
+    pub gb_enabled: bool,
+
+    /// Cached path to the GitButler CLI binary
+    pub gb_binary: Option<std::path::PathBuf>,
+
+    /// Cached stacks from the last `but status` call
+    pub gb_stacks: Vec<crate::gitbutler::GbStack>,
+
+    /// Index of the currently selected stack (for Branch mode)
+    pub gb_selected_stack: usize,
 }
 
 /// A single reference to a symbol (file + line)
@@ -987,6 +1000,10 @@ impl TabState {
             agent_log_auto_scroll: true,
             wizard: None,
             quiz: None,
+            gb_enabled: false,
+            gb_binary: None,
+            gb_stacks: Vec::new(),
+            gb_selected_stack: 0,
         };
 
         // Build hunk offsets for initial selection
@@ -1086,9 +1103,28 @@ impl TabState {
             agent_log_auto_scroll: true,
             wizard: None,
             quiz: None,
+            gb_enabled: false,
+            gb_binary: None,
+            gb_stacks: Vec::new(),
+            gb_selected_stack: 0,
         };
 
         tab.refresh_diff()?;
+
+        // GitButler detection
+        if crate::gitbutler::is_gitbutler_repo(&tab.repo_root) {
+            if let Some(binary) = crate::gitbutler::find_gitbutler_binary() {
+                if let Ok(status) = crate::gitbutler::gitbutler_status(&binary, &tab.repo_root) {
+                    tab.gb_stacks = status.stacks;
+                    tab.gb_binary = Some(binary);
+                    tab.gb_enabled = true;
+                    // Write initial context file
+                    let er_dir = format!("{}/.er", tab.repo_root);
+                    let _ = crate::gitbutler::write_gb_context(&er_dir, &tab.gb_context());
+                }
+            }
+        }
+
         tab.refresh_watched_files();
         Ok(tab)
     }
@@ -1183,6 +1219,10 @@ impl TabState {
             agent_log_auto_scroll: true,
             wizard: None,
             quiz: None,
+            gb_enabled: false,
+            gb_binary: None,
+            gb_stacks: Vec::new(),
+            gb_selected_stack: 0,
         }
     }
 
@@ -1276,9 +1316,63 @@ impl TabState {
     pub fn er_dir(&self) -> String {
         if self.is_remote() {
             self.comments_dir()
+        } else if self.gb_enabled && matches!(self.mode, DiffMode::Branch) {
+            if let Some(name) = self.gb_current_branch_name() {
+                crate::gitbutler::gb_er_dir(&format!("{}/.er", self.repo_root), &name)
+            } else {
+                format!("{}/.er", self.repo_root)
+            }
         } else {
             format!("{}/.er", self.repo_root)
         }
+    }
+
+    /// Build a GbContext from current state (for writing .er/gb-context.json)
+    pub fn gb_context(&self) -> crate::gitbutler::GbContext {
+        let selected_stack = self.gb_stacks.get(self.gb_selected_stack);
+        let (stack_id, branch_name) = if let Some(stack) = selected_stack {
+            let branch = stack.branches.first();
+            (
+                stack.cli_id.clone(),
+                branch.map(|b| b.name.clone()).unwrap_or_default(),
+            )
+        } else {
+            (String::new(), String::new())
+        };
+
+        crate::gitbutler::GbContext {
+            enabled: self.gb_enabled,
+            binary: self
+                .gb_binary
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            selected_stack_id: stack_id,
+            selected_branch: branch_name,
+            stacks: self
+                .gb_stacks
+                .iter()
+                .map(|s| crate::gitbutler::GbContextStack {
+                    cli_id: s.cli_id.clone(),
+                    name: s
+                        .branches
+                        .first()
+                        .map(|b| b.name.clone())
+                        .unwrap_or_else(|| s.cli_id.clone()),
+                })
+                .collect(),
+        }
+    }
+
+    /// Get the name of the currently selected GitButler virtual branch
+    pub fn gb_current_branch_name(&self) -> Option<String> {
+        if !self.gb_enabled {
+            return None;
+        }
+        self.gb_stacks
+            .get(self.gb_selected_stack)
+            .and_then(|s| s.branches.first())
+            .map(|b| b.name.clone())
     }
 
     /// Directory for storing comment files. In remote mode, uses `~/.cache/er/remote/`.
@@ -1377,6 +1471,135 @@ impl TabState {
         self.file_tree_cache = None;
     }
 
+    /// Refresh diff using GitButler CLI for the selected stack
+    fn refresh_diff_gitbutler(
+        &mut self,
+        update_branch_hash: bool,
+        auto_unmark: bool,
+    ) -> Result<()> {
+        let binary = match &self.gb_binary {
+            Some(b) => b.clone(),
+            None => anyhow::bail!("GitButler binary not found"),
+        };
+
+        // Refresh stacks from GitButler status
+        if let Ok(status) = crate::gitbutler::gitbutler_status(&binary, &self.repo_root) {
+            self.gb_stacks = status.stacks;
+            // Clamp selection if stacks changed
+            if self.gb_selected_stack >= self.gb_stacks.len() && !self.gb_stacks.is_empty() {
+                self.gb_selected_stack = self.gb_stacks.len() - 1;
+            }
+        }
+
+        // Get diff target: stack CLI ID for Branch mode, empty for Unstaged (all uncommitted)
+        let target = if matches!(self.mode, DiffMode::Branch) {
+            self.gb_stacks
+                .get(self.gb_selected_stack)
+                .map(|s| s.cli_id.clone())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Get diff from GitButler
+        let raw = crate::gitbutler::gitbutler_diff_raw(&binary, &self.repo_root, &target)
+            .unwrap_or_default();
+
+        // Save current position
+        let prev_file_path = self.files.get(self.selected_file).map(|f| f.path.clone());
+
+        // Parse diff (same pipeline as normal mode)
+        let compaction_config = &self.compaction_config;
+        if raw.len() > 200_000 {
+            // Lazy mode
+            self.file_headers = git::parse_diff_headers(&raw);
+            self.files = self
+                .file_headers
+                .iter()
+                .map(git::header_to_stub)
+                .collect();
+            // Apply compaction to stubs
+            for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
+                let total_lines = header.adds + header.dels;
+                let should_compact = compaction_config.enabled
+                    && (compaction_config
+                        .patterns
+                        .iter()
+                        .any(|p| git::compact_files_match(p, &file.path))
+                        || total_lines > compaction_config.max_lines_before_compact);
+                if should_compact {
+                    file.compacted = true;
+                    file.raw_hunk_count = header.hunk_count;
+                }
+            }
+            self.lazy_mode = true;
+            self.raw_diff = Some(raw.clone());
+        } else {
+            self.files = git::parse_diff(&raw);
+            git::compact_files(&mut self.files, compaction_config);
+            self.lazy_mode = false;
+            self.file_headers = Vec::new();
+            self.raw_diff = None;
+        }
+
+        // Compute diff hash
+        let hash = crate::ai::compute_diff_hash(&raw);
+        self.diff_hash = hash.clone();
+        if update_branch_hash {
+            self.branch_diff_hash = hash;
+        }
+
+        // Per-file hashes for auto-unmark
+        let new_hashes = crate::ai::compute_per_file_hashes(&raw);
+        if auto_unmark && !self.current_per_file_hashes.is_empty() {
+            let mut unmarked = 0;
+            for (path, old_hash) in &self.current_per_file_hashes {
+                if let Some(new_hash) = new_hashes.get(path) {
+                    if old_hash != new_hash && self.reviewed.remove(path).is_some() {
+                        unmarked += 1;
+                    }
+                }
+            }
+            self.pending_unmark_count = unmarked;
+        }
+        self.current_per_file_hashes = new_hashes;
+
+        // Ensure per-stack .er/ directory exists
+        let er_dir = self.er_dir();
+        let _ = std::fs::create_dir_all(&er_dir);
+
+        // Reload AI state from per-stack directory
+        self.reload_ai_state();
+
+        // Update gb-context.json
+        let base_er_dir = format!("{}/.er", self.repo_root);
+        let _ = crate::gitbutler::write_gb_context(&base_er_dir, &self.gb_context());
+
+        // Restore file selection
+        if let Some(prev_path) = prev_file_path {
+            if let Some(idx) = self.files.iter().position(|f| f.path == prev_path) {
+                self.selected_file = idx;
+            } else {
+                self.selected_file = 0;
+            }
+        } else {
+            self.selected_file = 0;
+        }
+
+        // Clamp and rebuild
+        if self.selected_file >= self.files.len() && !self.files.is_empty() {
+            self.selected_file = self.files.len() - 1;
+        }
+        self.current_hunk = 0;
+        self.current_line = None;
+        self.file_tree_cache = None;
+        self.rebuild_hunk_offsets();
+        self.ensure_file_parsed();
+        self.update_mem_budget();
+
+        Ok(())
+    }
+
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool, auto_unmark: bool) -> Result<()> {
         // History mode doesn't use git_diff_raw — skip normal diff refresh
         if self.mode == DiffMode::History {
@@ -1393,6 +1616,14 @@ impl TabState {
         if self.mode == DiffMode::Hidden {
             self.refresh_watched_files();
             return Ok(());
+        }
+
+        // GitButler mode: use `but diff` for the selected stack (Branch)
+        // or all uncommitted changes (Unstaged)
+        if self.gb_enabled
+            && matches!(self.mode, DiffMode::Branch | DiffMode::Unstaged)
+        {
+            return self.refresh_diff_gitbutler(recompute_branch_hash, auto_unmark);
         }
 
         // Remote mode: fetch diff from GitHub API instead of local git

@@ -21,6 +21,12 @@ Flags:
 6. Submits the review via `gh api`
 7. Reports how many inline comments were posted and links to the PR
 
+## GitButler awareness
+
+Before reading any `.er/` files, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true, extract `selected_branch` and set `ER_DIR` to `.er/stacks/<selected_branch>/`. Review artifacts (`.er/review.json`, `.er/summary.md`, `.er/checklist.json`) are read from `<ER_DIR>/`. However, `.er/github-comments.json` stays in the root `.er/` directory (not per-stack), since GitHub comments are PR-level. If `.er/gb-context.json` does not exist, use `.er/` as normal.
+
+When in GitButler mode, include the branch name in the review header: `## Review: <selected_branch>`.
+
 ## Prerequisites check — REQUIRED FIRST
 
 Before doing anything else, verify:

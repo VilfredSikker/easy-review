@@ -19,6 +19,27 @@ Numbers match the er TUI keybindings (1/2/3 to switch modes).
 A base branch can optionally follow the scope: `/er-review branch develop`.
 If no base branch is given, detect main or master.
 
+## GitButler awareness
+
+Before Step 1, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true:
+
+1. Extract `binary`, `selected_stack_id`, and `selected_branch` from the JSON
+2. Set `ER_DIR` to `.er/stacks/<selected_branch>/` (create with `mkdir -p`)
+3. For the diff capture, use:
+   ```
+   <binary> diff <selected_stack_id> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp && git rev-parse --short HEAD
+   ```
+   instead of `git diff <base> ...`. The binary path from gb-context.json must be added to allowed first-words.
+4. All `.er/` file reads and writes in this skill use `<ER_DIR>/` instead of `.er/`
+   (e.g., `<ER_DIR>/review.json` instead of `.er/review.json`)
+5. The persistence cache path becomes `<ER_DIR>/reviews/<branch>/<commit>/`
+6. For `diff_hash`, hash the `<ER_DIR>/diff-tmp` file as usual
+7. Set `base_branch` in output JSON to the GitButler target branch (from `<binary> config --json`)
+
+If `.er/gb-context.json` does not exist, proceed with the normal git diff flow (backward compatible).
+
+**Permission note:** The GitButler binary path (e.g., `/Applications/GitButler.app/Contents/MacOS/gitbutler-tauri`) is allowed as a first-word command for Bash calls.
+
 ## Diff source — CRITICAL
 
 Both `/er-review` and `/review-pr` MUST use the same diff command that `er` uses internally:
@@ -48,12 +69,14 @@ For `unstaged` and `staged` scopes, the base branch is irrelevant — the diff i
 
 ## Feedback-aware mode
 
-Before generating, check if `.er/feedback.json` exists and its `diff_hash` matches the current diff. If it does, read the human comments and:
+Before generating, check if `<ER_DIR>/feedback.json` exists and its `diff_hash` matches the current diff. If it does, read the human comments and:
 - Address each comment in the relevant finding's `responses` array
 - Add new findings if a comment reveals something you missed
-- Archive the old feedback to `.er/feedback.prev.json`
+- Archive the old feedback to `<ER_DIR>/feedback.prev.json`
 
-If `.er/feedback.json` exists but its `diff_hash` doesn't match, ignore it (it's stale).
+If `<ER_DIR>/feedback.json` exists but its `diff_hash` doesn't match, ignore it (it's stale).
+
+(`<ER_DIR>` is `.er/` normally, or `.er/stacks/<branch>/` in GitButler mode — see GitButler awareness section.)
 
 ## Speed budget
 
@@ -64,7 +87,7 @@ Outputs are written in parallel. Bash calls are batched with `&&`.
 ### Permission & hook constraints
 
 All Bash commands MUST start with an allowed command to avoid permission prompts.
-Allowed first-words: `git`, `shasum`, `mkdir`, `cp`, `scripts/er-*`
+Allowed first-words: `git`, `shasum`, `mkdir`, `cp`, `scripts/er-*`, and the GitButler binary path when in GB mode
 NOT allowed as first word: `for`, `rm`, `while`, `bash`, `sh`
 
 - `&&` chaining is FINE for: `git`, `shasum`, `printf`, `mkdir`, `cp` (not in CHAIN_BLOCKED)
@@ -76,6 +99,11 @@ NOT allowed as first word: `for`, `rm`, `while`, `bash`, `sh`
 ## Step-by-step
 
 ```
+Step 0 (GB check): Read .er/gb-context.json (1 tool call, skip if missing)
+  → If exists and enabled=true: set ER_DIR=.er/stacks/<selected_branch>/, use GB diff command
+  → If missing or enabled=false: set ER_DIR=.er/, use normal git diff flow
+  All .er/ paths below become <ER_DIR>/ in GB mode.
+
 Step 1: Scope + fast-path check (2-3 tool calls)
 
 Parse scope from arguments (default: branch):
@@ -84,6 +112,7 @@ Parse scope from arguments (default: branch):
 - "staged" or "3" → staged scope
 
 Base branch: use second argument if provided, else detect main/master.
+(In GB mode, scope is always "branch" — the binary handles scope.)
 
 Scope args (used in all git diff commands below):
 - branch:   main --unified=3 --no-color --no-ext-diff
@@ -91,26 +120,28 @@ Scope args (used in all git diff commands below):
 - staged:   --staged --unified=3 --no-color --no-ext-diff
 
 TOOL CALL 1 — Bash (all setup via helper script):
-  For branch scope:
-    scripts/er-freshness-check.sh <base>
-    → Output: "ok", hash line, commit hash (3 lines)
-  For unstaged/staged scope (no base branch):
-    git diff <scope-args> > .er/diff-tmp && shasum -a 256 .er/diff-tmp && git rev-parse --short HEAD && git branch --show-current
+  Normal mode:
+    For branch scope:
+      scripts/er-freshness-check.sh <base>
+      → Output: "ok", hash line, commit hash (3 lines)
+    For unstaged/staged scope (no base branch):
+      git diff <scope-args> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp && git rev-parse --short HEAD && git branch --show-current
+  GB mode:
+    mkdir -p <ER_DIR> && <binary> diff <selected_stack_id> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp && git rev-parse --short HEAD
   → Captures: diff_hash, commit_hash, branch_name
-  → Both forms match allow rules: scripts/er-* or git diff *
 
-TOOL CALL 2 — Read .er/review.json (if it exists):
+TOOL CALL 2 — Read <ER_DIR>/review.json (if it exists):
   → If exists AND diff_hash matches → print "Review is current", DONE (2 calls total)
-  → .er/diff-tmp is left in place (overwritten next run, gitignored)
+  → <ER_DIR>/diff-tmp is left in place (overwritten next run, gitignored)
 
 Step 2: Check persistence cache (1-2 tool calls)
 
-TOOL CALL 3 — Read .er/reviews/<branch>/<commit-hash>/review.json:
+TOOL CALL 3 — Read <ER_DIR>/reviews/<branch>/<commit-hash>/review.json:
   → If exists AND diff_hash matches:
-    TOOL CALL 4 — Bash: cp .er/reviews/<branch>/<commit>/review.json .er/reviews/<branch>/<commit>/order.json .er/reviews/<branch>/<commit>/checklist.json .er/reviews/<branch>/<commit>/summary.md .er/
+    TOOL CALL 4 — Bash: cp <ER_DIR>/reviews/<branch>/<commit>/review.json <ER_DIR>/reviews/<branch>/<commit>/order.json <ER_DIR>/reviews/<branch>/<commit>/checklist.json <ER_DIR>/reviews/<branch>/<commit>/summary.md <ER_DIR>/
     → Print "Restored cached review", DONE (4 calls total)
   → If exists but diff_hash mismatched: use as incremental base (Step 4)
-  → If not found, check most recent in .er/reviews/<branch>/ for incremental base
+  → If not found, check most recent in <ER_DIR>/reviews/<branch>/ for incremental base
   → If nothing found → full analysis (Step 3)
 
 Step 3: Full analysis (~10 tool calls total)
@@ -118,12 +149,13 @@ Step 3: Full analysis (~10 tool calls total)
 TOOL CALL 4 — Bash (per-file hashes + full diff via helper script):
   er-hash-files.sh <scope-args>
   → Runs a single git diff, splits in-memory, outputs <file>\t<hash> per line.
-  → Also leaves the full diff in .er/diff-tmp (reused by TOOL CALL 5).
+  → Also leaves the full diff in <ER_DIR>/diff-tmp (reused by TOOL CALL 5).
+  (In GB mode, per-file hashes are computed from <ER_DIR>/diff-tmp instead.)
 
-TOOL CALL 5 — Read .er/diff-tmp (the full diff):
+TOOL CALL 5 — Read <ER_DIR>/diff-tmp (the full diff):
   → This loads the ENTIRE diff into context. Do NOT read individual files.
 
-(Optional) TOOL CALL 7 — Read .er/feedback.json if it exists
+(Optional) TOOL CALL 7 — Read <ER_DIR>/feedback.json if it exists
 
 IN-CONTEXT ANALYSIS (zero tool calls):
   With the full diff in context, analyse ALL files in a single thinking pass:
@@ -148,12 +180,12 @@ IN-CONTEXT ANALYSIS (zero tool calls):
   }
 
 TOOL CALLS 8-11 — Write all four output files (parallel):
-  Write .er/review.json, .er/order.json, .er/checklist.json, .er/summary.md
+  Write <ER_DIR>/review.json, <ER_DIR>/order.json, <ER_DIR>/checklist.json, <ER_DIR>/summary.md
 
 TOOL CALL 12 — Bash (persist, one command):
-  mkdir -p .er/reviews/<branch>/<commit>/ && cp .er/review.json .er/order.json .er/checklist.json .er/summary.md .er/reviews/<branch>/<commit>/
+  mkdir -p <ER_DIR>/reviews/<branch>/<commit>/ && cp <ER_DIR>/review.json <ER_DIR>/order.json <ER_DIR>/checklist.json <ER_DIR>/summary.md <ER_DIR>/reviews/<branch>/<commit>/
 
-Print summary. (.er/diff-tmp left in place — gitignored, overwritten next run.)
+Print summary. (<ER_DIR>/diff-tmp left in place — gitignored, overwritten next run.)
 
 Step 4: Incremental analysis (~12 tool calls total)
 
@@ -161,16 +193,16 @@ Uses the base review from Step 2 (already in context).
 
 TOOL CALL 4 — Bash (per-file hashes + full diff via helper script):
   er-hash-files.sh <scope-args>
-  → Single git diff, in-memory split. Also leaves full diff in .er/diff-tmp.
+  → Single git diff, in-memory split. Also leaves full diff in <ER_DIR>/diff-tmp.
 
 Compare each file hash against base review's file_hashes:
   - Hash matches → preserve findings as-is
   - Hash changed or new file → needs re-analysis
   - Files in base but not in new diff → drop
 
-TOOL CALL 5 — Read .er/diff-tmp (full diff into context)
+TOOL CALL 5 — Read <ER_DIR>/diff-tmp (full diff into context)
 
-(Optional) TOOL CALL 7 — Read .er/feedback.json if it exists
+(Optional) TOOL CALL 7 — Read <ER_DIR>/feedback.json if it exists
 
 IN-CONTEXT ANALYSIS (zero tool calls):
   Analyse ONLY changed + new files. Merge with preserved findings.
