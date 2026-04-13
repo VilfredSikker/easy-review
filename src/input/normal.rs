@@ -196,28 +196,29 @@ pub fn handle_normal_input(
             app.close_tab();
             return Ok(());
         }
-        // Branch cycling (GitButler) or tab switching ([ / ])
+        // Tab switching ([ / ])
         KeyCode::Char(']') => {
-            if app.tab().gb_enabled && matches!(app.tab().mode, DiffMode::Branch) {
-                let tab = app.tab_mut();
-                if tab.gb_selected_branch + 1 < tab.gb_branches.len() {
-                    tab.gb_selected_branch += 1;
-                    tab.refresh_diff()?;
-                }
-            } else {
-                app.next_tab();
-            }
+            app.next_tab();
             return Ok(());
         }
         KeyCode::Char('[') => {
-            if app.tab().gb_enabled && matches!(app.tab().mode, DiffMode::Branch) {
-                let tab = app.tab_mut();
-                if tab.gb_selected_branch > 0 {
-                    tab.gb_selected_branch -= 1;
-                    tab.refresh_diff()?;
-                }
-            } else {
-                app.prev_tab();
+            app.prev_tab();
+            return Ok(());
+        }
+        // GitButler branch cycling (( / ))
+        KeyCode::Char(')') if app.tab().gb_enabled && matches!(app.tab().mode, DiffMode::Branch) => {
+            let tab = app.tab_mut();
+            if tab.gb_selected_branch + 1 < tab.gb_branches.len() {
+                tab.gb_selected_branch += 1;
+                tab.refresh_diff()?;
+            }
+            return Ok(());
+        }
+        KeyCode::Char('(') if app.tab().gb_enabled && matches!(app.tab().mode, DiffMode::Branch) => {
+            let tab = app.tab_mut();
+            if tab.gb_selected_branch > 0 {
+                tab.gb_selected_branch -= 1;
+                tab.refresh_diff()?;
             }
             return Ok(());
         }
