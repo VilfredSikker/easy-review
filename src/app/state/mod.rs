@@ -634,8 +634,22 @@ pub struct TabState {
     /// Cached stacks from the last `but status` call
     pub gb_stacks: Vec<crate::gitbutler::GbStack>,
 
-    /// Index of the currently selected stack (for Branch mode)
-    pub gb_selected_stack: usize,
+    /// Flattened list of all branches across all stacks (for navigation).
+    /// Each entry: (stack_cli_id, branch_cli_id, branch_name, stack_index, branch_index_in_stack)
+    pub gb_branches: Vec<GbBranchEntry>,
+
+    /// Index into gb_branches for the currently selected branch
+    pub gb_selected_branch: usize,
+}
+
+/// A flattened branch entry for navigation across all stacks
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct GbBranchEntry {
+    pub stack_cli_id: String,
+    pub branch_cli_id: String,
+    pub branch_name: String,
+    pub stack_index: usize,
 }
 
 /// A single reference to a symbol (file + line)
@@ -1003,7 +1017,8 @@ impl TabState {
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),
-            gb_selected_stack: 0,
+            gb_branches: Vec::new(),
+            gb_selected_branch: 0,
         };
 
         // Build hunk offsets for initial selection
@@ -1106,7 +1121,8 @@ impl TabState {
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),
-            gb_selected_stack: 0,
+            gb_branches: Vec::new(),
+            gb_selected_branch: 0,
         };
 
         tab.refresh_diff()?;
@@ -1118,6 +1134,7 @@ impl TabState {
                     tab.gb_stacks = status.stacks;
                     tab.gb_binary = Some(binary);
                     tab.gb_enabled = true;
+                    tab.gb_rebuild_branches();
                     // Write initial context file
                     let er_dir = format!("{}/.er", tab.repo_root);
                     let _ = crate::gitbutler::write_gb_context(&er_dir, &tab.gb_context());
@@ -1222,7 +1239,8 @@ impl TabState {
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),
-            gb_selected_stack: 0,
+            gb_branches: Vec::new(),
+            gb_selected_branch: 0,
         }
     }
 
@@ -1327,17 +1345,38 @@ impl TabState {
         }
     }
 
+    /// Flatten stacks into a list of branches for navigation
+    pub fn gb_rebuild_branches(&mut self) {
+        self.gb_branches = self
+            .gb_stacks
+            .iter()
+            .enumerate()
+            .flat_map(|(si, stack)| {
+                stack.branches.iter().map(move |branch| GbBranchEntry {
+                    stack_cli_id: stack.cli_id.clone(),
+                    branch_cli_id: branch.cli_id.clone(),
+                    branch_name: branch.name.clone(),
+                    stack_index: si,
+                })
+            })
+            .collect();
+        // Clamp selection
+        if self.gb_selected_branch >= self.gb_branches.len() && !self.gb_branches.is_empty() {
+            self.gb_selected_branch = self.gb_branches.len() - 1;
+        }
+    }
+
     /// Build a GbContext from current state (for writing .er/gb-context.json)
     pub fn gb_context(&self) -> crate::gitbutler::GbContext {
-        let selected_stack = self.gb_stacks.get(self.gb_selected_stack);
-        let (stack_id, branch_name) = if let Some(stack) = selected_stack {
-            let branch = stack.branches.first();
+        let entry = self.gb_branches.get(self.gb_selected_branch);
+        let (stack_id, branch_name, branch_cli_id) = if let Some(e) = entry {
             (
-                stack.cli_id.clone(),
-                branch.map(|b| b.name.clone()).unwrap_or_default(),
+                e.stack_cli_id.clone(),
+                e.branch_name.clone(),
+                e.branch_cli_id.clone(),
             )
         } else {
-            (String::new(), String::new())
+            (String::new(), String::new(), String::new())
         };
 
         crate::gitbutler::GbContext {
@@ -1348,7 +1387,8 @@ impl TabState {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
             selected_stack_id: stack_id,
-            selected_branch: branch_name,
+            selected_branch_id: branch_cli_id,
+            selected_branch: branch_name.clone(),
             stacks: self
                 .gb_stacks
                 .iter()
@@ -1364,15 +1404,17 @@ impl TabState {
         }
     }
 
-    /// Get the name of the currently selected GitButler virtual branch
-    pub fn gb_current_branch_name(&self) -> Option<String> {
+    /// Get the currently selected GitButler branch entry
+    pub fn gb_current_branch(&self) -> Option<&GbBranchEntry> {
         if !self.gb_enabled {
             return None;
         }
-        self.gb_stacks
-            .get(self.gb_selected_stack)
-            .and_then(|s| s.branches.first())
-            .map(|b| b.name.clone())
+        self.gb_branches.get(self.gb_selected_branch)
+    }
+
+    /// Get the name of the currently selected GitButler virtual branch
+    pub fn gb_current_branch_name(&self) -> Option<String> {
+        self.gb_current_branch().map(|e| e.branch_name.clone())
     }
 
     /// Directory for storing comment files. In remote mode, uses `~/.cache/er/remote/`.
@@ -1482,20 +1524,17 @@ impl TabState {
             None => anyhow::bail!("GitButler binary not found"),
         };
 
-        // Refresh stacks from GitButler status
+        // Refresh stacks from GitButler status and rebuild flattened branches
         if let Ok(status) = crate::gitbutler::gitbutler_status(&binary, &self.repo_root) {
             self.gb_stacks = status.stacks;
-            // Clamp selection if stacks changed
-            if self.gb_selected_stack >= self.gb_stacks.len() && !self.gb_stacks.is_empty() {
-                self.gb_selected_stack = self.gb_stacks.len() - 1;
-            }
+            self.gb_rebuild_branches();
         }
 
-        // Get diff target: stack CLI ID for Branch mode, empty for Unstaged (all uncommitted)
+        // Get diff target: branch CLI ID for Branch mode, empty for Unstaged (all uncommitted)
         let target = if matches!(self.mode, DiffMode::Branch) {
-            self.gb_stacks
-                .get(self.gb_selected_stack)
-                .map(|s| s.cli_id.clone())
+            self.gb_branches
+                .get(self.gb_selected_branch)
+                .map(|e| e.branch_cli_id.clone())
                 .unwrap_or_default()
         } else {
             String::new()

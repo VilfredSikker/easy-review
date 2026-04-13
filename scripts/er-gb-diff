@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# Get a GitButler branch diff as standard unified diff text.
+#
+# Usage: scripts/er-gb-diff <binary-path> <branch-cli-id> <output-file>
+# Output: writes unified diff to <output-file>, prints shasum + HEAD info
+#
+# Example:
+#   scripts/er-gb-diff /Applications/GitButler.app/Contents/MacOS/gitbutler-tauri gi .er/stacks/my-branch/diff-tmp
+
+set -euo pipefail
+
+BINARY="$1"
+BRANCH_ID="$2"
+OUTPUT="$3"
+
+# Get JSON diff from GitButler
+JSON=$("$BINARY" diff "$BRANCH_ID" --json 2>/dev/null)
+
+# Reconstruct unified diff from JSON
+# Each change has: path, status, diff.hunks[].diff
+# We output: diff --git header, ---/+++ lines, then each hunk's diff text
+echo "$JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for change in data.get('changes', []):
+    path = change['path']
+    status = change.get('status', 'modified')
+    print(f'diff --git a/{path} b/{path}')
+    if status == 'added':
+        print('new file mode 100644')
+        print('--- /dev/null')
+        print(f'+++ b/{path}')
+    elif status == 'deleted':
+        print('deleted file mode 100644')
+        print(f'--- a/{path}')
+        print('+++ /dev/null')
+    else:
+        print(f'--- a/{path}')
+        print(f'+++ b/{path}')
+    diff_data = change.get('diff')
+    if diff_data:
+        for hunk in diff_data.get('hunks', []):
+            text = hunk.get('diff', '')
+            print(text, end='')
+            if text and not text.endswith('\n'):
+                print()
+" > "$OUTPUT"
+
+# Hash and HEAD
+shasum -a 256 "$OUTPUT"
+git rev-parse --short HEAD
