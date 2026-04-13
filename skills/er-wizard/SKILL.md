@@ -15,6 +15,27 @@ Same as `/er-review`:
 
 Optional base branch follows the scope: `/er-wizard branch develop`.
 
+## GitButler awareness
+
+Before Step 1, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true:
+
+1. Extract `binary`, `selected_stack_id`, and `selected_branch` from the JSON
+2. Set `ER_DIR` to `.er/stacks/<selected_branch>/` (create with `mkdir -p`)
+3. For the diff capture, use:
+   ```
+   <binary> diff <selected_stack_id> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp && git rev-parse --short HEAD
+   ```
+   instead of `git diff <base> ...`. The binary path from gb-context.json must be added to allowed first-words.
+4. All `.er/` file reads and writes in this skill use `<ER_DIR>/` instead of `.er/`
+   (e.g., `<ER_DIR>/wizard.json` instead of `.er/wizard.json`)
+5. The persistence cache path becomes `<ER_DIR>/reviews/<branch>/<commit>/`
+6. For `diff_hash`, hash the `<ER_DIR>/diff-tmp` file as usual
+7. Set `base_branch` in output JSON to the GitButler target branch (from `<binary> config --json`)
+
+If `.er/gb-context.json` does not exist, proceed with the normal git diff flow (backward compatible).
+
+**Permission note:** The GitButler binary path (e.g., `/Applications/GitButler.app/Contents/MacOS/gitbutler-tauri`) is allowed as a first-word command for Bash calls.
+
 ## What it does
 
 1. Reads the current diff (same command as `/er-review`)
@@ -46,15 +67,18 @@ Each file in the tour gets an importance level:
 
 **Target: ≤6 tool calls, ≤45 seconds.**
 
-- TOOL CALL 1: Bash — capture diff + hash (same as er-review step 1)
-- TOOL CALL 2: Read `.er/review.json` (optional — skip if missing)
-- TOOL CALL 3: Read `.er/diff-tmp` (full diff into context)
+- TOOL CALL 0: Read `.er/gb-context.json` (GB check — skip if missing; sets `ER_DIR`)
+- TOOL CALL 1: Bash — capture diff + hash (GB mode: `<binary> diff`; normal: same as er-review step 1)
+- TOOL CALL 2: Read `<ER_DIR>/review.json` (optional — skip if missing)
+- TOOL CALL 3: Read `<ER_DIR>/diff-tmp` (full diff into context)
 - IN-CONTEXT: Analyze changes and build tour — zero tool calls
-- TOOL CALL 4: Write `.er/wizard.json`
+- TOOL CALL 4: Write `<ER_DIR>/wizard.json`
+
+`<ER_DIR>` is `.er/` normally, or `.er/stacks/<branch>/` in GitButler mode.
 
 ### Permission & hook constraints
 
-All Bash commands MUST start with an allowed command: `git`, `shasum`, `cp`, `mkdir`, `scripts/er-*`.
+All Bash commands MUST start with an allowed command: `git`, `shasum`, `cp`, `mkdir`, `scripts/er-*`, and the GitButler binary path when in GB mode.
 Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
 
 ## Tour design rules

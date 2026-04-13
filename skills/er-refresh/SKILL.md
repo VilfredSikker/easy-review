@@ -6,6 +6,27 @@ Lightweight re-evaluation of existing review findings after code changes. Valida
 
 Run as `/er-refresh`.
 
+## GitButler awareness
+
+Before Step 1, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true:
+
+1. Extract `binary`, `selected_stack_id`, and `selected_branch` from the JSON
+2. Set `ER_DIR` to `.er/stacks/<selected_branch>/` (create with `mkdir -p`)
+3. For the diff capture, use:
+   ```
+   <binary> diff <selected_stack_id> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp && git rev-parse --short HEAD
+   ```
+   instead of `git diff <base> ...`. The binary path from gb-context.json must be added to allowed first-words.
+4. All `.er/` file reads and writes in this skill use `<ER_DIR>/` instead of `.er/`
+   (e.g., `<ER_DIR>/review.json` instead of `.er/review.json`)
+5. The persistence cache path becomes `<ER_DIR>/reviews/<branch>/<commit>/`
+6. For `diff_hash`, hash the `<ER_DIR>/diff-tmp` file as usual
+7. Set `base_branch` in output JSON to the GitButler target branch (from `<binary> config --json`)
+
+If `.er/gb-context.json` does not exist, proceed with the normal git diff flow (backward compatible).
+
+**Permission note:** The GitButler binary path (e.g., `/Applications/GitButler.app/Contents/MacOS/gitbutler-tauri`) is allowed as a first-word command for Bash calls.
+
 ## When to use
 
 After running `/er-review` and making fixes. Instead of re-running the full review, this validates existing findings against the updated diff. Much faster since it only checks changed files and doesn't discover new issues.
@@ -25,15 +46,20 @@ After running `/er-review` and making fixes. Instead of re-running the full revi
 ### Permission & hook constraints
 
 All Bash commands MUST start with an allowed command.
-Allowed first-words: `git`, `shasum`, `mkdir`, `cp`, `scripts/er-*`
+Allowed first-words: `git`, `shasum`, `mkdir`, `cp`, `scripts/er-*`, and the GitButler binary path when in GB mode
 NOT allowed as first word: `for`, `rm`, `while`, `bash`, `sh`
 
 ## Step-by-step
 
 ```
+Step 0 (GB check): Read .er/gb-context.json (1 tool call, skip if missing)
+  → If exists and enabled=true: set ER_DIR=.er/stacks/<selected_branch>/, use GB diff command
+  → If missing or enabled=false: set ER_DIR=.er/, use normal git diff flow
+  All .er/ paths below become <ER_DIR>/ in GB mode.
+
 Step 1: Read existing review (1 tool call)
 
-TOOL CALL 1 — Read .er/review.json:
+TOOL CALL 1 — Read <ER_DIR>/review.json:
   → If missing: print "No review found. Run /er-review first.", DONE.
   → Extract: diff_hash, diff_scope, base_branch, head_branch, file_hashes, files
 
@@ -45,12 +71,14 @@ Determine scope args from the review's diff_scope + base_branch:
 - "staged" → --staged --unified=3 --no-color --no-ext-diff
 
 If diff_scope is missing, default to "branch".
+(In GB mode, use `<binary> diff <selected_stack_id>` instead of git diff.)
 
 TOOL CALL 2 — Bash (hash + per-file hashes):
-  For branch scope:
-    scripts/er-freshness-check.sh <base_branch>
-  For unstaged/staged:
-    git diff <scope-args> > .er/diff-tmp && shasum -a 256 .er/diff-tmp
+  Normal mode:
+    For branch scope: scripts/er-freshness-check.sh <base_branch>
+    For unstaged/staged: git diff <scope-args> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp
+  GB mode:
+    mkdir -p <ER_DIR> && <binary> diff <selected_stack_id> > <ER_DIR>/diff-tmp && shasum -a 256 <ER_DIR>/diff-tmp
   → Get current diff_hash
 
 TOOL CALL 3 — Bash (per-file hashes):
@@ -68,10 +96,11 @@ TOOL CALL 3 — Bash (per-file hashes):
 
 Step 3: Load diffs for changed files (1-2 tool calls)
 
-TOOL CALL 4 — Bash: capture full diff
-  git diff <scope-args> > .er/diff-tmp
+TOOL CALL 4 — Bash: capture full diff (skip if already captured in Step 2)
+  Normal: git diff <scope-args> > <ER_DIR>/diff-tmp
+  GB mode: already captured in Step 2
 
-TOOL CALL 5 — Read .er/diff-tmp
+TOOL CALL 5 — Read <ER_DIR>/diff-tmp
   → Load into context
 
 Step 4: In-context validation (zero tool calls)
@@ -112,13 +141,13 @@ Regenerate .er/summary.md: append a "Refresh" section noting what changed.
 Step 5: Write updated files (3-4 tool calls)
 
 TOOL CALLS 6-9 — Write updated files in parallel:
-  - .er/review.json (with new diff_hash, updated file_hashes, updated_at, preserved version)
-  - .er/order.json (updated)
-  - .er/checklist.json (updated)
-  - .er/summary.md (updated with refresh note)
+  - <ER_DIR>/review.json (with new diff_hash, updated file_hashes, updated_at, preserved version)
+  - <ER_DIR>/order.json (updated)
+  - <ER_DIR>/checklist.json (updated)
+  - <ER_DIR>/summary.md (updated with refresh note)
 
 TOOL CALL 10 — Bash: persist to cache
-  mkdir -p .er/reviews/<branch>/<commit>/ && cp .er/review.json .er/order.json .er/checklist.json .er/summary.md .er/reviews/<branch>/<commit>/
+  mkdir -p <ER_DIR>/reviews/<branch>/<commit>/ && cp <ER_DIR>/review.json <ER_DIR>/order.json <ER_DIR>/checklist.json <ER_DIR>/summary.md <ER_DIR>/reviews/<branch>/<commit>/
 
 Print summary:
   "Refresh complete: N findings resolved, M persisting, K shifted"

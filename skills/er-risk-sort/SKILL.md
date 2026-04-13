@@ -23,6 +23,10 @@ Run as `/er-risk-sort`.
 - IN-CONTEXT: Sort and group using review data — zero tool calls
 - TOOL CALL 3: Write .er/order.json
 
+## GitButler awareness
+
+Before reading any `.er/` files, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true, extract `selected_branch` and set `ER_DIR` to `.er/stacks/<selected_branch>/`. All `.er/` file reads and writes use `<ER_DIR>/` instead of `.er/`. If `.er/gb-context.json` does not exist, use `.er/` as normal.
+
 ## Sorting strategy
 
 Sort order: **P0 → P1 → P2 → cosmetic/info last**

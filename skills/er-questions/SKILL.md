@@ -30,6 +30,10 @@ Note: Questions are personal/private — they are NOT synced to GitHub. Use `c`/
 All Bash commands MUST start with an allowed command: `git`, `shasum`, `cp`, `mkdir`.
 Do NOT pipe (`|`) into `shasum`. Do NOT chain `rm` with `&&`.
 
+## GitButler awareness
+
+Before reading any `.er/` files, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true, extract `selected_branch` and set `ER_DIR` to `.er/stacks/<selected_branch>/`. All `.er/` file reads and writes use `<ER_DIR>/` instead of `.er/` — questions are stored per-stack when in GitButler mode. If `.er/gb-context.json` does not exist, use `.er/` as normal.
+
 ## Step-by-step
 
 ```
