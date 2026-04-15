@@ -140,6 +140,36 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ));
         }
     }
+    if tab.is_jj && !tab.jj_stack.is_empty() {
+        info_spans.push(Span::styled(
+            " [JJ]",
+            ratatui::style::Style::default()
+                .fg(styles::BG())
+                .bg(styles::CYAN())
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+        info_spans.push(Span::styled(
+            format!(" [{}/{}]", tab.jj_selected + 1, tab.jj_stack.len()),
+            ratatui::style::Style::default().fg(styles::DIM()),
+        ));
+        if let Some(entry) = tab.jj_stack.get(tab.jj_selected) {
+            if !entry.bookmarks.is_empty() {
+                info_spans.push(Span::styled(
+                    format!(" {}", entry.bookmarks),
+                    ratatui::style::Style::default().fg(styles::GREEN()),
+                ));
+            }
+            let desc = if entry.description.is_empty() {
+                "(no description)".to_string()
+            } else {
+                entry.description.clone()
+            };
+            info_spans.push(Span::styled(
+                format!(" {}", desc),
+                ratatui::style::Style::default().fg(styles::DIM()),
+            ));
+        }
+    }
     if let Some(pr_num) = tab.pr_number {
         info_spans.push(Span::styled(
             format!(" [PR #{}]", pr_num),
@@ -188,7 +218,9 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         let num = format!(" {} ", i + 1);
         let label = match vmode {
             DiffMode::Branch => " BRANCH ",
-            DiffMode::Unstaged => " UNSTAGED ",
+            DiffMode::Unstaged => {
+                if tab.is_jj { " WORKING COPY " } else { " UNSTAGED " }
+            }
             DiffMode::Staged => {
                 if tab.mode == DiffMode::Staged && tab.committed_unpushed {
                     " COMMITTED "

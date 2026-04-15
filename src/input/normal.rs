@@ -222,6 +222,24 @@ pub fn handle_normal_input(
             }
             return Ok(());
         }
+        KeyCode::Char(')') if app.tab().is_jj && !app.tab().jj_stack.is_empty()
+            && matches!(app.tab().mode, DiffMode::Branch) => {
+            let tab = app.tab_mut();
+            if tab.jj_selected + 1 < tab.jj_stack.len() {
+                tab.jj_selected += 1;
+                tab.refresh_diff()?;
+            }
+            return Ok(());
+        }
+        KeyCode::Char('(') if app.tab().is_jj && !app.tab().jj_stack.is_empty()
+            && matches!(app.tab().mode, DiffMode::Branch) => {
+            let tab = app.tab_mut();
+            if tab.jj_selected > 0 {
+                tab.jj_selected -= 1;
+                tab.refresh_diff()?;
+            }
+            return Ok(());
+        }
 
         // Repo overlays
         KeyCode::Char('o') => {

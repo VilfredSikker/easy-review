@@ -260,6 +260,10 @@ pub struct ReviewQuestion {
     /// Author display name (defaults to "You")
     #[serde(default = "default_author")]
     pub author: String,
+    /// jj change_id when this comment was created (jj stack mode only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub change_id: Option<String>,
 }
 
 // ── .er-github-comments.json — GitHub PR comments ──
@@ -342,6 +346,10 @@ pub struct GitHubReviewComment {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub finding_ref: Option<String>,
+    /// jj change_id when this comment was created (jj stack mode only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub change_id: Option<String>,
 }
 
 fn default_source() -> String {

@@ -624,6 +624,12 @@ pub struct TabState {
     /// Quiz mode state (only populated when mode == Quiz)
     pub quiz: Option<QuizState>,
 
+    // ── Jujutsu integration ──
+    /// Whether this repo is a jj colocated repo (.jj/ directory present)
+    pub is_jj: bool,
+    pub jj_stack: Vec<crate::git::JjStackEntry>,
+    pub jj_selected: usize,
+
     // ── GitButler integration ──
     /// Whether this repo is GitButler-managed and the binary was found
     pub gb_enabled: bool,
@@ -1014,6 +1020,9 @@ impl TabState {
             agent_log_auto_scroll: true,
             wizard: None,
             quiz: None,
+            is_jj: false,
+            jj_stack: Vec::new(),
+            jj_selected: 0,
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),
@@ -1118,6 +1127,9 @@ impl TabState {
             agent_log_auto_scroll: true,
             wizard: None,
             quiz: None,
+            is_jj: false,
+            jj_stack: Vec::new(),
+            jj_selected: 0,
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),
@@ -1139,6 +1151,14 @@ impl TabState {
                     let er_dir = format!("{}/.er", tab.repo_root);
                     let _ = crate::gitbutler::write_gb_context(&er_dir, &tab.gb_context());
                 }
+            }
+        }
+
+        // Jujutsu colocated detection
+        if crate::git::is_jj_colocated(&tab.repo_root) {
+            tab.is_jj = true;
+            if let Ok(stack) = crate::git::jj_log_stack(&tab.repo_root) {
+                tab.jj_stack = stack;
             }
         }
 
@@ -1236,6 +1256,9 @@ impl TabState {
             agent_log_auto_scroll: true,
             wizard: None,
             quiz: None,
+            is_jj: false,
+            jj_stack: Vec::new(),
+            jj_selected: 0,
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),
@@ -1307,7 +1330,7 @@ impl TabState {
         if config.features.view_unstaged && !self.is_remote() && self.pr_head_ref.is_none() {
             modes.push(DiffMode::Unstaged);
         }
-        if config.features.view_staged && !self.is_remote() && self.pr_head_ref.is_none() {
+        if config.features.view_staged && !self.is_remote() && self.pr_head_ref.is_none() && !self.is_jj {
             modes.push(DiffMode::Staged);
         }
         if config.features.view_history && !self.is_remote() {
@@ -1747,9 +1770,28 @@ impl TabState {
         let prev_line = self.current_line;
         let prev_scroll = self.diff_scroll;
 
-        // In Staged mode after a commit, show HEAD~1..HEAD unless new staged changes exist
+        // Jujutsu stack: refresh stack list for Branch mode navigation
+        if self.is_jj && !self.jj_stack.is_empty() && self.mode == DiffMode::Branch {
+            if let Ok(stack) = git::jj_log_stack(&self.repo_root) {
+                self.jj_stack = stack;
+            }
+            if !self.jj_stack.is_empty() && self.jj_selected >= self.jj_stack.len() {
+                self.jj_selected = self.jj_stack.len() - 1;
+            }
+        }
+
         let head_ref_owned = self.pr_head_ref.clone();
-        let raw = if self.mode == DiffMode::Staged && self.committed_unpushed {
+        let raw = if self.is_jj && !self.jj_stack.is_empty() && self.mode == DiffMode::Branch {
+            if let Some(entry) = self.jj_stack.get(self.jj_selected) {
+                git::jj_diff_revision(&self.repo_root, &entry.change_id).unwrap_or_default()
+            } else {
+                String::new()
+            }
+        } else if self.is_jj && self.mode == DiffMode::Unstaged {
+            // Jujutsu colocated: use `jj diff --git` for working copy changes
+            // (git diff returns empty because jj auto-commits the working copy)
+            git::jj_diff_working(&self.repo_root)?
+        } else if self.mode == DiffMode::Staged && self.committed_unpushed {
             let staged_raw = git::git_diff_raw(
                 self.mode.git_mode(),
                 &self.base_branch,
@@ -5612,6 +5654,14 @@ mod tests {
             agent_log_auto_scroll: true,
             wizard: None,
             quiz: None,
+            is_jj: false,
+            jj_stack: Vec::new(),
+            jj_selected: 0,
+            gb_enabled: false,
+            gb_binary: None,
+            gb_stacks: Vec::new(),
+            gb_branches: Vec::new(),
+            gb_selected_branch: 0,
         }
     }
 
@@ -7247,6 +7297,7 @@ mod tests {
                 relocated_at_hash: String::new(),
                 in_reply_to: None,
                 author: "You".to_string(),
+                change_id: None,
             }],
         });
         let mut app = make_test_app(tab);

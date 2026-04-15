@@ -1789,6 +1789,7 @@ mod tests {
             relocated_at_hash: String::new(),
             in_reply_to: None,
             author: "You".to_string(),
+            change_id: None,
         }
     }
 
@@ -1821,6 +1822,7 @@ mod tests {
             anchor_status: "original".to_string(),
             relocated_at_hash: String::new(),
             finding_ref: None,
+            change_id: None,
         }
     }
 

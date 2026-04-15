@@ -1,6 +1,86 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
+
+/// Check if the repo is a jj colocated repo (.jj/ directory present alongside .git/)
+pub fn is_jj_colocated(repo_root: &str) -> bool {
+    Path::new(repo_root).join(".jj").is_dir()
+}
+
+#[derive(Debug, Clone)]
+pub struct JjStackEntry {
+    pub change_id: String,
+    pub description: String,
+    pub bookmarks: String,
+}
+
+pub fn jj_log_stack(repo_root: &str) -> Result<Vec<JjStackEntry>> {
+    let output = Command::new("jj")
+        .args([
+            "log",
+            "-r",
+            "trunk()..@",
+            "--no-graph",
+            "-T",
+            r#"change_id.short() ++ "\x1e" ++ description.first_line() ++ "\x1e" ++ bookmarks ++ "\n""#,
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run jj log")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("jj log failed: {}", stderr);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut entries: Vec<JjStackEntry> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(3, '\x1e').collect();
+            if parts.len() >= 2 {
+                Some(JjStackEntry {
+                    change_id: parts[0].trim().to_string(),
+                    description: parts.get(1).unwrap_or(&"").trim().to_string(),
+                    bookmarks: parts.get(2).unwrap_or(&"").trim().to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    // jj log outputs children first (@ at top), reverse so trunk-adjacent = index 0
+    entries.reverse();
+    Ok(entries)
+}
+
+pub fn jj_diff_revision(repo_root: &str, change_id: &str) -> Result<String> {
+    let output = Command::new("jj")
+        .args(["diff", "-r", change_id, "--git"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run jj diff")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("jj diff failed: {}", stderr);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Get working copy diff from jj in unified diff format.
+/// Used in jj colocated repos where `git diff` (unstaged) returns empty
+/// because jj auto-commits the working copy.
+pub fn jj_diff_working(repo_root: &str) -> Result<String> {
+    let output = Command::new("jj")
+        .args(["diff", "--git"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run jj diff")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("jj diff failed: {}", stderr);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
 use std::time::SystemTime;
 
 /// Metadata for a single commit (used in History mode)

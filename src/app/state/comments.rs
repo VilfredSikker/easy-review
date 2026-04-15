@@ -211,6 +211,7 @@ impl App {
         let comment_line_num = tab.comment_line_num;
         let reply_to = tab.comment_reply_to.clone();
         let pr_head_ref_owned = tab.pr_head_ref.clone();
+        let change_id = tab.jj_stack.get(tab.jj_selected).map(|e| e.change_id.clone());
 
         // Compute branch_diff_hash on-demand when not yet set (e.g., non-Branch mode with no AI data).
         // Without this, questions would always be marked stale because the hash would be empty.
@@ -285,6 +286,7 @@ impl App {
             relocated_at_hash: self.tab().branch_diff_hash.clone(),
             in_reply_to: reply_to,
             author: "You".to_string(),
+            change_id,
         });
 
         // Write atomically
@@ -311,6 +313,7 @@ impl App {
         let reply_to = tab.comment_reply_to.clone();
         let finding_ref = tab.comment_finding_ref.clone();
         let comment_line_num = tab.comment_line_num;
+        let change_id = tab.jj_stack.get(tab.jj_selected).map(|e| e.change_id.clone());
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
@@ -379,6 +382,7 @@ impl App {
             anchor_status: "original".to_string(),
             relocated_at_hash: self.tab().branch_diff_hash.clone(),
             finding_ref,
+            change_id,
         });
 
         // Write atomically
