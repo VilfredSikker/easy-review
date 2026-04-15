@@ -572,6 +572,7 @@ mod tests {
                 relocated_at_hash: String::new(),
                 in_reply_to: None,
                 author: "You".to_string(),
+                change_id: None,
             }],
         });
         app.tab_mut().focused_comment_id = Some("q-abc".to_string());

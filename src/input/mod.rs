@@ -1037,6 +1037,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
             anchor_status: "original".to_string(),
             relocated_at_hash: diff_hash_for_anchor.clone(),
             finding_ref: None,
+            change_id: None,
         });
     }
 
