@@ -27,6 +27,23 @@ Run as `/er-risk-sort`.
 
 Before reading any `.er/` files, check if `.er/gb-context.json` exists (Read tool). If it exists and `enabled` is true, extract `selected_branch` and set `ER_DIR` to `.er/stacks/<selected_branch>/`. All `.er/` file reads and writes use `<ER_DIR>/` instead of `.er/`. If `.er/gb-context.json` does not exist, use `.er/` as normal.
 
+## Jujutsu awareness
+
+Before Step 1, if no GitButler context was found, check if `.er/jj-context.json` exists (Read tool). If it exists and `enabled` is true:
+
+1. Extract `change_id` from the JSON
+2. Set `ER_DIR` to `.er/stacks/<change_id>/` (create with `mkdir -p`)
+3. For the diff capture, use:
+   ```
+   scripts/er-jj-diff <change_id> <ER_DIR>/diff-tmp
+   ```
+   instead of `git diff <base> ...`. The script runs `jj diff -r <change_id> --git` and writes unified diff to the output file. It matches the allowed `scripts/er-*` pattern.
+4. All `.er/` file reads and writes in this skill use `<ER_DIR>/` instead of `.er/`
+   (e.g., `<ER_DIR>/order.json` instead of `.er/order.json`)
+5. For `diff_hash`, hash the `<ER_DIR>/diff-tmp` file as usual
+
+If `.er/jj-context.json` does not exist, proceed with the normal git diff flow (backward compatible).
+
 ## Sorting strategy
 
 Sort order: **P0 → P1 → P2 → cosmetic/info last**

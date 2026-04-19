@@ -366,6 +366,13 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
             app.tab_mut().refresh_watched_files();
         }
 
+        // Refresh jj log panel (every 50 ticks ≈ 5s)
+        if app.tab().is_jj && app.tab().jj_log_visible && app.ai_poll_counter.is_multiple_of(50) {
+            if let Ok(log) = git::jj_log(&app.tab().repo_root) {
+                app.tab_mut().jj_log_output = log;
+            }
+        }
+
         // Check for PR base hint from background thread (fires once)
         if let Some(rx) = &hint_rx {
             if let Ok(msg) = rx.try_recv() {

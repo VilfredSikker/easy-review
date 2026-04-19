@@ -12,7 +12,10 @@ mod utils;
 
 use crate::app::{App, OverlayData};
 use highlight::Highlighter;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 /// Render the entire UI
@@ -88,6 +91,20 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
         file_tree::render(f, main_area[0], app);
         diff_view::render(f, main_area[1], app, hl);
         panel::render(f, main_area[2], app);
+    } else if tab.jj_log_visible && !tab.jj_log_output.is_empty() {
+        // 3-col layout: file_tree + diff + jj log panel
+        let jj_log_width: u16 = 40;
+        let main_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(tab.file_tree_width),
+                Constraint::Min(20),
+                Constraint::Length(jj_log_width),
+            ])
+            .split(outer[1]);
+        file_tree::render(f, main_area[0], app);
+        diff_view::render(f, main_area[1], app, hl);
+        render_jj_log_panel(f, main_area[2], app);
     } else {
         // 2-col layout: file_tree + diff
         let main_area = Layout::default()
@@ -123,4 +140,24 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
             }
         }
     }
+}
+
+/// Render the jj log side panel
+fn render_jj_log_panel(f: &mut Frame, area: Rect, app: &App) {
+    let tab = app.tab();
+    let lines: Vec<Line> = tab
+        .jj_log_output
+        .lines()
+        .skip(tab.jj_log_scroll)
+        .map(|l| Line::from(l.to_string()))
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(styles::BORDER()))
+        .title(" jj log ")
+        .title_style(Style::default().fg(styles::CYAN()));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, area);
 }

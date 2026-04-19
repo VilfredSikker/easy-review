@@ -629,6 +629,14 @@ pub struct TabState {
     pub is_jj: bool,
     pub jj_stack: Vec<crate::git::JjStackEntry>,
     pub jj_selected: usize,
+    /// Current bookmark name for the working copy (@)
+    pub jj_bookmark: String,
+    /// Cached jj log output for the side panel
+    pub jj_log_output: String,
+    /// Whether the jj log panel is visible
+    pub jj_log_visible: bool,
+    /// Scroll offset for the jj log panel
+    pub jj_log_scroll: usize,
 
     // ── GitButler integration ──
     /// Whether this repo is GitButler-managed and the binary was found
@@ -874,6 +882,21 @@ impl TabState {
         self.comment_textarea.lines().join("\n").trim().to_string()
     }
 
+    /// Compute the (from, to) refs for a bookmark-range jj diff of the currently selected
+    /// stack entry. Head = selected entry's first local bookmark (or its change_id as a
+    /// fallback). Base = the nearest ancestor entry's bookmark in the stack, or `trunk()`.
+    pub fn jj_branch_range(&self) -> Option<(String, String)> {
+        let entry = self.jj_stack.get(self.jj_selected)?;
+        let to = git::jj_first_local_bookmark(&entry.bookmarks)
+            .unwrap_or_else(|| entry.change_id.clone());
+        let from = self.jj_stack[..self.jj_selected]
+            .iter()
+            .rev()
+            .find_map(|e| git::jj_first_local_bookmark(&e.bookmarks))
+            .unwrap_or_else(|| "trunk()".to_string());
+        Some((from, to))
+    }
+
     /// Create a new tab for a given repo root
     pub fn new(repo_root: String) -> Result<Self> {
         let current_branch = git::get_current_branch_in(&repo_root)?;
@@ -1023,6 +1046,10 @@ impl TabState {
             is_jj: false,
             jj_stack: Vec::new(),
             jj_selected: 0,
+            jj_bookmark: String::new(),
+            jj_log_output: String::new(),
+            jj_log_visible: false,
+            jj_log_scroll: 0,
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),
@@ -1130,6 +1157,10 @@ impl TabState {
             is_jj: false,
             jj_stack: Vec::new(),
             jj_selected: 0,
+            jj_bookmark: String::new(),
+            jj_log_output: String::new(),
+            jj_log_visible: false,
+            jj_log_scroll: 0,
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),
@@ -1159,7 +1190,11 @@ impl TabState {
             tab.is_jj = true;
             if let Ok(stack) = crate::git::jj_log_stack(&tab.repo_root) {
                 tab.jj_stack = stack;
+                // Write initial context file
+                let er_dir = format!("{}/.er", tab.repo_root);
+                let _ = git::write_jj_context(&er_dir, &tab.jj_stack, tab.jj_selected);
             }
+            tab.jj_bookmark = git::jj_current_bookmark(&tab.repo_root).unwrap_or_default();
         }
 
         tab.refresh_watched_files();
@@ -1259,6 +1294,10 @@ impl TabState {
             is_jj: false,
             jj_stack: Vec::new(),
             jj_selected: 0,
+            jj_bookmark: String::new(),
+            jj_log_output: String::new(),
+            jj_log_visible: false,
+            jj_log_scroll: 0,
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),
@@ -1360,6 +1399,13 @@ impl TabState {
         } else if self.gb_enabled && matches!(self.mode, DiffMode::Branch) {
             if let Some(name) = self.gb_current_branch_name() {
                 crate::gitbutler::gb_er_dir(&format!("{}/.er", self.repo_root), &name)
+            } else {
+                format!("{}/.er", self.repo_root)
+            }
+        } else if self.is_jj && !self.jj_stack.is_empty() && matches!(self.mode, DiffMode::Branch)
+        {
+            if let Some(entry) = self.jj_stack.get(self.jj_selected) {
+                git::jj_er_dir(&format!("{}/.er", self.repo_root), &entry.change_id)
             } else {
                 format!("{}/.er", self.repo_root)
             }
@@ -1637,6 +1683,12 @@ impl TabState {
         let base_er_dir = format!("{}/.er", self.repo_root);
         let _ = crate::gitbutler::write_gb_context(&base_er_dir, &self.gb_context());
 
+        // Update jj-context.json and bookmark
+        if self.is_jj {
+            let _ = git::write_jj_context(&base_er_dir, &self.jj_stack, self.jj_selected);
+            self.jj_bookmark = git::jj_current_bookmark(&self.repo_root).unwrap_or_default();
+        }
+
         // Restore file selection
         if let Some(prev_path) = prev_file_path {
             if let Some(idx) = self.files.iter().position(|f| f.path == prev_path) {
@@ -1782,10 +1834,11 @@ impl TabState {
 
         let head_ref_owned = self.pr_head_ref.clone();
         let raw = if self.is_jj && !self.jj_stack.is_empty() && self.mode == DiffMode::Branch {
-            if let Some(entry) = self.jj_stack.get(self.jj_selected) {
-                git::jj_diff_revision(&self.repo_root, &entry.change_id).unwrap_or_default()
-            } else {
-                String::new()
+            match self.jj_branch_range() {
+                Some((from, to)) => {
+                    git::jj_diff_range(&self.repo_root, &from, &to).unwrap_or_default()
+                }
+                None => String::new(),
             }
         } else if self.is_jj && self.mode == DiffMode::Unstaged {
             // Jujutsu colocated: use `jj diff --git` for working copy changes
@@ -5657,6 +5710,10 @@ mod tests {
             is_jj: false,
             jj_stack: Vec::new(),
             jj_selected: 0,
+            jj_bookmark: String::new(),
+            jj_log_output: String::new(),
+            jj_log_visible: false,
+            jj_log_scroll: 0,
             gb_enabled: false,
             gb_binary: None,
             gb_stacks: Vec::new(),

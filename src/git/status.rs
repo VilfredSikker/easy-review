@@ -53,15 +53,62 @@ pub fn jj_log_stack(repo_root: &str) -> Result<Vec<JjStackEntry>> {
     Ok(entries)
 }
 
-pub fn jj_diff_revision(repo_root: &str, change_id: &str) -> Result<String> {
+/// Get diff for a specific file in the jj working copy.
+pub fn jj_diff_working_file(repo_root: &str, path: &str) -> Result<String> {
     let output = Command::new("jj")
-        .args(["diff", "-r", change_id, "--git"])
+        .args(["diff", "--git", "--", path])
         .current_dir(repo_root)
         .output()
-        .context("Failed to run jj diff")?;
+        .context("Failed to run jj diff for file")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("jj diff failed: {}", stderr);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Return the first local bookmark from a space-separated bookmarks template output.
+/// Tokens like `name@remote` are treated as fallbacks — a plain local name wins.
+pub fn jj_first_local_bookmark(bookmarks: &str) -> Option<String> {
+    let mut fallback: Option<String> = None;
+    for tok in bookmarks.split_whitespace() {
+        if tok.is_empty() {
+            continue;
+        }
+        if tok.contains('@') {
+            fallback.get_or_insert_with(|| tok.to_string());
+        } else {
+            return Some(tok.to_string());
+        }
+    }
+    fallback
+}
+
+/// Full bookmark-range diff: `jj diff --from <from> --to <to> --git`.
+/// `from` and `to` may be bookmark names, change IDs, or revsets like `trunk()`.
+pub fn jj_diff_range(repo_root: &str, from: &str, to: &str) -> Result<String> {
+    let output = Command::new("jj")
+        .args(["diff", "--from", from, "--to", to, "--git"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run jj diff range")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("jj diff --from/--to failed: {}", stderr);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Per-file bookmark-range diff.
+pub fn jj_diff_range_file(repo_root: &str, from: &str, to: &str, path: &str) -> Result<String> {
+    let output = Command::new("jj")
+        .args(["diff", "--from", from, "--to", to, "--git", "--", path])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run jj diff range for file")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("jj diff --from/--to failed: {}", stderr);
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
@@ -81,6 +128,79 @@ pub fn jj_diff_working(repo_root: &str) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
+
+/// Context written to `.er/jj-context.json` so external skills know the selected jj change.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct JjContext {
+    pub enabled: bool,
+    pub change_id: String,
+    pub description: String,
+    pub bookmarks: String,
+}
+
+/// Write `.er/jj-context.json` with current jj state.
+/// Uses atomic write (tmp file + rename).
+pub fn write_jj_context(er_dir: &str, stack: &[JjStackEntry], selected: usize) -> Result<()> {
+    let dir = Path::new(er_dir);
+    std::fs::create_dir_all(dir).context("Failed to create .er/ directory")?;
+
+    let ctx = if let Some(entry) = stack.get(selected) {
+        JjContext {
+            enabled: true,
+            change_id: entry.change_id.clone(),
+            description: entry.description.clone(),
+            bookmarks: entry.bookmarks.clone(),
+        }
+    } else {
+        JjContext {
+            enabled: true,
+            change_id: String::new(),
+            description: String::new(),
+            bookmarks: String::new(),
+        }
+    };
+
+    let path = dir.join("jj-context.json");
+    let tmp_path = dir.join("jj-context.json.tmp");
+    let json = serde_json::to_string_pretty(&ctx).context("Failed to serialize JjContext")?;
+    std::fs::write(&tmp_path, &json).context("Failed to write jj-context.json.tmp")?;
+    std::fs::rename(&tmp_path, &path).context("Failed to rename jj-context.json.tmp")?;
+    Ok(())
+}
+
+/// Get the current bookmark(s) for the working copy commit (@).
+pub fn jj_current_bookmark(repo_root: &str) -> Result<String> {
+    let output = Command::new("jj")
+        .args(["log", "-r", "@", "--no-graph", "-T", "bookmarks"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run jj log for bookmark")?;
+    if !output.status.success() {
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Get the jj log output for the side panel display.
+pub fn jj_log(repo_root: &str) -> Result<String> {
+    let output = Command::new("jj")
+        .args(["log", "--no-pager", "-r", "trunk()..@", "--color", "never"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run jj log")?;
+    if !output.status.success() {
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Compute per-change `.er/` directory path: `.er/stacks/<change_id>/`
+/// Change IDs are short alphanumeric strings, no sanitization needed.
+pub fn jj_er_dir(er_dir: &str, change_id: &str) -> String {
+    let p = Path::new(er_dir).join("stacks").join(change_id);
+    p.to_string_lossy().to_string()
+}
+
 use std::time::SystemTime;
 
 /// Metadata for a single commit (used in History mode)

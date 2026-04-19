@@ -27,6 +27,23 @@ If `.er/gb-context.json` does not exist, proceed with the normal git diff flow (
 
 **Permission note:** The GitButler binary path (e.g., `/Applications/GitButler.app/Contents/MacOS/gitbutler-tauri`) is allowed as a first-word command for Bash calls.
 
+## Jujutsu awareness
+
+Before Step 1, if no GitButler context was found, check if `.er/jj-context.json` exists (Read tool). If it exists and `enabled` is true:
+
+1. Extract `change_id` from the JSON
+2. Set `ER_DIR` to `.er/stacks/<change_id>/` (create with `mkdir -p`)
+3. For the diff capture, use:
+   ```
+   scripts/er-jj-diff <change_id> <ER_DIR>/diff-tmp
+   ```
+   instead of `git diff <base> ...`. The script runs `jj diff -r <change_id> --git` and writes unified diff to the output file. It matches the allowed `scripts/er-*` pattern.
+4. All `.er/` file reads and writes in this skill use `<ER_DIR>/` instead of `.er/`
+   (e.g., `<ER_DIR>/summary.md` instead of `.er/summary.md`)
+5. For `diff_hash`, hash the `<ER_DIR>/diff-tmp` file as usual
+
+If `.er/jj-context.json` does not exist, proceed with the normal git diff flow (backward compatible).
+
 ## What it does
 
 1. Reads the current git diff

@@ -241,6 +241,18 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
+        // Toggle jj log side panel (Shift+L)
+        KeyCode::Char('L') if app.tab().is_jj => {
+            let tab = app.tab_mut();
+            tab.jj_log_visible = !tab.jj_log_visible;
+            if tab.jj_log_visible && tab.jj_log_output.is_empty() {
+                if let Ok(log) = crate::git::jj_log(&tab.repo_root) {
+                    tab.jj_log_output = log;
+                }
+            }
+            return Ok(());
+        }
+
         // Repo overlays
         KeyCode::Char('o') => {
             app.open_open_hub();

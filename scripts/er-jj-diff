@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#
+# Get a jj change diff as standard unified diff text.
+#
+# Usage: scripts/er-jj-diff <change-id> <output-file>
+# Output: writes unified diff to <output-file>, prints shasum + HEAD info
+
+set -euo pipefail
+
+CHANGE_ID="$1"
+OUTPUT="$2"
+
+jj diff -r "$CHANGE_ID" --git > "$OUTPUT"
+
+shasum -a 256 "$OUTPUT"
+git rev-parse --short HEAD

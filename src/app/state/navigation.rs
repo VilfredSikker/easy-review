@@ -575,6 +575,27 @@ impl TabState {
                         }
                     }
                 }
+            } else if self.is_jj {
+                // jj mode: use bookmark-range diff in Branch mode, working-copy diff otherwise.
+                let repo_root = self.repo_root.clone();
+                let range = (self.mode == DiffMode::Branch)
+                    .then(|| self.jj_branch_range())
+                    .flatten();
+                let file = &mut self.files[self.selected_file];
+                let raw = match range {
+                    Some((from, to)) => {
+                        git::jj_diff_range_file(&repo_root, &from, &to, &file.path)?
+                    }
+                    None => git::jj_diff_working_file(&repo_root, &file.path)?,
+                };
+                let parsed = git::parse_diff(&raw);
+                if let Some(f) = parsed.into_iter().next() {
+                    file.hunks = f.hunks;
+                    file.adds = f.adds;
+                    file.dels = f.dels;
+                    file.compacted = false;
+                    file.raw_hunk_count = 0;
+                }
             } else {
                 // Extract values before mutable borrow of files
                 let repo_root = self.repo_root.clone();

@@ -140,7 +140,8 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ));
         }
     }
-    if tab.is_jj && !tab.jj_stack.is_empty() {
+    if tab.is_jj && !tab.jj_stack.is_empty() && tab.mode == DiffMode::Branch {
+        // Branch mode with stack: show [JJ] [1/3] bookmark description
         info_spans.push(Span::styled(
             " [JJ]",
             ratatui::style::Style::default()
@@ -169,6 +170,19 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
                 ratatui::style::Style::default().fg(styles::DIM()),
             ));
         }
+    } else if tab.is_jj && !tab.jj_bookmark.is_empty() {
+        // Working Copy / other modes: show [JJ] bookmark-name
+        info_spans.push(Span::styled(
+            " [JJ] ",
+            ratatui::style::Style::default()
+                .fg(styles::BG())
+                .bg(styles::CYAN())
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+        info_spans.push(Span::styled(
+            format!(" {} ", tab.jj_bookmark),
+            ratatui::style::Style::default().fg(styles::DIM()),
+        ));
     }
     if let Some(pr_num) = tab.pr_number {
         info_spans.push(Span::styled(
@@ -799,6 +813,9 @@ fn build_hints(app: &App) -> Vec<Hint> {
                 hints.push(Hint::new("Z", " clear reviews "));
             }
             hints.push(Hint::new(",", " settings "));
+            if tab.is_jj {
+                hints.push(Hint::new("L", " jj-log "));
+            }
         }
     }
 
