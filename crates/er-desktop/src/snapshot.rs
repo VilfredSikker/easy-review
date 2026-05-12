@@ -199,9 +199,9 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
         ai,
         pr,
         panels: Panels {
-            left: true,
-            tree: true,
-            right: true,
+            left: app.panels_visible.left,
+            tree: app.panels_visible.tree,
+            right: app.panels_visible.right,
         },
         theme: "dark".to_string(),
         watch_active: app.watching,

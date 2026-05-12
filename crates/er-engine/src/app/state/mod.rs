@@ -2485,7 +2485,7 @@ impl TabState {
         }
     }
 
-    fn save_reviewed_files(&self) -> Result<()> {
+    pub fn save_reviewed_files(&self) -> Result<()> {
         if self.is_remote() {
             return Ok(());
         }
@@ -2677,6 +2677,19 @@ pub struct AgentLogEntry {
     pub text: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PanelsVisible {
+    pub left: bool,
+    pub tree: bool,
+    pub right: bool,
+}
+
+impl Default for PanelsVisible {
+    fn default() -> Self {
+        PanelsVisible { left: true, tree: true, right: true }
+    }
+}
+
 pub struct App {
     /// Open tabs (one per repo)
     pub tabs: Vec<TabState>,
@@ -2725,6 +2738,9 @@ pub struct App {
 
     /// Last known terminal width (updated each tick for resize calculations)
     pub last_terminal_width: u16,
+
+    /// Which panels are currently visible in the desktop UI
+    pub panels_visible: PanelsVisible,
 }
 
 impl App {
@@ -2811,6 +2827,7 @@ impl App {
             current_ai_model,
             pending_hub_action: None,
             last_terminal_width: 0,
+            panels_visible: PanelsVisible::default(),
         })
     }
 
@@ -2838,6 +2855,7 @@ impl App {
             current_ai_model,
             pending_hub_action: None,
             last_terminal_width: 0,
+            panels_visible: PanelsVisible::default(),
         }
     }
 
@@ -3027,6 +3045,15 @@ impl App {
     // ever exceeds tabs.len() (e.g., after close_tab() removes the last non-first tab and the index
     // is not decremented correctly, or if tabs is somehow emptied), this panics. All callers assume
     // tabs is non-empty; that invariant is enforced only by close_tab's guard but not at the type level.
+    pub fn toggle_panel(&mut self, name: &str) {
+        match name {
+            "left" => self.panels_visible.left = !self.panels_visible.left,
+            "tree" => self.panels_visible.tree = !self.panels_visible.tree,
+            "right" => self.panels_visible.right = !self.panels_visible.right,
+            _ => {}
+        }
+    }
+
     pub fn tab(&self) -> &TabState {
         &self.tabs[self.active_tab]
     }

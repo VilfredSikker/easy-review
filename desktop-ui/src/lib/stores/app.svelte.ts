@@ -16,6 +16,23 @@ class AppStore {
       this.loading = false;
     }
   }
+
+  async togglePanel(panel: "left" | "tree" | "right") {
+    try {
+      await invoke("toggle_panel", { panel });
+      await this.load();
+    } catch (e) {
+      console.error("togglePanel failed:", e);
+    }
+  }
+
+  async cmd(command: string, args?: Record<string, unknown>) {
+    try {
+      this.snapshot = await invoke<AppSnapshot>(command, args);
+    } catch (e) {
+      console.error(`${command} failed:`, e);
+    }
+  }
 }
 
 export const app = new AppStore();

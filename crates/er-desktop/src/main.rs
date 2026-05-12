@@ -23,7 +23,21 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(state)
-        .invoke_handler(tauri::generate_handler![commands::get_snapshot])
+        .invoke_handler(tauri::generate_handler![
+            commands::get_snapshot,
+            commands::toggle_panel,
+            commands::select_file,
+            commands::next_file,
+            commands::prev_file,
+            commands::jump_to_unreviewed,
+            commands::set_mode,
+            commands::toggle_reviewed,
+            commands::mark_reviewed,
+            commands::unmark_reviewed,
+            commands::open_in_editor,
+            commands::set_filter,
+            commands::clear_filter,
+        ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");
 }
