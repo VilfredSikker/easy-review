@@ -10,7 +10,7 @@
   const { thread }: Props = $props();
 
   const borderColor = $derived(
-    thread.kind === "comment" ? "border-l-[color:var(--color-comment)]" : "border-l-[color:var(--color-question)]"
+    thread.kind === "comment" ? "border-comment" : "border-question"
   );
   const kindColor = $derived(thread.kind === "comment" ? "text-comment" : "text-question");
 
