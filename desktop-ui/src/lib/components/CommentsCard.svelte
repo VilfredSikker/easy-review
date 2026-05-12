@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AiSnapshot, ThreadSnapshot } from "$lib/types";
+  import { app } from "$lib/stores/app.svelte";
 
   interface Props {
     ai: AiSnapshot;
@@ -26,15 +27,24 @@
         {ai.comments}
       </span>
     </div>
-    {#if ai.unpushed > 0}
+    <div class="flex items-center gap-1">
       <button
-        class="text-[10px] font-mono text-comment bg-comment/10 px-1.5 py-0.5 rounded opacity-50 cursor-not-allowed"
-        disabled
-        title="GitHub push not yet implemented"
+        class="text-[10px] font-mono text-ink-400 bg-ink-700 hover:bg-ink-600 px-1.5 py-0.5 rounded transition-colors"
+        onclick={() => app.cmd("pull_github_comments")}
+        title="Pull comments from GitHub"
       >
-        Push {ai.unpushed}
+        Pull
       </button>
-    {/if}
+      {#if ai.unpushed > 0}
+        <button
+          class="text-[10px] font-mono text-comment bg-comment/10 hover:bg-comment/20 px-1.5 py-0.5 rounded transition-colors"
+          onclick={() => app.cmd("push_github_comments")}
+          title="Push local comments to GitHub"
+        >
+          Push {ai.unpushed}
+        </button>
+      {/if}
+    </div>
   </div>
 
   {#if threads.length > 0}

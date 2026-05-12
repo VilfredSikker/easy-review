@@ -45,6 +45,8 @@ fn main() {
             commands::reply_to_thread,
             commands::delete_thread,
             commands::refresh_diff,
+            commands::pull_github_comments,
+            commands::push_github_comments,
             commands::poll,
         ])
         .run(tauri::generate_context!())

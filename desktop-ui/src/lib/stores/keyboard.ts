@@ -42,10 +42,23 @@ export function initKeyboard(): () => void {
       // Refresh diff
       case "R": app.cmd("refresh_diff"); break;
 
+      // Open in editor
+      case "e": {
+        import("@tauri-apps/api/core").then(({ invoke }) => {
+          invoke("open_in_editor").catch(() => {});
+        });
+        break;
+      }
+
       // Scope / mode switching
       case "1": app.cmd("set_mode", { mode: "branch" }); break;
       case "2": app.cmd("set_mode", { mode: "unstaged" }); break;
       case "3": app.cmd("set_mode", { mode: "staged" }); break;
+      case "4": app.cmd("set_mode", { mode: "history" }); break;
+
+      // GitHub sync
+      case "g": app.cmd("pull_github_comments"); break;
+      case "p": app.cmd("push_github_comments"); break;
     }
   }
 

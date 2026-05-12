@@ -300,7 +300,15 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
         },
         theme: "dark".to_string(),
         watch_active: app.watching,
-        worktrees: vec![],
+        worktrees: er_engine::git::list_worktrees(&tab.repo_root)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|wt| WorktreeSnapshot {
+                is_current: wt.path == tab.repo_root,
+                branch: wt.branch,
+                path: wt.path,
+            })
+            .collect(),
         notification: app.watch_message.clone(),
     }
 }

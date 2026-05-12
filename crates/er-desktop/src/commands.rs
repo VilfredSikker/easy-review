@@ -282,6 +282,22 @@ pub fn refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
 }
 
 #[tauri::command]
+pub fn pull_github_comments(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    app.sync_github_comments().map_err(|e| e.to_string())?;
+    Ok(build_snapshot(&app, &mut hl))
+}
+
+#[tauri::command]
+pub fn push_github_comments(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    app.push_all_comments_to_github().map_err(|e| e.to_string())?;
+    Ok(build_snapshot(&app, &mut hl))
+}
+
+#[tauri::command]
 pub fn poll(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;

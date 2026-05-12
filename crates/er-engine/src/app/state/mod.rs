@@ -1,4 +1,5 @@
 pub(super) mod comments;
+mod github_sync;
 pub(super) mod navigation;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
