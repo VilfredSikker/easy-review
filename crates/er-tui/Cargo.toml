@@ -1,0 +1,30 @@
+[package]
+name = "er-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal UI for easy-review"
+
+[[bin]]
+name = "er"
+path = "src/main.rs"
+
+[dependencies]
+er-engine = { path = "../er-engine" }
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Syntax highlighting
+syntect = "5"
+two-face = "0.5.1"
+tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["crossterm"] }
+
+# Shared (needed for types crossing the boundary, e.g. serde derives, anyhow::Result)
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true

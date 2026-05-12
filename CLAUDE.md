@@ -22,7 +22,7 @@ Rust + Ratatui TUI. Six modules + a standalone GitHub integration file:
 
 - **`git/`** — Shells out to `git diff` and parses unified diff format into structured data (`DiffFile` → `DiffHunk` → `DiffLine`). Handles base branch auto-detection: upstream tracking → main → master → develop → dev. Also provides staging (file level), worktree listing, commit log loading (`git log` + `git diff` for individual commits), and watched file discovery/diffing. Includes two-phase lazy parsing for large diffs (header-only scan + on-demand file parse) and auto-compaction of low-value files (lock files, generated code).
 - **`watch/`** — File system watcher using `notify` + `notify-debouncer-mini`. 500ms debounce. Watches working tree changes plus `.git/index` (staging) and `.git/refs/` (commits). Sends events via `std::sync::mpsc` channel. Starts automatically on launch.
-- **`app/`** — All application state in one `App` struct. Six diff modes (Branch, Unstaged, Staged, History, Wizard, Quiz). Six input modes (Normal, Search, Comment, Confirm, Filter, Commit). File/hunk/line navigation, AI state management, comment persistence (with replies and deletion), comment focus navigation, watch notifications, auto-unmark reviewed files on diff change, cleanup commands. History mode has its own `HistoryState` with commit list, per-commit diff cache (LRU, 5 entries), and lazy loading. Wizard mode (`DiffMode::Wizard`) provides a guided tour of important changes driven by `.er/wizard.json` — importance-based file ordering, key changes context panel, and symbol references; state in `WizardState`. Quiz mode (`DiffMode::Quiz`) provides an interactive comprehension quiz driven by `.er/quiz.json` — MC and freeform answers, scoring, and level/category filtering; state in `QuizState`. Holds `ErConfig` for settings. Loads `.er-config.toml` for watched files configuration. Composable filter system (`filter.rs`) with glob, status, size, and risk rules. Mtime sort toggle (`Shift+R`) works in any diff mode.
+- **`app/`** — All application state in one `App` struct. Four diff modes (Branch, Unstaged, Staged, History). Six input modes (Normal, Search, Comment, Confirm, Filter, Commit). File/hunk/line navigation, AI state management, comment persistence (with replies and deletion), comment focus navigation, watch notifications, auto-unmark reviewed files on diff change, cleanup commands. History mode has its own `HistoryState` with commit list, per-commit diff cache (LRU, 5 entries), and lazy loading. Holds `ErConfig` for settings. Loads `.er-config.toml` for watched files configuration. Composable filter system (`filter.rs`) with glob, status, size, and risk rules. Mtime sort toggle (`Shift+R`) works in any diff mode.
 - **`ui/`** — Ratatui rendering. InlineLayers + PanelContent system (replaces ViewMode). Cool blue-undertone dark theme in `styles.rs`. Viewport-based rendering for diff and file tree (only builds `Line` objects for visible rows). Syntax highlighting is cached by content hash. Settings overlay for live config editing via `S` key. Sticky file path header in diff view.
 - **`ai/`** — Data model and file loader for AI-generated review artifacts. Reads `.er/` directory files written by external Claude Code skills. Manages staleness detection via SHA-256 diff hashing. Lazy comment index (`CommentIndexData`) for fast per-file comment lookup without loading all comments into memory. Does NOT run AI — reads AI output.
 - **`config.rs`** — Configuration system. Loads `.er-config.toml` (per-repo) or `~/.config/er/config.toml` (global) with serde defaults. `ErConfig` struct holds `FeatureFlags`, `AgentConfig`, and `DisplayConfig`. Settings items for the overlay UI are defined here.
@@ -55,8 +55,6 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 - **Post-commit diff view.** After committing, `er` automatically switches to a view of the just-committed diff (using `git diff HEAD~1 HEAD`). Lets you review exactly what was committed before moving on.
 - **Config via TOML, not CLI flags.** Per-repo (`.er-config.toml`) overrides global (`~/.config/er/config.toml`) overrides built-in defaults. Every feature is gated behind `config.features.*`. Settings overlay applies changes live; `s` persists, Esc reverts.
 - **Watched files for git-ignored paths.** `.er-config.toml` with `[watched]` section specifies glob patterns for files to monitor (e.g., `.work/` agent sync folders). Two diff modes: "content" (show file contents) and "snapshot" (diff against saved baseline). Gitignore safety check warns if watched files aren't ignored.
-- **Wizard and Quiz as first-class DiffMode views.** Both modes are `DiffMode` variants (not overlays) with dedicated rendering paths, input routing in `main.rs`, and their own state structs (`WizardState`, `QuizState`) on `TabState`. This keeps the mode-switch logic uniform and avoids modal stacking.
-- **Quiz learning loop via `.er/` sidecar files.** Quiz generation (`/er-quiz` skill → `.er/quiz.json`) and feedback evaluation (skill reads `.er/quiz-answers.json` → writes `.er/quiz-feedback.json`) happen entirely outside `er`. The TUI provides the interaction surface; skills provide the AI. Same decoupling pattern as review/questions.
 
 ## Code Conventions
 
@@ -66,7 +64,7 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 - GitHub commands: all in `github.rs`. Shell out to `gh` CLI, never use HTTP API directly.
 - UI styles: all colors and composed styles in `ui/styles.rs`. Don't use raw colors elsewhere.
 - Syntax highlighting: `syntect` crate via `ui/highlight.rs`. Highlighter is created once in main and passed as `&mut` to diff_view (mutable for cache writes). Uses `base16-ocean.dark` theme. Language detection is automatic from filename. Results are cached by content hash with LRU eviction.
-- AI sidecar files: all live in `.er/` directory in the repo root, gitignored with a single `.gitignore` entry. `er` reads all files in `.er/`, writes `.er/questions.json` and `.er/github-comments.json`. Atomic writes via tmp+rename. `CommentIndexData` provides a lazy per-file index for fast comment lookup without loading full comment lists. Quiz sidecar files: `.er/quiz.json` (generated by `/er-quiz` skill, read-only from `er`), `.er/quiz-answers.json` (written by `er` when saving answers), `.er/quiz-feedback.json` (written by skill after AI evaluates freeform answers).
+- AI sidecar files: all live in `.er/` directory in the repo root, gitignored with a single `.gitignore` entry. `er` reads all files in `.er/`, writes `.er/questions.json` and `.er/github-comments.json`. Atomic writes via tmp+rename. `CommentIndexData` provides a lazy per-file index for fast comment lookup without loading full comment lists.
 - Question fields: `ReviewQuestion` has `id`, `file`, `hunk_index`, `line_start`, `line_content`, `text`, `resolved`, `stale` (runtime-only).
 - GitHub comment fields: `GitHubReviewComment` has `source` ("local"/"github"), `github_id` (Option<u64>), `author` (String), `synced` (bool), `in_reply_to` (Option<String>), `line_start` (Option<usize>), `stale` (runtime-only). Line comments have `line_start`; hunk comments do not.
 - Unified query via `CommentRef` enum: query methods on `AiState` return `Vec<CommentRef>` which wraps either a `ReviewQuestion`, `GitHubReviewComment`, or legacy `FeedbackComment`.
@@ -78,33 +76,34 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 
 ## File Map
 
+Workspace layout: `crates/er-engine/` (UI-agnostic core, `er_engine` crate) and `crates/er-tui/` (terminal UI, `er` binary).
+
 ```
-src/main.rs              Event loop, CLI parsing (clap), input routing, debounced watch refresh
-src/config.rs            ErConfig, FeatureFlags, load/save, settings items
-src/app/state.rs         App struct, all state, navigation, comments, comment focus, replies, HistoryState, DiffCache, watched files config, filter, HunkOffsets, MemoryBudget, lazy parsing
-src/app/filter.rs        Composable filter system (glob, status, size rules, presets)
-src/git/diff.rs          parse_diff(), parse_diff_headers(), compact_files(), expand_compacted_file()
-src/git/status.rs        detect_base_branch(), git_diff_raw(), git_diff_raw_file(), staging, worktrees, git_log_branch(), git_diff_commit(), watched file ops
-src/github.rs            GitHub PR URL parsing, gh CLI wrapper, comment sync (pull/push/reply/delete), PR base hint
-src/ai/review.rs         AI data model (AiState, ErReview, Finding, InlineLayers, PanelContent, CommentRef, ReviewQuestion, GitHubReviewComment, CommentIndexData)
-src/ai/loader.rs         .er/ directory loading, SHA-256 + fast diff hashing, mtime polling, mtime cache
-src/watch/mod.rs         FileWatcher — debounced notify watcher
-src/ui/mod.rs            draw() — panel-based layout dispatch
-src/ui/styles.rs         Color constants and style helpers (blue-undertone theme)
-src/ui/highlight.rs      Syntect-based syntax highlighting with LRU content-hash cache
-src/ui/file_tree.rs      Left panel — file list with risk indicators (or commit list in History mode)
-src/ui/diff_view.rs      Right panel — viewport-based rendering, compacted file view, inline line comments, sticky file path header (or multi-file commit diff in History mode)
-src/ui/panel.rs          Side panel — FileDetail, AiSummary, PrOverview content renderers
-src/ui/status_bar.rs     Top bar, bottom bar, AI status badges, memory budget (debug), comment input
-src/ui/overlay.rs        Modal popups (worktree picker, directory browser, filter history)
-src/ui/settings.rs       Settings overlay — toggleable config items
-src/ui/quiz.rs           Quiz view — question list, answer panel, freeform input
-src/ui/utils.rs          Shared utilities (word_wrap)
+crates/er-tui/src/main.rs              Event loop, CLI parsing (clap), input routing, debounced watch refresh
+crates/er-engine/src/config.rs         ErConfig, FeatureFlags, load/save, settings items
+crates/er-engine/src/app/state/mod.rs  App struct, all state, navigation, comments, comment focus, replies, HistoryState, DiffCache, watched files config, filter, HunkOffsets, MemoryBudget, lazy parsing
+crates/er-engine/src/app/filter.rs     Composable filter system (glob, status, size rules, presets)
+crates/er-engine/src/git/diff.rs       parse_diff(), parse_diff_headers(), compact_files(), expand_compacted_file()
+crates/er-engine/src/git/status.rs     detect_base_branch(), git_diff_raw(), git_diff_raw_file(), staging, worktrees, git_log_branch(), git_diff_commit(), watched file ops
+crates/er-engine/src/github.rs         GitHub PR URL parsing, gh CLI wrapper, comment sync (pull/push/reply/delete), PR base hint
+crates/er-engine/src/ai/review.rs      AI data model (AiState, ErReview, Finding, InlineLayers, PanelContent, CommentRef, ReviewQuestion, GitHubReviewComment, CommentIndexData)
+crates/er-engine/src/ai/loader.rs      .er/ directory loading, SHA-256 + fast diff hashing, mtime polling, mtime cache
+crates/er-engine/src/watch/mod.rs      FileWatcher — debounced notify watcher
+crates/er-tui/src/ui/mod.rs            draw() — panel-based layout dispatch; applies theme each frame
+crates/er-tui/src/ui/styles.rs         Color constants and style helpers (blue-undertone theme)
+crates/er-tui/src/ui/highlight.rs      Syntect-based syntax highlighting with LRU content-hash cache
+crates/er-tui/src/ui/file_tree.rs      Left panel — file list with risk indicators (or commit list in History mode)
+crates/er-tui/src/ui/diff_view.rs      Right panel — viewport-based rendering, compacted file view, inline line comments, sticky file path header (or multi-file commit diff in History mode)
+crates/er-tui/src/ui/panel.rs          Side panel — FileDetail, AiSummary, PrOverview content renderers
+crates/er-tui/src/ui/status_bar.rs     Top bar, bottom bar, AI status badges, memory budget (debug), comment input
+crates/er-tui/src/ui/overlay.rs        Modal popups (worktree picker, directory browser, filter history)
+crates/er-tui/src/ui/settings.rs       Settings overlay — toggleable config items
+crates/er-tui/src/ui/utils.rs          Shared utilities (word_wrap)
 ```
 
 ## Current State
 
-v1.5 with Wizard mode for guided tour of changes and Quiz mode for interactive comprehension quizzes. Tab numbers are dynamic (assigned sequentially based on visible modes). Building v0.3.0 release branch. Earlier: v1.4 with `.er/` directory migration, auto-unmark reviewed, post-commit diff view, cleanup commands, sticky file path header, and lazy comment index. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log` and shows memory budget in the status bar. Test fixtures via `scripts/generate-test-fixtures.sh`.
+v1.5 with dynamic tab numbering (assigned sequentially based on visible modes). Building v0.3.0 release branch. Earlier: v1.4 with `.er/` directory migration, auto-unmark reviewed, post-commit diff view, cleanup commands, sticky file path header, and lazy comment index. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log` and shows memory budget in the status bar. Test fixtures via `scripts/generate-test-fixtures.sh`.
 
 ## Roadmap
 
@@ -118,7 +117,7 @@ v1.5 with Wizard mode for guided tour of changes and Quiz mode for interactive c
 
 **v1.4 (done):** `.er/` directory migration — all sidecar files moved from scattered repo-root dotfiles into `.er/` (single `.gitignore` entry). Auto-unmark reviewed files when diff changes (prevents stale reviewed state). Jump to next unreviewed file (`U`). Git push from TUI (`Ctrl+P` in staged mode). Post-commit diff view (shows just-committed diff after committing). Cleanup commands (`z` to clean current file artifacts, `Z` to clean all). Sticky file path header in diff view. Lazy comment index (`CommentIndexData`) for fast per-file comment lookup. LRU eviction for syntax highlight cache (replaces full eviction on overflow). Mtime cache to reduce `stat` calls during polling. `er-questions` standalone redesign. History mode key deduplication.
 
-**v1.5 (current):** Dynamic tab numbering — visible modes get sequential numbers, hidden modes don't leave gaps. Wizard mode — independent guided tour of important changes driven by `.er/wizard.json` (decoupled from review); importance-based file ordering (fundamental/important/supporting), `WizardState` completion tracking, symbol references panel. Quiz mode — independent comprehension quiz driven by `.er/quiz.json` (decoupled from review); MC + freeform answers, scoring, level/category filters, freeform text input mode, answer persistence to `.er/quiz-answers.json` and feedback loop via `.er/quiz-feedback.json`.
+**v1.5 (current):** Dynamic tab numbering — visible modes get sequential numbers, hidden modes don't leave gaps.
 
 **v2:** Split diff mode, review heatmap on exit, blame-aware findings, diff bookmarks. Multi-worktree tabs (Tab/Shift+Tab to cycle), per-worktree state, cross-worktree watch notifications.
 

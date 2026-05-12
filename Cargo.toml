@@ -1,53 +1,24 @@
-[package]
-name = "easy-review"
+[workspace]
+resolver = "2"
+members = ["crates/er-engine", "crates/er-tui"]
+
+[workspace.package]
 version = "0.2.0"
 edition = "2021"
-description = "Terminal-based git review tool for AI-assisted development"
 license = "MIT"
 repository = "https://github.com/VilfredSikker/easy-review"
-keywords = ["git", "diff", "review", "tui", "ai"]
-categories = ["command-line-utilities", "development-tools"]
 
-[[bin]]
-name = "er"
-path = "src/main.rs"
-
-[dependencies]
-# TUI
-ratatui = "0.30"
-crossterm = "0.29"
-
-# File watching
-notify = "8"
-notify-debouncer-mini = "0.7"
-
-# CLI
-clap = { version = "4", features = ["derive"] }
-
-# Syntax highlighting
-syntect = "5"
-
-# JSON (AI review files)
+[workspace.dependencies]
+# shared deps — pin once, reuse across crates
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Hashing (diff staleness detection)
+anyhow = "1"
 sha2 = "0.10"
-
-# Config file parsing
+glob = "0.3"
 toml = "1"
 dirs = "6"
-
-# File glob matching (filter system + watched files)
-glob = "0.3"
-
-# Error handling
-anyhow = "1"
-two-face = "0.5.1"
-tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["crossterm"] }
-
-[dev-dependencies]
-tempfile = "3"
+notify = "8"
+notify-debouncer-mini = "0.7"
 
 [profile.release]
 opt-level = 3

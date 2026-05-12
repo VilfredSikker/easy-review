@@ -434,28 +434,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "easy-review"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "dirs",
- "glob",
- "notify",
- "notify-debouncer-mini",
- "ratatui",
- "serde",
- "serde_json",
- "sha2",
- "syntect",
- "tempfile",
- "toml",
- "tui-textarea-2",
- "two-face",
-]
-
-[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -466,6 +444,39 @@ name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+
+[[package]]
+name = "er-engine"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "glob",
+ "notify",
+ "notify-debouncer-mini",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+ "tui-textarea-2",
+]
+
+[[package]]
+name = "er-tui"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "er-engine",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "syntect",
+ "tui-textarea-2",
+ "two-face",
+]
 
 [[package]]
 name = "errno"
