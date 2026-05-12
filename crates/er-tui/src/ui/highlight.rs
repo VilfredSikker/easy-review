@@ -1,175 +1,44 @@
+use er_engine::highlight::Highlighter as EngineHighlighter;
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::rc::Rc;
-use syntect::easy::HighlightLines;
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
 
-/// A cached highlighted span (owned, can be cloned across frames)
-#[derive(Debug, Clone)]
-struct CachedSpan {
-    /// Rc<str> so cache hits are a pointer bump (~1ns) vs heap alloc (~50ns)
-    text: Rc<str>,
-    fg: Color,
-    /// Insertion counter for LRU eviction
-    access_gen: u64,
-}
-
-/// Cache key: content hash + filename hash (for language detection)
-fn cache_key(line: &str, filename: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    line.hash(&mut hasher);
-    filename.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// Cached syntax highlighting state — loaded once, reused for all files.
-/// Includes a line-level cache to avoid re-highlighting identical content
-/// across frames (high hit rate since most lines don't change between renders).
-///
-/// Uses two-face's extended syntax set (Sublime Text 4 definitions) for
-/// broad language coverage including TypeScript, TSX, TOML, Svelte (via HTML), etc.
-pub struct Highlighter {
-    syntax_set: SyntaxSet,
-    theme_set: ThemeSet,
-    /// Cache: content+filename hash → highlighted spans (fg colors only)
-    cache: HashMap<u64, Vec<CachedSpan>>,
-    /// Monotonic generation counter for LRU eviction tracking
-    gen: u64,
-    /// Last syntect theme name used — cache is invalidated when this changes
-    current_syntect_theme: String,
-}
-
-/// Maximum cache entries before LRU eviction
-const MAX_CACHE_SIZE: usize = 10_000;
-/// Number of entries to evict when cache is full (oldest 25%)
-const EVICT_COUNT: usize = MAX_CACHE_SIZE / 4;
+/// TUI syntax highlighter — thin adapter over the engine's Highlighter.
+/// Converts `#RRGGBB` color strings to ratatui Color and layers them on a base style.
+pub struct Highlighter(EngineHighlighter);
 
 impl Highlighter {
     pub fn new() -> Self {
-        let initial_theme = super::themes::current().syntect_theme.clone();
-        Highlighter {
-            syntax_set: two_face::syntax::extra_newlines(),
-            theme_set: ThemeSet::load_defaults(),
-            cache: HashMap::new(),
-            gen: 0,
-            current_syntect_theme: initial_theme,
-        }
+        Self(EngineHighlighter::new())
     }
 
-    /// Highlight a single line of code, returning styled spans.
-    /// `filename` is used to detect the language (e.g., "main.rs" → Rust).
-    /// `base_style` is the background style to layer highlighting on top of
-    /// (so add/delete background colors are preserved).
-    ///
-    /// Results are cached by content hash + filename for fast re-rendering.
+    /// Highlight a single line of code, returning styled ratatui Spans.
+    /// `base_style` carries the diff row background (add/del colors) which
+    /// is preserved — only the foreground is overridden by syntax highlighting.
     pub fn highlight_line<'a>(
         &mut self,
         line: &'a str,
         filename: &str,
         base_style: Style,
     ) -> Vec<Span<'a>> {
-        // Invalidate cache if the syntect theme has changed
-        let theme_name = super::themes::current().syntect_theme.clone();
-        if theme_name != self.current_syntect_theme {
-            self.cache.clear();
-            self.current_syntect_theme = theme_name.clone();
-        }
-
-        let key = cache_key(line, filename);
-
-        // Check cache — Rc::clone is a pointer bump, not a heap allocation
-        if let Some(cached) = self.cache.get(&key) {
-            return cached
-                .iter()
-                .map(|cs| Span::styled(Rc::clone(&cs.text).to_string(), base_style.fg(cs.fg)))
-                .collect();
-        }
-
-        // Cache miss — perform highlighting
-        // two-face's syntax set covers TS, TSX, TOML, Svelte (via HTML), etc.
-        // Fall back to HTML for .svelte/.vue/.astro which aren't in the set directly.
-        let syntax = self
-            .syntax_set
-            .find_syntax_for_file(filename)
-            .ok()
-            .flatten()
-            .or_else(|| {
-                let fallback = match filename.rsplit('.').next() {
-                    Some("svelte" | "vue" | "astro") => "HTML",
-                    _ => return None,
-                };
-                self.syntax_set.find_syntax_by_name(fallback)
+        let theme = super::themes::current().syntect_theme.clone();
+        self.0
+            .highlight_line(line, filename, &theme)
+            .into_iter()
+            .map(|span| {
+                let color = parse_hex_color(&span.color);
+                Span::styled(span.text, base_style.fg(color))
             })
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
-
-        let theme = self
-            .theme_set
-            .themes
-            .get(&theme_name)
-            .or_else(|| self.theme_set.themes.get("base16-ocean.dark"))
-            .unwrap_or_else(|| self.theme_set.themes.values().next().unwrap());
-        let mut highlighter = HighlightLines::new(syntax, theme);
-
-        let input = if line.ends_with('\n') {
-            line.to_string()
-        } else {
-            format!("{}\n", line)
-        };
-
-        match highlighter.highlight_line(&input, &self.syntax_set) {
-            Ok(ranges) => {
-                self.gen += 1;
-                let current_gen = self.gen;
-                let cached_spans: Vec<CachedSpan> = ranges
-                    .iter()
-                    .map(|(syn_style, text)| {
-                        let text = text.trim_end_matches('\n');
-                        CachedSpan {
-                            text: Rc::from(text),
-                            fg: Color::Rgb(
-                                syn_style.foreground.r,
-                                syn_style.foreground.g,
-                                syn_style.foreground.b,
-                            ),
-                            access_gen: current_gen,
-                        }
-                    })
-                    .collect();
-
-                let result = cached_spans
-                    .iter()
-                    .map(|cs| Span::styled(Rc::clone(&cs.text).to_string(), base_style.fg(cs.fg)))
-                    .collect();
-
-                // LRU eviction: remove oldest 25% of entries when cache is full
-                if self.cache.len() >= MAX_CACHE_SIZE {
-                    let mut entries: Vec<(u64, u64)> = self
-                        .cache
-                        .iter()
-                        .map(|(k, v)| (*k, v.first().map_or(0, |s| s.access_gen)))
-                        .collect();
-                    entries.sort_unstable_by_key(|&(_, gen)| gen);
-                    for (k, _) in entries.into_iter().take(EVICT_COUNT) {
-                        self.cache.remove(&k);
-                    }
-                }
-                self.cache.insert(key, cached_spans);
-
-                result
-            }
-            Err(_) => {
-                // Fallback: return unstyled
-                vec![Span::styled(line.to_string(), base_style)]
-            }
-        }
+            .collect()
     }
+}
 
-    /// Clear the highlight cache (e.g., on file switch)
-    #[allow(dead_code)]
-    pub fn clear_cache(&mut self) {
-        self.cache.clear();
+fn parse_hex_color(hex: &str) -> Color {
+    if hex.len() == 7 && hex.starts_with('#') {
+        let r = u8::from_str_radix(&hex[1..3], 16).unwrap_or(204);
+        let g = u8::from_str_radix(&hex[3..5], 16).unwrap_or(204);
+        let b = u8::from_str_radix(&hex[5..7], 16).unwrap_or(204);
+        Color::Rgb(r, g, b)
+    } else {
+        Color::Reset
     }
 }

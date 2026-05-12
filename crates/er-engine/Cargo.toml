@@ -16,6 +16,8 @@ dirs.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["crossterm"] }
+syntect = "5"
+two-face = "0.5.1"
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", monospace;
+
+  --color-ink-900: #0a0a0a;
+  --color-ink-850: #0f0f0f;
+  --color-ink-800: #141414;
+  --color-ink-750: #181818;
+  --color-ink-700: #1a1a1a;
+  --color-ink-600: #222222;
+  --color-ink-500: #2a2a2a;
+  --color-ink-400: #3a3a3a;
+  --color-ink-300: #5e5e5e;
+  --color-ink-200: #999999;
+  --color-ink-100: #cccccc;
+  --color-ink-50:  #e8e8e8;
+
+  --color-accent:        #ff6a3d;
+  --color-accent-soft:   rgba(255,106,61,0.12);
+  --color-accent-border: rgba(255,106,61,0.30);
+
+  --color-add-bg: #13301f;
+  --color-add-fg: #7ee2a8;
+  --color-del-bg: #3a1a1a;
+  --color-del-fg: #f4a3a3;
+
+  --color-risk-high: #ef4444;
+  --color-risk-med:  #fbbf24;
+  --color-risk-low:  #60a5fa;
+
+  --color-comment: #22d3ee;
+  --color-question: #fde047;
+  --color-ai: #fbbf24;
+
+  --color-syntax-keyword: #c4b5fd;
+  --color-syntax-type:    #7dd3fc;
+  --color-syntax-fn:      #fbbf24;
+  --color-syntax-param:   #fda4af;
+  --color-syntax-string:  #86efac;
+  --color-syntax-punct:   #6b6b6b;
+  --color-syntax-comment: #5e5e5e;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #app {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--color-ink-900);
+  color: var(--color-ink-50);
+  font-family: var(--font-sans);
+}

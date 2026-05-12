@@ -19,9 +19,6 @@ crossterm = "0.29"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Syntax highlighting
-syntect = "5"
-two-face = "0.5.1"
 tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["crossterm"] }
 
 # Shared (needed for types crossing the boundary, e.g. serde derives, anyhow::Result)
