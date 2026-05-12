@@ -280,3 +280,12 @@ pub fn refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
     Ok(build_snapshot(&app, &mut hl))
 }
+
+#[tauri::command]
+pub fn poll(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    // Check if .er/ AI files changed — cheap mtime check, reloads AI state if yes
+    app.tab_mut().check_ai_files_changed();
+    Ok(build_snapshot(&app, &mut hl))
+}

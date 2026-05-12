@@ -6,6 +6,7 @@
   import DiffView from "$lib/components/DiffView.svelte";
   import LeftSidebar from "$lib/components/LeftSidebar.svelte";
   import RightPanel from "$lib/components/RightPanel.svelte";
+  import Toast from "$lib/components/Toast.svelte";
 
   const panels = $derived(app.snapshot?.panels);
 
@@ -65,6 +66,8 @@
       <RightPanel ai={app.snapshot?.ai ?? null} pr={app.snapshot?.pr ?? null} />
     {/if}
   </div>
+
+  <Toast message={app.snapshot?.notification ?? null} />
 
   <footer class="h-7 shrink-0 bg-ink-850 border-t border-ink-500/40 flex items-center gap-4 px-4">
     <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">j/k</span> files</span>

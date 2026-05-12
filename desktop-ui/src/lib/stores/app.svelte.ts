@@ -23,7 +23,7 @@ class AppStore {
     if (this.pollTimer !== null) return;
     this.pollTimer = setInterval(async () => {
       try {
-        const next = await invoke<AppSnapshot>("get_snapshot");
+        const next = await invoke<AppSnapshot>("poll");
         // Only update if something changed (avoids unnecessary re-renders)
         if (JSON.stringify(next) !== JSON.stringify(this.snapshot)) {
           this.snapshot = next;

@@ -24,6 +24,7 @@ pub struct AppSnapshot {
     pub theme: String,
     pub watch_active: bool,
     pub worktrees: Vec<WorktreeSnapshot>,
+    pub notification: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -300,6 +301,7 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
         theme: "dark".to_string(),
         watch_active: app.watching,
         worktrees: vec![],
+        notification: app.watch_message.clone(),
     }
 }
 

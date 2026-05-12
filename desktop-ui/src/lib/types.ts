@@ -113,4 +113,5 @@ export interface AppSnapshot {
   theme: string;
   watch_active: boolean;
   worktrees: WorktreeSnapshot[];
+  notification: string | null;
 }
