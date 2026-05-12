@@ -20,10 +20,12 @@ export interface ThreadMessage {
 export interface ThreadSnapshot {
   id: string;
   kind: "comment" | "question";
+  file: string;
   line: number;
   source: string;
   synced: boolean;
   stale: boolean;
+  resolved: boolean;
   root: ThreadMessage;
   replies: ThreadMessage[];
 }
@@ -52,6 +54,15 @@ export interface FileSnapshot {
   hunks: HunkSnapshot[];
 }
 
+export interface FlatFinding {
+  id: string;
+  file: string;
+  line: number | null;
+  severity: "high" | "med" | "low";
+  title: string;
+  message_markdown: string;
+}
+
 export interface AiSnapshot {
   fresh: boolean;
   summary_markdown: string | null;
@@ -61,6 +72,8 @@ export interface AiSnapshot {
   comments: number;
   questions: number;
   unpushed: number;
+  threads: ThreadSnapshot[];
+  findings: FlatFinding[];
 }
 
 export interface PrSnapshot {

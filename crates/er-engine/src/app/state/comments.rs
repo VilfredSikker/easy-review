@@ -475,6 +475,38 @@ impl App {
         }
     }
 
+    /// Submit a comment or question without going through InputMode flow.
+    /// Used by the desktop app where there is no TextArea widget.
+    pub fn submit_comment_text(
+        &mut self,
+        file: String,
+        hunk_idx: usize,
+        line_num: Option<usize>,
+        text: String,
+        comment_type: CommentType,
+        reply_to: Option<String>,
+    ) -> Result<()> {
+        {
+            let tab = self.tab_mut();
+            tab.comment_file = file;
+            tab.comment_hunk = hunk_idx;
+            tab.comment_line_num = line_num;
+            tab.comment_reply_to = reply_to;
+            tab.comment_finding_ref = None;
+            tab.comment_type = comment_type;
+            tab.comment_edit_id = None;
+            tab.comment_textarea = TextArea::new(vec![text]);
+        }
+        self.input_mode = InputMode::Comment;
+        self.submit_comment()
+    }
+
+    /// Delete a comment or question by ID, bypassing the confirmation dialog.
+    /// Used by the desktop app.
+    pub fn delete_comment_direct(&mut self, comment_id: &str) -> Result<()> {
+        self.confirm_delete_comment(comment_id)
+    }
+
     /// Cancel comment input
     pub fn cancel_comment(&mut self) {
         self.tab_mut().comment_textarea = TextArea::default();

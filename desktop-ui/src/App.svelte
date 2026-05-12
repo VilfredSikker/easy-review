@@ -58,7 +58,7 @@
     </main>
 
     {#if panels?.right}
-      <RightPanel ai={app.snapshot?.ai ?? null} />
+      <RightPanel ai={app.snapshot?.ai ?? null} pr={app.snapshot?.pr ?? null} />
     {/if}
   </div>
 

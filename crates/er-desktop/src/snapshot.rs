@@ -1,10 +1,10 @@
+use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{App, DiffMode, InputMode, TabState};
 use er_engine::git::{DiffFile, FileStatus, LineType};
 use er_engine::highlight::Highlighter;
-use er_engine::ai::RiskLevel;
 use serde::Serialize;
 
-// ── Wire types ──
+// ── Wire types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
@@ -76,11 +76,13 @@ pub struct SpanSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadSnapshot {
     pub id: String,
-    pub kind: String,
+    pub kind: String,    // "comment" | "question"
+    pub file: String,
     pub line: usize,
-    pub source: String,
+    pub source: String,  // "local" | "github"
     pub synced: bool,
     pub stale: bool,
+    pub resolved: bool,
     pub root: ThreadMessage,
     pub replies: Vec<ThreadMessage>,
 }
@@ -88,9 +90,19 @@ pub struct ThreadSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadMessage {
     pub author: String,
-    pub kind: String,
+    pub kind: String,    // "you" | "human" | "ai"
     pub timestamp: String,
     pub body_markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FlatFinding {
+    pub id: String,
+    pub file: String,
+    pub line: Option<usize>,
+    pub severity: String,  // "high" | "med" | "low"
+    pub title: String,
+    pub message_markdown: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +115,8 @@ pub struct AiSnapshot {
     pub comments: usize,
     pub questions: usize,
     pub unpushed: usize,
+    pub threads: Vec<ThreadSnapshot>,
+    pub findings: Vec<FlatFinding>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,7 +135,64 @@ pub struct WorktreeSnapshot {
     pub is_current: bool,
 }
 
-// ── Builder ──
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn severity_str(r: &RiskLevel) -> &'static str {
+    match r {
+        RiskLevel::High => "high",
+        RiskLevel::Medium => "med",
+        RiskLevel::Low | RiskLevel::Info => "low",
+    }
+}
+
+fn comment_ref_to_thread(c: &CommentRef<'_>, file: &str, hunk_idx: usize) -> ThreadSnapshot {
+    let kind = match c.comment_type() {
+        er_engine::ai::CommentType::Question => "question",
+        er_engine::ai::CommentType::GitHubComment => "comment",
+    };
+    let source = match c {
+        CommentRef::GitHubComment(gc) => gc.source.clone(),
+        _ => "local".to_string(),
+    };
+    let line = match c {
+        CommentRef::Question(q) => q.line_start.unwrap_or(0),
+        CommentRef::GitHubComment(gc) => gc.line_start.unwrap_or(0),
+        CommentRef::Legacy(lc) => lc.line_start.unwrap_or(0),
+    };
+    let author_kind = if c.author() == "You" { "you" } else { "human" };
+    ThreadSnapshot {
+        id: c.id().to_string(),
+        kind: kind.to_string(),
+        file: file.to_string(),
+        line,
+        source,
+        synced: c.is_synced(),
+        stale: match c {
+            CommentRef::Question(q) => q.stale,
+            CommentRef::GitHubComment(gc) => gc.stale,
+            CommentRef::Legacy(_) => false,
+        },
+        resolved: c.is_resolved(),
+        root: ThreadMessage {
+            author: c.author().to_string(),
+            kind: author_kind.to_string(),
+            timestamp: c.timestamp().to_string(),
+            body_markdown: c.text().to_string(),
+        },
+        replies: build_replies(c, hunk_idx),
+    }
+}
+
+fn build_replies(c: &CommentRef<'_>, _hunk_idx: usize) -> Vec<ThreadMessage> {
+    // Replies live as separate comments with in_reply_to set — the snapshot
+    // builder collects them here for the selected file's hunks. For the flat
+    // all-threads list we emit root-only and let the UI fetch replies on expand.
+    // For now return empty — replies are a Phase 3.C enhancement.
+    let _ = c;
+    vec![]
+}
+
+// ── Builder ──────────────────────────────────────────────────────────────────
 
 pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
     let tab = app.tab();
@@ -155,10 +226,33 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
         .map(|(i, f)| {
             let is_selected = i == tab.selected_file;
             let hunks = if is_selected && !f.compacted {
-                build_hunks(f, highlighter)
+                build_hunks(f, tab, highlighter)
             } else {
                 vec![]
             };
+
+            // Per-file counts from AI state
+            let finding_count = tab
+                .ai
+                .review
+                .as_ref()
+                .map(|r| {
+                    r.files
+                        .get(&f.path)
+                        .map(|fr| fr.findings.len())
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0);
+            let comment_count = tab.ai.file_github_comment_count(&f.path);
+            let question_count = tab.ai.file_question_count(&f.path);
+
+            // File-level risk from AI review
+            let risk = tab
+                .ai
+                .review
+                .as_ref()
+                .and_then(|r| r.files.get(&f.path))
+                .map(|fr| severity_str(&fr.risk).to_string());
 
             FileSnapshot {
                 path: f.path.clone(),
@@ -167,10 +261,10 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
                 deletions: f.dels,
                 reviewed: tab.reviewed.contains_key(&f.path),
                 compacted: f.compacted,
-                risk: None,
-                finding_count: 0,
-                comment_count: 0,
-                question_count: 0,
+                risk,
+                finding_count,
+                comment_count,
+                question_count,
                 hunks,
             }
         })
@@ -209,7 +303,7 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
     }
 }
 
-fn build_hunks(file: &DiffFile, highlighter: &mut Highlighter) -> Vec<HunkSnapshot> {
+fn build_hunks(file: &DiffFile, tab: &TabState, highlighter: &mut Highlighter) -> Vec<HunkSnapshot> {
     let filename = std::path::Path::new(&file.path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -217,7 +311,8 @@ fn build_hunks(file: &DiffFile, highlighter: &mut Highlighter) -> Vec<HunkSnapsh
 
     file.hunks
         .iter()
-        .map(|hunk| {
+        .enumerate()
+        .map(|(hunk_idx, hunk)| {
             let lines = hunk
                 .lines
                 .iter()
@@ -249,12 +344,25 @@ fn build_hunks(file: &DiffFile, highlighter: &mut Highlighter) -> Vec<HunkSnapsh
                 })
                 .collect();
 
-            let old_count = hunk.lines.iter().filter(|l| {
-                matches!(l.line_type, LineType::Context | LineType::Delete)
-            }).count();
-            let new_count = hunk.lines.iter().filter(|l| {
-                matches!(l.line_type, LineType::Context | LineType::Add)
-            }).count();
+            let old_count = hunk
+                .lines
+                .iter()
+                .filter(|l| matches!(l.line_type, LineType::Context | LineType::Delete))
+                .count();
+            let new_count = hunk
+                .lines
+                .iter()
+                .filter(|l| matches!(l.line_type, LineType::Context | LineType::Add))
+                .count();
+
+            // Collect threads for this hunk
+            let threads: Vec<ThreadSnapshot> = tab
+                .ai
+                .comments_for_hunk(&file.path, hunk_idx)
+                .iter()
+                .filter(|c| !c.is_resolved())
+                .map(|c| comment_ref_to_thread(c, &file.path, hunk_idx))
+                .collect();
 
             HunkSnapshot {
                 header: hunk.header.clone(),
@@ -263,7 +371,7 @@ fn build_hunks(file: &DiffFile, highlighter: &mut Highlighter) -> Vec<HunkSnapsh
                 new_start: hunk.new_start,
                 new_count,
                 lines,
-                threads: vec![],
+                threads,
             }
         })
         .collect()
@@ -292,9 +400,84 @@ fn build_ai_snapshot(tab: &TabState) -> AiSnapshot {
 
     let questions = ai.questions.as_ref().map(|q| q.questions.len()).unwrap_or(0);
     let comments = ai.github_comments.as_ref().map(|c| c.comments.len()).unwrap_or(0);
-    let unpushed = ai.github_comments.as_ref().map(|c| {
-        c.comments.iter().filter(|c| !c.synced).count()
-    }).unwrap_or(0);
+    let unpushed = ai
+        .github_comments
+        .as_ref()
+        .map(|c| c.comments.iter().filter(|c| !c.synced).count())
+        .unwrap_or(0);
+
+    // Flat thread list for CommentsCard / QuestionsCard
+    let threads: Vec<ThreadSnapshot> = {
+        let mut result = Vec::new();
+        if let Some(qs) = &ai.questions {
+            for q in &qs.questions {
+                if q.in_reply_to.is_none() && !q.resolved {
+                    result.push(ThreadSnapshot {
+                        id: q.id.clone(),
+                        kind: "question".to_string(),
+                        file: q.file.clone(),
+                        line: q.line_start.unwrap_or(0),
+                        source: "local".to_string(),
+                        synced: false,
+                        stale: q.stale,
+                        resolved: q.resolved,
+                        root: ThreadMessage {
+                            author: if q.author.is_empty() { "You".to_string() } else { q.author.clone() },
+                            kind: "you".to_string(),
+                            timestamp: q.timestamp.clone(),
+                            body_markdown: q.text.clone(),
+                        },
+                        replies: vec![],
+                    });
+                }
+            }
+        }
+        if let Some(gc) = &ai.github_comments {
+            for c in &gc.comments {
+                if c.in_reply_to.is_none() && !c.resolved {
+                    let author_kind = if c.author.is_empty() || c.author == "You" { "you" } else { "human" };
+                    result.push(ThreadSnapshot {
+                        id: c.id.clone(),
+                        kind: "comment".to_string(),
+                        file: c.file.clone(),
+                        line: c.line_start.unwrap_or(0),
+                        source: c.source.clone(),
+                        synced: c.synced,
+                        stale: c.stale,
+                        resolved: c.resolved,
+                        root: ThreadMessage {
+                            author: if c.author.is_empty() { "You".to_string() } else { c.author.clone() },
+                            kind: author_kind.to_string(),
+                            timestamp: c.timestamp.clone(),
+                            body_markdown: c.comment.clone(),
+                        },
+                        replies: vec![],
+                    });
+                }
+            }
+        }
+        result
+    };
+
+    // Flat findings list for AiReviewCard
+    let findings: Vec<FlatFinding> = if let Some(review) = &ai.review {
+        review
+            .files
+            .iter()
+            .flat_map(|(path, fr)| {
+                fr.findings.iter().map(move |f| FlatFinding {
+                    id: f.id.clone(),
+                    file: path.clone(),
+                    line: f.line_start,
+                    severity: severity_str(&f.severity).to_string(),
+                    title: f.title.clone(),
+                    message_markdown: f.description.clone(),
+                })
+            })
+            .collect()
+    } else {
+        vec![]
+    };
 
     AiSnapshot {
         fresh: !ai.is_stale,
@@ -305,6 +488,8 @@ fn build_ai_snapshot(tab: &TabState) -> AiSnapshot {
         comments,
         questions,
         unpushed,
+        threads,
+        findings,
     }
 }
 

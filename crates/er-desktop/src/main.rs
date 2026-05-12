@@ -37,6 +37,11 @@ fn main() {
             commands::open_in_editor,
             commands::set_filter,
             commands::clear_filter,
+            commands::add_comment,
+            commands::add_question,
+            commands::reply_to_thread,
+            commands::delete_thread,
+            commands::refresh_diff,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

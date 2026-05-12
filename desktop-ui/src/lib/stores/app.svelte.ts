@@ -19,8 +19,7 @@ class AppStore {
 
   async togglePanel(panel: "left" | "tree" | "right") {
     try {
-      await invoke("toggle_panel", { panel });
-      await this.load();
+      this.snapshot = await invoke<AppSnapshot>("toggle_panel", { panel });
     } catch (e) {
       console.error("togglePanel failed:", e);
     }

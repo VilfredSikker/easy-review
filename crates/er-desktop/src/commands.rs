@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use tauri::State;
 
+use er_engine::ai::CommentType;
 use er_engine::app::{App, DiffMode};
 use er_engine::highlight::Highlighter;
 
@@ -25,10 +26,11 @@ pub fn get_snapshot(state: State<AppState>) -> Result<AppSnapshot, String> {
 }
 
 #[tauri::command]
-pub fn toggle_panel(panel: String, state: State<AppState>) -> Result<(), String> {
+pub fn toggle_panel(panel: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.toggle_panel(&panel);
-    Ok(())
+    Ok(build_snapshot(&app, &mut hl))
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -173,5 +175,82 @@ pub fn clear_filter(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().apply_filter_expr("");
+    Ok(build_snapshot(&app, &mut hl))
+}
+
+// ── Threads ───────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn add_comment(
+    file: String,
+    hunk_idx: usize,
+    line_num: Option<usize>,
+    text: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    app.submit_comment_text(file, hunk_idx, line_num, text, CommentType::GitHubComment, None)
+        .map_err(|e| e.to_string())?;
+    Ok(build_snapshot(&app, &mut hl))
+}
+
+#[tauri::command]
+pub fn add_question(
+    file: String,
+    hunk_idx: usize,
+    line_num: Option<usize>,
+    text: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    app.submit_comment_text(file, hunk_idx, line_num, text, CommentType::Question, None)
+        .map_err(|e| e.to_string())?;
+    Ok(build_snapshot(&app, &mut hl))
+}
+
+#[tauri::command]
+pub fn reply_to_thread(
+    parent_id: String,
+    text: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    let (file, hunk_idx, line_num, comment_type) = {
+        let tab = app.tab();
+        if parent_id.starts_with("q-") {
+            let q = tab.ai.questions.as_ref()
+                .and_then(|qs| qs.questions.iter().find(|q| q.id == parent_id))
+                .map(|q| (q.file.clone(), q.hunk_index.unwrap_or(0), q.line_start, CommentType::Question));
+            q.ok_or_else(|| "Question not found".to_string())?
+        } else {
+            let c = tab.ai.github_comments.as_ref()
+                .and_then(|gc| gc.comments.iter().find(|c| c.id == parent_id))
+                .map(|c| (c.file.clone(), c.hunk_index.unwrap_or(0), c.line_start, CommentType::GitHubComment));
+            c.ok_or_else(|| "Comment not found".to_string())?
+        }
+    };
+    app.submit_comment_text(file, hunk_idx, line_num, text, comment_type, Some(parent_id))
+        .map_err(|e| e.to_string())?;
+    Ok(build_snapshot(&app, &mut hl))
+}
+
+#[tauri::command]
+pub fn delete_thread(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+    Ok(build_snapshot(&app, &mut hl))
+}
+
+// ── GitHub sync ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
     Ok(build_snapshot(&app, &mut hl))
 }
