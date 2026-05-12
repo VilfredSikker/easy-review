@@ -12,27 +12,40 @@ export function initKeyboard(): () => void {
     }
 
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-      console.log("⌘K palette (stub)");
+      // command palette stub
       return;
     }
 
-    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-      if (e.key === "[") {
-        console.log("keyboard: toggle left");
-        app.togglePanel("left");
-      } else if (e.key === "\\") {
-        console.log("keyboard: toggle tree");
-        app.togglePanel("tree");
-      } else if (e.key === "]") {
-        console.log("keyboard: toggle right");
-        app.togglePanel("right");
-      } else if (e.key === "j") {
-        app.cmd("next_file");
-      } else if (e.key === "k") {
-        app.cmd("prev_file");
-      } else if (e.key === "U") {
-        app.cmd("jump_to_unreviewed");
-      }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    switch (e.key) {
+      // Panel toggles
+      case "[": app.togglePanel("left"); break;
+      case "\\": app.togglePanel("tree"); break;
+      case "]": app.togglePanel("right"); break;
+
+      // File navigation
+      case "j": app.cmd("next_file"); break;
+      case "k": app.cmd("prev_file"); break;
+      case "U": app.cmd("jump_to_unreviewed"); break;
+
+      // Hunk navigation
+      case "n": app.cmd("next_hunk"); break;
+      case "N": app.cmd("prev_hunk"); break;
+
+      // Reviewed
+      case "r": app.cmd("toggle_reviewed"); break;
+
+      // Expand / collapse compacted file
+      case "Enter": app.cmd("toggle_compacted"); break;
+
+      // Refresh diff
+      case "R": app.cmd("refresh_diff"); break;
+
+      // Scope / mode switching
+      case "1": app.cmd("set_mode", { mode: "branch" }); break;
+      case "2": app.cmd("set_mode", { mode: "unstaged" }); break;
+      case "3": app.cmd("set_mode", { mode: "staged" }); break;
     }
   }
 

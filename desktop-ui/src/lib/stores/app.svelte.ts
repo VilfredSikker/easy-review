@@ -6,6 +6,8 @@ class AppStore {
   loading = $state(false);
   error = $state<string | null>(null);
 
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+
   async load() {
     this.loading = true;
     try {
@@ -14,6 +16,28 @@ class AppStore {
       this.error = String(e);
     } finally {
       this.loading = false;
+    }
+  }
+
+  startPolling(intervalMs = 2000) {
+    if (this.pollTimer !== null) return;
+    this.pollTimer = setInterval(async () => {
+      try {
+        const next = await invoke<AppSnapshot>("get_snapshot");
+        // Only update if something changed (avoids unnecessary re-renders)
+        if (JSON.stringify(next) !== JSON.stringify(this.snapshot)) {
+          this.snapshot = next;
+        }
+      } catch {
+        // Silently ignore poll errors (window may be closing)
+      }
+    }, intervalMs);
+  }
+
+  stopPolling() {
+    if (this.pollTimer !== null) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
   }
 

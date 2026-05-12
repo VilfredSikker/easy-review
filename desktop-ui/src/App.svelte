@@ -10,8 +10,12 @@
   const panels = $derived(app.snapshot?.panels);
 
   onMount(() => {
-    app.load();
-    return initKeyboard();
+    app.load().then(() => app.startPolling());
+    const cleanupKeyboard = initKeyboard();
+    return () => {
+      cleanupKeyboard();
+      app.stopPolling();
+    };
   });
 </script>
 
@@ -63,11 +67,12 @@
   </div>
 
   <footer class="h-7 shrink-0 bg-ink-850 border-t border-ink-500/40 flex items-center gap-4 px-4">
-    <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">j/k</span> navigate</span>
+    <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">j/k</span> files</span>
+    <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">n/N</span> hunks</span>
+    <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">r</span> reviewed</span>
     <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">Enter</span> expand</span>
-    <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">g/G</span> top/bottom</span>
-    <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">/</span> search</span>
-    <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">⌘K</span> palette</span>
+    <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">R</span> refresh</span>
+    <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">[\/]</span> panels</span>
     <span class="text-xs text-ink-300"><span class="font-mono text-ink-200">Ctrl+Q</span> quit</span>
   </footer>
 </div>

@@ -95,6 +95,32 @@ pub fn jump_to_unreviewed(state: State<AppState>) -> Result<AppSnapshot, String>
     Ok(build_snapshot(&app, &mut hl))
 }
 
+// ── Hunk navigation ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn next_hunk(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    app.tab_mut().next_hunk();
+    Ok(build_snapshot(&app, &mut hl))
+}
+
+#[tauri::command]
+pub fn prev_hunk(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    app.tab_mut().prev_hunk();
+    Ok(build_snapshot(&app, &mut hl))
+}
+
+#[tauri::command]
+pub fn toggle_compacted(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    app.tab_mut().toggle_compacted().map_err(|e| e.to_string())?;
+    Ok(build_snapshot(&app, &mut hl))
+}
+
 // ── Mode ──────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
