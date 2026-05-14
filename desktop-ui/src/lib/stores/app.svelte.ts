@@ -161,8 +161,14 @@ class AppStore {
         const next = await invoke<PollResponse>("poll");
         if (this.lastPollRevision !== next.revision) {
           this.lastPollRevision = next.revision;
-          this.snapshot = next.snapshot;
-          this.syncSnapshotToast(this.snapshot);
+          // snapshot is null when only the revision changed on the backend
+          // but no full snapshot was built (unchanged poll optimization).
+          // That shouldn't happen since revision != lastPollRevision implies
+          // the backend built a snapshot, but guard defensively.
+          if (next.snapshot !== null) {
+            this.snapshot = next.snapshot;
+            this.syncSnapshotToast(this.snapshot);
+          }
         }
       } catch {
         // Silently ignore poll errors (window may be closing)

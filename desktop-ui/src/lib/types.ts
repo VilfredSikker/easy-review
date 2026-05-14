@@ -250,7 +250,8 @@ export interface LoadingFlags {
 
 export interface PollResponse {
   revision: number;
-  snapshot: AppSnapshot;
+  /** Full snapshot; `null` when revision is unchanged since last poll. */
+  snapshot: AppSnapshot | null;
 }
 
 export interface UiAnnotation {

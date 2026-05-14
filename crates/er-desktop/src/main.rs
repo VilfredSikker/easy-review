@@ -603,6 +603,10 @@ fn main() {
     let terminals: Arc<Mutex<HashMap<String, terminal::PtySession>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let terminals_for_exit = Arc::clone(&terminals);
+    let desktop_revision: Arc<std::sync::atomic::AtomicU64> =
+        Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let last_sent_revision: Arc<std::sync::atomic::AtomicU64> =
+        Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let state = AppState {
         app: Arc::clone(&app_arc),
         highlighter: Mutex::new(Highlighter::new()),
@@ -614,6 +618,8 @@ fn main() {
         gh_status_cache: Arc::clone(&gh_status_cache),
         loading: Arc::clone(&loading),
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
+        desktop_revision: Arc::clone(&desktop_revision),
+        last_sent_revision: Arc::clone(&last_sent_revision),
     };
 
     // Startup GitHub-status kick: after 5s the pr_cache is likely populated.
@@ -623,6 +629,7 @@ fn main() {
         let gh_status_startup = Arc::clone(&gh_status_cache);
         let app_startup = Arc::clone(&app_arc);
         let pr_cache_startup = Arc::clone(&pr_cache);
+        let desktop_rev_startup = Arc::clone(&desktop_revision);
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(5));
             let key: Option<(String, String, u64)> = match app_startup.lock() {
@@ -657,6 +664,7 @@ fn main() {
                     if let Ok(mut g) = gh_status_startup.lock() {
                         g.insert((owner, repo, number), snap);
                     }
+                    desktop_rev_startup.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
         });
@@ -668,6 +676,7 @@ fn main() {
     // watcher; remote PRs have no filesystem surface to watch.
     let remote_app = Arc::clone(&app_arc);
     let remote_loading = Arc::clone(&loading);
+    let remote_desktop_rev = Arc::clone(&desktop_revision);
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(45));
         // Use try_lock so a busy app skips this cycle instead of blocking.
@@ -677,6 +686,7 @@ fn main() {
         };
         if guard.tab().is_remote() {
             if let Ok(mut f) = remote_loading.lock() { f.gh_status = true; }
+            remote_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let t = std::time::Instant::now();
             if let Err(e) = guard.tab_mut().refresh_diff() {
                 log::error!("remote PR refresh failed: {e}");
@@ -684,6 +694,7 @@ fn main() {
                 log::info!("remote PR diff refresh done in {}ms", t.elapsed().as_millis());
             }
             if let Ok(mut f) = remote_loading.lock() { f.gh_status = false; }
+            remote_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     });
 
@@ -698,6 +709,7 @@ fn main() {
         let pr_cache_bg = Arc::clone(&pr_cache);
         let gh_status_loading = Arc::clone(&loading);
         let gh_status_in_flight_bg = Arc::clone(&gh_status_in_flight);
+        let gh_status_desktop_rev = Arc::clone(&desktop_revision);
         std::thread::spawn(move || loop {
             // Snapshot identity in a short critical section.
             let key: Option<(String, String, u64)> = match app_bg.lock() {
@@ -737,12 +749,14 @@ fn main() {
                     .unwrap_or(false);
                 if registered {
                     if let Ok(mut f) = gh_status_loading.lock() { f.gh_status = true; }
+                    gh_status_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if let Some(snap) = commands::fetch_github_status(&owner, &repo, number) {
                         if let Ok(mut g) = gh_status_bg.lock() {
                             g.insert((owner.clone(), repo.clone(), number), snap);
                         }
                     }
                     if let Ok(mut f) = gh_status_loading.lock() { f.gh_status = false; }
+                    gh_status_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = gh_status_in_flight_bg
                         .lock()
                         .map(|mut s| s.remove(&(owner, repo, number)));

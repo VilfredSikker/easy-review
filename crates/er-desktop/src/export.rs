@@ -396,6 +396,7 @@ mod tests {
             anchor_status: "original".into(),
             relocated_at_hash: String::new(),
             finding_ref: None,
+            side: "RIGHT".into(),
         }
     }
 

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
@@ -18,7 +19,8 @@ const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question d
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PollResponse {
     pub revision: u64,
-    pub snapshot: AppSnapshot,
+    /// Full snapshot — `None` when the revision is unchanged since the last poll.
+    pub snapshot: Option<AppSnapshot>,
 }
 
 pub struct AppState {
@@ -40,6 +42,12 @@ pub struct AppState {
     pub loading: LoadingState,
     /// Keys with an in-flight gh_status fetch. Prevents duplicate concurrent fetches.
     pub gh_status_in_flight: Arc<Mutex<HashSet<(String, String, u64)>>>,
+    /// Monotonic counter bumped whenever background-owned state changes (caches,
+    /// loading flags) so that poll() can detect changes not visible in App state.
+    pub desktop_revision: Arc<AtomicU64>,
+    /// Last revision included in a poll response. Used to skip snapshot builds
+    /// when the app and desktop state are unchanged since the previous poll.
+    pub last_sent_revision: Arc<AtomicU64>,
 }
 
 macro_rules! snap {
@@ -79,6 +87,7 @@ fn snap_from(app: &App, hl: &mut Highlighter, state: &AppState) -> AppSnapshot {
 pub fn kick_github_status_refresh(
     cache: GhStatusCache,
     in_flight: Arc<Mutex<HashSet<(String, String, u64)>>>,
+    desktop_revision: Arc<AtomicU64>,
     owner: String,
     repo: String,
     number: u64,
@@ -89,6 +98,7 @@ pub fn kick_github_status_refresh(
             return; // already fetching
         }
     }
+    desktop_revision.fetch_add(1, Ordering::Relaxed); // in-flight started
     let in_flight_clone = Arc::clone(&in_flight);
     std::thread::spawn(move || {
         let snap = fetch_github_status(&owner, &repo, number);
@@ -97,6 +107,7 @@ pub fn kick_github_status_refresh(
                 g.insert((owner, repo, number), snap);
             }
         }
+        desktop_revision.fetch_add(1, Ordering::Relaxed); // completed (success or miss)
         if let Ok(mut set) = in_flight_clone.lock() {
             set.remove(&key);
         }
@@ -222,6 +233,7 @@ fn kick_active_gh_status(app: &App, state: &AppState) {
         kick_github_status_refresh(
             state.gh_status_cache.clone(),
             Arc::clone(&state.gh_status_in_flight),
+            Arc::clone(&state.desktop_revision),
             owner,
             repo,
             number,
@@ -1242,6 +1254,7 @@ pub fn open_remote_pr(
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
         Arc::clone(&state.gh_status_in_flight),
+        Arc::clone(&state.desktop_revision),
         owner,
         repo,
         number,
@@ -1270,6 +1283,7 @@ pub fn open_pr_url(
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
         Arc::clone(&state.gh_status_in_flight),
+        Arc::clone(&state.desktop_revision),
         pr_ref.owner,
         pr_ref.repo,
         pr_ref.number,
@@ -1426,6 +1440,8 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
     if !already_running {
         let cache = Arc::clone(&state.pr_cache);
         let loading = Arc::clone(&state.loading);
+        let desktop_rev = Arc::clone(&state.desktop_revision);
+        desktop_rev.fetch_add(1, Ordering::Relaxed); // loading started
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1437,6 +1453,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
             }
+            desktop_rev.fetch_add(1, Ordering::Relaxed); // loading finished / cache updated
         });
     }
 
@@ -2315,7 +2332,19 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     // Check if .er/ AI files changed — cheap mtime check, reloads AI state if yes
     app.tab_mut().check_ai_files_changed();
+
+    let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
+    let revision = compute_poll_revision(&app, desktop_rev);
+    let last_sent = state.last_sent_revision.load(Ordering::Relaxed);
+
+    if revision == last_sent {
+        // Nothing changed — skip the expensive snapshot build.
+        return Ok(PollResponse { revision, snapshot: None });
+    }
+
     let snapshot = snap_from(&app, &mut hl, &*state);
+    state.last_sent_revision.store(revision, Ordering::Relaxed);
+
     if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {
         eprintln!(
             "er-desktop poll_ms={} files={} threads={}",
@@ -2325,14 +2354,16 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
         );
     }
     Ok(PollResponse {
-        revision: compute_poll_revision(&app),
-        snapshot,
+        revision,
+        snapshot: Some(snapshot),
     })
 }
 
-fn compute_poll_revision(app: &App) -> u64 {
+fn compute_poll_revision(app: &App, desktop_revision: u64) -> u64 {
     let tab = app.tab();
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    // Desktop-side background state (PR cache, gh status, loading flags)
+    desktop_revision.hash(&mut h);
     app.active_tab.hash(&mut h);
     tab.diff_hash.hash(&mut h);
     tab.branch_diff_hash.hash(&mut h);
@@ -2749,6 +2780,7 @@ mod tests {
                 anchor_status: "original".to_string(),
                 relocated_at_hash: String::new(),
                 finding_ref: None,
+                side: "RIGHT".to_string(),
             }],
         };
         std::fs::write(&gc_path, serde_json::to_string_pretty(&comments).unwrap()).unwrap();
@@ -2975,6 +3007,7 @@ mod tests {
             anchor_status: "original".to_string(),
             relocated_at_hash: String::new(),
             finding_ref: None,
+            side: "RIGHT".to_string(),
         }
     }
 

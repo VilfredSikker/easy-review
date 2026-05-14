@@ -1899,6 +1899,7 @@ mod tests {
             anchor_status: "original".to_string(),
             relocated_at_hash: String::new(),
             finding_ref: None,
+            side: "RIGHT".to_string(),
         }
     }
 
