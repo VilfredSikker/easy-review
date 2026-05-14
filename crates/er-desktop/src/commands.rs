@@ -684,28 +684,59 @@ pub fn submit_github_review(
         .and_then(|s| serde_json::from_str::<ErGitHubComments>(&s).ok())
         .unwrap_or(ErGitHubComments { version: 1, diff_hash: String::new(), github: None, comments: vec![] });
 
-    let pending_ids: Vec<String> = gc
+    // Reject early if any unsynced local comment has no line anchor — those can
+    // never be part of a GitHub review batch and would silently get marked synced
+    // without actually being sent.
+    let unsubmittable_count = gc
         .comments
         .iter()
-        .filter(|c| c.source == "local" && !c.synced && !c.file.is_empty())
-        .map(|c| c.id.clone())
-        .collect();
+        .filter(|c| c.source == "local" && !c.synced && !c.file.is_empty() && c.line_start.is_none())
+        .count();
+    if unsubmittable_count > 0 {
+        return Err(format!(
+            "{unsubmittable_count} pending comment(s) have no line anchor and cannot be included \
+             in a batch GitHub review. Add them on a specific diff line or delete them first."
+        ));
+    }
 
-    let mut invalid_anchors: Vec<(String, usize, String)> = Vec::new();
-    let batch: Vec<(String, usize, String)> = gc
+    struct BatchEntry {
+        id: String,
+        file: String,
+        line: usize,
+        body: String,
+    }
+
+    // Collect all line-anchored pending candidates.
+    let candidates: Vec<BatchEntry> = gc
         .comments
         .iter()
         .filter(|c| c.source == "local" && !c.synced && !c.file.is_empty())
-        .filter_map(|c| c.line_start.map(|l| (c.id.clone(), c.file.clone(), l, c.comment.clone())))
-        .filter_map(|(id, file, line, body)| {
-            if is_anchor_in_current_diff(&file_anchors, &file, line) {
-                Some((file, line, body))
-            } else {
-                invalid_anchors.push((id, line, file));
-                None
-            }
+        .filter_map(|c| {
+            c.line_start.map(|l| BatchEntry {
+                id: c.id.clone(),
+                file: c.file.clone(),
+                line: l,
+                body: c.comment.clone(),
+            })
         })
         .collect();
+
+    // Partition into valid (anchor in current diff) and stale.
+    let mut invalid_anchors: Vec<(String, usize, String)> = Vec::new();
+    let mut batch_entries: Vec<BatchEntry> = Vec::new();
+    for e in candidates {
+        if is_anchor_in_current_diff(&file_anchors, &e.file, e.line) {
+            batch_entries.push(e);
+        } else {
+            invalid_anchors.push((e.id, e.line, e.file));
+        }
+    }
+
+    let batch: Vec<(String, usize, String)> = batch_entries
+        .iter()
+        .map(|e| (e.file.clone(), e.line, e.body.clone()))
+        .collect();
+    let submitted_ids: Vec<String> = batch_entries.iter().map(|e| e.id.clone()).collect();
 
     let summary_trimmed = summary.trim().to_string();
     validate_review_submission(batch.len(), &summary_trimmed)?;
@@ -713,7 +744,7 @@ pub fn submit_github_review(
         let sample = invalid_anchors
             .iter()
             .take(3)
-            .map(|(id, line, file)| format!("{id} ({file}:{line})"))
+            .map(|(id, line, file)| format!("{id} ({file}:{line}) — stale line anchor"))
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
@@ -761,13 +792,13 @@ pub fn submit_github_review(
     };
     submit_result.map_err(submit_err)?;
 
-    // Mark only comments that were submitted in this review as synced.
-    if !pending_ids.is_empty() {
+    // Mark only comments that were actually submitted in this review as synced.
+    if !submitted_ids.is_empty() {
         let mut gc_to_write = gc;
-        let pending: std::collections::HashSet<String> = pending_ids.into_iter().collect();
+        let submitted: std::collections::HashSet<String> = submitted_ids.into_iter().collect();
         let mut touched = false;
         for c in &mut gc_to_write.comments {
-            if pending.contains(&c.id) {
+            if submitted.contains(&c.id) {
                 c.synced = true;
                 touched = true;
             }
@@ -2906,5 +2937,82 @@ mod tests {
             (1.0, 2.0, 10.0, 20.0),
             "a2 box should be unchanged when new_box is None"
         );
+    }
+
+    fn make_gh_comment(id: &str, file: &str, line_start: Option<usize>, synced: bool) -> GitHubReviewComment {
+        GitHubReviewComment {
+            id: id.to_string(),
+            timestamp: "t".to_string(),
+            file: file.to_string(),
+            hunk_index: None,
+            line_start,
+            line_end: None,
+            line_content: String::new(),
+            comment: "body".to_string(),
+            in_reply_to: None,
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+        }
+    }
+
+    /// Verifies that comments without a line anchor are detected as unsubmittable
+    /// before any GitHub API call would be made.
+    #[test]
+    fn submit_review_detects_unanchored_local_comments() {
+        let gc = ErGitHubComments {
+            version: 1,
+            diff_hash: "abc".to_string(),
+            github: None,
+            comments: vec![
+                make_gh_comment("c-1", "src/main.rs", Some(10), false), // has anchor, unsynced
+                make_gh_comment("c-2", "src/lib.rs", None, false),      // NO anchor, unsynced — the problem
+                make_gh_comment("c-3", "src/foo.rs", None, true),       // no anchor but already synced — OK
+            ],
+        };
+
+        let unsubmittable_count = gc
+            .comments
+            .iter()
+            .filter(|c| c.source == "local" && !c.synced && !c.file.is_empty() && c.line_start.is_none())
+            .count();
+
+        assert_eq!(
+            unsubmittable_count, 1,
+            "only the unsynced comment without a line anchor should be flagged"
+        );
+    }
+
+    /// Verifies that all-anchored unsynced comments produce a zero unsubmittable count,
+    /// meaning the validation passes and submission proceeds normally.
+    #[test]
+    fn submit_review_no_false_positive_when_all_comments_have_anchors() {
+        let gc = ErGitHubComments {
+            version: 1,
+            diff_hash: "abc".to_string(),
+            github: None,
+            comments: vec![
+                make_gh_comment("c-1", "src/main.rs", Some(5), false),
+                make_gh_comment("c-2", "src/lib.rs", Some(20), false),
+            ],
+        };
+
+        let unsubmittable_count = gc
+            .comments
+            .iter()
+            .filter(|c| c.source == "local" && !c.synced && !c.file.is_empty() && c.line_start.is_none())
+            .count();
+
+        assert_eq!(unsubmittable_count, 0, "no unsubmittable comments when all have line anchors");
     }
 }
