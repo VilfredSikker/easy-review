@@ -334,23 +334,52 @@ fn upstream_url_for_proxy(uri: &tauri::http::Uri, upstream_scheme: &str) -> Stri
     }
 }
 
-fn proxied_response(uri: &tauri::http::Uri, upstream_scheme: &str) -> tauri::http::Response<Vec<u8>> {
-    use std::io::Read as _;
+const PROXY_HTML_SIZE_LIMIT: usize = 10 * 1024 * 1024; // 10 MB
+const PROXY_ASSET_SIZE_LIMIT: usize = 5 * 1024 * 1024; // 5 MB
 
+/// Read at most `limit` bytes from `reader`. Returns `Ok(bytes)` on success,
+/// `Err(bytes_read)` if the limit was exceeded.
+fn read_bounded(mut reader: impl std::io::Read, limit: usize) -> Result<Vec<u8>, usize> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                if buf.len() + n > limit {
+                    return Err(buf.len() + n);
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(buf)
+}
+
+fn proxied_response(uri: &tauri::http::Uri, upstream_scheme: &str) -> tauri::http::Response<Vec<u8>> {
     let target = upstream_url_for_proxy(uri, upstream_scheme);
     eprintln!("[erp] request: {} -> {}", uri, target);
-    let result = ureq::get(&target)
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout_read(std::time::Duration::from_secs(30))
+        .build();
+    let result = agent
+        .get(&target)
         .set("Accept-Encoding", "identity")
         .call();
     let resp = match result {
         Ok(resp) => resp,
         Err(ureq::Error::Status(_, resp)) => resp,
         Err(e) => {
-            eprintln!("[erp] connection error: {}", e);
+            let msg = e.to_string();
+            let status = if msg.contains("timed out") || msg.contains("TimedOut") { 504 } else { 502 };
+            let label = if status == 504 { "Request timed out" } else { "Connection failed" };
+            eprintln!("[erp] connection error ({}): {}", status, e);
             return tauri::http::Response::builder()
-                .status(502)
-                .header("Content-Type", "text/plain")
-                .body(format!("Connection failed: {}", e).into_bytes())
+                .status(status)
+                .header("Content-Type", "text/html")
+                .body(format!("<html><body><p>{}: {}</p></body></html>", label, e).into_bytes())
                 .unwrap();
         }
     };
@@ -368,9 +397,23 @@ fn proxied_response(uri: &tauri::http::Uri, upstream_scheme: &str) -> tauri::htt
             })
         })
         .collect::<Vec<_>>();
-    let mut body = Vec::new();
-    let mut reader = resp.into_reader();
-    reader.read_to_end(&mut body).unwrap_or(0);
+    let size_limit = if is_html { PROXY_HTML_SIZE_LIMIT } else { PROXY_ASSET_SIZE_LIMIT };
+    let bounded = read_bounded(resp.into_reader(), size_limit);
+    let mut body = match bounded {
+        Ok(b) => b,
+        Err(bytes) => {
+            eprintln!("[erp] response too large: {} bytes exceeds limit {}", bytes, size_limit);
+            let msg = format!(
+                "<html><body><p>Response too large ({} bytes exceeds {} byte limit).</p></body></html>",
+                bytes, size_limit
+            );
+            return tauri::http::Response::builder()
+                .status(413)
+                .header("Content-Type", "text/html")
+                .body(msg.into_bytes())
+                .unwrap();
+        }
+    };
     if is_html {
         body = inject_script(body);
     }
@@ -396,6 +439,27 @@ fn proxied_response(uri: &tauri::http::Uri, upstream_scheme: &str) -> tauri::htt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_read_under_limit_succeeds() {
+        let data = b"hello world";
+        let result = read_bounded(std::io::Cursor::new(data), 100);
+        assert_eq!(result.unwrap(), data);
+    }
+
+    #[test]
+    fn bounded_read_at_limit_succeeds() {
+        let data = vec![0u8; 100];
+        let result = read_bounded(std::io::Cursor::new(data.clone()), 100);
+        assert_eq!(result.unwrap(), data);
+    }
+
+    #[test]
+    fn bounded_read_over_limit_returns_err() {
+        let data = vec![0u8; 101];
+        let result = read_bounded(std::io::Cursor::new(data), 100);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn injects_before_head_case_insensitively() {
