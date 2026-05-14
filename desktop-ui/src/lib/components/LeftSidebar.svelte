@@ -114,11 +114,10 @@
     });
   }
 
-  function openPr(projectId: string, prNumber: number, headRef: string, e: MouseEvent) {
-    app.cmd("open_pr_branch", {
+  function openPr(projectId: string, prNumber: number, _headRef: string, e: MouseEvent) {
+    app.cmd("open_pr_review", {
       projectId,
       prNumber,
-      headRef,
       replace: shouldReplaceTab(e),
     });
   }

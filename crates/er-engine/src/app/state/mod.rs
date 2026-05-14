@@ -813,6 +813,32 @@ impl TabState {
         Ok(tab)
     }
 
+    /// Create a TabState for a read-only local PR review. Fetches the PR head to
+    /// `refs/er/pr/<number>/head` without running `gh pr checkout` or touching the
+    /// working tree. Diffs `<resolved_base>...refs/er/pr/<number>/head`.
+    pub fn new_local_pr(repo_root: String, pr_number: u64) -> Result<Self> {
+        // Fetch PR head ref into a local ref without checking out
+        let head_ref = crate::github::fetch_pr_head(pr_number, &repo_root)?;
+
+        // Resolve the PR base branch and ensure it's available locally
+        let base_branch = crate::github::gh_pr_base_branch(pr_number, &repo_root)?;
+        let resolved_base =
+            crate::github::ensure_base_ref_available(&repo_root, &base_branch)?;
+
+        // Display name: head branch name from the API, fallback to the ref
+        let head_branch_name =
+            crate::github::gh_pr_head_branch_name(pr_number, &repo_root)
+                .unwrap_or_else(|_| format!("pr/{}", pr_number));
+
+        let mut tab = TabState::new_with_base(repo_root, resolved_base)?;
+        tab.local_branch_view = Some(head_branch_name);
+        tab.pr_head_ref = Some(head_ref);
+        tab.pr_number = Some(pr_number);
+        tab.mode = DiffMode::Branch;
+        tab.refresh_diff()?;
+        Ok(tab)
+    }
+
     /// Create a TabState for remote PR review (no local git repo needed).
     /// Uses `gh pr diff --repo` instead of local git operations.
     pub fn new_remote(pr_ref: &crate::github::PrRef) -> Result<Self> {
@@ -1265,6 +1291,11 @@ impl TabState {
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("repo");
+            // Local PR reviews get a PR-scoped cache dir, not a branch-named one,
+            // so comments survive branch renames and don't collide with branch views.
+            if let Some(pr_num) = self.pr_number {
+                return format!("{}/.cache/er/local/{}/pr-{}", home, repo_slug, pr_num);
+            }
             let safe_branch = branch.replace('/', "-");
             return format!("{}/.cache/er/local/{}/{}", home, repo_slug, safe_branch);
         }
@@ -1374,9 +1405,15 @@ impl TabState {
         }
 
         // Local branch view: read-only `git diff <base>...<branch>` from the user's clone.
+        // For local PR review, pr_head_ref holds the fetched ref to diff against instead.
         if let Some(ref branch) = self.local_branch_view.clone() {
             let base = self.base_branch.clone();
-            let raw = crate::git::git_diff_against_branch(&self.repo_root, &base, branch)?;
+            let diff_target = self
+                .pr_head_ref
+                .clone()
+                .unwrap_or_else(|| branch.clone());
+            let raw =
+                crate::git::git_diff_against_branch(&self.repo_root, &base, &diff_target)?;
 
             let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
 

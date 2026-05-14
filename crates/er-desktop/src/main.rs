@@ -870,6 +870,7 @@ fn main() {
             commands::poll,
             commands::open_local_branch,
             commands::open_pr_branch,
+            commands::open_pr_review,
             commands::refresh_pr_list,
             commands::dismiss_remote_pr,
             commands::track_pr,

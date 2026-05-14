@@ -17,6 +17,8 @@ pub enum TabKind {
     Working,
     LocalBranch,
     RemotePr,
+    /// Local clone + fetched PR ref; never runs `gh pr checkout`.
+    LocalPr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,6 +33,12 @@ pub struct TabDescriptor {
     pub pr_repo: Option<String>,
     #[serde(default)]
     pub pr_number: Option<u64>,
+    /// For `LocalPr` tabs: the fetched local ref (`refs/er/pr/<n>/head`).
+    #[serde(default)]
+    pub pr_head_ref: Option<String>,
+    /// For `LocalPr` tabs: the resolved base ref used for the diff.
+    #[serde(default)]
+    pub base_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +84,7 @@ pub fn load_tabs() -> Option<TabsFile> {
 
 /// Convert a live `TabState` into a persistable descriptor.
 pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
+    // Remote PR (no local clone)
     if let (Some(slug), Some(num)) = (tab.remote_repo.as_ref(), tab.pr_number) {
         let mut parts = slug.splitn(2, '/');
         let owner = parts.next().unwrap_or("").to_string();
@@ -87,8 +96,24 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_owner: Some(owner),
             pr_repo: Some(repo),
             pr_number: Some(num),
+            pr_head_ref: None,
+            base_ref: None,
         };
     }
+    // Local PR review (fetched head ref, no checkout)
+    if let (Some(head_ref), Some(num)) = (tab.pr_head_ref.as_ref(), tab.pr_number) {
+        return TabDescriptor {
+            kind: TabKind::LocalPr,
+            repo_root: tab.repo_root.clone(),
+            branch: tab.local_branch_view.clone(),
+            pr_owner: None,
+            pr_repo: None,
+            pr_number: Some(num),
+            pr_head_ref: Some(head_ref.clone()),
+            base_ref: Some(tab.base_branch.clone()),
+        };
+    }
+    // Plain local branch view
     if let Some(branch) = tab.local_branch_view.clone() {
         return TabDescriptor {
             kind: TabKind::LocalBranch,
@@ -97,6 +122,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_owner: None,
             pr_repo: None,
             pr_number: None,
+            pr_head_ref: None,
+            base_ref: None,
         };
     }
     TabDescriptor {
@@ -106,6 +133,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
         pr_owner: None,
         pr_repo: None,
         pr_number: None,
+        pr_head_ref: None,
+        base_ref: None,
     }
 }
 
@@ -127,6 +156,11 @@ pub fn rebuild_tab(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
             let number = d.pr_number.context("remote_pr missing number")?;
             let pr_ref = er_engine::github::PrRef { owner, repo, number };
             er_engine::app::TabState::new_remote(&pr_ref)
+        }
+        TabKind::LocalPr => {
+            let number = d.pr_number.context("local_pr descriptor missing pr_number")?;
+            // Re-fetch the PR head so the ref is up-to-date after restart.
+            er_engine::app::TabState::new_local_pr(d.repo_root.clone(), number)
         }
     }
 }
@@ -150,6 +184,8 @@ mod tests {
                 pr_owner: None,
                 pr_repo: None,
                 pr_number: None,
+                pr_head_ref: None,
+                base_ref: None,
             },
             TabDescriptor {
                 kind: TabKind::LocalBranch,
@@ -158,6 +194,8 @@ mod tests {
                 pr_owner: None,
                 pr_repo: None,
                 pr_number: None,
+                pr_head_ref: None,
+                base_ref: None,
             },
             TabDescriptor {
                 kind: TabKind::RemotePr,
@@ -166,6 +204,18 @@ mod tests {
                 pr_owner: Some("octo".to_string()),
                 pr_repo: Some("cat".to_string()),
                 pr_number: Some(42),
+                pr_head_ref: None,
+                base_ref: None,
+            },
+            TabDescriptor {
+                kind: TabKind::LocalPr,
+                repo_root: "/tmp/repo-b".to_string(),
+                branch: Some("feat/no-checkout".to_string()),
+                pr_owner: None,
+                pr_repo: None,
+                pr_number: Some(1110),
+                pr_head_ref: Some("refs/er/pr/1110/head".to_string()),
+                base_ref: Some("origin/main".to_string()),
             },
         ];
         let file = TabsFile {
@@ -188,7 +238,7 @@ mod tests {
         let loaded: TabsFile = serde_json::from_str(&loaded_raw).expect("deserialize");
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(loaded.tabs.len(), 3);
+        assert_eq!(loaded.tabs.len(), 4);
         assert_eq!(loaded.tabs, tabs);
         assert_eq!(loaded.active_idx, 1);
     }

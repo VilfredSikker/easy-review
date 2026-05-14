@@ -1302,8 +1302,56 @@ pub fn open_local_branch(
     Ok(snap_from(&app, &mut hl, &*state))
 }
 
-/// Open a PR branch. If the branch doesn't exist locally, run `gh pr checkout`
-/// in the project root first so the diff can be computed against the local clone.
+/// Inner helper: fetch the PR head ref and build a read-only local PR review tab.
+/// Never runs `gh pr checkout` or mutates the working tree.
+pub(crate) fn do_open_local_pr(
+    app: &mut App,
+    project_id: &str,
+    pr_number: u64,
+    replace: bool,
+) -> Result<(), String> {
+    let file = projects::load();
+    let proj = file
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?
+        .clone();
+    let new_tab =
+        er_engine::app::TabState::new_local_pr(proj.root_path.clone(), pr_number)
+            .map_err(|e| e.to_string())?;
+    place_tab(app, new_tab, replace);
+    Ok(())
+}
+
+/// Open a PR for read-only review. Fetches the PR head to a local ref without
+/// running `gh pr checkout` and without touching the working tree or requiring
+/// the repo to be clean.
+#[tauri::command]
+pub fn open_pr_review(
+    project_id: String,
+    pr_number: u64,
+    replace: Option<bool>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let t = std::time::Instant::now();
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    do_open_local_pr(&mut app, &project_id, pr_number, replace.unwrap_or(false))
+        .map_err(|e| {
+            log::error!("open_pr_review: pr=#{pr_number} project_id={project_id} err={e}");
+            e
+        })?;
+    kick_meta_refresh(&*state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, &*state);
+    log::info!(
+        "open_pr_review: pr=#{pr_number} opened in {}ms",
+        t.elapsed().as_millis()
+    );
+    Ok(snap_from(&app, &mut hl, &*state))
+}
+
+/// Kept for backwards compatibility — delegates to the no-checkout PR review flow.
 #[tauri::command]
 pub fn open_pr_branch(
     project_id: String,
@@ -1312,62 +1360,8 @@ pub fn open_pr_branch(
     replace: Option<bool>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let t = std::time::Instant::now();
-    let file = projects::load();
-    let proj = file
-        .projects
-        .iter()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| {
-            log::error!("open_pr_branch: project not found: project_id={project_id} pr=#{pr_number} head_ref={head_ref}");
-            format!("Project not found: {project_id}")
-        })?
-        .clone();
-
-    // Check whether the branch already exists locally.
-    let exists = std::process::Command::new("git")
-        .args([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{head_ref}"),
-        ])
-        .current_dir(&proj.root_path)
-        .status()
-        .map_err(|e| {
-            log::error!("open_pr_branch: git show-ref failed: project_id={project_id} pr=#{pr_number} head_ref={head_ref} root={} err={e}", proj.root_path);
-            format!("git show-ref failed: {e}")
-        })?
-        .success();
-
-    if !exists {
-        // Fetch + create the local branch via gh pr checkout (handles any remote config).
-        let out = std::process::Command::new("gh")
-            .args(["pr", "checkout", &pr_number.to_string()])
-            .current_dir(&proj.root_path)
-            .output()
-            .map_err(|e| {
-                log::error!("open_pr_branch: gh pr checkout failed to start: project_id={project_id} pr=#{pr_number} head_ref={head_ref} root={} err={e}", proj.root_path);
-                format!("gh pr checkout failed to start: {e}")
-            })?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            log::error!("open_pr_branch: gh pr checkout non-zero exit: project_id={project_id} pr=#{pr_number} head_ref={head_ref} root={} status={} stderr={stderr}", proj.root_path, out.status);
-            return Err(format!("gh pr checkout #{pr_number} failed: {stderr}"));
-        }
-    }
-
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    do_open_local_branch(&mut app, &project_id, head_ref.clone(), replace.unwrap_or(false))
-        .map_err(|e| {
-            log::error!("open_pr_branch: local branch tab build failed: project_id={project_id} pr=#{pr_number} head_ref={head_ref} err={e}");
-            e
-        })?;
-    kick_meta_refresh(&*state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &*state);
-    log::info!("open_pr_branch: pr=#{pr_number} head_ref={head_ref} opened in {}ms", t.elapsed().as_millis());
-    Ok(snap_from(&app, &mut hl, &*state))
+    let _ = head_ref; // ignored; PR head is fetched directly from origin
+    open_pr_review(project_id, pr_number, replace, state)
 }
 
 /// Trigger a manual PR-list refresh. Returns the current snapshot immediately
