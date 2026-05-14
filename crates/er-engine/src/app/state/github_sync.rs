@@ -3,9 +3,273 @@ use anyhow::Result;
 use crate::ai;
 use crate::git;
 use crate::github;
+use crate::github::PrOverviewData;
 
 use super::chrono_now;
 use super::App;
+
+// ── Two-phase background comment sync ─────────────────────────────────────────
+
+/// Data snapshotted from App state before releasing the lock.
+/// Contains everything needed to perform a comment sync without holding App.
+pub struct CommentSyncContext {
+    pub owner: String,
+    pub repo_name: String,
+    pub pr_number: u64,
+    pub is_remote: bool,
+    pub repo_root: String,
+    pub comments_path: String,
+    /// SHA-256 of the branch diff (stored in comments JSON)
+    pub diff_hash: String,
+    /// Current diff hash (for anchor status on new comments)
+    pub anchor_hash: String,
+    /// File list snapshot for content-based hunk matching
+    pub files: Vec<git::DiffFile>,
+    /// pr_number from the tab field (may differ from pr_number in local mode)
+    pub pr_number_for_overview: Option<u64>,
+}
+
+/// Pre-processed results ready to apply to App state.
+pub struct CommentSyncResult {
+    pub gc: ai::ErGitHubComments,
+    pub pr_data: Option<PrOverviewData>,
+    pub github_count: usize,
+    pub local_count: usize,
+    pub is_remote: bool,
+    pub comments_path: String,
+    /// Tab identity for safe application without race conditions.
+    /// (repo_root, pr_number, is_remote)
+    pub tab_key: (String, Option<u64>, bool),
+}
+
+impl App {
+    /// Snapshot identity + files from the active tab. Call while holding the lock,
+    /// then release it before calling `fetch_comment_sync_data`.
+    pub fn snapshot_for_comment_sync(
+        &self,
+        owner: String,
+        repo_name: String,
+        pr_number: u64,
+    ) -> CommentSyncContext {
+        let tab = self.tab();
+        CommentSyncContext {
+            owner,
+            repo_name,
+            pr_number,
+            is_remote: tab.is_remote(),
+            repo_root: tab.repo_root.clone(),
+            comments_path: tab.github_comments_path(),
+            diff_hash: tab.branch_diff_hash.clone(),
+            anchor_hash: tab.diff_hash.clone(),
+            files: tab.files.clone(),
+            pr_number_for_overview: tab.pr_number,
+        }
+    }
+
+    /// Apply pre-fetched comment sync results. Finds the correct tab by identity
+    /// (safe against the user switching/closing tabs during network I/O).
+    pub fn apply_comment_sync_result(&mut self, result: CommentSyncResult) {
+        let (target_root, target_pr, target_is_remote) = &result.tab_key;
+        let tab_idx = self.tabs.iter().position(|t| {
+            &t.repo_root == target_root
+                && t.pr_number == *target_pr
+                && t.is_remote() == *target_is_remote
+        });
+        let idx = match tab_idx {
+            Some(i) => i,
+            None => return, // tab was closed or switched — file was written; next activate picks it up
+        };
+        if result.is_remote {
+            self.tabs[idx].reload_remote_comments();
+        } else {
+            self.tabs[idx].reload_ai_state();
+        }
+        if let Some(pr_data) = result.pr_data {
+            self.tabs[idx].pr_data = Some(pr_data);
+        }
+        // Only notify if this is the currently active tab.
+        if idx == self.active_tab {
+            self.notify(&format!(
+                "GitHub sync: {} from GitHub, {} local kept, PR status refreshed",
+                result.github_count, result.local_count
+            ));
+        }
+    }
+}
+
+/// Perform the network I/O and data processing for a comment sync.
+/// Does NOT hold the App mutex — all data comes from `CommentSyncContext`.
+/// Writes the comments JSON file to disk before returning.
+pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncResult> {
+    let gh_comments = if ctx.is_remote {
+        github::gh_pr_comments_remote(&ctx.owner, &ctx.repo_name, ctx.pr_number)?
+    } else {
+        github::gh_pr_comments(&ctx.owner, &ctx.repo_name, ctx.pr_number, &ctx.repo_root)?
+    };
+
+    let resolved_map = if ctx.is_remote {
+        github::gh_pr_review_threads_remote(&ctx.owner, &ctx.repo_name, ctx.pr_number)
+            .unwrap_or_default()
+    } else {
+        github::gh_pr_review_threads(&ctx.owner, &ctx.repo_name, ctx.pr_number, &ctx.repo_root)
+            .unwrap_or_default()
+    };
+
+    let mut gc: ai::ErGitHubComments = match std::fs::read_to_string(&ctx.comments_path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| ai::ErGitHubComments {
+            version: 1,
+            diff_hash: ctx.diff_hash.clone(),
+            github: None,
+            comments: Vec::new(),
+        }),
+        Err(_) => ai::ErGitHubComments {
+            version: 1,
+            diff_hash: ctx.diff_hash.clone(),
+            github: None,
+            comments: Vec::new(),
+        },
+    };
+
+    gc.github = Some(ai::GitHubSyncState {
+        pr_number: Some(ctx.pr_number),
+        owner: ctx.owner.clone(),
+        repo: ctx.repo_name.clone(),
+        last_synced: chrono_now(),
+    });
+
+    let local_unpushed: Vec<_> = gc
+        .comments
+        .into_iter()
+        .filter(|c| c.source == "local" && !c.synced)
+        .collect();
+
+    let mut github_entries = Vec::new();
+    for gh in &gh_comments {
+        let file_path = gh.path.clone().unwrap_or_default();
+        let stable_line = gh.original_line.or(gh.line);
+        let resolved_line: Option<usize> = if let (Some(diff_hunk), Some(f)) = (
+            &gh.diff_hunk,
+            ctx.files.iter().find(|f| f.path == file_path),
+        ) {
+            find_local_line_for_diff_hunk(diff_hunk, f)
+                .map(|(_, ln)| ln)
+                .or(stable_line)
+        } else {
+            stable_line
+        };
+
+        let (hunk_index, anchor_line_content, anchor_ctx_before, anchor_ctx_after, anchor_old_line, anchor_hunk_header) =
+            resolve_anchor(resolved_line, &file_path, &ctx.files, gh.diff_hunk.as_deref());
+
+        let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
+        github_entries.push(ai::GitHubReviewComment {
+            id: format!("gh-{}", gh.id),
+            timestamp: gh.created_at.clone(),
+            file: file_path,
+            hunk_index,
+            line_start: resolved_line,
+            line_end: None,
+            line_content: anchor_line_content,
+            comment: gh.body.clone(),
+            in_reply_to,
+            resolved: resolved_map.get(&gh.id).copied().unwrap_or(false),
+            source: "github".to_string(),
+            github_id: Some(gh.id),
+            author: gh.user.login.clone(),
+            synced: true,
+            stale: false,
+            context_before: anchor_ctx_before,
+            context_after: anchor_ctx_after,
+            old_line_start: anchor_old_line,
+            hunk_header: anchor_hunk_header,
+            anchor_status: "original".to_string(),
+            relocated_at_hash: ctx.anchor_hash.clone(),
+            finding_ref: None,
+        });
+    }
+
+    let github_count = github_entries.len();
+    let local_count = local_unpushed.len();
+    gc.comments = local_unpushed;
+    gc.comments.extend(github_entries);
+
+    // Write to disk (atomic rename, outside app lock)
+    if !ctx.is_remote {
+        std::fs::create_dir_all(format!("{}/.er", ctx.repo_root))?;
+    } else if let Some(dir) = std::path::Path::new(&ctx.comments_path).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let json = serde_json::to_string_pretty(&gc)?;
+    let tmp_path = format!("{}.tmp", ctx.comments_path);
+    std::fs::write(&tmp_path, &json)?;
+    std::fs::rename(&tmp_path, &ctx.comments_path)?;
+
+    // Refresh PR overview (still outside app lock)
+    let pr_data = if ctx.is_remote {
+        github::gh_pr_overview_remote(
+            &ctx.owner,
+            &ctx.repo_name,
+            ctx.pr_number_for_overview.unwrap_or(ctx.pr_number),
+        )
+    } else {
+        github::gh_pr_overview(&ctx.repo_root, ctx.pr_number_for_overview)
+    };
+
+    Ok(CommentSyncResult {
+        gc,
+        pr_data,
+        github_count,
+        local_count,
+        is_remote: ctx.is_remote,
+        comments_path: ctx.comments_path.clone(),
+        tab_key: (ctx.repo_root.clone(), ctx.pr_number_for_overview, ctx.is_remote),
+    })
+}
+
+/// Resolve anchor location for a GitHub comment against our local diff files.
+fn resolve_anchor(
+    resolved_line: Option<usize>,
+    file_path: &str,
+    files: &[git::DiffFile],
+    diff_hunk: Option<&str>,
+) -> (Option<usize>, String, Vec<String>, Vec<String>, Option<usize>, String) {
+    if let Some(line) = resolved_line {
+        if let Some(f) = files.iter().find(|f| f.path == file_path) {
+            if let Some((i, hunk)) = f
+                .hunks
+                .iter()
+                .enumerate()
+                .find(|(_, h)| line >= h.new_start && line < h.new_start + h.new_count)
+            {
+                let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
+                let (lc, old_ln, ctx_before, ctx_after) = if let Some(idx) = target_idx {
+                    let start = idx.saturating_sub(3);
+                    let end = (idx + 4).min(hunk.lines.len());
+                    (
+                        hunk.lines[idx].content.clone(),
+                        hunk.lines[idx].old_num,
+                        hunk.lines[start..idx].iter().map(|l| l.content.clone()).collect(),
+                        hunk.lines[(idx + 1)..end].iter().map(|l| l.content.clone()).collect(),
+                    )
+                } else if let Some(dh) = diff_hunk {
+                    let (fallback_lc, fallback_ctx) = extract_anchor_from_diff_hunk(dh);
+                    (fallback_lc, None, fallback_ctx, Vec::new())
+                } else {
+                    let nearest = hunk
+                        .lines
+                        .iter()
+                        .filter_map(|l| l.new_num.map(|n| (n, l)))
+                        .min_by_key(|(n, _)| (*n as isize - line as isize).unsigned_abs());
+                    let (lc, old_ln) =
+                        nearest.map(|(_, l)| (l.content.clone(), l.old_num)).unwrap_or_default();
+                    (lc, old_ln, Vec::new(), Vec::new())
+                };
+                return (Some(i), lc, ctx_before, ctx_after, old_ln, hunk.header.clone());
+            }
+        }
+    }
+    (None, String::new(), Vec::new(), Vec::new(), None, String::new())
+}
 
 /// GitHub's diff_hunk ends at the commented line. The last non-deleted line is the target;
 /// the preceding non-deleted lines are context. Used as a fallback when the local DiffLine
@@ -224,7 +488,7 @@ impl App {
             .collect();
 
         // Build fresh GitHub entries from API response
-        let tab_files = &self.tab().files;
+        let tab_files = self.tab().files.clone();
         let diff_hash_for_anchor = self.tab().diff_hash.clone();
         let mut github_entries = Vec::new();
 
@@ -233,13 +497,6 @@ impl App {
 
             // Prefer content-based matching via diff_hunk — robust against line-number drift when
             // main has advanced since the PR was filed.
-            //
-            // Fallback priority:
-            //   1. Content match (diff_hunk sliding window)
-            //   2. original_line — stable line from when the comment was first created; always
-            //      consistent with diff_hunk, never null even after the PR head is force-pushed
-            //   3. line — GitHub's current value, which GitHub nulls out when it considers the
-            //      comment outdated after a rebase
             let stable_line = gh.original_line.or(gh.line);
             let resolved_line: Option<usize> = if let (Some(diff_hunk), Some(f)) = (
                 &gh.diff_hunk,
@@ -252,97 +509,8 @@ impl App {
                 stable_line
             };
 
-            let (
-                hunk_index,
-                anchor_line_content,
-                anchor_ctx_before,
-                anchor_ctx_after,
-                anchor_old_line,
-                anchor_hunk_header,
-            ) = if let Some(line) = resolved_line {
-                if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
-                    if let Some((i, hunk)) = f
-                        .hunks
-                        .iter()
-                        .enumerate()
-                        .find(|(_, h)| line >= h.new_start && line < h.new_start + h.new_count)
-                    {
-                        let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
-                        let (lc, old_ln, ctx_before, ctx_after) = if let Some(idx) = target_idx {
-                            let start = idx.saturating_sub(3);
-                            let end = (idx + 4).min(hunk.lines.len());
-                            (
-                                hunk.lines[idx].content.clone(),
-                                hunk.lines[idx].old_num,
-                                hunk.lines[start..idx]
-                                    .iter()
-                                    .map(|l| l.content.clone())
-                                    .collect(),
-                                hunk.lines[(idx + 1)..end]
-                                    .iter()
-                                    .map(|l| l.content.clone())
-                                    .collect(),
-                            )
-                        } else {
-                            // The line number doesn't map to a local DiffLine — PR base has drifted.
-                            // Priority: 1) extract from diff_hunk content, 2) snap to the nearest
-                            // line in the hunk by new_num so the anchor is never blank.
-                            if let Some(dh) = gh.diff_hunk.as_deref() {
-                                let (fallback_lc, fallback_ctx) =
-                                    extract_anchor_from_diff_hunk(dh);
-                                (fallback_lc, None, fallback_ctx, Vec::new())
-                            } else {
-                                let nearest = hunk
-                                    .lines
-                                    .iter()
-                                    .filter_map(|l| l.new_num.map(|n| (n, l)))
-                                    .min_by_key(|(n, _)| {
-                                        (*n as isize - line as isize).unsigned_abs()
-                                    });
-                                let (lc, old_ln) = nearest
-                                    .map(|(_, l)| (l.content.clone(), l.old_num))
-                                    .unwrap_or_default();
-                                (lc, old_ln, Vec::new(), Vec::new())
-                            }
-                        };
-                        (
-                            Some(i),
-                            lc,
-                            ctx_before,
-                            ctx_after,
-                            old_ln,
-                            hunk.header.clone(),
-                        )
-                    } else {
-                        (
-                            None,
-                            String::new(),
-                            Vec::new(),
-                            Vec::new(),
-                            None,
-                            String::new(),
-                        )
-                    }
-                } else {
-                    (
-                        None,
-                        String::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        None,
-                        String::new(),
-                    )
-                }
-            } else {
-                (
-                    None,
-                    String::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    None,
-                    String::new(),
-                )
-            };
+            let (hunk_index, anchor_line_content, anchor_ctx_before, anchor_ctx_after, anchor_old_line, anchor_hunk_header) =
+                resolve_anchor(resolved_line, &file_path, &tab_files, gh.diff_hunk.as_deref());
 
             let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
 

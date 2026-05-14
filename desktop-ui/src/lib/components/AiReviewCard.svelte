@@ -1,5 +1,9 @@
 <script lang="ts">
-  import type { AiSnapshot, FlatFinding } from "$lib/types";
+  import type { AiSnapshot } from "$lib/types";
+  import Card from "$lib/components/ui/Card.svelte";
+  import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
+  import { jumpTo as scrollFlash } from "$lib/dom";
 
   interface Props {
     ai: AiSnapshot;
@@ -7,95 +11,98 @@
 
   const { ai }: Props = $props();
 
-  let summaryOpen = $state(false);
-  let expandedFindings = $state(new Set<string>());
+  let open = $state(false);
+  let filter = $state<"all" | "high" | "med" | "low">("all");
 
-  function toggleFinding(id: string) {
-    const next = new Set(expandedFindings);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
-    }
-    expandedFindings = next;
+  function basename(p: string): string {
+    const i = p.lastIndexOf("/");
+    return i === -1 ? p : p.slice(i + 1);
   }
 
-  function severityLabel(s: FlatFinding["severity"]): string {
-    return s === "high" ? "H" : s === "med" ? "M" : "L";
+  function jumpTo(findingId: string) {
+    scrollFlash(`finding-${findingId}`);
   }
 
-  function severityClass(s: FlatFinding["severity"]): string {
-    return s === "high"
-      ? "text-risk-high"
-      : s === "med"
-        ? "text-risk-med"
-        : "text-risk-low";
-  }
+  const summary = $derived(
+    ai.summary_markdown ??
+      `${ai.high + ai.med + ai.low} findings across ${new Set(ai.findings.map((f) => f.file)).size} files.`
+  );
 
-  function basename(path: string): string {
-    return path.split("/").pop() ?? path;
-  }
+  const filtered = $derived(
+    ai.findings.filter((f) => filter === "all" || f.severity === filter)
+  );
 </script>
 
-<div class="px-3 py-2.5 border-b border-ink-500/40">
+<Card>
   <div class="flex items-center justify-between mb-2">
-    <span class="text-[10px] font-medium uppercase tracking-wider text-ink-400">AI Review</span>
-    {#if !ai.fresh}
-      <span class="text-[10px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-400">stale</span>
+    <SectionLabel>AI Review</SectionLabel>
+    {#if ai.fresh}
+      <span class="text-[10px] mono text-add-fg">fresh</span>
+    {:else}
+      <span class="text-[10px] mono text-ai">stale</span>
     {/if}
   </div>
+  <div class="text-sm text-fg-2 leading-relaxed mb-3 whitespace-pre-wrap">{summary}</div>
 
-  <div class="flex items-center gap-3 mb-2">
-    <span class="text-xs font-mono text-risk-high">{ai.high}<span class="text-ink-500 ml-0.5">H</span></span>
-    <span class="text-xs font-mono text-risk-med">{ai.med}<span class="text-ink-500 ml-0.5">M</span></span>
-    <span class="text-xs font-mono text-risk-low">{ai.low}<span class="text-ink-500 ml-0.5">L</span></span>
-  </div>
-
-  {#if ai.summary_markdown}
+  <div class="grid grid-cols-3 gap-2 mb-3">
     <button
-      class="flex items-center gap-1 text-[10px] text-ink-400 hover:text-ink-200 transition-colors mb-1.5 w-full text-left"
-      onclick={() => (summaryOpen = !summaryOpen)}
+      onclick={() => { open = true; filter = "high"; }}
+      class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-high {filter === 'high' && open ? 'border-risk-high' : 'border-border'}"
     >
-      <span class="font-mono">{summaryOpen ? "▼" : "▶"}</span>
-      <span>Summary</span>
+      <div class="flex items-center gap-1.5 text-[10px] text-risk-high uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>High</div>
+      <div class="text-lg font-semibold mono">{ai.high}</div>
     </button>
-    {#if summaryOpen}
-      <div class="text-[11px] text-ink-300 whitespace-pre-wrap mb-2 leading-relaxed">
-        {ai.summary_markdown}
-      </div>
-    {/if}
-  {/if}
+    <button
+      onclick={() => { open = true; filter = "med"; }}
+      class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-med {filter === 'med' && open ? 'border-risk-med' : 'border-border'}"
+    >
+      <div class="flex items-center gap-1.5 text-[10px] text-risk-med uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>Med</div>
+      <div class="text-lg font-semibold mono">{ai.med}</div>
+    </button>
+    <button
+      onclick={() => { open = true; filter = "low"; }}
+      class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-low {filter === 'low' && open ? 'border-risk-low' : 'border-border'}"
+    >
+      <div class="flex items-center gap-1.5 text-[10px] text-risk-low uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>Low</div>
+      <div class="text-lg font-semibold mono">{ai.low}</div>
+    </button>
+  </div>
 
-  {#if ai.findings.length > 0}
-    <div class="flex flex-col gap-0.5">
-      {#each ai.findings as finding (finding.id)}
-        <div class="rounded overflow-hidden">
-          <button
-            class="w-full flex items-center gap-1.5 py-1 px-1 hover:bg-ink-800 transition-colors text-left"
-            onclick={() => toggleFinding(finding.id)}
-          >
-            <span class="text-[10px] font-mono font-bold {severityClass(finding.severity)} shrink-0">
-              ● {severityLabel(finding.severity)}
-            </span>
-            <span class="text-[10px] text-ink-500 shrink-0">{basename(finding.file)}</span>
-            {#if finding.line !== null}
-              <span class="text-[10px] text-ink-600 shrink-0">:{finding.line}</span>
-            {/if}
-            <span
-              class="text-[10px] text-ink-200 truncate flex-1"
-              title={finding.title}
-            >{finding.title}</span>
-            <span class="text-ink-600 text-[8px] shrink-0">{expandedFindings.has(finding.id) ? "▲" : "▼"}</span>
-          </button>
-          {#if expandedFindings.has(finding.id)}
-            <div class="px-2 pb-1.5 text-[11px] text-ink-400 whitespace-pre-wrap leading-relaxed bg-ink-800/50">
-              {finding.message_markdown}
+  {#if open}
+    <div class="mt-4 pt-3 border-t border-hairline space-y-1.5 mb-3">
+      <div class="flex items-center gap-1.5 mb-2 text-[10px] mono">
+        <button onclick={() => filter = "all"} class="px-2 py-0.5 rounded {filter === 'all' ? 'bg-hairline text-fg' : 'text-fg-3 hover:bg-hover'}">all</button>
+        <button onclick={() => filter = "high"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'high' ? 'bg-hairline text-risk-high' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>high</button>
+        <button onclick={() => filter = "med"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'med' ? 'bg-hairline text-risk-med' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>med</button>
+        <button onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
+      </div>
+
+      {#each filtered as finding (finding.id)}
+        {@const dotClass = finding.severity === "high" ? "bg-risk-high" : finding.severity === "med" ? "bg-risk-med" : "bg-risk-low"}
+        <button
+          onclick={() => jumpTo(finding.id)}
+          class="w-full text-left p-2 rounded-md hover:bg-bg border border-transparent hover:border-border block"
+        >
+          <div class="flex items-start gap-2">
+            <span class="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 {dotClass}"></span>
+            <div class="flex-1 min-w-0">
+              <div class="text-[11px] font-mono text-muted mb-0.5">{basename(finding.file)}{finding.line !== null ? `:${finding.line}` : ""}</div>
+              <div class="text-[13px] text-fg-2 leading-snug">{finding.title}</div>
             </div>
-          {/if}
-        </div>
+          </div>
+        </button>
       {/each}
     </div>
-  {:else}
-    <div class="text-[11px] text-ink-500">No findings</div>
   {/if}
-</div>
+
+  <Button
+    variant="secondary"
+    onclick={() => open = !open}
+    class="w-full flex items-center justify-center gap-2 normal-case"
+  >
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="transition-transform {open ? 'rotate-180' : ''}">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+    <span>{open ? "Hide findings" : "View findings"}</span>
+  </Button>
+</Card>

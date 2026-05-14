@@ -1,16 +1,24 @@
 @import "tailwindcss";
 
+/* Explicit scan paths — without these, Tailwind v4 misses arbitrary-value
+ * classes (`bg-[#141414]`, `border-[#1f1f1f]`) inside Svelte templates. */
+@source "./**/*.{svelte,ts,js,html}";
+@source "../index.html";
+
 @theme {
   --font-sans: "DM Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", monospace;
 
   --color-ink-900: #0a0a0a;
+  --color-ink-880: #0c0c0c;  /* side rails */
+  --color-ink-870: #0d0d0d;  /* titlebar, sticky headers */
   --color-ink-850: #0f0f0f;
-  --color-ink-800: #141414;
+  --color-ink-800: #141414;  /* card surface */
   --color-ink-750: #181818;
-  --color-ink-700: #1a1a1a;
+  --color-ink-700: #1a1a1a;  /* hover surface */
+  --color-ink-650: #1f1f1f;  /* hairline border, kbd bg */
   --color-ink-600: #222222;
-  --color-ink-500: #2a2a2a;
+  --color-ink-500: #2a2a2a;  /* card border / kbd border */
   --color-ink-400: #3a3a3a;
   --color-ink-300: #5e5e5e;
   --color-ink-200: #999999;
@@ -32,7 +40,28 @@
 
   --color-comment: #22d3ee;
   --color-question: #fde047;
+  --color-question-surface: rgba(253,224,71,0.04);
+  --color-question-border: rgba(253,224,71,0.25);
   --color-ai: #fbbf24;
+
+  /* Semantic surface aliases (consume the ink-* scale). Use these in
+   * components instead of raw ink shades or inline hex. */
+  --color-bg:        var(--color-ink-900);
+  --color-surface:   var(--color-ink-880);
+  --color-card:      var(--color-ink-800);
+  --color-hover:     var(--color-ink-700);
+  --color-hairline:  var(--color-ink-650);
+  --color-border:    var(--color-ink-500);
+
+  --color-fg:     var(--color-ink-50);   /* primary text */
+  --color-fg-2:   var(--color-ink-100);  /* secondary body text */
+  --color-fg-3:   var(--color-ink-200);  /* tertiary / icon text */
+  --color-muted:  var(--color-ink-300);  /* metadata, section labels */
+
+  --font-weight-regular:  400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
 
   --color-syntax-keyword: #c4b5fd;
   --color-syntax-type:    #7dd3fc;
@@ -43,10 +72,12 @@
   --color-syntax-comment: #5e5e5e;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 }
 
 html, body, #app {
@@ -58,4 +89,49 @@ body {
   background: var(--color-ink-900);
   color: var(--color-ink-50);
   font-family: var(--font-sans);
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--color-ink-500); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+.kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--color-ink-650);
+  border: 1px solid var(--color-ink-500);
+  color: var(--color-ink-200);
+  display: inline-block;
+  line-height: 1.4;
+}
+
+/* Mock uses `class="mono"` (defined inline in 01-main.html) — keep the verbatim ports working without rewrites. */
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* Diff row hover + selection styles — required by drag-select (mock lines 33–43). */
+.diff-row { cursor: pointer; }
+.diff-row:hover > div:not(.gutter):not(.diff-add):not(.diff-del) {
+  background: var(--color-ink-870);
+}
+.diff-row.is-selected > div {
+  background-color: rgba(59, 130, 246, 0.18) !important;
+}
+.diff-row.is-selected > div.diff-add {
+  background-color: rgba(59, 130, 246, 0.18) !important;
+}
+.diff-row.is-selected > div.gutter:first-child {
+  box-shadow: inset 3px 0 0 0 #3b82f6;
+}
+.gutter { color: #444; user-select: none; }
+
+/* Jump-to pulse animation (mock lines 35–43, build-plan §lookup-utilities). */
+.flash { animation: flash-pulse 1200ms ease-out; }
+@keyframes flash-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(255, 106, 61, 0.55), 0 0 0 0 rgba(255, 106, 61, 0.35); }
+  30%  { box-shadow: 0 0 0 3px rgba(255, 106, 61, 0.45), 0 0 22px 4px rgba(255, 106, 61, 0.35); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 106, 61, 0),    0 0 0 0 rgba(255, 106, 61, 0); }
 }

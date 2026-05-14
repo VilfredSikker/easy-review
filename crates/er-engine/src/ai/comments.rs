@@ -260,6 +260,10 @@ pub struct ReviewQuestion {
     /// Author display name (defaults to "You")
     #[serde(default = "default_author")]
     pub author: String,
+    /// ID of the GitHub comment this question was promoted to (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub promoted_to: Option<String>,
 }
 
 // ── .er-github-comments.json — GitHub PR comments ──
@@ -356,6 +360,83 @@ fn default_author() -> String {
     "You".to_string()
 }
 
+// ── .er/ui-annotations.json — browser-view annotations ──
+
+/// A point/region annotation captured from the embedded browser view.
+/// Stored at `<comments_dir>/ui-annotations.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiAnnotation {
+    pub id: String,
+    /// Path portion of the page URL (no query/hash), e.g. `/dashboard`.
+    pub url: String,
+    /// CSS selector (best-effort tag + nth-child path). `None` for cross-origin.
+    #[serde(default)]
+    pub selector: Option<String>,
+    pub box_x: f64,
+    pub box_y: f64,
+    pub box_w: f64,
+    pub box_h: f64,
+    pub viewport_w: u32,
+    pub viewport_h: u32,
+    pub text: String,
+    #[serde(default)]
+    pub timestamp: String,
+    #[serde(default = "default_author")]
+    pub author: String,
+    #[serde(default)]
+    pub screenshot_path: Option<String>,
+    /// Persisted: set when re-anchoring fails or the new box deviates too much.
+    #[serde(default)]
+    pub stale: bool,
+    /// Short description of the annotated element (tag + label/text), e.g. "button: Submit".
+    #[serde(default)]
+    pub element_context: Option<String>,
+    /// Structured DOM context captured from the resolved element at annotation time.
+    /// This is intended for agent communication, not as a stable re-anchor.
+    #[serde(default)]
+    pub dom_context: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ErUiAnnotations {
+    #[serde(default = "default_ui_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub annotations: Vec<UiAnnotation>,
+}
+
+fn default_ui_version() -> u32 {
+    1
+}
+
+/// Load annotations from `<comments_dir>/ui-annotations.json`. Missing file → empty.
+pub fn load_ui_annotations(comments_dir: &str) -> Vec<UiAnnotation> {
+    let path = format!("{comments_dir}/ui-annotations.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<ErUiAnnotations>(&content)
+        .map(|f| f.annotations)
+        .unwrap_or_default()
+}
+
+/// Atomically write annotations to `<comments_dir>/ui-annotations.json`.
+pub fn save_ui_annotations(
+    comments_dir: &str,
+    annotations: &[UiAnnotation],
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(comments_dir)?;
+    let path = format!("{comments_dir}/ui-annotations.json");
+    let tmp = format!("{path}.tmp");
+    let file = ErUiAnnotations {
+        version: 1,
+        annotations: annotations.to_vec(),
+    };
+    let json = serde_json::to_string_pretty(&file).map_err(std::io::Error::other)?;
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, &path)
+}
+
 // ── Legacy .er-feedback.json (for migration) ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -397,4 +478,129 @@ pub struct FeedbackComment {
     /// Whether this comment was pushed to GitHub
     #[serde(default)]
     pub synced: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_question() -> ReviewQuestion {
+        ReviewQuestion {
+            id: "q-1".into(),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            file: "src/foo.rs".into(),
+            hunk_index: Some(0),
+            line_start: Some(10),
+            line_content: "fn foo() {}".into(),
+            text: "Why this name?".into(),
+            resolved: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".into(),
+            relocated_at_hash: String::new(),
+            in_reply_to: None,
+            author: "You".into(),
+            promoted_to: None,
+        }
+    }
+
+    #[test]
+    fn review_question_promoted_to_roundtrips_via_serde() {
+        let mut q = sample_question();
+        q.promoted_to = Some("c-42".into());
+
+        let json = serde_json::to_string(&q).unwrap();
+        let back: ReviewQuestion = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.promoted_to.as_deref(), Some("c-42"));
+    }
+
+    #[test]
+    fn ui_annotation_roundtrips_via_serde() {
+        let ann = UiAnnotation {
+            id: "ann-1".into(),
+            url: "/dashboard".into(),
+            selector: Some("button.primary:nth-child(2)".into()),
+            box_x: 12.5,
+            box_y: 30.0,
+            box_w: 100.0,
+            box_h: 28.0,
+            viewport_w: 1280,
+            viewport_h: 800,
+            text: "This button looks off".into(),
+            timestamp: "2026-05-13T10:00:00Z".into(),
+            author: "You".into(),
+            screenshot_path: None,
+            stale: false,
+            element_context: Some("button: Save".into()),
+            dom_context: Some(serde_json::json!({
+                "tag": "button",
+                "text": "Save",
+                "role": "button"
+            })),
+        };
+        let json = serde_json::to_string(&ann).unwrap();
+        let back: UiAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ann);
+    }
+
+    #[test]
+    fn ui_annotation_file_load_missing_returns_empty() {
+        let tmp = std::env::temp_dir().join("er-ui-ann-test-missing");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let dir = tmp.to_string_lossy().to_string();
+        let v = load_ui_annotations(&dir);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn ui_annotation_save_then_load_roundtrip() {
+        let tmp = std::env::temp_dir().join(format!(
+            "er-ui-ann-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dir = tmp.to_string_lossy().to_string();
+        let anns = vec![UiAnnotation {
+            id: "a".into(),
+            url: "/x".into(),
+            selector: None,
+            box_x: 0.0,
+            box_y: 0.0,
+            box_w: 10.0,
+            box_h: 10.0,
+            viewport_w: 800,
+            viewport_h: 600,
+            text: "hi".into(),
+            timestamp: "t".into(),
+            author: "You".into(),
+            screenshot_path: None,
+            stale: false,
+            element_context: None,
+            dom_context: None,
+        }];
+        save_ui_annotations(&dir, &anns).unwrap();
+        let back = load_ui_annotations(&dir);
+        assert_eq!(back, anns);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn review_question_promoted_to_defaults_to_none_when_missing() {
+        let json = r#"{
+            "id": "q-1",
+            "file": "src/foo.rs",
+            "hunk_index": 0,
+            "line_start": 10,
+            "text": "Hi?"
+        }"#;
+        let q: ReviewQuestion = serde_json::from_str(json).unwrap();
+        assert!(q.promoted_to.is_none());
+    }
 }

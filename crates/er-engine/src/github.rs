@@ -1217,6 +1217,8 @@ pub fn gh_pr_submit_review(
     pr: u64,
     comments: &[(String, usize, String)],
     repo_root: &str,
+    event: &str,
+    body: &str,
 ) -> Result<()> {
     // Fetch the head commit SHA
     let sha_output = Command::new("gh")
@@ -1260,8 +1262,8 @@ pub fn gh_pr_submit_review(
 
     let payload = serde_json::json!({
         "commit_id": commit_id,
-        "event": "COMMENT",
-        "body": "",
+        "event": event,
+        "body": body,
         "comments": comment_values
     });
 
@@ -1299,6 +1301,8 @@ pub fn gh_pr_submit_review_remote(
     repo: &str,
     pr: u64,
     comments: &[(String, usize, String)],
+    event: &str,
+    body: &str,
 ) -> Result<()> {
     let repo_slug = format!("{}/{}", owner, repo);
     let sha_output = Command::new("gh")
@@ -1342,8 +1346,8 @@ pub fn gh_pr_submit_review_remote(
 
     let payload = serde_json::json!({
         "commit_id": commit_id,
-        "event": "COMMENT",
-        "body": "",
+        "event": event,
+        "body": body,
         "comments": comment_values
     });
 
@@ -1431,6 +1435,238 @@ pub fn gh_pr_general_comment_remote(owner: &str, repo: &str, pr: u64, body: &str
         serde_json::from_str(&stdout).context("Failed to parse general comment response")?;
 
     Ok(resp.id)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rich GitHub status for the SourcesCard. These mirror existing `gh_pr_*`
+// helpers but return richer data (review decision, mergeable, labels, checks,
+// recent comments/reviews). Parsing is extracted into pure functions so it can
+// be unit-tested against fixed JSON blobs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct PrOverviewFull {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub is_draft: bool,
+    pub author: String,
+    pub url: String,
+    pub review_decision: Option<String>,
+    pub mergeable: Option<String>,
+    pub head_ref_name: String,
+    pub base_ref_name: String,
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrComment {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrReview {
+    pub author: String,
+    pub state: String,
+    pub body: String,
+    pub submitted_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckRun {
+    pub name: String,
+    pub status: String,
+    pub conclusion: String,
+    pub url: Option<String>,
+}
+
+/// Pure parser for `gh pr view --json number,title,state,isDraft,author,reviewDecision,mergeable,headRefName,baseRefName,labels,url` output.
+pub fn parse_pr_overview(json: &str) -> Result<PrOverviewFull> {
+    let v: serde_json::Value = serde_json::from_str(json).context("invalid PR overview JSON")?;
+    Ok(PrOverviewFull {
+        number: v["number"].as_u64().unwrap_or(0),
+        title: v["title"].as_str().unwrap_or("").to_string(),
+        state: v["state"].as_str().unwrap_or("").to_string(),
+        is_draft: v["isDraft"].as_bool().unwrap_or(false),
+        author: v["author"]["login"].as_str().unwrap_or("").to_string(),
+        url: v["url"].as_str().unwrap_or("").to_string(),
+        review_decision: v["reviewDecision"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string()),
+        mergeable: v["mergeable"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string()),
+        head_ref_name: v["headRefName"].as_str().unwrap_or("").to_string(),
+        base_ref_name: v["baseRefName"].as_str().unwrap_or("").to_string(),
+        labels: v["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+/// Pure parser for `gh pr view --json comments` output (the wrapping object).
+pub fn parse_pr_comments(json: &str) -> Result<Vec<PrComment>> {
+    let v: serde_json::Value = serde_json::from_str(json).context("invalid comments JSON")?;
+    let arr = v["comments"].as_array().cloned().unwrap_or_default();
+    Ok(arr
+        .into_iter()
+        .map(|c| PrComment {
+            author: c["author"]["login"].as_str().unwrap_or("").to_string(),
+            body: c["body"].as_str().unwrap_or("").to_string(),
+            created_at: c["createdAt"].as_str().unwrap_or("").to_string(),
+            url: c["url"].as_str().unwrap_or("").to_string(),
+        })
+        .collect())
+}
+
+/// Pure parser for `gh pr view --json reviews` output (the wrapping object).
+pub fn parse_pr_reviews(json: &str) -> Result<Vec<PrReview>> {
+    let v: serde_json::Value = serde_json::from_str(json).context("invalid reviews JSON")?;
+    let arr = v["reviews"].as_array().cloned().unwrap_or_default();
+    Ok(arr
+        .into_iter()
+        .map(|r| PrReview {
+            author: r["author"]["login"].as_str().unwrap_or("").to_string(),
+            state: r["state"].as_str().unwrap_or("").to_string(),
+            body: r["body"].as_str().unwrap_or("").to_string(),
+            submitted_at: r["submittedAt"].as_str().unwrap_or("").to_string(),
+        })
+        .collect())
+}
+
+/// Pure parser for `gh pr checks --json name,state,bucket,link` output.
+pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
+    let v: serde_json::Value = serde_json::from_str(json).context("invalid checks JSON")?;
+    let arr = v.as_array().cloned().unwrap_or_default();
+    Ok(arr
+        .into_iter()
+        .map(|c| {
+            let state = c["state"].as_str().unwrap_or("").to_string();
+            let bucket = c["bucket"].as_str().unwrap_or("").to_string();
+            // Map `gh pr checks` semantics into status/conclusion:
+            //   state ~ PENDING|SUCCESS|FAILURE|...
+            //   bucket ~ pass|fail|pending|cancel|skipping
+            let (status, conclusion) = if state == "PENDING" || bucket == "pending" {
+                ("PENDING".to_string(), "".to_string())
+            } else {
+                ("COMPLETED".to_string(), state.clone())
+            };
+            CheckRun {
+                name: c["name"].as_str().unwrap_or("").to_string(),
+                status,
+                conclusion: if conclusion.is_empty() { bucket } else { conclusion },
+                url: c["link"].as_str().map(|s| s.to_string()),
+            }
+        })
+        .collect())
+}
+
+/// Fetch a rich PR overview (state, draft, review decision, mergeable, labels)
+/// for a remote PR. No local clone required.
+pub fn gh_pr_overview_remote_full(
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Result<PrOverviewFull> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "number,title,state,isDraft,author,reviewDecision,mergeable,headRefName,baseRefName,labels,url",
+        ])
+        .output()
+        .context("Failed to run gh pr view")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr view failed: {}", stderr.trim());
+    }
+    parse_pr_overview(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Fetch general PR conversation comments (the issue-comments stream — NOT the
+/// per-line review comments fetched by `gh_pr_comments_remote`).
+pub fn gh_pr_comments_overview(
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Result<Vec<PrComment>> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "comments",
+        ])
+        .output()
+        .context("Failed to run gh pr view (comments)")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr view comments failed: {}", stderr.trim());
+    }
+    parse_pr_comments(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Fetch reviews (APPROVED / CHANGES_REQUESTED / COMMENTED) for a remote PR.
+pub fn gh_pr_reviews(owner: &str, repo: &str, number: u64) -> Result<Vec<PrReview>> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "reviews",
+        ])
+        .output()
+        .context("Failed to run gh pr view (reviews)")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr view reviews failed: {}", stderr.trim());
+    }
+    parse_pr_reviews(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Fetch CI check runs for a remote PR.
+pub fn gh_pr_checks_remote(owner: &str, repo: &str, number: u64) -> Result<Vec<CheckRun>> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "checks",
+            &number.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "name,state,bucket,link",
+        ])
+        .output()
+        .context("Failed to run gh pr checks")?;
+    if !output.status.success() {
+        // No checks configured is not an error — return empty.
+        return Ok(Vec::new());
+    }
+    parse_pr_checks(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Push a reply to an existing review comment on a remote PR.
@@ -1746,6 +1982,114 @@ mod tests {
         assert_eq!(o, "owner");
         assert_eq!(r, "repo");
         assert_eq!(n, 42);
+    }
+
+    // ── parse_pr_overview ──
+
+    #[test]
+    fn parse_pr_overview_full_json() {
+        let json = r#"{
+            "number": 7,
+            "title": "Add feature",
+            "state": "OPEN",
+            "isDraft": false,
+            "author": {"login": "alice"},
+            "url": "https://github.com/o/r/pull/7",
+            "reviewDecision": "APPROVED",
+            "mergeable": "MERGEABLE",
+            "headRefName": "feat/x",
+            "baseRefName": "main",
+            "labels": [{"name": "bug"}, {"name": "ui"}]
+        }"#;
+        let pr = parse_pr_overview(json).unwrap();
+        assert_eq!(pr.number, 7);
+        assert_eq!(pr.title, "Add feature");
+        assert_eq!(pr.state, "OPEN");
+        assert!(!pr.is_draft);
+        assert_eq!(pr.author, "alice");
+        assert_eq!(pr.review_decision.as_deref(), Some("APPROVED"));
+        assert_eq!(pr.mergeable.as_deref(), Some("MERGEABLE"));
+        assert_eq!(pr.head_ref_name, "feat/x");
+        assert_eq!(pr.base_ref_name, "main");
+        assert_eq!(pr.labels, vec!["bug".to_string(), "ui".to_string()]);
+    }
+
+    #[test]
+    fn parse_pr_overview_missing_optional_fields() {
+        let json = r#"{"number": 1, "title": "T", "state": "OPEN", "isDraft": true, "author": {}, "labels": []}"#;
+        let pr = parse_pr_overview(json).unwrap();
+        assert_eq!(pr.number, 1);
+        assert!(pr.is_draft);
+        assert_eq!(pr.author, "");
+        assert!(pr.labels.is_empty());
+        assert!(pr.review_decision.is_none());
+        assert!(pr.mergeable.is_none());
+    }
+
+    #[test]
+    fn parse_pr_overview_invalid_json_errors() {
+        assert!(parse_pr_overview("not json").is_err());
+    }
+
+    // ── parse_pr_comments ──
+
+    #[test]
+    fn parse_pr_comments_extracts_list() {
+        let json = r#"{"comments": [
+            {"author": {"login": "bob"}, "body": "Nice!", "createdAt": "2025-01-01T00:00:00Z", "url": "https://x/1"},
+            {"author": {"login": "carol"}, "body": "+1", "createdAt": "2025-01-02T00:00:00Z", "url": "https://x/2"}
+        ]}"#;
+        let comments = parse_pr_comments(json).unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].author, "bob");
+        assert_eq!(comments[0].body, "Nice!");
+        assert_eq!(comments[1].author, "carol");
+    }
+
+    #[test]
+    fn parse_pr_comments_empty_array() {
+        let json = r#"{"comments": []}"#;
+        let comments = parse_pr_comments(json).unwrap();
+        assert!(comments.is_empty());
+    }
+
+    // ── parse_pr_reviews ──
+
+    #[test]
+    fn parse_pr_reviews_extracts_states() {
+        let json = r#"{"reviews": [
+            {"author": {"login": "r1"}, "state": "APPROVED", "body": "", "submittedAt": "2025-01-01T00:00:00Z"},
+            {"author": {"login": "r2"}, "state": "CHANGES_REQUESTED", "body": "fix", "submittedAt": "2025-01-02T00:00:00Z"}
+        ]}"#;
+        let reviews = parse_pr_reviews(json).unwrap();
+        assert_eq!(reviews.len(), 2);
+        assert_eq!(reviews[0].state, "APPROVED");
+        assert_eq!(reviews[1].state, "CHANGES_REQUESTED");
+        assert_eq!(reviews[1].body, "fix");
+    }
+
+    // ── parse_pr_checks ──
+
+    #[test]
+    fn parse_pr_checks_maps_state_and_bucket() {
+        let json = r#"[
+            {"name": "test", "state": "SUCCESS", "bucket": "pass", "link": "https://ci/1"},
+            {"name": "lint", "state": "FAILURE", "bucket": "fail", "link": "https://ci/2"},
+            {"name": "build", "state": "PENDING", "bucket": "pending"}
+        ]"#;
+        let checks = parse_pr_checks(json).unwrap();
+        assert_eq!(checks.len(), 3);
+        assert_eq!(checks[0].status, "COMPLETED");
+        assert_eq!(checks[0].conclusion, "SUCCESS");
+        assert_eq!(checks[0].url.as_deref(), Some("https://ci/1"));
+        assert_eq!(checks[1].conclusion, "FAILURE");
+        assert_eq!(checks[2].status, "PENDING");
+        assert!(checks[2].url.is_none());
+    }
+
+    #[test]
+    fn parse_pr_checks_empty_array() {
+        assert!(parse_pr_checks("[]").unwrap().is_empty());
     }
 
     #[test]

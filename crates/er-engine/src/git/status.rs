@@ -647,6 +647,23 @@ pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<Strin
     Ok(stdout)
 }
 
+/// Get raw diff output between a base branch and a target branch using the
+/// symmetric-difference range `base...branch` (everything on `branch` since
+/// it diverged from `base`). Read-only; never mutates the working tree.
+pub fn git_diff_against_branch(root: &str, base: &str, branch: &str) -> Result<String> {
+    let spec = format!("{base}...{branch}");
+    let output = Command::new("git")
+        .args(["diff", "--no-color", "--no-ext-diff", &spec])
+        .current_dir(root)
+        .output()
+        .context("failed to run git diff <base>...<branch>")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git diff failed: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Commit staged changes with the given message
 pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
     // TODO(risk:minor): `message` is passed as a separate argument to Command::args, so shell

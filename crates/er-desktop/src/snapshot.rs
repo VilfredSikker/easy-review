@@ -1,10 +1,29 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{App, DiffMode, InputMode, TabState};
 use er_engine::git::{DiffFile, FileStatus, LineType};
 use er_engine::highlight::Highlighter;
 use serde::Serialize;
 
+use crate::projects;
+
 // ── Wire types ──────────────────────────────────────────────────────────────
+
+/// Which background fetches are currently in-flight. Included in every snapshot
+/// so the frontend can show loading indicators without adding its own timers.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LoadingFlags {
+    /// `gh pr list` refresh running across all project remotes.
+    pub pr_list: bool,
+    /// GitHub status fetch (checks, reviews) for the active tab.
+    pub gh_status: bool,
+    /// Inline GitHub comment sync for the active tab.
+    pub gh_comments: bool,
+}
+
+pub type LoadingState = Arc<Mutex<LoadingFlags>>;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
@@ -24,7 +43,109 @@ pub struct AppSnapshot {
     pub theme: String,
     pub watch_active: bool,
     pub worktrees: Vec<WorktreeSnapshot>,
+    pub projects: Vec<ProjectSnapshot>,
     pub notification: Option<String>,
+    /// When Some, the active tab is a read-only diff of this local branch.
+    pub local_branch: Option<String>,
+    pub tabs: Vec<TabSummary>,
+    pub active_tab: usize,
+    /// Browser-view annotations for the active tab. Freshly read from disk
+    /// each snapshot — keeps the source of truth in `ui-annotations.json`.
+    #[serde(default)]
+    pub ui_annotations: Vec<UiAnnotationSnapshot>,
+    /// Live GitHub status for the active tab when it's a remote PR with cached data.
+    pub github: Option<GithubStatusSnapshot>,
+    /// Which background fetches are currently in-flight.
+    pub bg_loading: LoadingFlags,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UiAnnotationSnapshot {
+    pub id: String,
+    pub url: String,
+    pub selector: Option<String>,
+    pub box_x: f64,
+    pub box_y: f64,
+    pub box_w: f64,
+    pub box_h: f64,
+    pub viewport_w: u32,
+    pub viewport_h: u32,
+    pub text: String,
+    pub timestamp: String,
+    pub author: String,
+    pub screenshot_path: Option<String>,
+    pub stale: bool,
+    pub element_context: Option<String>,
+    pub dom_context: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TabSummary {
+    pub idx: usize,
+    pub label: String,
+    pub kind: String, // "working" | "local_branch" | "remote_pr"
+    pub branch: Option<String>,
+    pub pr_number: Option<u64>,
+    pub repo_root: String,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSnapshot {
+    pub id: String,
+    pub name: String,
+    pub root_path: String,
+    pub remote: Option<String>,
+    pub is_active: bool,
+    pub local_branches: Vec<BranchInfo>,
+    pub auto_branches: Vec<BranchInfo>,
+    /// Open PRs authored by the current user.
+    pub my_prs: Vec<PrInfo>,
+    /// Open PRs from others that the current user hasn't approved yet (max 5).
+    pub prs_to_review: Vec<PrInfo>,
+    /// Most recently merged PRs (max 5, sorted by merged_at desc).
+    pub recently_merged: Vec<PrInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BranchInfo {
+    pub name: String,
+    pub upstream: Option<String>,
+    pub is_current: bool,
+    pub is_merged: bool,
+    /// When the branch has a checked-out worktree on disk, its absolute path.
+    /// Informational only — clicking a branch never navigates here.
+    #[serde(default)]
+    pub worktree_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct PrInfo {
+    pub number: u64,
+    pub title: String,
+    pub head_ref: String,
+    pub state: String,
+    pub is_draft: bool,
+    pub author: String,
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    #[serde(default)]
+    pub reviewers: Vec<String>,
+    /// "PASSING" | "FAILING" | "PENDING" | null
+    #[serde(default)]
+    pub checks_state: Option<String>,
+    /// "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null
+    #[serde(default)]
+    pub review_decision: Option<String>,
+    /// ISO 8601 timestamp — used to sort recently merged PRs.
+    #[serde(default)]
+    pub merged_at: Option<String>,
+    /// True when the current gh user has an APPROVED latest review on this PR.
+    #[serde(default)]
+    pub approved_by_me: bool,
+    /// Transient: latest review per reviewer (login, state). Not serialized to frontend.
+    #[serde(skip)]
+    pub latest_reviewer_states: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,6 +207,8 @@ pub struct ThreadSnapshot {
     pub resolved: bool,
     pub root: ThreadMessage,
     pub replies: Vec<ThreadMessage>,
+    /// For questions: the GitHub comment id this was promoted to (if any).
+    pub promoted_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,6 +227,8 @@ pub struct FlatFinding {
     pub severity: String,  // "high" | "med" | "low"
     pub title: String,
     pub message_markdown: String,
+    /// GitHub comment id this finding was promoted to (if any).
+    pub promoted_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +246,53 @@ pub struct AiSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct CheckSummary {
+    pub name: String,
+    pub status: String,
+    pub conclusion: String,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GhCommentSummary {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GhReviewSummary {
+    pub author: String,
+    pub state: String,
+    pub body: String,
+    pub submitted_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GithubStatusSnapshot {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub url: String,
+    pub state: String,
+    pub is_draft: bool,
+    pub title: String,
+    pub author: String,
+    pub head_ref: String,
+    pub base_ref: String,
+    pub review_decision: Option<String>,
+    pub mergeable: Option<String>,
+    pub labels: Vec<String>,
+    pub checks: Vec<CheckSummary>,
+    pub comments_count: usize,
+    pub reviews_count: usize,
+    pub recent_comments: Vec<GhCommentSummary>,
+    pub recent_reviews: Vec<GhReviewSummary>,
+    pub last_updated: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct PrSnapshot {
     pub number: u64,
     pub title: String,
@@ -134,6 +306,9 @@ pub struct WorktreeSnapshot {
     pub path: String,
     pub branch: String,
     pub is_current: bool,
+    pub is_pr: bool,
+    pub pr_number: Option<u64>,
+    pub is_merged: bool,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -146,7 +321,13 @@ fn severity_str(r: &RiskLevel) -> &'static str {
     }
 }
 
-fn comment_ref_to_thread(c: &CommentRef<'_>, file: &str, hunk_idx: usize) -> ThreadSnapshot {
+fn comment_ref_to_thread(
+    c: &CommentRef<'_>,
+    file: &str,
+    _hunk_idx: usize,
+    tab: &TabState,
+    pending: Option<&PendingAiReplies>,
+) -> ThreadSnapshot {
     let kind = match c.comment_type() {
         er_engine::ai::CommentType::Question => "question",
         er_engine::ai::CommentType::GitHubComment => "comment",
@@ -180,22 +361,154 @@ fn comment_ref_to_thread(c: &CommentRef<'_>, file: &str, hunk_idx: usize) -> Thr
             timestamp: c.timestamp().to_string(),
             body_markdown: c.text().to_string(),
         },
-        replies: build_replies(c, hunk_idx),
+        replies: build_replies(c, tab, pending),
+        promoted_to: match c {
+            CommentRef::Question(q) => q.promoted_to.clone(),
+            _ => None,
+        },
     }
 }
 
-fn build_replies(c: &CommentRef<'_>, _hunk_idx: usize) -> Vec<ThreadMessage> {
-    // Replies live as separate comments with in_reply_to set — the snapshot
-    // builder collects them here for the selected file's hunks. For the flat
-    // all-threads list we emit root-only and let the UI fetch replies on expand.
-    // For now return empty — replies are a Phase 3.C enhancement.
-    let _ = c;
-    vec![]
+fn build_replies(
+    root: &CommentRef<'_>,
+    tab: &TabState,
+    pending: Option<&PendingAiReplies>,
+) -> Vec<ThreadMessage> {
+    let root_id = root.id();
+    let mut replies: Vec<ThreadMessage> = Vec::new();
+
+    if let Some(qs) = &tab.ai.questions {
+        for q in &qs.questions {
+            if q.in_reply_to.as_deref() == Some(root_id) {
+                let author = if q.author.is_empty() { "You".to_string() } else { q.author.clone() };
+                let kind = if author == "You" { "you" } else if author == "ai" { "ai" } else { "human" };
+                replies.push(ThreadMessage {
+                    author,
+                    kind: kind.to_string(),
+                    timestamp: q.timestamp.clone(),
+                    body_markdown: q.text.clone(),
+                });
+            }
+        }
+    }
+    if let Some(gc) = &tab.ai.github_comments {
+        for c in &gc.comments {
+            if c.in_reply_to.as_deref() == Some(root_id) {
+                let author = if c.author.is_empty() { "You".to_string() } else { c.author.clone() };
+                let kind = if author == "You" { "you" } else if author == "ai" { "ai" } else { "human" };
+                replies.push(ThreadMessage {
+                    author,
+                    kind: kind.to_string(),
+                    timestamp: c.timestamp.clone(),
+                    body_markdown: c.comment.clone(),
+                });
+            }
+        }
+    }
+
+    replies.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+    // Append synthetic "…thinking" reply when an ask_ai subprocess is in
+    // flight for this thread. Injected after the sort so it always renders at
+    // the bottom regardless of timestamps.
+    if let Some(pmap) = pending {
+        let is_pending = pmap
+            .lock()
+            .map(|g| g.contains_key(root.id()))
+            .unwrap_or(false);
+        if is_pending {
+            replies.push(ThreadMessage {
+                author: "ai".to_string(),
+                kind: "ai".to_string(),
+                timestamp: String::new(),
+                body_markdown: "…thinking".to_string(),
+            });
+        }
+    }
+
+    replies
 }
 
 // ── Builder ──────────────────────────────────────────────────────────────────
 
-pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
+pub type PrCache = Arc<Mutex<HashMap<String, Vec<PrInfo>>>>;
+pub type GhUser = Arc<Mutex<Option<String>>>;
+
+/// Cache key: (owner, repo, pr_number). Stores the most recent `GithubStatusSnapshot`
+/// the background poller fetched.
+pub type GhStatusCache = Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>>;
+
+/// Map of `thread_id -> started_at_ms`. Used to render a synthetic "…thinking"
+/// reply on threads where an AI subprocess is currently running.
+pub type PendingAiReplies = Arc<Mutex<HashMap<String, u64>>>;
+
+#[derive(Clone, Default)]
+pub struct ProjectMeta {
+    #[allow(dead_code)]
+    pub current_branch: String,
+    #[allow(dead_code)]
+    pub base_branch: String,
+    pub local_branches: Vec<BranchInfo>,
+    pub auto_branches: Vec<BranchInfo>,
+}
+
+pub type MetaCache = std::sync::Arc<Mutex<HashMap<String, ProjectMeta>>>;
+
+/// Refresh the per-project metadata cache by shelling out to git for each
+/// known project. MUST NOT hold `AppState.app` — runs on a background thread.
+pub fn refresh_meta_cache(active_root: &str, cache: &MetaCache) {
+    let file = projects::load();
+    let mut next: HashMap<String, ProjectMeta> = HashMap::new();
+    for p in &file.projects {
+        if p.root_path.is_empty() {
+            continue;
+        }
+        let current_branch = detect_current_branch(&p.root_path);
+        let base_branch = detect_base_branch(&p.root_path);
+        let raw_worktrees =
+            er_engine::git::list_worktrees(&p.root_path).unwrap_or_default();
+        let local_branches = build_tracked_branches(
+            &p.root_path,
+            &base_branch,
+            &current_branch,
+            &p.tracked_branches,
+            &raw_worktrees,
+        );
+        let auto_branches = build_auto_branches(
+            &p.root_path,
+            &base_branch,
+            &current_branch,
+            &p.tracked_branches,
+            10,
+            &raw_worktrees,
+        );
+        let _ = active_root; // active_root is unused now that ProjectMeta drops worktrees.
+        next.insert(
+            p.id.clone(),
+            ProjectMeta {
+                current_branch,
+                base_branch,
+                local_branches,
+                auto_branches,
+            },
+        );
+    }
+    if let Ok(mut g) = cache.lock() {
+        *g = next;
+    }
+}
+
+pub fn build_snapshot(
+    app: &App,
+    highlighter: &mut Highlighter,
+    pr_cache: Option<&PrCache>,
+    meta_cache: Option<&MetaCache>,
+    gh_user: Option<&GhUser>,
+    pending_ai: Option<&PendingAiReplies>,
+    gh_status_cache: Option<&GhStatusCache>,
+    loading: Option<&LoadingState>,
+) -> AppSnapshot {
+    let t0 = std::time::Instant::now();
     let tab = app.tab();
 
     let mode = match tab.mode {
@@ -224,10 +537,13 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
         .files
         .iter()
         .enumerate()
-        .map(|(i, f)| {
-            let is_selected = i == tab.selected_file;
-            let hunks = if is_selected && !f.compacted {
-                build_hunks(f, tab, highlighter)
+        .map(|(_i, f)| {
+            // Continuous-scroll diff view: populate hunks for every non-compacted
+            // file (selected_file becomes a focus cursor, not a viewport selector).
+            // TODO: revisit if large diffs cause perf issues — windowed rendering
+            // (frontend reports visible range) is the planned mitigation.
+            let hunks = if !f.compacted {
+                build_hunks(f, tab, highlighter, pending_ai)
             } else {
                 vec![]
             };
@@ -271,8 +587,33 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
         })
         .collect();
 
-    let ai = build_ai_snapshot(tab);
+    let ai = build_ai_snapshot(tab, pending_ai);
     let pr = build_pr_snapshot(tab);
+
+    let active_tab = app.active_tab;
+    let tabs: Vec<TabSummary> = app
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let kind = if t.is_remote() {
+                "remote_pr"
+            } else if t.is_local_branch_view() {
+                "local_branch"
+            } else {
+                "working"
+            };
+            TabSummary {
+                idx: i,
+                label: t.tab_name(),
+                kind: kind.to_string(),
+                branch: t.local_branch_view.clone(),
+                pr_number: t.pr_number,
+                repo_root: t.repo_root.clone(),
+                is_active: i == active_tab,
+            }
+        })
+        .collect();
 
     let filter = if tab.filter_expr.is_empty() {
         None
@@ -280,9 +621,71 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
         Some(tab.filter_expr.clone())
     };
 
-    AppSnapshot {
+    // Browser-view UI annotations — read freshly from the active tab's
+    // comments_dir so writes flow back to the UI on the next snapshot.
+    let ui_annotations: Vec<UiAnnotationSnapshot> = er_engine::ai::load_ui_annotations(&tab.comments_dir())
+        .into_iter()
+        .map(|a| UiAnnotationSnapshot {
+            id: a.id,
+            url: a.url,
+            selector: a.selector,
+            box_x: a.box_x,
+            box_y: a.box_y,
+            box_w: a.box_w,
+            box_h: a.box_h,
+            viewport_w: a.viewport_w,
+            viewport_h: a.viewport_h,
+            text: a.text,
+            timestamp: a.timestamp,
+            author: a.author,
+            screenshot_path: a.screenshot_path,
+            stale: a.stale,
+            element_context: a.element_context,
+            dom_context: a.dom_context,
+        })
+        .collect();
+
+    // Resolve the active tab's GitHub status from the cache.
+    // For remote PR tabs: use remote_repo + pr_number directly.
+    // For working-tree / local-branch tabs: look up the current branch in pr_cache.
+    let github = if let (Some(slug), Some(number)) =
+        (tab.remote_repo.as_ref(), tab.pr_number)
+    {
+        slug.split_once('/')
+            .and_then(|(o, r)| {
+                let key = (o.to_string(), r.to_string(), number);
+                gh_status_cache.and_then(|c| c.lock().ok()).and_then(|g| g.get(&key).cloned())
+            })
+    } else {
+        // Find a PR whose head_ref matches the viewed branch. Prefer open PRs,
+        // but keep merged/closed matches so the Sources card can show terminal
+        // PR state instead of looking disconnected.
+        let branch = tab.local_branch_view.as_deref().unwrap_or(&tab.current_branch);
+        let pr_key = pr_cache
+            .and_then(|pc| pc.lock().ok())
+            .and_then(|cache| {
+                cache.iter().find_map(|(slug, prs)| {
+                    prs.iter()
+                        .filter(|p| p.head_ref == branch)
+                        .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
+                        .and_then(|p| {
+                            slug.split_once('/')
+                                .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
+                        })
+                })
+            });
+        pr_key.and_then(|(o, r, n)| {
+            let key = (o, r, n);
+            gh_status_cache.and_then(|c| c.lock().ok()).and_then(|g| g.get(&key).cloned())
+        })
+    };
+
+    let out = AppSnapshot {
         mode: mode.to_string(),
-        branch: tab.current_branch.clone(),
+        branch: tab
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| tab.current_branch.clone()),
         base: tab.base_branch.clone(),
         input_mode: input_mode.to_string(),
         files,
@@ -300,20 +703,337 @@ pub fn build_snapshot(app: &App, highlighter: &mut Highlighter) -> AppSnapshot {
         },
         theme: "dark".to_string(),
         watch_active: app.watching,
-        worktrees: er_engine::git::list_worktrees(&tab.repo_root)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|wt| WorktreeSnapshot {
-                is_current: wt.path == tab.repo_root,
-                branch: wt.branch,
-                path: wt.path,
-            })
-            .collect(),
+        worktrees: build_worktrees(&tab.repo_root, &tab.base_branch, &tab.repo_root),
+        projects: build_projects(tab, pr_cache, meta_cache, gh_user),
         notification: app.watch_message.clone(),
+        local_branch: tab.local_branch_view.clone(),
+        tabs,
+        active_tab,
+        ui_annotations,
+        github,
+        bg_loading: loading
+            .and_then(|l| l.lock().ok().map(|g| g.clone()))
+            .unwrap_or_default(),
+    };
+    if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {
+        eprintln!(
+            "er-desktop build_snapshot_ms={} files={} rendered_hunks={}",
+            t0.elapsed().as_millis(),
+            out.files.len(),
+            out.files.iter().map(|f| f.hunks.len()).sum::<usize>()
+        );
     }
+    out
 }
 
-fn build_hunks(file: &DiffFile, tab: &TabState, highlighter: &mut Highlighter) -> Vec<HunkSnapshot> {
+fn build_worktrees(repo_root: &str, base_branch: &str, current_root: &str) -> Vec<WorktreeSnapshot> {
+    let wts = er_engine::git::list_worktrees(repo_root).unwrap_or_default();
+    let skip_merged = wts.len() > 10;
+    wts.into_iter()
+        .map(|wt| {
+            let (is_pr, pr_number, is_merged) =
+                detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged);
+            WorktreeSnapshot {
+                is_current: wt.path == current_root,
+                branch: wt.branch,
+                path: wt.path,
+                is_pr,
+                pr_number,
+                is_merged,
+            }
+        })
+        .collect()
+}
+
+fn build_tracked_branches(
+    repo_root: &str,
+    base_branch: &str,
+    current_branch: &str,
+    tracked: &[String],
+    worktrees: &[er_engine::git::Worktree],
+) -> Vec<BranchInfo> {
+    let out = std::process::Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)|%(upstream:short)",
+            "refs/heads/",
+        ])
+        .current_dir(repo_root)
+        .output();
+    let Ok(out) = out else { return Vec::new(); };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
+
+    // Build the full list first, then filter to the curated set (tracked ∪ {current}).
+    let all: Vec<BranchInfo> = text
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, '|');
+            let name = parts.next()?.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let upstream_raw = parts.next().unwrap_or("").trim().to_string();
+            let upstream = if upstream_raw.is_empty() { None } else { Some(upstream_raw) };
+            let is_current = name == current_branch;
+            let is_merged = if skip_merged || name == base_branch {
+                false
+            } else {
+                std::process::Command::new("git")
+                    .args(["merge-base", "--is-ancestor", &name, base_branch])
+                    .current_dir(repo_root)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            };
+            let worktree_path = worktrees
+                .iter()
+                .find(|w| w.branch == name)
+                .map(|w| w.path.clone());
+            Some(BranchInfo { name, upstream, is_current, is_merged, worktree_path })
+        })
+        .collect();
+
+    // Visibility set: tracked ∪ {current}. Always show current first.
+    let mut visible: Vec<BranchInfo> = Vec::new();
+    let mut seen = std::collections::HashSet::<String>::new();
+
+    if let Some(cur) = all.iter().find(|b| b.is_current) {
+        visible.push(cur.clone());
+        seen.insert(cur.name.clone());
+    }
+    for name in tracked {
+        if seen.contains(name) {
+            continue;
+        }
+        if let Some(b) = all.iter().find(|b| &b.name == name) {
+            visible.push(b.clone());
+            seen.insert(b.name.clone());
+        }
+    }
+    visible
+}
+
+fn build_auto_branches(
+    repo_root: &str,
+    base_branch: &str,
+    current_branch: &str,
+    tracked: &[String],
+    limit: usize,
+    worktrees: &[er_engine::git::Worktree],
+) -> Vec<BranchInfo> {
+    let out = std::process::Command::new("git")
+        .args([
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)|%(upstream:short)",
+            "refs/heads/",
+        ])
+        .current_dir(repo_root)
+        .output();
+    let Ok(out) = out else { return Vec::new(); };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
+
+    let tracked_set: std::collections::HashSet<&str> =
+        tracked.iter().map(|s| s.as_str()).collect();
+
+    let mut result: Vec<BranchInfo> = Vec::new();
+    for line in text.lines() {
+        if result.len() >= limit {
+            break;
+        }
+        let mut parts = line.splitn(2, '|');
+        let Some(name) = parts.next().map(|s| s.trim().to_string()) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        if name == current_branch {
+            continue;
+        }
+        if tracked_set.contains(name.as_str()) {
+            continue;
+        }
+        let upstream_raw = parts.next().unwrap_or("").trim().to_string();
+        let upstream = if upstream_raw.is_empty() { None } else { Some(upstream_raw) };
+        let is_merged = if skip_merged || name == base_branch {
+            false
+        } else {
+            std::process::Command::new("git")
+                .args(["merge-base", "--is-ancestor", &name, base_branch])
+                .current_dir(repo_root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        let worktree_path = worktrees
+            .iter()
+            .find(|w| w.branch == name)
+            .map(|w| w.path.clone());
+        result.push(BranchInfo {
+            name,
+            upstream,
+            is_current: false,
+            is_merged,
+            worktree_path,
+        });
+    }
+    result
+}
+
+fn build_projects(
+    tab: &TabState,
+    pr_cache: Option<&PrCache>,
+    meta_cache: Option<&MetaCache>,
+    gh_user: Option<&GhUser>,
+) -> Vec<ProjectSnapshot> {
+    let file = projects::load();
+    let active_root = &tab.repo_root;
+
+    let pr_map: Option<HashMap<String, Vec<PrInfo>>> = pr_cache.and_then(|m| {
+        m.lock().ok().map(|g| g.clone())
+    });
+
+    // Snapshot the meta cache once, then drop the lock immediately.
+    let meta_map: HashMap<String, ProjectMeta> = meta_cache
+        .and_then(|m| m.lock().ok().map(|g| g.clone()))
+        .unwrap_or_default();
+
+    let me: Option<String> = gh_user.and_then(|g| g.lock().ok().and_then(|v| v.clone()));
+
+    // The branch the user is currently viewing — for read-only tabs this is the
+    // local_branch_view; otherwise the working tree's HEAD. Drives the "active"
+    // dot in the sidebar so it tracks the tab, not the working tree.
+    let viewed_branch: String = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+
+    file.projects
+        .iter()
+        .filter(|p| !p.root_path.is_empty())
+        .map(|p| {
+            let is_active = &p.root_path == active_root;
+            let mut meta = meta_map.get(&p.id).cloned().unwrap_or_default();
+
+            // For the active project, recompute is_current per branch using the
+            // viewed branch instead of the worktree's HEAD.
+            if is_active {
+                for b in meta.local_branches.iter_mut() {
+                    b.is_current = b.name == viewed_branch;
+                }
+                for b in meta.auto_branches.iter_mut() {
+                    b.is_current = b.name == viewed_branch;
+                }
+            }
+
+            let (my_prs, prs_to_review, recently_merged) =
+                if let (Some(remote), Some(ref cache)) = (&p.remote, &pr_map) {
+                    let mut all: Vec<PrInfo> = cache
+                        .get(remote)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|pr| !p.dismissed_prs.contains(&pr.number))
+                        .map(|mut pr| {
+                            // Compute approved_by_me from transient latest_reviewer_states.
+                            if let Some(ref login) = me {
+                                pr.approved_by_me = pr
+                                    .latest_reviewer_states
+                                    .iter()
+                                    .any(|(l, s)| l == login && s == "APPROVED");
+                            }
+                            pr
+                        })
+                        .collect();
+
+                    let my: Vec<PrInfo> = all
+                        .iter()
+                        .filter(|pr| {
+                            pr.state == "OPEN"
+                                && me.as_deref().is_some_and(|login| pr.author == login)
+                        })
+                        .cloned()
+                        .collect();
+
+                    let to_review: Vec<PrInfo> = all
+                        .iter()
+                        .filter(|pr| {
+                            pr.state == "OPEN"
+                                && me.as_deref().map_or(true, |login| pr.author != login)
+                                && !pr.approved_by_me
+                        })
+                        .take(5)
+                        .cloned()
+                        .collect();
+
+                    all.retain(|pr| pr.state == "MERGED");
+                    all.sort_by(|a, b| b.merged_at.cmp(&a.merged_at));
+                    all.truncate(5);
+
+                    (my, to_review, all)
+                } else {
+                    (Vec::new(), Vec::new(), Vec::new())
+                };
+
+            ProjectSnapshot {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                root_path: p.root_path.clone(),
+                remote: p.remote.clone(),
+                is_active,
+                local_branches: meta.local_branches,
+                auto_branches: meta.auto_branches,
+                my_prs,
+                prs_to_review,
+                recently_merged,
+            }
+        })
+        .collect()
+}
+
+fn detect_current_branch(repo_root: &str) -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo_root)
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+        .unwrap_or_default()
+}
+
+fn detect_base_branch(repo_root: &str) -> String {
+    // Cheap fallback: try common defaults
+    for candidate in ["main", "master", "develop", "dev"] {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", &format!("refs/heads/{}", candidate)])
+            .current_dir(repo_root)
+            .output();
+        if let Ok(o) = out {
+            if o.status.success() {
+                return candidate.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn build_hunks(
+    file: &DiffFile,
+    tab: &TabState,
+    highlighter: &mut Highlighter,
+    pending: Option<&PendingAiReplies>,
+) -> Vec<HunkSnapshot> {
     let filename = std::path::Path::new(&file.path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -370,8 +1090,11 @@ fn build_hunks(file: &DiffFile, tab: &TabState, highlighter: &mut Highlighter) -
                 .ai
                 .comments_for_hunk(&file.path, hunk_idx)
                 .iter()
-                .filter(|c| !c.is_resolved())
-                .map(|c| comment_ref_to_thread(c, &file.path, hunk_idx))
+                .filter(|c| {
+                    c.in_reply_to().is_none()
+                        && !(matches!(c, CommentRef::Question(_)) && c.is_resolved())
+                })
+                .map(|c| comment_ref_to_thread(c, &file.path, hunk_idx, tab, pending))
                 .collect();
 
             HunkSnapshot {
@@ -387,7 +1110,7 @@ fn build_hunks(file: &DiffFile, tab: &TabState, highlighter: &mut Highlighter) -
         .collect()
 }
 
-fn build_ai_snapshot(tab: &TabState) -> AiSnapshot {
+fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSnapshot {
     let ai = &tab.ai;
 
     let (high, med, low) = if let Some(review) = &ai.review {
@@ -422,6 +1145,7 @@ fn build_ai_snapshot(tab: &TabState) -> AiSnapshot {
         if let Some(qs) = &ai.questions {
             for q in &qs.questions {
                 if q.in_reply_to.is_none() && !q.resolved {
+                    let qref = CommentRef::Question(q);
                     result.push(ThreadSnapshot {
                         id: q.id.clone(),
                         kind: "question".to_string(),
@@ -437,15 +1161,17 @@ fn build_ai_snapshot(tab: &TabState) -> AiSnapshot {
                             timestamp: q.timestamp.clone(),
                             body_markdown: q.text.clone(),
                         },
-                        replies: vec![],
+                        replies: build_replies(&qref, tab, pending),
+                        promoted_to: q.promoted_to.clone(),
                     });
                 }
             }
         }
         if let Some(gc) = &ai.github_comments {
             for c in &gc.comments {
-                if c.in_reply_to.is_none() && !c.resolved {
+                if c.in_reply_to.is_none() {
                     let author_kind = if c.author.is_empty() || c.author == "You" { "you" } else { "human" };
+                    let cref = CommentRef::GitHubComment(c);
                     result.push(ThreadSnapshot {
                         id: c.id.clone(),
                         kind: "comment".to_string(),
@@ -461,7 +1187,8 @@ fn build_ai_snapshot(tab: &TabState) -> AiSnapshot {
                             timestamp: c.timestamp.clone(),
                             body_markdown: c.comment.clone(),
                         },
-                        replies: vec![],
+                        replies: build_replies(&cref, tab, pending),
+                        promoted_to: None,
                     });
                 }
             }
@@ -469,12 +1196,15 @@ fn build_ai_snapshot(tab: &TabState) -> AiSnapshot {
         result
     };
 
-    // Flat findings list for AiReviewCard
+    // Flat findings list for AiReviewCard. Merge promoted_to from the sibling
+    // `.er/finding-promotions.json` so the UI can show "Promoted to #N".
+    let promotions = crate::commands::load_finding_promotions(&tab.er_dir());
     let findings: Vec<FlatFinding> = if let Some(review) = &ai.review {
         review
             .files
             .iter()
             .flat_map(|(path, fr)| {
+                let promotions = &promotions;
                 fr.findings.iter().map(move |f| FlatFinding {
                     id: f.id.clone(),
                     file: path.clone(),
@@ -482,6 +1212,7 @@ fn build_ai_snapshot(tab: &TabState) -> AiSnapshot {
                     severity: severity_str(&f.severity).to_string(),
                     title: f.title.clone(),
                     message_markdown: f.description.clone(),
+                    promoted_to: promotions.get(&f.id).cloned().or_else(|| f.promoted_to.clone()),
                 })
             })
             .collect()
@@ -512,6 +1243,46 @@ fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
         base: pr.base_branch.clone(),
         head: tab.current_branch.clone(),
     })
+}
+
+fn detect_pr_meta(
+    worktree_path: &str,
+    branch: &str,
+    base: &str,
+    skip_merged: bool,
+) -> (bool, Option<u64>, bool) {
+    let mut is_pr = false;
+    let mut pr_number: Option<u64> = None;
+    if let Ok(out) = std::process::Command::new("git")
+        .args(["config", "--get", &format!("branch.{}.merge", branch)])
+        .current_dir(worktree_path)
+        .output()
+    {
+        if out.status.success() {
+            let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Some(rest) = val.strip_prefix("refs/pull/") {
+                if let Some(num_str) = rest.strip_suffix("/head") {
+                    if let Ok(n) = num_str.parse::<u64>() {
+                        is_pr = true;
+                        pr_number = Some(n);
+                    }
+                }
+            }
+        }
+    }
+
+    let is_merged = if skip_merged || base.is_empty() || branch == base {
+        false
+    } else {
+        std::process::Command::new("git")
+            .args(["merge-base", "--is-ancestor", branch, base])
+            .current_dir(worktree_path)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+
+    (is_pr, pr_number, is_merged)
 }
 
 fn status_str(status: &FileStatus) -> String {

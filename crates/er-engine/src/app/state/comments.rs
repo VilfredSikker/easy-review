@@ -267,6 +267,11 @@ impl App {
         );
 
         let is_reply = reply_to.is_some();
+        let author = self
+            .tab_mut()
+            .comment_author_override
+            .take()
+            .unwrap_or_else(|| "You".to_string());
         questions.questions.push(ai::ReviewQuestion {
             id,
             timestamp: chrono_now(),
@@ -284,7 +289,8 @@ impl App {
             anchor_status: "original".to_string(),
             relocated_at_hash: self.tab().branch_diff_hash.clone(),
             in_reply_to: reply_to,
-            author: "You".to_string(),
+            author,
+            promoted_to: None,
         });
 
         // Write atomically
@@ -356,6 +362,11 @@ impl App {
         );
 
         let is_reply = reply_to.is_some();
+        let author = self
+            .tab_mut()
+            .comment_author_override
+            .take()
+            .unwrap_or_else(|| "You".to_string());
         gh_comments.comments.push(ai::GitHubReviewComment {
             id,
             timestamp: chrono_now(),
@@ -369,7 +380,7 @@ impl App {
             resolved: false,
             source: "local".to_string(),
             github_id: None,
-            author: "You".to_string(),
+            author,
             synced: false,
             stale: false,
             context_before: anchor.context_before,
@@ -496,6 +507,36 @@ impl App {
             tab.comment_type = comment_type;
             tab.comment_edit_id = None;
             tab.comment_textarea = TextArea::new(vec![text]);
+        }
+        self.input_mode = InputMode::Comment;
+        self.submit_comment()
+    }
+
+    /// Submit a comment/question whose `author` field is set to the provided
+    /// value (e.g. "ai") instead of "You". Used by the desktop `ask_ai` flow
+    /// to attribute AI-generated replies. Mirrors `submit_comment_text` and
+    /// sets a transient override consumed by submit_question/submit_github_comment.
+    pub fn submit_comment_text_as_author(
+        &mut self,
+        file: String,
+        hunk_idx: usize,
+        line_num: Option<usize>,
+        text: String,
+        comment_type: CommentType,
+        reply_to: Option<String>,
+        author: String,
+    ) -> Result<()> {
+        {
+            let tab = self.tab_mut();
+            tab.comment_file = file;
+            tab.comment_hunk = hunk_idx;
+            tab.comment_line_num = line_num;
+            tab.comment_reply_to = reply_to;
+            tab.comment_finding_ref = None;
+            tab.comment_type = comment_type;
+            tab.comment_edit_id = None;
+            tab.comment_textarea = TextArea::new(vec![text]);
+            tab.comment_author_override = Some(author);
         }
         self.input_mode = InputMode::Comment;
         self.submit_comment()

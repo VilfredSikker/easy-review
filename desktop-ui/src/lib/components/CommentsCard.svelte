@@ -1,6 +1,11 @@
 <script lang="ts">
-  import type { AiSnapshot, ThreadSnapshot } from "$lib/types";
+  import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import Card from "$lib/components/ui/Card.svelte";
+  import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
+  import Pill from "$lib/components/ui/Pill.svelte";
+  import { navigateToThread } from "$lib/dom";
+  import { openExportModal } from "$lib/components/ExportModal.svelte";
 
   interface Props {
     ai: AiSnapshot;
@@ -8,70 +13,231 @@
 
   const { ai }: Props = $props();
 
-  const threads = $derived(ai.threads.filter((t) => t.kind === "comment"));
+  let pushMode = $state<null | "review" | "individual">(null);
+  let decision = $state<"comment" | "approve" | "changes">("comment");
+  let summary = $state("");
+  let submitting = $state(false);
 
-  function basename(path: string): string {
-    return path.split("/").pop() ?? path;
+  const commentThreads = $derived(ai.threads.filter((t) => t.kind === "comment"));
+  const visibleCommentThreads = $derived.by(() => {
+    const visibility = app.commentVisibility;
+    if (visibility.hideAll) return [];
+    return commentThreads.filter(
+      (thread) =>
+        !(visibility.hideResolved && thread.resolved) &&
+        !(visibility.hideOutdated && thread.stale),
+    );
+  });
+  const annotationCount = $derived(app.snapshot?.ui_annotations?.length ?? 0);
+
+  function scrollToAnnotations() {
+    const el = document.getElementById("ui-annotations-card");
+    el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
-  function preview(body: string): string {
-    return body.length > 60 ? body.slice(0, 60) + "…" : body;
+  function basename(p: string): string {
+    const i = p.lastIndexOf("/");
+    return i === -1 ? p : p.slice(i + 1);
+  }
+
+  const ghEvent = $derived(
+    decision === "approve" ? "APPROVE" :
+    decision === "changes" ? "REQUEST_CHANGES" :
+    "COMMENT"
+  );
+
+  async function submitReview() {
+    submitting = true;
+    await app.cmd("submit_github_review", { mode: ghEvent, summary });
+    submitting = false;
+    pushMode = null;
+    summary = "";
+  }
+
+  async function submitIndividual() {
+    submitting = true;
+    await app.cmd("push_github_comments");
+    submitting = false;
+    pushMode = null;
   }
 </script>
 
-<div class="px-3 py-2.5 border-b border-ink-500/40">
-  <div class="flex items-center justify-between mb-2">
-    <div class="flex items-center gap-1.5">
-      <span class="text-[10px] font-medium uppercase tracking-wider text-ink-400">Comments</span>
-      <span class="text-[10px] font-mono bg-ink-700 text-ink-300 px-1 py-0.5 rounded">
-        {ai.comments}
-      </span>
-    </div>
-    <div class="flex items-center gap-1">
-      <button
-        class="text-[10px] font-mono text-ink-400 bg-ink-700 hover:bg-ink-600 px-1.5 py-0.5 rounded transition-colors"
-        onclick={() => app.cmd("pull_github_comments")}
-        title="Pull comments from GitHub"
-      >
-        Pull
-      </button>
-      {#if ai.unpushed > 0}
+<Card>
+  <div class="flex items-center justify-between mb-3">
+    <SectionLabel>Comments</SectionLabel>
+    <div class="flex items-center gap-2">
+      <span class="flex items-center gap-1 text-[10px] mono text-comment"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>{commentThreads.length} local</span>
+      {#if annotationCount > 0}
         <button
-          class="text-[10px] font-mono text-comment bg-comment/10 hover:bg-comment/20 px-1.5 py-0.5 rounded transition-colors"
-          onclick={() => app.cmd("push_github_comments")}
-          title="Push local comments to GitHub"
-        >
-          Push {ai.unpushed}
-        </button>
+          type="button"
+          onclick={scrollToAnnotations}
+          class="text-[10px] mono text-muted hover:text-fg-2 px-1 py-0.5 rounded border border-hairline"
+          title="Jump to UI annotations"
+        >+ {annotationCount} annotation{annotationCount === 1 ? "" : "s"}</button>
       {/if}
     </div>
   </div>
 
-  {#if threads.length > 0}
-    <div class="flex flex-col gap-1">
-      {#each threads as thread (thread.id)}
-        <div class="flex flex-col gap-0.5 py-1 px-1 rounded {thread.stale ? 'opacity-50' : ''} hover:bg-ink-800/50 transition-colors">
-          <div class="flex items-center gap-1.5">
-            <span class="text-[10px] text-ink-500 truncate">{basename(thread.file)}</span>
-            {#if thread.line}
-              <span class="text-[10px] text-ink-600 shrink-0">:{thread.line}</span>
-            {/if}
-            <span class="flex-1"></span>
-            {#if thread.synced}
-              <span class="text-[10px] text-add-fg shrink-0" title="Synced">✓</span>
-            {/if}
-            {#if thread.stale}
-              <span class="text-[10px] text-amber-500 shrink-0">stale</span>
-            {/if}
+  <div class="flex flex-wrap items-center gap-1.5 mb-3">
+    <button
+      type="button"
+      onclick={() => app.setCommentVisibility({ hideOutdated: !app.commentVisibility.hideOutdated })}
+      class="px-2 py-1 rounded text-[10px] border {app.commentVisibility.hideOutdated ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
+      title="Hide outdated GitHub comments in the side panel and inline diff"
+    >Hide outdated</button>
+    <button
+      type="button"
+      onclick={() => app.setCommentVisibility({ hideResolved: !app.commentVisibility.hideResolved })}
+      class="px-2 py-1 rounded text-[10px] border {app.commentVisibility.hideResolved ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
+      title="Hide resolved GitHub comments in the side panel and inline diff"
+    >Hide resolved</button>
+    <button
+      type="button"
+      onclick={() => app.setCommentVisibility({ hideAll: !app.commentVisibility.hideAll })}
+      class="px-2 py-1 rounded text-[10px] border {app.commentVisibility.hideAll ? 'bg-del-bg border-del-fg/30 text-del-fg' : 'border-hairline text-muted hover:text-fg-2'}"
+      title="Hide every GitHub comment in the side panel and inline diff"
+    >Hide all</button>
+    {#if visibleCommentThreads.length !== commentThreads.length}
+      <span class="text-[10px] text-muted mono">{visibleCommentThreads.length}/{commentThreads.length} shown</span>
+    {/if}
+  </div>
+
+  <div class="space-y-1">
+    {#each visibleCommentThreads as thread (thread.id)}
+      <button
+        onclick={() => navigateToThread(thread)}
+        class="w-full text-left text-sm border-l-2 border-comment pl-2 pr-1 py-1.5 rounded-r hover:bg-bg flex flex-col gap-0.5 group"
+      >
+        <div class="text-[11px] text-muted mono flex items-center gap-1.5">
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" class="text-comment" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span>{basename(thread.file)}:{thread.line}</span>
+          {#if !thread.synced}
+            <Pill dot="#fbbf24" textColor="text-ai">local</Pill>
+          {/if}
+          {#if thread.resolved}
+            <Pill dot="#60a5fa" textColor="text-fg-3">resolved</Pill>
+          {/if}
+          {#if thread.stale}
+            <Pill dot="#a78bfa" textColor="text-fg-3">outdated</Pill>
+          {/if}
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ml-auto opacity-0 group-hover:opacity-100 transition text-accent"><path d="M7 17L17 7M7 7h10v10"/></svg>
+        </div>
+        <div class="text-fg-2 text-left">{thread.root.body_markdown}</div>
+      </button>
+    {/each}
+  </div>
+
+  <!-- Push group -->
+  <div class="mt-4 border-t border-hairline pt-3">
+    <div class="flex items-center justify-between mb-2">
+      <SectionLabel size="sm">Push to GitHub</SectionLabel>
+      <span class="text-[10px] mono text-muted">{ai.unpushed} unpushed</span>
+    </div>
+
+    {#if pushMode === null}
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          onclick={() => pushMode = "review"}
+          title="Backend doesn't yet accept summary/decision — currently pushes the same as Individually"
+          class="px-3 py-2 rounded-md border border-border hover:border-accent hover:bg-hover text-left transition"
+        >
+          <div class="flex items-center gap-1.5 text-sm text-fg mb-0.5">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            As review
+            <span class="ml-auto text-[9px] mono text-muted uppercase tracking-wider">soon</span>
           </div>
-          <div class="flex items-baseline gap-1">
-            <span class="text-[10px] font-medium text-comment shrink-0">{thread.root.author}</span>
-            <span class="text-[11px] text-ink-400 truncate">{preview(thread.root.body_markdown)}</span>
+          <div class="text-[10px] text-muted">Summary + decision · single approval gate</div>
+        </button>
+        <button
+          onclick={() => pushMode = "individual"}
+          class="px-3 py-2 rounded-md border border-border hover:border-accent hover:bg-hover text-left transition"
+        >
+          <div class="flex items-center gap-1.5 text-sm text-fg mb-0.5">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Individually
+          </div>
+          <div class="text-[10px] text-muted">Each comment posts standalone · no review</div>
+        </button>
+      </div>
+    {/if}
+
+    {#if pushMode === "review"}
+      <div class="rounded-lg border border-border bg-surface">
+        <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-add-fg"><path d="M9 11l3 3L22 4"/></svg>
+          <span class="text-fg-2 font-medium">Push as review</span>
+          <span class="text-muted">· {commentThreads.length} comment{commentThreads.length === 1 ? "" : "s"}</span>
+          <button onclick={() => pushMode = null} aria-label="Cancel push" title="Cancel" class="ml-auto text-muted hover:text-fg-2">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <textarea
+          bind:value={summary}
+          rows="3"
+          class="w-full bg-transparent text-sm px-3 py-2 outline-none resize-none font-sans placeholder:text-muted"
+          placeholder={`Overall review comment (optional)… e.g. "Looks great overall. One typing question on the new options API."`}
+        ></textarea>
+
+        <div class="px-3 py-2 border-t border-hairline">
+          <SectionLabel size="sm">Decision</SectionLabel>
+          <div class="grid grid-cols-3 gap-1 mt-1.5">
+            <button
+              onclick={() => decision = "comment"}
+              class="px-2 py-1.5 rounded text-[11px] flex flex-col items-center gap-0.5 transition {decision === 'comment' ? 'bg-hover text-fg ring-1 ring-border' : 'text-fg-3 hover:bg-card'}"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              Comment
+            </button>
+            <button
+              onclick={() => decision = "approve"}
+              class="px-2 py-1.5 rounded text-[11px] flex flex-col items-center gap-0.5 transition {decision === 'approve' ? 'bg-add-bg text-add-fg ring-1 ring-add-fg/40' : 'text-fg-3 hover:bg-card'}"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+              Approve
+            </button>
+            <button
+              onclick={() => decision = "changes"}
+              class="px-2 py-1.5 rounded text-[11px] flex flex-col items-center gap-0.5 transition {decision === 'changes' ? 'bg-del-bg text-del-fg ring-1 ring-del-fg/40' : 'text-fg-3 hover:bg-card'}"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12c0-5 4-9 9-9s9 4 9 9-4 9-9 9-9-4-9-9z"/><path d="M9 9h6v6"/></svg>
+              Request changes
+            </button>
           </div>
         </div>
-      {/each}
-    </div>
-  {:else}
-    <div class="text-[11px] text-ink-500">No comments</div>
-  {/if}
-</div>
+
+        <div class="px-3 py-2 border-t border-hairline flex items-center gap-2">
+          <span class="text-[10px] mono text-muted">questions stay local</span>
+          <button
+            onclick={submitReview}
+            disabled={submitting}
+            class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium text-black disabled:opacity-50 disabled:cursor-not-allowed {decision === 'approve' ? 'bg-add-fg hover:opacity-90' : decision === 'changes' ? 'bg-del-fg hover:opacity-90' : 'bg-accent hover:opacity-90'}"
+          >
+            {#if submitting}Submitting…{:else}{decision === "approve" ? "Submit approval" : decision === "changes" ? "Submit changes request" : "Submit review"}{/if}
+          </button>
+        </div>
+      </div>
+    {/if}
+
+    {#if pushMode === "individual"}
+      <div class="rounded-lg border border-border bg-surface p-3">
+        <div class="flex items-start gap-2 mb-3">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mt-0.5 shrink-0 text-ai"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+          <div class="text-sm text-fg-2 leading-snug">Push <span class="text-fg font-medium">{commentThreads.length} comment{commentThreads.length === 1 ? "" : "s"}</span> as a standalone GitHub comment? It won't be tied to a review submission.</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick={() => pushMode = null} disabled={submitting} class="px-3 py-1.5 rounded-md text-xs text-fg-2 hover:bg-hover disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
+          <button onclick={submitIndividual} disabled={submitting} class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:opacity-90 text-black disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? "Pushing…" : "Push"}</button>
+        </div>
+      </div>
+    {/if}
+  </div>
+
+  <button
+    onclick={openExportModal}
+    class="mt-3 w-full px-3 py-1.5 text-xs rounded-md border border-border hover:bg-hover text-fg-2 flex items-center justify-center gap-2"
+  >
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    Export to coding agent
+  </button>
+</Card>

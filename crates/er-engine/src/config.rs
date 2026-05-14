@@ -118,6 +118,8 @@ pub struct AgentConfig {
     pub command: String,
     #[serde(default = "default_agent_args")]
     pub args: Vec<String>,
+    #[serde(default)]
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -255,6 +257,7 @@ impl Default for AgentConfig {
         Self {
             command: default_agent_cmd(),
             args: default_agent_args(),
+            model: String::new(),
         }
     }
 }
@@ -1121,6 +1124,7 @@ args = ["--model", "gpt-5.4"]
             agent: AgentConfig {
                 command: "my-agent".into(),
                 args: vec!["--flag".into()],
+                model: String::new(),
             },
             ..Default::default()
         };
@@ -1382,6 +1386,7 @@ args = ["--model", "gpt-5.4"]
         let agent = AgentConfig {
             command: "claude".into(),
             args: vec![],
+            model: String::new(),
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -1391,6 +1396,7 @@ args = ["--model", "gpt-5.4"]
         let agent = AgentConfig {
             command: "/usr/local/bin/claude".into(),
             args: vec![],
+            model: String::new(),
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -1400,6 +1406,7 @@ args = ["--model", "gpt-5.4"]
         let agent = AgentConfig {
             command: "".into(),
             args: vec![],
+            model: String::new(),
         };
         assert_eq!(agent.display_name(), "AI");
     }

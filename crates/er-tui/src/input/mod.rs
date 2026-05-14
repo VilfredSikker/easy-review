@@ -1453,9 +1453,9 @@ fn push_comments_as_review(app: &mut App) -> Result<()> {
             .collect();
 
         let result = if is_remote {
-            github::gh_pr_submit_review_remote(&owner, &repo_name, pr_number, &batch)
+            github::gh_pr_submit_review_remote(&owner, &repo_name, pr_number, &batch, "COMMENT", "")
         } else {
-            github::gh_pr_submit_review(&owner, &repo_name, pr_number, &batch, &repo_root)
+            github::gh_pr_submit_review(&owner, &repo_name, pr_number, &batch, &repo_root, "COMMENT", "")
         };
 
         match result {

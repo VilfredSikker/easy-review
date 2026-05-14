@@ -1,5 +1,5 @@
 pub(super) mod comments;
-mod github_sync;
+pub mod github_sync;
 pub(super) mod navigation;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
@@ -504,6 +504,11 @@ pub struct TabState {
     /// Optional finding ID this comment responds to (for finding replies)
     pub comment_finding_ref: Option<String>,
 
+    /// Transient override for the comment's `author` field on next submit.
+    /// Consumed (cleared) by submit_question / submit_github_comment.
+    /// Used by the desktop `ask_ai` flow to attribute AI replies as "ai".
+    pub comment_author_override: Option<String>,
+
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
 
@@ -586,6 +591,10 @@ pub struct TabState {
     /// Remote repo slug (e.g. "owner/repo") when reviewing a PR without a local clone.
     /// When Some, git operations are disabled and diffs come from `gh pr diff --repo`.
     pub remote_repo: Option<String>,
+
+    /// When Some, this tab is a read-only diff of a local branch against `base_branch`.
+    /// Diff source is `git diff <base>...<branch>` run from `repo_root`. No git mutation.
+    pub local_branch_view: Option<String>,
 
     // ── Agent log state (per-tab) ──
     /// Receivers for running background commands (keyed by command name)
@@ -793,6 +802,17 @@ impl TabState {
         Self::new_inner(repo_root, current_branch, base_branch)
     }
 
+    /// Create a TabState for a read-only diff of a local branch against the
+    /// project's base branch. Runs `git diff <base>...<branch>` — never
+    /// checks the branch out or mutates the working tree.
+    pub fn new_local_branch(repo_root: String, branch: String) -> Result<Self> {
+        let mut tab = TabState::new(repo_root)?;
+        tab.local_branch_view = Some(branch);
+        tab.mode = DiffMode::Branch;
+        tab.refresh_diff()?;
+        Ok(tab)
+    }
+
     /// Create a TabState for remote PR review (no local git repo needed).
     /// Uses `gh pr diff --repo` instead of local git operations.
     pub fn new_remote(pr_ref: &crate::github::PrRef) -> Result<Self> {
@@ -893,6 +913,7 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
+            comment_author_override: None,
             pr_data: None,
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
@@ -917,6 +938,7 @@ impl TabState {
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: Some(repo_slug),
+            local_branch_view: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -990,6 +1012,7 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
+            comment_author_override: None,
             pr_data: None,
             pr_head_ref: None,
             pr_number: None,
@@ -1014,6 +1037,7 @@ impl TabState {
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
+            local_branch_view: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1084,6 +1108,7 @@ impl TabState {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
+            comment_author_override: None,
             pr_data: None,
             pr_head_ref: None,
             pr_number: None,
@@ -1108,6 +1133,7 @@ impl TabState {
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
+            local_branch_view: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1140,14 +1166,26 @@ impl TabState {
         }
     }
 
-    /// Short name for display in tab bar (last path component)
+    /// Short name for display in tab bar.
+    ///
+    /// Priority:
+    /// 1. Local-branch view → that branch name.
+    /// 2. Remote PR → `repo#N` (or `repo` if no PR number).
+    /// 3. Working tab → `current_branch` if non-empty.
+    /// 4. Fallback → repo directory basename.
     pub fn tab_name(&self) -> String {
+        if let Some(ref branch) = self.local_branch_view {
+            return branch.clone();
+        }
         if let Some(ref slug) = self.remote_repo {
             let repo = slug.split('/').next_back().unwrap_or(slug);
             if let Some(pr_num) = self.pr_number {
                 return format!("{}#{}", repo, pr_num);
             }
             return repo.to_string();
+        }
+        if !self.current_branch.is_empty() {
+            return self.current_branch.clone();
         }
         std::path::Path::new(&self.repo_root)
             .file_name()
@@ -1170,6 +1208,12 @@ impl TabState {
         self.remote_repo.is_some()
     }
 
+    /// Whether this tab is a read-only local-branch view.
+    /// Like remote, only the Branch mode is offered and write commands are hidden.
+    pub fn is_local_branch_view(&self) -> bool {
+        self.local_branch_view.is_some()
+    }
+
     /// Return the list of DiffMode tabs currently visible, based on feature flags,
     /// remote status, and data availability. Used for dynamic tab numbering.
     pub fn visible_modes(&self, config: &crate::config::ErConfig) -> Vec<DiffMode> {
@@ -1177,19 +1221,20 @@ impl TabState {
         if config.features.view_branch {
             modes.push(DiffMode::Branch);
         }
-        if config.features.view_unstaged && !self.is_remote() && self.pr_head_ref.is_none() {
+        let read_only = self.is_remote() || self.is_local_branch_view();
+        if config.features.view_unstaged && !read_only && self.pr_head_ref.is_none() {
             modes.push(DiffMode::Unstaged);
         }
-        if config.features.view_staged && !self.is_remote() && self.pr_head_ref.is_none() {
+        if config.features.view_staged && !read_only && self.pr_head_ref.is_none() {
             modes.push(DiffMode::Staged);
         }
-        if config.features.view_history && !self.is_remote() {
+        if config.features.view_history && !read_only {
             modes.push(DiffMode::History);
         }
-        if config.features.view_conflicts && !self.is_remote() && self.merge_active {
+        if config.features.view_conflicts && !read_only && self.merge_active {
             modes.push(DiffMode::Conflicts);
         }
-        if config.features.view_hidden && !self.is_remote() && !self.watched_config.paths.is_empty()
+        if config.features.view_hidden && !read_only && !self.watched_config.paths.is_empty()
         {
             modes.push(DiffMode::Hidden);
         }
@@ -1199,7 +1244,7 @@ impl TabState {
     /// Return the `.er/` directory path — uses comments_dir() in remote mode,
     /// `{repo_root}/.er` in local mode.
     pub fn er_dir(&self) -> String {
-        if self.is_remote() {
+        if self.is_remote() || self.is_local_branch_view() {
             self.comments_dir()
         } else {
             format!("{}/.er", self.repo_root)
@@ -1212,10 +1257,18 @@ impl TabState {
         if let (Some(ref slug), Some(n)) = (&self.remote_repo, self.pr_number) {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             let safe_slug = slug.replace('/', "-");
-            format!("{}/.cache/er/remote/{}-{}", home, safe_slug, n)
-        } else {
-            format!("{}/.er", self.repo_root)
+            return format!("{}/.cache/er/remote/{}-{}", home, safe_slug, n);
         }
+        if let Some(ref branch) = self.local_branch_view {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let repo_slug = std::path::Path::new(&self.repo_root)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("repo");
+            let safe_branch = branch.replace('/', "-");
+            return format!("{}/.cache/er/local/{}/{}", home, repo_slug, safe_branch);
+        }
+        format!("{}/.er", self.repo_root)
     }
 
     /// Path to github-comments.json. Uses cache dir in remote mode.
@@ -1317,6 +1370,75 @@ impl TabState {
         // Hidden mode only shows watched files — reload them instead of running git diff
         if self.mode == DiffMode::Hidden {
             self.refresh_watched_files();
+            return Ok(());
+        }
+
+        // Local branch view: read-only `git diff <base>...<branch>` from the user's clone.
+        if let Some(ref branch) = self.local_branch_view.clone() {
+            let base = self.base_branch.clone();
+            let raw = crate::git::git_diff_against_branch(&self.repo_root, &base, branch)?;
+
+            let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
+
+            if raw.len() > 200_000 {
+                let headers = crate::git::parse_diff_headers(&raw);
+                self.files = headers.iter().map(crate::git::header_to_stub).collect();
+                self.file_headers = headers;
+                self.raw_diff = Some(raw.clone());
+                self.lazy_mode = true;
+                for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
+                    if self.user_expanded.contains(&file.path) {
+                        continue;
+                    }
+                    let total_lines = header.adds + header.dels;
+                    let should_compact = self.compaction_config.enabled
+                        && (self
+                            .compaction_config
+                            .patterns
+                            .iter()
+                            .any(|p| crate::git::compact_files_match(p, &file.path))
+                            || total_lines
+                                > self.compaction_config.max_lines_before_compact);
+                    if should_compact {
+                        file.compacted = true;
+                        file.raw_hunk_count = header.hunk_count;
+                    }
+                }
+            } else {
+                self.files = crate::git::parse_diff(&raw);
+                self.file_headers.clear();
+                self.raw_diff = None;
+                self.lazy_mode = false;
+                crate::git::compact_files(&mut self.files, &self.compaction_config);
+            }
+
+            if recompute_branch_hash {
+                self.diff_hash = crate::ai::compute_diff_hash(&raw);
+                self.branch_diff_hash = self.diff_hash.clone();
+            } else {
+                self.diff_hash =
+                    format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
+            }
+
+            // Restore selection
+            if let Some(ref path) = prev_path {
+                if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
+                    self.selected_file = idx;
+                } else {
+                    self.selected_file =
+                        self.files.len().saturating_sub(1).min(self.selected_file);
+                }
+            } else {
+                self.selected_file = 0;
+            }
+            self.clamp_hunk();
+            self.ensure_file_parsed();
+            self.rebuild_hunk_offsets();
+            self.file_tree_cache = None;
+            self.mtime_cache.clear();
+            self.update_mem_budget();
+            // Reload AI sidecar for this branch's comment directory
+            self.reload_ai_state();
             return Ok(());
         }
 
@@ -3131,6 +3253,74 @@ impl App {
             self.active_tab = self.tabs.len() - 1;
         }
         self.notify(&format!("Closed: {}", name));
+    }
+
+    /// Push a new tab and focus it. Returns the new tab's index.
+    pub fn open_tab(&mut self, tab: TabState) -> usize {
+        let name = tab.tab_name();
+        self.tabs.push(tab);
+        let idx = self.tabs.len() - 1;
+        self.active_tab = idx;
+        self.notify(&format!("Opened: {}", name));
+        idx
+    }
+
+    /// Close the tab at `idx`. Refuses if it's the last tab. If the closed
+    /// tab was active, focus shifts to the previous tab (or 0 if removing 0).
+    pub fn close_tab_at(&mut self, idx: usize) {
+        if self.tabs.len() <= 1 {
+            self.notify("Cannot close last tab");
+            return;
+        }
+        if idx >= self.tabs.len() {
+            return;
+        }
+        let name = self.tabs[idx].tab_name();
+        self.tabs.remove(idx);
+        if self.active_tab == idx {
+            // Focus previous (or 0 if removed first).
+            self.active_tab = if idx == 0 { 0 } else { idx - 1 };
+        } else if self.active_tab > idx {
+            self.active_tab -= 1;
+        }
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+        self.notify(&format!("Closed: {}", name));
+    }
+
+    /// Switch focus to the tab at `idx`. No-op if out of bounds.
+    pub fn select_tab(&mut self, idx: usize) {
+        if idx < self.tabs.len() {
+            self.active_tab = idx;
+        }
+    }
+
+    /// Move the tab at `from` to position `to`. `active_tab` follows the moved
+    /// tab (so the focused tab stays focused) or is shifted to account for the
+    /// removal/insertion when another tab was active.
+    ///
+    /// Returns `true` if the reorder happened. Out-of-bounds indices or
+    /// `from == to` are silent no-ops.
+    pub fn reorder_tabs(&mut self, from: usize, to: usize) -> bool {
+        let len = self.tabs.len();
+        if from >= len || to >= len || from == to {
+            return false;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+
+        // Fix up active_tab so the previously-focused tab stays focused.
+        self.active_tab = if self.active_tab == from {
+            to
+        } else if from < self.active_tab && self.active_tab <= to {
+            self.active_tab - 1
+        } else if to <= self.active_tab && self.active_tab < from {
+            self.active_tab + 1
+        } else {
+            self.active_tab
+        };
+        true
     }
 
     // ── Overlay: Worktree Picker ──
@@ -5269,6 +5459,7 @@ mod tests {
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
+            comment_author_override: None,
             pr_data: None,
             pr_head_ref: None,
             pr_number: None,
@@ -5293,6 +5484,7 @@ mod tests {
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
+            local_branch_view: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -6541,6 +6733,7 @@ mod tests {
             current_ai_model: None,
             pending_hub_action: None,
             last_terminal_width: 0,
+            panels_visible: PanelsVisible::default(),
         }
     }
 
@@ -6934,6 +7127,7 @@ mod tests {
                 relocated_at_hash: String::new(),
                 in_reply_to: None,
                 author: "You".to_string(),
+                promoted_to: None,
             }],
         });
         let mut app = make_test_app(tab);
@@ -6965,10 +7159,27 @@ mod tests {
     }
 
     #[test]
-    fn tab_name_returns_last_path_component_in_normal_mode() {
+    fn tab_name_falls_back_to_repo_basename_when_branch_empty() {
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = String::new();
         assert_eq!(tab.tab_name(), "my-project");
+    }
+
+    #[test]
+    fn tab_name_returns_current_branch_for_working_tab() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "main".to_string();
+        assert_eq!(tab.tab_name(), "main");
+    }
+
+    #[test]
+    fn tab_name_returns_local_branch_view_when_set() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.current_branch = "main".to_string();
+        tab.local_branch_view = Some("dev-5009".to_string());
+        assert_eq!(tab.tab_name(), "dev-5009");
     }
 
     #[test]
@@ -7380,5 +7591,81 @@ mod tests {
         app.cancel_comment();
         assert_eq!(app.input_mode, InputMode::Normal);
         assert_eq!(app.tab().comment_text(), "");
+    }
+
+    // ── reorder_tabs ──
+
+    /// Build an `App` with `n` distinct tabs so we can assert on order/active.
+    /// Each tab gets a unique repo_root marker we can read back after reorder.
+    fn make_app_with_n_tabs(n: usize) -> App {
+        let mut app = make_test_app(TabState::new_for_test(vec![]));
+        app.tab_mut().repo_root = "tab0".to_string();
+        for i in 1..n {
+            let mut t = TabState::new_for_test(vec![]);
+            t.repo_root = format!("tab{i}");
+            app.tabs.push(t);
+        }
+        app
+    }
+
+    fn tab_roots(app: &App) -> Vec<String> {
+        app.tabs.iter().map(|t| t.repo_root.clone()).collect()
+    }
+
+    #[test]
+    fn reorder_tabs_moves_first_to_last_and_follows_active() {
+        let mut app = make_app_with_n_tabs(3);
+        app.active_tab = 0;
+        assert!(app.reorder_tabs(0, 2));
+        assert_eq!(tab_roots(&app), vec!["tab1", "tab2", "tab0"]);
+        // Active followed the moved tab.
+        assert_eq!(app.active_tab, 2);
+    }
+
+    #[test]
+    fn reorder_tabs_moves_last_to_first_and_follows_active() {
+        let mut app = make_app_with_n_tabs(3);
+        app.active_tab = 2;
+        assert!(app.reorder_tabs(2, 0));
+        assert_eq!(tab_roots(&app), vec!["tab2", "tab0", "tab1"]);
+        assert_eq!(app.active_tab, 0);
+    }
+
+    #[test]
+    fn reorder_tabs_shifts_active_when_other_tab_moves_past_it() {
+        // Active is tab1 (idx 1). Move tab0 → idx 2. tab1 should still be active
+        // but its index shifts down to 0.
+        let mut app = make_app_with_n_tabs(3);
+        app.active_tab = 1;
+        assert!(app.reorder_tabs(0, 2));
+        assert_eq!(tab_roots(&app), vec!["tab1", "tab2", "tab0"]);
+        assert_eq!(app.active_tab, 0);
+    }
+
+    #[test]
+    fn reorder_tabs_shifts_active_when_other_tab_moves_back_past_it() {
+        // Active is tab1 (idx 1). Move tab2 → idx 0. tab1 stays active at idx 2.
+        let mut app = make_app_with_n_tabs(3);
+        app.active_tab = 1;
+        assert!(app.reorder_tabs(2, 0));
+        assert_eq!(tab_roots(&app), vec!["tab2", "tab0", "tab1"]);
+        assert_eq!(app.active_tab, 2);
+    }
+
+    #[test]
+    fn reorder_tabs_noop_when_from_equals_to() {
+        let mut app = make_app_with_n_tabs(3);
+        app.active_tab = 1;
+        assert!(!app.reorder_tabs(1, 1));
+        assert_eq!(tab_roots(&app), vec!["tab0", "tab1", "tab2"]);
+        assert_eq!(app.active_tab, 1);
+    }
+
+    #[test]
+    fn reorder_tabs_noop_on_out_of_bounds() {
+        let mut app = make_app_with_n_tabs(3);
+        assert!(!app.reorder_tabs(5, 0));
+        assert!(!app.reorder_tabs(0, 5));
+        assert_eq!(tab_roots(&app), vec!["tab0", "tab1", "tab2"]);
     }
 }

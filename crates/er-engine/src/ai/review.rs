@@ -173,6 +173,12 @@ pub struct Finding {
     /// ISO 8601 timestamp when validate marked this resolved. Empty otherwise.
     #[serde(default)]
     pub resolved_at: String,
+    /// ID of the GitHub comment this finding was promoted to (if any).
+    /// Populated from a sibling `.er/finding-promotions.json` mapping at load time
+    /// to avoid writing into AI-owned `.er/review.json`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub promoted_to: Option<String>,
 }
 
 impl Finding {
@@ -1100,6 +1106,7 @@ mod tests {
             resolved: false,
             resolved_note: String::new(),
             resolved_at: String::new(),
+            promoted_to: None,
         }
     }
 
@@ -1129,7 +1136,31 @@ mod tests {
             resolved: false,
             resolved_note: String::new(),
             resolved_at: String::new(),
+            promoted_to: None,
         }
+    }
+
+    #[test]
+    fn finding_promoted_to_roundtrips_via_serde() {
+        let mut f = make_finding("f-1", Some(0), RiskLevel::High);
+        f.promoted_to = Some("c-99".into());
+        let json = serde_json::to_string(&f).unwrap();
+        let back: Finding = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.promoted_to.as_deref(), Some("c-99"));
+    }
+
+    #[test]
+    fn finding_promoted_to_defaults_to_none_when_missing() {
+        let json = r#"{
+            "id": "f-1",
+            "severity": "high",
+            "title": "Title",
+            "hunk_index": 0,
+            "line_start": null,
+            "line_end": null
+        }"#;
+        let f: Finding = serde_json::from_str(json).unwrap();
+        assert!(f.promoted_to.is_none());
     }
 
     fn make_feedback_comment(file: &str, hunk_index: Option<usize>) -> FeedbackComment {
@@ -1835,6 +1866,7 @@ mod tests {
             relocated_at_hash: String::new(),
             in_reply_to: None,
             author: "You".to_string(),
+            promoted_to: None,
         }
     }
 
