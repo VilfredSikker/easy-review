@@ -346,10 +346,17 @@ pub struct GitHubReviewComment {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub finding_ref: Option<String>,
+    /// "LEFT" for old-side (deleted lines) or "RIGHT" for new-side/unified (default)
+    #[serde(default = "default_review_side")]
+    pub side: String,
 }
 
 fn default_source() -> String {
     "local".to_string()
+}
+
+fn default_review_side() -> String {
+    "RIGHT".to_string()
 }
 
 fn default_anchor_status() -> String {

@@ -443,10 +443,15 @@ pub fn add_comment(
     hunk_idx: usize,
     line_num: Option<usize>,
     text: String,
+    side: Option<String>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    // Set side before submit so submit_github_comment can consume it
+    if let Some(ref s) = side {
+        app.tab_mut().comment_side = Some(s.clone());
+    }
     app.submit_comment_text(file, hunk_idx, line_num, text, CommentType::GitHubComment, None)
         .map_err(|e| e.to_string())?;
     Ok(snap_from(&app, &mut hl, &*state))
@@ -704,6 +709,7 @@ pub fn submit_github_review(
         file: String,
         line: usize,
         body: String,
+        side: String,
     }
 
     // Collect all line-anchored pending candidates.
@@ -717,6 +723,7 @@ pub fn submit_github_review(
                 file: c.file.clone(),
                 line: l,
                 body: c.comment.clone(),
+                side: c.side.clone(),
             })
         })
         .collect();
@@ -732,9 +739,14 @@ pub fn submit_github_review(
         }
     }
 
-    let batch: Vec<(String, usize, String)> = batch_entries
+    let batch: Vec<er_engine::github::ReviewBatchEntry> = batch_entries
         .iter()
-        .map(|e| (e.file.clone(), e.line, e.body.clone()))
+        .map(|e| er_engine::github::ReviewBatchEntry {
+            file: e.file.clone(),
+            line: e.line,
+            body: e.body.clone(),
+            side: e.side.clone(),
+        })
         .collect();
     let submitted_ids: Vec<String> = batch_entries.iter().map(|e| e.id.clone()).collect();
 

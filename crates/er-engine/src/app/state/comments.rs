@@ -367,6 +367,11 @@ impl App {
             .comment_author_override
             .take()
             .unwrap_or_else(|| "You".to_string());
+        let side = self
+            .tab_mut()
+            .comment_side
+            .take()
+            .unwrap_or_else(|| "RIGHT".to_string());
         gh_comments.comments.push(ai::GitHubReviewComment {
             id,
             timestamp: chrono_now(),
@@ -390,6 +395,7 @@ impl App {
             anchor_status: "original".to_string(),
             relocated_at_hash: self.tab().branch_diff_hash.clone(),
             finding_ref,
+            side,
         });
 
         // Write atomically

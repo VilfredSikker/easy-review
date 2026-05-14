@@ -185,6 +185,7 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
             anchor_status: "original".to_string(),
             relocated_at_hash: ctx.anchor_hash.clone(),
             finding_ref: None,
+            side: gh.side.clone().unwrap_or_else(|| "RIGHT".to_string()),
         });
     }
 
@@ -537,6 +538,7 @@ impl App {
                 anchor_status: "original".to_string(),
                 relocated_at_hash: diff_hash_for_anchor.clone(),
                 finding_ref: None,
+                side: gh.side.clone().unwrap_or_else(|| "RIGHT".to_string()),
             });
         }
 

@@ -1208,14 +1208,22 @@ pub fn gh_pr_push_comment_remote(
     Ok(resp.id)
 }
 
+/// A single comment entry for a batch PR review submission.
+pub struct ReviewBatchEntry {
+    pub file: String,
+    pub line: usize,
+    pub body: String,
+    pub side: String,
+}
+
 /// Submit a batch PR review with multiple comments in one API call.
-/// `comments` is a slice of (path, line, body). Marks all included comments as synced
+/// `comments` is a slice of `ReviewBatchEntry`. Marks all included comments as synced
 /// (no individual comment IDs are returned by the review API).
 pub fn gh_pr_submit_review(
     owner: &str,
     repo: &str,
     pr: u64,
-    comments: &[(String, usize, String)],
+    comments: &[ReviewBatchEntry],
     repo_root: &str,
     event: &str,
     body: &str,
@@ -1250,12 +1258,12 @@ pub fn gh_pr_submit_review(
     // Build the review JSON payload
     let comment_values: Vec<serde_json::Value> = comments
         .iter()
-        .map(|(path, line, body)| {
+        .map(|entry| {
             serde_json::json!({
-                "path": path,
-                "line": line,
-                "side": "RIGHT",
-                "body": body
+                "path": entry.file,
+                "line": entry.line,
+                "side": entry.side,
+                "body": entry.body
             })
         })
         .collect();
@@ -1300,7 +1308,7 @@ pub fn gh_pr_submit_review_remote(
     owner: &str,
     repo: &str,
     pr: u64,
-    comments: &[(String, usize, String)],
+    comments: &[ReviewBatchEntry],
     event: &str,
     body: &str,
 ) -> Result<()> {
@@ -1334,12 +1342,12 @@ pub fn gh_pr_submit_review_remote(
 
     let comment_values: Vec<serde_json::Value> = comments
         .iter()
-        .map(|(path, line, body)| {
+        .map(|entry| {
             serde_json::json!({
-                "path": path,
-                "line": line,
-                "side": "RIGHT",
-                "body": body
+                "path": entry.file,
+                "line": entry.line,
+                "side": entry.side,
+                "body": entry.body
             })
         })
         .collect();

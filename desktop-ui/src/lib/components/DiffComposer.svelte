@@ -42,12 +42,16 @@
     // Tauri 2 auto-converts Rust snake_case to JS camelCase for command args.
     // Rust `fn add_comment(file, hunk_idx, line_num, text)` ⇒ JS keys must be
     // `file, hunkIdx, lineNum, text`.
-    await app.cmd(command, {
+    const cmdArgs: Record<string, unknown> = {
       file: diffSel.file,
       hunkIdx: findHunkIdx(),
       lineNum: diffSel.first(),
       text: diffSel.text.trim(),
-    });
+    };
+    if (command === "add_comment" && diffSel.side !== null) {
+      cmdArgs.side = diffSel.side === "old" ? "LEFT" : "RIGHT";
+    }
+    await app.cmd(command, cmdArgs);
     diffSel.clear();
   }
 

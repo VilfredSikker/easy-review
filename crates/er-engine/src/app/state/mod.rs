@@ -509,6 +509,10 @@ pub struct TabState {
     /// Used by the desktop `ask_ai` flow to attribute AI replies as "ai".
     pub comment_author_override: Option<String>,
 
+    /// Transient: selection side for the next GitHub comment ("LEFT"/"RIGHT").
+    /// Consumed by submit_github_comment. Defaults to "RIGHT".
+    pub comment_side: Option<String>,
+
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
 
@@ -940,6 +944,7 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_author_override: None,
+            comment_side: None,
             pr_data: None,
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
@@ -1039,6 +1044,7 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_author_override: None,
+            comment_side: None,
             pr_data: None,
             pr_head_ref: None,
             pr_number: None,
@@ -1135,6 +1141,7 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_author_override: None,
+            comment_side: None,
             pr_data: None,
             pr_head_ref: None,
             pr_number: None,
@@ -5497,6 +5504,7 @@ mod tests {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_author_override: None,
+            comment_side: None,
             pr_data: None,
             pr_head_ref: None,
             pr_number: None,
