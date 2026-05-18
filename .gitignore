@@ -1,6 +1,8 @@
 /target
 .DS_Store
 .work/
+desktop-ui/storybook-static/
+.playwright-mcp/
 
 # Override global gitignore for project-level Claude Code commands
 !.claude/
