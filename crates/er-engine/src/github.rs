@@ -79,6 +79,9 @@ pub struct GitHubComment {
     pub created_at: String,
     pub updated_at: String,
     pub diff_hunk: Option<String>,
+    /// GitHub marks a comment outdated when the lines it was left on have since changed.
+    #[serde(default)]
+    pub outdated: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -183,6 +186,38 @@ pub fn gh_pr_base_branch(pr_number: u64, repo_root: &str) -> Result<String> {
     Ok(base)
 }
 
+/// Get the base and head branch names for a PR with a single `gh pr view` call.
+pub fn gh_pr_branch_names(pr_number: u64, repo_root: &str) -> Result<(String, String)> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "baseRefName,headRefName",
+            "--jq",
+            r#"[.baseRefName, .headRefName] | @tsv"#,
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to get PR branch names")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to get PR #{}: {}", pr_number, stderr.trim());
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut parts = text.trim().split('\t');
+    let base = parts.next().unwrap_or("").to_string();
+    let head = parts.next().unwrap_or("").to_string();
+    if base.is_empty() {
+        anyhow::bail!("PR #{} has no base branch", pr_number);
+    }
+
+    Ok((base, head))
+}
+
 /// Checkout a PR by number using `gh pr checkout`
 #[allow(dead_code)]
 pub fn gh_pr_checkout(pr_number: u64, repo_root: &str) -> Result<()> {
@@ -217,6 +252,216 @@ pub fn fetch_pr_head(number: u64, root: &str) -> Result<String> {
         anyhow::bail!("git fetch PR head failed: {}", stderr.trim());
     }
     Ok(ref_name)
+}
+
+/// Easy Review owned ref path for a refreshed local branch view.
+/// Stable for the same branch name so subsequent refreshes overwrite the same ref.
+pub fn er_branch_ref_name(branch: &str) -> String {
+    format!("refs/er/branches/{}/head", branch)
+}
+
+/// Resolve a branch's upstream short-name via `for-each-ref`.
+/// Returns `Some("remote/branch")` when an upstream is configured, `None` otherwise.
+pub(crate) fn branch_upstream_short(repo_root: &str, branch: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(upstream:short)",
+            &format!("refs/heads/{}", branch),
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to run git for-each-ref")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git for-each-ref failed: {}", stderr.trim());
+    }
+    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if s.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(s))
+    }
+}
+
+/// Returns `(ahead, behind)` counts for `branch` relative to its upstream.
+/// `ahead` = commits local has that upstream doesn't.
+/// `behind` = commits upstream has that local doesn't.
+/// Returns `None` if the branch has no upstream configured.
+pub(crate) fn ahead_behind_local_vs_upstream(
+    repo_root: &str,
+    branch: &str,
+) -> Result<Option<(u32, u32)>> {
+    let upstream = match branch_upstream_short(repo_root, branch)? {
+        Some(u) => u,
+        None => return Ok(None),
+    };
+    let range = format!("{}...{}", branch, upstream);
+    let output = Command::new("git")
+        .args(["rev-list", "--left-right", "--count", &range])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to run git rev-list for ahead/behind")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git rev-list ahead/behind failed: {}", stderr.trim());
+    }
+    let s = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = s.trim().split_whitespace().collect();
+    if parts.len() != 2 {
+        anyhow::bail!("unexpected git rev-list output: {:?}", s.trim());
+    }
+    let ahead: u32 = parts[0].parse().context("parsing ahead count")?;
+    let behind: u32 = parts[1].parse().context("parsing behind count")?;
+    Ok(Some((ahead, behind)))
+}
+
+/// Force-fetch a branch's upstream into an Easy Review owned ref
+/// (`refs/er/branches/<branch>/head`) without moving the user's local branch.
+/// Never runs `git pull`, never checks out, never updates `refs/heads/<branch>`.
+/// Returns the local Easy Review ref name on success.
+pub fn fetch_branch_upstream_into_er_ref(repo_root: &str, branch: &str) -> Result<String> {
+    let upstream = branch_upstream_short(repo_root, branch)?
+        .ok_or_else(|| anyhow::anyhow!("Branch '{}' has no upstream to refresh", branch))?;
+    // Split remote/branch from upstream short name. Branches with slashes are valid;
+    // splitn(2) gives "remote" and the rest as the remote-side branch.
+    let (remote, remote_branch) = match upstream.split_once('/') {
+        Some((r, b)) => (r.to_string(), b.to_string()),
+        None => anyhow::bail!(
+            "Branch '{}' has an unexpected upstream format: '{}'",
+            branch,
+            upstream
+        ),
+    };
+    let er_ref = er_branch_ref_name(branch);
+    let refspec = format!("+refs/heads/{}:{}", remote_branch, er_ref);
+
+    let fetch = Command::new("git")
+        .args(["fetch", &remote, &refspec])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to fetch branch upstream")?;
+    if !fetch.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch.stderr);
+        anyhow::bail!(
+            "Failed to fetch upstream for '{}' from '{}': {}",
+            branch,
+            remote,
+            stderr.trim()
+        );
+    }
+    Ok(er_ref)
+}
+
+/// Whether an error came from a local branch that genuinely has no upstream.
+/// Callers may fall back to a local-only diff for this case, but not for fetch
+/// failures where falling back would show stale remote-backed state.
+pub fn is_no_upstream_to_refresh(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("has no upstream to refresh"))
+}
+
+/// Returns the Easy Review branch ref name if it already exists locally.
+/// Used to reuse a previously refreshed view when the branch tab is recreated.
+pub fn refreshed_branch_ref_if_exists(repo_root: &str, branch: &str) -> Option<String> {
+    let er_ref = er_branch_ref_name(branch);
+    let out = Command::new("git")
+        .args(["rev-parse", "--verify", &er_ref])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if out.status.success() {
+        Some(er_ref)
+    } else {
+        None
+    }
+}
+
+pub fn ref_exists_locally(repo_root: &str, ref_name: &str) -> bool {
+    let out = Command::new("git")
+        .args(["rev-parse", "--verify", ref_name])
+        .current_dir(repo_root)
+        .output();
+    out.map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Resolve a fast local branch diff target without running any network fetches.
+/// Priority order:
+/// 1) existing `refs/er/branches/<branch>/head`
+/// 2) configured upstream short ref (if locally resolvable)
+/// 3) `origin/<branch>` (if locally resolvable)
+/// 4) local branch name (if locally resolvable)
+pub fn resolve_fast_local_branch_diff_ref(repo_root: &str, branch: &str) -> Option<String> {
+    if let Some(er_ref) = refreshed_branch_ref_if_exists(repo_root, branch) {
+        return Some(er_ref);
+    }
+
+    if let Ok(Some(upstream)) = branch_upstream_short(repo_root, branch) {
+        if ref_exists_locally(repo_root, &upstream) {
+            return Some(upstream);
+        }
+    }
+
+    let origin_branch = format!("origin/{branch}");
+    if ref_exists_locally(repo_root, &origin_branch) {
+        return Some(origin_branch);
+    }
+
+    if ref_exists_locally(repo_root, branch) {
+        return Some(branch.to_string());
+    }
+
+    None
+}
+
+/// Force-fetch a base branch from origin, updating `origin/<base>` even if it already exists.
+/// Returns `origin/<base_branch>` on success.
+pub fn fetch_base_branch_ref(repo_root: &str, base_branch: &str) -> Result<String> {
+    let remote_ref = format!("origin/{}", base_branch);
+    let refspec = format!(
+        "+refs/heads/{}:refs/remotes/origin/{}",
+        base_branch, base_branch
+    );
+
+    let fetch = std::process::Command::new("git")
+        .args(["fetch", "origin", &refspec])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to fetch base branch from origin")?;
+
+    if !fetch.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch.stderr);
+        anyhow::bail!(
+            "Failed to fetch base branch '{}' from origin: {}",
+            base_branch,
+            stderr.trim()
+        );
+    }
+
+    let verify = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", &remote_ref])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to verify fetched base branch")?;
+
+    if !verify.status.success() {
+        anyhow::bail!(
+            "Base branch '{}' fetched but '{}' is not resolvable",
+            base_branch,
+            remote_ref
+        );
+    }
+
+    Ok(remote_ref)
+}
+
+/// Force-fetch the remote-tracking base ref for a diff base.
+///
+/// Branch tabs should not diff against a potentially stale local `main`; this
+/// normalizes either `main` or `origin/main` to a freshly fetched `origin/main`.
+pub fn fetch_remote_base_ref_for_diff(repo_root: &str, base_branch: &str) -> Result<String> {
+    let base = base_branch.strip_prefix("origin/").unwrap_or(base_branch);
+    fetch_base_branch_ref(repo_root, base)
 }
 
 /// Get the head branch name of a PR via gh CLI
@@ -803,6 +1048,28 @@ pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String>
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Get raw unified diff for a PR using the local repo context.
+///
+/// This intentionally delegates PR-source rendering to GitHub instead of
+/// reconstructing the range with local refs. GitHub PR diffs are not just
+/// "whatever local `origin/<base>...refs/pull/N/head` happens to produce" in
+/// every edge case, and using `gh pr diff` keeps Easy Review aligned with the
+/// Files changed view.
+pub fn gh_pr_diff(pr_number: u64, repo_root: &str) -> Result<String> {
+    let output = Command::new("gh")
+        .args(["pr", "diff", &pr_number.to_string()])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run gh pr diff")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to get PR diff: {}", stderr.trim());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Fallback for large PRs: shallow-clone the repo into a temp dir, fetch both
 /// refs, and produce the diff locally. The temp dir is cleaned up automatically.
 fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> {
@@ -1057,6 +1324,7 @@ struct ReviewThreadsConnection {
 #[serde(rename_all = "camelCase")]
 struct ReviewThread {
     is_resolved: bool,
+    is_outdated: bool,
     comments: ReviewThreadComments,
 }
 
@@ -1071,16 +1339,23 @@ struct ReviewThreadComment {
     database_id: Option<u64>,
 }
 
-/// Fetch review thread resolution status for a PR (local repo).
-/// Returns a map of comment_id -> is_resolved for all comments in resolved threads.
+/// GitHub review thread state keyed by REST review comment ID.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReviewThreadState {
+    pub resolved: bool,
+    pub outdated: bool,
+}
+
+/// Fetch review thread state for a PR (local repo).
+/// Returns a map of comment_id -> thread state for all review-thread comments.
 pub fn gh_pr_review_threads(
     owner: &str,
     repo: &str,
     pr: u64,
     repo_root: &str,
-) -> Result<HashMap<u64, bool>> {
+) -> Result<HashMap<u64, ReviewThreadState>> {
     let query = format!(
-        r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
+        r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved isOutdated comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
         owner, repo, pr
     );
 
@@ -1099,10 +1374,14 @@ pub fn gh_pr_review_threads(
     parse_review_threads_response(&stdout)
 }
 
-/// Fetch review thread resolution status for a remote PR (no local clone needed).
-pub fn gh_pr_review_threads_remote(owner: &str, repo: &str, pr: u64) -> Result<HashMap<u64, bool>> {
+/// Fetch review thread state for a remote PR (no local clone needed).
+pub fn gh_pr_review_threads_remote(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+) -> Result<HashMap<u64, ReviewThreadState>> {
     let query = format!(
-        r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
+        r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved isOutdated comments(first: 100) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
         owner, repo, pr
     );
 
@@ -1119,23 +1398,29 @@ pub fn gh_pr_review_threads_remote(owner: &str, repo: &str, pr: u64) -> Result<H
     parse_review_threads_response(&stdout)
 }
 
-/// Parse the GraphQL response into a comment_id -> is_resolved map
-fn parse_review_threads_response(json: &str) -> Result<HashMap<u64, bool>> {
-    let mut resolved_map = HashMap::new();
+/// Parse the GraphQL response into a comment_id -> review thread state map.
+fn parse_review_threads_response(json: &str) -> Result<HashMap<u64, ReviewThreadState>> {
+    let mut state_map = HashMap::new();
     let response: ReviewThreadsResponse = match serde_json::from_str(json) {
         Ok(r) => r,
-        Err(_) => return Ok(resolved_map),
+        Err(_) => return Ok(state_map),
     };
 
     for thread in &response.data.repository.pull_request.review_threads.nodes {
         for comment in &thread.comments.nodes {
             if let Some(id) = comment.database_id {
-                resolved_map.insert(id, thread.is_resolved);
+                state_map.insert(
+                    id,
+                    ReviewThreadState {
+                        resolved: thread.is_resolved,
+                        outdated: thread.is_outdated,
+                    },
+                );
             }
         }
     }
 
-    Ok(resolved_map)
+    Ok(state_map)
 }
 
 /// Push a new review comment to a remote PR (no local clone needed).
@@ -1572,7 +1857,11 @@ pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
             CheckRun {
                 name: c["name"].as_str().unwrap_or("").to_string(),
                 status,
-                conclusion: if conclusion.is_empty() { bucket } else { conclusion },
+                conclusion: if conclusion.is_empty() {
+                    bucket
+                } else {
+                    conclusion
+                },
                 url: c["link"].as_str().map(|s| s.to_string()),
             }
         })
@@ -1581,11 +1870,7 @@ pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
 
 /// Fetch a rich PR overview (state, draft, review decision, mergeable, labels)
 /// for a remote PR. No local clone required.
-pub fn gh_pr_overview_remote_full(
-    owner: &str,
-    repo: &str,
-    number: u64,
-) -> Result<PrOverviewFull> {
+pub fn gh_pr_overview_remote_full(owner: &str, repo: &str, number: u64) -> Result<PrOverviewFull> {
     let repo_slug = format!("{}/{}", owner, repo);
     let output = Command::new("gh")
         .args([
@@ -1608,11 +1893,7 @@ pub fn gh_pr_overview_remote_full(
 
 /// Fetch general PR conversation comments (the issue-comments stream — NOT the
 /// per-line review comments fetched by `gh_pr_comments_remote`).
-pub fn gh_pr_comments_overview(
-    owner: &str,
-    repo: &str,
-    number: u64,
-) -> Result<Vec<PrComment>> {
+pub fn gh_pr_comments_overview(owner: &str, repo: &str, number: u64) -> Result<Vec<PrComment>> {
     let repo_slug = format!("{}/{}", owner, repo);
     let output = Command::new("gh")
         .args([
@@ -1793,6 +2074,69 @@ mod tests {
     fn is_github_pr_url_false() {
         assert!(!is_github_pr_url("/some/local/path"));
         assert!(!is_github_pr_url("not-a-url"));
+    }
+
+    #[test]
+    fn is_no_upstream_to_refresh_only_matches_no_upstream_errors() {
+        let no_upstream = anyhow::anyhow!("Branch 'feature/a' has no upstream to refresh");
+        let fetch_failed =
+            anyhow::anyhow!("Failed to fetch upstream for 'feature/a' from 'origin': failed");
+
+        assert!(is_no_upstream_to_refresh(&no_upstream));
+        assert!(!is_no_upstream_to_refresh(&fetch_failed));
+    }
+
+    #[test]
+    fn parse_review_threads_response_extracts_resolved_and_outdated_state() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "isResolved": false,
+                                    "isOutdated": true,
+                                    "comments": {
+                                        "nodes": [
+                                            { "databaseId": 3188301632 }
+                                        ]
+                                    }
+                                },
+                                {
+                                    "isResolved": true,
+                                    "isOutdated": false,
+                                    "comments": {
+                                        "nodes": [
+                                            { "databaseId": 3188301633 },
+                                            { "databaseId": null }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let state = parse_review_threads_response(json).unwrap();
+
+        assert_eq!(
+            state.get(&3188301632),
+            Some(&ReviewThreadState {
+                resolved: false,
+                outdated: true,
+            })
+        );
+        assert_eq!(
+            state.get(&3188301633),
+            Some(&ReviewThreadState {
+                resolved: true,
+                outdated: false,
+            })
+        );
+        assert!(!state.contains_key(&0));
     }
 
     // ── remote_matches_repo ──

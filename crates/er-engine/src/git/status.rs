@@ -647,6 +647,46 @@ pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<Strin
     Ok(stdout)
 }
 
+/// Diff the working tree of `root` (a checked-out branch) against its merge
+/// base with `base`. Includes committed changes plus staged/unstaged tracked
+/// edits, so live edits in the checked-out branch surface immediately.
+/// Read-only; never mutates the working tree.
+pub fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String> {
+    if base.starts_with('-') {
+        anyhow::bail!("Invalid base branch: {}", base);
+    }
+    let merge_base_out = Command::new("git")
+        .args(["merge-base", base, "HEAD"])
+        .current_dir(root)
+        .output()
+        .context("failed to run git merge-base")?;
+    if !merge_base_out.status.success() {
+        let stderr = String::from_utf8_lossy(&merge_base_out.stderr);
+        anyhow::bail!("git merge-base failed: {}", stderr.trim());
+    }
+    let merge_base = String::from_utf8_lossy(&merge_base_out.stdout)
+        .trim()
+        .to_string();
+
+    let unified_arg = format!("--unified={}", super::DEFAULT_CONTEXT_LINES);
+    let output = Command::new("git")
+        .args([
+            "diff",
+            &merge_base,
+            &unified_arg,
+            "--no-color",
+            "--no-ext-diff",
+        ])
+        .current_dir(root)
+        .output()
+        .context("failed to run git diff <merge-base>")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git diff failed: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Get raw diff output between a base branch and a target branch using the
 /// symmetric-difference range `base...branch` (everything on `branch` since
 /// it diverged from `base`). Read-only; never mutates the working tree.
@@ -932,18 +972,19 @@ pub fn verify_gitignored(repo_root: &str, path: &str) -> bool {
     matches!(output, Ok(o) if o.status.success())
 }
 
-/// Save a snapshot of a watched file for later diffing
-pub fn save_snapshot(repo_root: &str, rel_path: &str) -> Result<()> {
+/// Save a snapshot of a watched file for later diffing.
+///
+/// `snapshots_dir` is the absolute path to the snapshots directory (e.g. from
+/// `tab.er_root.snapshots_dir()`). This allows the caller to redirect storage
+/// away from `<repo_root>/.er/snapshots` in managed (desktop) mode.
+pub fn save_snapshot(repo_root: &str, rel_path: &str, snapshots_dir: &str) -> Result<()> {
     let src = Path::new(repo_root).join(rel_path);
     // TODO(risk:high): `rel_path` comes from glob expansion of user-configured patterns.
     // A pattern like "../../../etc/passwd" or a symlink pointing outside the repo root
     // would cause the join to escape the repo directory. `Path::join` does not sanitize
     // ".." components. Validate that the resolved canonical path of `dst` still starts
     // with `repo_root` before writing.
-    let dst = Path::new(repo_root)
-        .join(".er")
-        .join("snapshots")
-        .join(rel_path);
+    let dst = Path::new(snapshots_dir).join(rel_path);
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -976,17 +1017,23 @@ pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Opti
 }
 
 /// Diff a watched file against its snapshot using git diff --no-index
-pub fn diff_watched_file_snapshot(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
+/// Diff a watched file against its snapshot using git diff --no-index.
+///
+/// `snapshots_dir` is the absolute path to the snapshots directory (e.g. from
+/// `tab.er_root.snapshots_dir()`). This allows the caller to redirect storage
+/// away from `<repo_root>/.er/snapshots` in managed (desktop) mode.
+pub fn diff_watched_file_snapshot(
+    repo_root: &str,
+    rel_path: &str,
+    snapshots_dir: &str,
+) -> Result<Option<String>> {
     // TODO(risk:high): same path traversal risk — `rel_path` is not canonicalized before joining.
     let current_path = Path::new(repo_root).join(rel_path);
-    let snapshot_path = Path::new(repo_root)
-        .join(".er")
-        .join("snapshots")
-        .join(rel_path);
+    let snapshot_path = Path::new(snapshots_dir).join(rel_path);
 
     if !snapshot_path.exists() {
         // First time seeing this file — save snapshot, signal "new file"
-        save_snapshot(repo_root, rel_path)?;
+        save_snapshot(repo_root, rel_path, snapshots_dir)?;
         return Ok(None);
     }
 

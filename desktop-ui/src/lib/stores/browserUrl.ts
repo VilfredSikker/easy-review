@@ -4,9 +4,11 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export const DEFAULT_DEV_URL = "http://localhost:5173";
+export const BLANK_BROWSER_URL = "about:blank";
 
 export function toProxyUrl(url: string): string {
-  if (!url) return "";
+  if (!url.trim()) return BLANK_BROWSER_URL;
+  if (url === BLANK_BROWSER_URL) return url;
   if (url.startsWith("erp://") || url.startsWith("erps://")) return url;
   if (url.startsWith("data:")) return url;
   try {
@@ -30,6 +32,53 @@ export function fromProxyUrl(url: string): string {
 }
 
 /**
+ * Canonical form used to decide whether two URLs point at the same page.
+ * Strips the proxy scheme, normalizes the root path so `host` and `host/`
+ * compare equal, and lowercases the protocol+host. Query and hash are
+ * preserved so genuine in-page navigations are still seen as different.
+ */
+export function canonicalizeBrowserUrl(url: string): string {
+  if (!url) return "";
+  if (url === BLANK_BROWSER_URL) return BLANK_BROWSER_URL;
+  const real = fromProxyUrl(url);
+  try {
+    const u = new URL(/^[a-z]+:\/\//i.test(real) ? real : `http://${real}`);
+    const pathname = u.pathname === "" ? "/" : u.pathname;
+    // Hash-only navigation should update the URL bar, but it should not force
+    // the iframe to reload and re-trigger the content-script location report.
+    return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${pathname}${u.search}`;
+  } catch {
+    return real.toLowerCase();
+  }
+}
+
+/** True when two URLs refer to the same page after canonicalization. */
+export function sameBrowserUrl(a: string, b: string): boolean {
+  return canonicalizeBrowserUrl(a) === canonicalizeBrowserUrl(b);
+}
+
+/**
+ * Canonical page identity for persisted UI annotations. Uses origin + path,
+ * deliberately ignoring query and hash so pins survive common SPA/router noise
+ * while still not leaking across different localhost apps or domains.
+ */
+export function pageKey(url: string): string {
+  const real = fromProxyUrl(url);
+  try {
+    const u = new URL(/^[a-z]+:\/\//i.test(real) ? real : `http://${real}`);
+    const pathname = u.pathname || "/";
+    return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${pathname}`;
+  } catch {
+    return urlPath(real);
+  }
+}
+
+/** Compatibility for annotations saved before page keys included origin. */
+export function annotationMatchesPage(annotationUrl: string, currentUrl: string): boolean {
+  return annotationUrl === pageKey(currentUrl) || annotationUrl === urlPath(currentUrl);
+}
+
+/**
  * Best-effort default dev-server URL. Asks the backend to inspect the project's
  * `package.json` (scripts.dev / scripts.start) and infer the dev port. Returns
  * the Vite default when the backend yields no answer, or when `invoke` is
@@ -47,8 +96,8 @@ export async function defaultDevUrl(repoRoot?: string): Promise<string> {
 }
 
 /**
- * Strip query + hash from a URL, returning just the path. Used to bucket
- * annotations per-page (per the spec, multi-page apps store path only).
+ * Strip query + hash from a URL, returning just the path. Kept for display and
+ * legacy annotation compatibility; new annotation storage should use pageKey().
  */
 export function urlPath(url: string): string {
   try {

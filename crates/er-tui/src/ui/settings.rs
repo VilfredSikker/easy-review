@@ -321,7 +321,9 @@ pub fn render_config_hub(
                 list_items.push(ListItem::new(line).style(style));
             }
 
-            ConfigItem::Action { label, description, .. } => {
+            ConfigItem::Action {
+                label, description, ..
+            } => {
                 let marker = if is_sel { "▸ " } else { "  " };
                 let mut spans = vec![
                     Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN())),

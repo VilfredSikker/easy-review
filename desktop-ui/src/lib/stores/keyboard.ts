@@ -4,7 +4,27 @@ import { diffSel } from "./diffSelection.svelte";
 import { terminal } from "./terminal.svelte";
 import { browser } from "./browser.svelte";
 import { openExportModal } from "$lib/components/ExportModal.svelte";
+import { openPrUrlModal } from "$lib/components/PrUrlModal.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
+
+// Callbacks registered by AiActionPalette to open itself
+let openAiPaletteCallback: (() => void) | null = null;
+
+export function registerAiPaletteOpener(fn: () => void): () => void {
+  openAiPaletteCallback = fn;
+  return () => { if (openAiPaletteCallback === fn) openAiPaletteCallback = null; };
+}
+
+function blurActiveField(): boolean {
+  const el = document.activeElement as HTMLElement | null;
+  if (!el) return false;
+  const tag = el.tagName;
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) || el.isContentEditable) {
+    el.blur();
+    return true;
+  }
+  return false;
+}
 
 /**
  * Buffer for the `gg` (jump to top) two-key sequence. Cleared after 600ms
@@ -37,6 +57,37 @@ function focusInput(selector: string) {
   }
 }
 
+function isPlainShortcut(e: KeyboardEvent): boolean {
+  return !e.ctrlKey && !e.metaKey && !e.altKey;
+}
+
+function isCommandShortcut(e: KeyboardEvent): boolean {
+  return e.metaKey || e.ctrlKey;
+}
+
+function isReviewPanelShortcut(e: KeyboardEvent, inField: boolean): boolean {
+  return !inField && !e.ctrlKey && !e.metaKey;
+}
+
+function togglePanelForKey(e: KeyboardEvent): boolean {
+  if (e.key === "[" || e.code === "BracketLeft") {
+    app.togglePanel("left");
+    e.preventDefault();
+    return true;
+  }
+  if (e.key === "]" || e.code === "BracketRight") {
+    app.togglePanel("right");
+    e.preventDefault();
+    return true;
+  }
+  if (e.key === "\\" || e.code === "Backslash") {
+    app.togglePanel("tree");
+    e.preventDefault();
+    return true;
+  }
+  return false;
+}
+
 /**
  * Move file selection in visual tree order (not flat `files` order, which is
  * path-sorted from `git diff`). The snapshot's `files` already reflects any
@@ -52,8 +103,8 @@ function moveFile(direction: 1 | -1) {
   let i = cur ? order.indexOf(cur) : -1;
   if (i === -1) i = 0;
   const nextPath = order[(i + direction + order.length) % order.length];
-  const idx = snap.files.findIndex((f) => f.path === nextPath);
-  if (idx >= 0) app.cmd("select_file", { idx });
+  const next = snap.files.find((f) => f.path === nextPath);
+  if (next) app.cmd("select_file", { idx: next.source_index });
 }
 
 /**
@@ -74,9 +125,9 @@ function nextHunkAcrossFiles() {
     return;
   }
   // At last hunk — jump to next file's first hunk.
-  const nextIdx = snap.selected_file + 1;
-  if (nextIdx < snap.files.length) {
-    app.cmd("select_file", { idx: nextIdx });
+  const nextVisibleIdx = snap.selected_file + 1;
+  if (nextVisibleIdx < snap.files.length) {
+    app.cmd("select_file", { idx: snap.files[nextVisibleIdx].source_index });
     // next_hunk on a fresh file leaves current_hunk at 0 by default — explicitly
     // ensure we're at hunk 0 by no-op'ing (select_file resets current_hunk to 0
     // in the engine). Scroll into view.
@@ -94,11 +145,11 @@ function prevHunkAcrossFiles() {
     return;
   }
   // At first hunk — jump to previous file's last hunk.
-  const prevIdx = snap.selected_file - 1;
-  if (prevIdx >= 0) {
-    const prevFile = snap.files[prevIdx];
+  const prevVisibleIdx = snap.selected_file - 1;
+  if (prevVisibleIdx >= 0) {
+    const prevFile = snap.files[prevVisibleIdx];
     const lastHunk = Math.max(0, (prevFile?.hunks.length ?? 1) - 1);
-    app.cmd("select_file", { idx: prevIdx });
+    app.cmd("select_file", { idx: prevFile.source_index });
     // Walk forward to the last hunk if there are any.
     for (let i = 0; i < lastHunk; i++) {
       app.cmd("next_hunk");
@@ -131,13 +182,29 @@ export function initKeyboard(): () => void {
     const inField =
       ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
       target.isContentEditable;
+    const inTerminal = !!target.closest(".xterm");
+
+    // When focus is inside xterm, every keystroke belongs to the PTY. Capture-phase
+    // preventDefault() here would swallow input before xterm's onData fires. Only
+    // Cmd/Ctrl+T is allowed through so the terminal toggle still closes the drawer.
+    if (inTerminal) {
+      const isToggleTerminal =
+        (e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "t" || e.key === "T");
+      if (!isToggleTerminal) return;
+    }
 
     // Always-fire shortcuts (work even when focus is in a text field):
-    // Esc dismisses the diff composer.
-    if (e.key === "Escape" && diffSel.active) {
-      diffSel.clear();
-      e.preventDefault();
-      return;
+    // Esc dismisses the diff composer first; then blurs any focused input.
+    if (e.key === "Escape") {
+      if (diffSel.active) {
+        diffSel.clear();
+        e.preventDefault();
+        return;
+      }
+      if (blurActiveField()) {
+        e.preventDefault();
+        return;
+      }
     }
     // ⌘Q / Ctrl+Q closes the window.
     if (e.ctrlKey && e.key === "q") {
@@ -146,6 +213,13 @@ export function initKeyboard(): () => void {
     }
     // ⌘K / Ctrl+K opens the palette (palette has its own handler too).
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      return;
+    }
+    // ⌘A / Ctrl+A — open AI action palette (only when not in a text field to
+    // avoid overriding native select-all).
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "a" || e.key === "A") && !inField) {
+      e.preventDefault();
+      openAiPaletteCallback?.();
       return;
     }
     // ⌘B — toggle browser view.
@@ -167,8 +241,21 @@ export function initKeyboard(): () => void {
       app.cmd("open_worktree", {});
       return;
     }
-    // ⌘T — new tab.
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "t" || e.key === "T") && !inField) {
+    // ⌘T — toggle terminal (Codex-style shortcut). Closing must work even
+    // when xterm's hidden textarea has focus; opening from other text fields
+    // still stays out of the way of native editing shortcuts.
+    if (
+      (e.metaKey || e.ctrlKey) &&
+      !e.shiftKey &&
+      (e.key === "t" || e.key === "T") &&
+      (!inField || terminal.open)
+    ) {
+      e.preventDefault();
+      terminal.toggle();
+      return;
+    }
+    // ⌘⇧T — new tab.
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "t" || e.key === "T") && !inField) {
       e.preventDefault();
       app.cmd("new_tab");
       return;
@@ -190,20 +277,20 @@ export function initKeyboard(): () => void {
       }
       return;
     }
-    // ⌘⇧O — open a PR by URL. No direct dialog yet; fires the EmptyState
-    // paste field via a "focus" pseudo-event by toggling the right route.
+    // ⌘⇧O — open PR URL modal.
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "o" || e.key === "O")) {
       e.preventDefault();
-      const input = document.querySelector<HTMLInputElement>('input[placeholder*="GitHub PR URL"]');
-      input?.focus();
+      openPrUrlModal();
       return;
     }
-    // Panel toggles fire from anywhere — `[`, `\`, `]` aren't valid edit input
-    // alone, and these are app-level toggles users expect to always work.
-    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-      if (e.key === "[") { app.togglePanel("left"); e.preventDefault(); return; }
-      if (e.key === "]") { app.togglePanel("right"); e.preventDefault(); return; }
-      if (e.key === "\\") { app.togglePanel("tree"); e.preventDefault(); return; }
+    // Panel toggles. Plain keys stay review-only so typing in fields/terminal
+    // is not hijacked. Cmd/Ctrl variants are app-level and work from focused
+    // inputs, including xterm.
+    if (
+      (isReviewPanelShortcut(e, inField) || isCommandShortcut(e)) &&
+      togglePanelForKey(e)
+    ) {
+      return;
     }
     // Backtick / Cmd+` toggles the terminal drawer. We let it fire even when
     // focus is in an input field that isn't the terminal itself — the terminal
@@ -215,8 +302,16 @@ export function initKeyboard(): () => void {
       return;
     }
 
-    // Below: only when NOT typing in a field.
+    // Cmd/Ctrl+R — force-refresh diff source for local PR tabs.
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "r" || e.key === "R")) {
+      e.preventDefault();
+      app.cmd("force_refresh_diff");
+      return;
+    }
+
+    // Below: only when NOT typing in a field or a modal overlay is open.
     if (inField) return;
+    if (document.querySelector('[data-modal]')) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     // Track the `g` buffer for `gg`. Reset on any non-`g` key.
@@ -304,7 +399,7 @@ export function initKeyboard(): () => void {
       // Open in editor
       case "e": {
         import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("open_in_editor").catch(() => {});
+          invoke("open_source").catch(() => {});
         });
         break;
       }

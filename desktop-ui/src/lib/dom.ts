@@ -1,6 +1,6 @@
 import { tick } from "svelte";
 import { app } from "$lib/stores/app.svelte";
-import type { ThreadSnapshot } from "$lib/types";
+import type { FlatFinding, ThreadSnapshot } from "$lib/types";
 
 /**
  * Smooth-scroll an element into view and pulse its outline.
@@ -36,11 +36,28 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
   if (!snap) return;
   const currentPath = snap.files[snap.selected_file]?.path;
   if (thread.file && thread.file !== currentPath) {
-    const idx = snap.files.findIndex((f) => f.path === thread.file);
-    if (idx >= 0) {
-      await app.cmd("select_file", { idx });
+    const f = snap.files.find((f) => f.path === thread.file);
+    if (f) {
+      await app.cmd("select_file", { idx: f.source_index });
       await tick();
     }
   }
   jumpTo(thread.id);
+}
+
+/**
+ * Navigate to a finding, switching files first if needed.
+ */
+export async function navigateToFinding(finding: FlatFinding): Promise<void> {
+  const snap = app.snapshot;
+  if (!snap) return;
+  const currentPath = snap.files[snap.selected_file]?.path;
+  if (finding.file && finding.file !== currentPath) {
+    const f = snap.files.find((f) => f.path === finding.file);
+    if (f) {
+      await app.cmd("select_file", { idx: f.source_index });
+      await tick();
+    }
+  }
+  jumpTo(`finding-${finding.id}`);
 }

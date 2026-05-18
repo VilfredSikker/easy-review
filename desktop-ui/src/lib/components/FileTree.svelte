@@ -3,6 +3,7 @@
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { buildTree } from "$lib/treeFromPaths";
   import ScopeSelector from "./ScopeSelector.svelte";
+  import { onDestroy } from "svelte";
 
   interface Props {
     /** When true, render narrow icon-only rail (mock lines 414–421). */
@@ -19,11 +20,73 @@
    *  selected-file cursor for the tree highlight so the highlight tracks scroll. */
   const viewportPath = $derived(diffScroll.currentFilePath);
 
-  function jumpToFile(path: string, idx: number) {
+  // ── Filter input state ────────────────────────────────────────────────────
+  // Local draft separates UI from backend so typing stays responsive while
+  // the expensive snapshot rebuild is debounced. Apply on settle / Enter /
+  // suggestion click; clear immediately on Escape.
+  let filterDraft = $state("");
+  let inputFocused = $state(false);
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let inputEl: HTMLInputElement | null = $state(null);
+  const DEBOUNCE_MS = 180;
+
+  // Sync draft from backend, unless the user is actively typing.
+  $effect(() => {
+    const backendValue = snapshot?.filter ?? "";
+    if (!inputFocused || filterDraft === backendValue) {
+      filterDraft = backendValue;
+    }
+  });
+
+  function clearTimer() {
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+  }
+
+  function applyFilter(v: string) {
+    clearTimer();
+    const trimmed = v.trim();
+    if (trimmed) app.cmd("set_filter", { query: trimmed });
+    else app.cmd("clear_filter");
+  }
+
+  function onFilterInput(e: Event) {
+    filterDraft = (e.target as HTMLInputElement).value;
+    clearTimer();
+    const v = filterDraft;
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      applyFilter(v);
+    }, DEBOUNCE_MS);
+  }
+
+  function onFilterKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyFilter(filterDraft);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      filterDraft = "";
+      clearTimer();
+      app.cmd("clear_filter");
+      inputEl?.blur();
+    }
+  }
+
+  function pickSuggestion(expr: string) {
+    filterDraft = expr;
+    applyFilter(expr);
+  }
+
+  onDestroy(clearTimer);
+
+  function jumpToFile(path: string, sourceIdx: number) {
     // Smooth-scroll the diff view to this file's anchor section.
     document.getElementById(`file-${path}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
     // Keep the focus cursor in sync for keyboard nav / Mark reviewed.
-    app.cmd("select_file", { idx });
+    app.cmd("select_file", { idx: sourceIdx });
   }
 
   /** `pl-3` (base) + 16px per additional depth, mirroring the mock's pl-7 → pl-11 progression. */
@@ -59,19 +122,41 @@
 {:else}
 <div class="w-64 border-r border-hairline bg-surface flex flex-col overflow-hidden transition-[width] duration-200">
   <!-- Search header -->
-  <div class="flex items-center gap-2 px-3 py-2 border-b border-hairline shrink-0">
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" class="shrink-0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-    <input
-      class="flex-1 bg-transparent text-sm text-fg-2 placeholder:text-muted outline-none min-w-0"
-      placeholder="Filter files…"
-      value={snapshot?.filter ?? ""}
-      oninput={(e) => {
-        const v = (e.target as HTMLInputElement).value;
-        if (v) app.cmd("set_filter", { query: v });
-        else app.cmd("clear_filter");
-      }}
-    />
-    <span class="kbd">/</span>
+  <div class="relative shrink-0 border-b border-hairline">
+    <div class="flex items-center gap-2 px-3 py-2">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" class="shrink-0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input
+        bind:this={inputEl}
+        class="flex-1 bg-transparent text-sm text-fg-2 placeholder:text-muted outline-none min-w-0"
+        placeholder="Filter files…"
+        value={filterDraft}
+        oninput={onFilterInput}
+        onkeydown={onFilterKeydown}
+        onfocus={() => (inputFocused = true)}
+        onblur={() => setTimeout(() => (inputFocused = false), 150)}
+      />
+      <span class="kbd">/</span>
+    </div>
+    {#if inputFocused && (snapshot?.filter_suggestions?.length ?? 0) > 0}
+      <div class="absolute left-0 right-0 top-full z-10 bg-surface border border-hairline border-t-0 max-h-64 overflow-y-auto shadow-lg">
+        {#each snapshot?.filter_suggestions ?? [] as sug}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="flex items-center gap-2 px-3 py-1.5 text-[12px] cursor-pointer hover:bg-hover"
+            onmousedown={(e) => { e.preventDefault(); pickSuggestion(sug.expr); }}
+          >
+            <span class="text-[10px] mono uppercase shrink-0 {sug.kind === 'preset' ? 'text-accent' : 'text-muted'}">{sug.kind === 'preset' ? 'preset' : 'recent'}</span>
+            {#if sug.kind === 'preset'}
+              <span class="text-fg-2 shrink-0">{sug.name}</span>
+              <span class="text-muted mono truncate text-[11px]">{sug.expr}</span>
+            {:else}
+              <span class="text-fg-2 mono truncate">{sug.expr}</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 
   <!-- Summary header -->
@@ -128,8 +213,8 @@
             tabindex="0"
             class="flex items-center gap-1.5 pr-3 py-[3px] cursor-pointer relative {selected ? 'bg-hover' : 'hover:bg-card'}"
             style="padding-left: {indentPx(node.depth)};"
-            onclick={() => jumpToFile(file.path, files.indexOf(file))}
-            onkeydown={(e) => e.key === "Enter" && jumpToFile(file.path, files.indexOf(file))}
+            onclick={() => jumpToFile(file.path, file.source_index)}
+            onkeydown={(e) => e.key === "Enter" && jumpToFile(file.path, file.source_index)}
           >
             {#if selected}
               <span class="absolute left-0 top-0 bottom-0 w-[3px] bg-accent"></span>

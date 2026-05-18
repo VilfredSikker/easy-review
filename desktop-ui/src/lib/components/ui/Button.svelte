@@ -1,0 +1,50 @@
+<script lang="ts">
+  import type { Snippet } from "svelte";
+
+  interface Props {
+    children: Snippet;
+    variant?: "primary" | "secondary" | "ghost";
+    size?: "sm" | "md";
+    type?: "button" | "submit" | "reset";
+    disabled?: boolean;
+    onclick?: (e: MouseEvent) => void;
+    class?: string;
+    title?: string;
+    "aria-label"?: string;
+  }
+
+  const {
+    children,
+    variant = "secondary",
+    size = "sm",
+    type = "button",
+    disabled = false,
+    onclick,
+    class: extra = "",
+    title,
+    "aria-label": ariaLabel,
+  }: Props = $props();
+
+  const base = "rounded-md font-medium uppercase tracking-wider transition-colors";
+
+  const variantClass = $derived(
+    variant === "primary"
+      ? "bg-accent text-black hover:bg-[#ff7d54]"
+      : variant === "ghost"
+        ? "text-fg-3 hover:bg-hover"
+        : "border border-border text-fg-2 hover:bg-hover"
+  );
+
+  const sizeClass = $derived(size === "md" ? "px-3 py-2 text-xs" : "px-3 py-1.5 text-xs");
+</script>
+
+<button
+  {type}
+  {disabled}
+  {onclick}
+  {title}
+  aria-label={ariaLabel}
+  class="{base} {variantClass} {sizeClass} {extra}"
+>
+  {@render children()}
+</button>

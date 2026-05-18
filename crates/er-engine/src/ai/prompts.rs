@@ -200,6 +200,166 @@ Reading source files IS allowed and expected (within the read budget above). Use
     )
 }
 
+/// Build the review prompt for Desktop local-managed mode.
+///
+/// Same review logic as `build_review_prompt` but uses absolute `output_dir` paths
+/// instead of repo-relative `.er/` paths. The agent runs with cwd = repo root so
+/// `git diff` resolves correctly; all outputs land in `output_dir`.
+pub fn build_review_prompt_local_managed(
+    base_branch: &str,
+    scope: &str,
+    output_dir: &str,
+) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let base_branch_escaped = base_branch.replace('{', "{{").replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+    };
+    let annotate = annotate_diff_command(
+        &format!("{output_dir}/diff-tmp"),
+        &format!("{output_dir}/diff-annotated"),
+    );
+    format!(
+        r#"You are a code reviewer. Perform a thorough review of the current git diff and write results to `{safe_output_dir}/`.
+
+## Instructions
+
+1. Run: `mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
+   - Save the SHA-256 hash as `diff_hash`
+2. Annotate the diff with file line numbers: `{annotate}`
+3. Read `{safe_output_dir}/diff-annotated` to get the diff with `[h<hunk> L<file_line>]` tags on every line. The diff includes 20 lines of context around each change so you can see surrounding functions, imports, and helpers.
+4. Analyse every changed file. **Findings target only `+` or `-` lines** — the wider context is for comprehension. For each file determine:
+   - `risk`: "high" | "medium" | "low" | "info"
+   - `risk_reason`: why this risk level
+   - `summary`: one-line description of changes
+   - `findings`: array of issues found (max 3-4 per file)
+5. **Verify findings agentically.** When a finding's significance depends on something not visible in the diff, read or grep:
+   - "Does this new function follow the established pattern?" → read 1–2 sibling files in the same directory
+   - "Will this break callers?" → grep for the symbol; read the top 2–3 hits
+   - "Is this covered by tests?" → look for `tests/test_<name>.py` (or analogue)
+   - Append each read/grep finding as an `EvidenceItem` on the relevant `Finding`
+   - Budget: ~5 file reads per finding, ~30 reads total. If you run out, mark the finding `tentative` with a `verification_plan` describing what remains.
+6. Set `confidence` on every finding:
+   - `confirmed` — evidence supports the finding; reviewer should act
+   - `informational` — real but pre-existing or low-impact relative to this PR
+   - `tentative` — couldn't verify within budget; `verification_plan` is required
+7. Write these four files:
+
+### `{safe_output_dir}/review.json`
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256 from step 1>",
+  "diff_scope": "{scope}",
+  "created_at": "<ISO 8601>",
+  "base_branch": "{base_branch_escaped}",
+  "head_branch": "<current branch>",
+  "file_hashes": {{}},
+  "files": {{
+    "path/to/file.rs": {{
+      "risk": "medium",
+      "risk_reason": "Modifies error handling logic",
+      "summary": "Adds retry mechanism for network calls",
+      "findings": [
+        {{
+          "id": "f-1",
+          "severity": "medium",
+          "category": "correctness",
+          "title": "Short title (max 60 chars)",
+          "description": "What the issue is and why it matters",
+          "hunk_index": 0,
+          "line_start": 42,
+          "suggestion": "What to do about it",
+          "related_files": [],
+          "outside_diff": false,
+          "confidence": "confirmed",
+          "verification_plan": "",
+          "evidence": [
+            {{
+              "file": "src/api.py",
+              "line_start": 110,
+              "line_end": 118,
+              "note": "All three callers pass user-controlled input directly."
+            }}
+          ],
+          "responses": [],
+          "resolved": false,
+          "resolved_note": "",
+          "resolved_at": ""
+        }}
+      ]
+    }}
+  }}
+}}
+```
+
+`resolved` / `resolved_note` / `resolved_at` are populated by the `validate` pass — leave them at defaults during review.
+
+### `{safe_output_dir}/order.json`
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256>",
+  "order": [
+    {{"path": "src/file.rs", "reason": "Core change", "group": "main"}}
+  ],
+  "groups": {{
+    "main": {{"label": "Main Changes", "color": "red"}}
+  }}
+}}
+```
+
+### `{safe_output_dir}/checklist.json`
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256>",
+  "items": [
+    {{
+      "id": "c-1",
+      "text": "Verify error handling covers all edge cases",
+      "category": "correctness",
+      "checked": false,
+      "related_findings": ["f-1"],
+      "related_files": ["src/file.rs"]
+    }}
+  ]
+}}
+```
+
+### `{safe_output_dir}/summary.md`
+A 3-5 paragraph markdown summary of the overall changes.
+
+## Guidelines
+
+- Be specific. "Check error handling" is bad. "Handle the None case in parse_token() at line 42" is good.
+- `hunk_index`: copy the number from the `[h<N>]` tag in `{safe_output_dir}/diff-annotated`. It is 0-based per file (first `@@` in a file = 0, second = 1). Never compute it yourself.
+- `line_start`: copy the number from the `[h<N> L<M>]` tag on the relevant `+` or context line in `{safe_output_dir}/diff-annotated`. **Never infer, count, or compute line numbers** — copy the tag verbatim from the line you are pointing at. If the line you want to reference has no `L<M>` tag (e.g. it is a deleted line tagged `L-<M>`), pick the nearest `+` or context line instead.
+- **Findings MUST anchor to a `+` or `-` line.** The 20 lines of surrounding context exist so you can understand the change — not so you can find issues in unchanged code. Set `outside_diff: false` for review-pass findings; if an issue lives entirely in unchanged code, drop it (the `validate` pass can re-add it as informational later).
+- Findings MUST point to a line tagged `[h<N> L<M>]` in `{safe_output_dir}/diff-annotated`. If you cannot anchor a finding to any tagged line, drop it rather than guessing.
+- `confidence` and `evidence`: see step 6. Use `confirmed` when you read enough to verify it, `informational` when the issue is real but minor or pre-existing, `tentative` when you ran out of budget. `evidence` should cite the actual files/ranges you read.
+- `verification_plan`: required for `tentative`; one line saying what would resolve it (e.g. "grep `parse_token` and check whether any callers pass user input directly").
+- Risk levels: high = likely bug or security issue, medium = code smell or missing edge case, low = style, info = observation.
+- Keep finding titles under 60 characters.
+- The `suggestion` field should be actionable.
+- Max 3-4 findings per file, max 15 total.
+- The checklist should be things the reviewer should manually verify.
+- Categories: security, logic, performance, correctness, error-handling, style, testing.
+
+## Speed
+
+Target: complete in under 3 minutes. Agentic verification adds time vs. the old diff-only flow; that's the trade for higher-confidence findings. Short-circuit when findings are obvious — you don't need to grep for a typo or an unambiguous null deref.
+Reading source files IS allowed and expected (within the read budget above). Use it to verify, not to expand scope."#
+    )
+}
+
 /// Build the questions-answering prompt.
 ///
 /// The prompt instructs the agent to:
@@ -261,13 +421,7 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
     )
 }
 
-/// Build the validate prompt — re-runs verification on existing findings.
-///
-/// Reads `.er/review.json` + `.er/diff-annotated`, follows each finding's `verification_plan`,
-/// and rewrites `confidence` + `evidence` in place. Used to:
-/// - Resolve `tentative` findings the review pass couldn't verify in budget.
-/// - Re-validate after the diff or codebase has changed.
-/// - Optionally surface `informational` issues in unchanged code that review skipped.
+/// Build the validate prompt — validates and re-anchors existing findings.
 pub fn build_validate_prompt(base_branch: &str, scope: &str) -> String {
     let safe_base_branch = sanitize_for_shell(base_branch);
     let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
@@ -279,9 +433,8 @@ pub fn build_validate_prompt(base_branch: &str, scope: &str) -> String {
     let annotate = annotate_diff_command(".er/diff-tmp", ".er/diff-annotated");
 
     format!(
-        r#"You are validating an existing code review. For every finding, do two things:
-(1) check whether the user has FIXED it since review ran, and (2) for any still-tentative
-findings, execute their `verification_plan`. Update the finding fields in place.
+        r#"You are validating and re-anchoring an existing code review.
+Do not create unrelated new findings in this action.
 
 ## Instructions
 
@@ -289,48 +442,26 @@ findings, execute their `verification_plan`. Update the finding fields in place.
 2. Refresh the annotated diff so line numbers stay current:
    - `git diff {diff_args} > .er/diff-tmp`
    - `{annotate}`
-3. **Resolution check (run for every finding, any confidence):**
-   For each finding, read the current state of `<file>:<line_start>` (and a few lines around it).
-   Compare to the original concern in `description` / `suggestion`.
-   - If the issue is no longer present (line deleted, refactored, null-check added, etc.):
-     - Set `resolved: true`
-     - Write a one-line `resolved_note` saying what changed (e.g. "added null check on line 42",
-       "function deleted", "replaced with helper that handles the case").
-     - Stamp `resolved_at` with the current ISO 8601 UTC timestamp.
-     - Do NOT change `confidence` — keep the audit trail of what review thought.
-   - If the issue is still present, leave `resolved: false`.
-   - **Never delete findings.** Resolved ones stay in the JSON for history.
-   - Budget for this step: 1 file read per finding.
-4. **Tentative promotion (run only when `confidence == "tentative"` or empty AND `resolved == false`):**
-   Execute the finding's `verification_plan`:
-      - Read the named files / grep the named symbols
-      - Inspect callers, sibling implementations, or tests as instructed
-   Decide the new `confidence`:
-      - `confirmed` — evidence supports the finding; reviewer should act
-      - `informational` — real but pre-existing or low-impact relative to this PR
-      - `dropped` — the verification disproved the concern (keep the finding for the audit trail)
-   Append `EvidenceItem`s to `evidence` with a one-line `note` per item.
-   If `confidence` was already `confirmed` / `informational` / `dropped`, leave it alone unless new
-   evidence flips the verdict.
-5. (Optional) If while reading callers/siblings you spot a real issue in unchanged code that
-   the review pass deliberately skipped, you MAY add a new finding with `outside_diff: true`
-   and `confidence: "informational"`. Anchor it to a context line tagged in `.er/diff-annotated`
-   (no inventing line numbers). Cap: max 3 such additions.
-6. Write the updated `.er/review.json` back. Preserve `diff_hash`, `version`, `created_at`,
-   `base_branch`, `head_branch`, and every untouched field on every finding.
+3. For each active finding, read existing replies (`responses`) before deciding the outcome.
+4. For each finding, choose exactly one result:
+   - `RESOLVED_OR_INVALID`: concern no longer applies. Remove it from active `files[].findings`.
+   - `PERSISTS`: concern still applies. Keep it and update title/description/suggestion if needed.
+   - `SHIFTED`: concern still applies but moved. Keep it and update `hunk_index`, `line_start`, `line_end`.
+5. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
+   `informational`, `dropped`) based on current code.
+6. Preserve `diff_hash`, `version`, and unchanged file entries unless your existing refresh workflow recomputes them.
+7. Write updated `.er/review.json`.
+8. Append a one-line note to `.er/summary.md` in this exact format:
+   `Refresh: N removed, M updated, K re-anchored.`
+9. Do not discover unrelated new findings in this action.
 
 ## Budget
 
-- 1 file read per finding for the resolution check (step 3).
-- ~5 file reads per finding being verified in step 4, ~50 reads total across the review.
-- If you exceed budget, leave remaining tentative findings as `tentative` and note that in the
-  `verification_plan` (e.g. "needs deeper trace through middleware/auth.py — re-run validate").
+- ~5 file reads per finding, ~50 reads total across the review.
 
 ## Speed
 
-Target: complete in under 5 minutes. Validate is opt-in and earns its keep with thorough
-verification, so don't rush — but don't read the entire codebase either. Each evidence read
-should map to a specific finding."#
+Target: complete in under 5 minutes. Each evidence read should map to a specific finding."#
     )
 }
 

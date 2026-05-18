@@ -31,6 +31,8 @@
   let includeFindings = $state(true);
   let includeAnnotations = $state(true);
   let onlyUnresolved = $state(false);
+  let revisions = $state<{ revision_id: string; active: boolean }[]>([]);
+  let selectedRevisionId = $state<string>("");
 
   let preview = $state<string>("");
   let savedPath = $state<string | null>(null);
@@ -73,6 +75,16 @@
     refreshPreview();
   });
 
+  $effect(() => {
+    if (!openState) return;
+    invoke<{ revision_id: string; active: boolean }[]>("list_review_revisions")
+      .then((r) => {
+        revisions = r;
+        selectedRevisionId = (r.find((x) => x.active) ?? r[0])?.revision_id ?? "";
+      })
+      .catch(() => {});
+  });
+
   async function handleCopyToClipboard() {
     try {
       const body = previewOverride !== null
@@ -103,6 +115,16 @@
     }
   }
 
+  async function copyReviewJson() {
+    try {
+      const body = await invoke<string>("read_review_json", { revisionId: selectedRevisionId || null });
+      await copyToClipboard(body);
+      app.showToast("success", `Copied review.json (${body.length} bytes)`);
+    } catch {
+      app.showToast("error", "No review.json found for selected revision");
+    }
+  }
+
   function onBackdropKey(e: KeyboardEvent) {
     if (e.key === "Escape") closeExportModal();
   }
@@ -112,6 +134,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
+    data-modal
     class="fixed inset-0 z-[200] bg-black/55 flex items-start justify-center pt-[10vh]"
     style="backdrop-filter: blur(2px);"
     onclick={closeExportModal}
@@ -136,6 +159,16 @@
       </div>
 
       <div class="px-4 py-3 border-b border-hairline space-y-2">
+        {#if revisions.length > 1}
+          <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
+            <span>Revision</span>
+            <select bind:value={selectedRevisionId} class="bg-bg border border-border rounded px-2 py-1 text-xs">
+              {#each revisions as rev}
+                <option value={rev.revision_id}>{rev.active ? "active · " : ""}{rev.revision_id}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
         <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
           <input type="checkbox" bind:checked={includeComments} />
           <span>Comments</span>
@@ -170,6 +203,12 @@
           class="px-3 py-1.5 rounded-md border border-border text-xs text-fg-2 hover:bg-hover"
         >
           Save to file
+        </button>
+        <button
+          onclick={copyReviewJson}
+          class="px-3 py-1.5 rounded-md border border-border text-xs text-fg-2 hover:bg-hover"
+        >
+          Copy review.json
         </button>
         {#if savedPath}
           <span class="text-[11px] text-add-fg mono ml-1">{savedPath}</span>

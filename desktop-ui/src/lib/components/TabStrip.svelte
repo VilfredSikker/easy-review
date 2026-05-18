@@ -2,6 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import type { TabSummary } from "$lib/types";
+  import { startWindowDrag } from "$lib/windowDrag";
 
   interface Props {
     tabs?: TabSummary[];
@@ -112,10 +113,21 @@
   }
 </script>
 
+<!-- Outer wrapper is the window-drag region. Must not be overflow-scrollable
+     because WebKit ignores -webkit-app-region: drag inside overflow containers.
+     The right padding (pr-4) is always-empty outer space that stays draggable
+     even when the tab list is full. The left padding offsets the macOS traffic lights. -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="flex items-center gap-1 h-9 pr-2 border-b border-ink-650 bg-ink-870 overflow-x-auto shrink-0 tabstrip-drag"
+  class="flex items-center h-9 border-b border-ink-650 bg-ink-870 shrink-0 tabstrip-drag pr-4"
   style="padding-left: env(titlebar-area-x, 80px)"
   data-testid="tab-strip"
+  data-tauri-drag-region
+  onmousedown={startWindowDrag}
+>
+<!-- Tabs scroll container: overflow here, but explicitly no-drag so tabs stay interactive. -->
+<div
+  class="flex items-center gap-1 pr-2 min-w-0 max-w-full overflow-x-auto tabstrip-no-drag"
 >
   {#each tabs as tab, i (tab.idx)}
     {#if dragFrom !== null && dropAt === i}
@@ -240,20 +252,21 @@
       </div>
     {/if}
   </div>
-  <!-- Empty space is window-draggable so the user can move the window from
-       the title-bar row, while tabs and buttons remain interactive. -->
-  <div class="flex-1 self-stretch tabstrip-drag-region" aria-hidden="true"></div>
+<!-- Close the inner tabs scroll container -->
+</div>
+<div class="flex-1 min-w-4" data-tauri-drag-region aria-hidden="true"></div>
 </div>
 
 <style>
-  /* The strip itself is the title-bar row: by default treat blank space as a
-     drag handle. Concrete children opt out via .tabstrip-drag-region inverse
-     or their default app-region. */
-  .tabstrip-drag :global(.tabstrip-drag-region) {
+  /* Outer container is the window-drag handle. WebKit requires the drag element
+     to not be inside an overflow-scrollable container, so the outer wrapper
+     has no overflow and the inner scroll div is explicitly no-drag. */
+  .tabstrip-drag {
     -webkit-app-region: drag;
   }
-  /* Tabs, buttons, and the new-tab button stay interactive. */
-  .tabstrip-drag > :not(.tabstrip-drag-region) {
+  /* Inner scroll container and all descendants are interactive. */
+  .tabstrip-no-drag,
+  .tabstrip-no-drag :global(*) {
     -webkit-app-region: no-drag;
   }
 </style>

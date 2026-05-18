@@ -4,6 +4,7 @@ use crate::ai;
 use crate::git;
 use crate::github;
 use crate::github::PrOverviewData;
+use crate::github::ReviewThreadState;
 
 use super::chrono_now;
 use super::App;
@@ -40,6 +41,10 @@ pub struct CommentSyncResult {
     /// Tab identity for safe application without race conditions.
     /// (repo_root, pr_number, is_remote)
     pub tab_key: (String, Option<u64>, bool),
+}
+
+fn merged_outdated_state(thread_state: ReviewThreadState, rest_outdated: bool) -> bool {
+    thread_state.outdated || rest_outdated
 }
 
 impl App {
@@ -107,7 +112,7 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
         github::gh_pr_comments(&ctx.owner, &ctx.repo_name, ctx.pr_number, &ctx.repo_root)?
     };
 
-    let resolved_map = if ctx.is_remote {
+    let thread_state = if ctx.is_remote {
         github::gh_pr_review_threads_remote(&ctx.owner, &ctx.repo_name, ctx.pr_number)
             .unwrap_or_default()
     } else {
@@ -158,10 +163,23 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
             stable_line
         };
 
-        let (hunk_index, anchor_line_content, anchor_ctx_before, anchor_ctx_after, anchor_old_line, anchor_hunk_header) =
-            resolve_anchor(resolved_line, &file_path, &ctx.files, gh.diff_hunk.as_deref());
+        let (
+            hunk_index,
+            anchor_line_content,
+            anchor_ctx_before,
+            anchor_ctx_after,
+            anchor_old_line,
+            anchor_hunk_header,
+        ) = resolve_anchor(
+            resolved_line,
+            &file_path,
+            &ctx.files,
+            gh.diff_hunk.as_deref(),
+        );
 
         let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
+        let state = thread_state.get(&gh.id).copied().unwrap_or_default();
+        let outdated = merged_outdated_state(state, gh.outdated);
         github_entries.push(ai::GitHubReviewComment {
             id: format!("gh-{}", gh.id),
             timestamp: gh.created_at.clone(),
@@ -172,12 +190,13 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
             line_content: anchor_line_content,
             comment: gh.body.clone(),
             in_reply_to,
-            resolved: resolved_map.get(&gh.id).copied().unwrap_or(false),
+            resolved: state.resolved,
             source: "github".to_string(),
             github_id: Some(gh.id),
             author: gh.user.login.clone(),
             synced: true,
-            stale: false,
+            outdated,
+            stale: outdated,
             context_before: anchor_ctx_before,
             context_after: anchor_ctx_after,
             old_line_start: anchor_old_line,
@@ -223,7 +242,11 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
         local_count,
         is_remote: ctx.is_remote,
         comments_path: ctx.comments_path.clone(),
-        tab_key: (ctx.repo_root.clone(), ctx.pr_number_for_overview, ctx.is_remote),
+        tab_key: (
+            ctx.repo_root.clone(),
+            ctx.pr_number_for_overview,
+            ctx.is_remote,
+        ),
     })
 }
 
@@ -233,7 +256,14 @@ fn resolve_anchor(
     file_path: &str,
     files: &[git::DiffFile],
     diff_hunk: Option<&str>,
-) -> (Option<usize>, String, Vec<String>, Vec<String>, Option<usize>, String) {
+) -> (
+    Option<usize>,
+    String,
+    Vec<String>,
+    Vec<String>,
+    Option<usize>,
+    String,
+) {
     if let Some(line) = resolved_line {
         if let Some(f) = files.iter().find(|f| f.path == file_path) {
             if let Some((i, hunk)) = f
@@ -249,8 +279,14 @@ fn resolve_anchor(
                     (
                         hunk.lines[idx].content.clone(),
                         hunk.lines[idx].old_num,
-                        hunk.lines[start..idx].iter().map(|l| l.content.clone()).collect(),
-                        hunk.lines[(idx + 1)..end].iter().map(|l| l.content.clone()).collect(),
+                        hunk.lines[start..idx]
+                            .iter()
+                            .map(|l| l.content.clone())
+                            .collect(),
+                        hunk.lines[(idx + 1)..end]
+                            .iter()
+                            .map(|l| l.content.clone())
+                            .collect(),
                     )
                 } else if let Some(dh) = diff_hunk {
                     let (fallback_lc, fallback_ctx) = extract_anchor_from_diff_hunk(dh);
@@ -261,15 +297,30 @@ fn resolve_anchor(
                         .iter()
                         .filter_map(|l| l.new_num.map(|n| (n, l)))
                         .min_by_key(|(n, _)| (*n as isize - line as isize).unsigned_abs());
-                    let (lc, old_ln) =
-                        nearest.map(|(_, l)| (l.content.clone(), l.old_num)).unwrap_or_default();
+                    let (lc, old_ln) = nearest
+                        .map(|(_, l)| (l.content.clone(), l.old_num))
+                        .unwrap_or_default();
                     (lc, old_ln, Vec::new(), Vec::new())
                 };
-                return (Some(i), lc, ctx_before, ctx_after, old_ln, hunk.header.clone());
+                return (
+                    Some(i),
+                    lc,
+                    ctx_before,
+                    ctx_after,
+                    old_ln,
+                    hunk.header.clone(),
+                );
             }
         }
     }
-    (None, String::new(), Vec::new(), Vec::new(), None, String::new())
+    (
+        None,
+        String::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        String::new(),
+    )
 }
 
 /// GitHub's diff_hunk ends at the commented line. The last non-deleted line is the target;
@@ -444,8 +495,8 @@ impl App {
             }
         };
 
-        // Fetch review thread resolution status
-        let resolved_map = if is_remote {
+        // Fetch review-thread state that the REST comments endpoint does not expose reliably.
+        let thread_state = if is_remote {
             github::gh_pr_review_threads_remote(&owner, &repo_name, pr_number).unwrap_or_default()
         } else {
             github::gh_pr_review_threads(&owner, &repo_name, pr_number, &repo_root)
@@ -510,10 +561,23 @@ impl App {
                 stable_line
             };
 
-            let (hunk_index, anchor_line_content, anchor_ctx_before, anchor_ctx_after, anchor_old_line, anchor_hunk_header) =
-                resolve_anchor(resolved_line, &file_path, &tab_files, gh.diff_hunk.as_deref());
+            let (
+                hunk_index,
+                anchor_line_content,
+                anchor_ctx_before,
+                anchor_ctx_after,
+                anchor_old_line,
+                anchor_hunk_header,
+            ) = resolve_anchor(
+                resolved_line,
+                &file_path,
+                &tab_files,
+                gh.diff_hunk.as_deref(),
+            );
 
             let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
+            let state = thread_state.get(&gh.id).copied().unwrap_or_default();
+            let outdated = merged_outdated_state(state, gh.outdated);
 
             github_entries.push(ai::GitHubReviewComment {
                 id: format!("gh-{}", gh.id),
@@ -525,12 +589,13 @@ impl App {
                 line_content: anchor_line_content,
                 comment: gh.body.clone(),
                 in_reply_to,
-                resolved: resolved_map.get(&gh.id).copied().unwrap_or(false),
+                resolved: state.resolved,
                 source: "github".to_string(),
                 github_id: Some(gh.id),
                 author: gh.user.login.clone(),
                 synced: true,
-                stale: false,
+                outdated,
+                stale: outdated,
                 context_before: anchor_ctx_before,
                 context_after: anchor_ctx_after,
                 old_line_start: anchor_old_line,
@@ -571,9 +636,7 @@ impl App {
             ) {
                 self.tab_mut().pr_data = Some(pr_data);
             }
-        } else if let Some(pr_data) =
-            github::gh_pr_overview(&repo_root, pr_number_for_overview)
-        {
+        } else if let Some(pr_data) = github::gh_pr_overview(&repo_root, pr_number_for_overview) {
             self.tab_mut().pr_data = Some(pr_data);
         }
 
@@ -783,5 +846,30 @@ impl App {
             self.notify(&format!("Pushed {} comments", pushed));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merged_outdated_state_preserves_graphql_thread_outdated() {
+        let state = ReviewThreadState {
+            resolved: false,
+            outdated: true,
+        };
+
+        assert!(merged_outdated_state(state, false));
+    }
+
+    #[test]
+    fn merged_outdated_state_preserves_rest_comment_outdated() {
+        let state = ReviewThreadState {
+            resolved: false,
+            outdated: false,
+        };
+
+        assert!(merged_outdated_state(state, true));
     }
 }

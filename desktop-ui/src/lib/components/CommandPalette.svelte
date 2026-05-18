@@ -100,6 +100,14 @@
         run: () => { close(); app.cmd("refresh_diff"); },
       },
       {
+        id: "force-refresh",
+        label: "Force refresh diff",
+        description: "Re-fetch PR head and base from remote",
+        group: "Navigate",
+        kbd: "⌘R",
+        run: () => { close(); app.cmd("force_refresh_diff"); },
+      },
+      {
         id: "toggle-diff-view-mode",
         label: "Toggle diff view (unified/split)",
         description: `Currently: ${app.diffViewMode}`,
@@ -147,10 +155,35 @@
         run: () => { close(); app.cmd("run_ai_review", { scope: "branch" }); },
       },
       {
+        id: "run-ai-review-unstaged",
+        label: "Run AI review (unstaged)",
+        description: "Review working tree changes",
+        group: "Actions",
+        run: () => { close(); app.cmd("run_ai_review", { scope: "unstaged" }); },
+      },
+      {
         id: "run-ai-review-staged",
         label: "Run AI review (staged only)",
         group: "Actions",
         run: () => { close(); app.cmd("run_ai_review", { scope: "staged" }); },
+      },
+      {
+        id: "run-ai-validate-branch",
+        label: "Validate / re-anchor review (branch)",
+        group: "Actions",
+        run: () => { close(); app.cmd("run_ai_validate", { scope: "branch" }); },
+      },
+      {
+        id: "run-ai-validate-unstaged",
+        label: "Validate / re-anchor review (unstaged)",
+        group: "Actions",
+        run: () => { close(); app.cmd("run_ai_validate", { scope: "unstaged" }); },
+      },
+      {
+        id: "run-ai-validate-staged",
+        label: "Validate / re-anchor review (staged only)",
+        group: "Actions",
+        run: () => { close(); app.cmd("run_ai_validate", { scope: "staged" }); },
       },
       {
         id: "set-ai-model-opus",
@@ -189,13 +222,13 @@
       });
     }
 
-    for (const [idx, file] of (snapshot?.files ?? []).entries()) {
+    for (const file of snapshot?.files ?? []) {
       items.push({
         id: `file-${file.path}`,
         label: file.path,
         group: "Files in this diff",
         file: { path: file.path, additions: file.additions, deletions: file.deletions },
-        run: () => { close(); app.cmd("select_file", { idx }); },
+        run: () => { close(); app.cmd("select_file", { idx: file.source_index }); },
       });
     }
     return items;
@@ -282,6 +315,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
+    data-modal
     class="fixed inset-0 z-[100] bg-black/50"
     style="backdrop-filter: blur(2px);"
     onclick={close}

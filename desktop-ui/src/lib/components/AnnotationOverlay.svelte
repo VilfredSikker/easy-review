@@ -1,7 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
-  import { browser, urlPath } from "$lib/stores/browser.svelte";
+  import { browser } from "$lib/stores/browser.svelte";
+  import { annotationMatchesPage } from "$lib/stores/browserUrl";
   import type { UiAnnotation, UiDomContext } from "$lib/types";
 
   interface Props {
@@ -48,9 +49,8 @@
   /** Capture errors surface as a small inline message under the composer. */
   let captureError = $state<string | null>(null);
 
-  const pageUrl = $derived(urlPath(browser.url));
   const annotations: UiAnnotation[] = $derived(
-    (app.snapshot?.ui_annotations ?? []).filter((a) => a.url === pageUrl),
+    (app.snapshot?.ui_annotations ?? []).filter((a) => annotationMatchesPage(a.url, browser.url)),
   );
 
   let composer = $state<{

@@ -6,6 +6,7 @@
   import Pill from "$lib/components/ui/Pill.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import { navigateToThread } from "$lib/dom";
+  import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
 
   interface Props {
     ai: AiSnapshot;
@@ -35,17 +36,27 @@
 
   <div class="space-y-1 mb-3">
     {#each questionThreads as thread (thread.id)}
-      <button
-        onclick={() => navigateToThread(thread)}
-        class="w-full text-left text-sm border-l-2 border-question pl-2 pr-1 py-1.5 hover:bg-bg flex flex-col gap-0.5 group"
-      >
-        <div class="text-[11px] font-mono text-muted flex items-center gap-1.5">
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fde047" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
-          <span>{basename(thread.file)}:{thread.line}</span>
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ml-auto opacity-0 group-hover:opacity-100 transition text-accent"><path d="M7 17L17 7M7 7h10v10"/></svg>
-        </div>
-        <div class="text-fg-2 text-left">{thread.root.body_markdown}</div>
-      </button>
+      <div class="relative group">
+        <button
+          onclick={() => navigateToThread(thread)}
+          class="w-full text-left text-sm border-l-2 border-question pl-2 pr-6 py-1.5 hover:bg-bg flex flex-col gap-0.5"
+        >
+          <div class="text-[11px] font-mono text-muted flex items-center gap-1.5">
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fde047" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
+            <span>{basename(thread.file)}:{thread.line}</span>
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ml-auto opacity-0 group-hover:opacity-100 transition text-accent"><path d="M7 17L17 7M7 7h10v10"/></svg>
+          </div>
+          <MarkdownText text={thread.root.body_markdown} className="text-fg-2 text-left" />
+        </button>
+        <button
+          type="button"
+          onclick={() => app.cmd("delete_thread", { id: thread.id })}
+          title="Delete question"
+          class="absolute top-1 right-1 p-0.5 rounded opacity-0 group-hover:opacity-100 transition hover:bg-del-bg text-muted hover:text-del-fg"
+        >
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+        </button>
+      </div>
     {/each}
   </div>
 

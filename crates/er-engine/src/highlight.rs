@@ -52,11 +52,23 @@ impl Highlighter {
 
     /// Highlight a single line. `theme_name` is a syntect theme name (e.g.
     /// "base16-ocean.dark"). Falls back to "base16-ocean.dark" if not found.
-    pub fn highlight_line(&mut self, line: &str, filename: &str, theme_name: &str) -> Vec<HighlightSpan> {
+    pub fn highlight_line(
+        &mut self,
+        line: &str,
+        filename: &str,
+        theme_name: &str,
+    ) -> Vec<HighlightSpan> {
         let key = cache_key(line, filename, theme_name);
 
         if let Some(cached) = self.cache.get(&key) {
-            return cached.spans.iter().map(|(t, c)| HighlightSpan { text: t.clone(), color: c.clone() }).collect();
+            return cached
+                .spans
+                .iter()
+                .map(|(t, c)| HighlightSpan {
+                    text: t.clone(),
+                    color: c.clone(),
+                })
+                .collect();
         }
 
         let syntax = self
@@ -98,32 +110,42 @@ impl Highlighter {
                         let text = text.trim_end_matches('\n').to_string();
                         let color = format!(
                             "#{:02x}{:02x}{:02x}",
-                            style.foreground.r,
-                            style.foreground.g,
-                            style.foreground.b
+                            style.foreground.r, style.foreground.g, style.foreground.b
                         );
                         (text, color)
                     })
                     .collect();
 
-                let result = spans.iter().map(|(t, c)| HighlightSpan { text: t.clone(), color: c.clone() }).collect();
+                let result = spans
+                    .iter()
+                    .map(|(t, c)| HighlightSpan {
+                        text: t.clone(),
+                        color: c.clone(),
+                    })
+                    .collect();
 
                 if self.cache.len() >= MAX_CACHE_SIZE {
-                    let mut entries: Vec<(u64, u64)> = self
-                        .cache
-                        .iter()
-                        .map(|(k, v)| (*k, v.access_gen))
-                        .collect();
+                    let mut entries: Vec<(u64, u64)> =
+                        self.cache.iter().map(|(k, v)| (*k, v.access_gen)).collect();
                     entries.sort_unstable_by_key(|&(_, g)| g);
                     for (k, _) in entries.into_iter().take(EVICT_COUNT) {
                         self.cache.remove(&k);
                     }
                 }
 
-                self.cache.insert(key, CachedLine { spans, access_gen: current_gen });
+                self.cache.insert(
+                    key,
+                    CachedLine {
+                        spans,
+                        access_gen: current_gen,
+                    },
+                );
                 result
             }
-            Err(_) => vec![HighlightSpan { text: line.to_string(), color: String::new() }],
+            Err(_) => vec![HighlightSpan {
+                text: line.to_string(),
+                color: String::new(),
+            }],
         }
     }
 }

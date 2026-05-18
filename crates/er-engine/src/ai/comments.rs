@@ -105,7 +105,7 @@ impl<'a> CommentRef<'a> {
     pub fn is_stale(&self) -> bool {
         match self {
             CommentRef::Question(q) => q.stale,
-            CommentRef::GitHubComment(c) => c.stale,
+            CommentRef::GitHubComment(c) => c.stale || c.outdated,
             CommentRef::Legacy(_) => false,
         }
     }
@@ -150,6 +150,14 @@ impl<'a> CommentRef<'a> {
             CommentRef::Question(q) => q.line_start,
             CommentRef::GitHubComment(c) => c.line_start,
             CommentRef::Legacy(c) => c.line_start,
+        }
+    }
+
+    pub fn old_line_start(&self) -> Option<usize> {
+        match self {
+            CommentRef::Question(q) => q.old_line_start,
+            CommentRef::GitHubComment(c) => c.old_line_start,
+            CommentRef::Legacy(_) => None,
         }
     }
 
@@ -321,6 +329,9 @@ pub struct GitHubReviewComment {
     /// Whether this comment was pushed to GitHub
     #[serde(default)]
     pub synced: bool,
+    /// Persisted GitHub review-thread outdated state.
+    #[serde(default)]
+    pub outdated: bool,
     /// Runtime-only staleness flag (not persisted)
     #[serde(skip)]
     pub stale: bool,
@@ -514,6 +525,35 @@ mod tests {
         }
     }
 
+    fn sample_github_comment() -> GitHubReviewComment {
+        GitHubReviewComment {
+            id: "gh-1".into(),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            file: "src/foo.rs".into(),
+            hunk_index: Some(0),
+            line_start: Some(10),
+            line_end: None,
+            line_content: "fn foo() {}".into(),
+            comment: "This changed upstream".into(),
+            in_reply_to: None,
+            resolved: false,
+            source: "github".into(),
+            github_id: Some(1),
+            author: "octo".into(),
+            synced: true,
+            outdated: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".into(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".into(),
+        }
+    }
+
     #[test]
     fn review_question_promoted_to_roundtrips_via_serde() {
         let mut q = sample_question();
@@ -523,6 +563,33 @@ mod tests {
         let back: ReviewQuestion = serde_json::from_str(&json).unwrap();
 
         assert_eq!(back.promoted_to.as_deref(), Some("c-42"));
+    }
+
+    #[test]
+    fn github_comment_outdated_roundtrips_via_serde() {
+        let mut c = sample_github_comment();
+        c.outdated = true;
+
+        let json = serde_json::to_string(&c).unwrap();
+        let back: GitHubReviewComment = serde_json::from_str(&json).unwrap();
+
+        assert!(back.outdated);
+        assert!(!back.stale, "runtime stale state must not be persisted");
+    }
+
+    #[test]
+    fn github_comment_outdated_defaults_to_false_when_missing() {
+        let json = r#"{
+            "id": "gh-1",
+            "file": "src/foo.rs",
+            "hunk_index": 0,
+            "line_start": 10,
+            "comment": "This changed upstream"
+        }"#;
+
+        let c: GitHubReviewComment = serde_json::from_str(json).unwrap();
+
+        assert!(!c.outdated);
     }
 
     #[test]

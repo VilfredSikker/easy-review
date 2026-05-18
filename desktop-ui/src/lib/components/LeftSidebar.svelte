@@ -2,6 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import type { ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
+  import { tick } from "svelte";
 
   interface PinnedItem {
     id: string;
@@ -37,6 +38,9 @@
 
   let settingsOpen = $state(false);
   let expandedProject = $state<string | null>(null);
+  let pendingBranchKey = $state<string | null>(null);
+  let pendingPrKey = $state<string | null>(null);
+  let prRevealCountByProject = $state<Record<string, number>>({});
 
   // Branch-picker state for the project header "+" button.
   let addingTo = $state<string | null>(null);
@@ -78,6 +82,15 @@
     return p.local_branches.length + p.my_prs.length + p.prs_to_review.length + p.recently_merged.length;
   }
 
+  function formatCacheAge(ms?: number | null): string {
+    if (ms == null || ms < 0) return "";
+    const mins = Math.floor(ms / 60_000);
+    if (mins < 1) return "<1m";
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    return `${hrs}h`;
+  }
+
   function prIconColor(pr: PrInfo): string {
     if (pr.state === "MERGED") return "text-purple-400";
     if (pr.review_decision === "CHANGES_REQUESTED") return "text-del-fg";
@@ -106,21 +119,62 @@
     return !(e.metaKey || e.ctrlKey || e.button === 1);
   }
 
-  function openBranch(projectId: string, name: string, e: MouseEvent) {
-    app.cmd("open_local_branch", {
-      projectId,
-      name,
-      replace: shouldReplaceTab(e),
+  function nextAnimationFrame(): Promise<void> {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => resolve());
+      } else {
+        setTimeout(resolve, 0);
+      }
     });
   }
 
-  function openPr(projectId: string, prNumber: number, _headRef: string, e: MouseEvent) {
-    app.cmd("open_pr_review", {
-      projectId,
-      prNumber,
-      replace: shouldReplaceTab(e),
-    });
+  async function yieldForPendingPaint() {
+    await tick();
+    await nextAnimationFrame();
   }
+
+  async function openBranch(projectId: string, name: string, e: MouseEvent) {
+    const branchKey = `${projectId}:${name}`;
+    if (pendingBranchKey === branchKey) return;
+    pendingBranchKey = branchKey;
+    try {
+      await yieldForPendingPaint();
+      await app.cmd("open_local_branch", {
+        projectId,
+        name,
+        replace: shouldReplaceTab(e),
+      });
+    } finally {
+      if (pendingBranchKey === branchKey) pendingBranchKey = null;
+    }
+  }
+
+  async function openPr(projectId: string, prNumber: number, _headRef: string, e: MouseEvent) {
+    const prKey = `${projectId}:${prNumber}`;
+    if (pendingPrKey === prKey) return;
+    pendingPrKey = prKey;
+    try {
+      await yieldForPendingPaint();
+      await app.cmd("open_pr_review", {
+        projectId,
+        prNumber,
+        replace: shouldReplaceTab(e),
+      });
+    } finally {
+      if (pendingPrKey === prKey) pendingPrKey = null;
+    }
+  }
+
+  function visibleToReviewCount(projectId: string): number {
+    return prRevealCountByProject[projectId] ?? 5;
+  }
+
+  function revealMoreToReview(projectId: string) {
+    const next = visibleToReviewCount(projectId) + 5;
+    prRevealCountByProject = { ...prRevealCountByProject, [projectId]: next };
+  }
+
 </script>
 
 {#if collapsed}
@@ -266,26 +320,46 @@
           </div>
           {#if open}
             <div class="ml-4 pl-3 border-l border-hairline space-y-0.5">
+              {#if project.pr_cache_stale}
+                <div class="flex items-center gap-1.5 px-2 py-1">
+                  <span class="text-[9px] uppercase tracking-wider text-amber-400">Stale</span>
+                  {#if project.pr_cache_age_ms != null}
+                    <span class="text-[9px] text-muted">{formatCacheAge(project.pr_cache_age_ms)} old</span>
+                  {/if}
+                  {#if loadingPrList}
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+                  {/if}
+                </div>
+              {/if}
               {#if project.local_branches.length > 0}
                 <div class="text-[9px] uppercase tracking-wider text-muted px-2 py-1">Tracked</div>
                 {#each project.local_branches as br (br.name)}
                   {@const isActiveView = activeTab?.branch === br.name && activeTab?.repo_root === project.root_path}
+                  {@const branchPending = pendingBranchKey === `${project.id}:${br.name}`}
                   <div class="group relative flex items-center">
                     <button
                       type="button"
                       title={br.name}
                       onclick={(e) => openBranch(project.id, br.name, e)}
                       onauxclick={(e) => { if (e.button === 1) openBranch(project.id, br.name, e); }}
-                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-sm text-left {isActiveView ? 'bg-accent/15 text-fg font-medium' : 'text-fg-3 hover:bg-hover'}"
+                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-sm text-left {(isActiveView || branchPending) ? 'bg-accent/15 text-fg font-medium' : 'text-fg-3 hover:bg-hover'}"
                     >
                       {#if isActiveView}
                         <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-purple-400' : 'bg-accent'} shrink-0"></span>
                       {:else}
                         <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-purple-400' : 'bg-ink-500'} shrink-0"></span>
                       {/if}
-                      <span class="truncate">{br.name}</span>
-                      {#if br.worktree_path != null}
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-muted"><title>{br.worktree_path}</title><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                      <div class="flex flex-col min-w-0 flex-1">
+                        <span class="truncate">{br.name}</span>
+                        {#if br.worktree_path != null}
+                          <span class="truncate text-[10px] text-muted font-mono">{br.worktree_path.split("/").slice(-2).join("/")}</span>
+                        {/if}
+                      </div>
+                      {#if branchPending}
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0 ml-auto">
+                          <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
+                          <path d="M21 3v5h-5"/>
+                        </svg>
                       {/if}
                     </button>
                     {#if !br.is_current}
@@ -302,13 +376,15 @@
               {/if}
 
               {#snippet prRow(pr: PrInfo)}
-                {@const isActivePr = activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number}
+                {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number) ||
+                  (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
+                {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
                 <button
                   type="button"
                   title="{pr.title} #{pr.number}"
                   onclick={(e) => openPr(project.id, pr.number, pr.head_ref, e)}
                   onauxclick={(e) => { if (e.button === 1) openPr(project.id, pr.number, pr.head_ref, e); }}
-                  class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left {isActivePr ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
+                  class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left {(isActivePr || prPending) ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
                 >
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="{prIconColor(pr)} shrink-0">
                     <line x1="6" y1="3" x2="6" y2="15"/>
@@ -317,6 +393,12 @@
                     <path d="M18 9a9 9 0 0 1-9 9"/>
                   </svg>
                   <span class="truncate text-sm">{pr.title}</span>
+                  {#if prPending}
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0">
+                      <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
+                      <path d="M21 3v5h-5"/>
+                    </svg>
+                  {/if}
                   <span class="shrink-0 text-[10px] mono text-muted">#{pr.number}</span>
                 </button>
               {/snippet}
@@ -339,9 +421,19 @@
 
               {#if project.prs_to_review?.length > 0 || (loadingPrList && project.prs_to_review?.length === 0)}
                 {@render prSectionLabel("To Review")}
-                {#each project.prs_to_review as pr (pr.number)}
+                {@const toReviewVisible = project.prs_to_review.slice(0, visibleToReviewCount(project.id))}
+                {#each toReviewVisible as pr (pr.number)}
                   {@render prRow(pr)}
                 {/each}
+                {#if project.prs_to_review.length > toReviewVisible.length}
+                  <button
+                    type="button"
+                    onclick={() => revealMoreToReview(project.id)}
+                    class="w-full text-left px-2 py-1 rounded-md text-xs text-fg-3 hover:bg-hover"
+                  >
+                    Show more
+                  </button>
+                {/if}
               {/if}
 
               {#if project.recently_merged?.length > 0 || (loadingPrList && project.recently_merged?.length === 0)}

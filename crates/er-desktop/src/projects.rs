@@ -57,10 +57,20 @@ pub fn save(file: &ProjectsFile) -> anyhow::Result<()> {
 fn sanitize_id(name: &str) -> String {
     let s: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     let trimmed = s.trim_matches('-').to_string();
-    if trimmed.is_empty() { "project".to_string() } else { trimmed }
+    if trimmed.is_empty() {
+        "project".to_string()
+    } else {
+        trimmed
+    }
 }
 
 fn current_branch(root_path: &str) -> Option<String> {
@@ -73,12 +83,23 @@ fn current_branch(root_path: &str) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 fn query_remote(root_path: &str) -> Option<String> {
     let out = std::process::Command::new("gh")
-        .args(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner",
+        ])
         .current_dir(root_path)
         .output()
         .ok()?;
@@ -86,7 +107,11 @@ fn query_remote(root_path: &str) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 pub fn auto_register(root_path: &str) -> ProjectRecord {

@@ -637,7 +637,11 @@ impl TabState {
         }
 
         let path = file.path.clone();
-        let current = self.context_overrides.get(&path).copied().unwrap_or(git::DEFAULT_CONTEXT_LINES);
+        let current = self
+            .context_overrides
+            .get(&path)
+            .copied()
+            .unwrap_or(git::DEFAULT_CONTEXT_LINES);
 
         // Find next step above current
         let next = git::CONTEXT_STEPS
@@ -683,7 +687,11 @@ impl TabState {
         }
 
         let path = file.path.clone();
-        let current = self.context_overrides.get(&path).copied().unwrap_or(git::DEFAULT_CONTEXT_LINES);
+        let current = self
+            .context_overrides
+            .get(&path)
+            .copied()
+            .unwrap_or(git::DEFAULT_CONTEXT_LINES);
 
         if current <= git::DEFAULT_CONTEXT_LINES {
             return Ok(());

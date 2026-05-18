@@ -2,16 +2,16 @@
 // drawer-open flag. Annotations themselves live in `app.snapshot.ui_annotations`
 // (single source of truth, persisted via Tauri commands).
 
-import { DEFAULT_DEV_URL, defaultDevUrl, urlPath } from "./browserUrl";
+import { DEFAULT_DEV_URL, defaultDevUrl, pageKey, urlPath } from "./browserUrl";
 import type { UiDomContext } from "$lib/types";
-export { DEFAULT_DEV_URL, defaultDevUrl, urlPath };
+export { DEFAULT_DEV_URL, defaultDevUrl, pageKey, urlPath };
 
 class BrowserStore {
   /** Whether the BrowserView drawer is visible. */
   open = $state(false);
 
   /** URL loaded in the iframe. User-editable via the URL bar. Starts empty
-   *  so BrowserView can prefill via `defaultDevUrl(repoRoot)` on first open. */
+   *  so the browser opens to a blank page until the user navigates. */
   url = $state<string>("");
 
   /** When true, clicks inside the iframe are captured as annotations. */

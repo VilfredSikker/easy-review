@@ -1,10 +1,97 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::projects;
 use crate::snapshot::PrInfo;
+use anyhow::Result;
 
 pub type PrCacheMap = Arc<Mutex<HashMap<String, Vec<PrInfo>>>>;
+pub type PrCacheFetchedAtMap = Arc<Mutex<HashMap<String, u64>>>;
+
+const PR_CACHE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedPrCacheFile {
+    version: u32,
+    entries: Vec<PersistedPrCacheEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedPrCacheEntry {
+    remote: String,
+    fetched_at_epoch_ms: u64,
+    prs: Vec<PrInfo>,
+}
+
+fn pr_cache_path() -> Option<PathBuf> {
+    let dir = dirs::config_dir()?.join("er");
+    Some(dir.join("pr-cache.json"))
+}
+
+fn now_epoch_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub fn load_persisted_pr_cache(
+) -> Result<Option<(HashMap<String, Vec<PrInfo>>, HashMap<String, u64>)>> {
+    let Some(path) = pr_cache_path() else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&path)?;
+    let parsed: PersistedPrCacheFile = serde_json::from_str(&content)?;
+    if parsed.version != PR_CACHE_SCHEMA_VERSION {
+        return Ok(None);
+    }
+    let mut pr_map: HashMap<String, Vec<PrInfo>> = HashMap::new();
+    let mut fetched_map: HashMap<String, u64> = HashMap::new();
+    for entry in parsed.entries {
+        pr_map.insert(entry.remote.clone(), entry.prs);
+        fetched_map.insert(entry.remote, entry.fetched_at_epoch_ms);
+    }
+    Ok(Some((pr_map, fetched_map)))
+}
+
+pub fn save_persisted_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtMap) {
+    let Some(path) = pr_cache_path() else {
+        return;
+    };
+    let cache_map = cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
+    let fetched_map = fetched_at
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    let entries: Vec<PersistedPrCacheEntry> = cache_map
+        .into_iter()
+        .map(|(remote, prs)| PersistedPrCacheEntry {
+            fetched_at_epoch_ms: fetched_map.get(&remote).copied().unwrap_or(0),
+            remote,
+            prs,
+        })
+        .collect();
+    let payload = PersistedPrCacheFile {
+        version: PR_CACHE_SCHEMA_VERSION,
+        entries,
+    };
+    let Ok(json) = serde_json::to_string_pretty(&payload) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
 
 /// Merge fresh fetch results into the existing cache.
 /// Successful remotes replace their old entries; failed remotes keep stale data.
@@ -23,7 +110,7 @@ pub(crate) fn merge_pr_results(
 
 /// Refresh PRs for every project with a remote. Fetches all remotes in parallel.
 /// Preserves stale cache entries for remotes that fail.
-pub(crate) async fn refresh_pr_cache(cache: &PrCacheMap) {
+pub(crate) async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtMap) {
     let file = projects::load();
     let remotes: Vec<String> = file
         .projects
@@ -50,10 +137,17 @@ pub(crate) async fn refresh_pr_cache(cache: &PrCacheMap) {
         .collect();
 
     let mut results: Vec<(String, Option<Vec<PrInfo>>)> = Vec::new();
+    let mut refreshed_remotes: Vec<String> = Vec::new();
     for handle in handles {
         if let Ok((remote, result, ms)) = handle.await {
             if let Some(ref prs) = result {
-                log::info!("pr_list fetch {} PRs from {} in {}ms", prs.len(), remote, ms);
+                log::info!(
+                    "pr_list fetch {} PRs from {} in {}ms",
+                    prs.len(),
+                    remote,
+                    ms
+                );
+                refreshed_remotes.push(remote.clone());
             } else {
                 log::warn!("pr_list fetch failed for {} after {}ms", remote, ms);
             }
@@ -64,6 +158,13 @@ pub(crate) async fn refresh_pr_cache(cache: &PrCacheMap) {
     if let Ok(mut guard) = cache.lock() {
         merge_pr_results(&mut guard, results);
     }
+    if let Ok(mut fetched_guard) = fetched_at.lock() {
+        let ts = now_epoch_ms();
+        for remote in refreshed_remotes {
+            fetched_guard.insert(remote, ts);
+        }
+    }
+    save_persisted_pr_cache(cache, fetched_at);
     log::info!(
         "pr_list refresh done ({} remotes) in {}ms",
         remotes.len(),
@@ -86,7 +187,7 @@ pub(crate) async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
             "--json",
             "number,title,headRefName,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
             "--limit",
-            "25",
+            "100",
         ])
         .output()
         .await
@@ -194,9 +295,7 @@ mod tests {
         let mut cache = HashMap::new();
         cache.insert("org/old".to_string(), vec![make_pr(1, "feature-old")]);
 
-        let results = vec![
-            ("org/old".to_string(), Some(vec![make_pr(2, "feature-new")])),
-        ];
+        let results = vec![("org/old".to_string(), Some(vec![make_pr(2, "feature-new")]))];
         merge_pr_results(&mut cache, results);
 
         assert_eq!(cache["org/old"].len(), 1);
@@ -220,9 +319,7 @@ mod tests {
     fn new_remote_added_when_successful() {
         let mut cache = HashMap::new();
 
-        let results = vec![
-            ("org/new".to_string(), Some(vec![make_pr(5, "branch-5")])),
-        ];
+        let results = vec![("org/new".to_string(), Some(vec![make_pr(5, "branch-5")]))];
         merge_pr_results(&mut cache, results);
 
         assert_eq!(cache["org/new"].len(), 1);

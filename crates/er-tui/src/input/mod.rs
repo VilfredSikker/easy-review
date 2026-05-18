@@ -1,11 +1,11 @@
+use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::app;
 use er_engine::app::{
     cleanup_question_answers, cleanup_questions, cleanup_reviews, AiActionKind, App, ConfirmAction,
     DiffMode, HubAction, InputMode,
 };
 use er_engine::{git, github};
-use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub mod normal;
 
@@ -939,8 +939,8 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
         }
     };
 
-    // Fetch review thread resolution status
-    let resolved_map = if is_remote {
+    // Fetch review-thread state that the REST comments endpoint does not expose reliably.
+    let thread_state = if is_remote {
         github::gh_pr_review_threads_remote(&owner, &repo_name, pr_number).unwrap_or_default()
     } else {
         github::gh_pr_review_threads(&owner, &repo_name, pr_number, &repo_root).unwrap_or_default()
@@ -1101,6 +1101,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
         };
 
         let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
+        let state = thread_state.get(&gh.id).copied().unwrap_or_default();
 
         github_entries.push(er_engine::ai::GitHubReviewComment {
             id: format!("gh-{}", gh.id),
@@ -1112,12 +1113,13 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
             line_content: anchor_line_content,
             comment: gh.body.clone(),
             in_reply_to,
-            resolved: resolved_map.get(&gh.id).copied().unwrap_or(false),
+            resolved: state.resolved,
             source: "github".to_string(),
             github_id: Some(gh.id),
             author: gh.user.login.clone(),
             synced: true,
-            stale: false,
+            outdated: state.outdated || gh.outdated,
+            stale: state.outdated || gh.outdated,
             context_before: anchor_ctx_before,
             context_after: anchor_ctx_after,
             old_line_start: anchor_old_line,
@@ -1125,6 +1127,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
             anchor_status: "original".to_string(),
             relocated_at_hash: diff_hash_for_anchor.clone(),
             finding_ref: None,
+            side: gh.side.clone().unwrap_or_else(|| "RIGHT".to_string()),
         });
     }
 
@@ -1446,16 +1449,23 @@ fn push_comments_as_review(app: &mut App) -> Result<()> {
 
     // Submit line comments as a single review batch
     if !line_comment_ids.is_empty() {
-        let batch: Vec<(String, usize, String)> = line_comment_ids
+        let batch: Vec<github::ReviewBatchEntry> = line_comment_ids
             .iter()
             .filter_map(|cid| gc.comments.iter().find(|c| c.id == *cid))
-            .map(|c| (c.file.clone(), c.line_start.unwrap_or(1), c.comment.clone()))
+            .map(|c| github::ReviewBatchEntry {
+                file: c.file.clone(),
+                line: c.line_start.unwrap_or(1),
+                body: c.comment.clone(),
+                side: c.side.clone(),
+            })
             .collect();
 
         let result = if is_remote {
             github::gh_pr_submit_review_remote(&owner, &repo_name, pr_number, &batch, "COMMENT", "")
         } else {
-            github::gh_pr_submit_review(&owner, &repo_name, pr_number, &batch, &repo_root, "COMMENT", "")
+            github::gh_pr_submit_review(
+                &owner, &repo_name, pr_number, &batch, &repo_root, "COMMENT", "",
+            )
         };
 
         match result {

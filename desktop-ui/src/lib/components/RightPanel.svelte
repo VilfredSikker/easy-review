@@ -5,8 +5,9 @@
   import AiReviewCard from "./AiReviewCard.svelte";
   import CommentsCard from "./CommentsCard.svelte";
   import QuestionsCard from "./QuestionsCard.svelte";
-  import SourcesCard from "./SourcesCard.svelte";
   import UiAnnotationsCard from "./UiAnnotationsCard.svelte";
+  import AgentOutputCard from "./AgentOutputCard.svelte";
+  import DiffSourceCard from "./DiffSourceCard.svelte";
 
   interface Props {
     ai: AiSnapshot | null;
@@ -14,10 +15,6 @@
   }
 
   const { ai, pr }: Props = $props();
-
-  const hasAiData = $derived(
-    ai !== null && (ai.high + ai.med + ai.low > 0 || ai.findings.length > 0)
-  );
 
   const totalAdds = $derived(
     app.snapshot?.files.reduce((sum, f) => sum + f.additions, 0) ?? 0
@@ -59,10 +56,16 @@
         is_pr={currentWorktree?.is_pr ?? false}
         pr_number={currentWorktree?.pr_number ?? null}
         is_merged={currentWorktree?.is_merged ?? false}
+        github_url={app.snapshot?.github?.url ?? null}
+        github={app.snapshot?.github ?? null}
       />
     {/if}
 
-    {#if ai && hasAiData}
+    {#if app.snapshot?.diff_source}
+      <DiffSourceCard source={app.snapshot.diff_source} />
+    {/if}
+
+    {#if ai}
       <AiReviewCard {ai} />
     {/if}
 
@@ -74,8 +77,8 @@
       <QuestionsCard {ai} />
     {/if}
 
-    <UiAnnotationsCard />
+    <AgentOutputCard />
 
-    <SourcesCard />
+    <UiAnnotationsCard />
   </div>
 </aside>

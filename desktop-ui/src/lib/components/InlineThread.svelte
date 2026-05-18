@@ -2,6 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import type { ThreadSnapshot } from "$lib/types";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
+  import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
 
   interface Props {
     thread: ThreadSnapshot;
@@ -143,7 +144,7 @@
       <div class="text-[11px] font-mono text-muted mb-0.5">
         {thread.root.kind === "you" ? "you" : thread.root.author} · {formatTimestamp(thread.root.timestamp)}
       </div>
-      <div class="text-sm text-fg-2 whitespace-pre-wrap">{thread.root.body_markdown}</div>
+      <MarkdownText text={thread.root.body_markdown} className="text-sm text-fg-2" />
     </div>
   </div>
 
@@ -167,7 +168,7 @@
             {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
               <div class="text-sm text-fg-3 italic animate-pulse">…thinking</div>
             {:else}
-              <div class="text-sm text-fg-2 whitespace-pre-wrap">{reply.body_markdown}</div>
+              <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
             {/if}
           </div>
         </div>

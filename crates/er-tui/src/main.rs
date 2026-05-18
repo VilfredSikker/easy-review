@@ -2,14 +2,14 @@ mod input;
 mod ui;
 
 use anyhow::Result;
-use er_engine::app::{self, App, InputMode};
-use er_engine::{github, watch};
 use clap::Parser;
 use crossterm::{
     event::{self, Event},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use er_engine::app::{self, App, InputMode};
+use er_engine::{github, watch};
 use input::{
     handle_comment_input, handle_commit_input, handle_confirm_input, handle_filter_input,
     handle_normal_input, handle_overlay_input, handle_remote_url_input, handle_search_input,
@@ -423,11 +423,11 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use er_engine::ai::PanelContent;
     use er_engine::app::{ConfirmAction, InputMode, TabState};
     use er_engine::config::ErConfig;
     use er_engine::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::sync::mpsc;
 
     // ── Test helpers ──
@@ -450,6 +450,7 @@ mod tests {
             current_ai_model: None,
             pending_hub_action: None,
             last_terminal_width: 0,
+            panels_visible: er_engine::app::PanelsVisible::default(),
         }
     }
 

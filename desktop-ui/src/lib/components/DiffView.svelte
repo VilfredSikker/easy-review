@@ -54,6 +54,24 @@
 
   const { viewModeOverride = null }: Props = $props();
 
+  /** Leading whitespace count, used for hanging-indent on wrapped lines. */
+  function leadingWS(line: LineSnapshot): number {
+    const t = lineText(line);
+    let n = 0;
+    while (n < t.length && (t[n] === " " || t[n] === "\t")) n++;
+    return n;
+  }
+
+  /** Inline style giving wrapped continuations a hanging indent that lands
+   *  one column past the code's natural indent — same pattern as GitHub's
+   *  wrapped diff so continuations are visually distinct from real indentation
+   *  changes. 0.75rem matches the `px-3` horizontal padding; the +2 accounts
+   *  for the +/-/space marker plus one extra column of hang. */
+  function hangingIndent(line: LineSnapshot): string {
+    const cols = leadingWS(line) + 2;
+    return `padding-left: calc(0.75rem + ${cols}ch); text-indent: -${cols}ch;`;
+  }
+
   function lineClass(kind: string) {
     if (kind === "add") return "diff-add";
     if (kind === "del") return "diff-del";
@@ -66,11 +84,32 @@
     return "";
   }
 
+  // Syntect's base16-ocean palette emits some low-contrast token colors
+  // (notably punctuation/comments) that become hard to read on add/del rows.
+  // Remap only known dim colors to brighter equivalents.
+  const spanColorRemap: Record<string, string> = {
+    "#4f5b66": "#a7b1ba",
+    "#343d46": "#a7b1ba",
+    "#65737e": "#a7b1ba",
+    "#6b6b6b": "#a7b1ba",
+    "#5e5e5e": "#a7b1ba",
+    "#99c794": "#8fd7a8",
+    "#a3be8c": "#8fd7a8",
+  };
+
+  function remapSpanColor(color: string): string {
+    if (!color) return color;
+    return spanColorRemap[color.toLowerCase()] ?? color;
+  }
+
   const snapshot = $derived(app.snapshot);
   const files = $derived(snapshot?.files ?? []);
   const treeHidden = $derived(!snapshot?.panels.tree);
   const viewMode = $derived<DiffViewMode>(viewModeOverride ?? app.diffViewMode);
+  const compactLines = $derived(app.compactLines);
   const mode = $derived(snapshot?.mode ?? "branch");
+
+  let settingsOpen = $state(false);
 
   /** Index findings by `${filePath}::${hunkIdx}` so we can interleave them per hunk. */
   const findingsByKey = $derived.by(() => {
@@ -89,6 +128,24 @@
       map.set(key, list);
     }
     return map;
+  });
+
+  /** Map of thread id → ThreadSnapshot for O(1) lookup. */
+  const threadMap = $derived.by(() => {
+    const map = new Map<string, ThreadSnapshot>();
+    if (!snapshot) return map;
+    for (const t of snapshot.ai.threads) map.set(t.id, t);
+    return map;
+  });
+
+  /** Set of thread IDs that are owned by a finding (rendered inside its card). */
+  const findingThreadIds = $derived.by(() => {
+    const ids = new Set<string>();
+    if (!snapshot) return ids;
+    for (const f of snapshot.ai.findings) {
+      if (f.thread_id) ids.add(f.thread_id);
+    }
+    return ids;
   });
 
   /** Clear stale selection when the focused file changes (still keyed off selected_file). */
@@ -140,6 +197,7 @@
     if (visibility.hideAll) return [];
     return threads.filter(
       (thread) =>
+        !findingThreadIds.has(thread.id) &&
         !(visibility.hideResolved && thread.resolved) &&
         !(visibility.hideOutdated && thread.stale),
     );
@@ -301,10 +359,10 @@
   }
 
   function expandCompacted(path: string) {
-    const idx = fileIdx(path);
-    if (idx < 0) return;
+    const file = files.find((f) => f.path === path);
+    if (!file) return;
     // Focus the file, then expand via the existing toggle_compacted command.
-    app.cmd("select_file", { idx });
+    app.cmd("select_file", { idx: file.source_index });
     app.cmd("toggle_compacted");
   }
 </script>
@@ -326,18 +384,69 @@
       {/if}
       <span class="mono text-xs text-fg-3">{files.length} {files.length === 1 ? "file" : "files"}</span>
       <div class="ml-auto flex items-center gap-1">
+        <div class="relative">
+          <button
+            class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded flex items-center"
+            onclick={() => (settingsOpen = !settingsOpen)}
+            title="View settings"
+            aria-label="View settings"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          {#if settingsOpen}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="fixed inset-0 z-40" onclick={() => (settingsOpen = false)}></div>
+            <div class="absolute right-0 top-full mt-1 z-50 bg-ink-800 border border-ink-500 rounded shadow-xl w-52 py-1">
+              <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Layout</div>
+              <button
+                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                onclick={() => { app.setDiffViewMode("unified"); settingsOpen = false; }}
+              >
+                <span class="w-3 inline-flex items-center justify-center">
+                  {#if viewMode === "unified"}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                  {/if}
+                </span>
+                Unified
+              </button>
+              <button
+                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                onclick={() => { app.setDiffViewMode("split"); settingsOpen = false; }}
+              >
+                <span class="w-3 inline-flex items-center justify-center">
+                  {#if viewMode === "split"}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                  {/if}
+                </span>
+                Split
+              </button>
+              <div class="border-t border-ink-500 my-1"></div>
+              <button
+                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                onclick={() => app.toggleCompactLines()}
+              >
+                <span class="w-3 inline-flex items-center justify-center">
+                  {#if compactLines}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                  {/if}
+                </span>
+                Compact line height
+              </button>
+            </div>
+          {/if}
+        </div>
         <button
           class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded"
-          onclick={() => app.toggleDiffViewMode()}
-          title="Toggle unified / split view (d)"
+          onclick={async () => {
+            const res = await invoke<{ kind: string; target: string }>("open_source");
+            if (res.kind === "needs_checkout") app.showToast("info", "Create editable worktree to open locally");
+          }}
         >
-          {viewMode === "split" ? "Split" : "Unified"}
-        </button>
-        <button
-          class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded"
-          onclick={() => invoke("open_in_editor")}
-        >
-          Open in editor
+          Open source
         </button>
       </div>
     </div>
@@ -350,7 +459,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={scrollEl}
-    class="flex-1 overflow-y-auto mono text-[13px] leading-[1.55] relative {diffSel.dragging ? 'select-none' : ''}"
+    class="flex-1 overflow-y-auto mono text-[13px] {compactLines ? 'leading-[1.25]' : 'leading-[1.55]'} relative {diffSel.dragging ? 'select-none' : ''}"
     onmouseleave={() => diffSel.finish()}
     onscroll={onScroll}
   >
@@ -396,7 +505,7 @@
               aria-hidden="true"
             ></div>
           {:else}
-          <div data-file-body={file.path}>
+          <div data-file-body={file.path} class="w-full">
           {#if file.compacted}
             <!-- Compacted placeholder: single clickable row that expands inline. -->
             <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -408,7 +517,7 @@
               File compacted — click or press Enter to expand
             </div>
           {:else if file.hunks.length === 0}
-            <div class="px-4 py-3 text-muted text-sm">No changes</div>
+            <div class="px-4 py-3 text-muted text-sm">{file.is_lazy_stub ? "Loading content…" : "No changes"}</div>
           {:else if viewMode === "unified"}
             {#each file.hunks as hunk, hunkIndex}
               <div class="px-4 py-1 text-muted bg-surface border-b border-hairline text-[12px]">
@@ -430,12 +539,7 @@
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                  class="grid grid-cols-[40px_40px_1fr] diff-row {ln !== null && diffSel.file === file.path && diffSel.sel(ln) ? 'is-selected' : ''}"
-                  onmousedown={(e) => {
-                    if (ln !== null && line.kind !== "fold") {
-                      diffSel.begin(ln, e.shiftKey, e, file.path);
-                    }
-                  }}
+                  class="grid grid-cols-[40px_40px_minmax(0,1fr)] diff-row {ln !== null && diffSel.file === file.path && diffSel.sel(ln) ? 'is-selected' : ''}"
                   onmouseenter={() => { if (ln !== null && diffSel.file === file.path) diffSel.extend(ln); }}
                 >
                   <div class="text-right pr-2 gutter {gutterClass(line.kind)}">
@@ -443,8 +547,17 @@
                   </div>
                   <div class="text-right pr-2 gutter {gutterClass(line.kind)}">
                     {line.new_num ?? ""}
+                    {#if ln !== null && line.kind !== "fold"}
+                      <button
+                        class="add-comment-btn"
+                        onmousedown={(e) => diffSel.begin(ln, e.shiftKey, e, file.path)}
+                      >+</button>
+                    {/if}
                   </div>
-                  <div class="px-3 {lineClass(line.kind)}">
+                  <div
+                    class="pr-3 whitespace-pre-wrap break-all {lineClass(line.kind)}"
+                    style={hangingIndent(line)}
+                  >
                     {#if line.kind === "add"}
                       <span class="text-add-fg">+</span>
                     {:else if line.kind === "del"}
@@ -463,7 +576,7 @@
                     {:else}
                       {#each line.spans as span}
                         {#if span.color}
-                          <span style="color: {span.color}">{span.text}</span>
+                          <span style="color: {remapSpanColor(span.color)}">{span.text}</span>
                         {:else}
                           {span.text}
                         {/if}
@@ -483,7 +596,7 @@
 
               <!-- Inline AI findings for this hunk -->
               {#each findingsByKey.get(`${file.path}::${hunkIndex}`) ?? [] as finding (finding.id)}
-                <InlineFinding {finding} />
+                <InlineFinding {finding} thread={finding.thread_id ? (threadMap.get(finding.thread_id) ?? null) : null} />
               {/each}
 
               <!-- Fallback: threads whose target line wasn't rendered in this hunk -->
@@ -507,25 +620,22 @@
                 {@const wd = isModifyPair ? wordDiff(lineText(left!), lineText(right!)) : null}
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div class="grid grid-cols-[40px_1fr_40px_1fr] diff-row">
+                <div class="grid grid-cols-[40px_minmax(0,1fr)_40px_minmax(0,1fr)] diff-row">
                   <div
                     class="text-right pr-2 gutter {left ? gutterClass(left.kind) : 'diff-empty'} {selectedOnSide(leftLn, 'old') && diffSel.file === file.path ? 'is-selected' : ''}"
-                    onmousedown={(e) => {
-                      if (left && leftLn !== null && left.kind !== "fold") {
-                        diffSel.begin(leftLn, e.shiftKey, e, file.path, "old");
-                      }
-                    }}
                     onmouseenter={() => { if (leftLn !== null && diffSel.file === file.path && diffSel.side === "old") diffSel.extend(leftLn); }}
                   >
                     {left?.old_num ?? ""}
+                    {#if left && leftLn !== null && left.kind !== "fold"}
+                      <button
+                        class="add-comment-btn"
+                        onmousedown={(e) => diffSel.begin(leftLn, e.shiftKey, e, file.path, "old")}
+                      >+</button>
+                    {/if}
                   </div>
                   <div
-                    class="px-3 {left ? lineClass(left.kind) : 'diff-empty'} {selectedOnSide(leftLn, 'old') && diffSel.file === file.path ? 'is-selected' : ''}"
-                    onmousedown={(e) => {
-                      if (left && leftLn !== null && left.kind !== "fold") {
-                        diffSel.begin(leftLn, e.shiftKey, e, file.path, "old");
-                      }
-                    }}
+                    class="pr-3 whitespace-pre-wrap break-all {left ? lineClass(left.kind) : 'diff-empty'} {selectedOnSide(leftLn, 'old') && diffSel.file === file.path ? 'is-selected' : ''}"
+                    style={left ? hangingIndent(left) : "padding-left: 0.75rem"}
                     onmouseenter={() => { if (leftLn !== null && diffSel.file === file.path && diffSel.side === "old") diffSel.extend(leftLn); }}
                   >
                     {#if left}
@@ -547,7 +657,7 @@
                       {:else}
                         {#each left.spans as span}
                           {#if span.color}
-                            <span style="color: {span.color}">{span.text}</span>
+                            <span style="color: {remapSpanColor(span.color)}">{span.text}</span>
                           {:else}
                             {span.text}
                           {/if}
@@ -559,22 +669,19 @@
                   </div>
                   <div
                     class="text-right pr-2 gutter {right ? gutterClass(right.kind) : 'diff-empty'} {selectedOnSide(rightLn, 'new') && diffSel.file === file.path ? 'is-selected' : ''}"
-                    onmousedown={(e) => {
-                      if (right && rightLn !== null && right.kind !== "fold") {
-                        diffSel.begin(rightLn, e.shiftKey, e, file.path, "new");
-                      }
-                    }}
                     onmouseenter={() => { if (rightLn !== null && diffSel.file === file.path && diffSel.side === "new") diffSel.extend(rightLn); }}
                   >
                     {right?.new_num ?? ""}
+                    {#if right && rightLn !== null && right.kind !== "fold"}
+                      <button
+                        class="add-comment-btn"
+                        onmousedown={(e) => diffSel.begin(rightLn, e.shiftKey, e, file.path, "new")}
+                      >+</button>
+                    {/if}
                   </div>
                   <div
-                    class="px-3 {right ? lineClass(right.kind) : 'diff-empty'} {selectedOnSide(rightLn, 'new') && diffSel.file === file.path ? 'is-selected' : ''}"
-                    onmousedown={(e) => {
-                      if (right && rightLn !== null && right.kind !== "fold") {
-                        diffSel.begin(rightLn, e.shiftKey, e, file.path, "new");
-                      }
-                    }}
+                    class="pr-3 whitespace-pre-wrap break-all {right ? lineClass(right.kind) : 'diff-empty'} {selectedOnSide(rightLn, 'new') && diffSel.file === file.path ? 'is-selected' : ''}"
+                    style={right ? hangingIndent(right) : "padding-left: 0.75rem"}
                     onmouseenter={() => { if (rightLn !== null && diffSel.file === file.path && diffSel.side === "new") diffSel.extend(rightLn); }}
                   >
                     {#if right}
@@ -596,7 +703,7 @@
                       {:else}
                         {#each right.spans as span}
                           {#if span.color}
-                            <span style="color: {span.color}">{span.text}</span>
+                            <span style="color: {remapSpanColor(span.color)}">{span.text}</span>
                           {:else}
                             {span.text}
                           {/if}
@@ -617,7 +724,7 @@
 
               {#each findingsByKey.get(`${file.path}::${hunkIndex}`) ?? [] as finding (finding.id)}
                 <div class="col-span-4">
-                  <InlineFinding {finding} />
+                  <InlineFinding {finding} thread={finding.thread_id ? (threadMap.get(finding.thread_id) ?? null) : null} />
                 </div>
               {/each}
 
@@ -641,7 +748,7 @@
 </div>
 
 <style>
-  .diff-add { background: #13301f; }
-  .diff-del { background: #3a1a1a; }
+  .diff-add { background: var(--color-add-bg); }
+  .diff-del { background: var(--color-del-bg); }
   .diff-empty { background: rgba(255, 255, 255, 0.02); }
 </style>

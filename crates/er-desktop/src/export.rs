@@ -54,11 +54,7 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     // sidebar ordering and what an agent will most naturally act on.
     let mut groups: Vec<(String, Vec<ItemBlock>)> = Vec::new();
 
-    fn push<'a>(
-        groups: &mut Vec<(String, Vec<ItemBlock<'a>>)>,
-        file: &str,
-        block: ItemBlock<'a>,
-    ) {
+    fn push<'a>(groups: &mut Vec<(String, Vec<ItemBlock<'a>>)>, file: &str, block: ItemBlock<'a>) {
         if let Some((_, items)) = groups.iter_mut().find(|(p, _)| p == file) {
             items.push(block);
         } else {
@@ -69,8 +65,11 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     if opts.include_questions {
         if let Some(qs) = tab.ai.questions.as_ref() {
             // Top-level only — replies are rendered nested under their parent.
-            let top_level: Vec<&ReviewQuestion> =
-                qs.questions.iter().filter(|q| q.in_reply_to.is_none()).collect();
+            let top_level: Vec<&ReviewQuestion> = qs
+                .questions
+                .iter()
+                .filter(|q| q.in_reply_to.is_none())
+                .collect();
             for q in top_level {
                 if opts.only_unresolved && q.resolved {
                     continue;
@@ -173,13 +172,21 @@ fn render_ui_annotations(out: &mut String, annotations: &[UiAnnotation]) {
 
     out.push_str("## UI annotations\n\n");
     for url in &url_order {
-        let display_url = if url.is_empty() { "(unknown)" } else { url.as_str() };
+        let display_url = if url.is_empty() {
+            "(unknown)"
+        } else {
+            url.as_str()
+        };
         out.push_str(&format!("### `{display_url}`\n"));
         let mut idx = 0usize;
         for a in annotations.iter().filter(|a| &a.url == url) {
             idx += 1;
             let stale = if a.stale { " [stale]" } else { "" };
-            let text = if a.text.is_empty() { "(no note)" } else { a.text.as_str() };
+            let text = if a.text.is_empty() {
+                "(no note)"
+            } else {
+                a.text.as_str()
+            };
             match a.selector.as_deref() {
                 Some(sel) if !sel.is_empty() => {
                     let x = a.box_x.round() as i64;
@@ -221,10 +228,17 @@ enum ItemBlock<'a> {
 fn render_item(out: &mut String, item: &ItemBlock<'_>) {
     match item {
         ItemBlock::Question(q, replies) => {
-            let line = q.line_start.map(|l| l.to_string()).unwrap_or_else(|| "—".into());
+            let line = q
+                .line_start
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "—".into());
             let stale = if q.stale { " [stale]" } else { "" };
             let resolved = if q.resolved { " [resolved]" } else { "" };
-            let author = if q.author.is_empty() { "You" } else { q.author.as_str() };
+            let author = if q.author.is_empty() {
+                "You"
+            } else {
+                q.author.as_str()
+            };
             let ago = ago_label(&q.timestamp);
             out.push_str(&format!(
                 "### `{file}:{line}` — Question ({author}{ago}){stale}{resolved}\n",
@@ -232,17 +246,28 @@ fn render_item(out: &mut String, item: &ItemBlock<'_>) {
             ));
             push_blockquote(out, &q.text, 1);
             for r in replies {
-                let r_author = if r.author.is_empty() { "You" } else { r.author.as_str() };
+                let r_author = if r.author.is_empty() {
+                    "You"
+                } else {
+                    r.author.as_str()
+                };
                 let r_ago = ago_label(&r.timestamp);
                 out.push_str(&format!("> ↳ **{r_author}{r_ago}**\n"));
                 push_blockquote(out, &r.text, 2);
             }
         }
         ItemBlock::Comment(c, replies) => {
-            let line = c.line_start.map(|l| l.to_string()).unwrap_or_else(|| "—".into());
+            let line = c
+                .line_start
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "—".into());
             let stale = if c.stale { " [stale]" } else { "" };
             let resolved = if c.resolved { " [resolved]" } else { "" };
-            let author = if c.author.is_empty() { "You" } else { c.author.as_str() };
+            let author = if c.author.is_empty() {
+                "You"
+            } else {
+                c.author.as_str()
+            };
             let ago = ago_label(&c.timestamp);
             out.push_str(&format!(
                 "### `{file}:{line}` — Comment ({author}{ago}){stale}{resolved}\n",
@@ -250,7 +275,11 @@ fn render_item(out: &mut String, item: &ItemBlock<'_>) {
             ));
             push_blockquote(out, &c.comment, 1);
             for r in replies {
-                let r_author = if r.author.is_empty() { "You" } else { r.author.as_str() };
+                let r_author = if r.author.is_empty() {
+                    "You"
+                } else {
+                    r.author.as_str()
+                };
                 let r_ago = ago_label(&r.timestamp);
                 out.push_str(&format!("> ↳ **{r_author}{r_ago}**\n"));
                 push_blockquote(out, &r.comment, 2);
@@ -263,14 +292,22 @@ fn render_item(out: &mut String, item: &ItemBlock<'_>) {
                 _ => "—".into(),
             };
             let severity = format!("{:?}", f.severity).to_lowercase();
-            let category = if f.category.is_empty() { "" } else { f.category.as_str() };
+            let category = if f.category.is_empty() {
+                ""
+            } else {
+                f.category.as_str()
+            };
             let badges = if category.is_empty() {
                 severity.clone()
             } else {
                 format!("{severity} · {category}")
             };
             let resolved = if f.resolved { " [resolved]" } else { "" };
-            let outside = if f.outside_diff { " [outside diff]" } else { "" };
+            let outside = if f.outside_diff {
+                " [outside diff]"
+            } else {
+                ""
+            };
             // File-level finding (no line) goes into a clearly-named sub-bucket.
             let header_path = if f.line_start.is_some() {
                 format!("`{file}:{line_label}`", file = first_file_of_finding(f))
@@ -349,7 +386,13 @@ mod tests {
         tab
     }
 
-    fn make_question(id: &str, file: &str, line: usize, text: &str, resolved: bool) -> ReviewQuestion {
+    fn make_question(
+        id: &str,
+        file: &str,
+        line: usize,
+        text: &str,
+        resolved: bool,
+    ) -> ReviewQuestion {
         ReviewQuestion {
             id: id.into(),
             timestamp: String::new(),
@@ -388,6 +431,7 @@ mod tests {
             github_id: None,
             author: "you".into(),
             synced: false,
+            outdated: false,
             stale: false,
             context_before: Vec::new(),
             context_after: Vec::new(),
@@ -423,8 +467,14 @@ mod tests {
         let tab = tab_with_ai(ai);
         let out = render_markdown(&tab, &ExportOpts::default());
 
-        assert!(out.contains("## packages/foo.ts"), "missing foo.ts header in:\n{out}");
-        assert!(out.contains("## packages/bar.ts"), "missing bar.ts header in:\n{out}");
+        assert!(
+            out.contains("## packages/foo.ts"),
+            "missing foo.ts header in:\n{out}"
+        );
+        assert!(
+            out.contains("## packages/bar.ts"),
+            "missing bar.ts header in:\n{out}"
+        );
         assert!(out.contains("Why this?"));
         assert!(out.contains("Nice."));
         assert!(out.contains("And this?"));
@@ -452,8 +502,14 @@ mod tests {
         };
         let out = render_markdown(&tab, &opts);
 
-        assert!(out.contains("Open question"), "should include unresolved:\n{out}");
-        assert!(!out.contains("Done question"), "should exclude resolved:\n{out}");
+        assert!(
+            out.contains("Open question"),
+            "should include unresolved:\n{out}"
+        );
+        assert!(
+            !out.contains("Done question"),
+            "should exclude resolved:\n{out}"
+        );
     }
 
     #[test]
@@ -469,10 +525,8 @@ mod tests {
 
         // Empty case: no annotations file → no "## UI annotations" section,
         // but other content still renders.
-        let empty_dir = std::env::temp_dir().join(format!(
-            "er-export-anns-empty-{}",
-            std::process::id()
-        ));
+        let empty_dir =
+            std::env::temp_dir().join(format!("er-export-anns-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&empty_dir);
         std::fs::create_dir_all(&empty_dir).unwrap();
         let mut ai = AiState::default();
@@ -483,19 +537,21 @@ mod tests {
         });
         let mut tab = tab_with_ai(ai);
         tab.repo_root = empty_dir.to_string_lossy().to_string();
+        tab.er_root = er_engine::ErRoot::RepoLocal(tab.repo_root.clone());
         let out = render_markdown(&tab, &ExportOpts::default());
         assert!(
             !out.contains("## UI annotations"),
             "empty case must not emit UI annotations section:\n{out}"
         );
-        assert!(out.contains("Why?"), "other content should still render:\n{out}");
+        assert!(
+            out.contains("Why?"),
+            "other content should still render:\n{out}"
+        );
 
         // Populated case: two annotations on the same URL plus one on another,
         // mixing selector + cross-origin (no selector).
-        let pop_dir = std::env::temp_dir().join(format!(
-            "er-export-anns-pop-{}",
-            std::process::id()
-        ));
+        let pop_dir =
+            std::env::temp_dir().join(format!("er-export-anns-pop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&pop_dir);
         std::fs::create_dir_all(&pop_dir).unwrap();
         let er_dir = format!("{}/.er", pop_dir.to_string_lossy());
@@ -567,15 +623,24 @@ mod tests {
         save_ui_annotations(&er_dir, &anns).unwrap();
         let mut tab = tab_with_ai(AiState::default());
         tab.repo_root = pop_dir.to_string_lossy().to_string();
+        tab.er_root = er_engine::ErRoot::RepoLocal(tab.repo_root.clone());
         let out = render_markdown(&tab, &ExportOpts::default());
         assert!(
             out.contains("## UI annotations"),
             "expected UI annotations section:\n{out}"
         );
-        assert!(out.contains("### `/dashboard`"), "missing /dashboard header:\n{out}");
-        assert!(out.contains("### `/settings`"), "missing /settings header:\n{out}");
         assert!(
-            out.contains("**Pin #1** (`button.primary` @ (240, 380)) — Padding looks off vs design."),
+            out.contains("### `/dashboard`"),
+            "missing /dashboard header:\n{out}"
+        );
+        assert!(
+            out.contains("### `/settings`"),
+            "missing /settings header:\n{out}"
+        );
+        assert!(
+            out.contains(
+                "**Pin #1** (`button.primary` @ (240, 380)) — Padding looks off vs design."
+            ),
             "missing selector pin row:\n{out}"
         );
         assert!(

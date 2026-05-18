@@ -387,6 +387,7 @@ impl App {
             github_id: None,
             author,
             synced: false,
+            outdated: false,
             stale: false,
             context_before: anchor.context_before,
             context_after: anchor.context_after,
@@ -502,6 +503,7 @@ impl App {
         text: String,
         comment_type: CommentType,
         reply_to: Option<String>,
+        finding_ref: Option<String>,
     ) -> Result<()> {
         {
             let tab = self.tab_mut();
@@ -509,7 +511,7 @@ impl App {
             tab.comment_hunk = hunk_idx;
             tab.comment_line_num = line_num;
             tab.comment_reply_to = reply_to;
-            tab.comment_finding_ref = None;
+            tab.comment_finding_ref = finding_ref;
             tab.comment_type = comment_type;
             tab.comment_edit_id = None;
             tab.comment_textarea = TextArea::new(vec![text]);
@@ -530,6 +532,7 @@ impl App {
         text: String,
         comment_type: CommentType,
         reply_to: Option<String>,
+        finding_ref: Option<String>,
         author: String,
     ) -> Result<()> {
         {
@@ -538,7 +541,7 @@ impl App {
             tab.comment_hunk = hunk_idx;
             tab.comment_line_num = line_num;
             tab.comment_reply_to = reply_to;
-            tab.comment_finding_ref = None;
+            tab.comment_finding_ref = finding_ref;
             tab.comment_type = comment_type;
             tab.comment_edit_id = None;
             tab.comment_textarea = TextArea::new(vec![text]);
@@ -853,18 +856,31 @@ impl App {
 
         // Validate the hunk and line exist in the parsed diff.
         let hunk_ok = hunk_index.is_none_or(|h| {
-            self.tab().files.get(self.tab().selected_file).is_some_and(|f| h < f.hunks.len())
+            self.tab()
+                .files
+                .get(self.tab().selected_file)
+                .is_some_and(|f| h < f.hunks.len())
         });
         let line_ok = line_start.is_none_or(|ls| {
-            self.tab().files.get(self.tab().selected_file).is_some_and(|f| {
-                f.hunks.iter().any(|hunk| hunk.lines.iter().any(|l| l.new_num == Some(ls)))
-            })
+            self.tab()
+                .files
+                .get(self.tab().selected_file)
+                .is_some_and(|f| {
+                    f.hunks
+                        .iter()
+                        .any(|hunk| hunk.lines.iter().any(|l| l.new_num == Some(ls)))
+                })
         });
 
         if !hunk_ok || !line_ok {
-            let ln = line_start.map(|l| l.to_string()).unwrap_or_else(|| "?".into());
+            let ln = line_start
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "?".into());
             self.tab_mut().panel_focus = false;
-            self.notify(&format!("Line {} is outside the diff — open in editor to view", ln));
+            self.notify(&format!(
+                "Line {} is outside the diff — open in editor to view",
+                ln
+            ));
             return;
         }
 
@@ -874,7 +890,11 @@ impl App {
             tab.current_line = None;
         }
         let hi = hunk_index.unwrap_or(0);
-        if let Some(hunk) = tab.files.get(tab.selected_file).and_then(|f| f.hunks.get(hi)) {
+        if let Some(hunk) = tab
+            .files
+            .get(tab.selected_file)
+            .and_then(|f| f.hunks.get(hi))
+        {
             tab.current_line = if let Some(ls) = line_start {
                 hunk.lines.iter().position(|l| l.new_num == Some(ls))
             } else {
@@ -1280,7 +1300,7 @@ impl App {
 
         // Persist atomically via temp file + rename
         if let Some(ref checklist) = tab.ai.checklist {
-            let checklist_path = format!("{}/.er/checklist.json", tab.repo_root);
+            let checklist_path = format!("{}/checklist.json", tab.er_dir());
             let tmp_path = format!("{}.tmp", checklist_path);
             let json = serde_json::to_string_pretty(checklist)?;
             std::fs::write(&tmp_path, json)?;
@@ -1307,7 +1327,7 @@ impl App {
 
     /// Copy the current hunk to the system clipboard
     pub fn copy_review_json(&mut self) -> Result<()> {
-        let er_dir = format!("{}/.er", self.tab().repo_root);
+        let er_dir = self.tab().er_dir();
         let path = std::path::Path::new(&er_dir).join("review.json");
         if !path.exists() {
             self.notify("No review.json found");
@@ -1322,7 +1342,7 @@ impl App {
 
     /// Copy the current questions.json to the system clipboard
     pub fn copy_questions_json(&mut self) -> Result<()> {
-        let er_dir = format!("{}/.er", self.tab().repo_root);
+        let er_dir = self.tab().er_dir();
         let path = std::path::Path::new(&er_dir).join("questions.json");
         if !path.exists() {
             self.notify("No questions.json found");
@@ -1801,10 +1821,7 @@ impl App {
                                 text: format!("{} completed", name),
                             });
                             // Force AI reload for commands that write .er/ files
-                            if name == "summary"
-                                || name == "review"
-                                || name == "questions"
-                            {
+                            if name == "summary" || name == "review" || name == "questions" {
                                 tab.last_ai_check = None;
                             }
                             let msg = Self::agent_completion_summary_for(tab, &name);
@@ -2062,5 +2079,395 @@ impl App {
                 self.watch_message_ticks = 0;
             }
         }
+    }
+
+    /// Spawn an app-level background AI *review* keyed by `target`.
+    ///
+    /// Unlike `spawn_agent_prompt` (which is tab-local), this task lives on
+    /// `App` and survives tab switches. Same-target dedup: if a Running task
+    /// already exists for `target`, returns an error. Different targets run
+    /// concurrently.
+    pub fn spawn_background_review(
+        &mut self,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+    ) -> Result<()> {
+        use super::background::{BackgroundTask, BackgroundTaskHandle};
+
+        // Dedup: refuse to start another review on the same target while one
+        // is in flight.
+        let already_running = self
+            .background_tasks
+            .values()
+            .any(|h| h.task.target == target && matches!(h.task.status, CommandStatus::Running));
+        if already_running {
+            anyhow::bail!("review already running for {}", target.display_label());
+        }
+
+        self.sync_ai_selection();
+
+        let (agent_cmd, config_args, is_claude_compatible) = if let Some(provider_id) = self
+            .config
+            .ai_hub
+            .resolve_provider_id(self.current_ai_provider.as_deref())
+        {
+            let provider = self
+                .config
+                .ai_hub
+                .providers
+                .get(&provider_id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
+            let mut args = provider.args.clone();
+            if let Some(model_id) = self
+                .config
+                .ai_hub
+                .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
+            {
+                if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
+                    args.extend(model.args.clone());
+                }
+            }
+            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
+            (provider.command.clone(), args, is_claude)
+        } else {
+            let cmd = self.config.agent.command.clone();
+            let is_claude = cmd.ends_with("claude") || cmd == "claude";
+            (cmd, self.config.agent.args.clone(), is_claude)
+        };
+
+        std::fs::create_dir_all(&target.er_dir)?;
+
+        // Build the background task descriptor + channels before spawning.
+        let task = BackgroundTask::new("review".to_string(), target.clone());
+        let task_id = task.id.clone();
+        let er_dir = target.er_dir.clone();
+        let repo_root = target.repo_root.clone();
+        let is_remote = target.remote_repo.is_some();
+        let managed_local = target.managed_local;
+        // For local-branch views (cache-dir er_dir) treat like remote — cwd is
+        // the cache dir so .er/* writes land where the loader reads them.
+        let is_cache_er_dir = !er_dir.starts_with(&repo_root);
+
+        let (log_tx, log_rx) = std::sync::mpsc::channel::<AgentLogEntry>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<()>>();
+
+        let _ = log_tx.send(AgentLogEntry {
+            timestamp: std::time::Instant::now(),
+            command_name: "review".to_string(),
+            source: AgentLogSource::Status,
+            text: format!("review started ({})", target.display_label()),
+        });
+
+        let log_tx_thread = log_tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<()> {
+                let debug_path = std::path::Path::new(&er_dir).join("debug-review.log");
+
+                let mut agent_args: Vec<String> = config_args
+                    .iter()
+                    .map(|a| a.replace("{prompt}", &prompt))
+                    .collect();
+
+                if is_claude_compatible {
+                    if !agent_args.iter().any(|a| a == "--output-format") {
+                        agent_args.push("--output-format".to_string());
+                        agent_args.push("stream-json".to_string());
+                    }
+                    let has_print = agent_args.iter().any(|a| a == "--print");
+                    let has_stream = agent_args.iter().any(|a| a == "stream-json");
+                    let has_verbose = agent_args.iter().any(|a| a == "--verbose");
+                    if has_print && has_stream && !has_verbose {
+                        agent_args.push("--verbose".to_string());
+                    }
+                }
+
+                if is_claude_compatible {
+                    let allowed: &[&str] = &[
+                        "Read",
+                        "Write",
+                        "Edit",
+                        "Bash(gh pr *)",
+                        "Bash(cp .er/*)",
+                        "Bash(git diff*)",
+                        "Bash(shasum*)",
+                        "Bash(sha256sum*)",
+                        "Bash(mkdir*)",
+                    ];
+                    for rule in allowed.iter().rev() {
+                        agent_args.insert(0, rule.to_string());
+                        agent_args.insert(0, "--allowedTools".to_string());
+                    }
+                }
+
+                // managed_local: er_dir is outside repo_root but git must run from repo_root.
+                // is_remote / is_cache_er_dir without managed_local: cwd = er_dir (cache-dir or remote).
+                let work_dir = if managed_local || (!is_remote && !is_cache_er_dir) {
+                    &repo_root
+                } else {
+                    &er_dir
+                };
+                let mut child = std::process::Command::new(&agent_cmd)
+                    .args(&agent_args)
+                    .current_dir(work_dir)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .with_context(|| format!("Failed to run review ({})", agent_cmd))?;
+
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+
+                let log_tx_out = log_tx_thread.clone();
+                let stdout_handle = std::thread::spawn(move || -> Vec<String> {
+                    let mut lines: Vec<String> = Vec::new();
+                    if let Some(pipe) = stdout {
+                        use std::io::BufRead;
+                        let reader = std::io::BufReader::new(pipe);
+                        for line in reader.lines().map_while(Result::ok) {
+                            lines.push(line.clone());
+                            let display = if is_claude_compatible {
+                                parse_stream_json_line(&line)
+                            } else {
+                                Some(truncate_str(line.trim(), 120))
+                            };
+                            if let Some(text) = display.filter(|t| !t.is_empty()) {
+                                let _ = log_tx_out.send(AgentLogEntry {
+                                    timestamp: std::time::Instant::now(),
+                                    command_name: "review".to_string(),
+                                    source: AgentLogSource::Stdout,
+                                    text,
+                                });
+                            }
+                        }
+                    }
+                    lines
+                });
+
+                let log_tx_err = log_tx_thread.clone();
+                let stderr_handle = std::thread::spawn(move || -> Vec<String> {
+                    let mut lines: Vec<String> = Vec::new();
+                    if let Some(pipe) = stderr {
+                        use std::io::BufRead;
+                        let reader = std::io::BufReader::new(pipe);
+                        for line in reader.lines().map_while(Result::ok) {
+                            let _ = log_tx_err.send(AgentLogEntry {
+                                timestamp: std::time::Instant::now(),
+                                command_name: "review".to_string(),
+                                source: AgentLogSource::Stderr,
+                                text: line.clone(),
+                            });
+                            lines.push(line);
+                        }
+                    }
+                    lines
+                });
+
+                let status = child
+                    .wait()
+                    .with_context(|| format!("Failed to wait for review ({})", agent_cmd))?;
+                let stdout_lines = stdout_handle.join().unwrap_or_default();
+                let stderr_lines = stderr_handle.join().unwrap_or_default();
+
+                let debug_content = format!(
+                    "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
+                    agent_cmd,
+                    agent_args.join(" "),
+                    status.code().map_or("signal".to_string(), |c| c.to_string()),
+                    stdout_lines.join("\n"),
+                    stderr_lines.join("\n"),
+                );
+                let _ = std::fs::write(&debug_path, &debug_content);
+
+                if !status.success() {
+                    anyhow::bail!("review failed (see {}/debug-review.log)", er_dir);
+                }
+                Ok(())
+            })();
+            let _ = result_tx.send(result);
+        });
+
+        self.background_tasks.insert(
+            task_id.clone(),
+            BackgroundTaskHandle {
+                task,
+                result_rx,
+                log_rx,
+            },
+        );
+
+        self.notify(&format!("review started ({})", target.display_label()));
+        Ok(())
+    }
+
+    /// Drain log channels and check for completion across all app-level
+    /// background tasks. Should be called once per tick from the event loop
+    /// (or per `poll` Tauri call on the desktop).
+    pub fn poll_background_tasks(&mut self) {
+        // 1. Drain log channels — push entries into matching tabs' agent_log
+        //    so existing UI keeps working when viewing a matching tab.
+        let task_ids: Vec<String> = self.background_tasks.keys().cloned().collect();
+        for id in &task_ids {
+            // Pull log entries without holding a long borrow.
+            let mut drained: Vec<AgentLogEntry> = Vec::new();
+            if let Some(handle) = self.background_tasks.get(id) {
+                while let Ok(entry) = handle.log_rx.try_recv() {
+                    drained.push(entry);
+                }
+            }
+            if drained.is_empty() {
+                continue;
+            }
+            let target = match self.background_tasks.get(id) {
+                Some(h) => h.task.target.clone(),
+                None => continue,
+            };
+            for tab in self.tabs.iter_mut() {
+                if !tab.matches_target(&target) {
+                    continue;
+                }
+                for entry in &drained {
+                    tab.agent_log.push_back(entry.clone());
+                    if tab.agent_log.len() > 5000 {
+                        tab.agent_log.pop_front();
+                    }
+                }
+            }
+        }
+
+        // 2. Check for completion.
+        let mut completed: Vec<(String, Result<()>)> = Vec::new();
+        for id in &task_ids {
+            if let Some(handle) = self.background_tasks.get(id) {
+                if !matches!(handle.task.status, CommandStatus::Running) {
+                    continue;
+                }
+                match handle.result_rx.try_recv() {
+                    Ok(res) => completed.push((id.clone(), res)),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        completed.push((id.clone(), Err(anyhow::anyhow!("review thread crashed"))));
+                    }
+                }
+            }
+        }
+
+        for (id, result) in completed {
+            let now = super::background::unix_now_ms();
+            let Some(handle) = self.background_tasks.get_mut(&id) else {
+                continue;
+            };
+            let target = handle.task.target.clone();
+            let label = target.display_label();
+            let (status, error, status_msg) = match result {
+                Ok(()) => (
+                    CommandStatus::Done,
+                    None,
+                    format!("review completed ({})", label),
+                ),
+                Err(e) => {
+                    let msg = e.to_string();
+                    (
+                        CommandStatus::Failed(msg.clone()),
+                        Some(msg.clone()),
+                        format!("review failed ({}): {}", label, msg),
+                    )
+                }
+            };
+            handle.task.status = status.clone();
+            handle.task.finished_at_ms = Some(now);
+            handle.task.error = error.clone();
+
+            // Force reload only on matching tabs.
+            for tab in self.tabs.iter_mut() {
+                if tab.matches_target(&target) {
+                    if matches!(status, CommandStatus::Done) {
+                        tab.last_ai_check = None;
+                    }
+                    tab.push_synthetic_log("review", status_msg.clone(), AgentLogSource::Status);
+                }
+            }
+
+            self.notify_long(&status_msg);
+        }
+
+        // 3. Retire finished tasks past the 8s display window into
+        //    `recent_background_tasks` (snapshot-only).
+        let cutoff = super::background::unix_now_ms().saturating_sub(8_000);
+        let mut to_remove: Vec<String> = Vec::new();
+        for (id, handle) in self.background_tasks.iter() {
+            if let Some(finished_at) = handle.task.finished_at_ms {
+                if finished_at < cutoff {
+                    to_remove.push(id.clone());
+                }
+            }
+        }
+        for id in to_remove {
+            if let Some(handle) = self.background_tasks.remove(&id) {
+                // Keep around in finished form only briefly; bounded.
+                self.recent_background_tasks.push(handle.task);
+                if self.recent_background_tasks.len() > 32 {
+                    self.recent_background_tasks.remove(0);
+                }
+            }
+        }
+    }
+
+    /// Snapshot of in-flight + recently finished background tasks. Includes
+    /// Running tasks and Done/Failed within the last 8 seconds.
+    pub fn background_task_snapshots(&self) -> Vec<super::background::BackgroundTaskSnapshot> {
+        let cutoff = super::background::unix_now_ms().saturating_sub(8_000);
+        let mut out: Vec<super::background::BackgroundTaskSnapshot> = Vec::new();
+        for handle in self.background_tasks.values() {
+            let include = match handle.task.status {
+                CommandStatus::Running => true,
+                _ => handle
+                    .task
+                    .finished_at_ms
+                    .map(|t| t >= cutoff)
+                    .unwrap_or(false),
+            };
+            if include {
+                out.push(super::background::BackgroundTaskSnapshot::from_task(
+                    &handle.task,
+                ));
+            }
+        }
+        for task in &self.recent_background_tasks {
+            if task.finished_at_ms.map(|t| t >= cutoff).unwrap_or(false) {
+                out.push(super::background::BackgroundTaskSnapshot::from_task(task));
+            }
+        }
+        out.sort_by_key(|t| t.started_at_ms);
+        out
+    }
+
+    /// Background tasks whose target matches the given tab. Used to merge
+    /// app-level task entries into the active tab's `agent_commands`
+    /// snapshot list.
+    pub fn background_tasks_for_tab(
+        &self,
+        tab: &TabState,
+    ) -> Vec<super::background::BackgroundTaskSnapshot> {
+        let cutoff = super::background::unix_now_ms().saturating_sub(8_000);
+        let mut out = Vec::new();
+        for handle in self.background_tasks.values() {
+            if !tab.matches_target(&handle.task.target) {
+                continue;
+            }
+            let include = match handle.task.status {
+                CommandStatus::Running => true,
+                _ => handle
+                    .task
+                    .finished_at_ms
+                    .map(|t| t >= cutoff)
+                    .unwrap_or(false),
+            };
+            if include {
+                out.push(super::background::BackgroundTaskSnapshot::from_task(
+                    &handle.task,
+                ));
+            }
+        }
+        out
     }
 }

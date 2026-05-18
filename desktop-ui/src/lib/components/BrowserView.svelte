@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { app } from "$lib/stores/app.svelte";
-  import { browser, defaultDevUrl, urlPath } from "$lib/stores/browser.svelte";
-  import { fromProxyUrl, toProxyUrl } from "$lib/stores/browserUrl";
+  import { browser, pageKey } from "$lib/stores/browser.svelte";
+  import { annotationMatchesPage, fromProxyUrl, sameBrowserUrl, toProxyUrl } from "$lib/stores/browserUrl";
   import type { UiDomContext } from "$lib/types";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
 
@@ -11,8 +11,22 @@
   let iframeWidth = $state(0);
   let iframeHeight = $state(0);
 
-  /** The src actually used for the iframe — always through the erp:// proxy. */
-  const iframeSrc = $derived(toProxyUrl(browser.url));
+  /**
+   * The src actually used for the iframe — always through the erp:// proxy.
+   * This is a committed value: it only changes when navigation is explicit
+   * (Go button, Enter key, palette setUrl, default-dev prefill). Updates to
+   * `browser.url` that canonicalize to the same page do NOT touch the iframe,
+   * preventing a feedback loop where the iframe's own `__er_location` message
+   * re-triggers a reload.
+   */
+  let iframeSrc = $state(toProxyUrl(browser.url));
+
+  $effect(() => {
+    const next = toProxyUrl(browser.url);
+    if (!sameBrowserUrl(fromProxyUrl(iframeSrc), fromProxyUrl(next))) {
+      iframeSrc = next;
+    }
+  });
 
   /** Element under the cursor in annotation mode (from content-script hover query). */
   let hoveredEl = $state<{ selector: string | null; rect: { left: number; top: number; width: number; height: number }; element_context?: string | null; dom_context?: UiDomContext | null } | null>(null);
@@ -87,8 +101,7 @@
 
   function queryAllAnnotationRects() {
     if (!iframeEl?.contentWindow) return;
-    const path = urlPath(browser.url);
-    const anns = (app.snapshot?.ui_annotations ?? []).filter((a) => a.url === path && a.selector);
+    const anns = (app.snapshot?.ui_annotations ?? []).filter((a) => annotationMatchesPage(a.url, browser.url) && a.selector);
     allPinRects = {};
     for (const a of anns) {
       try {
@@ -99,7 +112,6 @@
 
   function onIframeLoad() {
     if (!iframeEl) return;
-    console.log('[er:iframe] loaded, src=', iframeEl.src, 'iframeSrc=', iframeSrc);
     clearHoverState();
     markWaitingForReadiness();
     measureIframe();
@@ -109,9 +121,8 @@
 
   function requestReanchor() {
     if (!iframeEl?.contentWindow) return;
-    const path = urlPath(browser.url);
     const items = (app.snapshot?.ui_annotations ?? [])
-      .filter((a) => a.url === path && a.selector)
+      .filter((a) => annotationMatchesPage(a.url, browser.url) && a.selector)
       .map((a) => ({
         id: a.id,
         selector: a.selector,
@@ -158,7 +169,6 @@
     if (!data || typeof data !== "object") return;
 
     if ("__er_hover_result" in data || "__er_annotate" in data || "__er_location" in data || "__er_ready" in data) {
-      console.log('[er:msg]', data);
       markAnnotationReady();
     }
 
@@ -173,8 +183,14 @@
         : null;
       if (href) {
         const real = fromProxyUrl(href);
-        browser.url = real;
+        if (real === "about:blank") return;
         urlInput = real;
+        // Avoid feedback loop: only write back when the iframe truly moved to
+        // a different page. Same-page reports (trailing-slash differences,
+        // implicit root paths, scheme echoes) must not retrigger iframe src.
+        if (!sameBrowserUrl(real, browser.url)) {
+          browser.url = real;
+        }
       }
       return;
     }
@@ -258,7 +274,7 @@
     domContext: UiDomContext | null,
   ) {
     await app.cmd("add_ui_annotation", {
-      url: urlPath(browser.url),
+      url: pageKey(browser.url),
       selector,
       bbox,
       viewport: [Math.round(iframeWidth) || 1280, Math.round(iframeHeight) || 800],
@@ -300,22 +316,6 @@
     queryAllAnnotationRects();
   });
 
-  // On first open with no URL yet, ask the backend to infer one from the
-  // active project's `package.json`. Guarded to run at most once per session
-  // so the user can deliberately clear the field without auto-refilling.
-  let prefilled = false;
-  $effect(() => {
-    if (!browser.open || prefilled) return;
-    if (browser.url && browser.url.length > 0) return;
-    prefilled = true;
-    const tabs = app.snapshot?.tabs ?? [];
-    const active = app.snapshot?.active_tab ?? 0;
-    const repoRoot = tabs[active]?.repo_root ?? "";
-    void defaultDevUrl(repoRoot).then((url) => {
-      // Only set if the user hasn't typed in the meantime.
-      if (!browser.url) browser.setUrl(url);
-    });
-  });
 </script>
 
 <div
@@ -330,7 +330,7 @@
         bind:value={urlInput}
         onkeydown={onUrlKeydown}
         class="flex-1 bg-bg border border-hairline rounded px-2 py-1 text-sm outline-none mono"
-        placeholder="http://localhost:5173"
+        placeholder="Enter a URL"
       />
       <button
         type="button"

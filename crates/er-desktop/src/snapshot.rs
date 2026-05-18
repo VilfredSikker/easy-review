@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use er_engine::ai::{CommentRef, RiskLevel};
-use er_engine::app::{App, DiffMode, InputMode, TabState};
+use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
 use er_engine::git::{DiffFile, FileStatus, LineType};
 use er_engine::highlight::Highlighter;
 use serde::Serialize;
@@ -24,6 +24,42 @@ pub struct LoadingFlags {
 }
 
 pub type LoadingState = Arc<Mutex<LoadingFlags>>;
+pub type PrCacheFetchedAt = Arc<Mutex<HashMap<String, u64>>>;
+
+/// Active-branch watcher status. Set by the desktop background thread that
+/// watches the working tree of the currently active local-branch tab.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct WatchStatusSnapshot {
+    pub active: bool,
+    pub branch: Option<String>,
+    pub root_path: Option<String>,
+}
+
+pub type WatchStatusState = Arc<Mutex<WatchStatusSnapshot>>;
+
+/// Safety valve for continuous-diff snapshots. The Svelte view virtualizes DOM
+/// rows, but the wire snapshot can still become large if every non-compacted
+/// file serializes every highlighted line on every poll.
+const SNAPSHOT_DIFF_LINE_BUDGET: usize = 15_000;
+
+/// Snapshot of the current diff source and what's available.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffSourceSnapshot {
+    /// "pr" | "origin" | "local"
+    pub active: String,
+    /// Subset of ["pr", "origin", "local"] — only sources valid for this tab.
+    pub available: Vec<String>,
+    pub branch: String,
+    pub upstream: Option<String>,
+    pub base: String,
+    pub pr_number: Option<u64>,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
+    /// Short status phrase for UI display.
+    pub status: String,
+    /// Suggestion to the user about what to do.
+    pub suggestion: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
@@ -42,6 +78,7 @@ pub struct AppSnapshot {
     pub panels: Panels,
     pub theme: String,
     pub watch_active: bool,
+    pub watch_status: WatchStatusSnapshot,
     pub worktrees: Vec<WorktreeSnapshot>,
     pub projects: Vec<ProjectSnapshot>,
     pub notification: Option<String>,
@@ -55,8 +92,63 @@ pub struct AppSnapshot {
     pub ui_annotations: Vec<UiAnnotationSnapshot>,
     /// Live GitHub status for the active tab when it's a remote PR with cached data.
     pub github: Option<GithubStatusSnapshot>,
+    /// Diff source state for the active tab. None for working-tree tabs.
+    #[serde(default)]
+    pub diff_source: Option<DiffSourceSnapshot>,
     /// Which background fetches are currently in-flight.
     pub bg_loading: LoadingFlags,
+    /// Running/done/failed background AI commands for the active tab.
+    #[serde(default)]
+    pub agent_commands: Vec<AgentCommandSnapshot>,
+    /// Recent agent log output for the active tab (last 200 entries).
+    #[serde(default)]
+    pub agent_log: Vec<AgentLogSnapshot>,
+    /// Human-readable label for the currently selected AI provider/model.
+    #[serde(default)]
+    pub active_ai_label: String,
+    /// Filter presets + recent filter history for the active tab. Presets
+    /// come first to mirror the TUI's filter overlay ordering.
+    #[serde(default)]
+    pub filter_suggestions: Vec<FilterSuggestionSnapshot>,
+    /// Session-scoped background review tasks across all tabs. Includes
+    /// Running tasks and Done/Failed tasks within the last 8 seconds so
+    /// the frontend can render transient toasts.
+    #[serde(default)]
+    pub background_tasks: Vec<BackgroundTaskSnapshotWire>,
+}
+
+/// Wire representation of an app-level background task.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackgroundTaskSnapshotWire {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub target_label: String,
+    pub scope: String,
+    /// "running" | "done" | "failed"
+    pub status: String,
+    pub error: Option<String>,
+    pub started_at_ms: u128,
+    pub finished_at_ms: Option<u128>,
+}
+
+/// Status of a background AI command.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentCommandSnapshot {
+    pub name: String,
+    /// "running" | "done" | "failed"
+    pub status: String,
+    /// Error message when status == "failed"
+    pub error: Option<String>,
+}
+
+/// A single line of agent output.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentLogSnapshot {
+    pub command_name: String,
+    /// "stdout" | "stderr" | "status"
+    pub source: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,6 +197,10 @@ pub struct ProjectSnapshot {
     pub prs_to_review: Vec<PrInfo>,
     /// Most recently merged PRs (max 5, sorted by merged_at desc).
     pub recently_merged: Vec<PrInfo>,
+    #[serde(default)]
+    pub pr_cache_stale: bool,
+    #[serde(default)]
+    pub pr_cache_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,6 +213,9 @@ pub struct BranchInfo {
     /// Informational only — clicking a branch never navigates here.
     #[serde(default)]
     pub worktree_path: Option<String>,
+    /// PR number for the open PR whose head branch matches this branch name, if any.
+    #[serde(default)]
+    pub pr_number: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -168,6 +267,22 @@ pub struct FileSnapshot {
     pub comment_count: usize,
     pub question_count: usize,
     pub hunks: Vec<HunkSnapshot>,
+    /// True when the file exists in the diff but its hunks haven't been parsed
+    /// yet (lazy mode, large diff). The UI should show a loading state rather
+    /// than "No changes."
+    pub is_lazy_stub: bool,
+    /// Index into the backend's full `tab.files` list. Use this when calling
+    /// `select_file` — `files` may be filtered, so positional indices into the
+    /// frontend snapshot do not match the engine's selection index.
+    pub source_index: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FilterSuggestionSnapshot {
+    /// "preset" | "history"
+    pub kind: String,
+    pub name: String,
+    pub expr: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,10 +313,10 @@ pub struct SpanSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadSnapshot {
     pub id: String,
-    pub kind: String,    // "comment" | "question"
+    pub kind: String, // "comment" | "question"
     pub file: String,
     pub line: usize,
-    pub source: String,  // "local" | "github"
+    pub source: String, // "local" | "github"
     pub synced: bool,
     pub stale: bool,
     pub resolved: bool,
@@ -214,7 +329,7 @@ pub struct ThreadSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadMessage {
     pub author: String,
-    pub kind: String,    // "you" | "human" | "ai"
+    pub kind: String, // "you" | "human" | "ai"
     pub timestamp: String,
     pub body_markdown: String,
 }
@@ -224,20 +339,25 @@ pub struct FlatFinding {
     pub id: String,
     pub file: String,
     pub line: Option<usize>,
-    pub severity: String,  // "high" | "med" | "low"
+    pub severity: String, // "high" | "med" | "low"
     pub title: String,
     pub message_markdown: String,
     /// GitHub comment id this finding was promoted to (if any).
     pub promoted_to: Option<String>,
+    /// ID of the root GitHub comment thread created via "Ask AI" for this finding.
+    pub thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiSnapshot {
     pub fresh: bool,
+    pub stale_reason: Option<String>,
     pub summary_markdown: Option<String>,
     pub high: usize,
     pub med: usize,
     pub low: usize,
+    pub local_comment_count: usize,
+    pub github_comment_count: usize,
     pub comments: usize,
     pub questions: usize,
     pub unpushed: usize,
@@ -351,7 +471,7 @@ fn comment_ref_to_thread(
         synced: c.is_synced(),
         stale: match c {
             CommentRef::Question(q) => q.stale,
-            CommentRef::GitHubComment(gc) => gc.stale,
+            CommentRef::GitHubComment(gc) => gc.stale || gc.outdated,
             CommentRef::Legacy(_) => false,
         },
         resolved: c.is_resolved(),
@@ -380,8 +500,18 @@ fn build_replies(
     if let Some(qs) = &tab.ai.questions {
         for q in &qs.questions {
             if q.in_reply_to.as_deref() == Some(root_id) {
-                let author = if q.author.is_empty() { "You".to_string() } else { q.author.clone() };
-                let kind = if author == "You" { "you" } else if author == "ai" { "ai" } else { "human" };
+                let author = if q.author.is_empty() {
+                    "You".to_string()
+                } else {
+                    q.author.clone()
+                };
+                let kind = if author == "You" {
+                    "you"
+                } else if author == "ai" {
+                    "ai"
+                } else {
+                    "human"
+                };
                 replies.push(ThreadMessage {
                     author,
                     kind: kind.to_string(),
@@ -394,8 +524,18 @@ fn build_replies(
     if let Some(gc) = &tab.ai.github_comments {
         for c in &gc.comments {
             if c.in_reply_to.as_deref() == Some(root_id) {
-                let author = if c.author.is_empty() { "You".to_string() } else { c.author.clone() };
-                let kind = if author == "You" { "you" } else if author == "ai" { "ai" } else { "human" };
+                let author = if c.author.is_empty() {
+                    "You".to_string()
+                } else {
+                    c.author.clone()
+                };
+                let kind = if author == "You" {
+                    "you"
+                } else if author == "ai" {
+                    "ai"
+                } else {
+                    "human"
+                };
                 replies.push(ThreadMessage {
                     author,
                     kind: kind.to_string(),
@@ -465,8 +605,7 @@ pub fn refresh_meta_cache(active_root: &str, cache: &MetaCache) {
         }
         let current_branch = detect_current_branch(&p.root_path);
         let base_branch = detect_base_branch(&p.root_path);
-        let raw_worktrees =
-            er_engine::git::list_worktrees(&p.root_path).unwrap_or_default();
+        let raw_worktrees = er_engine::git::list_worktrees(&p.root_path).unwrap_or_default();
         let local_branches = build_tracked_branches(
             &p.root_path,
             &base_branch,
@@ -502,11 +641,13 @@ pub fn build_snapshot(
     app: &App,
     highlighter: &mut Highlighter,
     pr_cache: Option<&PrCache>,
+    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
     meta_cache: Option<&MetaCache>,
     gh_user: Option<&GhUser>,
     pending_ai: Option<&PendingAiReplies>,
     gh_status_cache: Option<&GhStatusCache>,
     loading: Option<&LoadingState>,
+    watch_status: Option<&WatchStatusState>,
 ) -> AppSnapshot {
     let t0 = std::time::Instant::now();
     let tab = app.tab();
@@ -533,16 +674,21 @@ pub fn build_snapshot(
     let reviewed_count = tab.reviewed.len();
     let total_count = tab.files.len();
 
-    let files: Vec<FileSnapshot> = tab
-        .files
+    let visible = tab.visible_files();
+    let mut diff_line_budget = std::env::var("ER_DESKTOP_SNAPSHOT_LINE_BUDGET")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(SNAPSHOT_DIFF_LINE_BUDGET);
+    let files: Vec<FileSnapshot> = visible
         .iter()
-        .enumerate()
-        .map(|(_i, f)| {
-            // Continuous-scroll diff view: populate hunks for every non-compacted
-            // file (selected_file becomes a focus cursor, not a viewport selector).
-            // TODO: revisit if large diffs cause perf issues — windowed rendering
-            // (frontend reports visible range) is the planned mitigation.
-            let hunks = if !f.compacted {
+        .map(|(source_index, f)| {
+            let source_index = *source_index;
+            let line_count = f.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
+            let include_hunks =
+                !f.compacted && (source_index == tab.selected_file || diff_line_budget > 0);
+            let budget_omitted = !f.compacted && !include_hunks;
+            let hunks = if include_hunks {
+                diff_line_budget = diff_line_budget.saturating_sub(line_count);
                 build_hunks(f, tab, highlighter, pending_ai)
             } else {
                 vec![]
@@ -582,10 +728,40 @@ pub fn build_snapshot(
                 finding_count,
                 comment_count,
                 question_count,
+                is_lazy_stub: (tab.lazy_mode && f.hunks.is_empty() && !f.compacted)
+                    || budget_omitted,
                 hunks,
+                source_index,
             }
         })
         .collect();
+
+    // Translate backend `selected_file` (index into `tab.files`) into a
+    // visible-list index. If the selected file is filtered out, fall back to 0.
+    let selected_file = visible
+        .iter()
+        .position(|(idx, _)| *idx == tab.selected_file)
+        .unwrap_or(0);
+
+    let filter_suggestions: Vec<FilterSuggestionSnapshot> = {
+        use er_engine::app::filter::FILTER_PRESETS;
+        let mut out: Vec<FilterSuggestionSnapshot> = FILTER_PRESETS
+            .iter()
+            .map(|p| FilterSuggestionSnapshot {
+                kind: "preset".to_string(),
+                name: p.name.to_string(),
+                expr: p.expr.to_string(),
+            })
+            .collect();
+        for expr in &tab.filter_history {
+            out.push(FilterSuggestionSnapshot {
+                kind: "history".to_string(),
+                name: expr.clone(),
+                expr: expr.clone(),
+            });
+        }
+        out
+    };
 
     let ai = build_ai_snapshot(tab, pending_ai);
     let pr = build_pr_snapshot(tab);
@@ -623,62 +799,67 @@ pub fn build_snapshot(
 
     // Browser-view UI annotations — read freshly from the active tab's
     // comments_dir so writes flow back to the UI on the next snapshot.
-    let ui_annotations: Vec<UiAnnotationSnapshot> = er_engine::ai::load_ui_annotations(&tab.comments_dir())
-        .into_iter()
-        .map(|a| UiAnnotationSnapshot {
-            id: a.id,
-            url: a.url,
-            selector: a.selector,
-            box_x: a.box_x,
-            box_y: a.box_y,
-            box_w: a.box_w,
-            box_h: a.box_h,
-            viewport_w: a.viewport_w,
-            viewport_h: a.viewport_h,
-            text: a.text,
-            timestamp: a.timestamp,
-            author: a.author,
-            screenshot_path: a.screenshot_path,
-            stale: a.stale,
-            element_context: a.element_context,
-            dom_context: a.dom_context,
-        })
-        .collect();
+    let ui_annotations: Vec<UiAnnotationSnapshot> =
+        er_engine::ai::load_ui_annotations(&tab.comments_dir())
+            .into_iter()
+            .map(|a| UiAnnotationSnapshot {
+                id: a.id,
+                url: a.url,
+                selector: a.selector,
+                box_x: a.box_x,
+                box_y: a.box_y,
+                box_w: a.box_w,
+                box_h: a.box_h,
+                viewport_w: a.viewport_w,
+                viewport_h: a.viewport_h,
+                text: a.text,
+                timestamp: a.timestamp,
+                author: a.author,
+                screenshot_path: a.screenshot_path,
+                stale: a.stale,
+                element_context: a.element_context,
+                dom_context: a.dom_context,
+            })
+            .collect();
 
     // Resolve the active tab's GitHub status from the cache.
     // For remote PR tabs: use remote_repo + pr_number directly.
     // For working-tree / local-branch tabs: look up the current branch in pr_cache.
-    let github = if let (Some(slug), Some(number)) =
-        (tab.remote_repo.as_ref(), tab.pr_number)
-    {
-        slug.split_once('/')
-            .and_then(|(o, r)| {
-                let key = (o.to_string(), r.to_string(), number);
-                gh_status_cache.and_then(|c| c.lock().ok()).and_then(|g| g.get(&key).cloned())
-            })
+    let github = if let (Some(slug), Some(number)) = (tab.remote_repo.as_ref(), tab.pr_number) {
+        slug.split_once('/').and_then(|(o, r)| {
+            let key = (o.to_string(), r.to_string(), number);
+            gh_status_cache
+                .and_then(|c| c.lock().ok())
+                .and_then(|g| g.get(&key).cloned())
+        })
     } else {
         // Find a PR whose head_ref matches the viewed branch. Prefer open PRs,
         // but keep merged/closed matches so the Sources card can show terminal
         // PR state instead of looking disconnected.
-        let branch = tab.local_branch_view.as_deref().unwrap_or(&tab.current_branch);
-        let pr_key = pr_cache
-            .and_then(|pc| pc.lock().ok())
-            .and_then(|cache| {
-                cache.iter().find_map(|(slug, prs)| {
-                    prs.iter()
-                        .filter(|p| p.head_ref == branch)
-                        .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-                        .and_then(|p| {
-                            slug.split_once('/')
-                                .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-                        })
-                })
-            });
+        let branch = tab
+            .local_branch_view
+            .as_deref()
+            .unwrap_or(&tab.current_branch);
+        let pr_key = pr_cache.and_then(|pc| pc.lock().ok()).and_then(|cache| {
+            cache.iter().find_map(|(slug, prs)| {
+                prs.iter()
+                    .filter(|p| p.head_ref == branch)
+                    .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
+                    .and_then(|p| {
+                        slug.split_once('/')
+                            .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
+                    })
+            })
+        });
         pr_key.and_then(|(o, r, n)| {
             let key = (o, r, n);
-            gh_status_cache.and_then(|c| c.lock().ok()).and_then(|g| g.get(&key).cloned())
+            gh_status_cache
+                .and_then(|c| c.lock().ok())
+                .and_then(|g| g.get(&key).cloned())
         })
     };
+
+    let diff_source = build_diff_source_snapshot(tab, pr_cache, meta_cache);
 
     let out = AppSnapshot {
         mode: mode.to_string(),
@@ -689,7 +870,7 @@ pub fn build_snapshot(
         base: tab.base_branch.clone(),
         input_mode: input_mode.to_string(),
         files,
-        selected_file: tab.selected_file,
+        selected_file,
         current_hunk: Some(tab.current_hunk),
         filter,
         reviewed_count,
@@ -702,18 +883,46 @@ pub fn build_snapshot(
             right: app.panels_visible.right,
         },
         theme: "dark".to_string(),
-        watch_active: app.watching,
+        watch_active: {
+            let ws = watch_status
+                .and_then(|w| w.lock().ok().map(|g| g.clone()))
+                .unwrap_or_default();
+            ws.active || app.watching
+        },
+        watch_status: watch_status
+            .and_then(|w| w.lock().ok().map(|g| g.clone()))
+            .unwrap_or_default(),
         worktrees: build_worktrees(&tab.repo_root, &tab.base_branch, &tab.repo_root),
-        projects: build_projects(tab, pr_cache, meta_cache, gh_user),
+        projects: build_projects(tab, pr_cache, pr_cache_fetched_at, meta_cache, gh_user),
         notification: app.watch_message.clone(),
         local_branch: tab.local_branch_view.clone(),
         tabs,
         active_tab,
         ui_annotations,
         github,
+        diff_source,
         bg_loading: loading
             .and_then(|l| l.lock().ok().map(|g| g.clone()))
             .unwrap_or_default(),
+        agent_commands: build_agent_commands(app, tab),
+        agent_log: build_agent_log(tab),
+        active_ai_label: app.active_ai_selection_label(),
+        filter_suggestions,
+        background_tasks: app
+            .background_task_snapshots()
+            .into_iter()
+            .map(|t| BackgroundTaskSnapshotWire {
+                id: t.id,
+                kind: t.kind,
+                label: t.label,
+                target_label: t.target_label,
+                scope: t.scope,
+                status: t.status,
+                error: t.error,
+                started_at_ms: t.started_at_ms,
+                finished_at_ms: t.finished_at_ms,
+            })
+            .collect(),
     };
     if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {
         eprintln!(
@@ -726,7 +935,64 @@ pub fn build_snapshot(
     out
 }
 
-fn build_worktrees(repo_root: &str, base_branch: &str, current_root: &str) -> Vec<WorktreeSnapshot> {
+fn build_agent_commands(app: &App, tab: &TabState) -> Vec<AgentCommandSnapshot> {
+    let mut out: Vec<AgentCommandSnapshot> = tab
+        .command_status
+        .iter()
+        .map(|(name, status)| AgentCommandSnapshot {
+            name: name.clone(),
+            status: match status {
+                CommandStatus::Running => "running".to_string(),
+                CommandStatus::Done => "done".to_string(),
+                CommandStatus::Failed(_) => "failed".to_string(),
+            },
+            error: match status {
+                CommandStatus::Failed(msg) => Some(msg.clone()),
+                _ => None,
+            },
+        })
+        .collect();
+
+    // Merge in app-level background tasks targeting this tab so existing
+    // per-tab UI (status badges, agent-output card) keeps working.
+    for task in app.background_tasks_for_tab(tab) {
+        // Skip if a tab-local entry with the same name already exists
+        // (avoids duplicate "review" badges if the user runs both layers).
+        if out.iter().any(|c| c.name == task.kind) {
+            continue;
+        }
+        out.push(AgentCommandSnapshot {
+            name: task.kind,
+            status: task.status,
+            error: task.error,
+        });
+    }
+    out
+}
+
+fn build_agent_log(tab: &TabState) -> Vec<AgentLogSnapshot> {
+    tab.agent_log
+        .iter()
+        .rev()
+        .take(200)
+        .rev()
+        .map(|e| AgentLogSnapshot {
+            command_name: e.command_name.clone(),
+            source: match &e.source {
+                AgentLogSource::Stdout => "stdout".to_string(),
+                AgentLogSource::Stderr => "stderr".to_string(),
+                AgentLogSource::Status => "status".to_string(),
+            },
+            text: e.text.clone(),
+        })
+        .collect()
+}
+
+fn build_worktrees(
+    repo_root: &str,
+    base_branch: &str,
+    current_root: &str,
+) -> Vec<WorktreeSnapshot> {
     let wts = er_engine::git::list_worktrees(repo_root).unwrap_or_default();
     let skip_merged = wts.len() > 10;
     wts.into_iter()
@@ -760,7 +1026,9 @@ fn build_tracked_branches(
         ])
         .current_dir(repo_root)
         .output();
-    let Ok(out) = out else { return Vec::new(); };
+    let Ok(out) = out else {
+        return Vec::new();
+    };
     if !out.status.success() {
         return Vec::new();
     }
@@ -778,7 +1046,11 @@ fn build_tracked_branches(
                 return None;
             }
             let upstream_raw = parts.next().unwrap_or("").trim().to_string();
-            let upstream = if upstream_raw.is_empty() { None } else { Some(upstream_raw) };
+            let upstream = if upstream_raw.is_empty() {
+                None
+            } else {
+                Some(upstream_raw)
+            };
             let is_current = name == current_branch;
             let is_merged = if skip_merged || name == base_branch {
                 false
@@ -794,11 +1066,21 @@ fn build_tracked_branches(
                 .iter()
                 .find(|w| w.branch == name)
                 .map(|w| w.path.clone());
-            Some(BranchInfo { name, upstream, is_current, is_merged, worktree_path })
+            Some(BranchInfo {
+                name,
+                upstream,
+                is_current,
+                is_merged,
+                worktree_path,
+                pr_number: None,
+            })
         })
         .collect();
 
-    // Visibility set: tracked ∪ {current}. Always show current first.
+    let worktree_branches: std::collections::HashSet<&str> =
+        worktrees.iter().map(|w| w.branch.as_str()).collect();
+
+    // Visibility set: {current} ∪ tracked ∪ {branches with an active worktree}.
     let mut visible: Vec<BranchInfo> = Vec::new();
     let mut seen = std::collections::HashSet::<String>::new();
 
@@ -806,11 +1088,13 @@ fn build_tracked_branches(
         visible.push(cur.clone());
         seen.insert(cur.name.clone());
     }
-    for name in tracked {
-        if seen.contains(name) {
+    for b in &all {
+        if seen.contains(&b.name) {
             continue;
         }
-        if let Some(b) = all.iter().find(|b| &b.name == name) {
+        let in_tracked = tracked.iter().any(|t| t == &b.name);
+        let has_worktree = worktree_branches.contains(b.name.as_str());
+        if in_tracked || has_worktree {
             visible.push(b.clone());
             seen.insert(b.name.clone());
         }
@@ -835,7 +1119,9 @@ fn build_auto_branches(
         ])
         .current_dir(repo_root)
         .output();
-    let Ok(out) = out else { return Vec::new(); };
+    let Ok(out) = out else {
+        return Vec::new();
+    };
     if !out.status.success() {
         return Vec::new();
     }
@@ -843,8 +1129,7 @@ fn build_auto_branches(
 
     let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
 
-    let tracked_set: std::collections::HashSet<&str> =
-        tracked.iter().map(|s| s.as_str()).collect();
+    let tracked_set: std::collections::HashSet<&str> = tracked.iter().map(|s| s.as_str()).collect();
 
     let mut result: Vec<BranchInfo> = Vec::new();
     for line in text.lines() {
@@ -865,7 +1150,11 @@ fn build_auto_branches(
             continue;
         }
         let upstream_raw = parts.next().unwrap_or("").trim().to_string();
-        let upstream = if upstream_raw.is_empty() { None } else { Some(upstream_raw) };
+        let upstream = if upstream_raw.is_empty() {
+            None
+        } else {
+            Some(upstream_raw)
+        };
         let is_merged = if skip_merged || name == base_branch {
             false
         } else {
@@ -886,6 +1175,7 @@ fn build_auto_branches(
             is_current: false,
             is_merged,
             worktree_path,
+            pr_number: None,
         });
     }
     result
@@ -894,15 +1184,18 @@ fn build_auto_branches(
 fn build_projects(
     tab: &TabState,
     pr_cache: Option<&PrCache>,
+    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
     meta_cache: Option<&MetaCache>,
     gh_user: Option<&GhUser>,
 ) -> Vec<ProjectSnapshot> {
     let file = projects::load();
     let active_root = &tab.repo_root;
 
-    let pr_map: Option<HashMap<String, Vec<PrInfo>>> = pr_cache.and_then(|m| {
-        m.lock().ok().map(|g| g.clone())
-    });
+    let pr_map: Option<HashMap<String, Vec<PrInfo>>> =
+        pr_cache.and_then(|m| m.lock().ok().map(|g| g.clone()));
+    let pr_fetched_map: HashMap<String, u64> = pr_cache_fetched_at
+        .and_then(|m| m.lock().ok().map(|g| g.clone()))
+        .unwrap_or_default();
 
     // Snapshot the meta cache once, then drop the lock immediately.
     let meta_map: HashMap<String, ProjectMeta> = meta_cache
@@ -937,7 +1230,7 @@ fn build_projects(
                 }
             }
 
-            let (my_prs, prs_to_review, recently_merged) =
+            let (my_prs, prs_to_review, recently_merged, pr_cache_stale, pr_cache_age_ms) =
                 if let (Some(remote), Some(ref cache)) = (&p.remote, &pr_map) {
                     let mut all: Vec<PrInfo> = cache
                         .get(remote)
@@ -973,7 +1266,6 @@ fn build_projects(
                                 && me.as_deref().map_or(true, |login| pr.author != login)
                                 && !pr.approved_by_me
                         })
-                        .take(5)
                         .cloned()
                         .collect();
 
@@ -981,10 +1273,37 @@ fn build_projects(
                     all.sort_by(|a, b| b.merged_at.cmp(&a.merged_at));
                     all.truncate(5);
 
-                    (my, to_review, all)
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let age_ms = pr_fetched_map
+                        .get(remote)
+                        .copied()
+                        .map(|fetched| now_ms.saturating_sub(fetched));
+                    let stale = age_ms.map(|age| age > 10 * 60 * 1000).unwrap_or(true);
+                    (my, to_review, all, stale, age_ms)
                 } else {
-                    (Vec::new(), Vec::new(), Vec::new())
+                    (Vec::new(), Vec::new(), Vec::new(), false, None)
                 };
+
+            // Populate pr_number on branches by matching against open PRs.
+            let all_open_prs: Vec<&PrInfo> = my_prs
+                .iter()
+                .chain(prs_to_review.iter())
+                .filter(|p| p.state == "OPEN")
+                .collect();
+
+            for b in meta.local_branches.iter_mut() {
+                if let Some(pr) = all_open_prs.iter().find(|p| p.head_ref == b.name) {
+                    b.pr_number = Some(pr.number);
+                }
+            }
+            for b in meta.auto_branches.iter_mut() {
+                if let Some(pr) = all_open_prs.iter().find(|p| p.head_ref == b.name) {
+                    b.pr_number = Some(pr.number);
+                }
+            }
 
             ProjectSnapshot {
                 id: p.id.clone(),
@@ -997,6 +1316,8 @@ fn build_projects(
                 my_prs,
                 prs_to_review,
                 recently_merged,
+                pr_cache_stale,
+                pr_cache_age_ms,
             }
         })
         .collect()
@@ -1008,7 +1329,13 @@ fn detect_current_branch(repo_root: &str) -> String {
         .current_dir(repo_root)
         .output()
         .ok()
-        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
         .unwrap_or_default()
 }
 
@@ -1016,7 +1343,11 @@ fn detect_base_branch(repo_root: &str) -> String {
     // Cheap fallback: try common defaults
     for candidate in ["main", "master", "develop", "dev"] {
         let out = std::process::Command::new("git")
-            .args(["rev-parse", "--verify", &format!("refs/heads/{}", candidate)])
+            .args([
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/{}", candidate),
+            ])
             .current_dir(repo_root)
             .output();
         if let Ok(o) = out {
@@ -1039,6 +1370,9 @@ fn build_hunks(
         .and_then(|n| n.to_str())
         .unwrap_or(&file.path);
 
+    let is_python = file.path.ends_with(".py");
+    let mut in_python_docstring = false;
+
     file.hunks
         .iter()
         .enumerate()
@@ -1054,11 +1388,55 @@ fn build_hunks(
                         LineType::Fold(_) => "fold",
                     };
                     let spans = if kind != "fold" {
-                        highlighter
+                        let mut spans: Vec<SpanSnapshot> = highlighter
                             .highlight_line(&line.content, filename, "base16-ocean.dark")
                             .into_iter()
-                            .map(|hs| SpanSnapshot { text: hs.text, color: hs.color })
-                            .collect()
+                            .map(|hs| SpanSnapshot {
+                                text: hs.text,
+                                color: hs.color,
+                            })
+                            .collect();
+
+                        // Keep comment/docstring lines semantically plain:
+                        // don't allow intra-line keyword highlighting for words
+                        // like "if"/"for"/"order" inside comments or docstrings.
+                        let trimmed = line.content.trim_start();
+                        let is_line_comment = trimmed.starts_with('#')
+                            || trimmed.starts_with("//")
+                            || trimmed.starts_with("/*")
+                            || trimmed.starts_with('*')
+                            || trimmed.starts_with("*/");
+
+                        let triple_single = line.content.matches("'''").count();
+                        let triple_double = line.content.matches("\"\"\"").count();
+                        let has_triple = triple_single > 0 || triple_double > 0;
+                        let in_docstring_now = is_python && (in_python_docstring || has_triple);
+
+                        if is_line_comment || in_docstring_now {
+                            spans = vec![SpanSnapshot {
+                                text: line.content.clone(),
+                                color: "#a7b1ba".to_string(),
+                            }];
+                        } else if !trimmed.is_empty()
+                            && trimmed
+                                .chars()
+                                .all(|c| matches!(c, ')' | ']' | '}' | ',' | ' ' | '\t'))
+                        {
+                            // Bare closing-bracket lines lose context when highlighted
+                            // line-by-line (HighlightLines is re-created per line), so
+                            // syntect dims them. Force the theme's default fg to match
+                            // the opening bracket on its source line.
+                            spans = vec![SpanSnapshot {
+                                text: line.content.clone(),
+                                color: "#c0c5ce".to_string(),
+                            }];
+                        }
+
+                        if is_python && has_triple && ((triple_single + triple_double) % 2 == 1) {
+                            in_python_docstring = !in_python_docstring;
+                        }
+
+                        spans
                     } else {
                         vec![SpanSnapshot {
                             text: line.content.clone(),
@@ -1085,10 +1463,18 @@ fn build_hunks(
                 .filter(|l| matches!(l.line_type, LineType::Context | LineType::Add))
                 .count();
 
-            // Collect threads for this hunk
+            // Collect threads for this hunk (also matches comments whose hunk_index is
+            // missing or stale, by falling back to line-range matching)
             let threads: Vec<ThreadSnapshot> = tab
                 .ai
-                .comments_for_hunk(&file.path, hunk_idx)
+                .comments_for_hunk_or_line_range(
+                    &file.path,
+                    hunk_idx,
+                    hunk.new_start,
+                    new_count,
+                    hunk.old_start,
+                    old_count,
+                )
                 .iter()
                 .filter(|c| {
                     c.in_reply_to().is_none()
@@ -1112,6 +1498,34 @@ fn build_hunks(
 
 fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSnapshot {
     let ai = &tab.ai;
+    let stale_reason = if !ai.is_stale {
+        None
+    } else if tab.branch_diff_hash.is_empty() {
+        Some("Current diff hash is unavailable; refresh the diff.".to_string())
+    } else {
+        let review_mismatch = ai
+            .review
+            .as_ref()
+            .map(|r| r.diff_hash != tab.branch_diff_hash)
+            .unwrap_or(false);
+        let order_mismatch = ai
+            .order
+            .as_ref()
+            .map(|o| o.diff_hash != tab.branch_diff_hash)
+            .unwrap_or(false);
+        let checklist_mismatch = ai
+            .checklist
+            .as_ref()
+            .map(|c| c.diff_hash != tab.branch_diff_hash)
+            .unwrap_or(false);
+        if review_mismatch {
+            Some("Review was generated for an older diff. Re-run or validate the review.".to_string())
+        } else if order_mismatch || checklist_mismatch {
+            Some("Review metadata is out of date for the current diff.".to_string())
+        } else {
+            Some("Review artifacts do not match the current diff.".to_string())
+        }
+    };
 
     let (high, med, low) = if let Some(review) = &ai.review {
         let mut h = 0usize;
@@ -1131,12 +1545,44 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         (0, 0, 0)
     };
 
-    let questions = ai.questions.as_ref().map(|q| q.questions.len()).unwrap_or(0);
-    let comments = ai.github_comments.as_ref().map(|c| c.comments.len()).unwrap_or(0);
+    let questions = ai
+        .questions
+        .as_ref()
+        .map(|q| q.questions.len())
+        .unwrap_or(0);
+    let comments = ai
+        .github_comments
+        .as_ref()
+        .map(|c| c.comments.len())
+        .unwrap_or(0);
     let unpushed = ai
         .github_comments
         .as_ref()
         .map(|c| c.comments.iter().filter(|c| !c.synced).count())
+        .unwrap_or(0);
+    let local_comment_count = ai
+        .github_comments
+        .as_ref()
+        .map(|c| {
+            c.comments
+                .iter()
+                .filter(|comment| {
+                    comment.in_reply_to.is_none() && comment.source == "local" && !comment.synced
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    let github_comment_count = ai
+        .github_comments
+        .as_ref()
+        .map(|c| {
+            c.comments
+                .iter()
+                .filter(|comment| {
+                    comment.in_reply_to.is_none() && (comment.source == "github" || comment.synced)
+                })
+                .count()
+        })
         .unwrap_or(0);
 
     // Flat thread list for CommentsCard / QuestionsCard
@@ -1156,7 +1602,11 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         stale: q.stale,
                         resolved: q.resolved,
                         root: ThreadMessage {
-                            author: if q.author.is_empty() { "You".to_string() } else { q.author.clone() },
+                            author: if q.author.is_empty() {
+                                "You".to_string()
+                            } else {
+                                q.author.clone()
+                            },
                             kind: "you".to_string(),
                             timestamp: q.timestamp.clone(),
                             body_markdown: q.text.clone(),
@@ -1170,7 +1620,11 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         if let Some(gc) = &ai.github_comments {
             for c in &gc.comments {
                 if c.in_reply_to.is_none() {
-                    let author_kind = if c.author.is_empty() || c.author == "You" { "you" } else { "human" };
+                    let author_kind = if c.author.is_empty() || c.author == "You" {
+                        "you"
+                    } else {
+                        "human"
+                    };
                     let cref = CommentRef::GitHubComment(c);
                     result.push(ThreadSnapshot {
                         id: c.id.clone(),
@@ -1179,10 +1633,14 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         line: c.line_start.unwrap_or(0),
                         source: c.source.clone(),
                         synced: c.synced,
-                        stale: c.stale,
+                        stale: c.stale || c.outdated,
                         resolved: c.resolved,
                         root: ThreadMessage {
-                            author: if c.author.is_empty() { "You".to_string() } else { c.author.clone() },
+                            author: if c.author.is_empty() {
+                                "You".to_string()
+                            } else {
+                                c.author.clone()
+                            },
                             kind: author_kind.to_string(),
                             timestamp: c.timestamp.clone(),
                             body_markdown: c.comment.clone(),
@@ -1205,14 +1663,30 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
             .iter()
             .flat_map(|(path, fr)| {
                 let promotions = &promotions;
-                fr.findings.iter().map(move |f| FlatFinding {
-                    id: f.id.clone(),
-                    file: path.clone(),
-                    line: f.line_start,
-                    severity: severity_str(&f.severity).to_string(),
-                    title: f.title.clone(),
-                    message_markdown: f.description.clone(),
-                    promoted_to: promotions.get(&f.id).cloned().or_else(|| f.promoted_to.clone()),
+                let gh = ai.github_comments.as_ref();
+                fr.findings.iter().map(move |f| {
+                    let thread_id = gh.and_then(|gc| {
+                        gc.comments
+                            .iter()
+                            .find(|c| {
+                                c.finding_ref.as_deref() == Some(f.id.as_str())
+                                    && c.in_reply_to.is_none()
+                            })
+                            .map(|c| c.id.clone())
+                    });
+                    FlatFinding {
+                        id: f.id.clone(),
+                        file: path.clone(),
+                        line: f.line_start,
+                        severity: severity_str(&f.severity).to_string(),
+                        title: f.title.clone(),
+                        message_markdown: f.description.clone(),
+                        promoted_to: promotions
+                            .get(&f.id)
+                            .cloned()
+                            .or_else(|| f.promoted_to.clone()),
+                        thread_id,
+                    }
                 })
             })
             .collect()
@@ -1222,15 +1696,231 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
 
     AiSnapshot {
         fresh: !ai.is_stale,
+        stale_reason,
         summary_markdown: ai.summary.clone(),
         high,
         med,
         low,
+        local_comment_count,
+        github_comment_count,
         comments,
         questions,
         unpushed,
         threads,
         findings,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+
+    fn github_comment(outdated: bool, stale: bool) -> GitHubReviewComment {
+        GitHubReviewComment {
+            id: "gh-1".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            file: "src/foo.rs".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(10),
+            line_end: None,
+            line_content: "fn foo() {}".to_string(),
+            comment: "This thread is outdated on GitHub".to_string(),
+            in_reply_to: None,
+            resolved: false,
+            source: "github".to_string(),
+            github_id: Some(1),
+            author: "octo".to_string(),
+            synced: true,
+            outdated,
+            stale,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    #[test]
+    fn ai_snapshot_marks_github_outdated_comment_stale_for_ui() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            github: None,
+            comments: vec![github_comment(true, false)],
+        });
+
+        let snapshot = build_ai_snapshot(&tab, None);
+
+        assert_eq!(snapshot.threads.len(), 1);
+        assert!(snapshot.threads[0].stale);
+    }
+
+    #[test]
+    fn thread_conversion_marks_github_outdated_comment_stale_for_ui() {
+        let tab = TabState::new_for_test(vec![]);
+        let comment = github_comment(true, false);
+
+        let thread = comment_ref_to_thread(
+            &CommentRef::GitHubComment(&comment),
+            "src/foo.rs",
+            0,
+            &tab,
+            None,
+        );
+
+        assert!(thread.stale);
+    }
+}
+
+fn build_diff_source_snapshot(
+    tab: &er_engine::app::TabState,
+    _pr_cache: Option<&PrCache>,
+    meta_cache: Option<&MetaCache>,
+) -> Option<DiffSourceSnapshot> {
+    use er_engine::app::DiffSource;
+
+    // Working-tree tabs (no local_branch_view, no remote_repo) don't show the card.
+    if tab.local_branch_view.is_none() && tab.remote_repo.is_none() {
+        return None;
+    }
+
+    let branch = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+
+    // Look up upstream from meta_cache if available.
+    let upstream = meta_cache.and_then(|mc| mc.lock().ok()).and_then(|cache| {
+        cache.values().find_map(|entry| {
+            entry
+                .local_branches
+                .iter()
+                .chain(entry.auto_branches.iter())
+                .find(|b| b.name == branch)
+                .and_then(|b| b.upstream.clone())
+        })
+    });
+
+    let active = tab.diff_source();
+    let available = tab.available_diff_sources();
+
+    let active_str = match active {
+        DiffSource::Pr => "pr",
+        DiffSource::Origin => "origin",
+        DiffSource::Local => "local",
+    }
+    .to_string();
+
+    let available_strs: Vec<String> = available
+        .iter()
+        .map(|s| match s {
+            DiffSource::Pr => "pr",
+            DiffSource::Origin => "origin",
+            DiffSource::Local => "local",
+        })
+        .map(|s| s.to_string())
+        .collect();
+
+    let ahead_behind = tab.ahead_behind_vs_upstream();
+    let (ahead, behind) = match ahead_behind {
+        Some((a, b)) => (Some(a), Some(b)),
+        None => (None, None),
+    };
+
+    let has_upstream = upstream.is_some();
+
+    let (status, suggestion) = build_diff_source_copy(active, ahead, behind, has_upstream);
+
+    Some(DiffSourceSnapshot {
+        active: active_str,
+        available: available_strs,
+        branch,
+        upstream,
+        base: tab.base_branch.clone(),
+        pr_number: tab.pr_number,
+        ahead,
+        behind,
+        status,
+        suggestion,
+    })
+}
+
+fn build_diff_source_copy(
+    source: er_engine::app::DiffSource,
+    ahead: Option<u32>,
+    behind: Option<u32>,
+    has_upstream: bool,
+) -> (String, String) {
+    use er_engine::app::DiffSource;
+    if !has_upstream && source != DiffSource::Pr {
+        return (
+            "No upstream configured. Only Local diff is available.".into(),
+            String::new(),
+        );
+    }
+    match source {
+        DiffSource::Pr => (
+            "Showing GitHub PR diff. This should match Files changed on GitHub.".into(),
+            String::new(),
+        ),
+        DiffSource::Origin => {
+            let ahead = ahead.unwrap_or(0);
+            let behind = behind.unwrap_or(0);
+            if ahead > 0 && behind > 0 {
+                (
+                    format!(
+                        "Showing pushed branch. Local and origin have both moved ({ahead} ahead, {behind} behind)."
+                    ),
+                    "Prefer PR or Origin for review parity.".into(),
+                )
+            } else if ahead > 0 {
+                (
+                    format!("Showing pushed branch. Local has {ahead} unpushed commit(s)."),
+                    "Switch to Local to inspect unpushed work.".into(),
+                )
+            } else if behind > 0 {
+                (
+                    format!("Showing pushed branch. Local is behind origin by {behind} commit(s)."),
+                    String::new(),
+                )
+            } else {
+                (
+                    "Showing pushed branch. Local is up to date with origin.".into(),
+                    String::new(),
+                )
+            }
+        }
+        DiffSource::Local => {
+            let ahead = ahead.unwrap_or(0);
+            let behind = behind.unwrap_or(0);
+            if ahead > 0 && behind > 0 {
+                (
+                    format!("Showing local branch. Local and origin have both moved ({ahead} ahead, {behind} behind)."),
+                    "Prefer PR or Origin for review parity.".into(),
+                )
+            } else if ahead > 0 {
+                (
+                    format!("Showing local branch with {ahead} unpushed commit(s)."),
+                    String::new(),
+                )
+            } else if behind > 0 {
+                (
+                    format!("Showing local branch, but origin is {behind} commit(s) ahead."),
+                    "Switch to Origin or PR for current review.".into(),
+                )
+            } else {
+                (
+                    "Showing local branch. In sync with origin.".into(),
+                    String::new(),
+                )
+            }
+        }
     }
 }
 

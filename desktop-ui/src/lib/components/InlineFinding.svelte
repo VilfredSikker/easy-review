@@ -1,13 +1,15 @@
 <script lang="ts">
-  import type { FlatFinding } from "$lib/types";
+  import type { FlatFinding, ThreadSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
+  import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
 
   interface Props {
     finding: FlatFinding;
+    thread?: ThreadSnapshot | null;
   }
 
-  const { finding }: Props = $props();
+  const { finding, thread = null }: Props = $props();
 
   const severityColor = $derived(
     finding.severity === "high" ? "#ef4444"
@@ -34,11 +36,19 @@
     replyText = "";
   }
   async function askAi() {
-    await app.cmd("reply_to_finding", {
-      findingId: finding.id,
-      body: "Elaborate on this and answer any question directly.",
-      aiAssist: true,
-    });
+    if (thread) {
+      // Thread already exists — ask AI as a reply on that thread
+      await app.cmd("ask_ai", {
+        threadId: thread.id,
+        prompt: "Elaborate on this and answer any question directly.",
+      });
+    } else {
+      await app.cmd("reply_to_finding", {
+        findingId: finding.id,
+        body: "Elaborate on this and answer any question directly.",
+        aiAssist: true,
+      });
+    }
     replyText = "";
   }
 
@@ -56,6 +66,25 @@
   const targetLineLabel = $derived(
     finding.line != null ? `${finding.file}:${finding.line}` : finding.file,
   );
+
+  function formatTimestamp(ts: string): string {
+    try {
+      const diff = Date.now() - new Date(ts).getTime();
+      const mins = Math.floor(diff / 60000);
+      const hours = Math.floor(diff / 3600000);
+      if (mins < 60) return `${Math.max(mins, 0)}m`;
+      if (hours < 24) return `${hours}h`;
+      return `${Math.floor(diff / 86400000)}d`;
+    } catch { return ts; }
+  }
+
+  async function askAiOnThread() {
+    if (!thread) return;
+    await app.cmd("ask_ai", {
+      threadId: thread.id,
+      prompt: "Elaborate on this and answer any question directly.",
+    });
+  }
 </script>
 
 <div
@@ -77,12 +106,48 @@
   </div>
 
   <!-- Body -->
-  <div class="px-3 py-2 text-sm text-fg-2 whitespace-pre-wrap">
-    {finding.title}
+  <div class="px-3 py-2 text-sm text-fg-2">
+    <MarkdownText text={finding.title} className="text-sm text-fg-2" />
     {#if finding.message_markdown}
-      <div class="text-fg-3 mt-1">{finding.message_markdown}</div>
+      <MarkdownText text={finding.message_markdown} className="text-fg-3 mt-1" />
     {/if}
   </div>
+
+  <!-- Inline AI thread replies (created via Ask AI) -->
+  {#if thread}
+    <div class="border-t border-hairline bg-surface">
+      <!-- Root message (the "AI follow-up requested" stub) is hidden; show replies only -->
+      {#if thread.replies.length === 0}
+        <div class="px-3 py-2.5 flex gap-2.5 items-center text-[12px] text-muted italic animate-pulse">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai shrink-0"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
+          AI is thinking…
+        </div>
+      {:else}
+        {#each thread.replies as reply, i}
+          <div class="px-3 py-2.5 flex gap-2.5 {i > 0 ? 'border-t border-hairline' : ''}">
+            <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {reply.kind === 'ai' ? 'bg-ai/20' : 'bg-accent text-black'}">
+              {#if reply.kind === "ai"}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
+              {:else}
+                {(reply.author || "Y")[0].toUpperCase()}
+              {/if}
+            </div>
+            <div class="flex-1 min-w-0 {reply.kind === 'ai' ? 'border-l-2 border-ai pl-2.5' : ''}">
+              <div class="text-[11px] font-mono text-muted mb-0.5">
+                {#if reply.kind === "ai"}<span class="text-ai font-medium font-sans">AI</span>{:else}<span>{reply.author}</span>{/if}
+                {#if reply.timestamp}<span>· {formatTimestamp(reply.timestamp)}</span>{/if}
+              </div>
+              {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
+                <div class="text-sm text-fg-3 italic animate-pulse">…thinking</div>
+              {:else}
+                <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
+              {/if}
+            </div>
+          </div>
+        {/each}
+      {/if}
+    </div>
+  {/if}
 
   <!-- Action footer -->
   <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-2 text-[11px] flex-wrap">

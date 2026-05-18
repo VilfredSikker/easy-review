@@ -1,8 +1,8 @@
+use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::ai::{PanelContent, ReviewFocus};
 use er_engine::app::{App, ConfirmAction, DiffMode, InputMode, SplitSide};
 use er_engine::watch::{FileWatcher, WatchEvent};
-use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::Path;
 use std::sync::mpsc;
 

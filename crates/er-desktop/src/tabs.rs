@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::er_storage;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TabKind {
@@ -39,6 +41,11 @@ pub struct TabDescriptor {
     /// For `LocalPr` tabs: the resolved base ref used for the diff.
     #[serde(default)]
     pub base_ref: Option<String>,
+    /// For `LocalBranch` tabs: the Easy Review owned ref (e.g.
+    /// `refs/er/branches/<branch>/head`) populated by an explicit force-refresh.
+    /// Persisting it ensures the refreshed view survives tab recreation/app restart.
+    #[serde(default)]
+    pub local_branch_diff_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,8 +67,7 @@ fn tabs_path() -> Option<PathBuf> {
 pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
     let path = tabs_path().context("no config dir")?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let file = TabsFile {
         tabs: tabs.to_vec(),
@@ -98,6 +104,7 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_number: Some(num),
             pr_head_ref: None,
             base_ref: None,
+            local_branch_diff_ref: None,
         };
     }
     // Local PR review (fetched head ref, no checkout)
@@ -111,6 +118,7 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_number: Some(num),
             pr_head_ref: Some(head_ref.clone()),
             base_ref: Some(tab.base_branch.clone()),
+            local_branch_diff_ref: None,
         };
     }
     // Plain local branch view
@@ -124,6 +132,7 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_number: None,
             pr_head_ref: None,
             base_ref: None,
+            local_branch_diff_ref: tab.local_branch_diff_ref.clone(),
         };
     }
     TabDescriptor {
@@ -135,34 +144,99 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
         pr_number: None,
         pr_head_ref: None,
         base_ref: None,
+        local_branch_diff_ref: None,
     }
+}
+
+/// Apply the desktop-managed `ErRoot` to a tab that has a local repo root.
+///
+/// For remote-PR tabs the engine already uses its own cache path; skip those.
+pub fn apply_managed_root(tab: &mut er_engine::app::TabState) {
+    if tab.is_remote() {
+        return;
+    }
+    let branch = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+    if branch.is_empty() || tab.repo_root.is_empty() {
+        return;
+    }
+
+    // For LocalPr tabs: if managed storage is empty but the legacy cache `.er/` dir has
+    // review files (written before managed storage was introduced), bootstrap from it so
+    // the review survives the migration transparently.
+    if let Some(pr_num) = tab.pr_number {
+        let repo_slug = er_storage::slug_repo(&tab.repo_root);
+        let branch_slug = er_storage::slug_branch(&branch);
+        if er_storage::active_revision(&repo_slug, &branch_slug).is_none() {
+            if let Ok(home) = std::env::var("HOME") {
+                let legacy_er =
+                    format!("{}/.cache/er/local/{}/pr-{}/.er", home, repo_slug, pr_num);
+                if std::path::Path::new(&legacy_er).is_dir() {
+                    let _ = er_storage::bootstrap_from_legacy_er_path(
+                        &legacy_er,
+                        &repo_slug,
+                        &branch_slug,
+                    );
+                }
+            }
+        }
+    }
+
+    tab.er_root = er_storage::resolve_managed_root(&tab.repo_root, &branch);
 }
 
 /// Rebuild a `TabState` from a descriptor. Skips work that needs the network
 /// (e.g. PR overview fetch) — that's done lazily when the tab is focused.
 pub fn rebuild_tab(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
-    match d.kind {
+    let mut tab = match d.kind {
         TabKind::Working => er_engine::app::TabState::new(d.repo_root.clone()),
         TabKind::LocalBranch => {
             let branch = d
                 .branch
                 .clone()
                 .context("local_branch descriptor missing branch")?;
-            er_engine::app::TabState::new_local_branch(d.repo_root.clone(), branch)
+            // Resolve the refreshed diff ref to use: prefer the persisted ref from
+            // the descriptor, then fall back to whatever Easy Review ref currently
+            // exists on disk (covers branches refreshed in a prior session).
+            let resolved_ref = d.local_branch_diff_ref.clone().or_else(|| {
+                er_engine::github::refreshed_branch_ref_if_exists(&d.repo_root, &branch)
+            });
+            // Build the tab with `local_branch_diff_ref` set before the initial
+            // refresh so the diff is computed against the refreshed ref directly,
+            // avoiding a wasted git-diff against the stale local branch.
+            let mut tab = er_engine::app::TabState::new_with_base(
+                d.repo_root.clone(),
+                er_engine::git::detect_base_branch_in(&d.repo_root)?,
+            )?;
+            tab.local_branch_view = Some(branch);
+            tab.mode = er_engine::app::DiffMode::Branch;
+            tab.local_branch_diff_ref = resolved_ref;
+            tab.refresh_diff()?;
+            Ok(tab)
         }
         TabKind::RemotePr => {
             let owner = d.pr_owner.clone().context("remote_pr missing owner")?;
             let repo = d.pr_repo.clone().context("remote_pr missing repo")?;
             let number = d.pr_number.context("remote_pr missing number")?;
-            let pr_ref = er_engine::github::PrRef { owner, repo, number };
+            let pr_ref = er_engine::github::PrRef {
+                owner,
+                repo,
+                number,
+            };
             er_engine::app::TabState::new_remote(&pr_ref)
         }
         TabKind::LocalPr => {
-            let number = d.pr_number.context("local_pr descriptor missing pr_number")?;
+            let number = d
+                .pr_number
+                .context("local_pr descriptor missing pr_number")?;
             // Re-fetch the PR head so the ref is up-to-date after restart.
             er_engine::app::TabState::new_local_pr(d.repo_root.clone(), number)
         }
-    }
+    }?;
+    apply_managed_root(&mut tab);
+    Ok(tab)
 }
 
 #[cfg(test)]
@@ -186,6 +260,7 @@ mod tests {
                 pr_number: None,
                 pr_head_ref: None,
                 base_ref: None,
+                local_branch_diff_ref: None,
             },
             TabDescriptor {
                 kind: TabKind::LocalBranch,
@@ -196,6 +271,7 @@ mod tests {
                 pr_number: None,
                 pr_head_ref: None,
                 base_ref: None,
+                local_branch_diff_ref: None,
             },
             TabDescriptor {
                 kind: TabKind::RemotePr,
@@ -206,6 +282,7 @@ mod tests {
                 pr_number: Some(42),
                 pr_head_ref: None,
                 base_ref: None,
+                local_branch_diff_ref: None,
             },
             TabDescriptor {
                 kind: TabKind::LocalPr,
@@ -216,6 +293,7 @@ mod tests {
                 pr_number: Some(1110),
                 pr_head_ref: Some("refs/er/pr/1110/head".to_string()),
                 base_ref: Some("origin/main".to_string()),
+                local_branch_diff_ref: None,
             },
         ];
         let file = TabsFile {

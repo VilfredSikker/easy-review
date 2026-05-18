@@ -49,6 +49,93 @@ const BLANK_UNIFIED_GUTTER: &str = "          \u{2502}";
 /// Blank split gutter matching `format!("{} \u{2502}", "    ")`
 const BLANK_SPLIT_GUTTER: &str = "     \u{2502}";
 
+/// A paired row in split diff view. Both panes advance `logical_line` by the same
+/// `row_height` so they stay vertically aligned regardless of wrap asymmetry.
+struct TuiSplitRow<'a> {
+    left: Option<SplitCell<'a>>,
+    right: Option<SplitCell<'a>>,
+}
+
+struct SplitCell<'a> {
+    line_idx: usize,
+    line: &'a er_engine::git::DiffLine,
+}
+
+/// Build aligned split rows from a hunk, pairing consecutive del/add runs by index.
+/// Mirrors `splitRows()` in `desktop-ui/src/lib/splitRows.ts`.
+fn build_split_rows(hunk: &er_engine::git::DiffHunk) -> Vec<TuiSplitRow<'_>> {
+    let mut rows = Vec::new();
+    let mut i = 0;
+    let lines = &hunk.lines;
+    while i < lines.len() {
+        match lines[i].line_type {
+            LineType::Context | LineType::Fold(_) => {
+                rows.push(TuiSplitRow {
+                    left: Some(SplitCell {
+                        line_idx: i,
+                        line: &lines[i],
+                    }),
+                    right: Some(SplitCell {
+                        line_idx: i,
+                        line: &lines[i],
+                    }),
+                });
+                i += 1;
+            }
+            LineType::Delete | LineType::Add => {
+                let mut del_idxs: Vec<usize> = Vec::new();
+                while i < lines.len() && lines[i].line_type == LineType::Delete {
+                    del_idxs.push(i);
+                    i += 1;
+                }
+                let mut add_idxs: Vec<usize> = Vec::new();
+                while i < lines.len() && lines[i].line_type == LineType::Add {
+                    add_idxs.push(i);
+                    i += 1;
+                }
+                let max_len = del_idxs.len().max(add_idxs.len());
+                for k in 0..max_len {
+                    rows.push(TuiSplitRow {
+                        left: del_idxs.get(k).map(|&idx| SplitCell {
+                            line_idx: idx,
+                            line: &lines[idx],
+                        }),
+                        right: add_idxs.get(k).map(|&idx| SplitCell {
+                            line_idx: idx,
+                            line: &lines[idx],
+                        }),
+                    });
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// Number of terminal rows this cell will occupy given wrapping settings.
+/// Uses the same pipeline as rendering: `expand_tabs` then `word_wrap`.
+fn cell_wrap_height(
+    cell: Option<&SplitCell<'_>>,
+    wrap: bool,
+    wrap_width: usize,
+    tab_width: u8,
+) -> usize {
+    match cell {
+        None => 1,
+        Some(c) => {
+            if let LineType::Fold(_) = c.line.line_type {
+                return 1;
+            }
+            if wrap && !c.line.content.is_empty() {
+                let expanded = expand_tabs(&c.line.content, tab_width);
+                word_wrap(&expanded, wrap_width.max(1)).len().max(1)
+            } else {
+                1
+            }
+        }
+    }
+}
+
 /// Pad `lines` with empty BG-styled rows so the Paragraph fills the entire visible area.
 /// Without this, Ratatui's double-buffer reuses the previous frame's cell content for rows
 /// below the Paragraph's last text line, causing stale content to bleed through.
@@ -422,6 +509,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                             .map(|s| Span::styled(s.content.into_owned(), s.style))
                             .collect();
                         spans.extend(highlighted);
+                        spans.push(Span::styled(" ".repeat(area.width as usize), base_style));
                         lines.push(Line::from(spans).style(base_style));
                     }
                     logical_line += 1;
@@ -447,6 +535,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         spans.extend(highlighted);
                     }
 
+                    spans.push(Span::styled(" ".repeat(area.width as usize), base_style));
                     lines.push(Line::from(spans).style(base_style));
                 }
                 logical_line += 1;
@@ -502,9 +591,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         DiffMode::Unstaged | DiffMode::Staged => {
                             tab.ai.findings_for_line_by_range(&file.path, new_line_num)
                         }
-                        DiffMode::History
-                        | DiffMode::Conflicts
-                        | DiffMode::Hidden => vec![],
+                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -554,9 +641,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History
-                | DiffMode::Conflicts
-                | DiffMode::Hidden => vec![], // AI findings not shown in these modes
+                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![], // AI findings not shown in these modes
             };
             for finding in &findings {
                 let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
@@ -916,8 +1001,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     }
     logical_line += 1;
 
-    // File-level (unanchored) comments — only on New side
-    if side == SplitSide::New {
+    // File-level (unanchored) comments — New side renders, Old side pads with blanks.
+    {
         let unanchored = tab.ai.comments_for_file_unanchored(&file.path);
         for comment in &unanchored {
             let visible = match comment {
@@ -932,25 +1017,55 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             if tab.layers.hide_resolved && comment.is_resolved() {
                 continue;
             }
-            let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
-            let pre_len = lines.len();
-            render_comment_lines(&mut lines, comment, inner.width, false, is_focused);
-            let comment_line_count = lines.len() - pre_len;
-            if logical_line < render_start || logical_line >= render_end {
-                lines.truncate(pre_len);
-            }
-            logical_line += comment_line_count;
 
-            let replies = tab.ai.replies_to(comment.id());
-            for reply in &replies {
+            if side == SplitSide::New {
+                let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
                 let pre_len = lines.len();
-                let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
-                render_reply_lines(&mut lines, reply, inner.width, false, is_focused);
-                let reply_line_count = lines.len() - pre_len;
+                render_comment_lines(&mut lines, comment, inner.width, false, is_focused);
+                let n = lines.len() - pre_len;
                 if logical_line < render_start || logical_line >= render_end {
                     lines.truncate(pre_len);
                 }
-                logical_line += reply_line_count;
+                logical_line += n;
+            } else {
+                let mut tmp: Vec<Line> = Vec::new();
+                render_comment_lines(&mut tmp, comment, inner.width, false, false);
+                let n = tmp.len();
+                for k in 0..n {
+                    if logical_line + k >= render_start && logical_line + k < render_end {
+                        lines.push(
+                            Line::from("").style(ratatui::style::Style::default().bg(styles::BG())),
+                        );
+                    }
+                }
+                logical_line += n;
+            }
+
+            let replies = tab.ai.replies_to(comment.id());
+            for reply in &replies {
+                if side == SplitSide::New {
+                    let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
+                    let pre_len = lines.len();
+                    render_reply_lines(&mut lines, reply, inner.width, false, is_focused);
+                    let n = lines.len() - pre_len;
+                    if logical_line < render_start || logical_line >= render_end {
+                        lines.truncate(pre_len);
+                    }
+                    logical_line += n;
+                } else {
+                    let mut tmp: Vec<Line> = Vec::new();
+                    render_reply_lines(&mut tmp, reply, inner.width, false, false);
+                    let n = tmp.len();
+                    for k in 0..n {
+                        if logical_line + k >= render_start && logical_line + k < render_end {
+                            lines.push(
+                                Line::from("")
+                                    .style(ratatui::style::Style::default().bg(styles::BG())),
+                            );
+                        }
+                    }
+                    logical_line += n;
+                }
             }
         }
     }
@@ -994,9 +1109,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         }
         logical_line += 1;
 
-        // Hunk-level comments — only on New side for simplicity
-        // TODO: split view — render hunk comments on both sides aligned
-        if side == SplitSide::New {
+        // Hunk-level comments — New side renders, Old side pads with blanks.
+        {
             let hunk_comments = tab.ai.comments_for_hunk_only(&file.path, hunk_idx);
             for comment in &hunk_comments {
                 let visible = match comment {
@@ -1011,38 +1125,88 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 if tab.layers.hide_resolved && comment.is_resolved() {
                     continue;
                 }
-                let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
-                let pre_len = lines.len();
-                render_comment_lines(&mut lines, comment, inner.width, false, is_focused);
-                let comment_line_count = lines.len() - pre_len;
-                if logical_line < render_start || logical_line >= render_end {
-                    lines.truncate(pre_len);
-                }
-                logical_line += comment_line_count;
 
-                let replies = tab.ai.replies_to(comment.id());
-                for reply in &replies {
+                if side == SplitSide::New {
+                    let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
                     let pre_len = lines.len();
-                    let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
-                    render_reply_lines(&mut lines, reply, inner.width, false, is_focused);
-                    let reply_line_count = lines.len() - pre_len;
+                    render_comment_lines(&mut lines, comment, inner.width, false, is_focused);
+                    let n = lines.len() - pre_len;
                     if logical_line < render_start || logical_line >= render_end {
                         lines.truncate(pre_len);
                     }
-                    logical_line += reply_line_count;
+                    logical_line += n;
+                } else {
+                    let mut tmp: Vec<Line> = Vec::new();
+                    render_comment_lines(&mut tmp, comment, inner.width, false, false);
+                    let n = tmp.len();
+                    for k in 0..n {
+                        if logical_line + k >= render_start && logical_line + k < render_end {
+                            lines.push(
+                                Line::from("")
+                                    .style(ratatui::style::Style::default().bg(styles::BG())),
+                            );
+                        }
+                    }
+                    logical_line += n;
+                }
+
+                let replies = tab.ai.replies_to(comment.id());
+                for reply in &replies {
+                    if side == SplitSide::New {
+                        let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
+                        let pre_len = lines.len();
+                        render_reply_lines(&mut lines, reply, inner.width, false, is_focused);
+                        let n = lines.len() - pre_len;
+                        if logical_line < render_start || logical_line >= render_end {
+                            lines.truncate(pre_len);
+                        }
+                        logical_line += n;
+                    } else {
+                        let mut tmp: Vec<Line> = Vec::new();
+                        render_reply_lines(&mut tmp, reply, inner.width, false, false);
+                        let n = tmp.len();
+                        for k in 0..n {
+                            if logical_line + k >= render_start && logical_line + k < render_end {
+                                lines.push(
+                                    Line::from("")
+                                        .style(ratatui::style::Style::default().bg(styles::BG())),
+                                );
+                            }
+                        }
+                        logical_line += n;
+                    }
                 }
             }
         }
 
-        // Hunk lines
-        for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
-            // Fold lines span both sides; render on New side only, blank on Old side.
-            if let LineType::Fold(hidden) = diff_line.line_type {
+        // Hunk lines — build aligned split rows so both panes advance logical_line identically.
+        let split_rows = build_split_rows(hunk);
+        for row in &split_rows {
+            let cell = match side {
+                SplitSide::Old => row.left.as_ref(),
+                SplitSide::New => row.right.as_ref(),
+            };
+            let other_cell = match side {
+                SplitSide::Old => row.right.as_ref(),
+                SplitSide::New => row.left.as_ref(),
+            };
+
+            // ── Fold rows ─────────────────────────────────────────────────────────
+            let is_fold = cell
+                .or(other_cell)
+                .map_or(false, |c| matches!(c.line.line_type, LineType::Fold(_)));
+            if is_fold {
                 if logical_line >= render_start && logical_line < render_end {
                     if side == SplitSide::New {
-                        let fold_text = format!(" ··· {} lines ···", hidden);
-                        let fold_style = ratatui::style::Style::default().fg(styles::MUTED());
-                        lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                        if let Some(c) = cell {
+                            if let LineType::Fold(hidden) = c.line.line_type {
+                                let fold_text = format!(" ··· {} lines ···", hidden);
+                                lines.push(Line::from(vec![Span::styled(
+                                    fold_text,
+                                    ratatui::style::Style::default().fg(styles::MUTED()),
+                                )]));
+                            }
+                        }
                     } else {
                         lines.push(
                             Line::from("").style(ratatui::style::Style::default().bg(styles::BG())),
@@ -1053,16 +1217,46 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 continue;
             }
 
-            // Determine if this side should show content or a blank padding line
-            let show_content = match diff_line.line_type {
-                LineType::Context => true,
-                LineType::Add => side == SplitSide::New,
-                LineType::Delete => side == SplitSide::Old,
-                LineType::Fold(_) => unreachable!(),
+            // ── Compute aligned row height ─────────────────────────────────────────
+            let left_h = cell_wrap_height(
+                row.left.as_ref(),
+                wrap_lines,
+                split_wrap_width,
+                app.config.display.tab_width,
+            );
+            let right_h = cell_wrap_height(
+                row.right.as_ref(),
+                wrap_lines,
+                split_wrap_width,
+                app.config.display.tab_width,
+            );
+            let row_height = left_h.max(right_h);
+            let this_h = match side {
+                SplitSide::Old => left_h,
+                SplitSide::New => right_h,
             };
 
-            if show_content && wrap_lines && !diff_line.content.is_empty() {
-                // Wrap the content and emit multiple logical lines
+            // Background for blank cells / continuation rows on this side.
+            let blank_bg = match cell {
+                Some(c) => match c.line.line_type {
+                    LineType::Add => styles::ADD_BG(),
+                    LineType::Delete => styles::DEL_BG(),
+                    LineType::Context | LineType::Fold(_) => styles::BG(),
+                },
+                None => match other_cell {
+                    Some(oc) => match oc.line.line_type {
+                        LineType::Add => styles::ADD_BG(),
+                        LineType::Delete => styles::DEL_BG(),
+                        _ => styles::BG(),
+                    },
+                    None => styles::BG(),
+                },
+            };
+
+            // ── Render this side's cell ────────────────────────────────────────────
+            if let Some(c) = cell {
+                let diff_line = c.line;
+                let line_idx = c.line_idx;
                 let is_selected_line = is_current && tab.active_current_line() == Some(line_idx);
 
                 let line_num = match side {
@@ -1106,178 +1300,151 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     }
                 };
 
-                // Segments are owned Strings; highlight them and convert to Span<'static>
-                // so they can safely outlive the local `segments` Vec.
-                let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
-                let segments = word_wrap(&content, split_wrap_width.max(1));
-                for (seg_idx, segment) in segments.iter().enumerate() {
-                    if logical_line >= render_start && logical_line < render_end {
-                        let mut spans: Vec<Span<'static>> = if seg_idx == 0 {
-                            vec![
-                                Span::styled(format!("{} \u{2502}", num_str), gutter_style),
-                                Span::styled(prefix, base_style),
-                            ]
-                        } else {
-                            vec![
-                                Span::styled(BLANK_SPLIT_GUTTER, gutter_style),
-                                Span::styled(" ", base_style),
-                            ]
-                        };
-                        // highlight_line borrows `segment`, so we eagerly clone span text to 'static
-                        let highlighted: Vec<Span<'static>> = hl
-                            .highlight_line(segment, &file.path, base_style)
-                            .into_iter()
-                            .map(|s| Span::styled(s.content.into_owned(), s.style))
-                            .collect();
-                        spans.extend(highlighted);
-                        lines.push(Line::from(spans).style(base_style));
-                    }
-                    logical_line += 1;
-                }
-            } else {
-                if logical_line >= render_start && logical_line < render_end {
-                    if show_content {
-                        let is_selected_line =
-                            is_current && tab.active_current_line() == Some(line_idx);
-
-                        // Line number: Old side shows old_num, New side shows new_num
-                        let line_num = match side {
-                            SplitSide::Old => diff_line.old_num,
-                            SplitSide::New => diff_line.new_num,
-                        };
-                        let num_str = line_num
-                            .map(|n| format!("{:>4}", n))
-                            .unwrap_or_else(|| "    ".to_string());
-
-                        let (prefix, base_style) = if is_selected_line {
-                            match diff_line.line_type {
-                                LineType::Add => ("+", styles::line_cursor_add()),
-                                LineType::Delete => ("-", styles::line_cursor_del()),
-                                LineType::Context => (" ", styles::line_cursor()),
-                                LineType::Fold(_) => unreachable!(),
-                            }
-                        } else {
-                            match diff_line.line_type {
-                                LineType::Add => ("+", styles::add_style()),
-                                LineType::Delete => ("-", styles::del_style()),
-                                LineType::Context => (" ", styles::default_style()),
-                                LineType::Fold(_) => unreachable!(),
-                            }
-                        };
-
-                        let gutter_style = if is_selected_line {
-                            ratatui::style::Style::default()
-                                .fg(styles::BRIGHT())
-                                .bg(styles::LINE_CURSOR_BG())
-                        } else {
-                            match diff_line.line_type {
-                                LineType::Add => ratatui::style::Style::default()
-                                    .fg(styles::DIM())
-                                    .bg(styles::ADD_BG()),
-                                LineType::Delete => ratatui::style::Style::default()
-                                    .fg(styles::DIM())
-                                    .bg(styles::DEL_BG()),
-                                LineType::Context => {
-                                    ratatui::style::Style::default().fg(styles::DIM())
-                                }
-                                LineType::Fold(_) => unreachable!(),
-                            }
-                        };
-
-                        let mut spans = vec![
-                            Span::styled(format!("{} \u{2502}", num_str), gutter_style),
-                            Span::styled(prefix, base_style),
-                        ];
-
-                        if diff_line.content.is_empty() {
-                            spans.push(Span::styled("", base_style));
-                        } else {
-                            let content =
-                                expand_tabs(&diff_line.content, app.config.display.tab_width);
+                if wrap_lines && !diff_line.content.is_empty() {
+                    let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                    let segments = word_wrap(&content, split_wrap_width.max(1));
+                    for (seg_idx, segment) in segments.iter().enumerate() {
+                        if logical_line + seg_idx >= render_start
+                            && logical_line + seg_idx < render_end
+                        {
+                            let mut spans: Vec<Span<'static>> = if seg_idx == 0 {
+                                vec![
+                                    Span::styled(format!("{} \u{2502}", num_str), gutter_style),
+                                    Span::styled(prefix, base_style),
+                                ]
+                            } else {
+                                vec![
+                                    Span::styled(BLANK_SPLIT_GUTTER, gutter_style),
+                                    Span::styled(" ", base_style),
+                                ]
+                            };
                             let highlighted: Vec<Span<'static>> = hl
-                                .highlight_line(&content, &file.path, base_style)
+                                .highlight_line(segment, &file.path, base_style)
                                 .into_iter()
                                 .map(|s| Span::styled(s.content.into_owned(), s.style))
                                 .collect();
                             spans.extend(highlighted);
+                            lines.push(Line::from(spans).style(base_style));
                         }
-
-                        lines.push(Line::from(spans).style(base_style));
-                    } else {
-                        // Blank padding line for the side that doesn't show this change
-                        let pad_bg = match diff_line.line_type {
-                            LineType::Add => styles::ADD_BG(),
-                            LineType::Delete => styles::DEL_BG(),
-                            LineType::Context => styles::BG(),
-                            LineType::Fold(_) => unreachable!(),
-                        };
-                        lines.push(
-                            Line::from(Span::styled(
-                                "",
-                                ratatui::style::Style::default().bg(pad_bg),
-                            ))
-                            .style(ratatui::style::Style::default().bg(pad_bg)),
-                        );
                     }
+                } else if logical_line >= render_start && logical_line < render_end {
+                    let mut spans = vec![
+                        Span::styled(format!("{} \u{2502}", num_str), gutter_style),
+                        Span::styled(prefix, base_style),
+                    ];
+                    if diff_line.content.is_empty() {
+                        spans.push(Span::styled("", base_style));
+                    } else {
+                        let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                        let highlighted: Vec<Span<'static>> = hl
+                            .highlight_line(&content, &file.path, base_style)
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style))
+                            .collect();
+                        spans.extend(highlighted);
+                    }
+                    lines.push(Line::from(spans).style(base_style));
                 }
-                logical_line += 1;
+            } else {
+                // Blank placeholder — other side has content here.
+                if logical_line >= render_start && logical_line < render_end {
+                    lines.push(
+                        Line::from(Span::styled(
+                            "",
+                            ratatui::style::Style::default().bg(blank_bg),
+                        ))
+                        .style(ratatui::style::Style::default().bg(blank_bg)),
+                    );
+                }
             }
 
-            // Inline line comments — on their natural side
-            // Add lines → New side; Delete lines → Old side; Context → New side
-            let comment_side = match diff_line.line_type {
-                LineType::Add => SplitSide::New,
-                LineType::Delete => SplitSide::Old,
-                LineType::Context | LineType::Fold(_) => SplitSide::New,
-            };
-            if side == comment_side {
-                if let Some(new_line_num) = diff_line.new_num {
-                    let line_comments =
-                        tab.ai.comments_for_line(&file.path, hunk_idx, new_line_num);
-                    for comment in &line_comments {
-                        let visible = match comment {
-                            CommentRef::Question(_) => tab.layers.show_questions,
-                            CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
-                                tab.layers.show_github_comments
-                            }
-                        };
-                        if !visible {
-                            continue;
+            // ── Blank continuation rows to match the taller side ──────────────────
+            for extra in this_h..row_height {
+                let ll = logical_line + extra;
+                if ll >= render_start && ll < render_end {
+                    lines.push(Line::from("").style(ratatui::style::Style::default().bg(blank_bg)));
+                }
+            }
+            logical_line += row_height;
+
+            // ── Inline line comments — anchored to new_num (right/New cell) ───────
+            // New side renders; Old side emits matching blank padding.
+            let comment_new_num = row.right.as_ref().and_then(|c| c.line.new_num);
+            if let Some(new_line_num) = comment_new_num {
+                let line_comments = tab.ai.comments_for_line(&file.path, hunk_idx, new_line_num);
+                for comment in &line_comments {
+                    let visible = match comment {
+                        CommentRef::Question(_) => tab.layers.show_questions,
+                        CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
+                            tab.layers.show_github_comments
                         }
-                        if tab.layers.hide_resolved && comment.is_resolved() {
-                            continue;
-                        }
+                    };
+                    if !visible {
+                        continue;
+                    }
+                    if tab.layers.hide_resolved && comment.is_resolved() {
+                        continue;
+                    }
+
+                    if side == SplitSide::New {
                         let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
                         let pre_len = lines.len();
                         render_comment_lines(&mut lines, comment, inner.width, true, is_focused);
-                        let comment_line_count = lines.len() - pre_len;
+                        let n = lines.len() - pre_len;
                         if logical_line < render_start || logical_line >= render_end {
                             lines.truncate(pre_len);
                         }
-                        logical_line += comment_line_count;
+                        logical_line += n;
+                    } else {
+                        let mut tmp: Vec<Line> = Vec::new();
+                        render_comment_lines(&mut tmp, comment, inner.width, true, false);
+                        let n = tmp.len();
+                        for k in 0..n {
+                            if logical_line + k >= render_start && logical_line + k < render_end {
+                                lines.push(
+                                    Line::from("")
+                                        .style(ratatui::style::Style::default().bg(styles::BG())),
+                                );
+                            }
+                        }
+                        logical_line += n;
+                    }
 
-                        let replies = tab.ai.replies_to(comment.id());
-                        for reply in &replies {
-                            let pre_len = lines.len();
+                    let replies = tab.ai.replies_to(comment.id());
+                    for reply in &replies {
+                        if side == SplitSide::New {
                             let is_focused = tab.focused_comment_id.as_deref() == Some(reply.id());
+                            let pre_len = lines.len();
                             render_reply_lines(&mut lines, reply, inner.width, true, is_focused);
-                            let reply_line_count = lines.len() - pre_len;
+                            let n = lines.len() - pre_len;
                             if logical_line < render_start || logical_line >= render_end {
                                 lines.truncate(pre_len);
                             }
-                            logical_line += reply_line_count;
+                            logical_line += n;
+                        } else {
+                            let mut tmp: Vec<Line> = Vec::new();
+                            render_reply_lines(&mut tmp, reply, inner.width, true, false);
+                            let n = tmp.len();
+                            for k in 0..n {
+                                if logical_line + k >= render_start && logical_line + k < render_end
+                                {
+                                    lines.push(
+                                        Line::from("").style(
+                                            ratatui::style::Style::default().bg(styles::BG()),
+                                        ),
+                                    );
+                                }
+                            }
+                            logical_line += n;
                         }
                     }
                 }
-            } else {
-                // For the opposite side, advance logical_line by however many comment
-                // lines the other side has — so both panes stay vertically aligned.
-                // TODO: split view — implement aligned comment padding across panes
             }
 
-            // ── Inline line-level findings (split view, New side only) ──
-            if side == SplitSide::New && tab.layers.show_ai_findings {
-                if let Some(new_line_num) = diff_line.new_num {
+            // ── Inline line findings — anchored to new_num (right/New cell) ───────
+            let finding_new_num = row.right.as_ref().and_then(|c| c.line.new_num);
+            if let Some(new_line_num) = finding_new_num {
+                if tab.layers.show_ai_findings {
                     let line_findings = match tab.mode {
                         DiffMode::Branch => {
                             tab.ai.findings_for_line(&file.path, hunk_idx, new_line_num)
@@ -1285,33 +1452,54 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         DiffMode::Unstaged | DiffMode::Staged => {
                             tab.ai.findings_for_line_by_range(&file.path, new_line_num)
                         }
-                        DiffMode::History
-                        | DiffMode::Conflicts
-                        | DiffMode::Hidden => vec![],
+                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
-                        let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
-                        let pre_len = lines.len();
-                        render_finding_banner(
-                            &mut lines,
-                            finding,
-                            inner.width,
-                            file_stale,
-                            is_focused,
-                        );
-                        let finding_line_count = lines.len() - pre_len;
-                        if logical_line < render_start || logical_line >= render_end {
-                            lines.truncate(pre_len);
+                        if side == SplitSide::New {
+                            let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
+                            let pre_len = lines.len();
+                            render_finding_banner(
+                                &mut lines,
+                                finding,
+                                inner.width,
+                                file_stale,
+                                is_focused,
+                            );
+                            let n = lines.len() - pre_len;
+                            if logical_line < render_start || logical_line >= render_end {
+                                lines.truncate(pre_len);
+                            }
+                            logical_line += n;
+                        } else {
+                            let mut tmp: Vec<Line> = Vec::new();
+                            render_finding_banner(
+                                &mut tmp,
+                                finding,
+                                inner.width,
+                                file_stale,
+                                false,
+                            );
+                            let n = tmp.len();
+                            for k in 0..n {
+                                if logical_line + k >= render_start && logical_line + k < render_end
+                                {
+                                    lines.push(
+                                        Line::from("").style(
+                                            ratatui::style::Style::default().bg(styles::BG()),
+                                        ),
+                                    );
+                                }
+                            }
+                            logical_line += n;
                         }
-                        logical_line += finding_line_count;
                     }
                 }
             }
         }
 
-        // AI finding banners — hunk-level only, on New side (same as unified view)
-        if side == SplitSide::New && tab.layers.show_ai_findings {
+        // AI finding banners — hunk-level; New side renders, Old side pads.
+        if tab.layers.show_ai_findings {
             let file_stale = tab.ai.is_file_stale(&file.path);
             let total_hunks = file.hunks.len();
             let findings = match tab.mode {
@@ -1323,19 +1511,32 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History
-                | DiffMode::Conflicts
-                | DiffMode::Hidden => vec![],
+                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
             };
             for finding in &findings {
-                let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
-                let pre_len = lines.len();
-                render_finding_banner(&mut lines, finding, inner.width, file_stale, is_focused);
-                let finding_line_count = lines.len() - pre_len;
-                if logical_line < render_start || logical_line >= render_end {
-                    lines.truncate(pre_len);
+                if side == SplitSide::New {
+                    let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
+                    let pre_len = lines.len();
+                    render_finding_banner(&mut lines, finding, inner.width, file_stale, is_focused);
+                    let n = lines.len() - pre_len;
+                    if logical_line < render_start || logical_line >= render_end {
+                        lines.truncate(pre_len);
+                    }
+                    logical_line += n;
+                } else {
+                    let mut tmp: Vec<Line> = Vec::new();
+                    render_finding_banner(&mut tmp, finding, inner.width, file_stale, false);
+                    let n = tmp.len();
+                    for k in 0..n {
+                        if logical_line + k >= render_start && logical_line + k < render_end {
+                            lines.push(
+                                Line::from("")
+                                    .style(ratatui::style::Style::default().bg(styles::BG())),
+                            );
+                        }
+                    }
+                    logical_line += n;
                 }
-                logical_line += finding_line_count;
             }
         }
 
@@ -2409,7 +2610,11 @@ fn render_watched(f: &mut Frame, area: Rect, app: &App, path: &str, size: u64) {
 
     if use_snapshot {
         // Try to get snapshot diff
-        match er_engine::git::diff_watched_file_snapshot(repo_root, path) {
+        match er_engine::git::diff_watched_file_snapshot(
+            repo_root,
+            path,
+            &tab.er_root.snapshots_dir(),
+        ) {
             Ok(Some(raw)) if raw.is_empty() => {
                 lines.push(Line::from(Span::styled(
                     "  No changes since snapshot",
@@ -2617,6 +2822,128 @@ fn format_size(size: u64) -> String {
         format!("{:.1} KB", size as f64 / 1024.0)
     } else {
         format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod build_split_rows_tests {
+    use super::*;
+    use er_engine::git::{DiffHunk, DiffLine};
+
+    fn make_line(lt: LineType, content: &str, old: Option<usize>, new: Option<usize>) -> DiffLine {
+        DiffLine {
+            line_type: lt,
+            content: content.to_string(),
+            old_num: old,
+            new_num: new,
+        }
+    }
+
+    fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {
+        DiffHunk {
+            header: String::new(),
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            lines,
+        }
+    }
+
+    #[test]
+    fn build_split_rows_context_both_sides() {
+        let hunk = make_hunk(vec![make_line(LineType::Context, "ctx", Some(1), Some(1))]);
+        let rows = build_split_rows(&hunk);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].left.is_some());
+        assert!(rows[0].right.is_some());
+        assert_eq!(rows[0].left.as_ref().unwrap().line_idx, 0);
+        assert_eq!(rows[0].right.as_ref().unwrap().line_idx, 0);
+    }
+
+    #[test]
+    fn build_split_rows_equal_del_add_pair_by_index() {
+        let hunk = make_hunk(vec![
+            make_line(LineType::Delete, "del0", Some(1), None),
+            make_line(LineType::Delete, "del1", Some(2), None),
+            make_line(LineType::Add, "add0", None, Some(1)),
+            make_line(LineType::Add, "add1", None, Some(2)),
+        ]);
+        let rows = build_split_rows(&hunk);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].left.as_ref().unwrap().line_idx, 0); // del0
+        assert_eq!(rows[0].right.as_ref().unwrap().line_idx, 2); // add0
+        assert_eq!(rows[1].left.as_ref().unwrap().line_idx, 1); // del1
+        assert_eq!(rows[1].right.as_ref().unwrap().line_idx, 3); // add1
+    }
+
+    #[test]
+    fn build_split_rows_extra_adds_become_right_only() {
+        let hunk = make_hunk(vec![
+            make_line(LineType::Delete, "del0", Some(1), None),
+            make_line(LineType::Add, "add0", None, Some(1)),
+            make_line(LineType::Add, "add1", None, Some(2)),
+        ]);
+        let rows = build_split_rows(&hunk);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].left.is_some());
+        assert!(rows[0].right.is_some());
+        assert!(rows[1].left.is_none());
+        assert!(rows[1].right.is_some());
+    }
+
+    #[test]
+    fn build_split_rows_extra_dels_become_left_only() {
+        let hunk = make_hunk(vec![
+            make_line(LineType::Delete, "del0", Some(1), None),
+            make_line(LineType::Delete, "del1", Some(2), None),
+            make_line(LineType::Add, "add0", None, Some(1)),
+        ]);
+        let rows = build_split_rows(&hunk);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].left.is_some());
+        assert!(rows[0].right.is_some());
+        assert!(rows[1].left.is_some());
+        assert!(rows[1].right.is_none());
+    }
+
+    #[test]
+    fn build_split_rows_standalone_add_right_only() {
+        let hunk = make_hunk(vec![
+            make_line(LineType::Context, "ctx", Some(1), Some(1)),
+            make_line(LineType::Add, "add0", None, Some(2)),
+        ]);
+        let rows = build_split_rows(&hunk);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].left.is_some());
+        assert!(rows[0].right.is_some());
+        assert!(rows[1].left.is_none());
+        assert!(rows[1].right.is_some());
+    }
+
+    #[test]
+    fn build_split_rows_standalone_del_left_only() {
+        let hunk = make_hunk(vec![
+            make_line(LineType::Delete, "del0", Some(1), None),
+            make_line(LineType::Context, "ctx", Some(2), Some(1)),
+        ]);
+        let rows = build_split_rows(&hunk);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].left.is_some());
+        assert!(rows[0].right.is_none());
+        assert!(rows[1].left.is_some());
+        assert!(rows[1].right.is_some());
+    }
+
+    #[test]
+    fn build_split_rows_fold_both_sides() {
+        let hunk = make_hunk(vec![make_line(LineType::Fold(5), "", None, None)]);
+        let rows = build_split_rows(&hunk);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].left.is_some());
+        assert!(rows[0].right.is_some());
+        assert_eq!(rows[0].left.as_ref().unwrap().line_idx, 0);
+        assert_eq!(rows[0].right.as_ref().unwrap().line_idx, 0);
     }
 }
 

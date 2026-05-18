@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod er_storage;
 mod export;
 mod pr_cache;
 mod projects;
@@ -14,7 +15,10 @@ use std::sync::{Arc, Mutex};
 use commands::AppState;
 use er_engine::app::App;
 use er_engine::highlight::Highlighter;
-use snapshot::{GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta};
+use snapshot::{
+    GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot,
+    WatchStatusState,
+};
 
 /// Annotation content script injected into browser-view frames.
 /// Handles hover queries, click reporting, re-anchoring, live rect queries,
@@ -335,10 +339,59 @@ fn upstream_url_for_proxy(uri: &tauri::http::Uri, upstream_scheme: &str) -> Stri
 }
 
 const PROXY_HTML_SIZE_LIMIT: usize = 10 * 1024 * 1024; // 10 MB
-const PROXY_ASSET_SIZE_LIMIT: usize = 5 * 1024 * 1024; // 5 MB
+                                                       // Vite/SvelteKit dev-server JS dependency chunks can be large, especially when
+                                                       // source maps or prebundled dependencies are served through the dev server.
+                                                       // Non-HTML assets are still bounded to avoid unbounded memory use during proxying.
+const PROXY_ASSET_SIZE_LIMIT: usize = 128 * 1024 * 1024; // 128 MB
+
+fn proxy_size_limit(is_html: bool) -> usize {
+    if is_html {
+        return std::env::var("ER_PROXY_HTML_LIMIT_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(PROXY_HTML_SIZE_LIMIT);
+    }
+    std::env::var("ER_PROXY_ASSET_LIMIT_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(PROXY_ASSET_SIZE_LIMIT)
+}
+
+fn oversized_response(
+    bytes: usize,
+    size_limit: usize,
+    is_html: bool,
+) -> tauri::http::Response<Vec<u8>> {
+    let (content_type, body) = if is_html {
+        (
+            "text/html",
+            format!(
+                "<html><body><p>Response too large ({} bytes exceeds {} byte limit).</p></body></html>",
+                bytes, size_limit
+            ),
+        )
+    } else {
+        (
+            "text/plain",
+            format!(
+                "Response too large ({} bytes exceeds {} byte limit).",
+                bytes, size_limit
+            ),
+        )
+    };
+    tauri::http::Response::builder()
+        .status(413)
+        .header("Content-Type", content_type)
+        .body(body.into_bytes())
+        .unwrap()
+}
 
 /// Read at most `limit` bytes from `reader`. Returns `Ok(bytes)` on success,
 /// `Err(bytes_read)` if the limit was exceeded.
+/// Read at most `limit` bytes from `reader`.
+/// Returns `Ok(bytes)` on clean EOF within the cap.
+/// Returns `Err(bytes_so_far)` if the limit is exceeded.
+/// Propagates I/O errors (e.g. connection reset) as `Err(bytes_so_far)`.
 fn read_bounded(mut reader: impl std::io::Read, limit: usize) -> Result<Vec<u8>, usize> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -351,30 +404,38 @@ fn read_bounded(mut reader: impl std::io::Read, limit: usize) -> Result<Vec<u8>,
                 }
                 buf.extend_from_slice(&chunk[..n]);
             }
-            Err(_) => break,
+            Err(_) => return Err(buf.len()),
         }
     }
     Ok(buf)
 }
 
-fn proxied_response(uri: &tauri::http::Uri, upstream_scheme: &str) -> tauri::http::Response<Vec<u8>> {
+fn proxied_response(
+    uri: &tauri::http::Uri,
+    upstream_scheme: &str,
+) -> tauri::http::Response<Vec<u8>> {
     let target = upstream_url_for_proxy(uri, upstream_scheme);
     eprintln!("[erp] request: {} -> {}", uri, target);
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout_read(std::time::Duration::from_secs(30))
         .build();
-    let result = agent
-        .get(&target)
-        .set("Accept-Encoding", "identity")
-        .call();
+    let result = agent.get(&target).set("Accept-Encoding", "identity").call();
     let resp = match result {
         Ok(resp) => resp,
         Err(ureq::Error::Status(_, resp)) => resp,
         Err(e) => {
             let msg = e.to_string();
-            let status = if msg.contains("timed out") || msg.contains("TimedOut") { 504 } else { 502 };
-            let label = if status == 504 { "Request timed out" } else { "Connection failed" };
+            let status = if msg.contains("timed out") || msg.contains("TimedOut") {
+                504
+            } else {
+                502
+            };
+            let label = if status == 504 {
+                "Request timed out"
+            } else {
+                "Connection failed"
+            };
             eprintln!("[erp] connection error ({}): {}", status, e);
             return tauri::http::Response::builder()
                 .status(status)
@@ -397,21 +458,16 @@ fn proxied_response(uri: &tauri::http::Uri, upstream_scheme: &str) -> tauri::htt
             })
         })
         .collect::<Vec<_>>();
-    let size_limit = if is_html { PROXY_HTML_SIZE_LIMIT } else { PROXY_ASSET_SIZE_LIMIT };
+    let size_limit = proxy_size_limit(is_html);
     let bounded = read_bounded(resp.into_reader(), size_limit);
     let mut body = match bounded {
         Ok(b) => b,
         Err(bytes) => {
-            eprintln!("[erp] response too large: {} bytes exceeds limit {}", bytes, size_limit);
-            let msg = format!(
-                "<html><body><p>Response too large ({} bytes exceeds {} byte limit).</p></body></html>",
+            eprintln!(
+                "[erp] response too large: {} bytes exceeds limit {}",
                 bytes, size_limit
             );
-            return tauri::http::Response::builder()
-                .status(413)
-                .header("Content-Type", "text/html")
-                .body(msg.into_bytes())
-                .unwrap();
+            return oversized_response(bytes, size_limit, is_html);
         }
     };
     if is_html {
@@ -428,12 +484,19 @@ fn proxied_response(uri: &tauri::http::Uri, upstream_scheme: &str) -> tauri::htt
     for h in filtered_proxy_headers(&headers, is_html) {
         builder = builder.header(&h.name, &h.value);
     }
-    if is_html && !headers.iter().any(|h| h.name.eq_ignore_ascii_case("cache-control")) {
+    if is_html
+        && !headers
+            .iter()
+            .any(|h| h.name.eq_ignore_ascii_case("cache-control"))
+    {
         builder = builder.header("Cache-Control", "no-cache");
     }
-    builder
-        .body(body)
-        .unwrap_or_else(|_| tauri::http::Response::builder().status(500).body(vec![]).unwrap())
+    builder.body(body).unwrap_or_else(|_| {
+        tauri::http::Response::builder()
+            .status(500)
+            .body(vec![])
+            .unwrap()
+    })
 }
 
 #[cfg(test)]
@@ -485,10 +548,22 @@ mod tests {
     #[test]
     fn strips_frame_blocking_headers_for_html() {
         let headers = vec![
-            ProxyHeader { name: "Content-Type".into(), value: "text/html".into() },
-            ProxyHeader { name: "Content-Security-Policy".into(), value: "default-src 'self'".into() },
-            ProxyHeader { name: "X-Frame-Options".into(), value: "DENY".into() },
-            ProxyHeader { name: "Cache-Control".into(), value: "max-age=60".into() },
+            ProxyHeader {
+                name: "Content-Type".into(),
+                value: "text/html".into(),
+            },
+            ProxyHeader {
+                name: "Content-Security-Policy".into(),
+                value: "default-src 'self'".into(),
+            },
+            ProxyHeader {
+                name: "X-Frame-Options".into(),
+                value: "DENY".into(),
+            },
+            ProxyHeader {
+                name: "Cache-Control".into(),
+                value: "max-age=60".into(),
+            },
         ];
         let names = filtered_proxy_headers(&headers, true)
             .into_iter()
@@ -502,14 +577,56 @@ mod tests {
         let body = b"body { color: red; }".to_vec();
         assert_eq!(body, b"body { color: red; }".to_vec());
         let headers = vec![
-            ProxyHeader { name: "Content-Type".into(), value: "text/css".into() },
-            ProxyHeader { name: "Content-Security-Policy".into(), value: "default-src 'self'".into() },
+            ProxyHeader {
+                name: "Content-Type".into(),
+                value: "text/css".into(),
+            },
+            ProxyHeader {
+                name: "Content-Security-Policy".into(),
+                value: "default-src 'self'".into(),
+            },
         ];
         let names = filtered_proxy_headers(&headers, false)
             .into_iter()
             .map(|h| h.name)
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["Content-Type", "Content-Security-Policy"]);
+    }
+
+    #[test]
+    fn asset_size_limit_exceeds_observed_vite_chunks() {
+        // Observed Vite dep chunks that triggered reload loops were ~5.2 MB
+        // and later ~26.2 MB.
+        assert!(PROXY_ASSET_SIZE_LIMIT > 25 * 1024 * 1024);
+        assert!(PROXY_ASSET_SIZE_LIMIT >= 26_219_024);
+    }
+
+    #[test]
+    fn oversized_html_response_uses_text_html() {
+        let resp = oversized_response(99, 50, true);
+        assert_eq!(resp.status(), 413);
+        let ct = resp
+            .headers()
+            .get("Content-Type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(ct, "text/html");
+    }
+
+    #[test]
+    fn oversized_non_html_response_uses_text_plain() {
+        let resp = oversized_response(99, 50, false);
+        assert_eq!(resp.status(), 413);
+        let ct = resp
+            .headers()
+            .get("Content-Type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(ct, "text/plain");
+        let body = String::from_utf8(resp.body().clone()).unwrap();
+        assert!(!body.contains("<html>"));
     }
 
     #[test]
@@ -550,7 +667,8 @@ fn main() {
                 Ok(t) => rebuilt.push(t),
                 Err(e) => log::warn!(
                     "er-desktop: skipping persisted tab {:?} ({}): {e}",
-                    d.kind, d.repo_root
+                    d.kind,
+                    d.repo_root
                 ),
             }
         }
@@ -561,14 +679,18 @@ fn main() {
         }
     }
 
-    let pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>> =
+    let pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let pr_cache_fetched_at: Arc<Mutex<HashMap<String, u64>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let pr_open_cache: Arc<
+        Mutex<HashMap<commands::PrOpenCacheKey, commands::PrOpenCacheEntry>>,
+    > = Arc::new(Mutex::new(HashMap::new()));
+    let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> = Arc::new(Mutex::new(HashMap::new()));
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let gh_status_cache: Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
+    let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
 
     // Resolve the gh user login once at launch in a background thread.
     // Don't block startup; if it fails, leave as None.
@@ -611,6 +733,8 @@ fn main() {
         app: Arc::clone(&app_arc),
         highlighter: Mutex::new(Highlighter::new()),
         pr_cache: Arc::clone(&pr_cache),
+        pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
+        pr_open_cache: Arc::clone(&pr_open_cache),
         meta_cache: Arc::clone(&meta_cache),
         gh_user: Arc::clone(&gh_user),
         terminals: Arc::clone(&terminals),
@@ -620,11 +744,28 @@ fn main() {
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
         desktop_revision: Arc::clone(&desktop_revision),
         last_sent_revision: Arc::clone(&last_sent_revision),
+        watch_status: Arc::clone(&watch_status),
     };
 
-    // Startup GitHub-status kick: after 5s the pr_cache is likely populated.
-    // Fire one immediate fetch for the initial active tab so the Sources card
-    // shows data within seconds of launch rather than waiting 60s.
+    match pr_cache::load_persisted_pr_cache() {
+        Ok(Some((cached_prs, cached_fetched_at))) => {
+            if let Ok(mut g) = pr_cache.lock() {
+                *g = cached_prs;
+            }
+            if let Ok(mut g) = pr_cache_fetched_at.lock() {
+                *g = cached_fetched_at;
+            }
+            desktop_revision.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!("failed to load persisted PR cache: {e}");
+        }
+    }
+
+    // Startup GitHub-status kick. Remote-PR tabs have enough metadata to fetch
+    // immediately; local-branch PR matching waits until the sidebar lazily loads
+    // that repo's PR cache.
     {
         let gh_status_startup = Arc::clone(&gh_status_cache);
         let app_startup = Arc::clone(&app_arc);
@@ -685,15 +826,22 @@ fn main() {
             Err(_) => continue,
         };
         if guard.tab().is_remote() {
-            if let Ok(mut f) = remote_loading.lock() { f.gh_status = true; }
+            if let Ok(mut f) = remote_loading.lock() {
+                f.gh_status = true;
+            }
             remote_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let t = std::time::Instant::now();
             if let Err(e) = guard.tab_mut().refresh_diff() {
                 log::error!("remote PR refresh failed: {e}");
             } else {
-                log::info!("remote PR diff refresh done in {}ms", t.elapsed().as_millis());
+                log::info!(
+                    "remote PR diff refresh done in {}ms",
+                    t.elapsed().as_millis()
+                );
             }
-            if let Ok(mut f) = remote_loading.lock() { f.gh_status = false; }
+            if let Ok(mut f) = remote_loading.lock() {
+                f.gh_status = false;
+            }
             remote_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     });
@@ -748,14 +896,18 @@ fn main() {
                     .map(|mut s| s.insert((owner.clone(), repo.clone(), number)))
                     .unwrap_or(false);
                 if registered {
-                    if let Ok(mut f) = gh_status_loading.lock() { f.gh_status = true; }
+                    if let Ok(mut f) = gh_status_loading.lock() {
+                        f.gh_status = true;
+                    }
                     gh_status_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if let Some(snap) = commands::fetch_github_status(&owner, &repo, number) {
                         if let Ok(mut g) = gh_status_bg.lock() {
                             g.insert((owner.clone(), repo.clone(), number), snap);
                         }
                     }
-                    if let Ok(mut f) = gh_status_loading.lock() { f.gh_status = false; }
+                    if let Ok(mut f) = gh_status_loading.lock() {
+                        f.gh_status = false;
+                    }
                     gh_status_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = gh_status_in_flight_bg
                         .lock()
@@ -775,6 +927,7 @@ fn main() {
         let comments_app = Arc::clone(&app_arc);
         let comments_pr_cache = Arc::clone(&pr_cache);
         let comments_loading = Arc::clone(&loading);
+        let comments_desktop_rev = Arc::clone(&desktop_revision);
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(45));
 
@@ -787,7 +940,8 @@ fn main() {
                 let tab = guard.tab();
                 let identity: Option<(String, String, u64)> =
                     if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-                        slug.split_once('/').map(|(o, r)| (o.to_string(), r.to_string(), n))
+                        slug.split_once('/')
+                            .map(|(o, r)| (o.to_string(), r.to_string(), n))
                     } else {
                         let branch = tab
                             .local_branch_view
@@ -814,7 +968,10 @@ fn main() {
 
             // Phase 2: network I/O — no lock held.
             if let Some(ctx) = ctx {
-                if let Ok(mut f) = comments_loading.lock() { f.gh_comments = true; }
+                if let Ok(mut f) = comments_loading.lock() {
+                    f.gh_comments = true;
+                }
+                comments_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let t = std::time::Instant::now();
                 match er_engine::app::fetch_comment_sync_data(&ctx) {
                     Ok(result) => {
@@ -827,7 +984,114 @@ fn main() {
                     }
                     Err(e) => log::error!("github comment sync failed: {e}"),
                 }
-                if let Ok(mut f) = comments_loading.lock() { f.gh_comments = false; }
+                if let Ok(mut f) = comments_loading.lock() {
+                    f.gh_comments = false;
+                }
+                comments_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    }
+
+    // Spawn the desktop active-branch watcher. Follows the currently active
+    // tab's local-branch checkout (project root or linked worktree) and
+    // refreshes the diff when tracked files in that checkout change.
+    {
+        let watcher_app = Arc::clone(&app_arc);
+        let watcher_status = Arc::clone(&watch_status);
+        let watcher_desktop_rev = Arc::clone(&desktop_revision);
+        std::thread::spawn(move || {
+            use er_engine::watch::{FileWatcher, WatchEvent};
+            use std::path::Path;
+            use std::sync::mpsc;
+
+            let (tx, rx) = mpsc::channel::<WatchEvent>();
+            // Held only for its Drop side effect: dropping stops the watcher.
+            #[allow(unused_assignments)]
+            let mut watcher: Option<FileWatcher> = None;
+            let mut current_key: Option<(String, String)> = None;
+            let poll_interval = std::time::Duration::from_millis(400);
+
+            loop {
+                let desired = match watcher_app.lock() {
+                    Ok(g) => desired_local_branch_watch(&g),
+                    Err(_) => None,
+                };
+
+                if desired != current_key {
+                    watcher = None; // drop old watcher
+                    if let Some((ref branch, ref root_path)) = desired {
+                        match FileWatcher::new(Path::new(root_path), 500, tx.clone()) {
+                            Ok(w) => {
+                                watcher = Some(w);
+                                if let Ok(mut s) = watcher_status.lock() {
+                                    *s = WatchStatusSnapshot {
+                                        active: true,
+                                        branch: Some(branch.clone()),
+                                        root_path: Some(root_path.clone()),
+                                    };
+                                }
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "er-desktop: active-branch watcher failed for {root_path}: {e}"
+                                );
+                                if let Ok(mut s) = watcher_status.lock() {
+                                    *s = WatchStatusSnapshot::default();
+                                }
+                            }
+                        }
+                    } else if let Ok(mut s) = watcher_status.lock() {
+                        *s = WatchStatusSnapshot::default();
+                    }
+
+                    // Mirror checkout root onto the active tab so refresh_diff
+                    // uses the working-tree helper.
+                    if let Ok(mut g) = watcher_app.lock() {
+                        let checkout_root = desired.as_ref().map(|(_, r)| r.clone());
+                        let active_branch = desired.as_ref().map(|(b, _)| b.clone());
+                        let tab = g.tab_mut();
+                        if tab.local_branch_view == active_branch {
+                            tab.local_branch_checkout_root = checkout_root;
+                        }
+                    }
+                    current_key = desired;
+                    watcher_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                // Drain any pending watch events. Coalesce — we only need to
+                // know "something changed" to trigger one refresh.
+                let mut got_event = false;
+                loop {
+                    match rx.recv_timeout(poll_interval) {
+                        Ok(WatchEvent::FilesChanged(_)) => {
+                            got_event = true;
+                            // Keep draining without blocking.
+                            while let Ok(WatchEvent::FilesChanged(_)) = rx.try_recv() {}
+                            break;
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => break,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+
+                if got_event {
+                    if let Some((ref watched_branch, _)) = current_key {
+                        let mut refreshed = false;
+                        if let Ok(mut g) = watcher_app.lock() {
+                            if g.tab().local_branch_view.as_deref() == Some(watched_branch.as_str())
+                            {
+                                if let Err(e) = g.tab_mut().refresh_diff_quick() {
+                                    log::error!("active-branch watcher refresh failed: {e}");
+                                } else {
+                                    refreshed = true;
+                                }
+                            }
+                        }
+                        if refreshed {
+                            watcher_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
             }
         });
     }
@@ -835,16 +1099,24 @@ fn main() {
     // Fetch PRs once at startup. Manual refresh is available via the
     // `refresh_pr_list` command. No background loop — on-demand only.
     let bg_cache = Arc::clone(&pr_cache);
+    let bg_fetched_at = Arc::clone(&pr_cache_fetched_at);
     let bg_loading = Arc::clone(&loading);
+    let bg_desktop_rev = Arc::clone(&desktop_revision);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("failed to build tokio runtime");
         rt.block_on(async move {
-            if let Ok(mut f) = bg_loading.lock() { f.pr_list = true; }
-            pr_cache::refresh_pr_cache(&bg_cache).await;
-            if let Ok(mut f) = bg_loading.lock() { f.pr_list = false; }
+            if let Ok(mut f) = bg_loading.lock() {
+                f.pr_list = true;
+            }
+            bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await;
+            if let Ok(mut f) = bg_loading.lock() {
+                f.pr_list = false;
+            }
+            bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
     });
 
@@ -852,6 +1124,7 @@ fn main() {
     // (branches, worktrees, current/base branch) fresh without ever taking
     // the AppState.app mutex.
     let bg_meta = Arc::clone(&meta_cache);
+    let meta_desktop_rev = Arc::clone(&desktop_revision);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -859,13 +1132,18 @@ fn main() {
             .expect("failed to build tokio runtime");
         rt.block_on(async move {
             // First pass uses launch-time root.
+            meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             snapshot::refresh_meta_cache(&launch_root, &bg_meta);
+            meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 // Re-derive active root from the persistent projects file —
                 // avoids touching AppState.app.
-                let active_root = active_root_from_projects().unwrap_or_else(|| launch_root.clone());
+                let active_root =
+                    active_root_from_projects().unwrap_or_else(|| launch_root.clone());
+                meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 snapshot::refresh_meta_cache(&active_root, &bg_meta);
+                meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         });
     });
@@ -903,6 +1181,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::start_window_drag,
             commands::get_snapshot,
             commands::toggle_panel,
             commands::select_file,
@@ -914,7 +1193,11 @@ fn main() {
             commands::mark_reviewed,
             commands::unmark_reviewed,
             commands::open_in_editor,
+            commands::open_source,
             commands::open_url_in_browser,
+            commands::reveal_er_folder,
+            commands::list_review_revisions,
+            commands::read_review_json,
             commands::next_hunk,
             commands::prev_hunk,
             commands::toggle_compacted,
@@ -926,12 +1209,16 @@ fn main() {
             commands::delete_thread,
             commands::resolve_thread,
             commands::refresh_diff,
+            commands::force_refresh_diff,
             commands::refresh_github_status,
             commands::pull_github_comments,
             commands::push_github_comments,
             commands::submit_github_review,
             commands::run_ai_review,
+            commands::run_ai_validate,
             commands::set_ai_model,
+            commands::list_ai_providers,
+            commands::set_ai_selection,
             commands::promote_to_comment,
             commands::ask_ai,
             commands::open_pr_url,
@@ -975,6 +1262,7 @@ fn main() {
             commands::terminal_resize,
             commands::terminal_close,
             commands::detect_dev_url,
+            commands::set_diff_source,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application");
@@ -984,11 +1272,8 @@ fn main() {
             // Best-effort persistence of the open tab list. We must not block
             // exit on save errors — log and move on.
             if let Ok(guard) = persist_app.lock() {
-                let descriptors: Vec<tabs::TabDescriptor> = guard
-                    .tabs
-                    .iter()
-                    .map(tabs::descriptor_from_tab)
-                    .collect();
+                let descriptors: Vec<tabs::TabDescriptor> =
+                    guard.tabs.iter().map(tabs::descriptor_from_tab).collect();
                 let active = guard.active_tab;
                 drop(guard);
                 if let Err(e) = tabs::save_tabs(&descriptors, active) {
@@ -1004,6 +1289,36 @@ fn main() {
     });
 }
 
+/// Compute the desired (branch, checkout_root) for the active local-branch
+/// tab. Returns None unless the active tab is a local-branch view (not a
+/// remote PR, not a local PR ref) AND that branch is checked out somewhere
+/// (project root via HEAD, or a linked worktree).
+fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
+    let tab = app.tab();
+    let branch = tab.local_branch_view.clone()?;
+    if tab.remote_repo.is_some() || tab.pr_head_ref.is_some() {
+        return None;
+    }
+
+    // Project root checkout?
+    let head_out = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&tab.repo_root)
+        .output()
+        .ok()?;
+    if head_out.status.success() {
+        let head = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
+        if head == branch {
+            return Some((branch, tab.repo_root.clone()));
+        }
+    }
+
+    // Linked worktree checkout?
+    let worktrees = er_engine::git::list_worktrees(&tab.repo_root).ok()?;
+    let wt = worktrees.into_iter().find(|w| w.branch == branch)?;
+    Some((branch, wt.path))
+}
+
 /// Read the persisted active project's root path, if any.
 fn active_root_from_projects() -> Option<String> {
     let file = projects::load();
@@ -1014,4 +1329,3 @@ fn active_root_from_projects() -> Option<String> {
         .map(|p| p.root_path.clone())
         .filter(|s| !s.is_empty())
 }
-

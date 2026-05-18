@@ -11,6 +11,13 @@
 
   const { mode, total_count, reviewed_count, commits = [] }: Props = $props();
 
+  const scopeLabel = $derived(
+    mode === "branch" ? "Branch" :
+    mode === "unstaged" ? "Unstaged" :
+    mode === "staged" ? "Staged" :
+    "History"
+  );
+
   const snapshot = $derived(app.snapshot);
   const commitsToShow = $derived(commits.length > 0 ? commits : (snapshot?.commits ?? []));
   /** Read-only tab: a local-branch view or a remote PR view. Hide write-mode tabs. */
@@ -72,7 +79,7 @@
 
   <!-- Footer summary -->
   <div class="border-t border-hairline px-3 py-1.5 flex items-center justify-between text-[11px] text-muted mono">
-    <span>{reviewed_count} / {total_count} reviewed</span>
+    <span>{scopeLabel} · {reviewed_count} / {total_count} reviewed</span>
     <span>j/k · U next</span>
   </div>
 </div>

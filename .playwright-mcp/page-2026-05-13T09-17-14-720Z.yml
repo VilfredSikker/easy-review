@@ -1,0 +1,511 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e9]:
+      - button "Toggle left" [ref=e10]:
+        - img [ref=e11]
+      - button "Back" [ref=e13]:
+        - img [ref=e14]
+      - button "Forward" [ref=e16]:
+        - img [ref=e17]
+    - generic [ref=e19]:
+      - generic [ref=e20]:
+        - img [ref=e21]
+        - generic [ref=e24]: Review
+        - generic [ref=e25]: discovery-platform
+      - button "New tab" [ref=e26]:
+        - img [ref=e27]
+    - generic [ref=e29]:
+      - button "Toggle tree" [ref=e30]:
+        - img [ref=e31]
+      - button "⌘K" [ref=e33]
+      - button "Toggle right" [ref=e34]:
+        - img [ref=e35]
+  - generic [ref=e37]:
+    - complementary [ref=e38]:
+      - generic [ref=e39]:
+        - generic [ref=e40]:
+          - button "New review" [ref=e41]:
+            - img [ref=e42]
+            - generic [ref=e44]: New review
+          - button "Search ⌘P" [ref=e45]:
+            - img [ref=e46]
+            - generic [ref=e49]: Search
+            - generic [ref=e50]: ⌘P
+        - generic [ref=e51]:
+          - generic [ref=e52]: Pinned
+          - generic [ref=e54]:
+            - img [ref=e55]
+            - generic [ref=e58]: DEV-5008 Show experiment params
+            - generic [ref=e59]: 5d
+        - generic [ref=e60]:
+          - generic [ref=e61]: Projects
+          - generic [ref=e62]:
+            - generic [ref=e63]:
+              - img [ref=e64]
+              - generic [ref=e67]: discovery-platform
+              - generic [ref=e68]: "3"
+            - generic [ref=e69]:
+              - generic [ref=e70]:
+                - generic [ref=e72]: show-experiment-params
+                - generic [ref=e73]: 45m
+              - generic [ref=e74]:
+                - img [ref=e75]
+                - generic [ref=e79]: fix-forward-button
+                - generic [ref=e80]: 1d
+              - generic [ref=e83]: main
+            - generic [ref=e84]:
+              - img [ref=e85]
+              - generic [ref=e88]: design-system
+            - generic [ref=e89]:
+              - img [ref=e90]
+              - generic [ref=e93]: ink-booking
+              - generic [ref=e94]: "2"
+        - generic [ref=e95]:
+          - generic [ref=e96]: Worktrees
+          - generic [ref=e97]:
+            - generic [ref=e98]:
+              - img [ref=e99]
+              - generic [ref=e104]: .worktrees/fix-forward-button
+            - generic [ref=e105]:
+              - img [ref=e106]
+              - generic [ref=e111]: worktrees/c175
+      - generic [ref=e112]:
+        - generic [ref=e113]: er
+        - generic [ref=e114]: Settings
+    - main [ref=e115]:
+      - generic [ref=e116]:
+        - generic [ref=e117]:
+          - img [ref=e118]
+          - textbox "Filter files…" [ref=e121]
+          - generic [ref=e122]: /
+        - generic [ref=e123]:
+          - generic [ref=e124]: 11 files
+          - generic [ref=e125]: "2"
+          - generic [ref=e127]: "1"
+          - generic [ref=e129]: "1"
+          - generic [ref=e131]: ·
+          - generic [ref=e132]:
+            - img [ref=e133]
+            - text: "1"
+          - generic [ref=e135]:
+            - img [ref=e136]
+            - text: "1"
+        - generic [ref=e139]:
+          - generic [ref=e140]:
+            - img [ref=e141]
+            - generic [ref=e143]: apps
+          - generic [ref=e144]:
+            - img [ref=e145]
+            - generic [ref=e147]: admin/src/lib/auth
+          - button "middleware.ts +7 −2" [ref=e148] [cursor=pointer]:
+            - generic [ref=e150]: middleware.ts
+            - generic [ref=e151]: "+7"
+            - generic [ref=e152]: −2
+          - generic [ref=e153]:
+            - img [ref=e154]
+            - generic [ref=e156]: web/src/routes
+          - generic [ref=e157]:
+            - img [ref=e158]
+            - generic [ref=e160]: api/health
+          - button "+server.ts 1 +12" [ref=e161] [cursor=pointer]:
+            - generic [ref=e163]: +server.ts
+            - generic [ref=e164]: "1"
+            - generic [ref=e165]: "+12"
+          - button "+page.svelte +5 −3" [ref=e166] [cursor=pointer]:
+            - generic [ref=e168]: +page.svelte
+            - generic [ref=e169]: "+5"
+            - generic [ref=e170]: −3
+          - generic [ref=e171]:
+            - img [ref=e172]
+            - generic [ref=e174]: infra/terraform
+          - button "main.tf +24" [ref=e175] [cursor=pointer]:
+            - generic [ref=e177]: main.tf
+            - generic [ref=e178]: "+24"
+          - button "variables.tf +6" [ref=e179] [cursor=pointer]:
+            - generic [ref=e181]: variables.tf
+            - generic [ref=e182]: "+6"
+          - generic [ref=e183]:
+            - img [ref=e184]
+            - generic [ref=e186]: packages/discovery-platform/src
+          - generic [ref=e187]:
+            - img [ref=e188]
+            - generic [ref=e190]: lib
+          - generic [ref=e191]:
+            - img [ref=e192]
+            - generic [ref=e194]: components/combobox/media
+          - button "MediaCombobox.svelte 1 1 1 +39" [ref=e195] [cursor=pointer]:
+            - generic [ref=e198]: MediaCombobox.svelte
+            - generic [ref=e199]: "1"
+            - generic [ref=e200]:
+              - img [ref=e201]
+              - text: "1"
+            - generic [ref=e203]:
+              - img [ref=e204]
+              - text: "1"
+            - generic [ref=e207]: "+39"
+          - button "experiment-template-resolution.ts 1 +4" [ref=e208] [cursor=pointer]:
+            - generic [ref=e210]: experiment-template-resolution.ts
+            - generic [ref=e211]: "1"
+            - generic [ref=e212]: "+4"
+          - button "variant-warning-copy.test.ts +2 −2" [ref=e213] [cursor=pointer]:
+            - generic [ref=e215]: variant-warning-copy.test.ts
+            - generic [ref=e216]: "+2"
+            - generic [ref=e217]: −2
+          - button "variant-warning-copy.ts 2 +8 −6" [ref=e218] [cursor=pointer]:
+            - generic [ref=e220]: variant-warning-copy.ts
+            - generic [ref=e221]: "2"
+            - generic [ref=e222]: "+8"
+            - generic [ref=e223]: −6
+          - generic [ref=e224]:
+            - img [ref=e225]
+            - generic [ref=e227]: routes
+          - button "page.test.ts ✓ reviewed" [ref=e228] [cursor=pointer]:
+            - generic [ref=e230]: page.test.ts
+            - generic [ref=e231]: ✓ reviewed
+          - button "README.md +1 −1" [ref=e232] [cursor=pointer]:
+            - generic [ref=e234]: README.md
+            - generic [ref=e235]: "+1"
+            - generic [ref=e236]: −1
+        - generic [ref=e237]:
+          - button "All changes 11 files" [ref=e239]:
+            - img [ref=e240]
+            - generic [ref=e242]: All changes
+            - generic [ref=e243]: 11 files
+          - generic [ref=e244]:
+            - button "Unstaged" [ref=e245]:
+              - generic [ref=e247]: Unstaged
+            - button "Staged" [ref=e248]:
+              - generic [ref=e250]: Staged
+          - generic [ref=e251]:
+            - generic [ref=e252]: Commits · 4
+            - button "Fix lint errors in variant warning copy typings 2afab9e · Vilfred · 45m" [ref=e253]:
+              - generic [ref=e254]: Fix lint errors in variant warning copy typings
+              - generic [ref=e255]: 2afab9e · Vilfred · 45m
+            - button "Add experiment-option resolver to combobox d1a6076 · Claude · 1d" [ref=e256]:
+              - generic [ref=e257]: Add experiment-option resolver to combobox
+              - generic [ref=e258]: d1a6076 · Claude · 1d
+            - button "Wire warning metadata through dropdowns 54a9a3d · Vilfred · 2h" [ref=e259]:
+              - generic [ref=e260]: Wire warning metadata through dropdowns
+              - generic [ref=e261]: 54a9a3d · Vilfred · 2h
+            - button "Merge branch 'main' into show-experiment-params 2356d55 · Vilfred · 1h" [ref=e262]:
+              - generic [ref=e263]: Merge branch 'main' into show-experiment-params
+              - generic [ref=e264]: 2356d55 · Vilfred · 1h
+          - generic [ref=e265]:
+            - generic [ref=e266]: 1 / 11 reviewed
+            - generic [ref=e267]: j/k · U next
+      - generic [ref=e268]:
+        - generic [ref=e269]:
+          - generic [ref=e270]: packages/discovery-platform/src/lib/components/combobox/media/MediaCombobox.svelte
+          - generic [ref=e271]: "+39"
+          - generic [ref=e272]: −0
+          - generic [ref=e273]:
+            - button "Open in editor" [ref=e274]
+            - button "Mark reviewed" [ref=e275]:
+              - img [ref=e276]
+              - text: Mark reviewed
+        - generic [ref=e278]:
+          - generic [ref=e279]: "@@ -36,7 +36,11 @@ export type Props = {"
+          - generic [ref=e280] [cursor=pointer]:
+            - generic [ref=e281]: "36"
+            - generic [ref=e282]: "36"
+            - generic [ref=e283]: "showPropertyInputs?: boolean;"
+          - generic [ref=e284] [cursor=pointer]:
+            - generic [ref=e285]: "37"
+            - generic [ref=e286]: "37"
+            - generic [ref=e287]: /** When true, clicking an item always adds it (for bulk multi-instance mode) */
+          - generic [ref=e288] [cursor=pointer]:
+            - generic [ref=e290]: "38"
+            - generic [ref=e291]: "+ experimentOptions?: ExperimentPropertyOption<SchemaFullMedia>[];"
+          - generic [ref=e292] [cursor=pointer]:
+            - generic [ref=e294]: "39"
+            - generic [ref=e295]: "+ onExperimentOptionSelect?: ("
+          - generic [ref=e296] [cursor=pointer]:
+            - generic [ref=e298]: "40"
+            - generic [ref=e299]: "+ _option: ExperimentPropertyOption<SchemaFullMedia>,"
+          - generic [ref=e300] [cursor=pointer]:
+            - generic [ref=e302]: "41"
+            - generic [ref=e303]: + ) => void;
+          - generic [ref=e304] [cursor=pointer]:
+            - generic [ref=e305]: "38"
+            - generic [ref=e306]: "42"
+            - generic [ref=e307]: "isSinglePlate?: boolean;"
+          - generic [ref=e308] [cursor=pointer]:
+            - generic [ref=e309]: "39"
+            - generic [ref=e310]: "43"
+            - generic [ref=e311]: "trigger?: Snippet<"
+          - generic [ref=e312] [cursor=pointer]:
+            - generic [ref=e313]: "40"
+            - generic [ref=e314]: "44"
+            - generic [ref=e315]: "["
+          - generic [ref=e316] [cursor=pointer]:
+            - generic [ref=e317]: "41"
+            - generic [ref=e318]: "45"
+            - generic [ref=e319]: "{"
+          - generic [ref=e320] [cursor=pointer]:
+            - generic [ref=e321]: "42"
+            - generic [ref=e322]: "46"
+            - generic [ref=e323]: // …existing fields
+          - generic [ref=e324] [cursor=pointer]:
+            - generic [ref=e325]: "43"
+            - generic [ref=e326]: "47"
+            - generic [ref=e327]: "},"
+          - generic [ref=e328] [cursor=pointer]:
+            - generic [ref=e329]: "44"
+            - generic [ref=e330]: "48"
+            - generic [ref=e331]: "]"
+          - generic [ref=e332] [cursor=pointer]:
+            - generic [ref=e333]: "45"
+            - generic [ref=e334]: "49"
+            - generic [ref=e335]: ">;"
+          - generic [ref=e336]:
+            - generic [ref=e337]:
+              - img [ref=e338]
+              - generic [ref=e341]: AI finding
+              - generic [ref=e342]: med
+              - generic [ref=e343]: · line 40
+              - generic [ref=e344]: AI
+            - generic [ref=e345]: _option prefix signals unused but the param is used — drop the underscore.
+            - generic [ref=e346]:
+              - button "Promote to comment" [ref=e347]:
+                - img [ref=e348]
+                - text: Promote to comment
+              - button "Reply" [ref=e350]
+              - button "Resolve" [ref=e351]
+              - button "Dismiss" [ref=e352]
+              - generic [ref=e353]: ⇧R
+            - generic [ref=e354]:
+              - textbox "Reply or ask follow-up…" [ref=e355]
+              - button "Ask AI" [ref=e356]:
+                - img [ref=e357]
+                - text: Ask AI
+          - generic [ref=e359]:
+            - generic [ref=e360]:
+              - img [ref=e361]
+              - generic [ref=e363]: Comment
+              - generic [ref=e364]: · line 38
+              - generic [ref=e365]: local · unpushed
+              - generic [ref=e367]: 8m
+            - generic [ref=e368]:
+              - generic [ref=e369]: "Y"
+              - generic [ref=e370]:
+                - generic [ref=e371]: you · 8m
+                - generic [ref=e372]: Should this be typed against SchemaMediaProperties instead? SchemaFullMedia includes fields we don't need at the option level.
+            - generic [ref=e373]:
+              - generic [ref=e374]:
+                - img [ref=e376]
+                - generic [ref=e378]:
+                  - generic [ref=e379]:
+                    - generic [ref=e380]: AI
+                    - generic [ref=e381]: · 6m
+                  - generic [ref=e382]: SchemaMediaProperties is a strict subset — just id, name, kind. Narrowing here is safe; only handleExperimentOptionSelect reads from this prop.
+              - generic [ref=e383]:
+                - generic [ref=e384]: M
+                - generic [ref=e385]:
+                  - generic [ref=e386]:
+                    - generic [ref=e387]: maria-c
+                    - generic [ref=e388]: · 2m
+                  - generic [ref=e389]: Agree. Worth doing — I'll tweak in this PR.
+            - generic [ref=e390]:
+              - button "Reply" [ref=e391]
+              - button "Resolve" [ref=e392]
+              - button "Push only this" [ref=e393]:
+                - img [ref=e394]
+                - text: Push only this
+              - button "Delete thread" [ref=e396]: ×
+              - generic [ref=e397]: 2 replies
+          - generic [ref=e398]:
+            - generic [ref=e399]:
+              - img [ref=e400]
+              - generic [ref=e403]: Local question
+              - generic [ref=e404]: · line 144
+              - generic [ref=e405]: private · won't push
+              - generic [ref=e406]: 12m
+            - generic [ref=e407]:
+              - generic [ref=e408]: "Y"
+              - generic [ref=e409]:
+                - generic [ref=e410]: you · 12m
+                - generic [ref=e411]: Should handleExperimentOptionSelect live on the parent component instead?
+            - generic [ref=e413]:
+              - img [ref=e415]
+              - generic [ref=e417]:
+                - generic [ref=e418]:
+                  - generic [ref=e419]: AI
+                  - generic [ref=e420]: · 10m
+                - generic [ref=e421]: The combobox owns comboboxOpen and uses it locally for show/hide. Lifting handleExperimentOptionSelect up would force the parent to manage that toggle too. Recommend keeping it here.
+            - generic [ref=e422]:
+              - button "Reply" [ref=e423]
+              - button "Resolve" [ref=e424]
+              - button "Promote to comment" [ref=e425]:
+                - img [ref=e426]
+                - text: Promote to comment
+              - button "Delete thread" [ref=e428]: ×
+              - generic [ref=e429]: 1 reply
+          - generic [ref=e430]: "@@ -137,3 +141,12 @@ function MediaCombobox() {"
+          - generic [ref=e431] [cursor=pointer]:
+            - generic [ref=e432]: "137"
+            - generic [ref=e433]: "141"
+            - generic [ref=e434]: comboboxOpen = false;
+          - generic [ref=e435] [cursor=pointer]:
+            - generic [ref=e436]: "138"
+            - generic [ref=e437]: "142"
+            - generic [ref=e438]: "}"
+          - generic [ref=e439] [cursor=pointer]:
+            - generic [ref=e441]: "143"
+            - generic [ref=e442]: +
+          - generic [ref=e443] [cursor=pointer]:
+            - generic [ref=e445]: "144"
+            - generic [ref=e446]: + function handleExperimentOptionSelect(
+          - generic [ref=e447] [cursor=pointer]:
+            - generic [ref=e449]: "145"
+            - generic [ref=e450]: "+ option: ExperimentPropertyOption<SchemaFullMedia>,"
+          - generic [ref=e451] [cursor=pointer]:
+            - generic [ref=e453]: "146"
+            - generic [ref=e454]: "+ ) {"
+          - generic [ref=e455] [cursor=pointer]:
+            - generic [ref=e457]: "147"
+            - generic [ref=e458]: + onExperimentOptionSelect?.(option);
+          - generic [ref=e459] [cursor=pointer]:
+            - generic [ref=e461]: "148"
+            - generic [ref=e462]: + comboboxOpen = false;
+          - generic [ref=e463] [cursor=pointer]:
+            - generic [ref=e465]: "149"
+            - generic [ref=e466]: "+ }"
+    - complementary [ref=e467]:
+      - generic [ref=e468]:
+        - generic [ref=e469]:
+          - generic [ref=e470]:
+            - generic [ref=e471]: Branch
+            - button "Pin review" [ref=e472]:
+              - img [ref=e473]
+          - generic [ref=e476]: show-experiment-params
+          - generic [ref=e477]: main ← show-experiment-params
+          - generic [ref=e478]:
+            - generic [ref=e479]:
+              - img [ref=e480]
+              - generic [ref=e483]: Changes
+              - generic [ref=e484]: +108 −14
+            - generic [ref=e485]:
+              - img [ref=e486]
+              - generic [ref=e490]: Git actions
+              - generic [ref=e491]: stage · commit
+            - generic [ref=e492]:
+              - img [ref=e493]
+              - generic [ref=e497]: "PR #1090"
+              - generic [ref=e498]: draft
+            - generic [ref=e499]:
+              - img [ref=e500]
+              - generic [ref=e503]: Checks successful
+              - img [ref=e504]
+        - generic [ref=e506]:
+          - generic [ref=e507]:
+            - generic [ref=e508]: AI Review
+            - generic [ref=e509]: fresh
+          - generic [ref=e510]: 4 findings across 3 files. Two high-risk issues in variant-warning-copy.ts around fallback handling.
+          - generic [ref=e511]:
+            - button "High 2" [ref=e512]:
+              - generic [ref=e513]: High
+              - generic [ref=e515]: "2"
+            - button "Med 1" [ref=e516]:
+              - generic [ref=e517]: Med
+              - generic [ref=e519]: "1"
+            - button "Low 1" [ref=e520]:
+              - generic [ref=e521]: Low
+              - generic [ref=e523]: "1"
+          - button "View findings" [ref=e524]:
+            - img [ref=e525]
+            - generic [ref=e527]: View findings
+        - generic [ref=e528]:
+          - generic [ref=e529]:
+            - generic [ref=e530]: Comments
+            - generic [ref=e531]:
+              - img [ref=e532]
+              - text: 1 local
+          - button "MediaCombobox.svelte:38 local Should this be typed against SchemaMediaProperties instead? SchemaFullMedia includes fields we don't need at the option level." [ref=e535]:
+            - generic [ref=e536]:
+              - img [ref=e537]
+              - generic [ref=e539]: MediaCombobox.svelte:38
+              - generic [ref=e540]: local
+              - img [ref=e542]
+            - generic [ref=e544]: Should this be typed against SchemaMediaProperties instead? SchemaFullMedia includes fields we don't need at the option level.
+          - generic [ref=e545]:
+            - generic [ref=e546]:
+              - generic [ref=e547]: Push to GitHub
+              - generic [ref=e548]: 1 unpushed
+            - generic [ref=e549]:
+              - button "As review Summary + decision · single approval gate" [ref=e550]:
+                - generic [ref=e551]:
+                  - img [ref=e552]
+                  - text: As review
+                - generic [ref=e555]: Summary + decision · single approval gate
+              - button "Individually Each comment posts standalone · no review" [ref=e556]:
+                - generic [ref=e557]:
+                  - img [ref=e558]
+                  - text: Individually
+                - generic [ref=e560]: Each comment posts standalone · no review
+          - button "Export to coding agent" [ref=e561]:
+            - img [ref=e562]
+            - text: Export to coding agent
+        - generic [ref=e564]:
+          - generic [ref=e565]:
+            - generic [ref=e566]:
+              - generic [ref=e567]: Questions
+              - generic [ref=e568]:
+                - img [ref=e569]
+                - text: private
+            - generic [ref=e572]:
+              - img [ref=e573]
+              - text: "1"
+          - button "MediaCombobox.svelte:144 Should handleExperimentOptionSelect live on the parent component instead?" [ref=e577]:
+            - generic [ref=e578]:
+              - img [ref=e579]
+              - generic [ref=e582]: MediaCombobox.svelte:144
+              - img [ref=e583]
+            - generic [ref=e585]: Should handleExperimentOptionSelect live on the parent component instead?
+          - generic [ref=e586]: Questions stay on your machine. Use them for personal review notes or routing to an AI assistant.
+          - generic [ref=e587]:
+            - button "Ask AI" [ref=e588]:
+              - img [ref=e589]
+              - text: Ask AI
+            - button "Promote to comment" [ref=e591]:
+              - img [ref=e592]
+              - text: Promote to comment
+        - generic [ref=e594]:
+          - generic [ref=e596]: Sources
+          - generic [ref=e597]:
+            - generic [ref=e598]:
+              - img [ref=e599]
+              - text: GitHub
+            - generic [ref=e601]:
+              - img [ref=e602]
+              - text: Figma
+            - generic [ref=e604]:
+              - img [ref=e605]
+              - text: Linear
+  - generic [ref=e607]:
+    - generic [ref=e608]:
+      - generic [ref=e609]: j
+      - generic [ref=e610]: k
+      - text: nav
+    - generic [ref=e611]:
+      - generic [ref=e612]: U
+      - text: next
+    - generic [ref=e613]:
+      - generic [ref=e614]: /
+      - text: search
+    - generic [ref=e615]:
+      - generic [ref=e616]: c
+      - text: comment
+    - generic [ref=e617]:
+      - generic [ref=e618]: q
+      - text: question
+    - generic [ref=e619]:
+      - generic [ref=e620]: ⇥
+      - text: hunk
+    - generic [ref=e621]:
+      - generic [ref=e622]: r
+      - text: reviewed
+    - generic [ref=e623]: ·
+    - generic [ref=e624]:
+      - generic [ref=e625]: ⌘K
+      - text: all shortcuts
+    - generic [ref=e626]: main ← show-experiment-params

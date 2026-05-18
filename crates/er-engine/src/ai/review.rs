@@ -580,6 +580,96 @@ impl AiState {
         result
     }
 
+    /// Like `comments_for_hunk` but also matches comments whose `hunk_index` is missing
+    /// or stale by falling back to a line-range check against `new_start`/`old_start`.
+    /// Returns both top-level comments and their replies (same contract as `comments_for_hunk`).
+    pub fn comments_for_hunk_or_line_range(
+        &self,
+        path: &str,
+        hunk_idx: usize,
+        new_start: usize,
+        new_count: usize,
+        old_start: usize,
+        old_count: usize,
+    ) -> Vec<CommentRef<'_>> {
+        let mut result: Vec<CommentRef<'_>> = Vec::new();
+        let mut seen_ids: HashSet<String> = HashSet::new();
+
+        let in_new_range = |ls: usize| ls >= new_start && ls < new_start + new_count;
+        let in_old_range = |ls: usize| ls >= old_start && ls < old_start + old_count;
+
+        macro_rules! matches_hunk {
+            ($c:expr, $hunk_idx:expr) => {
+                $c.hunk_index() == Some($hunk_idx)
+                    || $c.line_start().is_some_and(|ls| in_new_range(ls))
+                    || $c.old_line_start().is_some_and(|ls| in_old_range(ls))
+            };
+        }
+
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if q.file == path && q.in_reply_to.is_none() {
+                    let c = CommentRef::Question(q);
+                    if matches_hunk!(c, hunk_idx) && seen_ids.insert(q.id.clone()) {
+                        result.push(CommentRef::Question(q));
+                    }
+                }
+            }
+        }
+        if let Some(gc) = &self.github_comments {
+            for c in &gc.comments {
+                if c.file == path && c.in_reply_to.is_none() {
+                    let cr = CommentRef::GitHubComment(c);
+                    if matches_hunk!(cr, hunk_idx) && seen_ids.insert(c.id.clone()) {
+                        result.push(CommentRef::GitHubComment(c));
+                    }
+                }
+            }
+        }
+        if let Some(fb) = &self.feedback {
+            for c in &fb.comments {
+                if c.file == path && c.in_reply_to.is_none() {
+                    let cr = CommentRef::Legacy(c);
+                    if matches_hunk!(cr, hunk_idx) && seen_ids.insert(c.id.clone()) {
+                        result.push(CommentRef::Legacy(c));
+                    }
+                }
+            }
+        }
+
+        // For each top-level comment found, also include its replies
+        let top_level_ids: Vec<String> = result.iter().map(|c| c.id().to_string()).collect();
+        if let Some(qs) = &self.questions {
+            for q in &qs.questions {
+                if let Some(ref parent) = q.in_reply_to {
+                    if top_level_ids.contains(parent) && seen_ids.insert(q.id.clone()) {
+                        result.push(CommentRef::Question(q));
+                    }
+                }
+            }
+        }
+        if let Some(gc) = &self.github_comments {
+            for c in &gc.comments {
+                if let Some(ref parent) = c.in_reply_to {
+                    if top_level_ids.contains(parent) && seen_ids.insert(c.id.clone()) {
+                        result.push(CommentRef::GitHubComment(c));
+                    }
+                }
+            }
+        }
+        if let Some(fb) = &self.feedback {
+            for c in &fb.comments {
+                if let Some(ref parent) = c.in_reply_to {
+                    if top_level_ids.contains(parent) && seen_ids.insert(c.id.clone()) {
+                        result.push(CommentRef::Legacy(c));
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     /// Comments targeting a specific line within a hunk (top-level only, no replies)
     pub fn comments_for_line(
         &self,
@@ -1891,6 +1981,7 @@ mod tests {
             github_id: None,
             author: "You".to_string(),
             synced: false,
+            outdated: false,
             stale: false,
             context_before: vec![],
             context_after: vec![],
@@ -2300,5 +2391,4 @@ mod tests {
         assert_eq!(ordered[0].1, Some(0));
         assert_eq!(ordered[0].3, "f_some");
     }
-
 }

@@ -157,7 +157,11 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
 
 // ── FileDetail ──
 
-fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engine::app::TabState) {
+fn render_file_detail<'a>(
+    lines: &mut Vec<Line<'a>>,
+    area: Rect,
+    tab: &'a er_engine::app::TabState,
+) {
     let ai_stale = tab.ai.is_stale;
 
     let file = tab.selected_diff_file();
@@ -243,7 +247,8 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_eng
                 let file_stale = tab.ai.is_file_stale(path);
                 let max_w = area.width.saturating_sub(5) as usize;
 
-                let mut sorted_findings: Vec<&er_engine::ai::Finding> = fr.findings.iter().collect();
+                let mut sorted_findings: Vec<&er_engine::ai::Finding> =
+                    fr.findings.iter().collect();
                 sorted_findings.sort_by(|a, b| {
                     let sev_ord = |r: &RiskLevel| match r {
                         RiskLevel::High => 0,
@@ -269,7 +274,10 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_eng
                 let resolved_count = sorted_findings.iter().filter(|f| f.resolved).count();
                 let active_count = sorted_findings.len() - resolved_count;
                 let header = if resolved_count > 0 {
-                    format!(" Findings ({} active · {} resolved)", active_count, resolved_count)
+                    format!(
+                        " Findings ({} active · {} resolved)",
+                        active_count, resolved_count
+                    )
                 } else {
                     format!(" Findings ({})", sorted_findings.len())
                 };
@@ -310,24 +318,18 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_eng
                     // Confidence badge: a one-glyph tag rendered before the title.
                     // Resolved findings always show green ✓, overriding the confidence badge.
                     let (conf_glyph, conf_style) = if finding.resolved {
-                        (
-                            "✓ ",
-                            Style::default().fg(styles::GREEN()).bg(bg),
-                        )
+                        ("✓ ", Style::default().fg(styles::GREEN()).bg(bg))
                     } else {
                         match finding.confidence {
-                            Confidence::Confirmed => (
-                                "✓ ",
-                                Style::default().fg(styles::GREEN()).bg(bg),
-                            ),
-                            Confidence::Tentative => (
-                                "? ",
-                                Style::default().fg(styles::DIM()).bg(bg),
-                            ),
-                            Confidence::Informational => (
-                                "i ",
-                                Style::default().fg(styles::BLUE()).bg(bg),
-                            ),
+                            Confidence::Confirmed => {
+                                ("✓ ", Style::default().fg(styles::GREEN()).bg(bg))
+                            }
+                            Confidence::Tentative => {
+                                ("? ", Style::default().fg(styles::DIM()).bg(bg))
+                            }
+                            Confidence::Informational => {
+                                ("i ", Style::default().fg(styles::BLUE()).bg(bg))
+                            }
                             Confidence::Dropped => (
                                 "✗ ",
                                 Style::default()
@@ -363,13 +365,13 @@ fn render_file_detail<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_eng
                     if finding.hunk_index.is_some() || finding.line_start.is_some() {
                         // Validate that the referenced hunk/line actually exists in the parsed diff.
                         let diff_hunks = tab.files.get(tab.selected_file).map(|f| &f.hunks);
-                        let hunk_exists = finding.hunk_index
+                        let hunk_exists = finding
+                            .hunk_index
                             .is_none_or(|h| diff_hunks.is_some_and(|hs| h < hs.len()));
                         let line_in_diff = finding.line_start.is_none_or(|ls| {
                             diff_hunks.is_some_and(|hs| {
-                                hs.iter().any(|hunk| {
-                                    hunk.lines.iter().any(|l| l.new_num == Some(ls))
-                                })
+                                hs.iter()
+                                    .any(|hunk| hunk.lines.iter().any(|l| l.new_num == Some(ls)))
                             })
                         });
                         let in_diff = hunk_exists && line_in_diff;
@@ -789,7 +791,11 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
 
 // ── PrOverview ──
 
-fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engine::app::TabState) {
+fn render_pr_overview<'a>(
+    lines: &mut Vec<Line<'a>>,
+    area: Rect,
+    tab: &'a er_engine::app::TabState,
+) {
     lines.push(Line::from(vec![Span::styled(
         " PR Overview",
         Style::default()
@@ -1040,7 +1046,11 @@ fn render_pr_overview<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_eng
 
 // ── SymbolRefs ──
 
-fn render_symbol_refs<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engine::app::TabState) {
+fn render_symbol_refs<'a>(
+    lines: &mut Vec<Line<'a>>,
+    area: Rect,
+    tab: &'a er_engine::app::TabState,
+) {
     let state = match tab.symbol_refs.as_ref() {
         Some(s) => s,
         None => {

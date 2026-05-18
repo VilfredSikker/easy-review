@@ -19,12 +19,7 @@ pub const CONTEXT_STEPS: &[usize] = &[DEFAULT_CONTEXT_LINES, 20, 40, 80, FULL_CO
 /// total diff line count is `<= max_diff_lines` is auto-expanded to the
 /// matching `context_value`. Files larger than the last tier fall back to
 /// `DEFAULT_CONTEXT_LINES`. Ordered small → large.
-pub const SIZE_LADDER: &[(usize, usize)] = &[
-    (60, FULL_CONTEXT),
-    (180, 80),
-    (500, 40),
-    (1500, 20),
-];
+pub const SIZE_LADDER: &[(usize, usize)] = &[(60, FULL_CONTEXT), (180, 80), (500, 40), (1500, 20)];
 
 #[allow(unused_imports)]
 pub use diff::{
@@ -35,8 +30,9 @@ pub use diff::{
 pub use status::{
     detect_base_branch_in, diff_watched_file_snapshot, discover_watched_files,
     get_current_branch_in, get_repo_root, get_repo_root_in, git_commit, git_diff_against_branch,
-    git_diff_commit, git_diff_conflicts, git_diff_raw, git_diff_raw_file, git_diff_raw_range,
-    git_log_branch, git_push, git_stage_all, git_stage_file, git_unstage_file,
-    is_merge_in_progress, list_worktrees, read_watched_file_content, save_snapshot, unmerged_files,
-    verify_gitignored, CommitInfo, FileStatus, WatchedFile, Worktree,
+    git_diff_checkout_against_base, git_diff_commit, git_diff_conflicts, git_diff_raw,
+    git_diff_raw_file, git_diff_raw_range, git_log_branch, git_push, git_stage_all, git_stage_file,
+    git_unstage_file, is_merge_in_progress, list_worktrees, read_watched_file_content,
+    save_snapshot, unmerged_files, verify_gitignored, CommitInfo, FileStatus, WatchedFile,
+    Worktree,
 };

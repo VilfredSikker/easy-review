@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { startWindowDrag } from "$lib/windowDrag";
 
   let prUrl = $state("");
 
@@ -41,9 +42,12 @@
 
 <div class="h-screen flex flex-col bg-bg text-fg">
   <!-- Minimal top bar -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <header
-    class="h-11 px-4 border-b border-hairline bg-ink-870 flex items-center gap-2 shrink-0"
+    class="titlebar-drag h-11 px-4 border-b border-hairline bg-ink-870 flex items-center gap-2 shrink-0"
     style="padding-left: env(titlebar-area-x, 80px)"
+    data-tauri-drag-region
+    onmousedown={startWindowDrag}
   >
     <div class="w-5 h-5 rounded bg-accent flex items-center justify-center text-black text-[10px] font-bold">er</div>
     <span class="text-sm">Easy Review</span>
@@ -98,7 +102,7 @@
               </div>
               <div class="font-medium">Open a PR</div>
             </div>
-            <p class="text-sm text-fg-3">Paste a GitHub URL. We'll check out the branch and load comments.</p>
+            <p class="text-sm text-fg-3">Paste a GitHub URL. We'll open the PR for review.</p>
             <div class="mt-3 text-[11px] text-muted mono">⌘⇧O</div>
           </button>
         </div>

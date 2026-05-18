@@ -54,6 +54,16 @@ export interface FileSnapshot {
   comment_count: number;
   question_count: number;
   hunks: HunkSnapshot[];
+  /** True when the diff is large and this file's hunks haven't been parsed yet. */
+  is_lazy_stub?: boolean;
+  /** Index into the backend's full file list — pass to `select_file`. */
+  source_index: number;
+}
+
+export interface FilterSuggestionSnapshot {
+  kind: "preset" | "history";
+  name: string;
+  expr: string;
 }
 
 export interface FlatFinding {
@@ -65,14 +75,19 @@ export interface FlatFinding {
   message_markdown: string;
   /** Id of the GitHub comment this finding was promoted to. */
   promoted_to: string | null;
+  /** Id of the root comment thread created via "Ask AI" for this finding. */
+  thread_id: string | null;
 }
 
 export interface AiSnapshot {
   fresh: boolean;
+  stale_reason: string | null;
   summary_markdown: string | null;
   high: number;
   med: number;
   low: number;
+  local_comment_count: number;
+  github_comment_count: number;
   comments: number;
   questions: number;
   unpushed: number;
@@ -109,6 +124,7 @@ export interface BranchInfo {
   is_current: boolean;
   is_merged: boolean;
   worktree_path: string | null;
+  pr_number?: number | null;
 }
 
 export interface PrInfo {
@@ -142,6 +158,10 @@ export interface ProjectSnapshot {
   prs_to_review: PrInfo[];
   /** Most recently merged PRs (max 5). */
   recently_merged: PrInfo[];
+  /** True when cached PR data is older than TTL. */
+  pr_cache_stale?: boolean;
+  /** Age of cached PR data in ms. */
+  pr_cache_age_ms?: number | null;
 }
 
 export interface CommitSummary {
@@ -228,6 +248,7 @@ export interface AppSnapshot {
   panels: Panels;
   theme: string;
   watch_active: boolean;
+  watch_status: WatchStatusSnapshot;
   worktrees: WorktreeSnapshot[];
   projects: ProjectSnapshot[];
   local_branch: string | null;
@@ -240,12 +261,83 @@ export interface AppSnapshot {
   github?: GithubStatusSnapshot | null;
   /** Which background fetches are currently in-flight. */
   bg_loading: LoadingFlags;
+  /** Running/done/failed background AI commands for the active tab. */
+  agent_commands?: AgentCommandStatus[];
+  /** Recent agent log output for the active tab. */
+  agent_log?: AgentLogEntry[];
+  /** Human-readable label for the currently selected AI provider/model. */
+  active_ai_label?: string;
+  /** Filter presets + recent filter history for the active tab. */
+  filter_suggestions?: FilterSuggestionSnapshot[];
+  /** Session-scoped background review tasks across all tabs. */
+  background_tasks?: BackgroundTaskSnapshot[];
+  /** Diff source state for the active tab. Null for working-tree tabs. */
+  diff_source?: DiffSourceSnapshot | null;
+}
+
+export interface BackgroundTaskSnapshot {
+  id: string;
+  kind: string;
+  label: string;
+  target_label: string;
+  scope: string;
+  /** "running" | "done" | "failed" */
+  status: string;
+  error?: string | null;
+  started_at_ms: number;
+  finished_at_ms?: number | null;
+}
+
+export interface DiffSourceSnapshot {
+  active: "pr" | "origin" | "local";
+  available: Array<"pr" | "origin" | "local">;
+  branch: string;
+  upstream: string | null;
+  base: string;
+  pr_number: number | null;
+  ahead: number | null;
+  behind: number | null;
+  status: string;
+  suggestion: string;
+}
+
+export interface WatchStatusSnapshot {
+  active: boolean;
+  branch: string | null;
+  root_path: string | null;
 }
 
 export interface LoadingFlags {
   pr_list: boolean;
   gh_status: boolean;
   gh_comments: boolean;
+}
+
+export interface AgentCommandStatus {
+  name: string;
+  /** "running" | "done" | "failed" */
+  status: string;
+  error?: string | null;
+}
+
+export interface AgentLogEntry {
+  command_name: string;
+  /** "stdout" | "stderr" | "status" */
+  source: string;
+  text: string;
+}
+
+export interface AiModelInfo {
+  id: string;
+  label: string;
+  is_selected: boolean;
+}
+
+export interface AiProviderInfo {
+  id: string;
+  label: string;
+  models: AiModelInfo[];
+  is_selected: boolean;
 }
 
 export interface PollResponse {
@@ -256,7 +348,7 @@ export interface PollResponse {
 
 export interface UiAnnotation {
   id: string;
-  /** Path portion of the URL (no query). */
+  /** Canonical origin + path page key. Older rows may contain path-only values. */
   url: string;
   /** Best-effort CSS selector; null for cross-origin captures. */
   selector: string | null;

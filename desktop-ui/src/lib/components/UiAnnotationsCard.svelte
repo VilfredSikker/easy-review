@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import { browser, urlPath } from "$lib/stores/browser.svelte";
+  import { pageKey } from "$lib/stores/browserUrl";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
 
@@ -44,7 +45,16 @@
   });
 
   function focusPin(id: string, url: string) {
-    if (url) browser.url = url.startsWith("http") ? url : browser.url;
+    if (url.startsWith("http")) {
+      browser.url = url;
+    } else if (url.startsWith("/")) {
+      try {
+        const current = new URL(pageKey(browser.url));
+        browser.url = `${current.protocol}//${current.host}${url}`;
+      } catch {
+        // Legacy path-only annotations cannot navigate without a current origin.
+      }
+    }
     browser.open = true;
     browser.highlightPinId = id;
   }

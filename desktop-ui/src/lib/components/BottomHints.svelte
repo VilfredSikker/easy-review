@@ -10,6 +10,7 @@
   <span><span class="kbd">q</span> <span class="ml-1">question</span></span>
   <span><span class="kbd">⇥</span> <span class="ml-1">hunk</span></span>
   <span><span class="kbd">r</span> <span class="ml-1">reviewed</span></span>
+  <span><span class="kbd">⌘R</span> <span class="ml-1">reload</span></span>
   <span class="text-ink-400">·</span>
   <span><span class="kbd">⌘K</span> <span class="ml-1">all shortcuts</span></span>
   {#if app.snapshot}
