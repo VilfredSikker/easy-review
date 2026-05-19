@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::State;
+use tauri_plugin_notification::NotificationExt;
 
 use er_engine::ai::CommentType;
 use er_engine::app::{App, DiffMode, InputMode};
@@ -12,12 +13,28 @@ use er_engine::highlight::Highlighter;
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects;
 use crate::snapshot::{
-    build_snapshot, AppSnapshot, CheckSummary, GhCommentSummary, GhReviewSummary, GhStatusCache,
-    GhUser, GithubStatusSnapshot, LoadingState, MetaCache, PendingAiReplies, PrInfo,
-    WatchStatusState,
+    build_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary, GhCommentSummary,
+    GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState, MetaCache,
+    PendingAiReplies, PrInfo, WatchStatusState,
 };
+use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
+const REQUESTED_KINDS: &[&str] = &[
+    "ai_review_done",
+    "ai_review_failed",
+    "ai_review_cancelled",
+    "pr_review_approved",
+    "pr_review_changes_requested",
+    "ci_failed",
+    "review_requested",
+    "review_rerequested",
+    "pr_comment_or_mention",
+    "pr_merged",
+    "pr_closed",
+    "github_refresh_failed",
+    "pr_cache_stale",
+];
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PollResponse {
@@ -72,6 +89,8 @@ pub struct AppState {
     /// Active-branch watcher status. Read by `build_snapshot` so the UI can
     /// show `Watching` when the desktop watcher is following a checkout.
     pub watch_status: WatchStatusState,
+    pub inbox: InboxHandle,
+    pub tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -127,9 +146,10 @@ macro_rules! snap {
             Some(&$state.gh_user),
             Some(&$state.pending_ai_replies),
             Some(&$state.gh_status_cache),
-            Some(&$state.loading),
-            Some(&$state.watch_status),
-        ))
+        Some(&$state.loading),
+        Some(&$state.watch_status),
+        Some(&$state.inbox),
+    ))
     }};
 }
 
@@ -146,6 +166,7 @@ fn snap_from(app: &App, hl: &mut Highlighter, state: &AppState) -> AppSnapshot {
         Some(&state.gh_status_cache),
         Some(&state.loading),
         Some(&state.watch_status),
+        Some(&state.inbox),
     )
 }
 
@@ -162,6 +183,45 @@ fn log_branch_open_phase(
         phase,
         started_at.elapsed().as_millis()
     );
+}
+
+fn now_ms() -> u64 {
+    crate::inbox::now_epoch_ms()
+}
+
+fn maybe_send_native_notification(
+    inbox_handle: &InboxHandle,
+    app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
+    item: &InboxItem,
+) {
+    if !REQUESTED_KINDS.contains(&item.kind.as_str())
+        && item.severity != "warning"
+        && item.severity != "error"
+    {
+        return;
+    }
+    let Ok(mut inbox) = inbox_handle.lock() else {
+        return;
+    };
+    if inbox.notified_item_ids.contains(&item.id) {
+        return;
+    }
+    let handle = app_handle_state
+        .lock()
+        .ok()
+        .and_then(|g| g.clone());
+    if let Some(app) = handle {
+        let shown = app
+            .notification()
+            .builder()
+            .title(&item.title)
+            .body(&item.body)
+            .show()
+            .is_ok();
+        if shown {
+            inbox.notified_item_ids.insert(item.id.clone());
+        }
+    }
 }
 
 /// Spawn a background fetch of the GitHub status for the given (owner, repo, number).
@@ -232,6 +292,69 @@ fn active_github_key(app: &App, state: &AppState) -> Option<(String, String, u64
                 })
         })
     })
+}
+
+fn process_ai_task_inbox(app: &App, state: &AppState) {
+    let now = now_ms();
+    let tasks = app.background_task_snapshots();
+    let mut emitted_any = false;
+    if let Ok(mut inbox) = state.inbox.lock() {
+        for task in tasks {
+            let (kind, severity, title, body) = match task.status.as_str() {
+                "done" => (
+                    "ai_review_done".to_string(),
+                    "success".to_string(),
+                    format!("AI review completed ({})", task.target_label),
+                    task.label.clone(),
+                ),
+                "failed" => (
+                    "ai_review_failed".to_string(),
+                    "error".to_string(),
+                    format!("AI review failed ({})", task.target_label),
+                    task.error
+                        .clone()
+                        .unwrap_or_else(|| "Review failed".to_string()),
+                ),
+                _ => continue,
+            };
+            let item = InboxItem {
+                id: format!("inbox-ai-{}-{}", task.id, task.status),
+                kind: kind.clone(),
+                severity,
+                title,
+                body,
+                source: "ai".to_string(),
+                target: InboxTarget {
+                    project_id: None,
+                    repo_root: Some(
+                        app.tab()
+                            .repo_root
+                            .clone(),
+                    ),
+                    remote: app.tab().remote_repo.clone(),
+                    pr_number: app.tab().pr_number,
+                    branch: Some(
+                        app.tab()
+                            .local_branch_view
+                            .clone()
+                            .unwrap_or_else(|| app.tab().current_branch.clone()),
+                    ),
+                    url: None,
+                },
+                created_at_ms: now,
+                read_at_ms: None,
+                dedupe_key: format!("ai:{}:{}", task.id, task.status),
+            };
+            if inbox.add_item(item.clone()) {
+                emitted_any = true;
+                maybe_send_native_notification(&state.inbox, &state.tauri_app_handle, &item);
+            }
+        }
+    }
+    if emitted_any {
+        crate::inbox::save_inbox_state(&state.inbox);
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Fetch all GitHub status data for a PR. Runs the 4 gh calls in parallel.
@@ -312,6 +435,7 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         state: overview.state,
         is_draft: overview.is_draft,
         title: overview.title,
+        body: overview.body,
         author: overview.author,
         head_ref: overview.head_ref_name,
         base_ref: overview.base_ref_name,
@@ -639,12 +763,30 @@ pub fn open_url_in_browser(url: String) -> Result<(), String> {
 }
 
 fn github_file_url_for_tab(tab: &er_engine::app::TabState, file_path: &str, line_num: usize) -> Option<String> {
-    let branch_ref = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(&tab.current_branch)
+    let pr_head = tab
+        .pr_data
+        .as_ref()
+        .map(|pr| pr.head_branch.trim().to_string())
+        .filter(|b| !b.is_empty());
+
+    let mut branch_ref = pr_head
+        .or_else(|| tab.local_branch_view.clone())
+        .unwrap_or_else(|| tab.current_branch.clone())
         .trim()
         .to_string();
+
+    // PR tab whose overview hasn't loaded yet: synchronously ask gh for the head branch.
+    if tab.pr_data.is_none() {
+        if let Some(n) = tab.pr_number {
+            if let Ok(name) = er_engine::github::gh_pr_head_branch_name(n, &tab.repo_root) {
+                let name = name.trim().to_string();
+                if !name.is_empty() {
+                    branch_ref = name;
+                }
+            }
+        }
+    }
+
     if branch_ref.is_empty() {
         return None;
     }
@@ -678,6 +820,365 @@ fn parse_github_slug(remote: &str) -> Option<String> {
         return Some(normalized[(pos + "github.com/".len())..].to_string());
     }
     None
+}
+
+fn normalize_check_state(checks: &[er_engine::github::CheckRun]) -> (String, Vec<String>) {
+    if checks.is_empty() {
+        return ("unknown".to_string(), Vec::new());
+    }
+    let mut has_pending = false;
+    let mut failing = Vec::new();
+    for c in checks {
+        let status = c.status.to_ascii_uppercase();
+        let conclusion = c
+            .conclusion
+            .as_str()
+            .to_ascii_uppercase();
+        if status == "PENDING" || status == "IN_PROGRESS" || status == "QUEUED" {
+            has_pending = true;
+        }
+        if conclusion == "FAILURE" || conclusion == "TIMED_OUT" || conclusion == "CANCELLED" {
+            failing.push(c.name.clone());
+        }
+    }
+    if !failing.is_empty() {
+        ("failure".to_string(), failing)
+    } else if has_pending {
+        ("pending".to_string(), Vec::new())
+    } else {
+        ("success".to_string(), Vec::new())
+    }
+}
+
+pub fn process_inbox_after_pr_refresh(
+    pr_cache: &Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
+    gh_user_state: &GhUser,
+    inbox_handle: &InboxHandle,
+    desktop_revision: &Arc<AtomicU64>,
+    app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
+    refresh_failed_remote: Option<String>,
+) {
+    let now = now_ms();
+    let gh_user = gh_user_state.lock().ok().and_then(|g| g.clone());
+    let Some(gh_user) = gh_user else {
+        if let Some(remote) = refresh_failed_remote {
+            let mut inbox = match inbox_handle.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            let last = inbox.refresh_error_at_ms.get(&remote).copied().unwrap_or(0);
+            if now.saturating_sub(last) >= crate::inbox::REFRESH_ERROR_TTL_MS {
+                let _ = inbox.add_item(InboxItem {
+                    id: format!("inbox-gh-refresh-failed-{remote}-{now}"),
+                    kind: "github_refresh_failed".to_string(),
+                    severity: "info".to_string(),
+                    title: format!("GitHub refresh failed for {remote}"),
+                    body: "Could not refresh PR data; using stale cache.".to_string(),
+                    source: "github".to_string(),
+                    target: InboxTarget {
+                        project_id: None,
+                        repo_root: None,
+                        remote: Some(remote.clone()),
+                        pr_number: None,
+                        branch: None,
+                        url: None,
+                    },
+                    created_at_ms: now,
+                    read_at_ms: None,
+                    dedupe_key: format!("github:{remote}:refresh_failed"),
+                });
+                inbox.refresh_error_at_ms.insert(remote, now);
+            }
+            drop(inbox);
+            crate::inbox::save_inbox_state(inbox_handle);
+            desktop_revision.fetch_add(1, Ordering::Relaxed);
+        }
+        return;
+    };
+
+    let projects_file = projects::load();
+    let mut project_by_remote: HashMap<String, (String, String)> = HashMap::new();
+    for p in projects_file.projects {
+        if let Some(remote) = p.remote {
+            project_by_remote.insert(remote, (p.id, p.root_path));
+        }
+    }
+    let cache = pr_cache
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+
+    let mut new_items: Vec<InboxItem> = Vec::new();
+    let mut ci_work: Vec<(String, String, u64, String, String, String)> = Vec::new();
+    let mut inbox = match inbox_handle.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    if let Some(remote) = refresh_failed_remote {
+        let last = inbox.refresh_error_at_ms.get(&remote).copied().unwrap_or(0);
+        if now.saturating_sub(last) >= crate::inbox::REFRESH_ERROR_TTL_MS {
+            new_items.push(InboxItem {
+                id: format!("inbox-gh-refresh-failed-{remote}-{now}"),
+                kind: "github_refresh_failed".to_string(),
+                severity: "info".to_string(),
+                title: format!("GitHub refresh failed for {remote}"),
+                body: "Could not refresh PR data; using stale cache.".to_string(),
+                source: "github".to_string(),
+                target: InboxTarget {
+                    project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
+                    repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                    remote: Some(remote.clone()),
+                    pr_number: None,
+                    branch: None,
+                    url: None,
+                },
+                created_at_ms: now,
+                read_at_ms: None,
+                dedupe_key: format!("github:{remote}:refresh_failed"),
+            });
+            inbox.refresh_error_at_ms.insert(remote, now);
+        }
+    }
+
+    for (remote, prs) in cache {
+        for pr in prs {
+            let key = format!("{remote}#{}", pr.number);
+            let requested_me = pr.reviewers.iter().any(|r| r == &gh_user);
+            let requested_reviewers = pr.reviewers.clone();
+            let is_my_pr = pr.author == gh_user;
+            let prev = inbox.observed_pr.get(&key).cloned();
+
+            if let Some(prev_state) = &prev {
+                if is_my_pr {
+                    if pr.review_decision.as_deref() == Some("APPROVED")
+                        && prev_state.review_decision.as_deref() != Some("APPROVED")
+                    {
+                        new_items.push(InboxItem {
+                            id: format!("inbox-pr-approved-{remote}-{}-{now}", pr.number),
+                            kind: "pr_review_approved".to_string(),
+                            severity: "success".to_string(),
+                            title: format!("PR #{} approved", pr.number),
+                            body: pr.title.clone(),
+                            source: "github".to_string(),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
+                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                remote: Some(remote.clone()),
+                                pr_number: Some(pr.number),
+                                branch: Some(pr.head_ref.clone()),
+                                url: None,
+                            },
+                            created_at_ms: now,
+                            read_at_ms: None,
+                            dedupe_key: format!("github:{remote}:{}:review_decision:APPROVED", pr.number),
+                        });
+                    }
+                    if pr.review_decision.as_deref() == Some("CHANGES_REQUESTED")
+                        && prev_state.review_decision.as_deref() != Some("CHANGES_REQUESTED")
+                    {
+                        new_items.push(InboxItem {
+                            id: format!("inbox-pr-changes-{remote}-{}-{now}", pr.number),
+                            kind: "pr_review_changes_requested".to_string(),
+                            severity: "warning".to_string(),
+                            title: format!("Changes requested on PR #{}", pr.number),
+                            body: pr.title.clone(),
+                            source: "github".to_string(),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
+                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                remote: Some(remote.clone()),
+                                pr_number: Some(pr.number),
+                                branch: Some(pr.head_ref.clone()),
+                                url: None,
+                            },
+                            created_at_ms: now,
+                            read_at_ms: None,
+                            dedupe_key: format!("github:{remote}:{}:review_decision:CHANGES_REQUESTED", pr.number),
+                        });
+                    }
+                }
+                if !is_my_pr {
+                    let prev_requested = prev_state.requested_reviewers.iter().any(|r| r == &gh_user);
+                    if requested_me && !prev_requested {
+                        let kind = if prev_state.requested_reviewers.contains(&gh_user) {
+                            "review_rerequested"
+                        } else {
+                            "review_requested"
+                        };
+                        new_items.push(InboxItem {
+                            id: format!("inbox-{kind}-{remote}-{}-{now}", pr.number),
+                            kind: kind.to_string(),
+                            severity: "info".to_string(),
+                            title: format!("Review requested: PR #{}", pr.number),
+                            body: pr.title.clone(),
+                            source: "github".to_string(),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
+                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                remote: Some(remote.clone()),
+                                pr_number: Some(pr.number),
+                                branch: Some(pr.head_ref.clone()),
+                                url: None,
+                            },
+                            created_at_ms: now,
+                            read_at_ms: None,
+                            dedupe_key: format!("github:{remote}:{}:{kind}", pr.number),
+                        });
+                    }
+                }
+                if prev_state.pr_state != pr.state {
+                    if pr.state == "MERGED" {
+                        new_items.push(InboxItem {
+                            id: format!("inbox-pr-merged-{remote}-{}-{now}", pr.number),
+                            kind: "pr_merged".to_string(),
+                            severity: "success".to_string(),
+                            title: format!("PR #{} merged", pr.number),
+                            body: pr.title.clone(),
+                            source: "github".to_string(),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
+                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                remote: Some(remote.clone()),
+                                pr_number: Some(pr.number),
+                                branch: Some(pr.head_ref.clone()),
+                                url: None,
+                            },
+                            created_at_ms: now,
+                            read_at_ms: None,
+                            dedupe_key: format!("github:{remote}:{}:merged", pr.number),
+                        });
+                    } else if pr.state == "CLOSED" {
+                        new_items.push(InboxItem {
+                            id: format!("inbox-pr-closed-{remote}-{}-{now}", pr.number),
+                            kind: "pr_closed".to_string(),
+                            severity: "info".to_string(),
+                            title: format!("PR #{} closed", pr.number),
+                            body: pr.title.clone(),
+                            source: "github".to_string(),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
+                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                remote: Some(remote.clone()),
+                                pr_number: Some(pr.number),
+                                branch: Some(pr.head_ref.clone()),
+                                url: None,
+                            },
+                            created_at_ms: now,
+                            read_at_ms: None,
+                            dedupe_key: format!("github:{remote}:{}:closed", pr.number),
+                        });
+                    }
+                }
+            }
+
+            if is_my_pr && pr.state == "OPEN" {
+                let ci_key = format!("{remote}#{}", pr.number);
+                let should_fetch_ci = inbox
+                    .ci_state
+                    .get(&ci_key)
+                    .map(|c| now.saturating_sub(c.fetched_at_ms) >= crate::inbox::CI_TTL_MS)
+                    .unwrap_or(true);
+                if should_fetch_ci {
+                    if let Some((owner, repo_name)) = remote.split_once('/') {
+                        ci_work.push((
+                            remote.clone(),
+                            owner.to_string(),
+                            pr.number,
+                            repo_name.to_string(),
+                            pr.title.clone(),
+                            pr.head_ref.clone(),
+                        ));
+                    }
+                }
+            }
+
+            inbox.observed_pr.insert(
+                key,
+                crate::inbox::ObservedPrState {
+                    review_decision: pr.review_decision.clone(),
+                    requested_reviewers,
+                    pr_state: pr.state.clone(),
+                    is_my_pr,
+                    check_state: prev.as_ref().and_then(|p| p.check_state.clone()),
+                    failing_checks: prev
+                        .as_ref()
+                        .map(|p| p.failing_checks.clone())
+                        .unwrap_or_default(),
+                },
+            );
+        }
+    }
+    drop(inbox);
+
+    for (remote, owner, pr_number, repo_name, pr_title, head_ref) in ci_work {
+        let checks = er_engine::github::gh_pr_checks_remote(&owner, &repo_name, pr_number)
+            .unwrap_or_default();
+        let (state_name, failing_checks) = normalize_check_state(&checks);
+        let ci_key = format!("{remote}#{pr_number}");
+            let mut inbox = match inbox_handle.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let prev = inbox.ci_state.get(&ci_key).cloned();
+        let prev_state = prev
+            .as_ref()
+            .map(|c| c.check_state.as_str())
+            .unwrap_or("unknown");
+        if state_name == "failure" && prev_state != "failure" {
+            let body = if failing_checks.is_empty() {
+                pr_title.clone()
+            } else {
+                format!("{pr_title} — failing: {}", failing_checks.join(", "))
+            };
+            new_items.push(InboxItem {
+                id: format!("inbox-ci-failed-{remote}-{pr_number}-{now}"),
+                kind: "ci_failed".to_string(),
+                severity: "warning".to_string(),
+                title: format!("CI failed on PR #{pr_number}"),
+                body,
+                source: "github".to_string(),
+                target: InboxTarget {
+                    project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
+                    repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                    remote: Some(remote.clone()),
+                    pr_number: Some(pr_number),
+                    branch: Some(head_ref.clone()),
+                    url: None,
+                },
+                created_at_ms: now,
+                read_at_ms: None,
+                dedupe_key: format!("github:{remote}:{pr_number}:ci_failed"),
+            });
+        }
+        inbox.ci_state.insert(
+            ci_key.clone(),
+            crate::inbox::ObservedCiState {
+                fetched_at_ms: now,
+                check_state: state_name.clone(),
+                failing_checks: failing_checks.clone(),
+            },
+        );
+        if let Some(pr_state) = inbox.observed_pr.get_mut(&ci_key) {
+            pr_state.check_state = Some(state_name);
+            pr_state.failing_checks = failing_checks;
+        }
+    }
+
+    let mut emitted_any = false;
+    if let Ok(mut inbox) = inbox_handle.lock() {
+        for item in new_items {
+            if inbox.add_item(item.clone()) {
+                emitted_any = true;
+                maybe_send_native_notification(inbox_handle, app_handle_state, &item);
+            }
+        }
+    }
+    crate::inbox::save_inbox_state(inbox_handle);
+    if emitted_any {
+        desktop_revision.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 
@@ -1274,6 +1775,117 @@ pub fn submit_github_review(
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.tab_mut().reload_ai_state();
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &mut hl, &*state))
+}
+
+/// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
+/// the GitHub card. Unlike `submit_github_review`, this **does not** bundle any
+/// pending line-anchored comments — it sends only the body + event. This avoids
+/// HTTP 422s when local drafts have stale line anchors vs the remote PR head
+/// (the GitHub card is for decisions, not for pushing inline drafts — that's
+/// what the Comments card is for).
+#[tauri::command]
+pub fn submit_github_pr_decision(
+    mode: String,
+    summary: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    use er_engine::github;
+
+    let event = match mode.as_str() {
+        "APPROVE" | "REQUEST_CHANGES" | "COMMENT" => mode.as_str(),
+        _ => {
+            return Err(format!(
+                "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
+            ))
+        }
+    };
+
+    let summary_trimmed = summary.trim().to_string();
+    // GitHub itself rejects REQUEST_CHANGES and COMMENT reviews with a blank body.
+    // APPROVE is fine without a body.
+    if event != "APPROVE" && summary_trimmed.is_empty() {
+        return Err(format!(
+            "GitHub requires a comment for {event} reviews. Add a summary first."
+        ));
+    }
+
+    let (owner, repo, number, is_remote, repo_root) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab = app.tab();
+        let is_remote = tab.is_remote();
+        let repo_root = tab.repo_root.clone();
+        let (owner, repo, number) = active_github_key(&app, &*state)
+            .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?;
+        (owner, repo, number, is_remote, repo_root)
+    };
+
+    let submit_result = if is_remote {
+        github::gh_pr_submit_review_remote(&owner, &repo, number, &[], event, &summary_trimmed)
+    } else {
+        github::gh_pr_submit_review(
+            &owner,
+            &repo,
+            number,
+            &[],
+            &repo_root,
+            event,
+            &summary_trimmed,
+        )
+    };
+    submit_result.map_err(|e| format!("GitHub review submission failed: {e}"))?;
+
+    kick_github_status_refresh(
+        state.gh_status_cache.clone(),
+        Arc::clone(&state.gh_status_in_flight),
+        Arc::clone(&state.desktop_revision),
+        Some(Arc::clone(&state.loading)),
+        owner,
+        repo,
+        number,
+    );
+
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &mut hl, &*state))
+}
+
+/// Post a PR-wide (issue-stream) comment on the active tab's PR. Used by the
+/// GitHub card's "Comment / Review" action — distinct from line-anchored
+/// review comments handled by `submit_github_review`.
+#[tauri::command]
+pub fn post_github_pr_comment(
+    body: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Err("Comment body cannot be empty".to_string());
+    }
+
+    let (owner, repo, number) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        active_github_key(&app, &*state).ok_or_else(|| {
+            "No GitHub PR detected for the active tab".to_string()
+        })?
+    };
+
+    er_engine::github::gh_pr_general_comment_remote(&owner, &repo, number, trimmed)
+        .map_err(|e| format!("Failed to post comment: {e}"))?;
+
+    // Refresh the cached GitHub status so the comment count + recent list update.
+    kick_github_status_refresh(
+        state.gh_status_cache.clone(),
+        Arc::clone(&state.gh_status_in_flight),
+        Arc::clone(&state.desktop_revision),
+        Some(Arc::clone(&state.loading)),
+        owner,
+        repo,
+        number,
+    );
+
+    let app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     Ok(snap_from(&app, &mut hl, &*state))
 }
@@ -2704,20 +3316,101 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
         let fetched_at = Arc::clone(&state.pr_cache_fetched_at);
         let loading = Arc::clone(&state.loading);
         let desktop_rev = Arc::clone(&state.desktop_revision);
+        let pr_cache = Arc::clone(&state.pr_cache);
+        let gh_user = Arc::clone(&state.gh_user);
+        let inbox = Arc::clone(&state.inbox);
+        let app_handle_state = Arc::clone(&state.tauri_app_handle);
         desktop_rev.fetch_add(1, Ordering::Relaxed); // loading started
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime");
-            rt.block_on(async move {
-                crate::pr_cache::refresh_pr_cache(&cache, &fetched_at).await;
-            });
+            let failed = rt.block_on(async move { crate::pr_cache::refresh_pr_cache(&cache, &fetched_at).await });
+            for remote in failed {
+                process_inbox_after_pr_refresh(
+                    &pr_cache,
+                    &gh_user,
+                    &inbox,
+                    &desktop_rev,
+                    &app_handle_state,
+                    Some(remote),
+                );
+            }
+            process_inbox_after_pr_refresh(
+                &pr_cache,
+                &gh_user,
+                &inbox,
+                &desktop_rev,
+                &app_handle_state,
+                None,
+            );
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
             }
             desktop_rev.fetch_add(1, Ordering::Relaxed); // loading finished / cache updated
         });
+    }
+
+    snap!(state)
+}
+
+#[tauri::command]
+pub fn mark_inbox_item_read(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let now = now_ms();
+    if let Ok(mut inbox) = state.inbox.lock() {
+        inbox.mark_item_read(&id, now);
+    }
+    crate::inbox::save_inbox_state(&state.inbox);
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    snap!(state)
+}
+
+#[tauri::command]
+pub fn mark_all_inbox_read(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let now = now_ms();
+    if let Ok(mut inbox) = state.inbox.lock() {
+        inbox.mark_all_read(now);
+    }
+    crate::inbox::save_inbox_state(&state.inbox);
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    snap!(state)
+}
+
+#[tauri::command]
+pub fn clear_read_inbox_items(state: State<AppState>) -> Result<AppSnapshot, String> {
+    if let Ok(mut inbox) = state.inbox.lock() {
+        inbox.clear_read();
+    }
+    crate::inbox::save_inbox_state(&state.inbox);
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    snap!(state)
+}
+
+#[tauri::command]
+pub fn refresh_notifications(state: State<AppState>) -> Result<AppSnapshot, String> {
+    refresh_pr_list(state)
+}
+
+#[tauri::command]
+pub fn open_inbox_item(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let now = now_ms();
+    let target = {
+        let mut inbox = state.inbox.lock().map_err(|e| e.to_string())?;
+        let target = inbox.items.iter().find(|i| i.id == id).map(|i| i.target.clone());
+        inbox.mark_item_read(&id, now);
+        target
+    };
+    crate::inbox::save_inbox_state(&state.inbox);
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+
+    if let Some(target) = target {
+        if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
+            return open_pr_review(project_id, pr_number, Some(true), state);
+        }
+        if let (Some(project_id), Some(branch)) = (target.project_id, target.branch) {
+            return open_local_branch(project_id, branch, Some(true), state);
+        }
     }
 
     snap!(state)
@@ -3273,13 +3966,22 @@ pub fn open_commit_composer(state: State<AppState>) -> Result<AppSnapshot, Strin
 pub fn select_commit(sha: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    // TODO: trigger the engine's commit-load path. For v1 just move the index
-    // when the sha matches a loaded commit.
     {
         let tab = app.tab_mut();
+        // Switching into History mode lazily initializes HistoryState with the
+        // first 50 commits — needed when the user clicks a commit from
+        // Branch/Unstaged/Staged where history was never loaded.
+        if tab.mode != DiffMode::History {
+            tab.set_mode(DiffMode::History);
+        }
         if let Some(history) = tab.history.as_mut() {
             if let Some(pos) = history.commits.iter().position(|c| c.hash == sha) {
-                history.selected_commit = pos;
+                if history.selected_commit != pos {
+                    history.selected_commit = pos;
+                    // Reuse the engine's commit-load path so the right panel
+                    // updates without forcing the user to keystroke.
+                    tab.history_load_selected_diff();
+                }
             }
         }
     }
@@ -3613,6 +4315,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     app.check_commands();
     // Same lifecycle for app-level background tasks (cross-tab reviews).
     app.poll_background_tasks();
+    process_ai_task_inbox(&app, &*state);
     // Drain again so completion/failure log entries are visible in this poll.
     app.drain_agent_log();
     // Check if .er/ AI files changed — cheap mtime check, reloads AI state if yes
@@ -3929,6 +4632,30 @@ pub fn detect_dev_url(repo_root: String) -> Result<Option<String>, String> {
     }
     // No package.json — caller may extend later (pyproject.toml / Cargo.toml).
     Ok(None)
+}
+
+/// Return the recent log entries for a specific background task.
+/// Returns an empty list if the task is not found (may have been reaped).
+#[tauri::command]
+pub fn get_background_task_log(
+    task_id: String,
+    state: State<AppState>,
+) -> Result<Vec<AgentLogSnapshot>, String> {
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let entries = app.background_task_log_tail(&task_id);
+    let log: Vec<AgentLogSnapshot> = entries
+        .iter()
+        .map(|e| AgentLogSnapshot {
+            command_name: e.command_name.clone(),
+            source: match &e.source {
+                er_engine::app::AgentLogSource::Stdout => "stdout".to_string(),
+                er_engine::app::AgentLogSource::Stderr => "stderr".to_string(),
+                er_engine::app::AgentLogSource::Status => "status".to_string(),
+            },
+            text: e.text.clone(),
+        })
+        .collect();
+    Ok(log)
 }
 
 #[cfg(test)]

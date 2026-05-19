@@ -11,6 +11,7 @@ export interface LineSnapshot {
 }
 
 export interface ThreadMessage {
+  id: string;
   author: string;
   kind: "you" | "human" | "ai";
   timestamp: string;
@@ -213,6 +214,7 @@ export interface GithubStatusSnapshot {
   state: string;
   is_draft: boolean;
   title: string;
+  body: string;
   author: string;
   head_ref: string;
   base_ref: string;
@@ -234,6 +236,8 @@ export interface AppSnapshot {
   mode: "branch" | "unstaged" | "staged" | "history";
   /** Optional — populated by the engine when in history mode or branch-mode scope. */
   commits?: CommitSummary[];
+  /** SHA of the selected commit when in history mode; null otherwise. */
+  selected_commit_sha?: string | null;
   branch: string;
   base: string;
   input_mode: "normal" | "search" | "comment" | "filter" | "commit" | "confirm";
@@ -273,6 +277,30 @@ export interface AppSnapshot {
   background_tasks?: BackgroundTaskSnapshot[];
   /** Diff source state for the active tab. Null for working-tree tabs. */
   diff_source?: DiffSourceSnapshot | null;
+  inbox_items?: InboxItemSnapshot[];
+  inbox_unread_count?: number;
+}
+
+export interface InboxTargetSnapshot {
+  project_id?: string | null;
+  repo_root?: string | null;
+  remote?: string | null;
+  pr_number?: number | null;
+  branch?: string | null;
+  url?: string | null;
+}
+
+export interface InboxItemSnapshot {
+  id: string;
+  kind: string;
+  severity: string;
+  title: string;
+  body: string;
+  source: string;
+  target: InboxTargetSnapshot;
+  created_at_ms: number;
+  read_at_ms?: number | null;
+  dedupe_key: string;
 }
 
 export interface BackgroundTaskSnapshot {
@@ -286,6 +314,10 @@ export interface BackgroundTaskSnapshot {
   error?: string | null;
   started_at_ms: number;
   finished_at_ms?: number | null;
+  /** Last ~40 log entries for this task (from backend snapshot tail). */
+  recent_log?: AgentLogEntry[];
+  /** Path to the debug log file written after task completion, if available. */
+  debug_log_path?: string | null;
 }
 
 export interface DiffSourceSnapshot {

@@ -8,6 +8,7 @@ use er_engine::highlight::Highlighter;
 use serde::Serialize;
 
 use crate::projects;
+use crate::inbox::InboxHandle;
 
 // ── Wire types ──────────────────────────────────────────────────────────────
 
@@ -110,11 +111,37 @@ pub struct AppSnapshot {
     /// come first to mirror the TUI's filter overlay ordering.
     #[serde(default)]
     pub filter_suggestions: Vec<FilterSuggestionSnapshot>,
+    /// Last 10 commits on the active tab's branch (vs base). Powers the file
+    /// viewer's commit history scroller. Empty for remote-only tabs.
+    #[serde(default)]
+    pub commits: Vec<CommitSummary>,
+    /// SHA of the currently-selected commit when in History mode.
+    /// None when viewing a non-history scope ("All changes", unstaged, staged).
+    #[serde(default)]
+    pub selected_commit_sha: Option<String>,
     /// Session-scoped background review tasks across all tabs. Includes
     /// Running tasks and Done/Failed tasks within the last 8 seconds so
     /// the frontend can render transient toasts.
     #[serde(default)]
     pub background_tasks: Vec<BackgroundTaskSnapshotWire>,
+    #[serde(default)]
+    pub inbox_items: Vec<InboxItemSnapshot>,
+    #[serde(default)]
+    pub inbox_unread_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InboxItemSnapshot {
+    pub id: String,
+    pub kind: String,
+    pub severity: String,
+    pub title: String,
+    pub body: String,
+    pub source: String,
+    pub target: serde_json::Value,
+    pub created_at_ms: u64,
+    pub read_at_ms: Option<u64>,
+    pub dedupe_key: String,
 }
 
 /// Wire representation of an app-level background task.
@@ -130,6 +157,12 @@ pub struct BackgroundTaskSnapshotWire {
     pub error: Option<String>,
     pub started_at_ms: u128,
     pub finished_at_ms: Option<u128>,
+    /// Last 40 log entries from the task's ring buffer.
+    #[serde(default)]
+    pub recent_log: Vec<AgentLogSnapshot>,
+    /// Path to the task's debug log file, if available.
+    #[serde(default)]
+    pub debug_log_path: Option<String>,
 }
 
 /// Status of a background AI command.
@@ -277,6 +310,16 @@ pub struct FileSnapshot {
     pub source_index: usize,
 }
 
+/// Lightweight commit metadata for the file viewer's history scroller.
+/// Includes "All changes" + last N commits.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommitSummary {
+    pub sha: String,
+    pub title: String,
+    pub author: String,
+    pub age: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FilterSuggestionSnapshot {
     /// "preset" | "history"
@@ -328,6 +371,7 @@ pub struct ThreadSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadMessage {
+    pub id: String,
     pub author: String,
     pub kind: String, // "you" | "human" | "ai"
     pub timestamp: String,
@@ -398,6 +442,7 @@ pub struct GithubStatusSnapshot {
     pub state: String,
     pub is_draft: bool,
     pub title: String,
+    pub body: String,
     pub author: String,
     pub head_ref: String,
     pub base_ref: String,
@@ -476,6 +521,7 @@ fn comment_ref_to_thread(
         },
         resolved: c.is_resolved(),
         root: ThreadMessage {
+            id: c.id().to_string(),
             author: c.author().to_string(),
             kind: author_kind.to_string(),
             timestamp: c.timestamp().to_string(),
@@ -513,6 +559,7 @@ fn build_replies(
                     "human"
                 };
                 replies.push(ThreadMessage {
+                    id: q.id.clone(),
                     author,
                     kind: kind.to_string(),
                     timestamp: q.timestamp.clone(),
@@ -537,6 +584,7 @@ fn build_replies(
                     "human"
                 };
                 replies.push(ThreadMessage {
+                    id: c.id.clone(),
                     author,
                     kind: kind.to_string(),
                     timestamp: c.timestamp.clone(),
@@ -558,6 +606,7 @@ fn build_replies(
             .unwrap_or(false);
         if is_pending {
             replies.push(ThreadMessage {
+                id: String::new(),
                 author: "ai".to_string(),
                 kind: "ai".to_string(),
                 timestamp: String::new(),
@@ -648,6 +697,7 @@ pub fn build_snapshot(
     gh_status_cache: Option<&GhStatusCache>,
     loading: Option<&LoadingState>,
     watch_status: Option<&WatchStatusState>,
+    inbox: Option<&InboxHandle>,
 ) -> AppSnapshot {
     let t0 = std::time::Instant::now();
     let tab = app.tab();
@@ -765,6 +815,15 @@ pub fn build_snapshot(
 
     let ai = build_ai_snapshot(tab, pending_ai);
     let pr = build_pr_snapshot(tab);
+    let commits = build_commits_snapshot(tab);
+    let selected_commit_sha = if matches!(tab.mode, DiffMode::History) {
+        tab.history
+            .as_ref()
+            .and_then(|h| h.commits.get(h.selected_commit))
+            .map(|c| c.hash.clone())
+    } else {
+        None
+    };
 
     let active_tab = app.active_tab;
     let tabs: Vec<TabSummary> = app
@@ -908,10 +967,26 @@ pub fn build_snapshot(
         agent_log: build_agent_log(tab),
         active_ai_label: app.active_ai_selection_label(),
         filter_suggestions,
+        commits,
+        selected_commit_sha,
         background_tasks: app
             .background_task_snapshots()
             .into_iter()
             .map(|t| BackgroundTaskSnapshotWire {
+                recent_log: t
+                    .recent_log
+                    .iter()
+                    .map(|e| AgentLogSnapshot {
+                        command_name: e.command_name.clone(),
+                        source: match &e.source {
+                            AgentLogSource::Stdout => "stdout".to_string(),
+                            AgentLogSource::Stderr => "stderr".to_string(),
+                            AgentLogSource::Status => "status".to_string(),
+                        },
+                        text: e.text.clone(),
+                    })
+                    .collect(),
+                debug_log_path: None,
                 id: t.id,
                 kind: t.kind,
                 label: t.label,
@@ -923,6 +998,26 @@ pub fn build_snapshot(
                 finished_at_ms: t.finished_at_ms,
             })
             .collect(),
+        inbox_items: inbox
+            .and_then(|h| h.lock().ok().map(|g| g.items.clone()))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| InboxItemSnapshot {
+                id: i.id,
+                kind: i.kind,
+                severity: i.severity,
+                title: i.title,
+                body: i.body,
+                source: i.source,
+                target: serde_json::to_value(i.target).unwrap_or(serde_json::Value::Null),
+                created_at_ms: i.created_at_ms,
+                read_at_ms: i.read_at_ms,
+                dedupe_key: i.dedupe_key,
+            })
+            .collect(),
+        inbox_unread_count: inbox
+            .and_then(|h| h.lock().ok().map(|g| g.unread_count()))
+            .unwrap_or(0),
     };
     if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {
         eprintln!(
@@ -933,6 +1028,39 @@ pub fn build_snapshot(
         );
     }
     out
+}
+
+/// Load the most recent 10 commits on the current branch for the file viewer's
+/// commit history scroller. Reuses history-mode commits if already loaded;
+/// otherwise shells out to `git log`. Returns an empty list for remote-only
+/// tabs (no local repo to query).
+fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
+    const LIMIT: usize = 10;
+
+    let raw: Vec<er_engine::git::CommitInfo> = if let Some(history) = tab.history.as_ref() {
+        history.commits.iter().take(LIMIT).cloned().collect()
+    } else if tab.remote_repo.is_some() {
+        Vec::new()
+    } else {
+        let ranged = er_engine::git::git_log_branch(&tab.base_branch, &tab.repo_root, LIMIT, 0)
+            .unwrap_or_default();
+        if ranged.is_empty() {
+            // On the base branch itself `base..HEAD` is empty — fall back to
+            // recent HEAD history so the commit scroller still shows something.
+            er_engine::git::git_log_head(&tab.repo_root, LIMIT).unwrap_or_default()
+        } else {
+            ranged
+        }
+    };
+
+    raw.into_iter()
+        .map(|c| CommitSummary {
+            sha: c.hash,
+            title: c.subject,
+            author: c.author,
+            age: c.relative_date,
+        })
+        .collect()
 }
 
 fn build_agent_commands(app: &App, tab: &TabState) -> Vec<AgentCommandSnapshot> {
@@ -1602,6 +1730,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         stale: q.stale,
                         resolved: q.resolved,
                         root: ThreadMessage {
+                            id: q.id.clone(),
                             author: if q.author.is_empty() {
                                 "You".to_string()
                             } else {
@@ -1636,6 +1765,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         stale: c.stale || c.outdated,
                         resolved: c.resolved,
                         root: ThreadMessage {
+                            id: c.id.clone(),
                             author: if c.author.is_empty() {
                                 "You".to_string()
                             } else {

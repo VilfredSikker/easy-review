@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import type { AgentLogEntry, AgentCommandStatus } from "$lib/types";
+  import { sourceColor } from "$lib/utils/agentLog";
 
   const commands = $derived<AgentCommandStatus[]>(app.snapshot?.agent_commands ?? []);
   const log = $derived<AgentLogEntry[]>(app.snapshot?.agent_log ?? []);
@@ -13,12 +14,6 @@
     if (status === "done") return "text-add-fg";
     if (status === "failed") return "text-del-fg";
     return "text-ink-300";
-  }
-
-  function sourceColor(source: string): string {
-    if (source === "stderr") return "text-del-fg/80";
-    if (source === "status") return "text-ink-400 italic";
-    return "text-ink-200";
   }
 </script>
 

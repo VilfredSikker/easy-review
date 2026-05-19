@@ -3,6 +3,7 @@
 mod commands;
 mod er_storage;
 mod export;
+mod inbox;
 mod pr_cache;
 mod projects;
 mod snapshot;
@@ -11,13 +12,13 @@ mod terminal;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tauri::Manager;
 
 use commands::AppState;
 use er_engine::app::App;
 use er_engine::highlight::Highlighter;
 use snapshot::{
-    GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot,
-    WatchStatusState,
+    GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState,
 };
 
 /// Annotation content script injected into browser-view frames.
@@ -691,6 +692,8 @@ fn main() {
         Arc::new(Mutex::new(HashMap::new()));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
+    let inbox = Arc::new(Mutex::new(inbox::load_inbox_state()));
+    let tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
 
     // Resolve the gh user login once at launch in a background thread.
     // Don't block startup; if it fails, leave as None.
@@ -745,6 +748,8 @@ fn main() {
         desktop_revision: Arc::clone(&desktop_revision),
         last_sent_revision: Arc::clone(&last_sent_revision),
         watch_status: Arc::clone(&watch_status),
+        inbox: Arc::clone(&inbox),
+        tauri_app_handle: Arc::clone(&tauri_app_handle),
     };
 
     match pr_cache::load_persisted_pr_cache() {
@@ -1102,6 +1107,9 @@ fn main() {
     let bg_fetched_at = Arc::clone(&pr_cache_fetched_at);
     let bg_loading = Arc::clone(&loading);
     let bg_desktop_rev = Arc::clone(&desktop_revision);
+    let bg_gh_user = Arc::clone(&gh_user);
+    let bg_inbox = Arc::clone(&inbox);
+    let bg_handle = Arc::clone(&tauri_app_handle);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1112,7 +1120,25 @@ fn main() {
                 f.pr_list = true;
             }
             bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await;
+            let failed = pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await;
+            for remote in failed {
+                commands::process_inbox_after_pr_refresh(
+                    &bg_cache,
+                    &bg_gh_user,
+                    &bg_inbox,
+                    &bg_desktop_rev,
+                    &bg_handle,
+                    Some(remote),
+                );
+            }
+            commands::process_inbox_after_pr_refresh(
+                &bg_cache,
+                &bg_gh_user,
+                &bg_inbox,
+                &bg_desktop_rev,
+                &bg_handle,
+                None,
+            );
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
             }
@@ -1156,6 +1182,8 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(state)
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
         // proxies `https://host/path`. HTML responses get the annotation script.
@@ -1166,6 +1194,11 @@ fn main() {
             proxied_response(request.uri(), "https")
         })
         .setup(|app| {
+            if let Some(state) = app.try_state::<AppState>() {
+                if let Ok(mut h) = state.tauri_app_handle.lock() {
+                    *h = Some(app.handle().clone());
+                }
+            }
             tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -1214,6 +1247,8 @@ fn main() {
             commands::pull_github_comments,
             commands::push_github_comments,
             commands::submit_github_review,
+            commands::submit_github_pr_decision,
+            commands::post_github_pr_comment,
             commands::run_ai_review,
             commands::run_ai_validate,
             commands::set_ai_model,
@@ -1237,6 +1272,11 @@ fn main() {
             commands::open_pr_branch,
             commands::open_pr_review,
             commands::refresh_pr_list,
+            commands::open_inbox_item,
+            commands::mark_inbox_item_read,
+            commands::mark_all_inbox_read,
+            commands::clear_read_inbox_items,
+            commands::refresh_notifications,
             commands::dismiss_remote_pr,
             commands::track_pr,
             commands::untrack_pr,
@@ -1263,6 +1303,7 @@ fn main() {
             commands::terminal_close,
             commands::detect_dev_url,
             commands::set_diff_source,
+            commands::get_background_task_log,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application");

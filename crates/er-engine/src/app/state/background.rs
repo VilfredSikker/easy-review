@@ -7,7 +7,7 @@
 //!
 //! All state is session-only — no persistence across app restarts.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{AgentLogEntry, AgentLogSource, CommandStatus, TabState};
@@ -99,6 +99,8 @@ pub(crate) struct BackgroundTaskHandle {
     pub result_rx: std::sync::mpsc::Receiver<anyhow::Result<()>>,
     /// Per-task log entries draining into `App` log buffer.
     pub log_rx: std::sync::mpsc::Receiver<AgentLogEntry>,
+    /// Ring buffer of recent log entries for app-wide log access (capped at 500).
+    pub recent_log: VecDeque<AgentLogEntry>,
 }
 
 /// Drained view used by snapshot building. Includes Running plus
@@ -115,6 +117,8 @@ pub struct BackgroundTaskSnapshot {
     pub error: Option<String>,
     pub started_at_ms: u128,
     pub finished_at_ms: Option<u128>,
+    /// Last 40 log entries from the handle's ring buffer. Empty for retired tasks.
+    pub recent_log: Vec<AgentLogEntry>,
 }
 
 impl BackgroundTaskSnapshot {
@@ -134,6 +138,7 @@ impl BackgroundTaskSnapshot {
             error: task.error.clone(),
             started_at_ms: task.started_at_ms,
             finished_at_ms: task.finished_at_ms,
+            recent_log: Vec::new(),
         }
     }
 }

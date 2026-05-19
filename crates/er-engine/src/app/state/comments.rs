@@ -2292,6 +2292,7 @@ impl App {
                 task,
                 result_rx,
                 log_rx,
+                recent_log: std::collections::VecDeque::new(),
             },
         );
 
@@ -2329,6 +2330,15 @@ impl App {
                     tab.agent_log.push_back(entry.clone());
                     if tab.agent_log.len() > 5000 {
                         tab.agent_log.pop_front();
+                    }
+                }
+            }
+            // Also push into the per-handle ring buffer for app-wide log access.
+            if let Some(handle) = self.background_tasks.get_mut(id) {
+                for entry in &drained {
+                    handle.recent_log.push_back(entry.clone());
+                    if handle.recent_log.len() > 500 {
+                        handle.recent_log.pop_front();
                     }
                 }
             }
@@ -2386,6 +2396,18 @@ impl App {
                     tab.push_synthetic_log("review", status_msg.clone(), AgentLogSource::Status);
                 }
             }
+            // Mirror completion status into handle's recent_log.
+            if let Some(handle) = self.background_tasks.get_mut(&id) {
+                handle.recent_log.push_back(AgentLogEntry {
+                    timestamp: std::time::Instant::now(),
+                    command_name: "review".to_string(),
+                    source: AgentLogSource::Status,
+                    text: status_msg.clone(),
+                });
+                if handle.recent_log.len() > 500 {
+                    handle.recent_log.pop_front();
+                }
+            }
 
             self.notify_long(&status_msg);
         }
@@ -2427,9 +2449,16 @@ impl App {
                     .unwrap_or(false),
             };
             if include {
-                out.push(super::background::BackgroundTaskSnapshot::from_task(
-                    &handle.task,
-                ));
+                let mut snap = super::background::BackgroundTaskSnapshot::from_task(&handle.task);
+                snap.recent_log = handle
+                    .recent_log
+                    .iter()
+                    .rev()
+                    .take(40)
+                    .rev()
+                    .cloned()
+                    .collect();
+                out.push(snap);
             }
         }
         for task in &self.recent_background_tasks {
@@ -2469,5 +2498,14 @@ impl App {
             }
         }
         out
+    }
+
+    /// Return a tail of log entries for a specific background task by ID.
+    /// Returns an empty Vec if the task is not found (may have been reaped).
+    pub fn background_task_log_tail(&self, task_id: &str) -> Vec<AgentLogEntry> {
+        self.background_tasks
+            .get(task_id)
+            .map(|h| h.recent_log.iter().cloned().collect())
+            .unwrap_or_default()
     }
 }

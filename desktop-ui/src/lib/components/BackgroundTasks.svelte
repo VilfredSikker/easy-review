@@ -1,14 +1,17 @@
 <script lang="ts">
   import type { BackgroundTaskSnapshot } from "$lib/types";
+  import RunningAgentPanel from "./RunningAgentPanel.svelte";
 
   interface Props {
     tasks: BackgroundTaskSnapshot[];
     avoidRightPanel?: boolean;
+    rightPanelWidth?: number;
   }
-  const { tasks, avoidRightPanel = false }: Props = $props();
+  const { tasks, avoidRightPanel = false, rightPanelWidth = 340 }: Props = $props();
+
+  let expandedTaskId = $state<string | null>(null);
 
   const DISPLAY_WINDOW_MS = 8_000;
-  const RIGHT_PANEL_WIDTH = 340;
   const LABEL_MAX = 32;
 
   let now = $state(Date.now());
@@ -90,26 +93,45 @@
     return "bg-del-fg";
   }
 
-  const rightOffset = $derived(avoidRightPanel ? RIGHT_PANEL_WIDTH + 16 : 24);
+  const rightOffset = $derived(avoidRightPanel ? rightPanelWidth + 16 : 24);
 </script>
 
 {#if pills.length > 0}
   <div
-    class="fixed bottom-10 flex flex-col items-end gap-1 z-40 pointer-events-none"
+    class="fixed bottom-10 flex flex-col items-end gap-1 z-40"
     style="right: {rightOffset}px"
     aria-label="Background tasks"
   >
+    {#if expandedTaskId !== null && visible.length > 0}
+      <RunningAgentPanel
+        tasks={visible}
+        onClose={() => (expandedTaskId = null)}
+        {avoidRightPanel}
+        {rightPanelWidth}
+      />
+    {/if}
+
     {#each pills as pill (pill.key)}
-      <div
-        class="bg-ink-800/90 text-ink-100 text-[11px] font-mono px-2.5 py-1 rounded-sm border border-ink-500/40 shadow flex items-center gap-1.5 max-w-[260px]"
+      {@const pillTaskId = pill.key.startsWith("run-multi")
+        ? running[0]?.id
+        : pill.key.startsWith("run-")
+          ? running[0]?.id
+          : pill.key.startsWith("fail-")
+            ? pill.key.slice("fail-".length)
+            : pill.key.slice("done-".length)}
+      <button
+        class="bg-ink-800/90 text-ink-100 text-[11px] font-mono px-2.5 py-1 rounded-sm border border-ink-500/40 shadow flex items-center gap-1.5 max-w-[260px] cursor-pointer hover:bg-ink-700/90 transition-colors"
         title={pill.title ?? ""}
+        onclick={() => {
+          expandedTaskId = expandedTaskId === pillTaskId ? null : (pillTaskId ?? null);
+        }}
       >
         <span
           class="inline-block w-1.5 h-1.5 rounded-full shrink-0 {dotColor(pill.status)}"
           aria-hidden="true"
         ></span>
         <span class="truncate">{pill.text}</span>
-      </div>
+      </button>
     {/each}
   </div>
 {/if}
