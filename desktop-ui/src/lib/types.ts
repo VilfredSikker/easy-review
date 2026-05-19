@@ -71,6 +71,7 @@ export interface FlatFinding {
   id: string;
   file: string;
   line: number | null;
+  hunk_index: number | null;
   severity: "high" | "med" | "low";
   title: string;
   message_markdown: string;

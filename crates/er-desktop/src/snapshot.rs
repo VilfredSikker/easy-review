@@ -395,6 +395,7 @@ pub struct FlatFinding {
     pub id: String,
     pub file: String,
     pub line: Option<usize>,
+    pub hunk_index: Option<usize>,
     pub severity: String, // "high" | "med" | "low"
     pub title: String,
     pub message_markdown: String,
@@ -1827,6 +1828,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         id: f.id.clone(),
                         file: path.clone(),
                         line: f.line_start,
+                        hunk_index: f.hunk_index,
                         severity: severity_str(&f.severity).to_string(),
                         title: f.title.clone(),
                         message_markdown: f.description.clone(),

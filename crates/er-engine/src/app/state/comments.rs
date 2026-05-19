@@ -2114,6 +2114,7 @@ impl App {
         &mut self,
         target: super::background::BackgroundTaskTarget,
         prompt: String,
+        prepared_diff: bool,
     ) -> Result<()> {
         use super::background::{BackgroundTask, BackgroundTaskHandle};
 
@@ -2205,17 +2206,30 @@ impl App {
                 }
 
                 if is_claude_compatible {
-                    let allowed: &[&str] = &[
-                        "Read",
-                        "Write",
-                        "Edit",
-                        "Bash(gh pr *)",
-                        "Bash(cp .er/*)",
-                        "Bash(git diff*)",
-                        "Bash(shasum*)",
-                        "Bash(sha256sum*)",
-                        "Bash(mkdir*)",
-                    ];
+                    let allowed: &[&str] = if prepared_diff {
+                        &[
+                            "Read",
+                            "Write",
+                            "Edit",
+                            "Bash(cp .er/*)",
+                            "Bash(shasum*)",
+                            "Bash(sha256sum*)",
+                            "Bash(mkdir*)",
+                            "Bash(awk*)",
+                        ]
+                    } else {
+                        &[
+                            "Read",
+                            "Write",
+                            "Edit",
+                            "Bash(gh pr *)",
+                            "Bash(cp .er/*)",
+                            "Bash(git diff*)",
+                            "Bash(shasum*)",
+                            "Bash(sha256sum*)",
+                            "Bash(mkdir*)",
+                        ]
+                    };
                     for rule in allowed.iter().rev() {
                         agent_args.insert(0, rule.to_string());
                         agent_args.insert(0, "--allowedTools".to_string());

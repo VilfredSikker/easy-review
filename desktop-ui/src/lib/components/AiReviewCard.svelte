@@ -7,6 +7,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { navigateToFinding } from "$lib/dom";
+  import { copyToClipboard } from "$lib/clipboard";
 
   interface Props {
     ai: AiSnapshot;
@@ -46,6 +47,41 @@
 
   function revealErFolder() {
     invoke("reveal_er_folder").catch(() => {});
+  }
+
+  async function copyFindingsJson() {
+    try {
+      const raw = await invoke<string>("read_review_json", { revisionId: null });
+      const review = JSON.parse(raw) as {
+        diff_hash?: string;
+        diff_scope?: string;
+        base_branch?: string;
+        head_branch?: string;
+        files?: Record<string, { findings?: unknown[] }>;
+      };
+      const files = Object.fromEntries(
+        Object.entries(review.files ?? {}).flatMap(([path, fileReview]) => {
+          const findings = fileReview.findings ?? [];
+          return findings.length > 0 ? [[path, { findings }] as const] : [];
+        })
+      );
+      const findingCount = Object.values(files).reduce(
+        (n, entry) => n + entry.findings.length,
+        0
+      );
+      const payload = {
+        diff_hash: review.diff_hash,
+        diff_scope: review.diff_scope,
+        base_branch: review.base_branch,
+        head_branch: review.head_branch,
+        files,
+      };
+      await copyToClipboard(JSON.stringify(payload, null, 2));
+      app.showToast("success", `Copied ${findingCount} findings as JSON`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      app.showToast("error", msg.includes("review.json") ? "No review.json found" : msg);
+    }
   }
 </script>
 
@@ -167,16 +203,32 @@
     </Button>
   {/if}
 
-  <button
-    onclick={revealErFolder}
-    class="w-full mt-2 flex items-center justify-center gap-2 text-[11px] mono text-fg-3 hover:text-fg py-1.5 rounded hover:bg-bg border border-transparent hover:border-border"
-    title="Open the review files folder in your file manager"
-  >
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-7l-2-2H5a2 2 0 0 0-2 2z"/>
-    </svg>
-    <span>Reveal review files</span>
-  </button>
+  <div class="mt-2 flex flex-col gap-1">
+    <button
+      type="button"
+      onclick={copyFindingsJson}
+      disabled={isEmpty}
+      class="w-full flex items-center justify-center gap-2 text-[11px] mono text-fg-3 hover:text-fg py-1.5 rounded hover:bg-bg border border-transparent hover:border-border disabled:opacity-40 disabled:pointer-events-none"
+      title="Copy findings from review.json for pasting into an agent prompt"
+    >
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0" aria-hidden="true">
+        <rect x="9" y="9" width="13" height="13" rx="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </svg>
+      <span class="whitespace-nowrap">Copy findings JSON</span>
+    </button>
+    <button
+      type="button"
+      onclick={revealErFolder}
+      class="w-full flex items-center justify-center gap-2 text-[11px] mono text-fg-3 hover:text-fg py-1.5 rounded hover:bg-bg border border-transparent hover:border-border"
+      title="Open the review files folder in your file manager"
+    >
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0" aria-hidden="true">
+        <path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-7l-2-2H5a2 2 0 0 0-2 2z"/>
+      </svg>
+      <span class="whitespace-nowrap">Reveal review files</span>
+    </button>
+  </div>
 </Card>
 
 <style>

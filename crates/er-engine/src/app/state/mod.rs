@@ -1786,6 +1786,96 @@ impl TabState {
         self.file_tree_cache = None;
     }
 
+    /// Whether `raw_diff` (if present) matches the review `scope` for this tab.
+    fn review_scope_matches_cached_diff(&self, scope: &str) -> bool {
+        if self.local_branch_view.is_some() || self.remote_repo.is_some() {
+            return true;
+        }
+        match scope {
+            "unstaged" => self.mode == DiffMode::Unstaged,
+            "staged" => self.mode == DiffMode::Staged,
+            _ => self.mode == DiffMode::Branch,
+        }
+    }
+
+    /// Fetch raw unified-diff text using the same subprocess rules as `refresh_diff`.
+    ///
+    /// Extracts only the git/gh calls — no parsing, hashing, or selection restore.
+    pub fn fetch_tab_raw_diff(&self, scope: &str) -> Result<String> {
+        if self.mode == DiffMode::History || self.mode == DiffMode::Conflicts {
+            anyhow::bail!("Cannot fetch diff in {:?} mode", self.mode);
+        }
+        if self.mode == DiffMode::Hidden {
+            return Ok(String::new());
+        }
+
+        if let Some(ref branch) = self.local_branch_view {
+            let base = self.base_branch.clone();
+            return if let Some(head_ref) = self.pr_head_ref.clone() {
+                if self.pr_number.is_some() {
+                    crate::github::gh_pr_diff(self.pr_number.unwrap(), &self.repo_root)
+                } else {
+                    crate::git::git_diff_against_branch(&self.repo_root, &base, &head_ref)
+                }
+            } else if let Some(checkout_root) = self.local_branch_checkout_root.clone() {
+                crate::git::git_diff_checkout_against_base(&checkout_root, &base)
+            } else {
+                let diff_target = self
+                    .local_branch_diff_ref
+                    .clone()
+                    .unwrap_or_else(|| branch.clone());
+                crate::git::git_diff_against_branch(&self.repo_root, &base, &diff_target)
+            };
+        }
+
+        if let Some(ref repo_slug) = self.remote_repo {
+            let parts: Vec<&str> = repo_slug.split('/').collect();
+            if parts.len() == 2 {
+                let owner = parts[0];
+                let repo = parts[1];
+                if let Some(pr_number) = self.pr_number {
+                    return crate::github::gh_pr_diff_remote(owner, repo, pr_number);
+                }
+            }
+            anyhow::bail!("Remote tab missing owner/repo or pr_number");
+        }
+
+        let head_ref_owned = self.pr_head_ref.clone();
+        if scope == "staged" && self.committed_unpushed {
+            let staged_raw = git::git_diff_raw(
+                "staged",
+                &self.base_branch,
+                &self.repo_root,
+                head_ref_owned.as_deref(),
+            )?;
+            if !staged_raw.is_empty() {
+                return Ok(staged_raw);
+            }
+            match git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root) {
+                Ok(raw) => return Ok(raw),
+                Err(_) => return Ok(String::new()),
+            }
+        }
+
+        git::git_diff_raw(
+            scope,
+            &self.base_branch,
+            &self.repo_root,
+            head_ref_owned.as_deref(),
+        )
+    }
+
+    /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.
+    pub fn raw_diff_for_review(&self, scope: &str) -> Result<String> {
+        if self.raw_diff.is_some()
+            && !self.branch_diff_hash.is_empty()
+            && self.review_scope_matches_cached_diff(scope)
+        {
+            return Ok(self.raw_diff.as_ref().unwrap().clone());
+        }
+        self.fetch_tab_raw_diff(scope)
+    }
+
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool, auto_unmark: bool) -> Result<()> {
         let t_total = Instant::now();
 
@@ -1826,24 +1916,9 @@ impl TabState {
 
         // Local branch view: read-only `git diff <base>...<branch>` from the user's clone.
         // For local PR review, pr_head_ref holds the fetched ref to diff against instead.
-        if let Some(ref branch) = self.local_branch_view.clone() {
-            let base = self.base_branch.clone();
+        if self.local_branch_view.is_some() {
             let t_raw_diff = Instant::now();
-            let raw = if let Some(head_ref) = self.pr_head_ref.clone() {
-                if let Some(pr_number) = self.pr_number {
-                    crate::github::gh_pr_diff(pr_number, &self.repo_root)?
-                } else {
-                    crate::git::git_diff_against_branch(&self.repo_root, &base, &head_ref)?
-                }
-            } else if let Some(checkout_root) = self.local_branch_checkout_root.clone() {
-                crate::git::git_diff_checkout_against_base(&checkout_root, &base)?
-            } else {
-                let diff_target = self
-                    .local_branch_diff_ref
-                    .clone()
-                    .unwrap_or_else(|| branch.clone());
-                crate::git::git_diff_against_branch(&self.repo_root, &base, &diff_target)?
-            };
+            let raw = self.fetch_tab_raw_diff("branch")?;
             log_branch_profile_phase(self, "local_branch_raw_diff", t_raw_diff);
 
             let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
@@ -1915,74 +1990,67 @@ impl TabState {
         }
 
         // Remote mode: fetch diff from GitHub API instead of local git
-        if let Some(ref repo_slug) = self.remote_repo.clone() {
-            let parts: Vec<&str> = repo_slug.split('/').collect();
-            if parts.len() == 2 {
-                let owner = parts[0].to_string();
-                let repo = parts[1].to_string();
-                if let Some(pr_number) = self.pr_number {
-                    let raw = crate::github::gh_pr_diff_remote(&owner, &repo, pr_number)?;
+        if let (Some(repo_slug), Some(_pr_number)) = (&self.remote_repo, self.pr_number) {
+            if repo_slug.split('/').count() == 2 {
+                let raw = self.fetch_tab_raw_diff("branch")?;
 
-                    let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
+                let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
 
-                    if raw.len() > 200_000 {
-                        let headers = crate::git::parse_diff_headers(&raw);
-                        self.files = headers.iter().map(crate::git::header_to_stub).collect();
-                        self.file_headers = headers;
-                        self.raw_diff = Some(raw.clone());
-                        self.lazy_mode = true;
-                        for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
-                            if self.user_expanded.contains(&file.path) {
-                                continue;
-                            }
-                            let total_lines = header.adds + header.dels;
-                            let should_compact = self.compaction_config.enabled
-                                && (self
-                                    .compaction_config
-                                    .patterns
-                                    .iter()
-                                    .any(|p| crate::git::compact_files_match(p, &file.path))
-                                    || total_lines
-                                        > self.compaction_config.max_lines_before_compact);
-                            if should_compact {
-                                file.compacted = true;
-                                file.raw_hunk_count = header.hunk_count;
-                            }
+                if raw.len() > 200_000 {
+                    let headers = crate::git::parse_diff_headers(&raw);
+                    self.files = headers.iter().map(crate::git::header_to_stub).collect();
+                    self.file_headers = headers;
+                    self.raw_diff = Some(raw.clone());
+                    self.lazy_mode = true;
+                    for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
+                        if self.user_expanded.contains(&file.path) {
+                            continue;
                         }
-                    } else {
-                        self.files = crate::git::parse_diff(&raw);
-                        self.file_headers.clear();
-                        self.raw_diff = None;
-                        self.lazy_mode = false;
-                        crate::git::compact_files(&mut self.files, &self.compaction_config);
-                    }
-
-                    if recompute_branch_hash {
-                        self.diff_hash = crate::ai::compute_diff_hash(&raw);
-                        self.branch_diff_hash = self.diff_hash.clone();
-                    } else {
-                        self.diff_hash =
-                            format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
-                    }
-
-                    // Restore selection
-                    if let Some(ref path) = prev_path {
-                        if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
-                            self.selected_file = idx;
-                        } else {
-                            self.selected_file =
-                                self.files.len().saturating_sub(1).min(self.selected_file);
+                        let total_lines = header.adds + header.dels;
+                        let should_compact = self.compaction_config.enabled
+                            && (self
+                                .compaction_config
+                                .patterns
+                                .iter()
+                                .any(|p| crate::git::compact_files_match(p, &file.path))
+                                || total_lines > self.compaction_config.max_lines_before_compact);
+                        if should_compact {
+                            file.compacted = true;
+                            file.raw_hunk_count = header.hunk_count;
                         }
-                    } else {
-                        self.selected_file = 0;
                     }
-                    self.clamp_hunk();
-                    self.ensure_file_parsed();
-                    self.rebuild_hunk_offsets();
-                    self.file_tree_cache = None;
-                    self.update_mem_budget();
-                    return Ok(());
+                } else {
+                    self.files = crate::git::parse_diff(&raw);
+                    self.file_headers.clear();
+                    self.raw_diff = None;
+                    self.lazy_mode = false;
+                    crate::git::compact_files(&mut self.files, &self.compaction_config);
                 }
+
+                if recompute_branch_hash {
+                    self.diff_hash = crate::ai::compute_diff_hash(&raw);
+                    self.branch_diff_hash = self.diff_hash.clone();
+                } else {
+                    self.diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
+                }
+
+                // Restore selection
+                if let Some(ref path) = prev_path {
+                    if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
+                        self.selected_file = idx;
+                    } else {
+                        self.selected_file =
+                            self.files.len().saturating_sub(1).min(self.selected_file);
+                    }
+                } else {
+                    self.selected_file = 0;
+                }
+                self.clamp_hunk();
+                self.ensure_file_parsed();
+                self.rebuild_hunk_offsets();
+                self.file_tree_cache = None;
+                self.update_mem_budget();
+                return Ok(());
             }
             return Ok(());
         }
@@ -1996,7 +2064,6 @@ impl TabState {
         let prev_line = self.current_line;
         let prev_scroll = self.diff_scroll;
 
-        // In Staged mode after a commit, show HEAD~1..HEAD unless new staged changes exist
         let head_ref_owned = self.pr_head_ref.clone();
         let raw = if self.mode == DiffMode::Staged && self.committed_unpushed {
             let staged_raw = git::git_diff_raw(
@@ -2019,12 +2086,7 @@ impl TabState {
                 }
             }
         } else {
-            git::git_diff_raw(
-                self.mode.git_mode(),
-                &self.base_branch,
-                &self.repo_root,
-                head_ref_owned.as_deref(),
-            )?
+            self.fetch_tab_raw_diff(self.mode.git_mode())?
         };
 
         // Decide parsing strategy based on diff size.

@@ -317,7 +317,17 @@ fn active_github_key(app: &App, state: &AppState) -> Option<(String, String, u64
 fn process_ai_task_inbox(app: &App, state: &AppState) {
     let now = now_ms();
     let tasks = app.background_task_snapshots();
+    let tab = app.tab();
+    let repo_root = tab.repo_root.clone();
+    let remote = tab.remote_repo.clone();
+    let pr_number = tab.pr_number;
+    let branch = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+
     let mut emitted_any = false;
+    let mut just_added: Vec<InboxItem> = Vec::new();
     if let Ok(mut inbox) = state.inbox.lock() {
         for task in tasks {
             let (kind, severity, title, body) = match task.status.as_str() {
@@ -339,22 +349,17 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
             };
             let item = InboxItem {
                 id: format!("inbox-ai-{}-{}", task.id, task.status),
-                kind: kind.clone(),
+                kind,
                 severity,
                 title,
                 body,
                 source: "ai".to_string(),
                 target: InboxTarget {
                     project_id: None,
-                    repo_root: Some(app.tab().repo_root.clone()),
-                    remote: app.tab().remote_repo.clone(),
-                    pr_number: app.tab().pr_number,
-                    branch: Some(
-                        app.tab()
-                            .local_branch_view
-                            .clone()
-                            .unwrap_or_else(|| app.tab().current_branch.clone()),
-                    ),
+                    repo_root: Some(repo_root.clone()),
+                    remote: remote.clone(),
+                    pr_number,
+                    branch: Some(branch.clone()),
                     url: None,
                 },
                 created_at_ms: now,
@@ -363,9 +368,12 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
             };
             if inbox.add_item(item.clone()) {
                 emitted_any = true;
-                maybe_send_native_notification(&state.inbox, &state.tauri_app_handle, &item);
+                just_added.push(item);
             }
         }
+    }
+    for item in &just_added {
+        maybe_send_native_notification(&state.inbox, &state.tauri_app_handle, item);
     }
     if emitted_any {
         crate::inbox::save_inbox_state(&state.inbox);
@@ -1900,97 +1908,50 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
-    let is_remote = app.tab().remote_repo.is_some();
-
-    let (prompt, target) = if is_remote {
-        // Remote PR review: write into the flat branch-level managed dir so
-        // remote and local tabs share the same on-disk layout. Uses absolute
-        // paths in the prompt; the agent fetches the diff via `gh pr diff`.
-        let (er_dir, repo_root, branch_label, base_branch, pr_number, remote_repo) = {
-            let tab = app.tab();
-            let branch_label = tab
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone());
-            (
-                tab.er_dir(),
-                tab.repo_root.clone(),
-                branch_label,
-                tab.base_branch.clone(),
-                tab.pr_number,
-                tab.remote_repo.clone(),
-            )
-        };
-
-        std::fs::create_dir_all(&er_dir)
-            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-
-        let (owner, repo, pr_num) = match (&remote_repo, pr_number) {
-            (Some(slug), Some(n)) => {
-                let (o, r) = slug
-                    .split_once('/')
-                    .map(|(a, b)| (a.to_string(), b.to_string()))
-                    .unwrap_or((slug.clone(), String::new()));
-                (o, r, n)
-            }
-            _ => return Err("Remote PR review requires owner/repo and pr_number".to_string()),
-        };
-        let prompt =
-            er_engine::ai::prompts::build_review_prompt_remote(&owner, &repo, pr_num, &er_dir);
-
-        let target = er_engine::app::BackgroundTaskTarget {
-            repo_root,
-            er_dir,
+    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+        let tab = app.tab();
+        let branch_label = tab
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| tab.current_branch.clone());
+        (
+            tab.repo_root.clone(),
             branch_label,
-            base_branch,
-            scope: scope.clone(),
-            pr_number,
-            remote_repo,
-            managed_local: false,
-        };
-        (prompt, target)
-    } else {
-        // Local managed review: write into the flat branch-level managed dir.
-        // No revision creation — re-running review overwrites in place. The
-        // tab's er_root is already pointed at this dir by apply_managed_root
-        // (called from place_tab), so the loader reads from where we write.
-        let (repo_root, branch, base_branch, er_dir) = {
-            let tab = app.tab();
-            let branch = tab
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone());
-            (
-                tab.repo_root.clone(),
-                branch,
-                tab.base_branch.clone(),
-                tab.er_dir(),
-            )
-        };
-
-        std::fs::create_dir_all(&er_dir)
-            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-
-        let prompt = er_engine::ai::prompts::build_review_prompt_local_managed(
-            &base_branch,
-            &scope,
-            &er_dir,
-        );
-
-        let target = er_engine::app::BackgroundTaskTarget {
-            repo_root: repo_root.clone(),
-            er_dir,
-            branch_label: branch,
-            base_branch,
-            scope: scope.clone(),
-            pr_number: None,
-            remote_repo: None,
-            managed_local: true,
-        };
-        (prompt, target)
+            tab.base_branch.clone(),
+            tab.er_dir(),
+            tab.pr_number,
+            tab.remote_repo.clone(),
+            tab.remote_repo.is_some(),
+        )
     };
 
-    app.spawn_background_review(target, prompt)
+    std::fs::create_dir_all(&er_dir)
+        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+
+    let raw = app
+        .tab()
+        .raw_diff_for_review(&scope)
+        .map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Err("Nothing to review".to_string());
+    }
+    std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
+        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
+
+    let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(&scope, &er_dir);
+
+    let target = er_engine::app::BackgroundTaskTarget {
+        repo_root,
+        er_dir,
+        branch_label,
+        base_branch,
+        scope: scope.clone(),
+        pr_number,
+        remote_repo,
+        managed_local: !is_remote,
+    };
+
+    app.spawn_background_review(target, prompt, true)
         .map_err(|e| e.to_string())?;
 
     let debug_bg = er_engine::app::debug_bg_enabled();
@@ -2029,11 +1990,17 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
         return Err("No review to validate. Run AI review first.".to_string());
     }
 
-    let base_branch = app.tab().base_branch.clone();
-    // Anchor the prompt at the managed branch dir so the agent updates the
-    // same review.json the UI loads from (rather than `<repo>/.er/`).
-    let prompt =
-        er_engine::ai::prompts::build_validate_prompt_local_managed(&base_branch, &scope, &er_dir);
+    let raw = app
+        .tab()
+        .raw_diff_for_review(&scope)
+        .map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Err("Nothing to validate".to_string());
+    }
+    std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
+        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
+
+    let prompt = er_engine::ai::prompts::build_validate_prompt_prepared_diff(&scope, &er_dir);
     app.spawn_agent_prompt("validate", &prompt)
         .map_err(|e| e.to_string())?;
     app.notify("AI review validation started");
@@ -5501,5 +5468,58 @@ mod tests {
             unsubmittable_count, 0,
             "no unsubmittable comments when all have line anchors"
         );
+    }
+
+    /// Regression: `process_ai_task_inbox` must not call `maybe_send_native_notification`
+    /// while holding the inbox mutex (non-reentrant lock → permanent deadlock on review done).
+    #[test]
+    fn ai_review_done_inbox_notify_does_not_deadlock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let inbox: InboxHandle = Arc::new(Mutex::new(crate::inbox::InboxState::default()));
+        let app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
+
+        let item = InboxItem {
+            id: "inbox-ai-test:done".to_string(),
+            kind: "ai_review_done".to_string(),
+            severity: "success".to_string(),
+            title: "AI review completed (test-branch)".to_string(),
+            body: "test-branch".to_string(),
+            source: "ai".to_string(),
+            target: InboxTarget {
+                project_id: None,
+                repo_root: Some("/tmp/repo".to_string()),
+                remote: None,
+                pr_number: None,
+                branch: Some("test-branch".to_string()),
+                url: None,
+            },
+            created_at_ms: 0,
+            read_at_ms: None,
+            dedupe_key: "ai:test-task:done".to_string(),
+        };
+
+        let inbox_thread = Arc::clone(&inbox);
+        let handle_thread = Arc::clone(&app_handle);
+        let item_thread = item.clone();
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let mut just_added = Vec::new();
+            if let Ok(mut guard) = inbox_thread.lock() {
+                if guard.add_item(item_thread.clone()) {
+                    just_added.push(item_thread);
+                }
+            }
+            for added in &just_added {
+                maybe_send_native_notification(&inbox_thread, &handle_thread, added);
+            }
+            let _ = tx.send(());
+        });
+
+        rx.recv_timeout(Duration::from_millis(500))
+            .expect("inbox notify path deadlocked (re-entrant lock on ai_review_done)");
+        assert_eq!(inbox.lock().unwrap().items.len(), 1);
     }
 }

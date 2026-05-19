@@ -934,21 +934,28 @@ fn main() {
                 }
 
                 if got_event {
-                    if let Some((ref watched_branch, _)) = current_key {
-                        let mut refreshed = false;
-                        if let Ok(mut g) = watcher_app.lock() {
-                            if g.tab().local_branch_view.as_deref() == Some(watched_branch.as_str())
-                            {
-                                if let Err(e) = g.tab_mut().refresh_diff_quick() {
-                                    log::error!("active-branch watcher refresh failed: {e}");
-                                } else {
-                                    refreshed = true;
+                    if let Some((watched_branch, _root_path)) = current_key.clone() {
+                        let app = Arc::clone(&watcher_app);
+                        let rev = Arc::clone(&watcher_desktop_rev);
+                        std::thread::spawn(move || {
+                            let result = app.lock().ok().and_then(|mut g| {
+                                if g.tab().local_branch_view.as_deref()
+                                    != Some(watched_branch.as_str())
+                                {
+                                    return None;
                                 }
+                                Some(g.tab_mut().refresh_diff_quick())
+                            });
+                            match result {
+                                Some(Ok(())) => {
+                                    rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                Some(Err(e)) => {
+                                    log::error!("active-branch watcher refresh failed: {e}");
+                                }
+                                None => {}
                             }
-                        }
-                        if refreshed {
-                            watcher_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
+                        });
                     }
                 }
             }

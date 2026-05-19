@@ -9,7 +9,7 @@
   import DiffComposer from "./DiffComposer.svelte";
   import { splitRows } from "$lib/splitRows";
   import { wordDiff } from "$lib/wordDiff";
-  import type { FileSnapshot, LineSnapshot, ThreadSnapshot } from "$lib/types";
+  import type { FileSnapshot, FlatFinding, LineSnapshot, ThreadSnapshot } from "$lib/types";
 
   /** Flatten a line's spans into plain text — used as input to word-diff. */
   function lineText(line: LineSnapshot): string {
@@ -111,24 +111,110 @@
 
   let settingsOpen = $state(false);
 
-  /** Index findings by `${filePath}::${hunkIdx}` so we can interleave them per hunk. */
-  const findingsByKey = $derived.by(() => {
-    const map = new Map<string, NonNullable<typeof snapshot>["ai"]["findings"]>();
-    if (!snapshot) return map;
-    for (const f of snapshot.ai.findings) {
-      const file = files.find((x) => x.path === f.file);
-      if (!file) continue;
-      const hunkIdx = file.hunks.findIndex(
-        (h) => f.line !== null && f.line >= h.new_start && f.line < h.new_start + h.new_count,
-      );
-      if (hunkIdx === -1) continue;
-      const key = `${f.file}::${hunkIdx}`;
-      const list = map.get(key) ?? [];
-      list.push(f);
-      map.set(key, list);
+  const allFindings = $derived(snapshot?.ai.findings ?? []);
+
+  /** Branch mode: match hunk_index when set. Other modes: line number only. */
+  function findingMatchesHunk(f: FlatFinding, hunkIndex: number, diffMode: string): boolean {
+    if (diffMode !== "branch") return true;
+    return f.hunk_index === null || f.hunk_index === hunkIndex;
+  }
+
+  /** Whether a finding is owned by this hunk (for footer / fallback placement). */
+  function findingBelongsToHunk(
+    f: FlatFinding,
+    filePath: string,
+    hunkIndex: number,
+    hunk: { new_start: number; new_count: number },
+  ): boolean {
+    if (f.file !== filePath) return false;
+    if (f.hunk_index !== null) return f.hunk_index === hunkIndex;
+    if (f.line !== null) {
+      return f.line >= hunk.new_start && f.line < hunk.new_start + hunk.new_count;
     }
-    return map;
-  });
+    return mode === "branch" ? false : f.hunk_index === hunkIndex;
+  }
+
+  /** Line-anchored findings for a diff row (mirrors AiState::findings_for_line). */
+  function findingsForLine(
+    filePath: string,
+    hunkIndex: number,
+    targetLine: number,
+    hunkLines: LineSnapshot[],
+    skipDelDuplicate: boolean,
+  ): FlatFinding[] {
+    return allFindings.filter((f) => {
+      if (f.file !== filePath || f.line !== targetLine) return false;
+      if (!findingMatchesHunk(f, hunkIndex, mode)) return false;
+      if (skipDelDuplicate && hunkLines.some((l) => l.new_num === targetLine)) return false;
+      return true;
+    });
+  }
+
+  /** True when a line-anchored finding would render on some row in this hunk. */
+  function findingRendersInline(
+    f: FlatFinding,
+    filePath: string,
+    hunkIndex: number,
+    hunkLines: LineSnapshot[],
+  ): boolean {
+    if (f.file !== filePath || f.line === null) return false;
+    if (!findingMatchesHunk(f, hunkIndex, mode)) return false;
+    for (const line of hunkLines) {
+      const ln = lineNum(line);
+      if (ln !== f.line) continue;
+      if (line.kind === "del" && hunkLines.some((l) => l.new_num === f.line)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /** Hunk-level findings (no line anchor), matching TUI hunk footer. */
+  function hunkLevelFindings(
+    filePath: string,
+    hunkIndex: number,
+    hunk: { new_start: number; new_count: number },
+  ): FlatFinding[] {
+    return allFindings.filter(
+      (f) => f.file === filePath && f.line === null && findingBelongsToHunk(f, filePath, hunkIndex, hunk),
+    );
+  }
+
+  /** Line-anchored findings whose target line is not rendered in this hunk. */
+  function fallbackFindings(
+    filePath: string,
+    hunkIndex: number,
+    hunk: { new_start: number; new_count: number },
+    hunkLines: LineSnapshot[],
+  ): FlatFinding[] {
+    return allFindings.filter(
+      (f) =>
+        f.file === filePath &&
+        f.line !== null &&
+        findingBelongsToHunk(f, filePath, hunkIndex, hunk) &&
+        !findingRendersInline(f, filePath, hunkIndex, hunkLines),
+    );
+  }
+
+  /** Split row: match left or right line numbers (same as inline threads). */
+  function findingsForSplitRow(
+    filePath: string,
+    hunkIndex: number,
+    leftLn: number | null,
+    rightLn: number | null,
+    hunkLines: LineSnapshot[],
+  ): FlatFinding[] {
+    const out: FlatFinding[] = [];
+    const seen = new Set<string>();
+    for (const ln of [rightLn, leftLn]) {
+      if (ln === null) continue;
+      for (const f of findingsForLine(filePath, hunkIndex, ln, hunkLines, false)) {
+        if (seen.has(f.id)) continue;
+        seen.add(f.id);
+        out.push(f);
+      }
+    }
+    return out;
+  }
 
   /** Map of thread id → ThreadSnapshot for O(1) lookup. */
   const threadMap = $derived.by(() => {
@@ -592,10 +678,20 @@
                   }) as thread (thread.id)}
                   <InlineThread {thread} hunk_idx={hunkIndex} />
                 {/each}
+                {#if ln !== null}
+                  {#each findingsForLine(file.path, hunkIndex, ln, hunk.lines, line.kind === "del" && hunk.lines.some((l: LineSnapshot) => l.new_num === ln)) as finding (finding.id)}
+                    <InlineFinding {finding} thread={finding.thread_id ? (threadMap.get(finding.thread_id) ?? null) : null} />
+                  {/each}
+                {/if}
               {/each}
 
-              <!-- Inline AI findings for this hunk -->
-              {#each findingsByKey.get(`${file.path}::${hunkIndex}`) ?? [] as finding (finding.id)}
+              <!-- Hunk-level AI findings (no line anchor) -->
+              {#each hunkLevelFindings(file.path, hunkIndex, hunk) as finding (finding.id)}
+                <InlineFinding {finding} thread={finding.thread_id ? (threadMap.get(finding.thread_id) ?? null) : null} />
+              {/each}
+
+              <!-- Fallback: line-anchored findings whose target line wasn't rendered -->
+              {#each fallbackFindings(file.path, hunkIndex, hunk, hunk.lines) as finding (finding.id)}
                 <InlineFinding {finding} thread={finding.thread_id ? (threadMap.get(finding.thread_id) ?? null) : null} />
               {/each}
 
@@ -720,9 +816,20 @@
                     <InlineThread {thread} hunk_idx={hunkIndex} />
                   </div>
                 {/each}
+                {#each findingsForSplitRow(file.path, hunkIndex, leftLn, rightLn, hunk.lines) as finding (finding.id)}
+                  <div class="col-span-4">
+                    <InlineFinding {finding} thread={finding.thread_id ? (threadMap.get(finding.thread_id) ?? null) : null} />
+                  </div>
+                {/each}
               {/each}
 
-              {#each findingsByKey.get(`${file.path}::${hunkIndex}`) ?? [] as finding (finding.id)}
+              {#each hunkLevelFindings(file.path, hunkIndex, hunk) as finding (finding.id)}
+                <div class="col-span-4">
+                  <InlineFinding {finding} thread={finding.thread_id ? (threadMap.get(finding.thread_id) ?? null) : null} />
+                </div>
+              {/each}
+
+              {#each fallbackFindings(file.path, hunkIndex, hunk, hunk.lines) as finding (finding.id)}
                 <div class="col-span-4">
                   <InlineFinding {finding} thread={finding.thread_id ? (threadMap.get(finding.thread_id) ?? null) : null} />
                 </div>
