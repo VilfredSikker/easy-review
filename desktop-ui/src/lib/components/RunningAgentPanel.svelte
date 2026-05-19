@@ -114,7 +114,7 @@
 
 <!-- Panel -->
 <div
-  class="fixed z-40 w-[360px] max-h-[400px] flex flex-col bg-ink-900/95 border border-ink-500/40 rounded-lg shadow-xl overflow-hidden"
+  class="fixed z-40 w-[360px] max-h-[260px] flex flex-col bg-ink-900/95 border border-ink-500/40 rounded-lg shadow-xl overflow-hidden"
   style="bottom: 64px; right: {rightOffset}px"
   role="dialog"
   aria-label="Running agent output"
