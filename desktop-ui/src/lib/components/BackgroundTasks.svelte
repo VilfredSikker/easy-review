@@ -98,7 +98,7 @@
 
 {#if pills.length > 0}
   <div
-    class="fixed bottom-10 flex flex-col items-end gap-1 z-40"
+    class="fixed bottom-10 flex flex-col items-end gap-1 z-50"
     style="right: {rightOffset}px"
     aria-label="Background tasks"
   >
@@ -120,7 +120,7 @@
             ? pill.key.slice("fail-".length)
             : pill.key.slice("done-".length)}
       <button
-        class="bg-ink-800/90 text-ink-100 text-[11px] font-mono px-2.5 py-1 rounded-sm border border-ink-500/40 shadow flex items-center gap-1.5 max-w-[260px] cursor-pointer hover:bg-ink-700/90 transition-colors"
+        class="bg-ink-800 text-ink-100 text-[11px] font-mono px-2.5 py-1 rounded-sm border border-ink-500 shadow flex items-center gap-1.5 max-w-[260px] cursor-pointer hover:bg-ink-700 transition-colors"
         title={pill.title ?? ""}
         onclick={() => {
           expandedTaskId = expandedTaskId === pillTaskId ? null : (pillTaskId ?? null);

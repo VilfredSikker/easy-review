@@ -128,6 +128,8 @@ pub struct AppSnapshot {
     pub inbox_items: Vec<InboxItemSnapshot>,
     #[serde(default)]
     pub inbox_unread_count: usize,
+    #[serde(default)]
+    pub inbox_last_refresh_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -275,6 +277,16 @@ pub struct PrInfo {
     /// True when the current gh user has an APPROVED latest review on this PR.
     #[serde(default)]
     pub approved_by_me: bool,
+    /// Base branch (e.g. "main"). Plumbed from `gh pr list` so callers can skip a
+    /// second `gh pr view` round-trip when opening the PR.
+    #[serde(default)]
+    pub base_ref: String,
+    /// Head commit SHA — used as the cache freshness key for `pr_open_cache`.
+    #[serde(default)]
+    pub head_oid: String,
+    /// PR `updatedAt` ISO timestamp — part of the freshness key.
+    #[serde(default)]
+    pub updated_at: String,
     /// Transient: latest review per reviewer (login, state). Not serialized to frontend.
     #[serde(skip)]
     pub latest_reviewer_states: Vec<(String, String)>,
@@ -1017,6 +1029,9 @@ pub fn build_snapshot(
             .collect(),
         inbox_unread_count: inbox
             .and_then(|h| h.lock().ok().map(|g| g.unread_count()))
+            .unwrap_or(0),
+        inbox_last_refresh_ms: inbox
+            .and_then(|h| h.lock().ok().map(|g| g.last_refresh_ms))
             .unwrap_or(0),
     };
     if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {

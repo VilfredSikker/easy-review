@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
-  import type { ProjectSnapshot, PrInfo } from "$lib/types";
+  import type { InboxItemSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
 
@@ -21,6 +21,9 @@
   const snapshot = $derived(app.snapshot);
   const worktrees = $derived(snapshot?.worktrees ?? []);
   const projects = $derived<ProjectSnapshot[]>(snapshot?.projects ?? []);
+  const inboxItems = $derived<InboxItemSnapshot[]>(snapshot?.inbox_items ?? []);
+  const inboxUnreadCount = $derived<number>(snapshot?.inbox_unread_count ?? 0);
+  const inboxLastRefreshMs = $derived<number>(snapshot?.inbox_last_refresh_ms ?? 0);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
   const activeTab = $derived(snapshot?.tabs?.find((t) => t.is_active) ?? null);
 
@@ -35,12 +38,40 @@
   );
 
   const pinned = $derived<PinnedItem[]>(pinnedOverride ?? []);
+  const inboxVisible = $derived(
+    [...inboxItems].sort((a, b) => {
+      const aUnread = a.read_at_ms == null ? 0 : 1;
+      const bUnread = b.read_at_ms == null ? 0 : 1;
+      if (aUnread !== bUnread) return aUnread - bUnread;
+      return b.created_at_ms - a.created_at_ms;
+    }).slice(0, 20),
+  );
+  const latestInboxMessage = $derived(inboxVisible[0] ?? null);
 
   let settingsOpen = $state(false);
+  let inboxPopoverOpen = $state(false);
+  let selectedInboxMessage = $state<InboxItemSnapshot | null>(null);
   let expandedProject = $state<string | null>(null);
   let pendingBranchKey = $state<string | null>(null);
   let pendingPrKey = $state<string | null>(null);
   let prRevealCountByProject = $state<Record<string, number>>({});
+  let sidebarSearch = $state("");
+
+  const sidebarSearchNeedle = $derived(sidebarSearch.trim().toLowerCase());
+  const searchActive = $derived(sidebarSearchNeedle.length > 0);
+  const matchesSearch = (v: string): boolean => v.toLowerCase().includes(sidebarSearchNeedle);
+  const filteredProjects = $derived(
+    !sidebarSearchNeedle
+      ? projects
+      : projects.filter((project) => {
+          if (matchesSearch(project.name)) return true;
+          if (project.local_branches.some((br) => matchesSearch(br.name))) return true;
+          if (project.my_prs.some((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))) return true;
+          if (project.prs_to_review.some((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))) return true;
+          if (project.recently_merged.some((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))) return true;
+          return false;
+        }),
+  );
 
   // Branch-picker state for the project header "+" button.
   let addingTo = $state<string | null>(null);
@@ -76,6 +107,27 @@
 
   function onSettingsKey(e: KeyboardEvent) {
     if (e.key === "Escape") settingsOpen = false;
+    if (e.key === "Escape") {
+      inboxPopoverOpen = false;
+      selectedInboxMessage = null;
+    }
+  }
+
+  function openInboxPopover() {
+    inboxPopoverOpen = true;
+  }
+
+  function closeInboxPopover() {
+    inboxPopoverOpen = false;
+  }
+
+  function openInboxMessageModal(item: InboxItemSnapshot) {
+    selectedInboxMessage = item;
+    app.cmd("mark_inbox_item_read", { id: item.id });
+  }
+
+  function closeInboxMessageModal() {
+    selectedInboxMessage = null;
   }
 
   function projectBadge(p: ProjectSnapshot): number {
@@ -91,6 +143,16 @@
     return `${hrs}h`;
   }
 
+  function formatInboxUpdated(ms: number): string {
+    if (!ms || ms <= 0) return "never";
+    const delta = Date.now() - ms;
+    if (delta < 60_000) return "just now";
+    const mins = Math.floor(delta / 60_000);
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    return `${hrs}h ago`;
+  }
+
   function prIconColor(pr: PrInfo): string {
     if (pr.state === "MERGED") return "text-purple-400";
     if (pr.review_decision === "CHANGES_REQUESTED") return "text-del-fg";
@@ -100,7 +162,30 @@
   }
 
   function isProjectOpen(p: ProjectSnapshot): boolean {
+    if (sidebarSearchNeedle) return true;
     return p.is_active || expandedProject === p.id;
+  }
+
+  function visibleBranches(project: ProjectSnapshot) {
+    return searchActive ? project.local_branches.filter((br) => matchesSearch(br.name)) : project.local_branches;
+  }
+
+  function visibleMyPrs(project: ProjectSnapshot) {
+    return searchActive
+      ? project.my_prs.filter((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))
+      : project.my_prs;
+  }
+
+  function visibleToReviewPrs(project: ProjectSnapshot) {
+    return searchActive
+      ? project.prs_to_review.filter((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))
+      : project.prs_to_review;
+  }
+
+  function visibleRecentlyMergedPrs(project: ProjectSnapshot) {
+    return searchActive
+      ? project.recently_merged.filter((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))
+      : project.recently_merged;
   }
 
   function toggleProject(p: ProjectSnapshot) {
@@ -150,19 +235,70 @@
     }
   }
 
-  async function openPr(projectId: string, prNumber: number, _headRef: string, e: MouseEvent) {
+  async function openPr(projectId: string, prNumber: number, _headRef: string, e: MouseEvent, hint?: PrInfo) {
     const prKey = `${projectId}:${prNumber}`;
     if (pendingPrKey === prKey) return;
     pendingPrKey = prKey;
+    // Clear any pending hover-prefetch timer for this PR — the click supersedes it.
+    cancelPrPrefetch(projectId, prNumber);
     try {
       await yieldForPendingPaint();
       await app.cmd("open_pr_review", {
         projectId,
         prNumber,
         replace: shouldReplaceTab(e),
+        hint: hint ? buildPrHint(hint) : undefined,
       });
     } finally {
       if (pendingPrKey === prKey) pendingPrKey = null;
+    }
+  }
+
+  // ── PR hover-prefetch ──
+  // After a short debounce on hover, kick a background `prefetch_pr_open` to
+  // warm the diff cache so the click feels instant. If the cursor leaves
+  // before the debounce fires, the timer is cleared and no fetch starts.
+  const PR_HOVER_PREFETCH_DELAY_MS = 150;
+  const prPrefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function buildPrHint(pr: PrInfo) {
+    return {
+      baseRef: pr.base_ref,
+      headRef: pr.head_ref,
+      headOid: pr.head_oid,
+      updatedAt: pr.updated_at,
+      title: pr.title,
+      author: pr.author,
+    };
+  }
+
+  function schedulePrPrefetch(projectId: string, pr: PrInfo) {
+    // No useful hint to send → skip; the open path falls back to the slow
+    // synchronous gh-pr-view round-trip anyway.
+    if (!pr.head_oid || !pr.base_ref) return;
+    const key = `${projectId}:${pr.number}`;
+    if (prPrefetchTimers.has(key)) return;
+    const timer = setTimeout(() => {
+      prPrefetchTimers.delete(key);
+      app
+        .cmd("prefetch_pr_open", {
+          projectId,
+          prNumber: pr.number,
+          hint: buildPrHint(pr),
+        })
+        .catch(() => {
+          // Background fetch — failure is logged in Rust, nothing to do here.
+        });
+    }, PR_HOVER_PREFETCH_DELAY_MS);
+    prPrefetchTimers.set(key, timer);
+  }
+
+  function cancelPrPrefetch(projectId: string, prNumber: number) {
+    const key = `${projectId}:${prNumber}`;
+    const timer = prPrefetchTimers.get(key);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      prPrefetchTimers.delete(key);
     }
   }
 
@@ -222,13 +358,22 @@
       <span>New review</span>
     </button>
     <button
-      onclick={() => { document.querySelector<HTMLInputElement>('input[placeholder^="Filter files"]')?.focus(); }}
+      onclick={() => { document.querySelector<HTMLInputElement>('[data-left-sidebar-search-input]')?.focus(); }}
       class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-3"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <span>Search</span>
       <span class="kbd ml-auto">⌘P</span>
     </button>
+    <div class="px-2 pt-1">
+      <input
+        data-left-sidebar-search-input
+        value={sidebarSearch}
+        oninput={(e) => (sidebarSearch = (e.currentTarget as HTMLInputElement).value)}
+        class="w-full bg-surface border border-hairline rounded-md px-2 py-1.5 text-sm text-fg-2 placeholder:text-muted outline-none"
+        placeholder="Search projects, branches, PRs…"
+      />
+    </div>
   </div>
 
   {#if pinned.length > 0}
@@ -242,6 +387,122 @@
             <span class="font-mono text-[10px] text-muted ml-auto">{item.age}</span>
           </div>
         {/each}
+      </div>
+    </div>
+  {/if}
+
+  <!-- Inbox -->
+  <div class="px-2 pt-2 pb-2">
+    <div class="flex items-center px-2 mb-1">
+      <button
+        type="button"
+        onclick={openInboxPopover}
+        class="text-[10px] uppercase tracking-wider text-muted hover:text-fg"
+      >
+        Inbox
+      </button>
+      {#if inboxUnreadCount > 0}
+        <span class="ml-1 text-[10px] font-mono text-amber-300">{inboxUnreadCount}</span>
+      {/if}
+      <button
+        type="button"
+        onclick={() => app.cmd("refresh_notifications")}
+        class="ml-auto text-[10px] text-muted hover:text-fg"
+      >↻</button>
+    </div>
+    <button
+      type="button"
+      onclick={openInboxPopover}
+      class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-xs"
+    >
+      {#if latestInboxMessage}
+        <div class="flex items-center gap-1.5">
+          <span class={latestInboxMessage.severity === "error" ? "text-del-fg" : latestInboxMessage.severity === "warning" ? "text-amber-300" : "text-muted"}>●</span>
+          <span class="truncate {latestInboxMessage.read_at_ms == null ? 'text-fg-2' : 'text-fg-3'}">{latestInboxMessage.title}</span>
+        </div>
+        {#if latestInboxMessage.body}
+          <div class="truncate text-[10px] text-muted ml-3">{latestInboxMessage.body}</div>
+        {/if}
+      {:else}
+        <div class="text-xs text-muted">No notifications</div>
+      {/if}
+    </button>
+  </div>
+
+  {#if inboxPopoverOpen}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="fixed inset-0 z-[200]" onclick={closeInboxPopover}></div>
+    <div class="absolute left-2 top-28 z-[201] w-64 h-[300px] rounded-md border border-border bg-card shadow-xl">
+      <div class="px-3 py-2 text-xs text-muted border-b border-hairline flex items-center">
+        <span>Inbox · Updated {formatInboxUpdated(inboxLastRefreshMs)}</span>
+        <button
+          type="button"
+          onclick={() => app.cmd("mark_all_inbox_read")}
+          class="ml-auto text-[10px] text-muted hover:text-fg"
+        >Read all</button>
+        <button
+          type="button"
+          onclick={() => app.cmd("clear_read_inbox_items")}
+          class="ml-2 text-[10px] text-muted hover:text-fg"
+        >Clear read</button>
+      </div>
+      <div class="h-[255px] overflow-y-auto p-1 space-y-0.5">
+        {#if inboxVisible.length === 0}
+          <div class="px-2 py-2 text-xs text-muted">No notifications</div>
+        {:else}
+          {#each inboxVisible as item (item.id)}
+            <button
+              type="button"
+              onclick={() => openInboxMessageModal(item)}
+              class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-xs {item.read_at_ms == null ? 'text-fg-2' : 'text-fg-3'}"
+            >
+              <div class="flex items-center gap-1.5">
+                <span class={item.severity === "error" ? "text-del-fg" : item.severity === "warning" ? "text-amber-300" : "text-muted"}>●</span>
+                <span class="truncate block min-w-0 flex-1">{item.title}</span>
+              </div>
+              {#if item.body}
+                <div class="truncate block min-w-0 text-[10px] text-muted ml-3">{item.body}</div>
+              {/if}
+            </button>
+          {/each}
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if selectedInboxMessage}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="fixed inset-0 z-[250] bg-black/60" onclick={closeInboxMessageModal}></div>
+    <div
+      class="fixed inset-0 z-[251] flex items-center justify-center p-6"
+      onclick={(e) => {
+        if (e.target === e.currentTarget) closeInboxMessageModal();
+      }}
+    >
+      <div class="w-full max-w-2xl rounded-lg border border-border bg-surface shadow-xl">
+        <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
+          <span class={selectedInboxMessage.severity === "error" ? "text-del-fg" : selectedInboxMessage.severity === "warning" ? "text-amber-300" : "text-muted"}>●</span>
+          <div class="text-sm text-fg-1 truncate">{selectedInboxMessage.title}</div>
+          <button class="ml-auto text-muted hover:text-fg px-2" onclick={closeInboxMessageModal}>×</button>
+        </div>
+        <div class="px-4 py-3 text-sm text-fg-2 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto">
+          {selectedInboxMessage.body || "(No message body)"}
+        </div>
+        <div class="px-4 py-3 border-t border-hairline flex items-center justify-end gap-2">
+          <button class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
+          <button
+            class="px-3 py-1.5 rounded bg-accent text-black text-sm hover:opacity-90"
+            onclick={() => {
+              if (!selectedInboxMessage) return;
+              app.cmd("open_inbox_item", { id: selectedInboxMessage.id });
+              closeInboxMessageModal();
+            }}
+          >
+            Open target
+          </button>
+        </div>
       </div>
     </div>
   {/if}
@@ -273,8 +534,8 @@
       </button>
     </div>
     <div class="space-y-0.5">
-      {#if projects.length > 0}
-        {#each projects as project (project.id)}
+      {#if filteredProjects.length > 0}
+        {#each filteredProjects as project (project.id)}
           {@const badge = projectBadge(project)}
           {@const open = isProjectOpen(project)}
           <div class="group relative flex items-center">
@@ -331,9 +592,9 @@
                   {/if}
                 </div>
               {/if}
-              {#if project.local_branches.length > 0}
+              {#if visibleBranches(project).length > 0}
                 <div class="text-[9px] uppercase tracking-wider text-muted px-2 py-1">Tracked</div>
-                {#each project.local_branches as br (br.name)}
+                {#each visibleBranches(project) as br (br.name)}
                   {@const isActiveView = activeTab?.branch === br.name && activeTab?.repo_root === project.root_path}
                   {@const branchPending = pendingBranchKey === `${project.id}:${br.name}`}
                   <div class="group relative flex items-center">
@@ -382,8 +643,10 @@
                 <button
                   type="button"
                   title="{pr.title} #{pr.number}"
-                  onclick={(e) => openPr(project.id, pr.number, pr.head_ref, e)}
-                  onauxclick={(e) => { if (e.button === 1) openPr(project.id, pr.number, pr.head_ref, e); }}
+                  onclick={(e) => openPr(project.id, pr.number, pr.head_ref, e, pr)}
+                  onauxclick={(e) => { if (e.button === 1) openPr(project.id, pr.number, pr.head_ref, e, pr); }}
+                  onmouseenter={() => schedulePrPrefetch(project.id, pr)}
+                  onmouseleave={() => cancelPrPrefetch(project.id, pr.number)}
                   class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left {(isActivePr || prPending) ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
                 >
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="{prIconColor(pr)} shrink-0">
@@ -412,20 +675,20 @@
                 </div>
               {/snippet}
 
-              {#if project.my_prs?.length > 0 || (loadingPrList && project.my_prs?.length === 0)}
+              {#if visibleMyPrs(project).length > 0 || (loadingPrList && project.my_prs?.length === 0 && !searchActive)}
                 {@render prSectionLabel("My PRs")}
-                {#each project.my_prs as pr (pr.number)}
+                {#each visibleMyPrs(project) as pr (pr.number)}
                   {@render prRow(pr)}
                 {/each}
               {/if}
 
-              {#if project.prs_to_review?.length > 0 || (loadingPrList && project.prs_to_review?.length === 0)}
+              {#if visibleToReviewPrs(project).length > 0 || (loadingPrList && project.prs_to_review?.length === 0 && !searchActive)}
                 {@render prSectionLabel("To Review")}
-                {@const toReviewVisible = project.prs_to_review.slice(0, visibleToReviewCount(project.id))}
+                {@const toReviewVisible = visibleToReviewPrs(project).slice(0, visibleToReviewCount(project.id))}
                 {#each toReviewVisible as pr (pr.number)}
                   {@render prRow(pr)}
                 {/each}
-                {#if project.prs_to_review.length > toReviewVisible.length}
+                {#if visibleToReviewPrs(project).length > toReviewVisible.length}
                   <button
                     type="button"
                     onclick={() => revealMoreToReview(project.id)}
@@ -436,15 +699,17 @@
                 {/if}
               {/if}
 
-              {#if project.recently_merged?.length > 0 || (loadingPrList && project.recently_merged?.length === 0)}
+              {#if visibleRecentlyMergedPrs(project).length > 0 || (loadingPrList && project.recently_merged?.length === 0 && !searchActive)}
                 {@render prSectionLabel("Recently Merged")}
-                {#each project.recently_merged as pr (pr.number)}
+                {#each visibleRecentlyMergedPrs(project) as pr (pr.number)}
                   {@render prRow(pr)}
                 {/each}
               {/if}
             </div>
           {/if}
         {/each}
+      {:else if projects.length > 0 && sidebarSearchNeedle}
+        <div class="px-2 py-2 text-xs text-muted">No matching projects, branches, or PRs.</div>
       {:else}
         <!-- Fallback: legacy single project derived from worktrees -->
         <div class="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-2">

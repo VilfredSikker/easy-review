@@ -1,7 +1,9 @@
 pub mod commands;
 pub mod er_storage;
 pub mod export;
+pub mod inbox;
 pub mod pr_cache;
 pub mod projects;
 pub mod snapshot;
+pub mod tabs;
 pub mod terminal;

@@ -12,9 +12,12 @@
   interface Props {
     ai: AiSnapshot | null;
     pr: PrSnapshot | null;
+    width?: number;
+    dragging?: boolean;
+    onResizeStart?: (e: MouseEvent) => void;
   }
 
-  const { ai, pr }: Props = $props();
+  const { ai, pr, width = 340, dragging = false, onResizeStart }: Props = $props();
 
   const totalAdds = $derived(
     app.snapshot?.files.reduce((sum, f) => sum + f.additions, 0) ?? 0
@@ -41,7 +44,25 @@
   (The 04-github mock uses a separate full-page layout; the tab-strip idea
   from build-plan §700 doesn't show up in 01-main even when a PR exists.)
 -->
-<aside class="w-[340px] shrink-0 bg-surface border-l border-hairline overflow-hidden flex flex-col">
+<aside
+  class="shrink-0 bg-surface border-l border-hairline overflow-hidden flex flex-col relative"
+  style="width: {width}px"
+>
+  <!--
+    4px drag handle along the panel's left edge. Mirrors the terminal drawer
+    pattern: capture mousedown to start a horizontal resize; while dragging the
+    parent sets a body class so the cursor stays consistent if the pointer
+    briefly leaves the handle.
+  -->
+  {#if onResizeStart}
+    <div
+      class="absolute -left-[2px] top-0 bottom-0 w-1 cursor-ew-resize z-10 hover:bg-accent/40 {dragging ? 'bg-accent/60' : ''}"
+      onmousedown={onResizeStart}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize right panel"
+    ></div>
+  {/if}
   <div class="flex-1 overflow-y-auto p-4 space-y-4 pb-8">
     {#if app.snapshot}
       <BranchCard

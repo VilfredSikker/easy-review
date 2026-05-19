@@ -3,10 +3,8 @@
   import { app } from "$lib/stores/app.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
-  import Pill from "$lib/components/ui/Pill.svelte";
-  import { navigateToThread } from "$lib/dom";
   import { openExportModal } from "$lib/components/ExportModal.svelte";
-  import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+  import InlineThread from "$lib/components/InlineThread.svelte";
 
   interface Props {
     ai: AiSnapshot;
@@ -34,11 +32,6 @@
   function scrollToAnnotations() {
     const el = document.getElementById("ui-annotations-card");
     el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }
-
-  function basename(p: string): string {
-    const i = p.lastIndexOf("/");
-    return i === -1 ? p : p.slice(i + 1);
   }
 
   const ghEvent = $derived(
@@ -106,38 +99,9 @@
     {/if}
   </div>
 
-  <div class="space-y-1">
+  <div class="space-y-2">
     {#each visibleCommentThreads as thread (thread.id)}
-      <div class="relative group">
-        <button
-          onclick={() => navigateToThread(thread)}
-          class="w-full text-left text-sm border-l-2 border-comment pl-2 pr-6 py-1.5 rounded-r hover:bg-bg flex flex-col gap-0.5"
-        >
-          <div class="text-[11px] text-muted mono flex items-center gap-1.5">
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" class="text-comment" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            <span>{basename(thread.file)}:{thread.line}</span>
-            {#if !thread.synced}
-              <Pill dot="#fbbf24" textColor="text-ai">local</Pill>
-            {/if}
-            {#if thread.resolved}
-              <Pill dot="#60a5fa" textColor="text-fg-3">resolved</Pill>
-            {/if}
-            {#if thread.stale}
-              <Pill dot="#a78bfa" textColor="text-fg-3">outdated</Pill>
-            {/if}
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ml-auto opacity-0 group-hover:opacity-100 transition text-accent"><path d="M7 17L17 7M7 7h10v10"/></svg>
-          </div>
-          <MarkdownText text={thread.root.body_markdown} className="text-fg-2 text-left" />
-        </button>
-        <button
-          type="button"
-          onclick={() => app.cmd("delete_thread", { id: thread.id })}
-          title="Delete comment"
-          class="absolute top-1 right-1 p-0.5 rounded opacity-0 group-hover:opacity-100 transition hover:bg-del-bg text-muted hover:text-del-fg"
-        >
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
-        </button>
-      </div>
+      <InlineThread {thread} hunk_idx={0} variant="panel" />
     {/each}
   </div>
 

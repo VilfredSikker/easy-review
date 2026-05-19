@@ -20,17 +20,24 @@
 
   const snapshot = $derived(app.snapshot);
   const commitsToShow = $derived(commits.length > 0 ? commits : (snapshot?.commits ?? []));
+  const selectedCommitSha = $derived(snapshot?.selected_commit_sha ?? null);
+  /** "All changes" is the active scope only when no commit is selected. In
+   *  History mode the engine sets selected_commit_sha, which then drives the
+   *  highlight to the commit row instead. */
+  const allChangesActive = $derived(mode !== "history" || selectedCommitSha == null);
   /** Read-only tab: a local-branch view or a remote PR view. Hide write-mode tabs. */
   const isReadOnly = $derived(
     (snapshot?.local_branch ?? null) !== null || (snapshot?.pr ?? null) !== null,
   );
+
+  let commitsCollapsed = $state(true);
 </script>
 
 <div class="border-t border-hairline bg-bg shrink-0">
   <!-- Current scope -->
   <div class="px-3 pt-2 pb-1.5">
     <button
-      class="w-full text-left px-3 py-1.5 rounded-md text-sm flex items-center gap-2 {mode === 'branch' ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
+      class="w-full text-left px-3 py-1.5 rounded-md text-sm flex items-center gap-2 {allChangesActive ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
       onclick={() => app.cmd("set_mode", { mode: "branch" })}
     >
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9M3 16l9-9 9 9M3 20l9-9 9 9"/></svg>
@@ -61,19 +68,39 @@
 
   <!-- Commits in scope (only when engine provides them; hidden on read-only tabs) -->
   {#if !isReadOnly && commitsToShow.length > 0}
-    <div class="border-t border-hairline max-h-44 overflow-y-auto">
-      <div class="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted">
-        Commits · {commitsToShow.length}
-      </div>
-      {#each commitsToShow as commit (commit.sha)}
-        <button
-          class="w-full text-left px-3 py-1.5 hover:bg-card"
-          onclick={() => app.cmd("select_commit", { sha: commit.sha })}
+    <div class="border-t border-hairline {commitsCollapsed ? '' : 'max-h-72 overflow-y-auto'}">
+      <button
+        class="w-full flex items-center gap-1.5 px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted hover:text-fg-2 sticky top-0 bg-bg"
+        onclick={() => (commitsCollapsed = !commitsCollapsed)}
+        aria-expanded={!commitsCollapsed}
+        title={commitsCollapsed ? "Expand commits" : "Collapse commits"}
+      >
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          class="transition-transform {commitsCollapsed ? '-rotate-90' : ''}"
         >
-          <div class="text-[13px] text-fg-2 truncate">{commit.title}</div>
-          <div class="text-[11px] text-muted mono">{commit.sha.slice(0, 7)} · {commit.author} · {commit.age}</div>
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+        <span>Commits · {commitsToShow.length}</span>
+      </button>
+      {#if !commitsCollapsed}
+      {#each commitsToShow as commit (commit.sha)}
+        {@const isSelected = commit.sha === selectedCommitSha}
+        <button
+          class="w-full text-left px-3 py-1.5 {isSelected ? 'bg-ink-650 text-fg' : 'hover:bg-card text-fg-2'}"
+          onclick={() => app.cmd("select_commit", { sha: commit.sha })}
+          title={commit.title}
+        >
+          <div class="text-[13px] truncate">{commit.title}</div>
+          <div class="text-[11px] text-muted mono truncate">{commit.sha.slice(0, 7)} · {commit.author} · {commit.age}</div>
         </button>
       {/each}
+      {/if}
     </div>
   {/if}
 

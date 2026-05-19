@@ -46,6 +46,7 @@ export const commentThread: ThreadSnapshot = {
   stale: false,
   resolved: false,
   root: {
+    id: "thread-comment-1",
     author: "you",
     kind: "you",
     timestamp: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
@@ -54,6 +55,7 @@ export const commentThread: ThreadSnapshot = {
   },
   replies: [
     {
+      id: "thread-comment-1-r1",
       author: "AI",
       kind: "ai",
       timestamp: new Date(Date.now() - 6 * 60 * 1000).toISOString(),
@@ -61,6 +63,7 @@ export const commentThread: ThreadSnapshot = {
         "SchemaMediaProperties is a strict subset — just id, name, kind. Narrowing here is safe; only handleExperimentOptionSelect reads from this prop.",
     },
     {
+      id: "thread-comment-1-r2",
       author: "maria-c",
       kind: "human",
       timestamp: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
@@ -80,6 +83,7 @@ export const questionThread: ThreadSnapshot = {
   stale: false,
   resolved: false,
   root: {
+    id: "thread-question-1",
     author: "you",
     kind: "you",
     timestamp: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
@@ -88,6 +92,7 @@ export const questionThread: ThreadSnapshot = {
   },
   replies: [
     {
+      id: "thread-question-1-r1",
       author: "AI",
       kind: "ai",
       timestamp: new Date(Date.now() - 10 * 60 * 1000).toISOString(),

@@ -745,6 +745,7 @@ fn main() {
         gh_status_cache: Arc::clone(&gh_status_cache),
         loading: Arc::clone(&loading),
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
+        pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         desktop_revision: Arc::clone(&desktop_revision),
         last_sent_revision: Arc::clone(&last_sent_revision),
         watch_status: Arc::clone(&watch_status),
@@ -1101,8 +1102,8 @@ fn main() {
         });
     }
 
-    // Fetch PRs once at startup. Manual refresh is available via the
-    // `refresh_pr_list` command. No background loop — on-demand only.
+    // Global notifications refresh across ALL configured project remotes.
+    // Startup fetch + conservative 10-minute cadence (not high-frequency polling).
     let bg_cache = Arc::clone(&pr_cache);
     let bg_fetched_at = Arc::clone(&pr_cache_fetched_at);
     let bg_loading = Arc::clone(&loading);
@@ -1115,12 +1116,13 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build tokio runtime");
-        rt.block_on(async move {
+        let run_refresh = || {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
             bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let failed = pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await;
+            let failed =
+                rt.block_on(async { pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await });
             for remote in failed {
                 commands::process_inbox_after_pr_refresh(
                     &bg_cache,
@@ -1143,7 +1145,16 @@ fn main() {
                 f.pr_list = false;
             }
             bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        });
+        };
+
+        // Initial startup pass.
+        run_refresh();
+
+        // Conservative cadence: every 10 minutes.
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(600));
+            run_refresh();
+        }
     });
 
     // Spawn background meta-cache refresh: keeps per-project git metadata
@@ -1271,6 +1282,7 @@ fn main() {
             commands::open_local_branch,
             commands::open_pr_branch,
             commands::open_pr_review,
+            commands::prefetch_pr_open,
             commands::refresh_pr_list,
             commands::open_inbox_item,
             commands::mark_inbox_item_read,

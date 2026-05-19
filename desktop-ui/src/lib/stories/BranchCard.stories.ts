@@ -21,6 +21,7 @@ function baseGithub(overrides: Partial<GithubStatusSnapshot> = {}): GithubStatus
     state: "OPEN",
     is_draft: false,
     title: "Wire SourcesCard to live GitHub data",
+    body: "## Summary\n\nReplaces the placeholder cards with a real wiring to the live GitHub status snapshot. Pulls title, reviewers, mergeable state, and labels straight from `gh pr view`.\n\n## Test plan\n- [x] Open a PR-mode tab, confirm the card shows up\n- [x] Toggle draft mode and verify the pill flips\n- [x] Refresh button re-fetches",
     author: "vilfred",
     head_ref: "feat/sources-live",
     base_ref: "main",

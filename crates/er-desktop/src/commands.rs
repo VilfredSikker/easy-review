@@ -80,6 +80,10 @@ pub struct AppState {
     pub loading: LoadingState,
     /// Keys with an in-flight gh_status fetch. Prevents duplicate concurrent fetches.
     pub gh_status_in_flight: Arc<Mutex<HashSet<(String, String, u64)>>>,
+    /// Keys (project_id, pr_number) with an in-flight PR-open prefetch.
+    /// Prevents duplicate background `gh` invocations when the user hovers
+    /// the same row repeatedly.
+    pub pr_open_prefetch_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
     /// Monotonic counter bumped whenever background-owned state changes (caches,
     /// loading flags) so that poll() can detect changes not visible in App state.
     pub desktop_revision: Arc<AtomicU64>,
@@ -112,6 +116,9 @@ pub struct PrOpenFreshness {
 pub struct PrOpenCacheEntry {
     freshness: PrOpenFreshness,
     raw_diff: String,
+    /// Cached PR overview so a click after a hover-prefetch can render the
+    /// right panel without re-running `gh pr view`.
+    pr_data: Option<er_engine::github::PrOverviewData>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +133,22 @@ struct PrOpenInputs {
     resolved_base: String,
     raw_diff: String,
     cache_hit: bool,
+}
+
+/// Hint passed from the frontend sidebar when opening or prefetching a PR.
+/// Carries the freshness fields the sidebar already has from `gh pr list`,
+/// so we can skip a `gh pr view` round-trip.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrOpenHint {
+    pub base_ref: String,
+    pub head_ref: String,
+    pub head_oid: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub author: String,
 }
 
 #[tauri::command]
@@ -859,6 +882,9 @@ pub fn process_inbox_after_pr_refresh(
     refresh_failed_remote: Option<String>,
 ) {
     let now = now_ms();
+    if let Ok(mut inbox) = inbox_handle.lock() {
+        inbox.last_refresh_ms = now;
+    }
     let gh_user = gh_user_state.lock().ok().and_then(|g| g.clone());
     let Some(gh_user) = gh_user else {
         if let Some(remote) = refresh_failed_remote {
@@ -1167,13 +1193,17 @@ pub fn process_inbox_after_pr_refresh(
     }
 
     let mut emitted_any = false;
+    let mut just_added: Vec<InboxItem> = Vec::new();
     if let Ok(mut inbox) = inbox_handle.lock() {
         for item in new_items {
             if inbox.add_item(item.clone()) {
                 emitted_any = true;
-                maybe_send_native_notification(inbox_handle, app_handle_state, &item);
+                just_added.push(item);
             }
         }
+    }
+    for item in &just_added {
+        maybe_send_native_notification(inbox_handle, app_handle_state, item);
     }
     crate::inbox::save_inbox_state(inbox_handle);
     if emitted_any {
@@ -1203,70 +1233,39 @@ pub fn reveal_er_folder(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_review_revisions(state: State<AppState>) -> Result<Vec<ReviewRevisionSummary>, String> {
+    // Branch-level managed storage no longer keeps multiple revisions per
+    // branch — re-running review overwrites the same files in place. The
+    // returned list is now at most one entry representing the current branch
+    // state, so the existing UI (ExportModal, AgentOutputView) keeps working
+    // without a revision picker.
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab = app.tab();
     if tab.repo_root.is_empty() {
         return Ok(Vec::new());
     }
-    let branch = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(&tab.current_branch)
-        .to_string();
-    if branch.is_empty() {
+    let er_dir = tab.er_dir();
+    let review_path = std::path::Path::new(&er_dir).join("review.json");
+    if !review_path.exists() {
         return Ok(Vec::new());
     }
-    let repo_slug = crate::er_storage::slug_repo(&tab.repo_root);
-    let branch_slug = crate::er_storage::slug_branch(&branch);
-    let active = crate::er_storage::active_revision(&repo_slug, &branch_slug);
-    let active_id = active.as_ref().map(|a| a.revision_id.as_str()).unwrap_or("");
-    let revisions = crate::er_storage::list_revisions(&repo_slug, &branch_slug);
-    let mut out = Vec::with_capacity(revisions.len());
-    for rev in revisions {
-        let agents_root = crate::er_storage::revision_root(&repo_slug, &branch_slug, &rev.revision_id).join("agents");
-        let mut agents = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(agents_root) {
-            for entry in entries.flatten() {
-                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    if let Some(name) = entry.file_name().to_str() {
-                        agents.push(name.to_string());
-                    }
-                }
-            }
-        }
-        out.push(ReviewRevisionSummary {
-            revision_id: rev.revision_id.clone(),
-            created_at: rev.created_at.clone(),
-            scope: rev.scope.clone(),
-            diff_hash: rev.diff_hash.clone(),
-            active: rev.revision_id == active_id,
-            agents,
-        });
-    }
-    Ok(out)
+    Ok(vec![ReviewRevisionSummary {
+        revision_id: "current".to_string(),
+        created_at: String::new(),
+        scope: String::new(),
+        diff_hash: tab.branch_diff_hash.clone(),
+        active: true,
+        agents: vec!["claude".to_string()],
+    }])
 }
 
 #[tauri::command]
 pub fn read_review_json(state: State<AppState>, revision_id: Option<String>) -> Result<String, String> {
+    let _ = revision_id; // single-revision model — ignored
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let tab = app.tab();
-    let branch = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(&tab.current_branch)
-        .to_string();
-    let repo_slug = crate::er_storage::slug_repo(&tab.repo_root);
-    let branch_slug = crate::er_storage::slug_branch(&branch);
-    let active = crate::er_storage::active_revision(&repo_slug, &branch_slug);
-    let rev_id = revision_id
-        .or_else(|| active.map(|a| a.revision_id))
-        .ok_or_else(|| "No active revision".to_string())?;
-    let review_path = crate::er_storage::revision_root(&repo_slug, &branch_slug, &rev_id)
-        .join("agents")
-        .join("claude")
-        .join("review.json");
+    let er_dir = app.tab().er_dir();
+    let review_path = std::path::Path::new(&er_dir).join("review.json");
     if !review_path.exists() {
-        return Err("No review.json found for selected revision".to_string());
+        return Err("No review.json found".to_string());
     }
     std::fs::read_to_string(&review_path).map_err(|e| e.to_string())
 }
@@ -1900,28 +1899,58 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
     let is_remote = app.tab().remote_repo.is_some();
 
     let (prompt, target) = if is_remote {
-        // Remote PR review: use existing relative-path prompt; cwd = er_dir (cache dir).
-        let base_branch = app.tab().base_branch.clone();
-        let prompt = er_engine::ai::prompts::build_review_prompt(&base_branch, &scope);
-        let tab = app.tab();
-        let branch_label = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
+        // Remote PR review: write into the flat branch-level managed dir so
+        // remote and local tabs share the same on-disk layout. Uses absolute
+        // paths in the prompt; the agent fetches the diff via `gh pr diff`.
+        let (er_dir, repo_root, branch_label, base_branch, pr_number, remote_repo) = {
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            (
+                tab.er_dir(),
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+            )
+        };
+
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+
+        let (owner, repo, pr_num) = match (&remote_repo, pr_number) {
+            (Some(slug), Some(n)) => {
+                let (o, r) = slug
+                    .split_once('/')
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .unwrap_or((slug.clone(), String::new()));
+                (o, r, n)
+            }
+            _ => return Err("Remote PR review requires owner/repo and pr_number".to_string()),
+        };
+        let prompt =
+            er_engine::ai::prompts::build_review_prompt_remote(&owner, &repo, pr_num, &er_dir);
+
         let target = er_engine::app::BackgroundTaskTarget {
-            repo_root: tab.repo_root.clone(),
-            er_dir: tab.er_dir(),
+            repo_root,
+            er_dir,
             branch_label,
-            base_branch: tab.base_branch.clone(),
+            base_branch,
             scope: scope.clone(),
-            pr_number: tab.pr_number,
-            remote_repo: tab.remote_repo.clone(),
+            pr_number,
+            remote_repo,
             managed_local: false,
         };
         (prompt, target)
     } else {
-        // Local managed review: create a fresh revision in managed storage.
-        let (repo_root, branch, base_branch, diff_hash) = {
+        // Local managed review: write into the flat branch-level managed dir.
+        // No revision creation — re-running review overwrites in place. The
+        // tab's er_root is already pointed at this dir by apply_managed_root
+        // (called from place_tab), so the loader reads from where we write.
+        let (repo_root, branch, base_branch, er_dir) = {
             let tab = app.tab();
             let branch = tab
                 .local_branch_view
@@ -1931,49 +1960,22 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
                 tab.repo_root.clone(),
                 branch,
                 tab.base_branch.clone(),
-                tab.branch_diff_hash.clone(),
+                tab.er_dir(),
             )
         };
 
-        let repo_slug = crate::er_storage::slug_repo(&repo_root);
-        let branch_slug = crate::er_storage::slug_branch(&branch);
-        let rev_id = crate::er_storage::new_revision_id(&diff_hash);
-
-        let meta = crate::er_storage::RevisionMeta {
-            revision_id: rev_id.clone(),
-            base_branch: base_branch.clone(),
-            head_branch: branch.clone(),
-            diff_hash: diff_hash.clone(),
-            commit_hash: String::new(),
-            created_at: crate::er_storage::iso_now(),
-            scope: scope.clone(),
-        };
-        crate::er_storage::create_revision(&repo_slug, &branch_slug, meta)
-            .map_err(|e| format!("Failed to create managed review revision: {e}"))?;
-
-        let agent_dir = crate::er_storage::agent_dir(&repo_slug, &branch_slug, &rev_id, "claude");
-        // Ensure the agent dir exists (create_revision builds it, but be explicit).
-        std::fs::create_dir_all(&agent_dir)
-            .map_err(|e| format!("Failed to create agent directory: {e}"))?;
-        let session_dir = crate::er_storage::revision_root(&repo_slug, &branch_slug, &rev_id);
-        let agent_dir_str = agent_dir.to_string_lossy().into_owned();
-        let session_dir_str = session_dir.to_string_lossy().into_owned();
-
-        // Update the tab's er_root so the UI loads from the new revision.
-        app.tab_mut().er_root = er_engine::ErRoot::Managed {
-            agent_dir: agent_dir_str.clone(),
-            session_dir: session_dir_str,
-        };
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
 
         let prompt = er_engine::ai::prompts::build_review_prompt_local_managed(
             &base_branch,
             &scope,
-            &agent_dir_str,
+            &er_dir,
         );
 
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root: repo_root.clone(),
-            er_dir: agent_dir_str,
+            er_dir,
             branch_label: branch,
             base_branch,
             scope: scope.clone(),
@@ -1987,10 +1989,25 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
     app.spawn_background_review(target, prompt)
         .map_err(|e| e.to_string())?;
 
+    let debug_bg = er_engine::app::debug_bg_enabled();
+    if debug_bg {
+        eprintln!(
+            "[bg] run_ai_review post-spawn snapshots={}",
+            app.background_task_snapshots().len()
+        );
+    }
+
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &*state))
+    let snap = snap_from(&app, &mut hl, &*state);
+    if debug_bg {
+        eprintln!(
+            "[bg] run_ai_review snapshot.background_tasks.len()={}",
+            snap.background_tasks.len()
+        );
+    }
+    Ok(snap)
 }
 
 #[tauri::command]
@@ -2009,7 +2026,13 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
     }
 
     let base_branch = app.tab().base_branch.clone();
-    let prompt = er_engine::ai::prompts::build_validate_prompt(&base_branch, &scope);
+    // Anchor the prompt at the managed branch dir so the agent updates the
+    // same review.json the UI loads from (rather than `<repo>/.er/`).
+    let prompt = er_engine::ai::prompts::build_validate_prompt_local_managed(
+        &base_branch,
+        &scope,
+        &er_dir,
+    );
     app.spawn_agent_prompt("validate", &prompt)
         .map_err(|e| e.to_string())?;
     app.notify("AI review validation started");
@@ -2454,6 +2477,13 @@ fn run_ask_ai_subprocess(model: &str, context: &str, user_prompt: &str) -> Strin
 /// Place `tab` into the app: replace the active slot when `replace` is true
 /// (Cmd-click / middle-click semantics), otherwise push a new tab.
 pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: bool) {
+    let mut tab = tab;
+    // Point the tab at managed storage so reads (loader, reveal) and writes
+    // (run_ai_review) resolve to the same agent_dir. Without this, fresh
+    // LocalPr/LocalBranch tabs default to `er_root = RepoLocal` and `er_dir()`
+    // falls back to the legacy `~/.cache/er/...` path, which never matches
+    // where the agent actually writes review.json.
+    crate::tabs::apply_managed_root(&mut tab);
     if replace && !app.tabs.is_empty() {
         let idx = app.active_tab.min(app.tabs.len() - 1);
         let name = tab.tab_name();
@@ -2548,6 +2578,12 @@ fn fetch_single_pr_for_remote(remote: &str, pr_number: u64) -> Result<PrInfo, St
         title: String,
         #[serde(rename = "headRefName")]
         head_ref_name: String,
+        #[serde(default, rename = "baseRefName")]
+        base_ref_name: String,
+        #[serde(default, rename = "headRefOid")]
+        head_ref_oid: String,
+        #[serde(default, rename = "updatedAt")]
+        updated_at: String,
         state: String,
         #[serde(rename = "isDraft")]
         is_draft: bool,
@@ -2572,7 +2608,7 @@ fn fetch_single_pr_for_remote(remote: &str, pr_number: u64) -> Result<PrInfo, St
             "--repo",
             remote,
             "--json",
-            "number,title,headRefName,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
+            "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
         ])
         .output()
         .map_err(|e| format!("Failed to run gh pr view for {remote}#{pr_number}: {e}"))?;
@@ -2608,6 +2644,9 @@ fn fetch_single_pr_for_remote(remote: &str, pr_number: u64) -> Result<PrInfo, St
         review_decision: raw.review_decision,
         merged_at: raw.merged_at,
         approved_by_me: false,
+        base_ref: raw.base_ref_name,
+        head_oid: raw.head_ref_oid,
+        updated_at: raw.updated_at,
         latest_reviewer_states,
     })
 }
@@ -2670,7 +2709,7 @@ pub fn open_pr_url(
             crate::pr_cache::save_persisted_pr_cache(&state.pr_cache, &state.pr_cache_fetched_at);
         }
         projects::track_pr(&project_id, pr_ref.number).map_err(|e| e.to_string())?;
-        return open_pr_review(project_id, pr_ref.number, replace, state);
+        return open_pr_review(project_id, pr_ref.number, replace, None, state);
     }
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -2947,18 +2986,52 @@ fn cached_pr_open_diff(
         .map(|entry| entry.raw_diff)
 }
 
+/// Same as `cached_pr_open_diff` but also returns cached `pr_data` when present.
+fn cached_pr_open_entry(
+    cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
+    key: &PrOpenCacheKey,
+    freshness: &PrOpenFreshness,
+) -> Option<(String, Option<er_engine::github::PrOverviewData>)> {
+    cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(key).cloned())
+        .filter(|entry| entry.freshness == *freshness)
+        .map(|entry| (entry.raw_diff, entry.pr_data))
+}
+
+#[cfg(test)]
 fn remember_pr_open_diff(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: PrOpenCacheKey,
     freshness: PrOpenFreshness,
     raw_diff: String,
 ) {
+    remember_pr_open_entry(cache, key, freshness, raw_diff, None);
+}
+
+fn remember_pr_open_entry(
+    cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
+    key: PrOpenCacheKey,
+    freshness: PrOpenFreshness,
+    raw_diff: String,
+    pr_data: Option<er_engine::github::PrOverviewData>,
+) {
     if let Ok(mut guard) = cache.lock() {
+        // Preserve existing pr_data if the new entry doesn't bring one (lets a
+        // hint-based prefetch keep pr_data fetched by an earlier full open).
+        let pr_data = pr_data.or_else(|| {
+            guard
+                .get(&key)
+                .filter(|e| e.freshness == freshness)
+                .and_then(|e| e.pr_data.clone())
+        });
         guard.insert(
             key,
             PrOpenCacheEntry {
                 freshness,
                 raw_diff,
+                pr_data,
             },
         );
         const MAX_PR_OPEN_CACHE_ENTRIES: usize = 32;
@@ -3058,9 +3131,40 @@ fn run_gh_pr_diff_for_open(repo_root: &str, pr_number: u64) -> Result<String, St
     er_engine::github::gh_pr_diff(pr_number, repo_root).map_err(|e| e.to_string())
 }
 
+/// Build a minimal `PrOverviewData` from a sidebar hint. Used when opening a PR
+/// without first fetching `gh pr view` — the panel renders immediately with the
+/// fields the sidebar already had, and a background refresh fills in body/checks/reviews.
+fn pr_overview_from_hint(hint: &PrOpenHint, pr_number: u64, repo_slug: Option<&str>) -> er_engine::github::PrOverviewData {
+    let url = repo_slug
+        .map(|slug| format!("https://github.com/{slug}/pull/{pr_number}"))
+        .unwrap_or_default();
+    er_engine::github::PrOverviewData {
+        number: pr_number,
+        title: hint.title.clone(),
+        body: String::new(),
+        state: "OPEN".to_string(),
+        author: hint.author.clone(),
+        url,
+        base_branch: hint.base_ref.clone(),
+        head_branch: hint.head_ref.clone(),
+        checks: Vec::new(),
+        reviewers: Vec::new(),
+    }
+}
+
+fn freshness_from_hint(hint: &PrOpenHint) -> PrOpenFreshness {
+    PrOpenFreshness {
+        base_branch: hint.base_ref.clone(),
+        head_branch: hint.head_ref.clone(),
+        head_oid: hint.head_oid.clone(),
+        updated_at: hint.updated_at.clone(),
+    }
+}
+
 fn load_pr_open_inputs(
     project_id: &str,
     pr_number: u64,
+    hint: Option<&PrOpenHint>,
     state: &AppState,
 ) -> Result<PrOpenInputs, String> {
     let file = projects::load();
@@ -3071,9 +3175,100 @@ fn load_pr_open_inputs(
         .ok_or_else(|| format!("Project not found: {project_id}"))?
         .clone();
     let repo_root = proj.root_path;
+    let repo_slug = proj.remote.clone();
     let branch_label = format!("pr-{}", pr_number);
-
     let key = pr_open_cache_key(project_id, &repo_root, pr_number);
+
+    // ── Hint path: skip the `gh pr view` round-trip entirely ──
+    if let Some(hint) = hint {
+        let freshness = freshness_from_hint(hint);
+
+        // Cache hit on the hint's freshness key → no `gh` calls at all.
+        if let Some((raw_diff, cached_pr_data)) =
+            cached_pr_open_entry(&state.pr_open_cache, &key, &freshness)
+        {
+            log::info!(
+                "branch_open project={} branch={} phase=gh_pr_diff ms=0 cache=hit_hint",
+                project_id,
+                branch_label
+            );
+            let t_base = std::time::Instant::now();
+            let resolved_base = er_engine::github::ensure_base_ref_available(
+                &repo_root,
+                &freshness.base_branch,
+            )
+            .map_err(|e| e.to_string())?;
+            log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
+            let pr_data = cached_pr_data.unwrap_or_else(|| {
+                pr_overview_from_hint(hint, pr_number, repo_slug.as_deref())
+            });
+            return Ok(PrOpenInputs {
+                repo_root,
+                metadata: PrOpenMetadata { freshness, pr_data },
+                resolved_base,
+                raw_diff,
+                cache_hit: true,
+            });
+        }
+
+        // Cache miss with hint: run `gh pr diff` and `ensure_base_ref_available`
+        // in parallel. Skip `gh pr view` — overview is rendered from the hint
+        // and a background refresh can fill in body/reviews later.
+        let (diff_res, base_res, diff_ms, base_ms) = std::thread::scope(|s| {
+            let diff_root = repo_root.clone();
+            let base_root = repo_root.clone();
+            let base_branch = freshness.base_branch.clone();
+            let diff_h = s.spawn(move || {
+                let t = std::time::Instant::now();
+                let res = run_gh_pr_diff_for_open(&diff_root, pr_number);
+                (res, t.elapsed().as_millis())
+            });
+            let base_h = s.spawn(move || {
+                let t = std::time::Instant::now();
+                let res = er_engine::github::ensure_base_ref_available(&base_root, &base_branch)
+                    .map_err(|e| e.to_string());
+                (res, t.elapsed().as_millis())
+            });
+            let (diff_res, diff_ms) = diff_h
+                .join()
+                .unwrap_or_else(|_| (Err("gh pr diff thread panicked".to_string()), 0));
+            let (base_res, base_ms) = base_h
+                .join()
+                .unwrap_or_else(|_| (Err("base ref fetch thread panicked".to_string()), 0));
+            (diff_res, base_res, diff_ms, base_ms)
+        });
+        log::info!(
+            "branch_open project={} branch={} phase=gh_pr_diff ms={} cache=miss_hint",
+            project_id,
+            branch_label,
+            diff_ms
+        );
+        log::info!(
+            "branch_open project={} branch={} phase=base_ref_check ms={} parallel=true",
+            project_id,
+            branch_label,
+            base_ms
+        );
+        let raw_diff = diff_res?;
+        let resolved_base = base_res?;
+        let pr_data = pr_overview_from_hint(hint, pr_number, repo_slug.as_deref());
+        remember_pr_open_entry(
+            &state.pr_open_cache,
+            key,
+            freshness.clone(),
+            raw_diff.clone(),
+            None, // intentionally None — pr_data is a placeholder; full view will fill it later
+        );
+        return Ok(PrOpenInputs {
+            repo_root,
+            metadata: PrOpenMetadata { freshness, pr_data },
+            resolved_base,
+            raw_diff,
+            cache_hit: false,
+        });
+    }
+
+    // ── No hint: original behavior (probe `gh pr view` for freshness) ──
     let has_cache_entry = state
         .pr_open_cache
         .lock()
@@ -3104,6 +3299,14 @@ fn load_pr_open_inputs(
             )
             .map_err(|e| e.to_string())?;
             log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
+            // Refresh cached pr_data with the freshly-fetched overview.
+            remember_pr_open_entry(
+                &state.pr_open_cache,
+                key,
+                metadata.freshness.clone(),
+                raw_diff.clone(),
+                Some(metadata.pr_data.clone()),
+            );
             return Ok(PrOpenInputs {
                 repo_root,
                 metadata,
@@ -3117,26 +3320,49 @@ fn load_pr_open_inputs(
             project_id,
             branch_label
         );
-        let t_diff = std::time::Instant::now();
-        let raw_diff = run_gh_pr_diff_for_open(&repo_root, pr_number)?;
+        let (diff_res, base_res, diff_ms, base_ms) = std::thread::scope(|s| {
+            let diff_root = repo_root.clone();
+            let base_root = repo_root.clone();
+            let base_branch = metadata.freshness.base_branch.clone();
+            let diff_h = s.spawn(move || {
+                let t = std::time::Instant::now();
+                let res = run_gh_pr_diff_for_open(&diff_root, pr_number);
+                (res, t.elapsed().as_millis())
+            });
+            let base_h = s.spawn(move || {
+                let t = std::time::Instant::now();
+                let res = er_engine::github::ensure_base_ref_available(&base_root, &base_branch)
+                    .map_err(|e| e.to_string());
+                (res, t.elapsed().as_millis())
+            });
+            let (diff_res, diff_ms) = diff_h
+                .join()
+                .unwrap_or_else(|_| (Err("gh pr diff thread panicked".to_string()), 0));
+            let (base_res, base_ms) = base_h
+                .join()
+                .unwrap_or_else(|_| (Err("base ref fetch thread panicked".to_string()), 0));
+            (diff_res, base_res, diff_ms, base_ms)
+        });
         log::info!(
             "branch_open project={} branch={} phase=gh_pr_diff ms={} cache=refresh",
             project_id,
             branch_label,
-            t_diff.elapsed().as_millis()
+            diff_ms
         );
-        let t_base = std::time::Instant::now();
-        let resolved_base = er_engine::github::ensure_base_ref_available(
-            &repo_root,
-            &metadata.freshness.base_branch,
-        )
-        .map_err(|e| e.to_string())?;
-        log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
-        remember_pr_open_diff(
+        log::info!(
+            "branch_open project={} branch={} phase=base_ref_check ms={} parallel=true",
+            project_id,
+            branch_label,
+            base_ms
+        );
+        let raw_diff = diff_res?;
+        let resolved_base = base_res?;
+        remember_pr_open_entry(
             &state.pr_open_cache,
             key,
             metadata.freshness.clone(),
             raw_diff.clone(),
+            Some(metadata.pr_data.clone()),
         );
         return Ok(PrOpenInputs {
             repo_root,
@@ -3187,11 +3413,12 @@ fn load_pr_open_inputs(
         er_engine::github::ensure_base_ref_available(&repo_root, &metadata.freshness.base_branch)
             .map_err(|e| e.to_string())?;
     log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
-    remember_pr_open_diff(
+    remember_pr_open_entry(
         &state.pr_open_cache,
         key,
         metadata.freshness.clone(),
         raw_diff.clone(),
+        Some(metadata.pr_data.clone()),
     );
     Ok(PrOpenInputs {
         repo_root,
@@ -3210,12 +3437,13 @@ pub fn open_pr_review(
     project_id: String,
     pr_number: u64,
     replace: Option<bool>,
+    hint: Option<PrOpenHint>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let t_total = std::time::Instant::now();
     let branch_label = format!("pr-{}", pr_number);
     let t_tab_build = std::time::Instant::now();
-    let inputs = load_pr_open_inputs(&project_id, pr_number, &*state).map_err(|e| {
+    let inputs = load_pr_open_inputs(&project_id, pr_number, hint.as_ref(), &*state).map_err(|e| {
         log::error!("open_pr_review: pr=#{pr_number} project_id={project_id} err={e}");
         e
     })?;
@@ -3265,7 +3493,93 @@ pub fn open_pr_branch(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let _ = head_ref; // ignored; PR head is fetched directly from origin
-    open_pr_review(project_id, pr_number, replace, state)
+    open_pr_review(project_id, pr_number, replace, None, state)
+}
+
+/// Fire-and-forget background warmup of the PR-open cache. Invoked from the
+/// sidebar's `onmouseenter` (after a short debounce). Returns immediately —
+/// the actual fetch runs on a worker thread. If the cache is already fresh
+/// for the hint or another prefetch is already in flight, this is a no-op.
+#[tauri::command]
+pub fn prefetch_pr_open(
+    project_id: String,
+    pr_number: u64,
+    hint: PrOpenHint,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let file = projects::load();
+    let Some(proj) = file.projects.iter().find(|p| p.id == project_id).cloned() else {
+        return Ok(());
+    };
+    let repo_root = proj.root_path;
+    let key = pr_open_cache_key(&project_id, &repo_root, pr_number);
+    let freshness = freshness_from_hint(&hint);
+
+    // Skip if we already have a fresh cached entry matching the hint's freshness.
+    if cached_pr_open_diff(&state.pr_open_cache, &key, &freshness).is_some() {
+        return Ok(());
+    }
+
+    // Dedupe: claim the in-flight slot atomically.
+    let claim_key = (project_id.clone(), pr_number);
+    {
+        let mut guard = state
+            .pr_open_prefetch_in_flight
+            .lock()
+            .map_err(|e| e.to_string())?;
+        if guard.contains(&claim_key) {
+            return Ok(());
+        }
+        guard.insert(claim_key.clone());
+    }
+
+    let cache = Arc::clone(&state.pr_open_cache);
+    let in_flight = Arc::clone(&state.pr_open_prefetch_in_flight);
+    let branch_label = format!("pr-{}", pr_number);
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        let diff_root = repo_root.clone();
+        let base_root = repo_root.clone();
+        let base_branch = freshness.base_branch.clone();
+        let (diff_res, base_res) = std::thread::scope(|s| {
+            let diff_h = s.spawn(move || run_gh_pr_diff_for_open(&diff_root, pr_number));
+            let base_h = s.spawn(move || {
+                er_engine::github::ensure_base_ref_available(&base_root, &base_branch)
+                    .map_err(|e| e.to_string())
+            });
+            let diff_res = diff_h
+                .join()
+                .unwrap_or_else(|_| Err("gh pr diff thread panicked".to_string()));
+            let base_res = base_h
+                .join()
+                .unwrap_or_else(|_| Err("base ref fetch thread panicked".to_string()));
+            (diff_res, base_res)
+        });
+        match (diff_res, base_res) {
+            (Ok(raw_diff), Ok(_)) => {
+                remember_pr_open_entry(&cache, key, freshness.clone(), raw_diff, None);
+                log::info!(
+                    "pr_open_prefetch project={} branch={} ok ms={}",
+                    claim_key.0,
+                    branch_label,
+                    t.elapsed().as_millis()
+                );
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                log::warn!(
+                    "pr_open_prefetch project={} branch={} failed ms={} err={}",
+                    claim_key.0,
+                    branch_label,
+                    t.elapsed().as_millis(),
+                    e
+                );
+            }
+        }
+        if let Ok(mut guard) = in_flight.lock() {
+            guard.remove(&claim_key);
+        }
+    });
+    Ok(())
 }
 
 /// Switch the active tab to a different diff source.
@@ -3406,7 +3720,7 @@ pub fn open_inbox_item(id: String, state: State<AppState>) -> Result<AppSnapshot
 
     if let Some(target) = target {
         if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
-            return open_pr_review(project_id, pr_number, Some(true), state);
+            return open_pr_review(project_id, pr_number, Some(true), None, state);
         }
         if let (Some(project_id), Some(branch)) = (target.project_id, target.branch) {
             return open_local_branch(project_id, branch, Some(true), state);
@@ -4314,7 +4628,18 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     // review so the .er reload below picks up freshly written files.
     app.check_commands();
     // Same lifecycle for app-level background tasks (cross-tab reviews).
+    // Only log poll diagnostics when there's actually a task in flight to avoid
+    // flooding stderr every 2 seconds during normal use.
+    let pre = app.background_task_snapshots().len();
+    let debug_bg = er_engine::app::debug_bg_enabled() && pre > 0;
+    if debug_bg {
+        eprintln!("[bg] poll: pre poll_background_tasks snapshots={pre}");
+    }
     app.poll_background_tasks();
+    let post = app.background_task_snapshots().len();
+    if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
+        eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
+    }
     process_ai_task_inbox(&app, &*state);
     // Drain again so completion/failure log entries are visible in this poll.
     app.drain_agent_log();

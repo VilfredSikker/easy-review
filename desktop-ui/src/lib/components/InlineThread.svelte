@@ -3,13 +3,16 @@
   import type { ThreadSnapshot } from "$lib/types";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+  import { navigateToThread } from "$lib/dom";
+  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
   interface Props {
     thread: ThreadSnapshot;
     hunk_idx: number;
+    variant?: "inline" | "panel";
   }
 
-  const { thread }: Props = $props();
+  const { thread, variant = "inline" }: Props = $props();
 
   const isQuestion = $derived(thread.kind === "question");
   const isPromoted = $derived(thread.promoted_to != null);
@@ -19,12 +22,34 @@
   let replyTextarea: HTMLTextAreaElement | null = $state(null);
   let showPromote = $state(false);
 
-  // Auto-focus the textarea when the composer opens.
+  let askAiText = $state("");
+  let showAskAi = $state(false);
+  let askAiTextarea: HTMLTextAreaElement | null = $state(null);
+
+  let justCopied = $state(false);
+
+  // Auto-focus the textarea when a composer opens. Opening one closes the other.
   $effect(() => {
     if (showReply && replyTextarea) {
       queueMicrotask(() => replyTextarea?.focus());
     }
   });
+  $effect(() => {
+    if (showAskAi && askAiTextarea) {
+      queueMicrotask(() => askAiTextarea?.focus());
+    }
+  });
+
+  function openReply() {
+    showAskAi = false;
+    askAiText = "";
+    showReply = true;
+  }
+  function openAskAi() {
+    showReply = false;
+    replyText = "";
+    showAskAi = true;
+  }
 
   function formatTimestamp(ts: string): string {
     try {
@@ -53,7 +78,18 @@
   }
 
   async function deleteThread() {
+    if (thread.replies.length > 0) {
+      const n = thread.replies.length;
+      const ok = confirm(
+        `Delete this thread and its ${n} ${n === 1 ? "reply" : "replies"}? This can't be undone.`,
+      );
+      if (!ok) return;
+    }
     await app.cmd("delete_thread", { id: thread.id });
+  }
+
+  async function deleteReply(replyId: string) {
+    await app.cmd("delete_thread", { id: replyId });
   }
 
   async function submitReply() {
@@ -80,11 +116,19 @@
     showPromote = false;
   }
 
-  async function askAi() {
-    await app.cmd("ask_ai", {
-      threadId: thread.id,
-      prompt: "Elaborate on this and answer any question directly.",
-    });
+  async function submitAskAi() {
+    const prompt = askAiText.trim();
+    showAskAi = false;
+    askAiText = "";
+    await app.cmd("ask_ai", { threadId: thread.id, prompt });
+  }
+
+  async function copyThread() {
+    const header = thread.line > 0 ? `${thread.file}:${thread.line}` : thread.file;
+    const text = `**${header}**\n\n${buildPromoteBody()}`;
+    await writeText(text);
+    justCopied = true;
+    setTimeout(() => (justCopied = false), 1500);
   }
 
   async function resolveThread() {
@@ -99,7 +143,7 @@
 
 <div
   id={thread.id}
-  class="mx-4 my-3 rounded-lg overflow-hidden font-sans border scroll-mt-16 {thread.stale ? 'opacity-60' : ''} {isQuestion ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
+  class="{variant === 'panel' ? '' : 'mx-4 my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 {thread.stale ? 'opacity-60' : ''} {isQuestion ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
 >
   <!-- Header -->
   <div class="px-3 py-2 border-b border-hairline flex items-center gap-2">
@@ -128,11 +172,22 @@
     {#if thread.stale}
       <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-hover text-fg-3">stale</span>
     {/if}
+    {#if variant === "panel"}
+      <button
+        type="button"
+        onclick={() => navigateToThread(thread)}
+        title="Jump to inline location"
+        aria-label="Jump to inline location"
+        class="p-0.5 rounded text-muted hover:text-accent hover:bg-hover transition"
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M7 7h10v10"/></svg>
+      </button>
+    {/if}
     <span class="text-muted text-[10px] font-mono shrink-0">{formatTimestamp(thread.root.timestamp)}</span>
   </div>
 
   <!-- Root message -->
-  <div class="px-3 py-2.5 flex gap-2.5">
+  <div class="px-3 py-2.5 flex gap-2.5 group/row">
     <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {avatarClass(thread.root.kind)}">
       {#if thread.root.kind === "ai"}
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
@@ -146,13 +201,22 @@
       </div>
       <MarkdownText text={thread.root.body_markdown} className="text-sm text-fg-2" />
     </div>
+    <button
+      type="button"
+      onclick={deleteThread}
+      title={thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
+      aria-label="Delete thread"
+      class="self-start shrink-0 p-0.5 rounded text-muted opacity-0 group-hover/row:opacity-60 hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
+    >
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+    </button>
   </div>
 
   <!-- Replies -->
   {#if thread.replies.length > 0}
     <div class="border-t border-hairline bg-surface">
       {#each thread.replies as reply, i}
-        <div class="px-3 py-2.5 flex gap-2.5 {i > 0 ? 'border-t border-hairline' : ''}">
+        <div class="px-3 py-2.5 flex gap-2.5 group/row {i > 0 ? 'border-t border-hairline' : ''}">
           <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {avatarClass(reply.kind)}">
             {#if reply.kind === "ai"}
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
@@ -171,8 +235,52 @@
               <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
             {/if}
           </div>
+          {#if reply.id}
+            <button
+              type="button"
+              onclick={() => deleteReply(reply.id)}
+              title="Delete this reply"
+              aria-label="Delete reply"
+              class="self-start shrink-0 p-0.5 rounded text-muted opacity-0 group-hover/row:opacity-60 hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+            </button>
+          {/if}
         </div>
       {/each}
+    </div>
+  {/if}
+
+  <!-- Ask AI composer -->
+  {#if showAskAi}
+    <div class="px-3 py-2 border-t border-hairline">
+      <textarea
+        bind:this={askAiTextarea}
+        bind:value={askAiText}
+        placeholder="Add context for the AI… (leave empty for default · ⌘+Enter to send)"
+        rows="3"
+        class="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-fg-2 placeholder:text-muted outline-none focus:border-ai resize-y font-mono"
+        onkeydown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            submitAskAi();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            showAskAi = false;
+            askAiText = "";
+          }
+        }}
+      ></textarea>
+      <div class="mt-1 flex items-center gap-2">
+        <span class="text-[10px] font-mono text-muted">⌘+Enter to send · Esc to cancel · empty = default prompt</span>
+        <button
+          onclick={() => { showAskAi = false; askAiText = ""; }}
+          class="ml-auto px-2 py-1 rounded-md text-[11px] text-fg-3 hover:bg-hover"
+        >Cancel</button>
+        <button onclick={submitAskAi} class="px-2 py-1 rounded-md text-[11px] text-ai hover:bg-hover border border-border">
+          Ask AI
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -210,14 +318,26 @@
   {/if}
 
   <!-- Footer actions -->
-  <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-1 flex-wrap">
+  <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-1 flex-wrap text-[11px]">
     {#if !showReply}
-      <button onclick={() => (showReply = true)} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
+      <button onclick={openReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
+    {/if}
+    {#if !showAskAi}
+      <button onclick={openAskAi} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI…</button>
     {/if}
     <button
-      onclick={askAi}
-      class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover"
-    >Ask AI</button>
+      onclick={copyThread}
+      title="Copy thread as markdown"
+      class="px-2 py-0.5 rounded hover:bg-hover flex items-center gap-1 {justCopied ? 'text-add-fg' : 'text-fg-3'}"
+    >
+      {#if justCopied}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        Copied
+      {:else}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        Copy
+      {/if}
+    </button>
     {#if !thread.resolved}
       <button onclick={resolveThread} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Resolve</button>
     {/if}
@@ -236,9 +356,8 @@
         Promote to comment
       </button>
     {/if}
-    <button onclick={deleteThread} aria-label="Delete thread" class="ml-auto px-2 py-0.5 rounded text-muted hover:text-del-fg hover:bg-hover">×</button>
     {#if thread.replies.length > 0}
-      <span class="text-muted text-[10px]">{thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"}</span>
+      <span class="ml-auto text-muted text-[10px]">{thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"}</span>
     {/if}
   </div>
 

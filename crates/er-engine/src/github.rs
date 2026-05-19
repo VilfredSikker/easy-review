@@ -321,8 +321,13 @@ pub(crate) fn ahead_behind_local_vs_upstream(
 /// Never runs `git pull`, never checks out, never updates `refs/heads/<branch>`.
 /// Returns the local Easy Review ref name on success.
 pub fn fetch_branch_upstream_into_er_ref(repo_root: &str, branch: &str) -> Result<String> {
-    let upstream = branch_upstream_short(repo_root, branch)?
-        .ok_or_else(|| anyhow::anyhow!("Branch '{}' has no upstream to refresh", branch))?;
+    let upstream = branch_upstream_short(repo_root, branch)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Branch '{branch}' has no upstream to refresh. Run \
+             `git branch --set-upstream-to=origin/{branch} {branch}` \
+             or use the Local branch source instead."
+        )
+    })?;
     // Split remote/branch from upstream short name. Branches with slashes are valid;
     // splitn(2) gives "remote" and the rest as the remote-side branch.
     let (remote, remote_branch) = match upstream.split_once('/') {
@@ -1741,6 +1746,7 @@ pub fn gh_pr_general_comment_remote(owner: &str, repo: &str, pr: u64, body: &str
 pub struct PrOverviewFull {
     pub number: u64,
     pub title: String,
+    pub body: String,
     pub state: String,
     pub is_draft: bool,
     pub author: String,
@@ -1782,6 +1788,7 @@ pub fn parse_pr_overview(json: &str) -> Result<PrOverviewFull> {
     Ok(PrOverviewFull {
         number: v["number"].as_u64().unwrap_or(0),
         title: v["title"].as_str().unwrap_or("").to_string(),
+        body: v["body"].as_str().unwrap_or("").to_string(),
         state: v["state"].as_str().unwrap_or("").to_string(),
         is_draft: v["isDraft"].as_bool().unwrap_or(false),
         author: v["author"]["login"].as_str().unwrap_or("").to_string(),
@@ -1880,7 +1887,7 @@ pub fn gh_pr_overview_remote_full(owner: &str, repo: &str, number: u64) -> Resul
             "--repo",
             &repo_slug,
             "--json",
-            "number,title,state,isDraft,author,reviewDecision,mergeable,headRefName,baseRefName,labels,url",
+            "number,title,body,state,isDraft,author,reviewDecision,mergeable,headRefName,baseRefName,labels,url",
         ])
         .output()
         .context("Failed to run gh pr view")?;

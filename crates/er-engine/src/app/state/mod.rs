@@ -648,6 +648,12 @@ pub struct TabState {
     /// tab recreation so switching branches and back keeps the refreshed view.
     pub local_branch_diff_ref: Option<String>,
 
+    /// Whether `local_branch_view` (or `current_branch` for working-tree tabs) has
+    /// an upstream configured. Refreshed during `refresh_diff_impl`. `None` = not
+    /// yet probed or git probe failed — treat as false for gating, but don't hide
+    /// Origin if a refreshed ref already exists.
+    pub has_upstream: Option<bool>,
+
     // ── Agent log state (per-tab) ──
     /// Receivers for running background commands (keyed by command name)
     pub command_rx: std::collections::HashMap<String, std::sync::mpsc::Receiver<Result<()>>>,
@@ -941,9 +947,9 @@ impl TabState {
                 }
             }
         } else {
+            tab.file_headers = crate::git::parse_diff_headers(&raw);
+            tab.raw_diff = Some(raw.clone());
             tab.files = crate::git::parse_diff(&raw);
-            tab.file_headers.clear();
-            tab.raw_diff = None;
             tab.lazy_mode = false;
             crate::git::compact_files(&mut tab.files, &tab.compaction_config);
         }
@@ -1112,6 +1118,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             local_branch_diff_ref: None,
+            has_upstream: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1221,6 +1228,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             local_branch_diff_ref: None,
+            has_upstream: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1323,6 +1331,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             local_branch_diff_ref: None,
+            has_upstream: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1429,28 +1438,34 @@ impl TabState {
         modes
     }
 
-    /// Return the `.er/` directory path for AI files (review.json, order.json, etc.).
+    /// Return the directory path for AI files (review.json, questions.json,
+    /// github-comments.json, etc.).
     ///
-    /// Remote tabs use the legacy cache dir (unchanged). Non-remote local-branch-view tabs
-    /// (LocalPr) use the managed agent dir when `er_root` is `Managed` (desktop), otherwise
-    /// fall back to the legacy cache path (TUI). Pure working-tree tabs always use `er_root`.
+    /// On desktop (after `apply_managed_root`) every tab — local, LocalPr,
+    /// remote — has `er_root = Managed { agent_dir }`, and that dir is the
+    /// single source of truth. We honour it first regardless of tab kind.
+    ///
+    /// The remaining fallbacks are for tab states where managed resolution
+    /// wasn't applied (TUI, tests):
+    /// - Remote or local-branch-view → legacy cache path
+    /// - Plain working-tree tab → `repo/.er/`
     pub fn er_dir(&self) -> String {
-        if self.is_remote() {
-            self.comments_dir_legacy()
-        } else if self.is_local_branch_view() {
-            match &self.er_root {
-                crate::paths::ErRoot::Managed { agent_dir, .. } => agent_dir.clone(),
-                _ => self.comments_dir_legacy(),
-            }
-        } else {
-            self.er_root.er_dir()
+        if let crate::paths::ErRoot::Managed { agent_dir, .. } = &self.er_root {
+            return agent_dir.clone();
         }
+        if self.is_remote() || self.is_local_branch_view() {
+            return self.comments_dir_legacy();
+        }
+        self.er_root.er_dir()
     }
 
-    /// Directory for storing comment files. In remote mode, uses `~/.cache/er/remote/`.
-    /// In normal mode, delegates to `er_root`.
+    /// Directory for storing comment files (github-comments.json, questions.json).
+    ///
+    /// Always resolves to the same dir as `er_dir()` — comments and review
+    /// artifacts live together under the flat managed branch dir
+    /// `~/Library/Application Support/easy-review/repos/<r>/branches/<b>/`.
     pub fn comments_dir(&self) -> String {
-        self.comments_dir_legacy()
+        self.er_dir()
     }
 
     fn comments_dir_legacy(&self) -> String {
@@ -1507,8 +1522,15 @@ impl TabState {
                 sources.push(DiffSource::Origin);
             }
         }
-        // Also offer Origin if there's a local_branch_view (caller checks upstream separately).
-        if self.local_branch_view.is_some() && !sources.contains(&DiffSource::Origin) {
+        // Offer Origin for a local_branch_view only when an upstream is actually
+        // configured (or we've already fetched one into an er-ref). Without this
+        // gate, clicking Origin on a branch with no upstream would error.
+        let has_upstream =
+            self.has_upstream.unwrap_or(false) || self.local_branch_diff_ref.is_some();
+        if has_upstream
+            && self.local_branch_view.is_some()
+            && !sources.contains(&DiffSource::Origin)
+        {
             sources.push(DiffSource::Origin);
         }
         // PR: only if we have a pr_number.
@@ -1766,6 +1788,25 @@ impl TabState {
 
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool, auto_unmark: bool) -> Result<()> {
         let t_total = Instant::now();
+
+        // Probe upstream presence for the branch this tab is showing. Cheap single
+        // `git for-each-ref`; result gates whether the UI offers the Origin source.
+        // Remote-only tabs (no local clone) skip this — has_upstream stays None.
+        if self.remote_repo.is_none() {
+            let branch = self
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| self.current_branch.clone());
+            if !branch.is_empty() {
+                self.has_upstream =
+                    match crate::github::branch_upstream_short(&self.repo_root, &branch) {
+                        Ok(Some(_)) => Some(true),
+                        Ok(None) => Some(false),
+                        Err(_) => None,
+                    };
+            }
+        }
+
         // History mode doesn't use git_diff_raw — skip normal diff refresh
         if self.mode == DiffMode::History {
             return Ok(());
@@ -1832,9 +1873,9 @@ impl TabState {
                     }
                 }
             } else {
+                self.file_headers = crate::git::parse_diff_headers(&raw);
+                self.raw_diff = Some(raw.clone());
                 self.files = crate::git::parse_diff(&raw);
-                self.file_headers.clear();
-                self.raw_diff = None;
                 self.lazy_mode = false;
                 crate::git::compact_files(&mut self.files, &self.compaction_config);
             }
@@ -5948,6 +5989,7 @@ mod tests {
             local_branch_view: None,
             local_branch_checkout_root: None,
             local_branch_diff_ref: None,
+            has_upstream: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,

@@ -66,6 +66,7 @@
     if (e.key === "Enter") {
       e.preventDefault();
       applyFilter(filterDraft);
+      inputEl?.blur();
     } else if (e.key === "Escape") {
       e.preventDefault();
       filterDraft = "";

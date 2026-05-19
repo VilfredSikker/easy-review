@@ -29,6 +29,7 @@ export const GithubOnlyOutdated: Story = {
           stale: true,
           resolved: false,
           root: {
+            id: "gh-thread-1",
             author: "octocat",
             kind: "human",
             timestamp: new Date().toISOString(),

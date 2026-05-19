@@ -560,8 +560,13 @@ impl TabState {
             .is_some_and(|f| f.compacted);
         if is_compacted {
             let path = self.files[self.selected_file].path.clone();
-            if is_remote {
-                // Remote mode: re-parse from raw_diff
+            // Local PR mode uses gh pr diff for the full load, so pr_head_ref is never
+            // fetched into the local clone. Treat it like remote when raw_diff is available;
+            // fetch the ref on demand when it isn't (e.g. pattern-compacted file in a small diff).
+            let use_raw_diff =
+                is_remote || (self.pr_number.is_some() && self.raw_diff.is_some());
+            if use_raw_diff {
+                // Remote / local-PR with cached diff: re-parse from raw_diff
                 let header_idx = self.file_headers.iter().position(|h| h.path == path);
                 if let Some(raw) = self.raw_diff.clone() {
                     if let Some(idx) = header_idx {
@@ -871,7 +876,7 @@ impl TabState {
     }
 
     /// Load the diff for the currently selected commit
-    fn history_load_selected_diff(&mut self) {
+    pub fn history_load_selected_diff(&mut self) {
         let (hash, repo_root) = {
             let history = match self.history.as_mut() {
                 Some(h) => h,

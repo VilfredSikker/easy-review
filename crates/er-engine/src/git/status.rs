@@ -768,6 +768,22 @@ pub fn git_log_branch(
     parse_git_log(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Get the most recent commits on HEAD, no range filter. Used when the user is
+/// sitting on the base branch itself (`base..HEAD` is empty) but we still want
+/// to show recent history in the file viewer's commit scroller.
+pub fn git_log_head(repo_root: &str, limit: usize) -> Result<Vec<CommitInfo>> {
+    let format_str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
+    let limit_str = format!("--max-count={}", limit);
+
+    let output = Command::new("git")
+        .args(["log", &limit_str, format_str, "--shortstat"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git log")?;
+
+    parse_git_log(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// Parse the output of `git log --format=... --shortstat`
 ///
 /// The format string uses `\x1e` (ASCII record separator) as the field delimiter,

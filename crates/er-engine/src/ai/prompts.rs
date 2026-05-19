@@ -422,6 +422,64 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
 }
 
 /// Build the validate prompt — validates and re-anchors existing findings.
+/// Build the validate prompt with paths anchored at an absolute managed
+/// directory (`output_dir`). Use this for non-remote local-managed tabs so
+/// the agent updates the same `review.json` the UI loads from, rather than
+/// writing to the repo-local `<repo>/.er/`.
+pub fn build_validate_prompt_local_managed(
+    base_branch: &str,
+    scope: &str,
+    output_dir: &str,
+) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+    };
+    let annotate = annotate_diff_command(
+        &format!("{output_dir}/diff-tmp"),
+        &format!("{output_dir}/diff-annotated"),
+    );
+
+    format!(
+        r#"You are validating and re-anchoring an existing code review.
+Do not create unrelated new findings in this action.
+
+## Instructions
+
+1. Read `{safe_output_dir}/review.json`. If it does not exist, print "No review to validate" and stop.
+2. Refresh the annotated diff so line numbers stay current:
+   - `mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp`
+   - `{annotate}`
+3. For each active finding, read existing replies (`responses`) before deciding the outcome.
+4. For each finding, choose exactly one result:
+   - `RESOLVED_OR_INVALID`: concern no longer applies. Remove it from active `files[].findings`.
+   - `PERSISTS`: concern still applies. Keep it and update title/description/suggestion if needed.
+   - `SHIFTED`: concern still applies but moved. Keep it and update `hunk_index`, `line_start`, `line_end`.
+5. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
+   `informational`, `dropped`) based on current code.
+6. Preserve `diff_hash`, `version`, and unchanged file entries unless your existing refresh workflow recomputes them.
+7. Write updated `{safe_output_dir}/review.json`.
+8. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
+   `Refresh: N removed, M updated, K re-anchored.`
+9. Do not discover unrelated new findings in this action.
+
+## Budget
+
+- ~5 file reads per finding, ~50 reads total across the review.
+
+## Speed
+
+Target: complete in under 5 minutes. Each evidence read should map to a specific finding."#
+    )
+}
+
 pub fn build_validate_prompt(base_branch: &str, scope: &str) -> String {
     let safe_base_branch = sanitize_for_shell(base_branch);
     let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");

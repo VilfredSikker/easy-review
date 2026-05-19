@@ -57,6 +57,16 @@ function focusInput(selector: string) {
   }
 }
 
+function focusSidebarSearchOrFileFilter() {
+  const sidebarInput = document.querySelector<HTMLInputElement>("[data-left-sidebar-search-input]");
+  if (sidebarInput) {
+    sidebarInput.focus();
+    sidebarInput.select();
+    return;
+  }
+  focusInput('input[placeholder^="Filter files"]');
+}
+
 function isPlainShortcut(e: KeyboardEvent): boolean {
   return !e.ctrlKey && !e.metaKey && !e.altKey;
 }
@@ -239,6 +249,12 @@ export function initKeyboard(): () => void {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "o" && !inField) {
       e.preventDefault();
       app.cmd("open_worktree", {});
+      return;
+    }
+    // ⌘P — sidebar search (projects/branches/PRs), not file filter.
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "p" || e.key === "P")) {
+      e.preventDefault();
+      focusSidebarSearchOrFileFilter();
       return;
     }
     // ⌘T — toggle terminal (Codex-style shortcut). Closing must work even

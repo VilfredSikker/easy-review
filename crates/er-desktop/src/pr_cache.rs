@@ -110,7 +110,10 @@ pub(crate) fn merge_pr_results(
 
 /// Refresh PRs for every project with a remote. Fetches all remotes in parallel.
 /// Preserves stale cache entries for remotes that fail.
-pub(crate) async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtMap) {
+pub(crate) async fn refresh_pr_cache(
+    cache: &PrCacheMap,
+    fetched_at: &PrCacheFetchedAtMap,
+) -> Vec<String> {
     let file = projects::load();
     let remotes: Vec<String> = file
         .projects
@@ -119,7 +122,7 @@ pub(crate) async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFet
         .collect();
 
     if remotes.is_empty() {
-        return;
+        return Vec::new();
     }
 
     let t = std::time::Instant::now();
@@ -138,6 +141,7 @@ pub(crate) async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFet
 
     let mut results: Vec<(String, Option<Vec<PrInfo>>)> = Vec::new();
     let mut refreshed_remotes: Vec<String> = Vec::new();
+    let mut failed_remotes: Vec<String> = Vec::new();
     for handle in handles {
         if let Ok((remote, result, ms)) = handle.await {
             if let Some(ref prs) = result {
@@ -150,6 +154,7 @@ pub(crate) async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFet
                 refreshed_remotes.push(remote.clone());
             } else {
                 log::warn!("pr_list fetch failed for {} after {}ms", remote, ms);
+                failed_remotes.push(remote.clone());
             }
             results.push((remote, result));
         }
@@ -170,6 +175,7 @@ pub(crate) async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFet
         remotes.len(),
         t.elapsed().as_millis()
     );
+    failed_remotes
 }
 
 pub(crate) async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
@@ -185,7 +191,7 @@ pub(crate) async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
             "--state",
             "all",
             "--json",
-            "number,title,headRefName,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
+            "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
             "--limit",
             "100",
         ])
@@ -201,6 +207,12 @@ pub(crate) async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
         title: String,
         #[serde(rename = "headRefName")]
         head_ref_name: String,
+        #[serde(default, rename = "baseRefName")]
+        base_ref_name: String,
+        #[serde(default, rename = "headRefOid")]
+        head_ref_oid: String,
+        #[serde(default, rename = "updatedAt")]
+        updated_at: String,
         state: String,
         #[serde(rename = "isDraft")]
         is_draft: bool,
@@ -261,6 +273,9 @@ pub(crate) async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
                     review_decision: r.review_decision,
                     merged_at: r.merged_at,
                     approved_by_me: false, // computed in build_projects()
+                    base_ref: r.base_ref_name,
+                    head_oid: r.head_ref_oid,
+                    updated_at: r.updated_at,
                     latest_reviewer_states,
                 }
             })
@@ -286,6 +301,9 @@ mod tests {
             review_decision: None,
             merged_at: None,
             approved_by_me: false,
+            base_ref: "main".to_string(),
+            head_oid: String::new(),
+            updated_at: String::new(),
             latest_reviewer_states: vec![],
         }
     }

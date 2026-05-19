@@ -141,6 +141,12 @@ export interface PrInfo {
   review_decision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
   merged_at: string | null;
   approved_by_me: boolean;
+  /** Base branch (e.g. "main"). Used as a hint when opening the PR. */
+  base_ref: string;
+  /** Head commit SHA. Used as the freshness key for the PR open cache. */
+  head_oid: string;
+  /** PR `updatedAt` ISO timestamp. Part of the freshness key. */
+  updated_at: string;
 }
 
 export interface ProjectSnapshot {
@@ -279,6 +285,7 @@ export interface AppSnapshot {
   diff_source?: DiffSourceSnapshot | null;
   inbox_items?: InboxItemSnapshot[];
   inbox_unread_count?: number;
+  inbox_last_refresh_ms?: number;
 }
 
 export interface InboxTargetSnapshot {

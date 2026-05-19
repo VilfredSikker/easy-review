@@ -3,6 +3,7 @@
   import { app } from "$lib/stores/app.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
+  import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
 
   interface Props {
     branch: string;
@@ -37,6 +38,55 @@
   }: Props = $props();
 
   let expandChecks = $state(false);
+  let descriptionOpen = $state(false);
+
+  // First non-empty line of the body, stripped of obvious markdown syntax,
+  // used for the collapsed preview. Full markdown renders when expanded.
+  function descriptionPreview(body: string): string {
+    const firstPara = body
+      .split(/\n\s*\n/)
+      .map((s) => s.trim())
+      .find((s) => s.length > 0) ?? "";
+    return firstPara
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/^[-*]\s+/gm, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  let actionsOpen = $state(false);
+  let reviewBody = $state("");
+  let submitting = $state(false);
+
+  // GitHub itself rejects REQUEST_CHANGES with an empty body and a plain comment
+  // needs a body too — gate locally so we don't round-trip just to fail.
+  const canSubmit = $derived.by(() => ({
+    comment: !submitting && reviewBody.trim().length > 0,
+    approve: !submitting,
+    changes: !submitting && reviewBody.trim().length > 0,
+  }));
+
+  async function submitAction(kind: "comment" | "approve" | "changes") {
+    if (submitting) return;
+    const body = reviewBody.trim();
+    submitting = true;
+    if (kind === "comment") {
+      await app.cmd("post_github_pr_comment", { body });
+    } else {
+      // Use the decision-only command so pending inline drafts (which may have
+      // stale line anchors) aren't bundled and 422'd by GitHub.
+      const mode = kind === "approve" ? "APPROVE" : "REQUEST_CHANGES";
+      await app.cmd("submit_github_pr_decision", { mode, summary: body });
+    }
+    submitting = false;
+    // Errors surface via the global toast (app.cmd swallows + showsToast); close
+    // the drawer either way so the user sees the updated state on next refresh.
+    reviewBody = "";
+    actionsOpen = false;
+  }
   const watchStatus = $derived(app.snapshot?.watch_status ?? null);
   const isWatching = $derived(watchStatus?.active === true);
   const watchTitle = $derived(
@@ -209,6 +259,37 @@
             {/if}
           </div>
 
+          <!-- PR description (collapsible — mirrors AiReviewCard summary) -->
+          {#if github.body.trim()}
+            <div>
+              {#if descriptionOpen}
+                <div class="text-sm text-fg-2 leading-relaxed mb-1.5">
+                  <MarkdownText text={github.body} />
+                </div>
+              {:else}
+                <div class="text-sm text-fg-2 leading-relaxed mb-1.5 line-clamp-2">
+                  {descriptionPreview(github.body)}
+                </div>
+              {/if}
+              <button
+                type="button"
+                onclick={() => (descriptionOpen = !descriptionOpen)}
+                class="flex items-center gap-1 text-xs text-fg-3 hover:text-fg-1"
+              >
+                {descriptionOpen ? "Hide description" : "Show description"}
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  class="transition-transform"
+                  class:rotate-180={descriptionOpen}><path d="M6 9l6 6 6-6" /></svg>
+              </button>
+            </div>
+          {/if}
+
           <!-- Checks summary -->
           {#if checkStats.total > 0}
             <button
@@ -285,6 +366,60 @@
           <div class="flex items-center gap-3 text-xs text-fg-3">
             <span>{github.comments_count} comment{github.comments_count === 1 ? "" : "s"}</span>
             <span>{github.reviews_count} review{github.reviews_count === 1 ? "" : "s"}</span>
+          </div>
+
+          <!-- PR-wide comment + review actions -->
+          <div class="pt-2 mt-1 border-t border-hairline">
+            {#if !actionsOpen}
+              <button
+                type="button"
+                onclick={() => (actionsOpen = true)}
+                class="w-full text-left text-xs text-fg-3 hover:text-fg-1 flex items-center gap-1"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                Comment or review…
+              </button>
+            {:else}
+              <textarea
+                bind:value={reviewBody}
+                placeholder="Leave a PR-wide comment. Required for Comment and Request changes; optional for Approve."
+                rows="3"
+                class="w-full text-sm bg-bg border border-hairline rounded px-2 py-1.5 focus:border-accent outline-none resize-y placeholder:text-muted"
+                disabled={submitting}
+              ></textarea>
+              <div class="flex items-center gap-1.5 mt-2 flex-wrap">
+                <button
+                  type="button"
+                  onclick={() => submitAction("comment")}
+                  disabled={!canSubmit.comment}
+                  class="px-2 py-1 rounded text-[11px] font-medium bg-accent text-black hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Post a PR-wide comment (issue conversation stream)"
+                >Comment</button>
+                <button
+                  type="button"
+                  onclick={() => submitAction("approve")}
+                  disabled={!canSubmit.approve}
+                  class="px-2 py-1 rounded text-[11px] font-medium bg-add-fg text-black hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Submit an approving review (body optional)"
+                >Approve</button>
+                <button
+                  type="button"
+                  onclick={() => submitAction("changes")}
+                  disabled={!canSubmit.changes}
+                  class="px-2 py-1 rounded text-[11px] font-medium bg-del-fg text-black hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Submit a Request changes review (body required by GitHub)"
+                >Request changes</button>
+                <button
+                  type="button"
+                  onclick={() => { actionsOpen = false; reviewBody = ""; }}
+                  disabled={submitting}
+                  class="ml-auto text-[11px] text-fg-3 hover:text-fg-1 px-2 py-1 rounded disabled:opacity-50"
+                >Cancel</button>
+              </div>
+              {#if submitting}
+                <div class="mt-1.5 text-[10px] text-fg-3">Submitting…</div>
+              {/if}
+            {/if}
           </div>
         </div>
       </div>

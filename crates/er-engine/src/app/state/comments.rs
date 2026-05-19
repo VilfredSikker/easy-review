@@ -2296,6 +2296,15 @@ impl App {
             },
         );
 
+        if super::background::debug_bg_enabled() {
+            eprintln!(
+                "[bg] inserted task id={} target={} map_size={}",
+                task_id,
+                target.display_label(),
+                self.background_tasks.len()
+            );
+        }
+
         self.notify(&format!("review started ({})", target.display_label()));
         Ok(())
     }
@@ -2437,8 +2446,27 @@ impl App {
     /// Snapshot of in-flight + recently finished background tasks. Includes
     /// Running tasks and Done/Failed within the last 8 seconds.
     pub fn background_task_snapshots(&self) -> Vec<super::background::BackgroundTaskSnapshot> {
+        // Only log when there's actually something interesting to report —
+        // otherwise this function fires many times per second from every
+        // build_snapshot call and floods stderr.
+        let debug_bg = super::background::debug_bg_enabled()
+            && (!self.background_tasks.is_empty() || !self.recent_background_tasks.is_empty());
         let cutoff = super::background::unix_now_ms().saturating_sub(8_000);
         let mut out: Vec<super::background::BackgroundTaskSnapshot> = Vec::new();
+        if debug_bg {
+            eprintln!(
+                "[bg] snapshots called map_size={} recent_size={} cutoff={}",
+                self.background_tasks.len(),
+                self.recent_background_tasks.len(),
+                cutoff
+            );
+            for (id, handle) in self.background_tasks.iter() {
+                eprintln!(
+                    "[bg]   handle id={} status={:?} finished_at_ms={:?}",
+                    id, handle.task.status, handle.task.finished_at_ms
+                );
+            }
+        }
         for handle in self.background_tasks.values() {
             let include = match handle.task.status {
                 CommandStatus::Running => true,
@@ -2467,6 +2495,16 @@ impl App {
             }
         }
         out.sort_by_key(|t| t.started_at_ms);
+        if debug_bg {
+            eprintln!(
+                "[bg] snapshots returning len={} statuses=[{}]",
+                out.len(),
+                out.iter()
+                    .map(|t| format!("{}={}", t.id, t.status))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         out
     }
 

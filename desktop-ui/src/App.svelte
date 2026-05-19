@@ -33,6 +33,44 @@
 
   let drawerHeight = $state(280);
 
+  // --- Right panel resize -------------------------------------------------
+  const RIGHT_PANEL_MIN = 280;
+  const RIGHT_PANEL_MAX_FRAC = 0.6;
+  const RIGHT_PANEL_DEFAULT = 340;
+  const RIGHT_PANEL_STORAGE_KEY = "rightPanelWidth";
+
+  let rightPanelWidth = $state(RIGHT_PANEL_DEFAULT);
+  let resizingRightPanel = $state(false);
+
+  function clampRightPanelWidth(w: number): number {
+    const max = Math.max(RIGHT_PANEL_MIN, window.innerWidth * RIGHT_PANEL_MAX_FRAC);
+    return Math.min(max, Math.max(RIGHT_PANEL_MIN, w));
+  }
+
+  function onRightPanelResizeStart(e: MouseEvent) {
+    e.preventDefault();
+    resizingRightPanel = true;
+    const startX = e.clientX;
+    const startW = rightPanelWidth;
+
+    const onMove = (ev: MouseEvent) => {
+      // Dragging left (toward the diff) grows the panel.
+      rightPanelWidth = clampRightPanelWidth(startW + (startX - ev.clientX));
+    };
+    const onUp = () => {
+      resizingRightPanel = false;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      try {
+        localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, String(rightPanelWidth));
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   // --- Terminal drawer resize ---------------------------------------------
   // Drag the 4px handle along the drawer's top edge to resize. Height is
   // clamped to a sane range and persisted to localStorage on drag-end so it
@@ -85,6 +123,13 @@
       const raw = localStorage.getItem(DRAWER_STORAGE_KEY);
       const parsed = raw ? Number(raw) : NaN;
       if (Number.isFinite(parsed)) drawerHeight = clampDrawerHeight(parsed);
+    } catch {
+      /* ignore */
+    }
+    try {
+      const raw = localStorage.getItem(RIGHT_PANEL_STORAGE_KEY);
+      const parsed = raw ? Number(raw) : NaN;
+      if (Number.isFinite(parsed)) rightPanelWidth = clampRightPanelWidth(parsed);
     } catch {
       /* ignore */
     }
@@ -220,7 +265,13 @@
     </main>
 
     {#if panels?.right && !browser.open && app.mainView === "diff"}
-      <RightPanel ai={app.snapshot?.ai ?? null} pr={app.snapshot?.pr ?? null} />
+      <RightPanel
+        ai={app.snapshot?.ai ?? null}
+        pr={app.snapshot?.pr ?? null}
+        width={rightPanelWidth}
+        dragging={resizingRightPanel}
+        onResizeStart={onRightPanelResizeStart}
+      />
     {/if}
   </div>
 
@@ -257,6 +308,7 @@
   <BackgroundTasks
     tasks={app.snapshot?.background_tasks ?? []}
     avoidRightPanel={!!panels?.right && !browser.open}
+    rightPanelWidth={rightPanelWidth}
   />
   <Toast toasts={app.toasts} />
   {#if app.error}

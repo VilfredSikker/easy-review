@@ -148,43 +148,38 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
     }
 }
 
-/// Apply the desktop-managed `ErRoot` to a tab that has a local repo root.
+/// Apply the desktop-managed `ErRoot` to a tab, pointing it at the flat
+/// branch-level managed storage dir under
+/// `~/Library/Application Support/easy-review/repos/<repo>/branches/<branch>/`.
 ///
-/// For remote-PR tabs the engine already uses its own cache path; skip those.
+/// Works for local tabs (LocalBranch, LocalPr, Working) and remote PR tabs
+/// (RemotePr). For remote tabs we slug the `owner/repo` and use `pr-<n>` as
+/// the branch component since there's no local branch name to anchor on.
 pub fn apply_managed_root(tab: &mut er_engine::app::TabState) {
-    if tab.is_remote() {
-        return;
-    }
-    let branch = tab
-        .local_branch_view
-        .clone()
-        .unwrap_or_else(|| tab.current_branch.clone());
-    if branch.is_empty() || tab.repo_root.is_empty() {
-        return;
-    }
-
-    // For LocalPr tabs: if managed storage is empty but the legacy cache `.er/` dir has
-    // review files (written before managed storage was introduced), bootstrap from it so
-    // the review survives the migration transparently.
-    if let Some(pr_num) = tab.pr_number {
-        let repo_slug = er_storage::slug_repo(&tab.repo_root);
-        let branch_slug = er_storage::slug_branch(&branch);
-        if er_storage::active_revision(&repo_slug, &branch_slug).is_none() {
-            if let Ok(home) = std::env::var("HOME") {
-                let legacy_er =
-                    format!("{}/.cache/er/local/{}/pr-{}/.er", home, repo_slug, pr_num);
-                if std::path::Path::new(&legacy_er).is_dir() {
-                    let _ = er_storage::bootstrap_from_legacy_er_path(
-                        &legacy_er,
-                        &repo_slug,
-                        &branch_slug,
-                    );
-                }
-            }
+    let (repo_slug, branch_slug) = if let Some(remote_repo) = tab.remote_repo.clone() {
+        // Remote PR: slug derived from `owner/repo`, branch from `pr-<n>`.
+        let Some(pr_num) = tab.pr_number else {
+            return;
+        };
+        (
+            er_storage::slug_branch(&remote_repo), // reuses the generic slugifier
+            format!("pr-{}", pr_num),
+        )
+    } else {
+        let branch = tab
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| tab.current_branch.clone());
+        if branch.is_empty() || tab.repo_root.is_empty() {
+            return;
         }
-    }
+        (
+            er_storage::slug_repo(&tab.repo_root),
+            er_storage::slug_branch(&branch),
+        )
+    };
 
-    tab.er_root = er_storage::resolve_managed_root(&tab.repo_root, &branch);
+    tab.er_root = er_storage::resolve_managed_root_from_slugs(&repo_slug, &branch_slug);
 }
 
 /// Rebuild a `TabState` from a descriptor. Skips work that needs the network
