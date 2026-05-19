@@ -26,11 +26,13 @@ export const SingleTab: Story = {
   args: {
     tabs: [tab({ idx: 0, label: "easy-review", is_active: true })],
     active: 0,
+    showToolbar: false,
   },
 };
 
 export const MultiTab: Story = {
   args: {
+    showToolbar: false,
     tabs: [
       tab({ idx: 0, label: "easy-review", is_active: true }),
       tab({
@@ -53,6 +55,7 @@ export const MultiTab: Story = {
 
 export const ManyTabs: Story = {
   args: {
+    showToolbar: false,
     tabs: Array.from({ length: 12 }, (_, i) =>
       tab({
         idx: i,
@@ -79,6 +82,7 @@ export const ManyTabs: Story = {
 export const Reorderable: Story = {
   name: "MultiTab (Reorderable)",
   args: {
+    showToolbar: false,
     tabs: [
       tab({ idx: 0, label: "easy-review", is_active: true }),
       tab({

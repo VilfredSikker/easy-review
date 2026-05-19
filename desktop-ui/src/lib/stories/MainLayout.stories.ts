@@ -6,6 +6,7 @@ import {
   multiFolderSnapshot,
   prDraft,
   commitsRich,
+  tabsWorkingActive,
 } from "./fixtures";
 
 const pinnedMock = [
@@ -61,11 +62,18 @@ export const AiReviewWithFindings: Story = {
 };
 
 /**
- * GitHub sync state — PR draft + checks.
+ * GitHub sync state — working tab with PR metadata + commit scroller visible.
+ * ScopeSelector must show Unstaged/Staged and Commits despite snapshot.pr being set.
  */
 export const GitHubSyncState: Story = {
   args: {
-    snapshot: { ...richSnapshot, pr: prDraft, commits: commitsRich },
+    snapshot: {
+      ...richSnapshot,
+      pr: prDraft,
+      commits: commitsRich,
+      tabs: tabsWorkingActive,
+      active_tab: 0,
+    },
     pinned: pinnedMock,
     projects: projectsMock,
     titlebarSubtitle: "discovery-platform",

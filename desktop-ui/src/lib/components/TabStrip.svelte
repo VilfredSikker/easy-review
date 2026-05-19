@@ -10,15 +10,24 @@
     onSelect?: (idx: number) => void;
     onClose?: (idx: number) => void;
     onNew?: () => void;
+    /** When false, render tabs only (Storybook). Default true in the desktop shell. */
+    showToolbar?: boolean;
   }
 
-  let { tabs: tabsProp, active: activeProp, onSelect, onClose, onNew }: Props =
-    $props();
+  let {
+    tabs: tabsProp,
+    active: activeProp,
+    onSelect,
+    onClose,
+    onNew,
+    showToolbar = true,
+  }: Props = $props();
 
   // Default to the live snapshot; props win when supplied (Storybook).
   const tabs = $derived(tabsProp ?? app.snapshot?.tabs ?? []);
   const active = $derived(activeProp ?? app.snapshot?.active_tab ?? 0);
   const canClose = $derived(tabs.length > 1);
+  const panels = $derived(app.snapshot?.panels);
 
   // Drag state. `dragFrom` is the source tab idx; `dropAt` is the insertion
   // marker position (0..tabs.length, where `tabs.length` means after the last
@@ -119,15 +128,27 @@
      even when the tab list is full. The left padding offsets the macOS traffic lights. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="flex items-center h-9 border-b border-ink-650 bg-ink-870 shrink-0 tabstrip-drag pr-4"
+  class="flex items-center h-11 border-b border-ink-650 bg-ink-870 shrink-0 tabstrip-drag pr-3 gap-1"
   style="padding-left: env(titlebar-area-x, 80px)"
   data-testid="tab-strip"
   data-tauri-drag-region
   onmousedown={startWindowDrag}
 >
+  {#if showToolbar}
+    <div class="tabstrip-no-drag flex items-center gap-0.5 shrink-0 text-ink-300">
+      <button
+        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {panels?.left ? 'text-accent bg-ink-700' : ''}"
+        onclick={() => app.togglePanel("left")}
+        title="Toggle left panel [["
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
+      </button>
+    </div>
+  {/if}
+
 <!-- Tabs scroll container: overflow here, but explicitly no-drag so tabs stay interactive. -->
 <div
-  class="flex items-center gap-1 pr-2 min-w-0 max-w-full overflow-x-auto tabstrip-no-drag"
+  class="flex items-center gap-1 pr-1 min-w-0 overflow-x-auto tabstrip-no-drag {showToolbar ? 'flex-1' : 'max-w-full'}"
 >
   {#each tabs as tab, i (tab.idx)}
     {#if dragFrom !== null && dropAt === i}
@@ -254,7 +275,32 @@
   </div>
 <!-- Close the inner tabs scroll container -->
 </div>
-<div class="flex-1 min-w-4" data-tauri-drag-region aria-hidden="true"></div>
+  {#if showToolbar}
+    <div class="flex-1 min-w-4" data-tauri-drag-region aria-hidden="true"></div>
+
+    <div class="tabstrip-no-drag flex items-center gap-0.5 shrink-0 text-ink-300 border-l border-ink-650 pl-2 ml-1">
+      {#if app.snapshot?.watch_active}
+        <span class="w-1.5 h-1.5 rounded-full bg-add-fg/60 shrink-0 mr-1" title="Watch active"></span>
+      {/if}
+      <button
+        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {panels?.tree ? 'text-accent bg-ink-700' : ''}"
+        onclick={() => app.togglePanel("tree")}
+        title="Toggle file tree [\]"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
+      </button>
+      <button class="text-xs text-ink-200 hover:bg-ink-700 px-2.5 py-1 rounded-md font-mono transition-colors">⌘K</button>
+      <button
+        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {panels?.right ? 'text-accent bg-ink-700' : ''}"
+        onclick={() => app.togglePanel("right")}
+        title="Toggle right panel []]"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
+      </button>
+    </div>
+  {:else}
+    <div class="flex-1 min-w-4" data-tauri-drag-region aria-hidden="true"></div>
+  {/if}
 </div>
 
 <style>

@@ -15,20 +15,20 @@
   import ExportModal from "$lib/components/ExportModal.svelte";
   import PrUrlModal from "$lib/components/PrUrlModal.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
+  import BranchContextBar from "$lib/components/BranchContextBar.svelte";
   import Terminal from "$lib/components/Terminal.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import { browser } from "$lib/stores/browser.svelte";
-  import { startWindowDrag } from "$lib/windowDrag";
-  import { copyToClipboard } from "$lib/clipboard";
-
   const panels = $derived(app.snapshot?.panels);
-  /** No snapshot yet (initial load) OR snapshot has no branch (no repo open). */
+  /** No snapshot yet, explicit welcome, or no repo/diff and no saved projects. */
   const isEmpty = $derived(
     app.showEmptyState ||
       app.snapshot === null ||
-      (app.snapshot.branch === "" && app.snapshot.files.length === 0),
+      (app.snapshot.branch === "" &&
+        app.snapshot.files.length === 0 &&
+        (app.snapshot.projects?.length ?? 0) === 0),
   );
 
   let drawerHeight = $state(280);
@@ -148,82 +148,7 @@
 
 <div class="h-screen flex flex-col bg-ink-900 text-ink-50 overflow-hidden">
   <TabStrip />
-
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <header
-    class="titlebar-drag h-11 border-b border-ink-650 bg-ink-870 flex items-center gap-1 shrink-0 pr-3 pl-3"
-    data-tauri-drag-region
-    onmousedown={startWindowDrag}
-  >
-    <!-- left panel + nav buttons -->
-    <div class="titlebar-no-drag flex items-center gap-0.5 mr-3 text-ink-300">
-      <button
-        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {panels?.left ? 'text-accent bg-ink-700' : ''}"
-        onclick={() => app.togglePanel("left")}
-        title="Toggle left panel [["
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
-      </button>
-      <button class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 opacity-40 transition-colors" title="Back">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-      </button>
-      <button class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 opacity-40 transition-colors" title="Forward">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-      </button>
-    </div>
-
-    <!-- branch chip + worktree controls -->
-    <div class="titlebar-no-drag relative flex items-center gap-1 min-w-0">
-      <div class="flex items-center gap-2 px-3 py-1 rounded-md bg-ink-700 border border-ink-500 text-sm cursor-default">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-        <span class="text-ink-100 text-sm">{app.snapshot?.branch ?? "Review"}</span>
-        {#if app.snapshot?.base}
-          <span class="font-mono text-[10px] text-ink-300">{app.snapshot.base}</span>
-        {/if}
-      </div>
-      <button
-        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 text-ink-300 hover:text-ink-100 transition-colors"
-        title="Copy branch name"
-        onclick={() => copyToClipboard(app.snapshot?.branch ?? "")}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-      </button>
-      {#if activeTabRoot && activeTab?.kind !== "remote_pr"}
-        <button
-          class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 text-ink-300 hover:text-ink-100 transition-colors"
-          title="Copy repo path"
-          onclick={() => copyToClipboard(activeTabRoot)}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-        </button>
-      {/if}
-    </div>
-
-    <!-- draggable spacer fills the gap between branch chip and right controls -->
-    <div class="flex-1" data-tauri-drag-region></div>
-
-    <!-- right side controls -->
-    <div class="titlebar-no-drag flex items-center gap-0.5 text-ink-300">
-      {#if app.snapshot?.watch_active}
-        <span class="w-1.5 h-1.5 rounded-full bg-add-fg/60 shrink-0 mr-1.5" title="Watch active"></span>
-      {/if}
-      <button
-        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {panels?.tree ? 'text-accent bg-ink-700' : ''}"
-        onclick={() => app.togglePanel("tree")}
-        title="Toggle file tree [\]"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
-      </button>
-      <button class="text-xs text-ink-200 hover:bg-ink-700 px-3 py-1 rounded-md font-mono transition-colors">⌘K</button>
-      <button
-        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {panels?.right ? 'text-accent bg-ink-700' : ''}"
-        onclick={() => app.togglePanel("right")}
-        title="Toggle right panel []]"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
-      </button>
-    </div>
-  </header>
+  <BranchContextBar />
 
   <div class="flex-1 flex min-h-0 relative">
     {#if app.switching}

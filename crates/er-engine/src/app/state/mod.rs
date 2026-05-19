@@ -1419,7 +1419,8 @@ impl TabState {
         if config.features.view_branch {
             modes.push(DiffMode::Branch);
         }
-        let read_only = self.is_remote() || self.is_local_branch_view();
+        let read_only =
+            self.is_remote() || (self.is_local_branch_view() && self.local_branch_checkout_root.is_none());
         if config.features.view_unstaged && !read_only && self.pr_head_ref.is_none() {
             modes.push(DiffMode::Unstaged);
         }
@@ -1788,7 +1789,10 @@ impl TabState {
 
     /// Whether `raw_diff` (if present) matches the review `scope` for this tab.
     fn review_scope_matches_cached_diff(&self, scope: &str) -> bool {
-        if self.local_branch_view.is_some() || self.remote_repo.is_some() {
+        if self.remote_repo.is_some() {
+            return true;
+        }
+        if self.local_branch_view.is_some() && self.local_branch_checkout_root.is_none() {
             return true;
         }
         match scope {
@@ -1818,7 +1822,15 @@ impl TabState {
                     crate::git::git_diff_against_branch(&self.repo_root, &base, &head_ref)
                 }
             } else if let Some(checkout_root) = self.local_branch_checkout_root.clone() {
-                crate::git::git_diff_checkout_against_base(&checkout_root, &base)
+                return match scope {
+                    "unstaged" | "staged" => crate::git::git_diff_raw(
+                        scope,
+                        &base,
+                        &checkout_root,
+                        None,
+                    ),
+                    _ => crate::git::git_diff_checkout_against_base(&checkout_root, &base),
+                };
             } else {
                 let diff_target = self
                     .local_branch_diff_ref
@@ -1914,11 +1926,17 @@ impl TabState {
             return Ok(());
         }
 
-        // Local branch view: read-only `git diff <base>...<branch>` from the user's clone.
+        // Local branch view: read-only `git diff <base>...<branch>` from the user's clone,
+        // or mode-aware diffs when the branch is checked out (working tree).
         // For local PR review, pr_head_ref holds the fetched ref to diff against instead.
         if self.local_branch_view.is_some() {
             let t_raw_diff = Instant::now();
-            let raw = self.fetch_tab_raw_diff("branch")?;
+            let scope = if self.local_branch_checkout_root.is_some() {
+                self.mode.git_mode()
+            } else {
+                "branch"
+            };
+            let raw = self.fetch_tab_raw_diff(scope)?;
             log_branch_profile_phase(self, "local_branch_raw_diff", t_raw_diff);
 
             let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
@@ -2739,10 +2757,32 @@ impl TabState {
         (files_start, checklist_start)
     }
 
+    /// Diff files for the active view: branch/unstaged/staged use `files`; History uses
+    /// the selected commit's parsed diff.
+    pub fn active_diff_files(&self) -> &[DiffFile] {
+        if self.mode == DiffMode::History {
+            return self
+                .history
+                .as_ref()
+                .map(|h| h.commit_files.as_slice())
+                .unwrap_or(&[]);
+        }
+        &self.files
+    }
+
+    /// Selected file index within [`Self::active_diff_files`].
+    pub fn active_selected_file_index(&self) -> usize {
+        if self.mode == DiffMode::History {
+            return self.history.as_ref().map(|h| h.selected_file).unwrap_or(0);
+        }
+        self.selected_file
+    }
+
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
     /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
-        let mut visible: Vec<(usize, &DiffFile)> = self.files.iter().enumerate().collect();
+        let mut visible: Vec<(usize, &DiffFile)> =
+            self.active_diff_files().iter().enumerate().collect();
 
         // Phase 1: Apply filter rules
         if !self.filter_rules.is_empty() {

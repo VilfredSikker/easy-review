@@ -1,14 +1,15 @@
 import type {
   AiSnapshot,
   AppSnapshot,
+  CommitSummary,
   FileSnapshot,
   HunkSnapshot,
   LineSnapshot,
   PrSnapshot,
   SpanSnapshot,
+  TabSummary,
   ThreadSnapshot,
   WorktreeSnapshot,
-  CommitSummary,
 } from "$lib/types";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -314,6 +315,19 @@ export const commitsRich: CommitSummary[] = [
   { sha: "2356d55a", title: "Merge branch 'main' into show-experiment-params", author: "Vilfred", age: "1h" },
 ];
 
+/** Active working-tree tab — ScopeSelector shows unstaged/staged/commits even when pr is set. */
+export const tabsWorkingActive: TabSummary[] = [
+  {
+    idx: 0,
+    label: "show-experiment-params",
+    kind: "working",
+    branch: "show-experiment-params",
+    pr_number: 142,
+    repo_root: "/Users/vilfred/Projects/discovery-platform",
+    is_active: true,
+  },
+];
+
 // ─── multi-folder files (for tree visualization) ────────────────────────────
 
 export const multiFolderFiles: FileSnapshot[] = [
@@ -353,7 +367,7 @@ const baseSnapshot: AppSnapshot = {
   projects: [],
   local_branch: null,
   notification: null,
-  tabs: [],
+  tabs: tabsWorkingActive,
   active_tab: 0,
   bg_loading: { pr_list: false, gh_status: false, gh_comments: false },
   commits: commitsRich,

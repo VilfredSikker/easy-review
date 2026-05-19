@@ -263,6 +263,8 @@ export interface AppSnapshot {
   worktrees: WorktreeSnapshot[];
   projects: ProjectSnapshot[];
   local_branch: string | null;
+  /** True when the viewed local branch is checked out (enables Unstaged/Staged/Commits scopes). */
+  local_branch_checked_out?: boolean;
   notification: string | null;
   tabs: TabSummary[];
   active_tab: number;

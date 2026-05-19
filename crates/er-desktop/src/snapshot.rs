@@ -85,6 +85,9 @@ pub struct AppSnapshot {
     pub notification: Option<String>,
     /// When Some, the active tab is a read-only diff of this local branch.
     pub local_branch: Option<String>,
+    /// True when the viewed local branch is checked out (project root or worktree).
+    #[serde(default)]
+    pub local_branch_checked_out: bool,
     pub tabs: Vec<TabSummary>,
     pub active_tab: usize,
     /// Browser-view annotations for the active tab. Freshly read from disk
@@ -736,7 +739,8 @@ pub fn build_snapshot(
     };
 
     let reviewed_count = tab.reviewed.len();
-    let total_count = tab.files.len();
+    let total_count = tab.active_diff_files().len();
+    let active_selected = tab.active_selected_file_index();
 
     let visible = tab.visible_files();
     let mut diff_line_budget = std::env::var("ER_DESKTOP_SNAPSHOT_LINE_BUDGET")
@@ -749,7 +753,7 @@ pub fn build_snapshot(
             let source_index = *source_index;
             let line_count = f.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
             let include_hunks =
-                !f.compacted && (source_index == tab.selected_file || diff_line_budget > 0);
+                !f.compacted && (source_index == active_selected || diff_line_budget > 0);
             let budget_omitted = !f.compacted && !include_hunks;
             let hunks = if include_hunks {
                 diff_line_budget = diff_line_budget.saturating_sub(line_count);
@@ -800,11 +804,11 @@ pub fn build_snapshot(
         })
         .collect();
 
-    // Translate backend `selected_file` (index into `tab.files`) into a
+    // Translate backend selection (index into active diff files) into a
     // visible-list index. If the selected file is filtered out, fall back to 0.
     let selected_file = visible
         .iter()
-        .position(|(idx, _)| *idx == tab.selected_file)
+        .position(|(idx, _)| *idx == active_selected)
         .unwrap_or(0);
 
     let filter_suggestions: Vec<FilterSuggestionSnapshot> = {
@@ -969,6 +973,7 @@ pub fn build_snapshot(
         projects: build_projects(tab, pr_cache, pr_cache_fetched_at, meta_cache, gh_user),
         notification: app.watch_message.clone(),
         local_branch: tab.local_branch_view.clone(),
+        local_branch_checked_out: tab.local_branch_checkout_root.is_some(),
         tabs,
         active_tab,
         ui_annotations,
@@ -1054,17 +1059,22 @@ pub fn build_snapshot(
 fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
     const LIMIT: usize = 10;
 
+    let log_root = tab
+        .local_branch_checkout_root
+        .as_deref()
+        .unwrap_or(tab.repo_root.as_str());
+
     let raw: Vec<er_engine::git::CommitInfo> = if let Some(history) = tab.history.as_ref() {
         history.commits.iter().take(LIMIT).cloned().collect()
     } else if tab.remote_repo.is_some() {
         Vec::new()
     } else {
-        let ranged = er_engine::git::git_log_branch(&tab.base_branch, &tab.repo_root, LIMIT, 0)
+        let ranged = er_engine::git::git_log_branch(&tab.base_branch, log_root, LIMIT, 0)
             .unwrap_or_default();
         if ranged.is_empty() {
             // On the base branch itself `base..HEAD` is empty — fall back to
             // recent HEAD history so the commit scroller still shows something.
-            er_engine::git::git_log_head(&tab.repo_root, LIMIT).unwrap_or_default()
+            er_engine::git::git_log_head(log_root, LIMIT).unwrap_or_default()
         } else {
             ranged
         }
@@ -1680,7 +1690,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         let mut m = 0usize;
         let mut l = 0usize;
         for file_review in review.files.values() {
-            for finding in &file_review.findings {
+            for finding in file_review.findings.iter().filter(|f| f.is_active()) {
                 match finding.severity {
                     RiskLevel::High => h += 1,
                     RiskLevel::Medium => m += 1,
@@ -1814,7 +1824,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
             .flat_map(|(path, fr)| {
                 let promotions = &promotions;
                 let gh = ai.github_comments.as_ref();
-                fr.findings.iter().map(move |f| {
+                fr.findings.iter().filter(|f| f.is_active()).map(move |f| {
                     let thread_id = gh.and_then(|gc| {
                         gc.comments
                             .iter()

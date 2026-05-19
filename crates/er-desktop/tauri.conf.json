@@ -10,7 +10,9 @@
     "frontendDist": "../../desktop-ui/dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "security": {
+      "capabilities": ["default", "browser-remote"],
       "csp": "default-src 'self' tauri:; connect-src 'self' tauri: ipc: http://ipc.localhost https: http://localhost:* http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; img-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*; frame-src 'self' erp: erps: http://localhost:* http://127.0.0.1:* https:",
       "devCsp": null
     }

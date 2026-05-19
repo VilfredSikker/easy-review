@@ -3,6 +3,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { annotationMatchesPage } from "$lib/stores/browserUrl";
+  import { registerBrowserAnnotationComposerDismiss } from "$lib/stores/keyboard";
   import type { UiAnnotation, UiDomContext } from "$lib/types";
 
   interface Props {
@@ -10,6 +11,8 @@
     width: number;
     /** Height of the iframe. */
     height: number;
+    /** Native review webview is above the overlay; the page script handles hover/click. */
+    pageHandlesAnnotate?: boolean;
     /** Hovered DOM element info from the content script (annotation mode only). */
     hoveredEl?: { selector: string | null; rect: { left: number; top: number; width: number; height: number }; element_context?: string | null; dom_context?: UiDomContext | null } | null;
     /** Live bounding rect from a DOM query for the currently-hovered annotation pin. */
@@ -35,7 +38,11 @@
     ) => void;
   }
 
-  const { width, height, hoveredEl = null, livePinRect = null, allPinRects = {}, onHoverPin, queryHoverAt, onPointerLeave, getIframeRect, onSubmit }: Props = $props();
+  const { width, height, pageHandlesAnnotate = false, hoveredEl = null, livePinRect = null, allPinRects = {}, onHoverPin, queryHoverAt, onPointerLeave, getIframeRect, onSubmit }: Props = $props();
+
+  const overlayCapturesPointer = $derived(
+    browser.annotateMode && !pageHandlesAnnotate,
+  );
 
   /** Feature-detect screen-capture support. Falls back gracefully on macOS
    *  Tauri webviews that don't ship the `getDisplayMedia` API. */
@@ -150,6 +157,27 @@
     captureError = null;
     onPointerLeave?.();
   }
+
+  function onComposerKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelComposer();
+    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      saveComposer();
+    }
+  }
+
+  $effect(() => {
+    if (!composer) {
+      registerBrowserAnnotationComposerDismiss(null);
+      return;
+    }
+    registerBrowserAnnotationComposerDismiss(cancelComposer);
+    return () => registerBrowserAnnotationComposerDismiss(null);
+  });
 
   function saveComposer() {
     if (!composer || !composer.text.trim()) {
@@ -377,8 +405,8 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="absolute inset-0"
-  style:pointer-events={browser.annotateMode ? "auto" : "none"}
-  style:cursor={browser.annotateMode ? "crosshair" : "default"}
+  style:pointer-events={overlayCapturesPointer ? "auto" : "none"}
+  style:cursor={overlayCapturesPointer ? "crosshair" : "default"}
   onpointermove={onOverlayPointerMove}
   onpointerleave={onOverlayPointerLeave}
   onclick={onOverlayClick}
@@ -546,6 +574,7 @@
         rows="3"
         placeholder="What's wrong here?"
         bind:value={composer.text}
+        onkeydown={onComposerKeydown}
         autofocus
       ></textarea>
       {#if composer.selector}
@@ -602,7 +631,10 @@
             No screen capture
           </span>
         {/if}
-        <div class="flex gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] text-muted hidden sm:inline">
+            <span class="kbd">⌘↩</span> save · <span class="kbd">esc</span> cancel
+          </span>
           <button
             type="button"
             class="text-xs px-2 py-1 rounded hover:bg-hover text-muted"

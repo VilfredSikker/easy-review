@@ -48,7 +48,29 @@ Bump `desktop_revision` when changing:
 - Background AI review tasks live in the engine `App`, not the active tab, so they survive tab switches. `commands::run_ai_review` should use `spawn_background_review` for review actions.
 - Read-only PR review should use fetched refs and `TabState::new_local_pr`/remote PR tabs. Avoid `gh pr checkout` as a default review path.
 - `submit_github_review` is high risk. Validate that only valid, unsynced local GitHub comments are submitted and only mark comments synced after GitHub success.
-- Browser annotations cross the browser proxy, injected content script, `ui-annotations.json`, and snapshot reloads. URL canonicalization and re-anchor freshness are part of the contract.
+- Browser annotations cross the browser proxy (`src/browser_proxy.rs`), injected content script, `ui-annotations.json`, and snapshot reloads. URL canonicalization and re-anchor freshness are part of the contract. See **Embedded dev browser** below.
+
+## Embedded dev browser (annotations-first)
+
+The Browser tab’s primary surface is a **native child webview** (`review-browser`) loading real `http://localhost` URLs so WKWebView handles OAuth/cookies like a normal browser. The main window is transparent over the browser pane; `AnnotationOverlay` stays in the Svelte shell on top.
+
+| Piece | Role |
+|-------|------|
+| `src/browser_webview.rs` | Create/position/hide child webview; `browser_host_message` / `browser_send_to_page` IPC |
+| `src/frame_script.rs` | Injected script: `reportToHost()` → Tauri invoke or `postMessage` fallback |
+| `desktop-ui/.../browserHost.ts` | `listen('browser://message')`, bounds sync, outbound eval |
+| `src/browser_proxy.rs` | **Fallback** `erp://` / `erps://` proxy when native webview unavailable or iframe mode |
+
+**Proxy navigation policy** (provider-agnostic) — `browser_proxy.rs`:
+
+| Request | Behaviour |
+|---------|-----------|
+| Assets, `POST`, etc. | Single upstream hop, forward WebView headers |
+| `GET`/`HEAD` document, same-origin 3xx | HTTP `Location` as `erp(s)://…` |
+| `GET`/`HEAD` document, cross-origin 3xx | HTML `location.replace` to `erp(s)://…` (iframes ignore custom-scheme `Location`) |
+| OAuth loops | Single server hop only; never follow redirect chains in ureq |
+
+Do not add provider-specific URL checks. Use `localhost` consistently (`127.0.0.1` is a different cookie origin).
 - `er_storage` redirects Desktop review artifacts away from the repo `.er` directory. Bootstrap existing `.er` data, then write active Desktop output to the managed revision path.
 - Terminal sessions are OS resources. Dropping the stored `PtySession` kills the child shell; be careful with session id reuse and tab close behavior.
 

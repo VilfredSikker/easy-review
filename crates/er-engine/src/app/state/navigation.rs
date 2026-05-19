@@ -4,6 +4,10 @@ impl TabState {
     pub fn next_file(&mut self) {
         self.focused_comment_id = None;
         self.focused_finding_id = None;
+        if self.mode == DiffMode::History {
+            self.history_next_file();
+            return;
+        }
         if let Some(idx) = self.selected_watched {
             // In watched section — move down within watched files
             let visible_watched = self.visible_watched_files();
@@ -90,6 +94,10 @@ impl TabState {
     pub fn prev_file(&mut self) {
         self.focused_comment_id = None;
         self.focused_finding_id = None;
+        if self.mode == DiffMode::History {
+            self.history_prev_file();
+            return;
+        }
         if let Some(idx) = self.selected_watched {
             // In watched section — move up within watched files
             let visible_watched = self.visible_watched_files();
@@ -918,6 +926,21 @@ impl TabState {
         history.current_line = None;
         history.diff_scroll = 0;
         history.h_scroll = 0;
+    }
+
+    /// Select a file within the current commit diff (History mode).
+    pub fn history_select_file(&mut self, idx: usize) {
+        let history = match self.history.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+        if idx >= history.commit_files.len() {
+            return;
+        }
+        history.selected_file = idx;
+        history.current_hunk = 0;
+        history.current_line = None;
+        Self::history_scroll_to_file(history);
     }
 
     /// Move to next file within the selected commit's diff

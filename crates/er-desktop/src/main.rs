@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod browser_proxy;
+mod browser_webview;
 mod commands;
+mod frame_script;
 mod er_storage;
 mod export;
 mod inbox;
@@ -9,250 +12,21 @@ mod projects;
 mod snapshot;
 mod tabs;
 mod terminal;
+mod window_placement;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
+use browser_webview::BrowserWebviewState;
 use commands::AppState;
 use er_engine::app::App;
 use er_engine::highlight::Highlighter;
+use frame_script::FRAME_SCRIPT;
 use snapshot::{
     GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot,
     WatchStatusState,
 };
-
-/// Annotation content script injected into browser-view frames.
-/// Handles hover queries, click reporting, re-anchoring, live rect queries,
-/// and location change reporting back to the parent.
-const FRAME_SCRIPT: &str = r#"(function(){
-  if(window.__er_injected)return;
-  window.__er_injected=true;
-
-  // Bail in the Tauri main frame (tauri: protocol) — we only annotate child frames.
-  // Using protocol check instead of window===window.top because WKWebView may not
-  // correctly set up window.top for custom-scheme iframes.
-  try{if(window.location.protocol==='tauri:')return;}catch(_){}
-
-  function cssPath(el){
-    if(!el||el.nodeType!==1)return null;
-    var path=[],cur=el;
-    while(cur&&cur.nodeType===1&&path.length<8){
-      var part=cur.nodeName.toLowerCase();
-      if(cur.id){part+='#'+CSS.escape(cur.id);path.unshift(part);break;}
-      var cls=Array.from(cur.classList).slice(0,2).map(function(c){return'.'+CSS.escape(c);}).join('');
-      if(cls)part+=cls;
-      var parent=cur.parentElement;
-      if(parent){var siblings=Array.from(parent.children).filter(function(c){return c.nodeName===cur.nodeName;});if(siblings.length>1)part+=':nth-of-type('+(siblings.indexOf(cur)+1)+')';}
-      path.unshift(part);cur=parent;
-    }
-    return path.join(' > ');
-  }
-
-  function cleanText(value,max){
-    try{
-      var s=(value||'').replace(/\s+/g,' ').trim();
-      return s.length>max?s.slice(0,max-1)+'…':s;
-    }catch(_){return null;}
-  }
-
-  function interestingAttrs(el){
-    var names=['id','class','role','aria-label','aria-describedby','aria-labelledby','title','placeholder','name','type','value','href','src','alt','data-testid','data-test','data-cy'];
-    var out={};
-    for(var i=0;i<names.length;i++){
-      try{
-        var v=el.getAttribute(names[i]);
-        if(v!==null&&v!=='')out[names[i]]=cleanText(v,240);
-      }catch(_){}
-    }
-    return out;
-  }
-
-  function shortNode(el){
-    if(!el||el.nodeType!==1)return null;
-    var attrs=interestingAttrs(el);
-    return{
-      tag:el.tagName?el.tagName.toLowerCase():null,
-      id:el.id||null,
-      classes:Array.from(el.classList||[]).slice(0,8),
-      role:el.getAttribute('role')||null,
-      aria_label:el.getAttribute('aria-label')||null,
-      text:cleanText(el.innerText||el.textContent||'',180),
-      attrs:attrs
-    };
-  }
-
-  function parentChain(el){
-    var chain=[],cur=el&&el.parentElement;
-    while(cur&&cur.nodeType===1&&chain.length<5){
-      chain.push(shortNode(cur));
-      cur=cur.parentElement;
-    }
-    return chain;
-  }
-
-  function elementContext(el){
-    try{
-      var tag=el.tagName?el.tagName.toLowerCase():'unknown';
-      var label=el.getAttribute('aria-label')||el.getAttribute('title')||el.getAttribute('placeholder')||cleanText(el.innerText||el.textContent||'',80);
-      return label?tag+': '+label:tag;
-    }catch(_){return null;}
-  }
-
-  function domContext(el,selector,rect){
-    try{
-      var parent=el.parentElement;
-      return{
-        selector:selector||null,
-        summary:elementContext(el),
-        node:shortNode(el),
-        rect:rect||null,
-        parent_chain:parentChain(el),
-        nearby_text:cleanText(parent?(parent.innerText||parent.textContent||''):'',500),
-        outer_html:cleanText(el.outerHTML||'',1200)
-      };
-    }catch(_){return null;}
-  }
-
-  // Report current page location to parent (so URL bar stays in sync when navigating
-  // inside the proxied iframe).
-  function reportLocation(){
-    try{window.parent.postMessage({__er_location:true,href:window.location.href},'*');}catch(_){}
-  }
-  function reportReady(){
-    try{window.parent.postMessage({__er_ready:true,href:window.location.href},'*');}catch(_){}
-  }
-  function proxyUrl(raw){
-    try{
-      var u=new URL(raw,window.location.href);
-      if(u.protocol==='http:')return 'erp://'+u.host+u.pathname+u.search+u.hash;
-      if(u.protocol==='https:')return 'erps://'+u.host+u.pathname+u.search+u.hash;
-    }catch(_){}
-    return raw;
-  }
-  reportLocation();
-  reportReady();
-  if(document.readyState==='loading'){
-    document.addEventListener('DOMContentLoaded',reportReady,{once:true});
-  }
-  window.addEventListener('load',reportReady,{once:true});
-  window.addEventListener('popstate',reportLocation);
-  window.addEventListener('hashchange',reportLocation);
-  document.addEventListener('click',function(ev){
-    if(ev.defaultPrevented||ev.button!==0||ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey)return;
-    var a=ev.target&&ev.target.closest?ev.target.closest('a[href]'):null;
-    if(!a)return;
-    var target=(a.getAttribute('target')||'').toLowerCase();
-    if(target&&target!=='_self')return;
-    var next=proxyUrl(a.href);
-    if(next!==a.href){ev.preventDefault();window.location.href=next;}
-  },true);
-  document.addEventListener('submit',function(ev){
-    if(ev.defaultPrevented)return;
-    var form=ev.target;
-    if(!form||!form.action)return;
-    var target=(form.getAttribute('target')||'').toLowerCase();
-    if(target&&target!=='_self')return;
-    var method=(form.getAttribute('method')||'get').toLowerCase();
-    if(method!=='get')return;
-    var next=proxyUrl(form.action);
-    if(next===form.action)return;
-    ev.preventDefault();
-    try{
-      var params=new URLSearchParams(new FormData(form));
-      var sep=next.indexOf('?')>=0?'&':'?';
-      window.location.href=params.toString()?next+sep+params.toString():next;
-    }catch(_){window.location.href=next;}
-  },true);
-
-  window.addEventListener('message',function(ev){
-    var d=ev.data;if(!d)return;
-
-    // Walk into nested iframes: given (x,y) in the current document, return
-    // {el, offsetLeft, offsetTop} where offsetLeft/Top is the cumulative iframe
-    // position so rects can be translated back to the top-level viewport.
-    function deepElementFromPoint(doc,x,y,ox,oy){
-      var el=doc.elementFromPoint(x,y);
-      if(!el)return null;
-      if(el.tagName==='IFRAME'){
-        try{
-          var fc=el.contentDocument;
-          if(fc&&fc.documentElement){
-            var fr=el.getBoundingClientRect();
-            var result=deepElementFromPoint(fc,x-fr.left,y-fr.top,ox+fr.left,oy+fr.top);
-            if(result)return result;
-          }
-        }catch(_){}
-      }
-      if(el===doc.documentElement||el===doc.body)return null;
-      return{el:el,ox:ox,oy:oy};
-    }
-
-    // Find a selector in the current document or any nested iframe.
-    // Returns {el, offsetLeft, offsetTop} or null.
-    function deepQuerySelector(doc,sel,ox,oy){
-      try{
-        var el=doc.querySelector(sel);
-        if(el)return{el:el,ox:ox,oy:oy};
-      }catch(_){}
-      var frames=doc.querySelectorAll('iframe');
-      for(var fi=0;fi<frames.length;fi++){
-        try{
-          var fc=frames[fi].contentDocument;
-          if(!fc)continue;
-          var fr=frames[fi].getBoundingClientRect();
-          var result=deepQuerySelector(fc,sel,ox+fr.left,oy+fr.top);
-          if(result)return result;
-        }catch(_){}
-      }
-      return null;
-    }
-
-    // Hover query: parent asks which element is under (x,y).
-    if(d.__er_hover===true){
-      try{
-        var hit=deepElementFromPoint(document,d.x,d.y,0,0);
-        if(!hit){window.parent.postMessage({__er_hover_result:true,selector:null,rect:null,element_context:null,dom_context:null},'*');return;}
-        var r=hit.el.getBoundingClientRect();
-        var selector=cssPath(hit.el);
-        var rect={left:hit.ox+r.left,top:hit.oy+r.top,width:r.width,height:r.height};
-        window.parent.postMessage({__er_hover_result:true,selector:selector,rect:rect,element_context:elementContext(hit.el),dom_context:domContext(hit.el,selector,rect)},'*');
-      }catch(_){window.parent.postMessage({__er_hover_result:true,selector:null,rect:null,element_context:null,dom_context:null},'*');}
-      return;
-    }
-
-    // Live rect query for an existing annotation pin.
-    if(d.__er_query_rect===true){
-      try{
-        if(!d.selector){window.parent.postMessage({__er_query_rect_result:true,id:d.id,rect:null},'*');return;}
-        var hit2=deepQuerySelector(document,d.selector,0,0);
-        if(!hit2){window.parent.postMessage({__er_query_rect_result:true,id:d.id,rect:null},'*');return;}
-        var r2=hit2.el.getBoundingClientRect();
-        window.parent.postMessage({__er_query_rect_result:true,id:d.id,rect:{left:hit2.ox+r2.left,top:hit2.oy+r2.top,width:r2.width,height:r2.height}},'*');
-      }catch(_){window.parent.postMessage({__er_query_rect_result:true,id:d.id,rect:null},'*');}
-      return;
-    }
-
-    // Re-anchor: re-resolve selectors after page load to detect stale annotations.
-    if(d.__er_reanchor===true){
-      var items=Array.isArray(d.items)?d.items:[];
-      var results=items.map(function(item){
-        try{
-          if(!item.selector)return{id:item.id,fresh:false};
-          var hit3=deepQuerySelector(document,item.selector,0,0);
-          if(!hit3)return{id:item.id,fresh:false};
-          var r3=hit3.el.getBoundingClientRect();
-          var nb=[hit3.ox+r3.left,hit3.oy+r3.top,r3.width,r3.height];
-          var ob=item.box||[0,0,0,0];
-          var ow=ob[2]||1,oh=ob[3]||1;
-          var fresh=Math.abs(nb[2]-ob[2])/ow<=0.1&&Math.abs(nb[3]-ob[3])/oh<=0.1&&Math.abs(nb[0]-ob[0])<=20&&Math.abs(nb[1]-ob[1])<=20;
-          return{id:item.id,fresh:fresh,new_box:nb};
-        }catch(_){return{id:item.id,fresh:false};}
-      });
-      try{window.parent.postMessage({__er_reanchor_result:true,results:results},'*');}catch(_){}
-    }
-  });
-})();"#;
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
 fn inject_script(mut html: Vec<u8>) -> Vec<u8> {
@@ -316,13 +90,10 @@ fn should_forward_header(name: &str, is_html: bool) -> bool {
     true
 }
 
-#[derive(Clone, Debug)]
-struct ProxyHeader {
-    name: String,
-    value: String,
-}
-
-fn filtered_proxy_headers(headers: &[ProxyHeader], is_html: bool) -> Vec<ProxyHeader> {
+fn filtered_proxy_headers(
+    headers: &[browser_proxy::ProxyHeader],
+    is_html: bool,
+) -> Vec<browser_proxy::ProxyHeader> {
     headers
         .iter()
         .filter(|h| should_forward_header(&h.name, is_html))
@@ -412,54 +183,135 @@ fn read_bounded(mut reader: impl std::io::Read, limit: usize) -> Result<Vec<u8>,
     Ok(buf)
 }
 
+/// Request headers to forward from the WebView to the upstream dev server.
+/// Cookie is required so Clerk/session SSR matches the logged-in client;
+/// without it SvelteKit renders unauthenticated (e.g. experiments 404) while
+/// the client still hydrates with a session → blank page.
+fn should_forward_request_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    if name.starts_with("sec-") {
+        return false;
+    }
+    !matches!(
+        name.as_str(),
+        "host"
+            | "connection"
+            | "content-length"
+            | "transfer-encoding"
+            | "upgrade"
+            | "accept-encoding"
+    )
+}
+
+fn forward_request_headers(headers: &tauri::http::HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter(|(name, _)| should_forward_request_header(name.as_str()))
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.as_str().to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+fn proxy_transport_error_response(e: &ureq::Error) -> tauri::http::Response<Vec<u8>> {
+    let msg = e.to_string();
+    let status = if msg.contains("timed out") || msg.contains("TimedOut") {
+        504
+    } else {
+        502
+    };
+    let label = if status == 504 {
+        "Request timed out"
+    } else {
+        "Connection failed"
+    };
+    eprintln!("[erp] connection error ({}): {}", status, e);
+    tauri::http::Response::builder()
+        .status(status)
+        .header("Content-Type", "text/html")
+        .body(
+            format!("<html><body><p>{}: {}</p></body></html>", label, e).into_bytes(),
+        )
+        .unwrap()
+}
+
+fn upstream_request(
+    agent: &ureq::Agent,
+    request: &tauri::http::Request<Vec<u8>>,
+    target: &str,
+) -> Result<ureq::Response, ureq::Error> {
+    let mut req = agent
+        .request(request.method().as_str(), target)
+        .set("Accept-Encoding", "identity");
+    for (name, value) in forward_request_headers(request.headers()) {
+        req = req.set(&name, &value);
+    }
+    let body = request.body();
+    if body.is_empty() {
+        req.call()
+    } else {
+        req.send_bytes(body)
+    }
+}
+
 fn proxied_response(
-    uri: &tauri::http::Uri,
+    request: &tauri::http::Request<Vec<u8>>,
     upstream_scheme: &str,
 ) -> tauri::http::Response<Vec<u8>> {
+    let uri = request.uri();
     let target = upstream_url_for_proxy(uri, upstream_scheme);
-    eprintln!("[erp] request: {} -> {}", uri, target);
+    eprintln!(
+        "[erp] request: {} {} -> {}",
+        request.method(),
+        uri,
+        target
+    );
+    // Document navigations: see `browser_proxy` module for redirect policy.
     let agent = ureq::AgentBuilder::new()
+        .redirects(0)
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout_read(std::time::Duration::from_secs(30))
         .build();
-    let result = agent.get(&target).set("Accept-Encoding", "identity").call();
-    let resp = match result {
-        Ok(resp) => resp,
-        Err(ureq::Error::Status(_, resp)) => resp,
-        Err(e) => {
-            let msg = e.to_string();
-            let status = if msg.contains("timed out") || msg.contains("TimedOut") {
-                504
-            } else {
-                502
-            };
-            let label = if status == 504 {
-                "Request timed out"
-            } else {
-                "Connection failed"
-            };
-            eprintln!("[erp] connection error ({}): {}", status, e);
-            return tauri::http::Response::builder()
-                .status(status)
-                .header("Content-Type", "text/html")
-                .body(format!("<html><body><p>{}: {}</p></body></html>", label, e).into_bytes())
-                .unwrap();
+
+    let forward_headers = forward_request_headers(request.headers());
+    let method = request.method().as_str();
+    let (resp, headers) = if method == "GET" || method == "HEAD" {
+        use browser_proxy::{fetch_upstream_get, UpstreamFetchError};
+        let fetched = match fetch_upstream_get(&agent, &forward_headers, &target, true) {
+            Ok(f) => f,
+            Err(UpstreamFetchError::BrowserRedirect { status, location }) => {
+                return browser_proxy::browser_redirect_response(status, &location);
+            }
+            Err(UpstreamFetchError::CrossOriginHandoff(location)) => {
+                return browser_proxy::webview_navigation_handoff(&location);
+            }
+            Err(UpstreamFetchError::Transport(e)) => {
+                return proxy_transport_error_response(&e);
+            }
+        };
+        (fetched.response, fetched.headers)
+    } else {
+        let result = upstream_request(&agent, request, &target);
+        match result {
+            Ok(resp) => {
+                let headers = browser_proxy::collect_ureq_headers(&resp);
+                (resp, headers)
+            }
+            Err(ureq::Error::Status(_, resp)) => {
+                let headers = browser_proxy::collect_ureq_headers(&resp);
+                (resp, headers)
+            }
+            Err(e) => return proxy_transport_error_response(&e),
         }
     };
 
     let status = resp.status();
+
     let ct = resp.header("Content-Type").map(str::to_string);
     let is_html = is_html_content_type(ct.as_deref());
-    let headers = resp
-        .headers_names()
-        .into_iter()
-        .flat_map(|name| {
-            resp.all(&name).into_iter().map(move |value| ProxyHeader {
-                name: name.clone(),
-                value: value.to_string(),
-            })
-        })
-        .collect::<Vec<_>>();
     let size_limit = proxy_size_limit(is_html);
     let bounded = read_bounded(resp.into_reader(), size_limit);
     let mut body = match bounded {
@@ -1054,15 +906,20 @@ fn main() {
         )
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .skip_initial_state("main")
+                .build(),
+        )
         .manage(state)
+        .manage(BrowserWebviewState::new())
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
         // proxies `https://host/path`. HTML responses get the annotation script.
         .register_uri_scheme_protocol("erp", |_app, request| {
-            proxied_response(request.uri(), "http")
+            proxied_response(&request, "http")
         })
         .register_uri_scheme_protocol("erps", |_app, request| {
-            proxied_response(request.uri(), "https")
+            proxied_response(&request, "https")
         })
         .setup(|app| {
             if let Some(state) = app.try_state::<AppState>() {
@@ -1070,7 +927,7 @@ fn main() {
                     *h = Some(app.handle().clone());
                 }
             }
-            tauri::WebviewWindowBuilder::new(
+            let window = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
@@ -1080,8 +937,15 @@ fn main() {
             .min_inner_size(900.0, 600.0)
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
-            .initialization_script(FRAME_SCRIPT)
+            .visible(false)
+            .transparent(true)
+            .initialization_script_for_all_frames(FRAME_SCRIPT)
             .build()?;
+
+            use tauri_plugin_window_state::{StateFlags, WindowExt};
+            window.restore_state(StateFlags::all())?;
+            window_placement::ensure_window_visible(&window)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1176,6 +1040,13 @@ fn main() {
             commands::detect_dev_url,
             commands::set_diff_source,
             commands::get_background_task_log,
+            browser_webview::browser_ensure,
+            browser_webview::browser_hide,
+            browser_webview::browser_set_bounds,
+            browser_webview::browser_navigate,
+            browser_webview::browser_host_message,
+            browser_webview::browser_send_to_page,
+            browser_webview::browser_set_annotate_mode,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application");
@@ -1292,19 +1163,19 @@ mod tests {
     #[test]
     fn strips_frame_blocking_headers_for_html() {
         let headers = vec![
-            ProxyHeader {
+            browser_proxy::ProxyHeader {
                 name: "Content-Type".into(),
                 value: "text/html".into(),
             },
-            ProxyHeader {
+            browser_proxy::ProxyHeader {
                 name: "Content-Security-Policy".into(),
                 value: "default-src 'self'".into(),
             },
-            ProxyHeader {
+            browser_proxy::ProxyHeader {
                 name: "X-Frame-Options".into(),
                 value: "DENY".into(),
             },
-            ProxyHeader {
+            browser_proxy::ProxyHeader {
                 name: "Cache-Control".into(),
                 value: "max-age=60".into(),
             },
@@ -1321,11 +1192,11 @@ mod tests {
         let body = b"body { color: red; }".to_vec();
         assert_eq!(body, b"body { color: red; }".to_vec());
         let headers = vec![
-            ProxyHeader {
+            browser_proxy::ProxyHeader {
                 name: "Content-Type".into(),
                 value: "text/css".into(),
             },
-            ProxyHeader {
+            browser_proxy::ProxyHeader {
                 name: "Content-Security-Policy".into(),
                 value: "default-src 'self'".into(),
             },
@@ -1385,5 +1256,33 @@ mod tests {
             upstream_url_for_proxy(&https_uri, "https"),
             "https://google.com/search?q=x"
         );
+    }
+
+    #[test]
+    fn forwards_cookie_but_not_hop_by_hop_request_headers() {
+        let mut headers = tauri::http::HeaderMap::new();
+        headers.insert(
+            tauri::http::header::COOKIE,
+            tauri::http::HeaderValue::from_static("session=abc"),
+        );
+        headers.insert(
+            tauri::http::header::AUTHORIZATION,
+            tauri::http::HeaderValue::from_static("Bearer token"),
+        );
+        headers.insert(
+            tauri::http::header::HOST,
+            tauri::http::HeaderValue::from_static("localhost"),
+        );
+        headers.insert(
+            "sec-fetch-mode",
+            tauri::http::HeaderValue::from_static("navigate"),
+        );
+
+        let forwarded = forward_request_headers(&headers);
+        let names: Vec<_> = forwarded.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"cookie"));
+        assert!(names.contains(&"authorization"));
+        assert!(!names.contains(&"host"));
+        assert!(!names.iter().any(|n| n.starts_with("sec-")));
     }
 }

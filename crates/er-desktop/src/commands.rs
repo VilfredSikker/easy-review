@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
-use er_engine::ai::CommentType;
+use er_engine::ai::{CommentType, ErReview};
 use er_engine::app::{App, DiffMode, InputMode};
 use er_engine::highlight::Highlighter;
 
@@ -526,7 +526,9 @@ pub fn select_file(idx: usize, state: State<AppState>) -> Result<AppSnapshot, St
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     {
         let tab = app.tab_mut();
-        if idx < tab.files.len() {
+        if tab.mode == er_engine::app::DiffMode::History {
+            tab.history_select_file(idx);
+        } else if idx < tab.files.len() {
             tab.selected_file = idx;
             tab.current_hunk = 0;
             tab.current_line = None;
@@ -2246,6 +2248,15 @@ fn save_finding_promotions(
     let path = finding_promotions_path(er_dir);
     let tmp = format!("{path}.tmp");
     let json = serde_json::to_string_pretty(map).unwrap_or_else(|_| "{}".to_string());
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, &path)
+}
+
+fn save_review_json(er_dir: &str, review: &ErReview) -> std::io::Result<()> {
+    std::fs::create_dir_all(er_dir)?;
+    let path = format!("{er_dir}/review.json");
+    let tmp = format!("{path}.tmp");
+    let json = serde_json::to_string_pretty(review)?;
     std::fs::write(&tmp, json)?;
     std::fs::rename(&tmp, &path)
 }
@@ -4003,20 +4014,35 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
 pub fn dismiss_finding(finding_id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    // TODO: persist to .er/review.json. For v1, mutate in-memory by marking resolved.
+
+    let er_dir = app.tab().er_dir();
+    let mut removed = false;
     {
         let tab = app.tab_mut();
         if let Some(review) = tab.ai.review.as_mut() {
             for file in review.files.values_mut() {
-                for f in file.findings.iter_mut() {
-                    if f.id == finding_id {
-                        f.resolved = true;
-                        f.resolved_note = "Dismissed by reviewer".to_string();
-                    }
+                let before = file.findings.len();
+                file.findings.retain(|f| f.id != finding_id);
+                if file.findings.len() < before {
+                    removed = true;
                 }
+            }
+            if removed {
+                save_review_json(&er_dir, review)
+                    .map_err(|e| format!("Failed to save review.json: {e}"))?;
             }
         }
     }
+    if !removed {
+        return Err(format!("Finding not found: {finding_id}"));
+    }
+
+    let mut promotions = load_finding_promotions(&er_dir);
+    if promotions.remove(&finding_id).is_some() {
+        save_finding_promotions(&er_dir, &promotions)
+            .map_err(|e| format!("Failed to update finding promotions: {e}"))?;
+    }
+
     Ok(snap_from(&app, &mut hl, &state))
 }
 
@@ -4270,12 +4296,8 @@ pub fn select_commit(sha: String, state: State<AppState>) -> Result<AppSnapshot,
         }
         if let Some(history) = tab.history.as_mut() {
             if let Some(pos) = history.commits.iter().position(|c| c.hash == sha) {
-                if history.selected_commit != pos {
-                    history.selected_commit = pos;
-                    // Reuse the engine's commit-load path so the right panel
-                    // updates without forcing the user to keystroke.
-                    tab.history_load_selected_diff();
-                }
+                history.selected_commit = pos;
+                tab.history_load_selected_diff();
             }
         }
     }

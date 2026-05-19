@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 er-engine = { path = "../er-engine" }
-tauri = { version = "2", features = ["devtools"] }
+tauri = { version = "2", features = ["devtools", "unstable", "macos-private-api"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-log = "2"
 tauri-plugin-window-state = "2"

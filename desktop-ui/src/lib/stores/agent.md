@@ -6,7 +6,8 @@ Stores coordinate frontend-only state around the backend snapshot. They should n
 
 - `app.svelte.ts`: owns `AppSnapshot`, polling, `app.cmd`, toasts, frontend logs, diff view mode, comment visibility, and coarse command loading flags.
 - `browser.svelte.ts`: browser drawer state, current URL, annotation mode, and pending annotation interaction state.
-- `browserUrl.ts`: canonical URL conversion between real URLs and the Tauri proxy schemes.
+- `browserHost.ts`: native review-browser webview lifecycle (`browser_ensure`, bounds sync) and `browser://message` events.
+- `browserUrl.ts`: canonical URL conversion between real URLs and the Tauri proxy schemes (fallback iframe).
 - `keyboard.ts`: global shortcut registration and command routing.
 - `diffSelection.svelte.ts`: selected diff range and selected old/new side for comments/questions.
 - `diffScroll.svelte.ts`: scroll positions and current file tracking for continuous diff.
@@ -27,10 +28,12 @@ Browser annotations depend on stable page identity. Use helpers in `browserUrl.t
 
 Current expectations:
 
-- Real HTTP(S) URLs are proxied as `erp://` or `erps://` for iframe loading.
+- Primary: native child webview loads real `http://localhost` URLs; messages use `browser://message` (see `browserHost.ts`).
+- Fallback: `erp://` / `erps://` proxy iframe when native webview is unavailable (`browser_proxy.rs`).
 - `fromProxyUrl` returns the real URL for UI display and page matching.
 - `sameBrowserUrl` prevents iframe reload feedback loops.
 - Page-scoped annotation matching should use the canonical page key agreed with the backend, not raw user input.
+- Prefer `http://localhost:PORT` over `127.0.0.1` — different origins for cookies and the proxy’s same-origin redirect logic.
 
 ## Loading And Errors
 

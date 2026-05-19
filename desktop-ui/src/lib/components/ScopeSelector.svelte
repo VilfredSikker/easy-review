@@ -21,13 +21,13 @@
   const snapshot = $derived(app.snapshot);
   const commitsToShow = $derived(commits.length > 0 ? commits : (snapshot?.commits ?? []));
   const selectedCommitSha = $derived(snapshot?.selected_commit_sha ?? null);
-  /** "All changes" is the active scope only when no commit is selected. In
-   *  History mode the engine sets selected_commit_sha, which then drives the
-   *  highlight to the commit row instead. */
-  const allChangesActive = $derived(mode !== "history" || selectedCommitSha == null);
-  /** Read-only tab: a local-branch view or a remote PR view. Hide write-mode tabs. */
+  const activeTab = $derived(snapshot?.tabs?.find((t) => t.is_active) ?? null);
+  /** "All changes" is active only in branch mode with no commit selected. */
+  const allChangesActive = $derived(mode === "branch" && selectedCommitSha == null);
+  /** Remote PR and read-only local-branch views hide unstaged/staged/commits. */
   const isReadOnly = $derived(
-    (snapshot?.local_branch ?? null) !== null || (snapshot?.pr ?? null) !== null,
+    activeTab?.kind === "remote_pr"
+      || (activeTab?.kind === "local_branch" && !snapshot?.local_branch_checked_out),
   );
 
   let commitsCollapsed = $state(true);

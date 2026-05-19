@@ -266,20 +266,8 @@ pub fn git_diff_raw(
         anyhow::bail!("git diff failed: {}", stderr.trim());
     }
 
-    // For unstaged mode, append synthetic diffs for untracked files
     if mode == "unstaged" {
-        let untracked = untracked_files(repo_root)?;
-        if !untracked.is_empty() {
-            let mut combined = stdout;
-            for path in untracked {
-                if let Ok(content) =
-                    std::fs::read_to_string(std::path::Path::new(repo_root).join(&path))
-                {
-                    combined.push_str(&synthetic_new_file_diff(&path, &content));
-                }
-            }
-            return Ok(combined);
-        }
+        return append_untracked_synthetic_diffs(repo_root, stdout);
     }
 
     Ok(stdout)
@@ -343,6 +331,21 @@ pub fn git_diff_raw_file(
     }
 
     Ok(stdout)
+}
+
+/// Append synthetic unified diffs for untracked text files to `combined`.
+pub fn append_untracked_synthetic_diffs(repo_root: &str, combined: String) -> Result<String> {
+    let untracked = untracked_files(repo_root)?;
+    if untracked.is_empty() {
+        return Ok(combined);
+    }
+    let mut combined = combined;
+    for path in untracked {
+        if let Ok(content) = std::fs::read_to_string(std::path::Path::new(repo_root).join(&path)) {
+            combined.push_str(&synthetic_new_file_diff(&path, &content));
+        }
+    }
+    Ok(combined)
 }
 
 /// List untracked files (excluding gitignored)
@@ -684,7 +687,8 @@ pub fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String> 
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("git diff failed: {}", stderr.trim());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    append_untracked_synthetic_diffs(root, stdout)
 }
 
 /// Get raw diff output between a base branch and a target branch using the
@@ -1255,6 +1259,84 @@ mod tests {
     fn strip_upstream_empty_after_slash() {
         // Edge case: "origin/" → empty string after slash
         assert_eq!(strip_upstream("origin/"), "");
+    }
+
+    #[test]
+    fn synthetic_new_file_diff_formats_unified_diff() {
+        let diff = synthetic_new_file_diff("src/new.rs", "line one\nline two");
+        assert!(diff.contains("diff --git a/src/new.rs b/src/new.rs"));
+        assert!(diff.contains("new file mode 100644"));
+        assert!(diff.contains("+line one"));
+        assert!(diff.contains("+line two"));
+    }
+
+    #[test]
+    fn append_untracked_synthetic_diffs_adds_new_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("tracked.txt"), "old\n").unwrap();
+        std::fs::write(root.join("new.txt"), "hello\n").unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init", "--no-gpg-sign"])
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let combined = append_untracked_synthetic_diffs(root.to_str().unwrap(), String::new())
+            .unwrap();
+        assert!(combined.contains("new.txt"));
+        assert!(combined.contains("+hello"));
+    }
+
+    #[test]
+    fn git_diff_checkout_against_base_includes_untracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("tracked.txt"), "v1\n").unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init", "--no-gpg-sign"])
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::fs::write(root.join("tracked.txt"), "v2\n").unwrap();
+        std::fs::write(root.join("new.txt"), "new file\n").unwrap();
+
+        let diff = git_diff_checkout_against_base(root.to_str().unwrap(), "main").unwrap();
+        assert!(diff.contains("tracked.txt"));
+        assert!(diff.contains("new.txt"));
     }
 
     #[test]

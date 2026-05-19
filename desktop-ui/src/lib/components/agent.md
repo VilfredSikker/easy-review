@@ -4,7 +4,8 @@ This directory contains Desktop feature components. Most components are thin vie
 
 ## Feature Ownership
 
-- `TabStrip.svelte`: open tab list, select/close/reorder tabs. Backend commands: `new_tab`, `select_tab`, `close_tab`, `reorder_tabs`.
+- `TabStrip.svelte`: open tab list, select/close/reorder tabs, panel toggles (left/tree/right). Backend commands: `new_tab`, `select_tab`, `close_tab`, `reorder_tabs`.
+- `BranchContextBar.svelte`: active branch chip, base label, copy branch/path actions (row below tab strip).
 - `LeftSidebar.svelte`: projects, tracked branches, PR buckets, refresh/dismiss/track actions.
 - `BranchCard.svelte`: active branch/PR summary, GitHub status, checks/reviews, watcher state, GitHub refresh.
 - `FileTree.svelte`: file index, reviewed toggles, continuous diff jump-to-file behavior.

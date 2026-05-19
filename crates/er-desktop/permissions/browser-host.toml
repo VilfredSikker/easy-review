@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-browser-host-message"
+description = "Allows the review browser content script to emit annotation events."
+commands.allow = ["browser_host_message"]

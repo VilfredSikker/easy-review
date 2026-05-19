@@ -158,7 +158,7 @@
       </button>
     {/if}
     <button onclick={focusReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
-    <button onclick={dismiss} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Dismiss</button>
+    <button type="button" onclick={dismiss} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Dismiss</button>
     <span class="ml-auto kbd">⇧R</span>
   </div>
 

@@ -15,6 +15,13 @@ export function registerAiPaletteOpener(fn: () => void): () => void {
   return () => { if (openAiPaletteCallback === fn) openAiPaletteCallback = null; };
 }
 
+let dismissBrowserAnnotationComposer: (() => void) | null = null;
+
+/** AnnotationOverlay registers while the browser note composer is open. */
+export function registerBrowserAnnotationComposerDismiss(fn: (() => void) | null): void {
+  dismissBrowserAnnotationComposer = fn;
+}
+
 function blurActiveField(): boolean {
   const el = document.activeElement as HTMLElement | null;
   if (!el) return false;
@@ -208,6 +215,11 @@ export function initKeyboard(): () => void {
     if (e.key === "Escape") {
       if (diffSel.active) {
         diffSel.clear();
+        e.preventDefault();
+        return;
+      }
+      if (dismissBrowserAnnotationComposer) {
+        dismissBrowserAnnotationComposer();
         e.preventDefault();
         return;
       }

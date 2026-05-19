@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Main Easy Review window",
+  "windows": ["main"],
+  "permissions": [
+    "allow-app-commands",
+    "core:default",
+    "core:webview:allow-webview-position",
+    "core:webview:allow-webview-size",
+    "core:webview:allow-set-webview-position",
+    "core:webview:allow-set-webview-size",
+    "core:webview:allow-webview-show",
+    "core:webview:allow-webview-hide",
+    "clipboard-manager:default",
+    "log:default",
+    "notification:default",
+    "window-state:default"
+  ]
+}
