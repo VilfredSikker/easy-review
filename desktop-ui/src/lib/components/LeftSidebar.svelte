@@ -280,15 +280,16 @@
     if (prPrefetchTimers.has(key)) return;
     const timer = setTimeout(() => {
       prPrefetchTimers.delete(key);
-      app
-        .cmd("prefetch_pr_open", {
-          projectId,
-          prNumber: pr.number,
-          hint: buildPrHint(pr),
-        })
-        .catch(() => {
-          // Background fetch — failure is logged in Rust, nothing to do here.
-        });
+      // Bypass app.cmd() — that assigns the return value to app.snapshot, and
+      // prefetch_pr_open returns () which would null out the snapshot and
+      // render the empty page. Fire-and-forget invoke is correct here.
+      invoke("prefetch_pr_open", {
+        projectId,
+        prNumber: pr.number,
+        hint: buildPrHint(pr),
+      }).catch(() => {
+        // Background fetch — failure is logged in Rust, nothing to do here.
+      });
     }, PR_HOVER_PREFETCH_DELAY_MS);
     prPrefetchTimers.set(key, timer);
   }

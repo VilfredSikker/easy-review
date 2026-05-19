@@ -1194,7 +1194,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             // ── Fold rows ─────────────────────────────────────────────────────────
             let is_fold = cell
                 .or(other_cell)
-                .map_or(false, |c| matches!(c.line.line_type, LineType::Fold(_)));
+                .is_some_and(|c| matches!(c.line.line_type, LineType::Fold(_)));
             if is_fold {
                 if logical_line >= render_start && logical_line < render_end {
                     if side == SplitSide::New {

@@ -344,7 +344,7 @@ fn push_blockquote(out: &mut String, body: &str, depth: usize) {
     let prefix = "> ".repeat(depth);
     for line in body.lines() {
         if line.is_empty() {
-            out.push_str(&prefix.trim_end());
+            out.push_str(prefix.trim_end());
             out.push('\n');
         } else {
             out.push_str(&prefix);

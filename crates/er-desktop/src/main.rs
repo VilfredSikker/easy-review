@@ -18,7 +18,8 @@ use commands::AppState;
 use er_engine::app::App;
 use er_engine::highlight::Highlighter;
 use snapshot::{
-    GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState,
+    GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot,
+    WatchStatusState,
 };
 
 /// Annotation content script injected into browser-view frames.
@@ -500,151 +501,6 @@ fn proxied_response(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounded_read_under_limit_succeeds() {
-        let data = b"hello world";
-        let result = read_bounded(std::io::Cursor::new(data), 100);
-        assert_eq!(result.unwrap(), data);
-    }
-
-    #[test]
-    fn bounded_read_at_limit_succeeds() {
-        let data = vec![0u8; 100];
-        let result = read_bounded(std::io::Cursor::new(data.clone()), 100);
-        assert_eq!(result.unwrap(), data);
-    }
-
-    #[test]
-    fn bounded_read_over_limit_returns_err() {
-        let data = vec![0u8; 101];
-        let result = read_bounded(std::io::Cursor::new(data), 100);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn injects_before_head_case_insensitively() {
-        let out = inject_script(b"<HTML><HEAD></HEAD><body></body></HTML>".to_vec());
-        let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("<script type=\"text/javascript\">"));
-        assert!(
-            s.find("<script").unwrap() < s.find("</HEAD>").unwrap(),
-            "script should be inserted before uppercase head close: {s}"
-        );
-    }
-
-    #[test]
-    fn injects_before_body_case_insensitively() {
-        let out = inject_script(b"<html><BODY><main></main></BODY></html>".to_vec());
-        let s = String::from_utf8(out).unwrap();
-        assert!(
-            s.find("<script").unwrap() < s.find("</BODY>").unwrap(),
-            "script should be inserted before uppercase body close: {s}"
-        );
-    }
-
-    #[test]
-    fn strips_frame_blocking_headers_for_html() {
-        let headers = vec![
-            ProxyHeader {
-                name: "Content-Type".into(),
-                value: "text/html".into(),
-            },
-            ProxyHeader {
-                name: "Content-Security-Policy".into(),
-                value: "default-src 'self'".into(),
-            },
-            ProxyHeader {
-                name: "X-Frame-Options".into(),
-                value: "DENY".into(),
-            },
-            ProxyHeader {
-                name: "Cache-Control".into(),
-                value: "max-age=60".into(),
-            },
-        ];
-        let names = filtered_proxy_headers(&headers, true)
-            .into_iter()
-            .map(|h| h.name)
-            .collect::<Vec<_>>();
-        assert_eq!(names, vec!["Content-Type", "Cache-Control"]);
-    }
-
-    #[test]
-    fn keeps_non_html_body_unmodified_and_headers_unstripped() {
-        let body = b"body { color: red; }".to_vec();
-        assert_eq!(body, b"body { color: red; }".to_vec());
-        let headers = vec![
-            ProxyHeader {
-                name: "Content-Type".into(),
-                value: "text/css".into(),
-            },
-            ProxyHeader {
-                name: "Content-Security-Policy".into(),
-                value: "default-src 'self'".into(),
-            },
-        ];
-        let names = filtered_proxy_headers(&headers, false)
-            .into_iter()
-            .map(|h| h.name)
-            .collect::<Vec<_>>();
-        assert_eq!(names, vec!["Content-Type", "Content-Security-Policy"]);
-    }
-
-    #[test]
-    fn asset_size_limit_exceeds_observed_vite_chunks() {
-        // Observed Vite dep chunks that triggered reload loops were ~5.2 MB
-        // and later ~26.2 MB.
-        assert!(PROXY_ASSET_SIZE_LIMIT > 25 * 1024 * 1024);
-        assert!(PROXY_ASSET_SIZE_LIMIT >= 26_219_024);
-    }
-
-    #[test]
-    fn oversized_html_response_uses_text_html() {
-        let resp = oversized_response(99, 50, true);
-        assert_eq!(resp.status(), 413);
-        let ct = resp
-            .headers()
-            .get("Content-Type")
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert_eq!(ct, "text/html");
-    }
-
-    #[test]
-    fn oversized_non_html_response_uses_text_plain() {
-        let resp = oversized_response(99, 50, false);
-        assert_eq!(resp.status(), 413);
-        let ct = resp
-            .headers()
-            .get("Content-Type")
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert_eq!(ct, "text/plain");
-        let body = String::from_utf8(resp.body().clone()).unwrap();
-        assert!(!body.contains("<html>"));
-    }
-
-    #[test]
-    fn upstream_url_preserves_proxy_scheme_intent() {
-        let http_uri: tauri::http::Uri = "erp://localhost:6006/iframe.html".parse().unwrap();
-        assert_eq!(
-            upstream_url_for_proxy(&http_uri, "http"),
-            "http://localhost:6006/iframe.html"
-        );
-        let https_uri: tauri::http::Uri = "erps://google.com/search?q=x".parse().unwrap();
-        assert_eq!(
-            upstream_url_for_proxy(&https_uri, "https"),
-            "https://google.com/search?q=x"
-        );
-    }
-}
-
 fn main() {
     let mut app = App::new_with_args(&[]).unwrap_or_else(|e| {
         eprintln!("er-desktop: failed to init engine: {e}"); // before logger is up
@@ -683,11 +539,11 @@ fn main() {
     let pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>> = Arc::new(Mutex::new(HashMap::new()));
     let pr_cache_fetched_at: Arc<Mutex<HashMap<String, u64>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let pr_open_cache: Arc<
-        Mutex<HashMap<commands::PrOpenCacheKey, commands::PrOpenCacheEntry>>,
-    > = Arc::new(Mutex::new(HashMap::new()));
+    let pr_open_cache: Arc<Mutex<HashMap<commands::PrOpenCacheKey, commands::PrOpenCacheEntry>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> = Arc::new(Mutex::new(HashMap::new()));
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    #[allow(clippy::type_complexity)]
     let gh_status_cache: Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
@@ -1005,6 +861,7 @@ fn main() {
         let watcher_app = Arc::clone(&app_arc);
         let watcher_status = Arc::clone(&watch_status);
         let watcher_desktop_rev = Arc::clone(&desktop_revision);
+        #[allow(unused_assignments)]
         std::thread::spawn(move || {
             use er_engine::watch::{FileWatcher, WatchEvent};
             use std::path::Path;
@@ -1012,7 +869,7 @@ fn main() {
 
             let (tx, rx) = mpsc::channel::<WatchEvent>();
             // Held only for its Drop side effect: dropping stops the watcher.
-            #[allow(unused_assignments)]
+            #[allow(unused_assignments, unused_variables)]
             let mut watcher: Option<FileWatcher> = None;
             let mut current_key: Option<(String, String)> = None;
             let poll_interval = std::time::Duration::from_millis(400);
@@ -1067,17 +924,13 @@ fn main() {
                 // Drain any pending watch events. Coalesce — we only need to
                 // know "something changed" to trigger one refresh.
                 let mut got_event = false;
-                loop {
-                    match rx.recv_timeout(poll_interval) {
-                        Ok(WatchEvent::FilesChanged(_)) => {
-                            got_event = true;
-                            // Keep draining without blocking.
-                            while let Ok(WatchEvent::FilesChanged(_)) = rx.try_recv() {}
-                            break;
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => break,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                match rx.recv_timeout(poll_interval) {
+                    Ok(WatchEvent::FilesChanged(_)) => {
+                        got_event = true;
+                        while let Ok(WatchEvent::FilesChanged(_)) = rx.try_recv() {}
                     }
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                    | Err(mpsc::RecvTimeoutError::Disconnected) => {}
                 }
 
                 if got_event {
@@ -1381,4 +1234,149 @@ fn active_root_from_projects() -> Option<String> {
         .find(|p| &p.id == active_id)
         .map(|p| p.root_path.clone())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_read_under_limit_succeeds() {
+        let data = b"hello world";
+        let result = read_bounded(std::io::Cursor::new(data), 100);
+        assert_eq!(result.unwrap(), data);
+    }
+
+    #[test]
+    fn bounded_read_at_limit_succeeds() {
+        let data = vec![0u8; 100];
+        let result = read_bounded(std::io::Cursor::new(data.clone()), 100);
+        assert_eq!(result.unwrap(), data);
+    }
+
+    #[test]
+    fn bounded_read_over_limit_returns_err() {
+        let data = vec![0u8; 101];
+        let result = read_bounded(std::io::Cursor::new(data), 100);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn injects_before_head_case_insensitively() {
+        let out = inject_script(b"<HTML><HEAD></HEAD><body></body></HTML>".to_vec());
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("<script type=\"text/javascript\">"));
+        assert!(
+            s.find("<script").unwrap() < s.find("</HEAD>").unwrap(),
+            "script should be inserted before uppercase head close: {s}"
+        );
+    }
+
+    #[test]
+    fn injects_before_body_case_insensitively() {
+        let out = inject_script(b"<html><BODY><main></main></BODY></html>".to_vec());
+        let s = String::from_utf8(out).unwrap();
+        assert!(
+            s.find("<script").unwrap() < s.find("</BODY>").unwrap(),
+            "script should be inserted before uppercase body close: {s}"
+        );
+    }
+
+    #[test]
+    fn strips_frame_blocking_headers_for_html() {
+        let headers = vec![
+            ProxyHeader {
+                name: "Content-Type".into(),
+                value: "text/html".into(),
+            },
+            ProxyHeader {
+                name: "Content-Security-Policy".into(),
+                value: "default-src 'self'".into(),
+            },
+            ProxyHeader {
+                name: "X-Frame-Options".into(),
+                value: "DENY".into(),
+            },
+            ProxyHeader {
+                name: "Cache-Control".into(),
+                value: "max-age=60".into(),
+            },
+        ];
+        let names = filtered_proxy_headers(&headers, true)
+            .into_iter()
+            .map(|h| h.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["Content-Type", "Cache-Control"]);
+    }
+
+    #[test]
+    fn keeps_non_html_body_unmodified_and_headers_unstripped() {
+        let body = b"body { color: red; }".to_vec();
+        assert_eq!(body, b"body { color: red; }".to_vec());
+        let headers = vec![
+            ProxyHeader {
+                name: "Content-Type".into(),
+                value: "text/css".into(),
+            },
+            ProxyHeader {
+                name: "Content-Security-Policy".into(),
+                value: "default-src 'self'".into(),
+            },
+        ];
+        let names = filtered_proxy_headers(&headers, false)
+            .into_iter()
+            .map(|h| h.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["Content-Type", "Content-Security-Policy"]);
+    }
+
+    #[test]
+    fn asset_size_limit_exceeds_observed_vite_chunks() {
+        // Observed Vite dep chunks that triggered reload loops were ~5.2 MB
+        // and later ~26.2 MB.
+        const { assert!(PROXY_ASSET_SIZE_LIMIT > 25 * 1024 * 1024) };
+        const { assert!(PROXY_ASSET_SIZE_LIMIT >= 26_219_024) };
+    }
+
+    #[test]
+    fn oversized_html_response_uses_text_html() {
+        let resp = oversized_response(99, 50, true);
+        assert_eq!(resp.status(), 413);
+        let ct = resp
+            .headers()
+            .get("Content-Type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(ct, "text/html");
+    }
+
+    #[test]
+    fn oversized_non_html_response_uses_text_plain() {
+        let resp = oversized_response(99, 50, false);
+        assert_eq!(resp.status(), 413);
+        let ct = resp
+            .headers()
+            .get("Content-Type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(ct, "text/plain");
+        let body = String::from_utf8(resp.body().clone()).unwrap();
+        assert!(!body.contains("<html>"));
+    }
+
+    #[test]
+    fn upstream_url_preserves_proxy_scheme_intent() {
+        let http_uri: tauri::http::Uri = "erp://localhost:6006/iframe.html".parse().unwrap();
+        assert_eq!(
+            upstream_url_for_proxy(&http_uri, "http"),
+            "http://localhost:6006/iframe.html"
+        );
+        let https_uri: tauri::http::Uri = "erps://google.com/search?q=x".parse().unwrap();
+        assert_eq!(
+            upstream_url_for_proxy(&https_uri, "https"),
+            "https://google.com/search?q=x"
+        );
+    }
 }

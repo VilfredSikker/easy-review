@@ -83,7 +83,8 @@ impl InboxState {
             item.id = format!("inbox-{}", item.created_at_ms);
         }
         self.items.push(item);
-        self.items.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        self.items
+            .sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
         if self.items.len() > MAX_ITEMS {
             self.items.truncate(MAX_ITEMS);
         }

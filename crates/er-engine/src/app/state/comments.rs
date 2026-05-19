@@ -495,6 +495,7 @@ impl App {
 
     /// Submit a comment or question without going through InputMode flow.
     /// Used by the desktop app where there is no TextArea widget.
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_comment_text(
         &mut self,
         file: String,
@@ -505,25 +506,23 @@ impl App {
         reply_to: Option<String>,
         finding_ref: Option<String>,
     ) -> Result<()> {
-        {
-            let tab = self.tab_mut();
-            tab.comment_file = file;
-            tab.comment_hunk = hunk_idx;
-            tab.comment_line_num = line_num;
-            tab.comment_reply_to = reply_to;
-            tab.comment_finding_ref = finding_ref;
-            tab.comment_type = comment_type;
-            tab.comment_edit_id = None;
-            tab.comment_textarea = TextArea::new(vec![text]);
-        }
-        self.input_mode = InputMode::Comment;
-        self.submit_comment()
+        self.submit_comment_text_inner(
+            file,
+            hunk_idx,
+            line_num,
+            text,
+            comment_type,
+            reply_to,
+            finding_ref,
+            None,
+        )
     }
 
     /// Submit a comment/question whose `author` field is set to the provided
     /// value (e.g. "ai") instead of "You". Used by the desktop `ask_ai` flow
     /// to attribute AI-generated replies. Mirrors `submit_comment_text` and
     /// sets a transient override consumed by submit_question/submit_github_comment.
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_comment_text_as_author(
         &mut self,
         file: String,
@@ -535,6 +534,30 @@ impl App {
         finding_ref: Option<String>,
         author: String,
     ) -> Result<()> {
+        self.submit_comment_text_inner(
+            file,
+            hunk_idx,
+            line_num,
+            text,
+            comment_type,
+            reply_to,
+            finding_ref,
+            Some(author),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit_comment_text_inner(
+        &mut self,
+        file: String,
+        hunk_idx: usize,
+        line_num: Option<usize>,
+        text: String,
+        comment_type: CommentType,
+        reply_to: Option<String>,
+        finding_ref: Option<String>,
+        author: Option<String>,
+    ) -> Result<()> {
         {
             let tab = self.tab_mut();
             tab.comment_file = file;
@@ -545,7 +568,7 @@ impl App {
             tab.comment_type = comment_type;
             tab.comment_edit_id = None;
             tab.comment_textarea = TextArea::new(vec![text]);
-            tab.comment_author_override = Some(author);
+            tab.comment_author_override = author;
         }
         self.input_mode = InputMode::Comment;
         self.submit_comment()

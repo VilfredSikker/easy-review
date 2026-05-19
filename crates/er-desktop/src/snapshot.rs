@@ -7,8 +7,8 @@ use er_engine::git::{DiffFile, FileStatus, LineType};
 use er_engine::highlight::Highlighter;
 use serde::Serialize;
 
-use crate::projects;
 use crate::inbox::InboxHandle;
+use crate::projects;
 
 // ── Wire types ──────────────────────────────────────────────────────────────
 
@@ -698,6 +698,7 @@ pub fn refresh_meta_cache(active_root: &str, cache: &MetaCache) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_snapshot(
     app: &App,
     highlighter: &mut Highlighter,
@@ -1406,7 +1407,7 @@ fn build_projects(
                         .iter()
                         .filter(|pr| {
                             pr.state == "OPEN"
-                                && me.as_deref().map_or(true, |login| pr.author != login)
+                                && me.as_deref().is_none_or(|login| pr.author != login)
                                 && !pr.approved_by_me
                         })
                         .cloned()
@@ -1662,7 +1663,10 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
             .map(|c| c.diff_hash != tab.branch_diff_hash)
             .unwrap_or(false);
         if review_mismatch {
-            Some("Review was generated for an older diff. Re-run or validate the review.".to_string())
+            Some(
+                "Review was generated for an older diff. Re-run or validate the review."
+                    .to_string(),
+            )
         } else if order_mismatch || checklist_mismatch {
             Some("Review metadata is out of date for the current diff.".to_string())
         } else {
@@ -1853,73 +1857,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         unpushed,
         threads,
         findings,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
-
-    fn github_comment(outdated: bool, stale: bool) -> GitHubReviewComment {
-        GitHubReviewComment {
-            id: "gh-1".to_string(),
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
-            file: "src/foo.rs".to_string(),
-            hunk_index: Some(0),
-            line_start: Some(10),
-            line_end: None,
-            line_content: "fn foo() {}".to_string(),
-            comment: "This thread is outdated on GitHub".to_string(),
-            in_reply_to: None,
-            resolved: false,
-            source: "github".to_string(),
-            github_id: Some(1),
-            author: "octo".to_string(),
-            synced: true,
-            outdated,
-            stale,
-            context_before: vec![],
-            context_after: vec![],
-            old_line_start: None,
-            hunk_header: String::new(),
-            anchor_status: "original".to_string(),
-            relocated_at_hash: String::new(),
-            finding_ref: None,
-            side: "RIGHT".to_string(),
-        }
-    }
-
-    #[test]
-    fn ai_snapshot_marks_github_outdated_comment_stale_for_ui() {
-        let mut tab = TabState::new_for_test(vec![]);
-        tab.ai.github_comments = Some(ErGitHubComments {
-            version: 1,
-            diff_hash: "hash".to_string(),
-            github: None,
-            comments: vec![github_comment(true, false)],
-        });
-
-        let snapshot = build_ai_snapshot(&tab, None);
-
-        assert_eq!(snapshot.threads.len(), 1);
-        assert!(snapshot.threads[0].stale);
-    }
-
-    #[test]
-    fn thread_conversion_marks_github_outdated_comment_stale_for_ui() {
-        let tab = TabState::new_for_test(vec![]);
-        let comment = github_comment(true, false);
-
-        let thread = comment_ref_to_thread(
-            &CommentRef::GitHubComment(&comment),
-            "src/foo.rs",
-            0,
-            &tab,
-            None,
-        );
-
-        assert!(thread.stale);
     }
 }
 
@@ -2130,4 +2067,71 @@ fn status_str(status: &FileStatus) -> String {
         FileStatus::Unmerged => "unmerged",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+
+    fn github_comment(outdated: bool, stale: bool) -> GitHubReviewComment {
+        GitHubReviewComment {
+            id: "gh-1".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            file: "src/foo.rs".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(10),
+            line_end: None,
+            line_content: "fn foo() {}".to_string(),
+            comment: "This thread is outdated on GitHub".to_string(),
+            in_reply_to: None,
+            resolved: false,
+            source: "github".to_string(),
+            github_id: Some(1),
+            author: "octo".to_string(),
+            synced: true,
+            outdated,
+            stale,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    #[test]
+    fn ai_snapshot_marks_github_outdated_comment_stale_for_ui() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            github: None,
+            comments: vec![github_comment(true, false)],
+        });
+
+        let snapshot = build_ai_snapshot(&tab, None);
+
+        assert_eq!(snapshot.threads.len(), 1);
+        assert!(snapshot.threads[0].stale);
+    }
+
+    #[test]
+    fn thread_conversion_marks_github_outdated_comment_stale_for_ui() {
+        let tab = TabState::new_for_test(vec![]);
+        let comment = github_comment(true, false);
+
+        let thread = comment_ref_to_thread(
+            &CommentRef::GitHubComment(&comment),
+            "src/foo.rs",
+            0,
+            &tab,
+            None,
+        );
+
+        assert!(thread.stale);
+    }
 }

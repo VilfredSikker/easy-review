@@ -425,33 +425,14 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use er_engine::ai::PanelContent;
-    use er_engine::app::{ConfirmAction, InputMode, TabState};
-    use er_engine::config::ErConfig;
+    use er_engine::app::{ConfirmAction, InputMode};
     use er_engine::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
     use std::sync::mpsc;
 
     // ── Test helpers ──
 
     fn make_app(files: Vec<DiffFile>) -> App {
-        App {
-            tabs: vec![TabState::new_for_test(files)],
-            active_tab: 0,
-            input_mode: InputMode::Normal,
-            should_quit: false,
-            overlay: None,
-            watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 20,
-            ai_poll_counter: 0,
-            remote_url_input: String::new(),
-            config: ErConfig::default(),
-            current_ai_provider: None,
-            current_ai_model: None,
-            pending_hub_action: None,
-            last_terminal_width: 0,
-            panels_visible: er_engine::app::PanelsVisible::default(),
-        }
+        App::new_for_test(files)
     }
 
     fn make_file_with_hunk() -> DiffFile {

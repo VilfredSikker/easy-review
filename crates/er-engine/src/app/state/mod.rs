@@ -1517,10 +1517,10 @@ impl TabState {
         // Origin: only if there's an upstream (we check via local_branch_view + upstream field,
         // but we can't call out to git here; instead we expose Origin as available when
         // a refreshed ref exists or the tab is currently in Origin mode).
-        if self.local_branch_diff_ref.is_some() || self.diff_source() == DiffSource::Origin {
-            if !sources.contains(&DiffSource::Origin) {
-                sources.push(DiffSource::Origin);
-            }
+        if (self.local_branch_diff_ref.is_some() || self.diff_source() == DiffSource::Origin)
+            && !sources.contains(&DiffSource::Origin)
+        {
+            sources.push(DiffSource::Origin);
         }
         // Offer Origin for a local_branch_view only when an upstream is actually
         // configured (or we've already fetched one into an er-ref). Without this
@@ -3474,6 +3474,32 @@ impl App {
             config: er_config,
             current_ai_provider,
             current_ai_model,
+            pending_hub_action: None,
+            last_terminal_width: 0,
+            panels_visible: PanelsVisible::default(),
+            background_tasks: std::collections::HashMap::new(),
+            recent_background_tasks: Vec::new(),
+        }
+    }
+
+    /// Construct an App with a single test tab. Intended for unit tests
+    /// that need to exercise input handlers without spinning up git.
+    pub fn new_for_test(files: Vec<crate::git::DiffFile>) -> Self {
+        App {
+            tabs: vec![TabState::new_for_test(files)],
+            active_tab: 0,
+            input_mode: InputMode::Normal,
+            should_quit: false,
+            overlay: None,
+            watching: false,
+            watch_message: None,
+            watch_message_ticks: 0,
+            watch_message_max_ticks: 20,
+            ai_poll_counter: 0,
+            remote_url_input: String::new(),
+            config: ErConfig::default(),
+            current_ai_provider: None,
+            current_ai_model: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),

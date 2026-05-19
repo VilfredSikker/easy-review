@@ -563,8 +563,7 @@ impl TabState {
             // Local PR mode uses gh pr diff for the full load, so pr_head_ref is never
             // fetched into the local clone. Treat it like remote when raw_diff is available;
             // fetch the ref on demand when it isn't (e.g. pattern-compacted file in a small diff).
-            let use_raw_diff =
-                is_remote || (self.pr_number.is_some() && self.raw_diff.is_some());
+            let use_raw_diff = is_remote || (self.pr_number.is_some() && self.raw_diff.is_some());
             if use_raw_diff {
                 // Remote / local-PR with cached diff: re-parse from raw_diff
                 let header_idx = self.file_headers.iter().position(|h| h.path == path);

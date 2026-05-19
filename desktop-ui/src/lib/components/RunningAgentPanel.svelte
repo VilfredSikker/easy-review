@@ -17,6 +17,13 @@
   let activeTaskId = $state(tasks[0]?.id ?? "");
   let logLines = $state<AgentLogEntry[]>([]);
   let logContainer = $state<HTMLDivElement | null>(null);
+  let stickToBottom = $state(true);
+
+  function handleScroll() {
+    if (!logContainer) return;
+    const distance = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight;
+    stickToBottom = distance < 8;
+  }
 
   const rightOffset = $derived(avoidRightPanel ? rightPanelWidth + 16 : 24);
 
@@ -34,6 +41,7 @@
   $effect(() => {
     const task = tasks.find((t) => t.id === activeTaskId);
     logLines = task?.recent_log ?? [];
+    stickToBottom = true;
   });
 
   // Poll for live log when active task is running
@@ -54,11 +62,10 @@
     return () => clearInterval(handle);
   });
 
-  // Auto-scroll to bottom when logLines changes
+  // Auto-scroll to bottom when logLines changes — only if user is pinned at bottom
   $effect(() => {
-    // Track logLines length to trigger scroll
     void logLines.length;
-    if (logContainer) {
+    if (logContainer && stickToBottom) {
       logContainer.scrollTo({ top: logContainer.scrollHeight });
     }
   });
@@ -153,6 +160,7 @@
     <!-- Log area -->
     <div
       bind:this={logContainer}
+      onscroll={handleScroll}
       class="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-0.5"
     >
       {#if logLines.length > 0}

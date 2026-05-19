@@ -307,7 +307,7 @@ pub(crate) fn ahead_behind_local_vs_upstream(
         anyhow::bail!("git rev-list ahead/behind failed: {}", stderr.trim());
     }
     let s = String::from_utf8_lossy(&output.stdout);
-    let parts: Vec<&str> = s.trim().split_whitespace().collect();
+    let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() != 2 {
         anyhow::bail!("unexpected git rev-list output: {:?}", s.trim());
     }

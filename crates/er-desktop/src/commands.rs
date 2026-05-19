@@ -10,14 +10,14 @@ use er_engine::ai::CommentType;
 use er_engine::app::{App, DiffMode, InputMode};
 use er_engine::highlight::Highlighter;
 
+use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects;
 use crate::snapshot::{
-    build_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary, GhCommentSummary,
-    GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState, MetaCache,
-    PendingAiReplies, PrInfo, WatchStatusState,
+    build_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary, GhCommentSummary, GhReviewSummary,
+    GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState, MetaCache, PendingAiReplies, PrInfo,
+    WatchStatusState,
 };
-use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
 const REQUESTED_KINDS: &[&str] = &[
@@ -169,10 +169,10 @@ macro_rules! snap {
             Some(&$state.gh_user),
             Some(&$state.pending_ai_replies),
             Some(&$state.gh_status_cache),
-        Some(&$state.loading),
-        Some(&$state.watch_status),
-        Some(&$state.inbox),
-    ))
+            Some(&$state.loading),
+            Some(&$state.watch_status),
+            Some(&$state.inbox),
+        ))
     }};
 }
 
@@ -229,10 +229,7 @@ fn maybe_send_native_notification(
     if inbox.notified_item_ids.contains(&item.id) {
         return;
     }
-    let handle = app_handle_state
-        .lock()
-        .ok()
-        .and_then(|g| g.clone());
+    let handle = app_handle_state.lock().ok().and_then(|g| g.clone());
     if let Some(app) = handle {
         let shown = app
             .notification()
@@ -349,11 +346,7 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
                 source: "ai".to_string(),
                 target: InboxTarget {
                     project_id: None,
-                    repo_root: Some(
-                        app.tab()
-                            .repo_root
-                            .clone(),
-                    ),
+                    repo_root: Some(app.tab().repo_root.clone()),
                     remote: app.tab().remote_repo.clone(),
                     pr_number: app.tab().pr_number,
                     branch: Some(
@@ -514,7 +507,7 @@ pub fn toggle_panel(panel: String, state: State<AppState>) -> Result<AppSnapshot
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.toggle_panel(&panel);
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -535,7 +528,7 @@ pub fn select_file(idx: usize, state: State<AppState>) -> Result<AppSnapshot, St
             tab.rebuild_hunk_offsets();
         }
     }
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -543,7 +536,7 @@ pub fn next_file(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().next_file();
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -551,7 +544,7 @@ pub fn prev_file(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().prev_file();
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -576,7 +569,7 @@ pub fn jump_to_unreviewed(state: State<AppState>) -> Result<AppSnapshot, String>
             tab.rebuild_hunk_offsets();
         }
     }
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Hunk navigation ──────────────────────────────────────────────────────────
@@ -586,7 +579,7 @@ pub fn next_hunk(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().next_hunk();
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -594,7 +587,7 @@ pub fn prev_hunk(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().prev_hunk();
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -604,7 +597,7 @@ pub fn toggle_compacted(state: State<AppState>) -> Result<AppSnapshot, String> {
     app.tab_mut()
         .toggle_compacted()
         .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
@@ -620,7 +613,7 @@ pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, Str
         _ => DiffMode::Branch,
     };
     app.tab_mut().set_mode(diff_mode);
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Reviewed state ────────────────────────────────────────────────────────────
@@ -630,7 +623,7 @@ pub fn toggle_reviewed(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.toggle_reviewed().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -650,7 +643,7 @@ pub fn mark_reviewed(file_idx: usize, state: State<AppState>) -> Result<AppSnaps
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -665,7 +658,7 @@ pub fn unmark_reviewed(file_idx: usize, state: State<AppState>) -> Result<AppSna
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Editor ────────────────────────────────────────────────────────────────────
@@ -719,11 +712,12 @@ pub fn open_source(state: State<AppState>) -> Result<OpenSourceResult, String> {
 
     Ok(OpenSourceResult {
         kind: "needs_checkout".to_string(),
-        target: "No local checkout found for this source. Create editable worktree first.".to_string(),
+        target: "No local checkout found for this source. Create editable worktree first."
+            .to_string(),
     })
 }
 
-fn local_source_root<'a>(tab: &'a er_engine::app::TabState) -> Option<&'a str> {
+fn local_source_root(tab: &er_engine::app::TabState) -> Option<&str> {
     if !allows_local_open(
         tab.is_remote(),
         tab.local_branch_view.is_some(),
@@ -785,7 +779,11 @@ pub fn open_url_in_browser(url: String) -> Result<(), String> {
     result.map(|_| ()).map_err(|e| e.to_string())
 }
 
-fn github_file_url_for_tab(tab: &er_engine::app::TabState, file_path: &str, line_num: usize) -> Option<String> {
+fn github_file_url_for_tab(
+    tab: &er_engine::app::TabState,
+    file_path: &str,
+    line_num: usize,
+) -> Option<String> {
     let pr_head = tab
         .pr_data
         .as_ref()
@@ -853,10 +851,7 @@ fn normalize_check_state(checks: &[er_engine::github::CheckRun]) -> (String, Vec
     let mut failing = Vec::new();
     for c in checks {
         let status = c.status.to_ascii_uppercase();
-        let conclusion = c
-            .conclusion
-            .as_str()
-            .to_ascii_uppercase();
+        let conclusion = c.conclusion.as_str().to_ascii_uppercase();
         if status == "PENDING" || status == "IN_PROGRESS" || status == "QUEUED" {
             has_pending = true;
         }
@@ -929,11 +924,7 @@ pub fn process_inbox_after_pr_refresh(
             project_by_remote.insert(remote, (p.id, p.root_path));
         }
     }
-    let cache = pr_cache
-        .lock()
-        .ok()
-        .map(|g| g.clone())
-        .unwrap_or_default();
+    let cache = pr_cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
 
     let mut new_items: Vec<InboxItem> = Vec::new();
     let mut ci_work: Vec<(String, String, u64, String, String, String)> = Vec::new();
@@ -998,7 +989,10 @@ pub fn process_inbox_after_pr_refresh(
                             },
                             created_at_ms: now,
                             read_at_ms: None,
-                            dedupe_key: format!("github:{remote}:{}:review_decision:APPROVED", pr.number),
+                            dedupe_key: format!(
+                                "github:{remote}:{}:review_decision:APPROVED",
+                                pr.number
+                            ),
                         });
                     }
                     if pr.review_decision.as_deref() == Some("CHANGES_REQUESTED")
@@ -1021,12 +1015,16 @@ pub fn process_inbox_after_pr_refresh(
                             },
                             created_at_ms: now,
                             read_at_ms: None,
-                            dedupe_key: format!("github:{remote}:{}:review_decision:CHANGES_REQUESTED", pr.number),
+                            dedupe_key: format!(
+                                "github:{remote}:{}:review_decision:CHANGES_REQUESTED",
+                                pr.number
+                            ),
                         });
                     }
                 }
                 if !is_my_pr {
-                    let prev_requested = prev_state.requested_reviewers.iter().any(|r| r == &gh_user);
+                    let prev_requested =
+                        prev_state.requested_reviewers.iter().any(|r| r == &gh_user);
                     if requested_me && !prev_requested {
                         let kind = if prev_state.requested_reviewers.contains(&gh_user) {
                             "review_rerequested"
@@ -1143,7 +1141,7 @@ pub fn process_inbox_after_pr_refresh(
             .unwrap_or_default();
         let (state_name, failing_checks) = normalize_check_state(&checks);
         let ci_key = format!("{remote}#{pr_number}");
-            let mut inbox = match inbox_handle.lock() {
+        let mut inbox = match inbox_handle.lock() {
             Ok(g) => g,
             Err(_) => return,
         };
@@ -1211,7 +1209,6 @@ pub fn process_inbox_after_pr_refresh(
     }
 }
 
-
 #[tauri::command]
 pub fn reveal_er_folder(state: State<AppState>) -> Result<(), String> {
     let er_dir = {
@@ -1259,7 +1256,10 @@ pub fn list_review_revisions(state: State<AppState>) -> Result<Vec<ReviewRevisio
 }
 
 #[tauri::command]
-pub fn read_review_json(state: State<AppState>, revision_id: Option<String>) -> Result<String, String> {
+pub fn read_review_json(
+    state: State<AppState>,
+    revision_id: Option<String>,
+) -> Result<String, String> {
     let _ = revision_id; // single-revision model — ignored
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let er_dir = app.tab().er_dir();
@@ -1277,7 +1277,7 @@ pub fn set_filter(query: String, state: State<AppState>) -> Result<AppSnapshot, 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().apply_filter_expr(&query);
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -1285,7 +1285,7 @@ pub fn clear_filter(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().apply_filter_expr("");
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Threads ───────────────────────────────────────────────────────────────────
@@ -1315,7 +1315,7 @@ pub fn add_comment(
         None,
     )
     .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -1328,9 +1328,17 @@ pub fn add_question(
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    app.submit_comment_text(file, hunk_idx, line_num, text, CommentType::Question, None, None)
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    app.submit_comment_text(
+        file,
+        hunk_idx,
+        line_num,
+        text,
+        CommentType::Question,
+        None,
+        None,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -1385,7 +1393,7 @@ pub fn reply_to_thread(
         None,
     )
     .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -1393,7 +1401,7 @@ pub fn delete_thread(id: String, state: State<AppState>) -> Result<AppSnapshot, 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 fn write_json_atomic<T: serde::Serialize>(path: &str, value: &T) -> Result<(), String> {
@@ -1444,7 +1452,7 @@ pub fn resolve_thread(id: String, state: State<AppState>) -> Result<AppSnapshot,
         return Err(format!("Thread not found or already resolved: {id}"));
     }
     app.tab_mut().reload_ai_state();
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 fn validate_review_submission(
@@ -1478,7 +1486,7 @@ pub fn refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -1488,8 +1496,8 @@ pub fn force_refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String>
     app.tab_mut()
         .refetch_and_refresh_diff()
         .map_err(|e| e.to_string())?;
-    kick_meta_refresh(&*state, app.tab().repo_root.clone());
-    Ok(snap_from(&app, &mut hl, &*state))
+    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 /// Trigger an immediate background refresh of the GitHub status for the active tab.
@@ -1498,7 +1506,7 @@ pub fn force_refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String>
 pub fn refresh_github_status(state: State<AppState>) -> Result<AppSnapshot, String> {
     let key = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        active_github_key(&app, &*state)
+        active_github_key(&app, &state)
     };
     if let Some((owner, repo, number)) = key {
         kick_github_status_refresh(
@@ -1519,7 +1527,7 @@ pub fn pull_github_comments(state: State<AppState>) -> Result<AppSnapshot, Strin
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.sync_github_comments().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -1528,7 +1536,7 @@ pub fn push_github_comments(state: State<AppState>) -> Result<AppSnapshot, Strin
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.push_all_comments_to_github()
         .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 /// Submit pending local comments as a GitHub PR review with an explicit decision.
@@ -1775,7 +1783,7 @@ pub fn submit_github_review(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.tab_mut().reload_ai_state();
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 /// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
@@ -1815,7 +1823,7 @@ pub fn submit_github_pr_decision(
         let tab = app.tab();
         let is_remote = tab.is_remote();
         let repo_root = tab.repo_root.clone();
-        let (owner, repo, number) = active_github_key(&app, &*state)
+        let (owner, repo, number) = active_github_key(&app, &state)
             .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?;
         (owner, repo, number, is_remote, repo_root)
     };
@@ -1847,17 +1855,14 @@ pub fn submit_github_pr_decision(
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 /// Post a PR-wide (issue-stream) comment on the active tab's PR. Used by the
 /// GitHub card's "Comment / Review" action — distinct from line-anchored
 /// review comments handled by `submit_github_review`.
 #[tauri::command]
-pub fn post_github_pr_comment(
-    body: String,
-    state: State<AppState>,
-) -> Result<AppSnapshot, String> {
+pub fn post_github_pr_comment(body: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return Err("Comment body cannot be empty".to_string());
@@ -1865,9 +1870,8 @@ pub fn post_github_pr_comment(
 
     let (owner, repo, number) = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        active_github_key(&app, &*state).ok_or_else(|| {
-            "No GitHub PR detected for the active tab".to_string()
-        })?
+        active_github_key(&app, &state)
+            .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?
     };
 
     er_engine::github::gh_pr_general_comment_remote(&owner, &repo, number, trimmed)
@@ -1886,7 +1890,7 @@ pub fn post_github_pr_comment(
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── AI integration ───────────────────────────────────────────────────────────
@@ -2000,7 +2004,7 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let snap = snap_from(&app, &mut hl, &*state);
+    let snap = snap_from(&app, &mut hl, &state);
     if debug_bg {
         eprintln!(
             "[bg] run_ai_review snapshot.background_tasks.len()={}",
@@ -2028,11 +2032,8 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
     let base_branch = app.tab().base_branch.clone();
     // Anchor the prompt at the managed branch dir so the agent updates the
     // same review.json the UI loads from (rather than `<repo>/.er/`).
-    let prompt = er_engine::ai::prompts::build_validate_prompt_local_managed(
-        &base_branch,
-        &scope,
-        &er_dir,
-    );
+    let prompt =
+        er_engine::ai::prompts::build_validate_prompt_local_managed(&base_branch, &scope, &er_dir);
     app.spawn_agent_prompt("validate", &prompt)
         .map_err(|e| e.to_string())?;
     app.notify("AI review validation started");
@@ -2040,7 +2041,7 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -2053,7 +2054,7 @@ pub fn set_ai_model(model: String, state: State<AppState>) -> Result<AppSnapshot
     cfg.agent.model = model;
     er_engine::config::save_config(&cfg).map_err(|e| e.to_string())?;
 
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── AI provider / model selection ───────────────────────────────────────────
@@ -2134,7 +2135,7 @@ pub fn set_ai_selection(
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Promote question to GitHub comment ──────────────────────────────────────
@@ -2251,7 +2252,7 @@ pub fn promote_to_comment(
         app.tab_mut().reload_ai_state();
     }
 
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Finding promotions sidecar ───────────────────────────────────────────────
@@ -2389,7 +2390,7 @@ pub fn ask_ai(
 
     // Build snapshot before releasing locks (test path expects synchronous
     // visibility of the pending state).
-    let snap = snap_from(&app, &mut hl, &*state);
+    let snap = snap_from(&app, &mut hl, &state);
 
     // Release locks before spawning so the subprocess runs without holding
     // the App mutex.
@@ -2540,9 +2541,12 @@ fn normalize_remote_slug(remote: &str) -> String {
 
 fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) -> Option<String> {
     let target = normalize_remote_slug(remote_slug);
-    file.projects
-        .iter()
-        .find_map(|p| p.remote.as_ref().filter(|r| normalize_remote_slug(r) == target).map(|_| p.id.clone()))
+    file.projects.iter().find_map(|p| {
+        p.remote
+            .as_ref()
+            .filter(|r| normalize_remote_slug(r) == target)
+            .map(|_| p.id.clone())
+    })
 }
 
 fn now_epoch_ms() -> u64 {
@@ -2619,9 +2623,8 @@ fn fetch_single_pr_for_remote(remote: &str, pr_number: u64) -> Result<PrInfo, St
             stderr.trim()
         ));
     }
-    let raw: RawPr = serde_json::from_slice(&out.stdout).map_err(|e| {
-        format!("Failed to parse gh pr view output for {remote}#{pr_number}: {e}")
-    })?;
+    let raw: RawPr = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("Failed to parse gh pr view output for {remote}#{pr_number}: {e}"))?;
     let latest_reviewer_states = raw
         .latest_reviews
         .into_iter()
@@ -2662,7 +2665,7 @@ pub fn open_remote_pr(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(&mut app, &owner, &repo, number, replace.unwrap_or(false))?;
-    kick_meta_refresh(&*state, app.tab().repo_root.clone());
+    kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
         Arc::clone(&state.gh_status_in_flight),
@@ -2672,7 +2675,7 @@ pub fn open_remote_pr(
         repo,
         number,
     );
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -2721,7 +2724,7 @@ pub fn open_pr_url(
         pr_ref.number,
         replace.unwrap_or(false),
     )?;
-    kick_meta_refresh(&*state, app.tab().repo_root.clone());
+    kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
         Arc::clone(&state.gh_status_in_flight),
@@ -2731,7 +2734,7 @@ pub fn open_pr_url(
         pr_ref.repo,
         pr_ref.number,
     );
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Worktree picker (stub — no dialog dep) ──────────────────────────────────
@@ -2757,8 +2760,8 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.open_tab(new_tab);
     let _ = projects::auto_register(&path_str);
-    kick_meta_refresh(&*state, app.tab().repo_root.clone());
-    Ok(snap_from(&app, &mut hl, &*state))
+    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Project commands ─────────────────────────────────────────────────────────
@@ -2808,7 +2811,9 @@ fn build_local_branch_tab(
             Ok((new_tab, LocalBranchOpenPath::LocalFirst))
         }
         Err(local_err) => {
-            log::info!("branch open local-first miss; falling back to local branch diff: {local_err}");
+            log::info!(
+                "branch open local-first miss; falling back to local branch diff: {local_err}"
+            );
             let t_local_fallback = std::time::Instant::now();
             new_tab.refresh_diff_quick().map_err(|e| e.to_string())?;
             log_branch_open_phase(
@@ -2945,12 +2950,12 @@ pub fn open_local_branch(
         branch_name,
         open_path_label
     );
-    kick_meta_refresh(&*state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &*state);
+    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, &state);
     let repo_root = app.tab().repo_root.clone();
     let base_branch = app.tab().base_branch.clone();
     let t_snapshot = std::time::Instant::now();
-    let snapshot = snap_from(&app, &mut hl, &*state);
+    let snapshot = snap_from(&app, &mut hl, &state);
     log_branch_open_phase(&project_id, &branch_name, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_name, "total", t_total);
     drop(hl);
@@ -3134,7 +3139,11 @@ fn run_gh_pr_diff_for_open(repo_root: &str, pr_number: u64) -> Result<String, St
 /// Build a minimal `PrOverviewData` from a sidebar hint. Used when opening a PR
 /// without first fetching `gh pr view` — the panel renders immediately with the
 /// fields the sidebar already had, and a background refresh fills in body/checks/reviews.
-fn pr_overview_from_hint(hint: &PrOpenHint, pr_number: u64, repo_slug: Option<&str>) -> er_engine::github::PrOverviewData {
+fn pr_overview_from_hint(
+    hint: &PrOpenHint,
+    pr_number: u64,
+    repo_slug: Option<&str>,
+) -> er_engine::github::PrOverviewData {
     let url = repo_slug
         .map(|slug| format!("https://github.com/{slug}/pull/{pr_number}"))
         .unwrap_or_default();
@@ -3193,15 +3202,12 @@ fn load_pr_open_inputs(
                 branch_label
             );
             let t_base = std::time::Instant::now();
-            let resolved_base = er_engine::github::ensure_base_ref_available(
-                &repo_root,
-                &freshness.base_branch,
-            )
-            .map_err(|e| e.to_string())?;
+            let resolved_base =
+                er_engine::github::ensure_base_ref_available(&repo_root, &freshness.base_branch)
+                    .map_err(|e| e.to_string())?;
             log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
-            let pr_data = cached_pr_data.unwrap_or_else(|| {
-                pr_overview_from_hint(hint, pr_number, repo_slug.as_deref())
-            });
+            let pr_data = cached_pr_data
+                .unwrap_or_else(|| pr_overview_from_hint(hint, pr_number, repo_slug.as_deref()));
             return Ok(PrOpenInputs {
                 repo_root,
                 metadata: PrOpenMetadata { freshness, pr_data },
@@ -3284,8 +3290,7 @@ fn load_pr_open_inputs(
             branch_label,
             t_view.elapsed().as_millis()
         );
-        if let Some(raw_diff) =
-            cached_pr_open_diff(&state.pr_open_cache, &key, &metadata.freshness)
+        if let Some(raw_diff) = cached_pr_open_diff(&state.pr_open_cache, &key, &metadata.freshness)
         {
             log::info!(
                 "branch_open project={} branch={} phase=gh_pr_diff ms=0 cache=hit",
@@ -3443,10 +3448,11 @@ pub fn open_pr_review(
     let t_total = std::time::Instant::now();
     let branch_label = format!("pr-{}", pr_number);
     let t_tab_build = std::time::Instant::now();
-    let inputs = load_pr_open_inputs(&project_id, pr_number, hint.as_ref(), &*state).map_err(|e| {
-        log::error!("open_pr_review: pr=#{pr_number} project_id={project_id} err={e}");
-        e
-    })?;
+    let inputs =
+        load_pr_open_inputs(&project_id, pr_number, hint.as_ref(), &state).map_err(|e| {
+            log::error!("open_pr_review: pr=#{pr_number} project_id={project_id} err={e}");
+            e
+        })?;
     let cache_hit = inputs.cache_hit;
     let new_tab = er_engine::app::TabState::new_local_pr_from_github_diff(
         inputs.repo_root,
@@ -3474,12 +3480,12 @@ pub fn open_pr_review(
     let t_place_tab = std::time::Instant::now();
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
-    kick_meta_refresh(&*state, app.tab().repo_root.clone());
+    kick_meta_refresh(&state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
-    let snapshot = snap_from(&app, &mut hl, &*state);
+    let snapshot = snap_from(&app, &mut hl, &state);
     log_branch_open_phase(&project_id, &branch_label, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_label, "total", t_total);
-    kick_active_gh_status(&app, &*state);
+    kick_active_gh_status(&app, &state);
     Ok(snapshot)
 }
 
@@ -3606,7 +3612,7 @@ pub fn set_diff_source(source: String, state: State<AppState>) -> Result<AppSnap
     app.tab_mut()
         .set_diff_source(diff_source)
         .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 /// Trigger a manual PR-list refresh. Returns the current snapshot immediately
@@ -3640,7 +3646,10 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime");
-            let failed = rt.block_on(async move { crate::pr_cache::refresh_pr_cache(&cache, &fetched_at).await });
+            let failed =
+                rt.block_on(
+                    async move { crate::pr_cache::refresh_pr_cache(&cache, &fetched_at).await },
+                );
             for remote in failed {
                 process_inbox_after_pr_refresh(
                     &pr_cache,
@@ -3711,7 +3720,11 @@ pub fn open_inbox_item(id: String, state: State<AppState>) -> Result<AppSnapshot
     let now = now_ms();
     let target = {
         let mut inbox = state.inbox.lock().map_err(|e| e.to_string())?;
-        let target = inbox.items.iter().find(|i| i.id == id).map(|i| i.target.clone());
+        let target = inbox
+            .items
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| i.target.clone());
         inbox.mark_item_read(&id, now);
         target
     };
@@ -3766,7 +3779,7 @@ pub fn add_tracked_branch(
         .ok()
         .map(|a| a.tab().repo_root.clone())
         .unwrap_or_default();
-    kick_meta_refresh(&*state, root);
+    kick_meta_refresh(&state, root);
     snap!(state)
 }
 
@@ -3809,7 +3822,7 @@ pub fn remove_tracked_branch(
         .ok()
         .map(|a| a.tab().repo_root.clone())
         .unwrap_or_default();
-    kick_meta_refresh(&*state, root);
+    kick_meta_refresh(&state, root);
     snap!(state)
 }
 
@@ -3886,9 +3899,9 @@ pub fn open_project_branch(
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     projects::set_active(&project_id);
-    kick_meta_refresh(&*state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &*state);
-    Ok(snap_from(&app, &mut hl, &*state))
+    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, &state);
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -3904,7 +3917,7 @@ pub fn dismiss_remote_pr(
         .ok()
         .map(|a| a.tab().repo_root.clone())
         .unwrap_or_default();
-    kick_meta_refresh(&*state, root);
+    kick_meta_refresh(&state, root);
     snap!(state)
 }
 
@@ -3921,7 +3934,7 @@ pub fn track_pr(
         .ok()
         .map(|a| a.tab().repo_root.clone())
         .unwrap_or_default();
-    kick_meta_refresh(&*state, root);
+    kick_meta_refresh(&state, root);
     snap!(state)
 }
 
@@ -3938,7 +3951,7 @@ pub fn untrack_pr(
         .ok()
         .map(|a| a.tab().repo_root.clone())
         .unwrap_or_default();
-    kick_meta_refresh(&*state, root);
+    kick_meta_refresh(&state, root);
     snap!(state)
 }
 
@@ -4012,9 +4025,9 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
     app.open_tab(new_tab);
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
     projects::set_active(&id);
-    kick_meta_refresh(&*state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &*state);
-    Ok(snap_from(&app, &mut hl, &*state))
+    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, &state);
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Findings: dismiss / promote / reply (v1 stubs) ──────────────────────────
@@ -4037,7 +4050,7 @@ pub fn dismiss_finding(finding_id: String, state: State<AppState>) -> Result<App
             }
         }
     }
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -4125,7 +4138,7 @@ pub fn promote_finding_to_comment(
         app.tab_mut().reload_ai_state();
     }
 
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -4206,7 +4219,7 @@ pub fn reply_to_finding(
         .map_err(|e| e.to_string())?;
     }
 
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Review export (markdown) ─────────────────────────────────────────────────
@@ -4261,7 +4274,7 @@ pub fn export_to_agent(state: State<AppState>) -> Result<AppSnapshot, String> {
     let _ = path;
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Commit composer ──────────────────────────────────────────────────────────
@@ -4271,7 +4284,7 @@ pub fn open_commit_composer(state: State<AppState>) -> Result<AppSnapshot, Strin
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.input_mode = InputMode::Commit;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── History: select commit ──────────────────────────────────────────────────
@@ -4299,7 +4312,7 @@ pub fn select_commit(sha: String, state: State<AppState>) -> Result<AppSnapshot,
             }
         }
     }
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── Tab management ──────────────────────────────────────────────────────────
@@ -4315,8 +4328,8 @@ pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
         .or_else(|_| er_engine::app::TabState::new(app.tabs[0].repo_root.clone()))
         .map_err(|e| format!("Failed to open new tab: {e}"))?;
     app.open_tab(tab);
-    kick_meta_refresh(&*state, root);
-    Ok(snap_from(&app, &mut hl, &*state))
+    kick_meta_refresh(&state, root);
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -4324,7 +4337,7 @@ pub fn close_tab(idx: usize, state: State<AppState>) -> Result<AppSnapshot, Stri
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.close_tab_at(idx);
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -4332,8 +4345,8 @@ pub fn select_tab(idx: usize, state: State<AppState>) -> Result<AppSnapshot, Str
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.select_tab(idx);
-    kick_active_gh_status(&app, &*state);
-    Ok(snap_from(&app, &mut hl, &*state))
+    kick_active_gh_status(&app, &state);
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -4348,13 +4361,13 @@ pub fn reorder_tabs(
     app.reorder_tabs(fromIdx, toIdx);
     // Persistence: the exit hook in main.rs flushes tab descriptors on app
     // exit, which captures any reorders. No mid-session save needed.
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 // ── UI annotations (browser view) ───────────────────────────────────────────
 
 #[tauri::command]
-#[allow(non_snake_case)]
+#[allow(non_snake_case, clippy::too_many_arguments)]
 pub fn add_ui_annotation(
     url: String,
     selector: Option<String>,
@@ -4407,7 +4420,7 @@ pub fn add_ui_annotation(
         dom_context: domContext,
     });
     er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 /// Decode a `data:image/png;base64,<payload>` URL into raw PNG bytes. Returns
@@ -4507,7 +4520,7 @@ pub fn read_annotation_screenshot(path: String) -> Result<String, String> {
 /// Minimal standard-base64 encoder. Mirrors `base64_decode`.
 fn base64_encode(input: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     let chunks = input.chunks(3);
     for c in chunks {
         let b0 = c[0];
@@ -4537,7 +4550,7 @@ pub fn delete_ui_annotation(id: String, state: State<AppState>) -> Result<AppSna
     let mut anns = er_engine::ai::load_ui_annotations(&dir);
     anns.retain(|a| a.id != id);
     er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -4550,7 +4563,7 @@ pub fn clear_ui_annotations(state: State<AppState>) -> Result<AppSnapshot, Strin
         let _ = std::fs::remove_file(path);
     }
     er_engine::ai::save_ui_annotations(&dir, &[]).map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[derive(serde::Deserialize)]
@@ -4588,7 +4601,7 @@ pub fn update_ui_annotation_anchors(
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let dir = app.tab().comments_dir();
     apply_anchor_updates(&dir, &updates).map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &*state))
+    Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
@@ -4640,7 +4653,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
         eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
     }
-    process_ai_task_inbox(&app, &*state);
+    process_ai_task_inbox(&app, &state);
     // Drain again so completion/failure log entries are visible in this poll.
     app.drain_agent_log();
     // Check if .er/ AI files changed — cheap mtime check, reloads AI state if yes
@@ -4658,7 +4671,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
         });
     }
 
-    let snapshot = snap_from(&app, &mut hl, &*state);
+    let snapshot = snap_from(&app, &mut hl, &state);
     state.last_sent_revision.store(revision, Ordering::Relaxed);
 
     if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {
