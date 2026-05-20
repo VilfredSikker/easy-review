@@ -16,8 +16,6 @@
 
   interface Props {
     composer?: AnnotationComposerState | null;
-    /** `overlay` positions near click coords; `toolbar` is a full-width bar. */
-    variant?: "overlay" | "toolbar";
     width?: number;
     height?: number;
     getIframeRect?: () => DOMRect | null;
@@ -34,7 +32,6 @@
 
   let {
     composer = $bindable<AnnotationComposerState | null>(null),
-    variant = "overlay",
     width = 1280,
     height = 800,
     getIframeRect,
@@ -167,12 +164,8 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="{variant === 'toolbar'
-      ? 'w-full bg-card border border-border rounded-md shadow-lg p-2'
-      : 'absolute bg-card border border-border rounded-md shadow-lg p-2 w-64 z-10'}"
-    style={variant === "overlay"
-      ? `left: ${clampedLeft(composer.x, 260)}px; top: ${clampedTop(composer.y + 14, 130)}px; pointer-events: auto;`
-      : "pointer-events: auto;"}
+    class="absolute bg-card border border-border rounded-md shadow-lg p-2 w-64 z-10"
+    style="left: {clampedLeft(composer.x, 260)}px; top: {clampedTop(composer.y + 14, 130)}px; pointer-events: auto;"
     onclick={(e) => e.stopPropagation()}
   >
     <!-- svelte-ignore a11y_autofocus -->

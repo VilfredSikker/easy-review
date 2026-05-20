@@ -19,10 +19,8 @@
     listenBrowserMessages,
   } from "$lib/stores/browserHost";
   import type { UiDomContext } from "$lib/types";
-  import AnnotationComposer, {
-    type AnnotationComposerState,
-  } from "./AnnotationComposer.svelte";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
+  import { registerBrowserAnnotationComposerDismiss } from "$lib/stores/keyboard";
 
   let urlInput = $state(browser.url);
   /** Native child webview pane (transparent hole in the main UI). */
@@ -188,11 +186,79 @@
     void sendToPage({ __er_hover: true, x, y });
   }
 
+  function syncPinsToPage() {
+    if (!browser.open || !browser.url.trim() || browser.url === BLANK_BROWSER_URL) {
+      void sendToPage({ __er_clear_pins: true });
+      return;
+    }
+    if (!pageHandlesAnnotate) {
+      void sendToPage({ __er_clear_pins: true });
+      return;
+    }
+    const items = (app.snapshot?.ui_annotations ?? [])
+      .filter((a) => annotationMatchesPage(a.url, browser.url))
+      .map((a, i) => ({
+        id: a.id,
+        selector: a.selector ?? null,
+        box: [a.box_x, a.box_y, a.box_w, a.box_h],
+        viewport: [a.viewport_w, a.viewport_h],
+        text: a.text,
+        label: a.element_context ?? a.selector ?? null,
+        stale: a.stale,
+        showTip: browser.showAnnotationTooltips,
+        index: i + 1,
+      }));
+    void sendToPage({ __er_sync_pins: true, items });
+  }
+
+  function showSavedPopover(
+    bbox: [number, number, number, number],
+    text: string,
+    elementContext: string | null,
+    selector: string | null = null,
+  ) {
+    if (!pageHandlesAnnotate) return;
+    void sendToPage({
+      __er_show_popover: true,
+      box: bbox,
+      viewport: [Math.round(paneWidth) || 1280, Math.round(paneHeight) || 800],
+      selector,
+      text,
+      element_context: elementContext,
+      label: elementContext,
+    });
+  }
+
   /** Native child webview sits above the Svelte overlay — page script handles pointer. */
   const pageHandlesAnnotate = $derived(!useProxyFallback);
 
-  /** Composer rendered in the toolbar so it stays above the native webview. */
-  let toolbarComposer = $state<AnnotationComposerState | null>(null);
+  let composerOpenInPage = $state(false);
+
+  function openPageComposer(p: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    selector: string | null;
+    element_context: string | null;
+    dom_context: UiDomContext | null;
+  }) {
+    composerOpenInPage = true;
+    void sendToPage({
+      __er_show_composer: true,
+      box: [p.x, p.y, p.w, p.h],
+      viewport: [Math.round(paneWidth) || 1280, Math.round(paneHeight) || 800],
+      selector: p.selector,
+      element_context: p.element_context,
+      label: p.element_context,
+      dom_context: p.dom_context,
+    });
+  }
+
+  function closePageComposer() {
+    composerOpenInPage = false;
+    void sendToPage({ __er_hide_composer: true });
+  }
 
   async function syncAnnotateModeToPage() {
     if (!browser.open) return;
@@ -246,6 +312,7 @@
     clearHoverState();
     allPinRects = {};
     await app.cmd("clear_ui_annotations", {});
+    syncPinsToPage();
   }
 
   function queryAllAnnotationRects() {
@@ -263,7 +330,11 @@
     clearHoverState();
     void syncPaneBounds();
     requestReanchor();
-    queryAllAnnotationRects();
+    if (pageHandlesAnnotate) {
+      syncPinsToPage();
+    } else {
+      queryAllAnnotationRects();
+    }
   }
 
   function onIframeLoad() {
@@ -301,6 +372,35 @@
       "__er_annotate_mode_ack" in data
     ) {
       markAnnotationReady();
+    }
+
+    if ((data as { __er_composer_submit?: boolean }).__er_composer_submit) {
+      composerOpenInPage = false;
+      const box = (data as { box?: number[] }).box;
+      const bbox: [number, number, number, number] = Array.isArray(box) && box.length >= 4
+        ? [Number(box[0]) || 0, Number(box[1]) || 0, Number(box[2]) || 24, Number(box[3]) || 24]
+        : [0, 0, 24, 24];
+      const text = typeof (data as { text?: unknown }).text === "string"
+        ? (data as { text: string }).text
+        : "";
+      const selector = typeof (data as { selector?: unknown }).selector === "string"
+        ? (data as { selector: string }).selector
+        : null;
+      const element_context = typeof (data as { element_context?: unknown }).element_context === "string"
+        ? (data as { element_context: string }).element_context
+        : null;
+      const dom_context = (data as { dom_context?: unknown }).dom_context &&
+        typeof (data as { dom_context?: unknown }).dom_context === "object"
+        ? (data as { dom_context: UiDomContext }).dom_context
+        : null;
+      void submitAnnotation(bbox, selector, text, null, element_context, dom_context);
+      return;
+    }
+
+    if ((data as { __er_composer_cancel?: boolean }).__er_composer_cancel) {
+      composerOpenInPage = false;
+      clearHoverState();
+      return;
     }
 
     if ((data as { __er_annotate_mode_ack?: boolean }).__er_annotate_mode_ack) {
@@ -421,10 +521,23 @@
       elementContext,
       domContext,
     });
+    showSavedPopover(bbox, text, elementContext, selector);
+    syncPinsToPage();
   }
 
   let resizeObserver: ResizeObserver | null = null;
   let unlistenBrowser: (() => void) | null = null;
+
+  $effect(() => {
+    if (composerOpenInPage && pageHandlesAnnotate) {
+      registerBrowserAnnotationComposerDismiss(() => {
+        closePageComposer();
+        clearHoverState();
+      });
+      return () => registerBrowserAnnotationComposerDismiss(null);
+    }
+    registerBrowserAnnotationComposerDismiss(null);
+  });
 
   onMount(() => {
     if (browser.annotateMode) markWaitingForReadiness();
@@ -435,6 +548,7 @@
         onPaneReady();
         markAnnotationReady();
         syncAnnotateModeToPage();
+        syncPinsToPage();
       }
     }).then((fn) => {
       unlistenBrowser = fn;
@@ -453,6 +567,7 @@
     unlistenBrowser?.();
     resizeObserver?.disconnect();
     if (readinessTimer !== null) clearTimeout(readinessTimer);
+    void sendToPage({ __er_clear_pins: true });
     void browserHide();
   });
 
@@ -463,7 +578,7 @@
   $effect(() => {
     if (!browser.annotateMode) {
       clearHoverState();
-      toolbarComposer = null;
+      closePageComposer();
       syncAnnotateModeToPage();
       return;
     }
@@ -479,30 +594,29 @@
   $effect(() => {
     if (!pageHandlesAnnotate) return;
     const p = browser.pendingIframeClick;
-    if (!p || !browser.annotateMode || toolbarComposer) return;
-    toolbarComposer = hoveredEl?.rect
-      ? {
-          x: hoveredEl.rect.left,
-          y: hoveredEl.rect.top,
-          w: hoveredEl.rect.width,
-          h: hoveredEl.rect.height,
-          selector: p.selector ?? hoveredEl.selector,
-          element_context: p.element_context ?? hoveredEl.element_context ?? null,
-          dom_context: p.dom_context ?? hoveredEl.dom_context ?? null,
-          text: "",
-          screenshotDataUrl: null,
-        }
-      : {
-          x: p.x,
-          y: p.y,
-          w: p.w || 24,
-          h: p.h || 24,
-          selector: p.selector,
-          element_context: p.element_context ?? null,
-          dom_context: p.dom_context ?? null,
-          text: "",
-          screenshotDataUrl: null,
-        };
+    if (!p || !browser.annotateMode || composerOpenInPage) return;
+    const rect = hoveredEl?.rect;
+    openPageComposer(
+      rect
+        ? {
+            x: rect.left,
+            y: rect.top,
+            w: rect.width,
+            h: rect.height,
+            selector: p.selector ?? hoveredEl.selector,
+            element_context: p.element_context ?? hoveredEl.element_context ?? null,
+            dom_context: p.dom_context ?? hoveredEl.dom_context ?? null,
+          }
+        : {
+            x: p.x,
+            y: p.y,
+            w: p.w || 24,
+            h: p.h || 24,
+            selector: p.selector,
+            element_context: p.element_context ?? null,
+            dom_context: p.dom_context ?? null,
+          },
+    );
     browser.pendingIframeClick = null;
     clearHoverState();
   });
@@ -514,7 +628,21 @@
 
   $effect(() => {
     void app.snapshot?.ui_annotations?.length;
-    queryAllAnnotationRects();
+    if (pageHandlesAnnotate) {
+      syncPinsToPage();
+    } else {
+      queryAllAnnotationRects();
+    }
+  });
+
+  $effect(() => {
+    void pageHandlesAnnotate;
+    void browser.url;
+    void browser.showAnnotationTooltips;
+    void app.snapshot?.ui_annotations;
+    void paneWidth;
+    void paneHeight;
+    syncPinsToPage();
   });
 
   $effect(() => {
@@ -595,20 +723,6 @@
     </button>
   </div>
 
-  {#if toolbarComposer && pageHandlesAnnotate}
-    <div class="px-3 pb-2 border-b border-hairline shrink-0">
-      <AnnotationComposer
-        bind:composer={toolbarComposer}
-        variant="toolbar"
-        width={paneWidth}
-        height={paneHeight}
-        getIframeRect={() => browserPaneEl?.getBoundingClientRect() ?? null}
-        onSave={submitAnnotation}
-        onCancel={clearHoverState}
-      />
-    </div>
-  {/if}
-
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={browserPaneEl}
@@ -650,7 +764,6 @@
         width={paneWidth}
         height={paneHeight}
         {pageHandlesAnnotate}
-        composerInToolbar={pageHandlesAnnotate}
         {hoveredEl}
         {livePinRect}
         {allPinRects}

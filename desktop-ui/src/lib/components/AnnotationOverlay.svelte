@@ -13,8 +13,6 @@
     height: number;
     /** Native review webview is above the overlay; the page script handles hover/click. */
     pageHandlesAnnotate?: boolean;
-    /** When true, parent renders the composer in the toolbar (above the native webview). */
-    composerInToolbar?: boolean;
     /** Hovered DOM element info from the content script (annotation mode only). */
     hoveredEl?: { selector: string | null; rect: { left: number; top: number; width: number; height: number }; element_context?: string | null; dom_context?: UiDomContext | null } | null;
     /** Live bounding rect from a DOM query for the currently-hovered annotation pin. */
@@ -40,7 +38,7 @@
     ) => void;
   }
 
-  const { width, height, pageHandlesAnnotate = false, composerInToolbar = false, hoveredEl = null, livePinRect = null, allPinRects = {}, onHoverPin, queryHoverAt, onPointerLeave, getIframeRect, onSubmit }: Props = $props();
+  const { width, height, pageHandlesAnnotate = false, hoveredEl = null, livePinRect = null, allPinRects = {}, onHoverPin, queryHoverAt, onPointerLeave, getIframeRect, onSubmit }: Props = $props();
 
   const overlayCapturesPointer = $derived(
     browser.annotateMode && !pageHandlesAnnotate,
@@ -143,7 +141,7 @@
   // Pick up clicks reported via the iframe content-script.
   // Prefer hoveredEl (more accurate bbox from hover tracking) over the click event coords.
   $effect(() => {
-    if (composerInToolbar) return;
+    if (pageHandlesAnnotate) return;
     const p = browser.pendingIframeClick;
     if (!p || !browser.annotateMode || composer) return;
     composer = hoveredEl?.rect
@@ -191,7 +189,14 @@
   });
 
   function pinCenter(a: UiAnnotation): { left: number; top: number } {
-    return { left: a.box_x + a.box_w / 2, top: a.box_y + a.box_h / 2 };
+    const vw = a.viewport_w > 0 ? a.viewport_w : width;
+    const vh = a.viewport_h > 0 ? a.viewport_h : height;
+    const sx = width / vw;
+    const sy = height / vh;
+    return {
+      left: a.box_x * sx + (a.box_w * sx) / 2,
+      top: a.box_y * sy + (a.box_h * sy) / 2,
+    };
   }
 
   function onPinClick(a: UiAnnotation) {
@@ -313,6 +318,7 @@
     ></div>
   {/if}
 
+  {#if !pageHandlesAnnotate}
   {#each annotations as a, i (a.id)}
     {@const r = allPinRects?.[a.id]}
     {#if r && r.width > 0 && r.height > 0}
@@ -331,7 +337,9 @@
       </div>
     {/if}
   {/each}
+  {/if}
 
+  {#if !pageHandlesAnnotate}
   {#each annotations as a, i (a.id)}
     {@const c = pinCenter(a)}
     <div
@@ -422,16 +430,14 @@
       {/if}
     </div>
   {/each}
-
-  {#if !composerInToolbar}
-    <AnnotationComposer
-      bind:composer
-      variant="overlay"
-      {width}
-      {height}
-      {getIframeRect}
-      onSave={onSubmit}
-      onCancel={onPointerLeave}
-    />
   {/if}
+
+  <AnnotationComposer
+    bind:composer
+    {width}
+    {height}
+    {getIframeRect}
+    onSave={onSubmit}
+    onCancel={onPointerLeave}
+  />
 </div>
