@@ -173,9 +173,20 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     }catch(_){window.location.href=next;}
   },true);
 
+  function pierceShadowAtPoint(el,x,y){
+    var cur=el;
+    while(cur&&cur.shadowRoot){
+      var inner=cur.shadowRoot.elementFromPoint(x,y);
+      if(!inner||inner===cur)break;
+      cur=inner;
+    }
+    return cur;
+  }
+
   function deepElementFromPoint(doc,x,y,ox,oy){
     var el=doc.elementFromPoint(x,y);
     if(!el)return null;
+    el=pierceShadowAtPoint(el,x,y);
     if(el.tagName==='IFRAME'){
       try{
         var fc=el.contentDocument;
@@ -232,13 +243,37 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
 
   var annotateActive=false;
   var annotateHoverRaf=0;
+  var hoverBoxEl=null;
+  function ensureHoverBox(){
+    if(hoverBoxEl&&hoverBoxEl.isConnected)return hoverBoxEl;
+    hoverBoxEl=document.createElement('div');
+    hoverBoxEl.id='__er_hover_box';
+    hoverBoxEl.setAttribute('style','position:fixed;pointer-events:none;z-index:2147483646;display:none;border:2px solid rgba(99,179,237,0.9);background:rgba(99,179,237,0.08);outline:1px solid rgba(255,255,255,0.15);border-radius:2px;box-sizing:border-box;');
+    (document.documentElement||document.body).appendChild(hoverBoxEl);
+    return hoverBoxEl;
+  }
+  function updateHoverBox(rect){
+    var box=ensureHoverBox();
+    if(!rect||rect.width<1||rect.height<1){box.style.display='none';return;}
+    box.style.display='block';
+    box.style.left=rect.left+'px';
+    box.style.top=rect.top+'px';
+    box.style.width=rect.width+'px';
+    box.style.height=rect.height+'px';
+  }
+  function hideHoverBox(){
+    if(hoverBoxEl)hoverBoxEl.style.display='none';
+  }
+
   function onAnnotateMove(ev){
     if(!annotateActive)return;
     if(annotateHoverRaf)return;
     annotateHoverRaf=requestAnimationFrame(function(){
       annotateHoverRaf=0;
       if(!annotateActive)return;
-      reportToHost(hoverPayloadFromPoint(ev.clientX,ev.clientY));
+      var payload=hoverPayloadFromPoint(ev.clientX,ev.clientY);
+      updateHoverBox(payload.rect);
+      reportToHost(payload);
     });
   }
   function onAnnotateClick(ev){
@@ -258,6 +293,7 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
       document.addEventListener('click',onAnnotateClick,true);
     }else{
       try{document.documentElement.style.cursor='';}catch(_){}
+      hideHoverBox();
       document.removeEventListener('pointermove',onAnnotateMove,true);
       document.removeEventListener('mousemove',onAnnotateMove,true);
       document.removeEventListener('click',onAnnotateClick,true);

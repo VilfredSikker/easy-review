@@ -105,10 +105,8 @@ fn ensure_review_webview(
         }
         if let Some(state) = app_for_load.try_state::<BrowserWebviewState>() {
             let active = *state.annotate_mode.lock().unwrap_or_else(|e| e.into_inner());
-            if active {
-                let msg = serde_json::json!({ "__er_set_annotate_mode": true });
-                let _ = post_message_to_review_webview(&wv, &msg);
-            }
+            let msg = serde_json::json!({ "__er_set_annotate_mode": active });
+            let _ = post_message_to_review_webview(&wv, &msg);
         }
     });
 

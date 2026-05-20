@@ -3,7 +3,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { annotationMatchesPage } from "$lib/stores/browserUrl";
-  import { registerBrowserAnnotationComposerDismiss } from "$lib/stores/keyboard";
+  import AnnotationComposer from "./AnnotationComposer.svelte";
   import type { UiAnnotation, UiDomContext } from "$lib/types";
 
   interface Props {
@@ -13,6 +13,8 @@
     height: number;
     /** Native review webview is above the overlay; the page script handles hover/click. */
     pageHandlesAnnotate?: boolean;
+    /** When true, parent renders the composer in the toolbar (above the native webview). */
+    composerInToolbar?: boolean;
     /** Hovered DOM element info from the content script (annotation mode only). */
     hoveredEl?: { selector: string | null; rect: { left: number; top: number; width: number; height: number }; element_context?: string | null; dom_context?: UiDomContext | null } | null;
     /** Live bounding rect from a DOM query for the currently-hovered annotation pin. */
@@ -38,23 +40,11 @@
     ) => void;
   }
 
-  const { width, height, pageHandlesAnnotate = false, hoveredEl = null, livePinRect = null, allPinRects = {}, onHoverPin, queryHoverAt, onPointerLeave, getIframeRect, onSubmit }: Props = $props();
+  const { width, height, pageHandlesAnnotate = false, composerInToolbar = false, hoveredEl = null, livePinRect = null, allPinRects = {}, onHoverPin, queryHoverAt, onPointerLeave, getIframeRect, onSubmit }: Props = $props();
 
   const overlayCapturesPointer = $derived(
     browser.annotateMode && !pageHandlesAnnotate,
   );
-
-  /** Feature-detect screen-capture support. Falls back gracefully on macOS
-   *  Tauri webviews that don't ship the `getDisplayMedia` API. */
-  const canCapture =
-    typeof navigator !== "undefined" &&
-    typeof navigator.mediaDevices !== "undefined" &&
-    typeof navigator.mediaDevices.getDisplayMedia === "function";
-
-  /** True while we're waiting on the user's screen-share grant + capture. */
-  let capturing = $state(false);
-  /** Capture errors surface as a small inline message under the composer. */
-  let captureError = $state<string | null>(null);
 
   const annotations: UiAnnotation[] = $derived(
     (app.snapshot?.ui_annotations ?? []).filter((a) => annotationMatchesPage(a.url, browser.url)),
@@ -131,7 +121,6 @@
         text: "",
         screenshotDataUrl: null,
       };
-      captureError = null;
       onPointerLeave?.();
     } else {
       // No hover result yet. Fire an immediate hover query and wait up to 200ms
@@ -146,137 +135,15 @@
         pendingNativeClick = null;
         if (composer) return;
         composer = { x: c.x, y: c.y, w: 24, h: 24, selector: null, element_context: null, dom_context: null, text: "", screenshotDataUrl: null };
-        captureError = null;
         onPointerLeave?.();
       }, 200);
     }
   }
 
-  function cancelComposer() {
-    composer = null;
-    captureError = null;
-    onPointerLeave?.();
-  }
-
-  function onComposerKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      cancelComposer();
-    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      e.stopPropagation();
-      saveComposer();
-    }
-  }
-
-  $effect(() => {
-    if (!composer) {
-      registerBrowserAnnotationComposerDismiss(null);
-      return;
-    }
-    registerBrowserAnnotationComposerDismiss(cancelComposer);
-    return () => registerBrowserAnnotationComposerDismiss(null);
-  });
-
-  function saveComposer() {
-    if (!composer || !composer.text.trim()) {
-      composer = null;
-      return;
-    }
-    console.log('[er:annotation] saving', {
-      selector: composer.selector,
-      element_context: composer.element_context,
-      dom_context: composer.dom_context,
-      bbox: [composer.x, composer.y, composer.w, composer.h],
-    });
-    onSubmit(
-      [composer.x, composer.y, composer.w, composer.h],
-      composer.selector,
-      composer.text.trim(),
-      composer.screenshotDataUrl,
-      composer.element_context,
-      composer.dom_context,
-    );
-    composer = null;
-    captureError = null;
-    onPointerLeave?.();
-  }
-
-  /** Use the browser's screen-share API to grab one frame, encode as PNG.
-   *  We grab one video frame, paint it to a canvas, and toDataURL it. The
-   *  user picks which screen/window/tab to share — we can't programmatically
-   *  scope to the iframe region without same-origin DOM access. */
-  async function captureScreenshot() {
-    if (!canCapture || !composer || capturing) return;
-    capturing = true;
-    captureError = null;
-    let stream: MediaStream | null = null;
-    try {
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: false,
-      });
-      const track = stream.getVideoTracks()[0];
-      if (!track) throw new Error("No video track available");
-
-      // Render one frame onto a canvas, then revoke the stream immediately.
-      const video = document.createElement("video");
-      video.srcObject = stream;
-      video.muted = true;
-      await video.play();
-      // Wait one rAF so the first frame is decoded.
-      await new Promise<void>((r) => requestAnimationFrame(() => r()));
-
-      const captureW = video.videoWidth || 1280;
-      const captureH = video.videoHeight || 800;
-
-      // Attempt to crop to the iframe region. The captured surface is the
-      // app window; the iframe rect (in CSS px) maps to capture pixels via
-      // (captureW / innerWidth). Falls back to full frame if rect unavailable.
-      const iframeRect = getIframeRect?.();
-      let sx = 0, sy = 0, sw = captureW, sh = captureH;
-      if (iframeRect && window.innerWidth > 0 && window.innerHeight > 0) {
-        const scaleX = captureW / window.innerWidth;
-        const scaleY = captureH / window.innerHeight;
-        sx = Math.round(iframeRect.left * scaleX);
-        sy = Math.round(iframeRect.top * scaleY);
-        sw = Math.round(iframeRect.width * scaleX);
-        sh = Math.round(iframeRect.height * scaleY);
-        // Clamp to capture bounds.
-        sx = Math.max(0, Math.min(sx, captureW - 1));
-        sy = Math.max(0, Math.min(sy, captureH - 1));
-        sw = Math.max(1, Math.min(sw, captureW - sx));
-        sh = Math.max(1, Math.min(sh, captureH - sy));
-      }
-
-      const canvas = document.createElement("canvas");
-      canvas.width = sw;
-      canvas.height = sh;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("Canvas 2D context unavailable");
-      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-
-      const dataUrl = canvas.toDataURL("image/png");
-      if (composer) composer.screenshotDataUrl = dataUrl;
-    } catch (err) {
-      captureError =
-        err instanceof Error ? err.message : "Screen capture failed";
-    } finally {
-      if (stream) {
-        for (const t of stream.getTracks()) t.stop();
-      }
-      capturing = false;
-    }
-  }
-
-  function clearScreenshot() {
-    if (composer) composer.screenshotDataUrl = null;
-  }
-
   // Pick up clicks reported via the iframe content-script.
   // Prefer hoveredEl (more accurate bbox from hover tracking) over the click event coords.
   $effect(() => {
+    if (composerInToolbar) return;
     const p = browser.pendingIframeClick;
     if (!p || !browser.annotateMode || composer) return;
     composer = hoveredEl?.rect
@@ -302,7 +169,6 @@
           text: "",
           screenshotDataUrl: null,
         };
-    captureError = null;
     browser.pendingIframeClick = null;
     onPointerLeave?.();
   });
@@ -367,7 +233,6 @@
       text: "",
       screenshotDataUrl: null,
     };
-    captureError = null;
     onPointerLeave?.();
   });
 
@@ -412,7 +277,7 @@
   onclick={onOverlayClick}
 >
   <!-- DOM element highlight while in annotation mode (from content script hover query) -->
-  {#if browser.annotateMode && hoverRect && !composer}
+  {#if browser.annotateMode && hoverRect && !composer && !pageHandlesAnnotate}
     {@const hr = hoverRect}
     <div
       class="absolute pointer-events-none rounded-sm"
@@ -558,99 +423,15 @@
     </div>
   {/each}
 
-  {#if composer}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="absolute bg-card border border-border rounded-md shadow-lg p-2 w-64 z-10"
-      style:left="{clampedLeft(composer.x, 260)}px"
-      style:top="{clampedTop(composer.y + 14, 130)}px"
-      style:pointer-events="auto"
-      onclick={(e) => e.stopPropagation()}
-    >
-      <!-- svelte-ignore a11y_autofocus -->
-      <textarea
-        class="w-full text-sm bg-bg border border-hairline rounded p-1 outline-none resize-none"
-        rows="3"
-        placeholder="What's wrong here?"
-        bind:value={composer.text}
-        onkeydown={onComposerKeydown}
-        autofocus
-      ></textarea>
-      {#if composer.selector}
-        <div class="mt-1 text-[10px] text-muted mono truncate" title={composer.selector}>
-          {composer.element_context ?? composer.selector}
-        </div>
-      {:else if composer.element_context}
-        <div class="mt-1 text-[10px] text-muted truncate" title={composer.element_context}>
-          {composer.element_context}
-        </div>
-      {:else}
-        <div class="mt-1 text-[10px] text-muted italic">
-          Approximate location
-        </div>
-      {/if}
-      {#if composer.screenshotDataUrl}
-        <div class="mt-2 flex items-center gap-2">
-          <img
-            src={composer.screenshotDataUrl}
-            alt="Captured screenshot"
-            class="h-12 w-auto rounded border border-hairline object-cover"
-          />
-          <button
-            type="button"
-            class="text-[10px] text-muted hover:text-fg underline"
-            onclick={clearScreenshot}
-          >
-            Remove
-          </button>
-        </div>
-      {/if}
-      {#if captureError}
-        <div class="mt-1 text-[10px] text-red-400" title={captureError}>
-          {captureError}
-        </div>
-      {/if}
-      <div class="flex justify-between items-center gap-2 mt-2">
-        {#if canCapture}
-          <button
-            type="button"
-            class="text-xs px-2 py-1 rounded bg-hover hover:opacity-80 text-fg disabled:opacity-50"
-            onclick={captureScreenshot}
-            disabled={capturing}
-            title="Pick a screen/window to share; one frame is saved as PNG."
-          >
-            {capturing
-              ? "Capturing…"
-              : composer.screenshotDataUrl
-                ? "Recapture"
-                : "Capture screenshot"}
-          </button>
-        {:else}
-          <span class="text-[10px] text-muted italic" title="Screen capture unavailable in this webview">
-            No screen capture
-          </span>
-        {/if}
-        <div class="flex items-center gap-2">
-          <span class="text-[10px] text-muted hidden sm:inline">
-            <span class="kbd">⌘↩</span> save · <span class="kbd">esc</span> cancel
-          </span>
-          <button
-            type="button"
-            class="text-xs px-2 py-1 rounded hover:bg-hover text-muted"
-            onclick={cancelComposer}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            class="text-xs px-2 py-1 rounded bg-accent text-white hover:opacity-90"
-            onclick={saveComposer}
-          >
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
+  {#if !composerInToolbar}
+    <AnnotationComposer
+      bind:composer
+      variant="overlay"
+      {width}
+      {height}
+      {getIframeRect}
+      onSave={onSubmit}
+      onCancel={onPointerLeave}
+    />
   {/if}
 </div>

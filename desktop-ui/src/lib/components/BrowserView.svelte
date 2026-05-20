@@ -19,6 +19,9 @@
     listenBrowserMessages,
   } from "$lib/stores/browserHost";
   import type { UiDomContext } from "$lib/types";
+  import AnnotationComposer, {
+    type AnnotationComposerState,
+  } from "./AnnotationComposer.svelte";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
 
   let urlInput = $state(browser.url);
@@ -188,6 +191,9 @@
   /** Native child webview sits above the Svelte overlay — page script handles pointer. */
   const pageHandlesAnnotate = $derived(!useProxyFallback);
 
+  /** Composer rendered in the toolbar so it stays above the native webview. */
+  let toolbarComposer = $state<AnnotationComposerState | null>(null);
+
   async function syncAnnotateModeToPage() {
     if (!browser.open) return;
     const active = browser.annotateMode;
@@ -298,10 +304,12 @@
     }
 
     if ((data as { __er_annotate_mode_ack?: boolean }).__er_annotate_mode_ack) {
+      void syncAnnotateModeToPage();
       return;
     }
 
     if ((data as { __er_ready?: boolean }).__er_ready) {
+      void syncAnnotateModeToPage();
       return;
     }
 
@@ -455,14 +463,48 @@
   $effect(() => {
     if (!browser.annotateMode) {
       clearHoverState();
+      toolbarComposer = null;
       syncAnnotateModeToPage();
       return;
     }
     if (browser.open) {
-      markWaitingForReadiness();
+      if (annotationReadiness !== "ready") {
+        markWaitingForReadiness();
+      }
       queryAllAnnotationRects();
       syncAnnotateModeToPage();
     }
+  });
+
+  $effect(() => {
+    if (!pageHandlesAnnotate) return;
+    const p = browser.pendingIframeClick;
+    if (!p || !browser.annotateMode || toolbarComposer) return;
+    toolbarComposer = hoveredEl?.rect
+      ? {
+          x: hoveredEl.rect.left,
+          y: hoveredEl.rect.top,
+          w: hoveredEl.rect.width,
+          h: hoveredEl.rect.height,
+          selector: p.selector ?? hoveredEl.selector,
+          element_context: p.element_context ?? hoveredEl.element_context ?? null,
+          dom_context: p.dom_context ?? hoveredEl.dom_context ?? null,
+          text: "",
+          screenshotDataUrl: null,
+        }
+      : {
+          x: p.x,
+          y: p.y,
+          w: p.w || 24,
+          h: p.h || 24,
+          selector: p.selector,
+          element_context: p.element_context ?? null,
+          dom_context: p.dom_context ?? null,
+          text: "",
+          screenshotDataUrl: null,
+        };
+    browser.pendingIframeClick = null;
+    clearHoverState();
   });
 
   $effect(() => {
@@ -553,6 +595,20 @@
     </button>
   </div>
 
+  {#if toolbarComposer && pageHandlesAnnotate}
+    <div class="px-3 pb-2 border-b border-hairline shrink-0">
+      <AnnotationComposer
+        bind:composer={toolbarComposer}
+        variant="toolbar"
+        width={paneWidth}
+        height={paneHeight}
+        getIframeRect={() => browserPaneEl?.getBoundingClientRect() ?? null}
+        onSave={submitAnnotation}
+        onCancel={clearHoverState}
+      />
+    </div>
+  {/if}
+
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={browserPaneEl}
@@ -594,6 +650,7 @@
         width={paneWidth}
         height={paneHeight}
         {pageHandlesAnnotate}
+        composerInToolbar={pageHandlesAnnotate}
         {hoveredEl}
         {livePinRect}
         {allPinRects}
