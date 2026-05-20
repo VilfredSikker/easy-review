@@ -1,32 +1,48 @@
-// Browser-view state. Holds the current URL, annotate-mode toggle, and the
-// drawer-open flag. Annotations themselves live in `app.snapshot.ui_annotations`
-// (single source of truth, persisted via Tauri commands).
+// Browser pane state — backed by the active tab in `app.snapshot.browser`.
+// Annotations live in `app.snapshot.ui_annotations` (persisted via Tauri commands).
 
+import { app } from "./app.svelte";
 import { DEFAULT_DEV_URL, defaultDevUrl, pageKey, urlPath } from "./browserUrl";
 import type { UiDomContext } from "$lib/types";
 export { DEFAULT_DEV_URL, defaultDevUrl, pageKey, urlPath };
 
+export type BrowserLayout = "hidden" | "split" | "fullscreen";
+
 class BrowserStore {
-  /** Whether the BrowserView drawer is visible. */
-  open = $state(false);
+  /** Whether the browser pane is visible (split or fullscreen). */
+  get open(): boolean {
+    return this.layout !== "hidden";
+  }
 
-  /** URL loaded in the iframe. User-editable via the URL bar. Starts empty
-   *  so the browser opens to a blank page until the user navigates. */
-  url = $state<string>("");
+  get url(): string {
+    return app.snapshot?.browser?.url ?? "";
+  }
 
-  /** When true, clicks inside the iframe are captured as annotations. */
-  annotateMode = $state(false);
+  get layout(): BrowserLayout {
+    const l = app.snapshot?.browser?.layout ?? "hidden";
+    if (l === "split" || l === "fullscreen") return l;
+    return "hidden";
+  }
 
-  /** When true, render annotation note bubbles for every current pin. */
-  showAnnotationTooltips = $state(false);
+  get splitRatio(): number {
+    return app.snapshot?.browser?.split_ratio ?? 0.45;
+  }
 
-  /** Annotation id to scroll into view in the right-panel card. Cleared after read. */
+  get annotateMode(): boolean {
+    return app.snapshot?.browser?.annotate_mode ?? false;
+  }
+
+  get showAnnotationTooltips(): boolean {
+    return app.snapshot?.browser?.show_tooltips ?? false;
+  }
+
+  /** Annotation id to scroll into view in the right-panel card. */
   scrollToId = $state<string | null>(null);
 
-  /** Pin id to flash/highlight in the iframe overlay. Cleared after read. */
+  /** Pin id to flash/highlight in the iframe overlay. */
   highlightPinId = $state<string | null>(null);
 
-  /** Click intercepted by the iframe content-script, awaiting composer. */
+  /** Click intercepted by the page content-script, awaiting composer. */
   pendingIframeClick = $state<{
     x: number;
     y: number;
@@ -37,20 +53,32 @@ class BrowserStore {
     dom_context?: UiDomContext | null;
   } | null>(null);
 
+  async setLayout(layout: BrowserLayout) {
+    await app.cmd("update_tab_browser", { layout });
+  }
+
+  async cycleLayout() {
+    await app.cmd("cycle_tab_browser_layout");
+  }
+
   toggleOpen() {
-    this.open = !this.open;
+    void (this.layout === "hidden" ? this.setLayout("split") : this.setLayout("hidden"));
   }
 
-  setUrl(next: string) {
-    this.url = next;
+  async setUrl(next: string) {
+    await app.cmd("update_tab_browser", { url: next });
   }
 
-  setAnnotateMode(v: boolean) {
-    this.annotateMode = v;
+  async setAnnotateMode(v: boolean) {
+    await app.cmd("update_tab_browser", { annotate: v });
   }
 
-  setShowAnnotationTooltips(v: boolean) {
-    this.showAnnotationTooltips = v;
+  async setShowAnnotationTooltips(v: boolean) {
+    await app.cmd("update_tab_browser", { tooltips: v });
+  }
+
+  async setSplitRatio(r: number) {
+    await app.cmd("update_tab_browser", { splitRatio: r });
   }
 }
 

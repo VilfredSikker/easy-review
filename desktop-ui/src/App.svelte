@@ -109,6 +109,49 @@
     window.addEventListener("mouseup", onUp);
   }
 
+  const browserLayout = $derived(browser.layout);
+  const showDiff = $derived(browserLayout !== "fullscreen");
+  const showBrowser = $derived(browserLayout === "split" || browserLayout === "fullscreen");
+  /** Diff column only shares width with the browser in split mode. */
+  const browserSplitWithDiff = $derived(showBrowser && browserLayout === "split");
+  const diffColumnFlex = $derived(
+    browserSplitWithDiff ? `${browserSplitRatio} 1 0%` : "1 1 0%",
+  );
+
+  let browserSplitRatio = $state(0.45);
+  let resizingBrowserSplit = $state(false);
+  let splitDebounce: ReturnType<typeof setTimeout> | null = null;
+
+  $effect(() => {
+    const r = app.snapshot?.browser?.split_ratio;
+    if (r != null && Number.isFinite(r)) browserSplitRatio = r;
+  });
+
+  function onBrowserSplitResizeStart(e: MouseEvent) {
+    e.preventDefault();
+    resizingBrowserSplit = true;
+    const row = (e.currentTarget as HTMLElement).parentElement;
+    if (!row) return;
+    const rect = row.getBoundingClientRect();
+    const startX = e.clientX;
+
+    const onMove = (ev: MouseEvent) => {
+      const frac = (ev.clientX - rect.left) / rect.width;
+      browserSplitRatio = Math.min(0.65, Math.max(0.35, frac));
+    };
+    const onUp = () => {
+      resizingBrowserSplit = false;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      if (splitDebounce) clearTimeout(splitDebounce);
+      splitDebounce = setTimeout(() => {
+        void browser.setSplitRatio(browserSplitRatio);
+      }, 150);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   const activeTabIdx = $derived(app.snapshot?.active_tab ?? 0);
   const activeTab = $derived(app.snapshot?.tabs?.[activeTabIdx]);
   const activeTabRoot = $derived(
@@ -174,22 +217,46 @@
       </div>
     {/if}
 
-    {#if !browser.open}
+    {#if showDiff}
       <LeftSidebar collapsed={!panels?.left} />
     {/if}
 
-    <main class="flex-1 flex min-w-0">
-      {#if !browser.open && app.mainView === "diff"}
-        <FileTree collapsed={!panels?.tree} />
-        <DiffView />
-      {:else if !browser.open && app.mainView === "agent-output"}
-        <AgentOutputView />
-      {:else}
-        <BrowserView />
-      {/if}
+    <main class="flex-1 flex min-w-0 min-h-0">
+      <div class="flex flex-1 min-w-0 min-h-0 flex-row">
+        {#if showDiff}
+          <div
+            class="flex flex-1 min-w-0 min-h-0"
+            style="flex: {diffColumnFlex};"
+          >
+            {#if app.mainView === "diff"}
+              <FileTree collapsed={!panels?.tree} />
+              <DiffView />
+            {:else}
+              <AgentOutputView />
+            {/if}
+          </div>
+        {/if}
+        {#if showBrowser && showDiff}
+          <div
+            class="w-1 shrink-0 cursor-col-resize hover:bg-accent/40 {resizingBrowserSplit ? 'bg-accent/60' : 'bg-ink-650'}"
+            onmousedown={onBrowserSplitResizeStart}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize browser split"
+          ></div>
+        {/if}
+        {#if showBrowser}
+          <div
+            class="flex flex-col min-w-0 min-h-0"
+            style="flex: {showDiff ? 1 - browserSplitRatio : 1} 1 0%; min-width: 12rem;"
+          >
+            <BrowserView />
+          </div>
+        {/if}
+      </div>
     </main>
 
-    {#if panels?.right && !browser.open && app.mainView === "diff"}
+    {#if panels?.right && showDiff && app.mainView === "diff"}
       <RightPanel
         ai={app.snapshot?.ai ?? null}
         pr={app.snapshot?.pr ?? null}
@@ -200,7 +267,7 @@
     {/if}
   </div>
 
-  {#if terminal.open && !browser.open}
+  {#if terminal.open && browserLayout !== "fullscreen"}
     <div
       class="relative border-t border-hairline bg-ink-900 shrink-0"
       style="height: {drawerHeight}px"
@@ -226,13 +293,13 @@
     </div>
   {/if}
 
-  {#if !browser.open}
+  {#if showDiff}
     <BottomHints />
   {/if}
 
   <BackgroundTasks
     tasks={app.snapshot?.background_tasks ?? []}
-    avoidRightPanel={!!panels?.right && !browser.open}
+    avoidRightPanel={!!panels?.right && showDiff}
     rightPanelWidth={rightPanelWidth}
   />
   <Toast toasts={app.toasts} />

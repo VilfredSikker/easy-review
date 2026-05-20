@@ -36,6 +36,20 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     },50);
   }
 
+  // Forward host-level keyboard shortcuts (e.g. ⌘A for the AI palette) that
+  // would otherwise be eaten by WebKit's native handling because focus is in
+  // this native child webview, not the desktop-ui parent. Claimed globally so
+  // the shortcut is consistent with desktop-ui's keyboard handler.
+  document.addEventListener('keydown',function(ev){
+    if(!(ev.metaKey||ev.ctrlKey))return;
+    if(ev.shiftKey||ev.altKey)return;
+    var k=ev.key;
+    if(k!=='a'&&k!=='A')return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    reportToHost({__er_shortcut:'ai-hub'});
+  },true);
+
   function useProxyScheme(){
     try{
       var p=window.location.protocol;
@@ -265,8 +279,28 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     if(hoverBoxEl)hoverBoxEl.style.display='none';
   }
 
+  function isErOverlayTarget(el){
+    if(!el||!el.closest)return false;
+    if(el.closest('#__er_pins_layer,#__er_hover_box,[data-er-overlay]'))return true;
+    if(composerEl&&composerEl.contains(el))return true;
+    if(popoverEl&&popoverEl.contains(el))return true;
+    return false;
+  }
+  function shouldIgnoreAnnotateEvent(ev){
+    if(!annotateActive)return true;
+    if(isErOverlayTarget(ev.target))return true;
+    if(composerEl)return true;
+    return false;
+  }
+  function onAnnotatePointerDown(ev){
+    if(shouldIgnoreAnnotateEvent(ev))return;
+    if(ev.defaultPrevented||ev.button!==0||ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey)return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    ev.stopImmediatePropagation();
+  }
   function onAnnotateMove(ev){
-    if(!annotateActive)return;
+    if(!annotateActive||composerEl)return;
     if(annotateHoverRaf)return;
     annotateHoverRaf=requestAnimationFrame(function(){
       annotateHoverRaf=0;
@@ -277,10 +311,11 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     });
   }
   function onAnnotateClick(ev){
-    if(!annotateActive)return;
+    if(shouldIgnoreAnnotateEvent(ev))return;
     if(ev.defaultPrevented||ev.button!==0||ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey)return;
     ev.preventDefault();
     ev.stopPropagation();
+    ev.stopImmediatePropagation();
     reportToHost(annotatePayloadFromPoint(ev.clientX,ev.clientY));
   }
   function applyAnnotateActive(on){
@@ -288,6 +323,8 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     annotateActive=!!on;
     if(annotateActive){
       try{document.documentElement.style.cursor='crosshair';}catch(_){}
+      document.addEventListener('pointerdown',onAnnotatePointerDown,true);
+      document.addEventListener('mousedown',onAnnotatePointerDown,true);
       document.addEventListener('pointermove',onAnnotateMove,true);
       document.addEventListener('mousemove',onAnnotateMove,true);
       document.addEventListener('click',onAnnotateClick,true);
@@ -295,6 +332,8 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
       try{document.documentElement.style.cursor='';}catch(_){}
       hideHoverBox();
       hideComposer();
+      document.removeEventListener('pointerdown',onAnnotatePointerDown,true);
+      document.removeEventListener('mousedown',onAnnotatePointerDown,true);
       document.removeEventListener('pointermove',onAnnotateMove,true);
       document.removeEventListener('mousemove',onAnnotateMove,true);
       document.removeEventListener('click',onAnnotateClick,true);
@@ -385,10 +424,20 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     });
   }
 
+  function positionComposerEl(){
+    if(!composerEl||!composerState)return;
+    var s=layoutPinItem({box:composerState.box,viewport:composerState.viewport,selector:composerState.selector});
+    var left=Math.min(Math.max(8,s.left+s.width+8),(window.innerWidth||800)-272);
+    var top=Math.max(8,Math.min(s.top+s.height+8,(window.innerHeight||600)-200));
+    composerEl.style.left=left+'px';
+    composerEl.style.top=top+'px';
+  }
+
   function renderPins(){
     var layer=ensurePinsLayer();
     layer.innerHTML='';
     if(!pinsCache.length){
+      hideComposer();
       unbindPinsRelayoutListeners();
       return;
     }
@@ -426,7 +475,10 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
       }
     }
     if(popoverEl)layer.appendChild(popoverEl);
-    if(composerEl)layer.appendChild(composerEl);
+    if(composerEl){
+      layer.appendChild(composerEl);
+      positionComposerEl();
+    }
   }
 
   function clearPinsLayer(){
@@ -438,6 +490,7 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
   }
 
   function syncPinsToPage(items){
+    hideComposer();
     hidePopover();
     pinsCache=Array.isArray(items)?items:[];
     renderPins();
@@ -513,7 +566,11 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     var left=Math.min(Math.max(8,s.left+s.width+8),(window.innerWidth||800)-272);
     var top=Math.max(8,Math.min(s.top+s.height+8,(window.innerHeight||600)-200));
     composerEl=document.createElement('div');
+    composerEl.setAttribute('data-er-overlay','composer');
     composerEl.setAttribute('style','position:absolute;left:'+left+'px;top:'+top+'px;width:16rem;max-width:min(16rem,calc(100vw - 2rem));padding:8px 10px;background:rgba(15,15,20,0.96);color:white;border:1px solid rgba(255,255,255,0.3);border-radius:8px;font-size:12px;line-height:1.4;pointer-events:auto;z-index:2147483647;box-shadow:0 8px 24px rgba(0,0,0,0.45);font-family:system-ui,sans-serif;');
+    ['pointerdown','mousedown','click'].forEach(function(evt){
+      composerEl.addEventListener(evt,function(ev){ev.stopPropagation();},{capture:true});
+    });
     var label=opts.element_context||opts.label;
     if(label){
       var h=document.createElement('div');
@@ -535,12 +592,12 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     cancelBtn.type='button';
     cancelBtn.textContent='Cancel';
     cancelBtn.setAttribute('style','font-size:11px;padding:4px 10px;border-radius:4px;border:none;background:rgba(255,255,255,0.1);color:white;cursor:pointer;');
-    cancelBtn.addEventListener('click',function(ev){ev.stopPropagation();hideComposer();reportToHost({__er_composer_cancel:true});});
+    cancelBtn.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();hideComposer();reportToHost({__er_composer_cancel:true});});
     var saveBtn=document.createElement('button');
     saveBtn.type='button';
     saveBtn.textContent='Save';
     saveBtn.setAttribute('style','font-size:11px;padding:4px 10px;border-radius:4px;border:none;background:rgb(59,130,246);color:white;cursor:pointer;font-weight:600;');
-    saveBtn.addEventListener('click',function(ev){ev.stopPropagation();submitComposer();});
+    saveBtn.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();submitComposer();});
     row.appendChild(cancelBtn);
     row.appendChild(saveBtn);
     composerEl.appendChild(row);

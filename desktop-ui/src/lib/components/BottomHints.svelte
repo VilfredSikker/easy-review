@@ -8,7 +8,7 @@
   <span><span class="kbd">/</span> <span class="ml-1">search</span></span>
   <span><span class="kbd">c</span> <span class="ml-1">comment</span></span>
   <span><span class="kbd">q</span> <span class="ml-1">question</span></span>
-  <span><span class="kbd">⇥</span> <span class="ml-1">hunk</span></span>
+  <span><span class="kbd">⇥</span> <span class="ml-1">tabs</span></span>
   <span><span class="kbd">r</span> <span class="ml-1">reviewed</span></span>
   <span><span class="kbd">⌘R</span> <span class="ml-1">reload</span></span>
   <span class="text-ink-400">·</span>

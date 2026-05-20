@@ -34,7 +34,7 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-function setupAnnotations(items: UiAnnotation[]) {
+function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
   // Force a snapshot shaped just enough for the overlay/right-panel to render.
   app.snapshot = {
     mode: "branch",
@@ -75,6 +75,13 @@ function setupAnnotations(items: UiAnnotation[]) {
     active_tab: 0,
     bg_loading: { pr_list: false, gh_status: false, gh_comments: false },
     ui_annotations: items,
+    browser: {
+      url: SAMPLE_HTML,
+      layout: "split",
+      split_ratio: 0.45,
+      annotate_mode: annotateMode,
+      show_tooltips: false,
+    },
   };
 }
 
@@ -82,9 +89,6 @@ export const EmptyState: Story = {
   render: () => ({
     Component: BrowserView,
     onMount: () => {
-      browser.open = true;
-      browser.url = SAMPLE_HTML;
-      browser.annotateMode = false;
       setupAnnotations([]);
     },
   }),
@@ -94,9 +98,6 @@ export const WithAnnotations: Story = {
   render: () => ({
     Component: BrowserView,
     onMount: () => {
-      browser.open = true;
-      browser.url = SAMPLE_HTML;
-      browser.annotateMode = false;
       setupAnnotations([
         {
           id: "ann-1",
@@ -155,10 +156,7 @@ export const AnnotatingHover: Story = {
   render: () => ({
     Component: BrowserView,
     onMount: () => {
-      browser.open = true;
-      browser.url = SAMPLE_HTML;
-      browser.annotateMode = true;
-      setupAnnotations([]);
+      setupAnnotations([], true);
       setTimeout(() => {
         window.dispatchEvent(new MessageEvent("message", {
           data: {

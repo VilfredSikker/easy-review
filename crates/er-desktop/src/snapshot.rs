@@ -94,6 +94,9 @@ pub struct AppSnapshot {
     /// each snapshot — keeps the source of truth in `ui-annotations.json`.
     #[serde(default)]
     pub ui_annotations: Vec<UiAnnotationSnapshot>,
+    /// Per-tab browser pane state for the active tab.
+    #[serde(default)]
+    pub browser: BrowserSnapshot,
     /// Live GitHub status for the active tab when it's a remote PR with cached data.
     pub github: Option<GithubStatusSnapshot>,
     /// Diff source state for the active tab. None for working-tree tabs.
@@ -187,6 +190,25 @@ pub struct AgentLogSnapshot {
     /// "stdout" | "stderr" | "status"
     pub source: String,
     pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct BrowserSnapshot {
+    pub url: String,
+    pub layout: String,
+    pub split_ratio: f32,
+    pub annotate_mode: bool,
+    pub show_tooltips: bool,
+}
+
+fn browser_snapshot_from_tab(tab: &TabState) -> BrowserSnapshot {
+    BrowserSnapshot {
+        url: tab.browser_url.clone(),
+        layout: tab.browser_layout.as_str().to_string(),
+        split_ratio: tab.browser_split_ratio.clamp(0.35, 0.65),
+        annotate_mode: tab.browser_annotate_mode,
+        show_tooltips: tab.browser_show_tooltips,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -977,6 +999,7 @@ pub fn build_snapshot(
         tabs,
         active_tab,
         ui_annotations,
+        browser: browser_snapshot_from_tab(tab),
         github,
         diff_source,
         bg_loading: loading

@@ -57,25 +57,52 @@ export function sameBrowserUrl(a: string, b: string): boolean {
   return canonicalizeBrowserUrl(a) === canonicalizeBrowserUrl(b);
 }
 
+/** Normalize hash-router paths for page identity (#/, #/foo → /foo). Ignores bare #frag anchors. */
+function normalizeHashPath(hash: string): string | null {
+  if (!hash || hash === "#") return null;
+  const m = hash.match(/^#\/(.*)$/);
+  if (!m) return null;
+  const rest = m[1] ?? "";
+  return rest ? `/${rest}` : "/";
+}
+
 /**
  * Canonical page identity for persisted UI annotations. Uses origin + path,
- * deliberately ignoring query and hash so pins survive common SPA/router noise
- * while still not leaking across different localhost apps or domains.
+ * plus hash-router paths when the hash looks like a route (#/, #/dashboard).
  */
 export function pageKey(url: string): string {
   const real = fromProxyUrl(url);
   try {
     const u = new URL(/^[a-z]+:\/\//i.test(real) ? real : `http://${real}`);
     const pathname = u.pathname || "/";
-    return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${pathname}`;
+    let key = `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${pathname}`;
+    const hashPath = normalizeHashPath(u.hash);
+    if (hashPath) key += hashPath;
+    return key;
   } catch {
     return urlPath(real);
   }
 }
 
-/** Compatibility for annotations saved before page keys included origin. */
+/** Legacy: match annotations stored with full URL including hash. */
+function legacyHashMatch(stored: string, current: string): boolean {
+  try {
+    const u = new URL(/^[a-z]+:\/\//i.test(current) ? current : `http://${current}`);
+    if (!u.hash) return false;
+    const withHash = pageKey(current) + normalizeHashPath(u.hash);
+    return stored === withHash || stored === u.href || stored === fromProxyUrl(u.href);
+  } catch {
+    return false;
+  }
+}
+
+/** Compatibility for annotations saved before page keys included origin or hash routes. */
 export function annotationMatchesPage(annotationUrl: string, currentUrl: string): boolean {
-  return annotationUrl === pageKey(currentUrl) || annotationUrl === urlPath(currentUrl);
+  return (
+    annotationUrl === pageKey(currentUrl) ||
+    annotationUrl === urlPath(currentUrl) ||
+    legacyHashMatch(annotationUrl, currentUrl)
+  );
 }
 
 /**

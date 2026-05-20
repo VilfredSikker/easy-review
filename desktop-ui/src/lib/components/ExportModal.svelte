@@ -31,8 +31,6 @@
   let includeFindings = $state(true);
   let includeAnnotations = $state(true);
   let onlyUnresolved = $state(false);
-  let revisions = $state<{ revision_id: string; active: boolean }[]>([]);
-  let selectedRevisionId = $state<string>("");
 
   let preview = $state<string>("");
   let savedPath = $state<string | null>(null);
@@ -75,16 +73,6 @@
     refreshPreview();
   });
 
-  $effect(() => {
-    if (!openState) return;
-    invoke<{ revision_id: string; active: boolean }[]>("list_review_revisions")
-      .then((r) => {
-        revisions = r;
-        selectedRevisionId = (r.find((x) => x.active) ?? r[0])?.revision_id ?? "";
-      })
-      .catch(() => {});
-  });
-
   async function handleCopyToClipboard() {
     try {
       const body = previewOverride !== null
@@ -117,11 +105,11 @@
 
   async function copyReviewJson() {
     try {
-      const body = await invoke<string>("read_review_json", { revisionId: selectedRevisionId || null });
+      const body = await invoke<string>("read_review_json", { revisionId: null });
       await copyToClipboard(body);
       app.showToast("success", `Copied review.json (${body.length} bytes)`);
     } catch {
-      app.showToast("error", "No review.json found for selected revision");
+      app.showToast("error", "No review.json found for this review tab");
     }
   }
 
@@ -159,16 +147,9 @@
       </div>
 
       <div class="px-4 py-3 border-b border-hairline space-y-2">
-        {#if revisions.length > 1}
-          <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
-            <span>Revision</span>
-            <select bind:value={selectedRevisionId} class="bg-bg border border-border rounded px-2 py-1 text-xs">
-              {#each revisions as rev}
-                <option value={rev.revision_id}>{rev.active ? "active · " : ""}{rev.revision_id}</option>
-              {/each}
-            </select>
-          </label>
-        {/if}
+        <p class="text-[11px] text-muted">
+          Includes all pages annotated on this review tab (active branch tab).
+        </p>
         <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
           <input type="checkbox" bind:checked={includeComments} />
           <span>Comments</span>

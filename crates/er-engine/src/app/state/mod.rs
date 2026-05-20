@@ -672,6 +672,59 @@ pub struct TabState {
 
     /// Whether the agent log panel auto-scrolls to the latest entry
     pub agent_log_auto_scroll: bool,
+
+    // ── Desktop browser pane (per-tab; TUI ignores) ──
+    /// URL loaded in the review browser for this tab.
+    pub browser_url: String,
+    /// Layout of the browser relative to the diff view.
+    pub browser_layout: BrowserLayout,
+    /// Horizontal split ratio (diff column fraction), clamped 0.35..0.65.
+    pub browser_split_ratio: f32,
+    /// In-page annotation mode for this tab's browser.
+    pub browser_annotate_mode: bool,
+    /// Show tooltips on all pins in the browser page.
+    pub browser_show_tooltips: bool,
+}
+
+/// Per-tab browser layout (desktop only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserLayout {
+    Hidden,
+    Split,
+    Fullscreen,
+}
+
+impl Default for BrowserLayout {
+    fn default() -> Self {
+        Self::Hidden
+    }
+}
+
+impl BrowserLayout {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hidden => "hidden",
+            Self::Split => "split",
+            Self::Fullscreen => "fullscreen",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "split" => Self::Split,
+            "fullscreen" => Self::Fullscreen,
+            _ => Self::Hidden,
+        }
+    }
+
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Hidden => Self::Split,
+            Self::Split => Self::Fullscreen,
+            Self::Fullscreen => Self::Hidden,
+        }
+    }
 }
 
 /// A single reference to a symbol (file + line)
@@ -1125,6 +1178,11 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
+            browser_url: String::new(),
+            browser_layout: BrowserLayout::default(),
+            browser_split_ratio: 0.45,
+            browser_annotate_mode: false,
+            browser_show_tooltips: false,
         };
 
         // Build hunk offsets for initial selection
@@ -1235,6 +1293,11 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
+            browser_url: String::new(),
+            browser_layout: BrowserLayout::default(),
+            browser_split_ratio: 0.45,
+            browser_annotate_mode: false,
+            browser_show_tooltips: false,
         };
 
         if refresh_initial_diff {
@@ -1338,6 +1401,11 @@ impl TabState {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
+            browser_url: String::new(),
+            browser_layout: BrowserLayout::default(),
+            browser_split_ratio: 0.45,
+            browser_annotate_mode: false,
+            browser_show_tooltips: false,
         }
     }
 
@@ -6124,6 +6192,11 @@ mod tests {
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
             agent_log_auto_scroll: true,
+            browser_url: String::new(),
+            browser_layout: BrowserLayout::default(),
+            browser_split_ratio: 0.45,
+            browser_annotate_mode: false,
+            browser_show_tooltips: false,
         }
     }
 

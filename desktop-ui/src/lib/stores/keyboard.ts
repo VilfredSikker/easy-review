@@ -15,6 +15,10 @@ export function registerAiPaletteOpener(fn: () => void): () => void {
   return () => { if (openAiPaletteCallback === fn) openAiPaletteCallback = null; };
 }
 
+export function triggerAiPalette(): void {
+  openAiPaletteCallback?.();
+}
+
 let dismissBrowserAnnotationComposer: (() => void) | null = null;
 
 /** AnnotationOverlay registers while the browser note composer is open. */
@@ -237,17 +241,24 @@ export function initKeyboard(): () => void {
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {
       return;
     }
-    // ⌘A / Ctrl+A — open AI action palette (only when not in a text field to
-    // avoid overriding native select-all).
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "a" || e.key === "A") && !inField) {
+    // ⌘A / Ctrl+A — open AI action palette. Claimed globally (even from input
+    // fields) so the shortcut is reliable; native select-all is sacrificed.
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "a" || e.key === "A")) {
       e.preventDefault();
+      e.stopPropagation();
       openAiPaletteCallback?.();
       return;
     }
-    // ⌘B — toggle browser view.
+    // ⌘B — cycle browser layout: hidden → split → fullscreen → hidden.
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "b" || e.key === "B") && !inField) {
       e.preventDefault();
-      browser.toggleOpen();
+      void browser.cycleLayout();
+      return;
+    }
+    // ⌘⇧B — fullscreen browser only.
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "b" || e.key === "B") && !inField) {
+      e.preventDefault();
+      void browser.setLayout(browser.layout === "fullscreen" ? "hidden" : "fullscreen");
       return;
     }
     // ⌘⇧E — open the export-review modal.
@@ -366,11 +377,17 @@ export function initKeyboard(): () => void {
       // Hunk navigation — crosses file boundaries in continuous-scroll mode.
       case "n": nextHunkAcrossFiles(); break;
       case "N": prevHunkAcrossFiles(); break;
-      case "Tab":
+      case "Tab": {
         e.preventDefault();
-        if (e.shiftKey) prevHunkAcrossFiles();
-        else nextHunkAcrossFiles();
+        const tabs = app.snapshot?.tabs ?? [];
+        if (tabs.length <= 1) break;
+        const active = app.snapshot?.active_tab ?? 0;
+        const next = e.shiftKey
+          ? (active === 0 ? tabs.length - 1 : active - 1)
+          : (active + 1) % tabs.length;
+        app.cmd("select_tab", { idx: next });
         break;
+      }
 
       // Scroll-to-top / scroll-to-bottom (vim-style)
       case "g":

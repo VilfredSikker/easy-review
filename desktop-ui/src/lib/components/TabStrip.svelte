@@ -1,6 +1,5 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
-  import { browser } from "$lib/stores/browser.svelte";
   import type { TabSummary } from "$lib/types";
   import { startWindowDrag } from "$lib/windowDrag";
 
@@ -36,7 +35,6 @@
   let dropAt = $state<number | null>(null);
 
   function select(idx: number) {
-    browser.open = false;
     if (onSelect) onSelect(idx);
     else app.cmd("select_tab", { idx });
   }
@@ -114,12 +112,6 @@
     else app.cmd("new_tab");
   }
 
-  function openBrowserTab() {
-    newTabMenuOpen = false;
-    browser.open = true;
-    // If a review tab was selected and browser wasn't open yet,
-    // this brings browser into focus via App.svelte's {#if browser.open} check.
-  }
 </script>
 
 <!-- Outer wrapper is the window-drag region. Must not be overflow-scrollable
@@ -207,34 +199,6 @@
     <div class="w-0.5 h-6 bg-accent rounded-full shrink-0" aria-hidden="true"></div>
   {/if}
 
-  <!-- Browser tab — shown when browser is open -->
-  {#if browser.open}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="group flex items-center gap-2 px-3 h-7 rounded-md text-sm cursor-default max-w-[200px] shrink-0 transition-colors bg-ink-700 border-b-2 border-accent text-ink-100"
-      title="Browser view"
-    >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0">
-        <rect x="3" y="3" width="18" height="18" rx="2"/>
-        <path d="M3 9h18"/>
-        <circle cx="7" cy="6" r="0.5" fill="currentColor"/>
-        <circle cx="10" cy="6" r="0.5" fill="currentColor"/>
-      </svg>
-      <span class="truncate min-w-0">Browser</span>
-      <button
-        class="opacity-0 group-hover:opacity-100 text-ink-300 hover:text-ink-100 transition-opacity shrink-0 w-4 h-4 flex items-center justify-center"
-        onclick={() => { browser.open = false; browser.annotateMode = false; }}
-        title="Close browser"
-        aria-label="Close browser tab"
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <path d="M18 6L6 18M6 6l12 12"/>
-        </svg>
-      </button>
-    </div>
-  {/if}
-
   <!-- New tab dropdown -->
   <div class="relative shrink-0">
     <button
@@ -260,15 +224,6 @@
             <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
           </svg>
           Review
-        </button>
-        <button
-          class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-          onclick={openBrowserTab}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/>
-          </svg>
-          Browser
         </button>
       </div>
     {/if}

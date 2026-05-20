@@ -46,6 +46,12 @@ pub struct TabDescriptor {
     /// Persisting it ensures the refreshed view survives tab recreation/app restart.
     #[serde(default)]
     pub local_branch_diff_ref: Option<String>,
+    /// Last browser URL for this tab (desktop).
+    #[serde(default)]
+    pub browser_url: Option<String>,
+    /// Last browser layout: hidden | split | fullscreen (desktop).
+    #[serde(default)]
+    pub browser_layout: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,8 +94,33 @@ pub fn load_tabs() -> Option<TabsFile> {
     serde_json::from_str(&content).ok()
 }
 
+fn browser_descriptor_fields(tab: &er_engine::app::TabState) -> (Option<String>, Option<String>) {
+    let url = if tab.browser_url.trim().is_empty() {
+        None
+    } else {
+        Some(tab.browser_url.clone())
+    };
+    let layout = if tab.browser_layout == er_engine::app::BrowserLayout::Hidden {
+        None
+    } else {
+        Some(tab.browser_layout.as_str().to_string())
+    };
+    (url, layout)
+}
+
+/// Apply persisted browser fields from a descriptor onto a live tab.
+pub fn apply_descriptor_browser(tab: &mut er_engine::app::TabState, d: &TabDescriptor) {
+    if let Some(url) = d.browser_url.clone() {
+        tab.browser_url = url;
+    }
+    if let Some(layout) = d.browser_layout.as_deref() {
+        tab.browser_layout = er_engine::app::BrowserLayout::from_str(layout);
+    }
+}
+
 /// Convert a live `TabState` into a persistable descriptor.
 pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
+    let (browser_url, browser_layout) = browser_descriptor_fields(tab);
     // Remote PR (no local clone)
     if let (Some(slug), Some(num)) = (tab.remote_repo.as_ref(), tab.pr_number) {
         let mut parts = slug.splitn(2, '/');
@@ -105,6 +136,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_head_ref: None,
             base_ref: None,
             local_branch_diff_ref: None,
+            browser_url: browser_url.clone(),
+            browser_layout: browser_layout.clone(),
         };
     }
     // Local PR review (fetched head ref, no checkout)
@@ -119,6 +152,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_head_ref: Some(head_ref.clone()),
             base_ref: Some(tab.base_branch.clone()),
             local_branch_diff_ref: None,
+            browser_url: browser_url.clone(),
+            browser_layout: browser_layout.clone(),
         };
     }
     // Plain local branch view
@@ -133,6 +168,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_head_ref: None,
             base_ref: None,
             local_branch_diff_ref: tab.local_branch_diff_ref.clone(),
+            browser_url: browser_url.clone(),
+            browser_layout: browser_layout.clone(),
         };
     }
     TabDescriptor {
@@ -145,6 +182,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
         pr_head_ref: None,
         base_ref: None,
         local_branch_diff_ref: None,
+        browser_url,
+        browser_layout,
     }
 }
 
@@ -231,6 +270,7 @@ pub fn rebuild_tab(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
         }
     }?;
     apply_managed_root(&mut tab);
+    apply_descriptor_browser(&mut tab, d);
     Ok(tab)
 }
 

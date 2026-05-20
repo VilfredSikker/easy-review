@@ -16,6 +16,7 @@ mod window_placement;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 
 use browser_webview::BrowserWebviewState;
@@ -351,6 +352,119 @@ fn proxied_response(
             .body(vec![])
             .unwrap()
     })
+}
+
+/// Install a custom application menu. Mirrors Tauri's default menu but defines
+/// Select All as a custom item with no accelerator, so ⌘A is no longer claimed
+/// by macOS at the menu-bar level and can reach desktop-ui's JS handler
+/// (which opens the AI palette).
+fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let pkg = app.package_info();
+    let app_name = pkg.name.clone();
+
+    // Select All without an accelerator. Wired in `on_menu_event` below.
+    let select_all = MenuItemBuilder::with_id("er.select_all", "Select All")
+        .accelerator("")
+        .build(app)?;
+
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &select_all,
+        ],
+    )?;
+
+    let window_menu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            #[cfg(target_os = "macos")]
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    let mut builder = MenuBuilder::new(app);
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_submenu = Submenu::with_items(
+            app,
+            app_name.clone(),
+            true,
+            &[
+                &PredefinedMenuItem::about(app, None, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::services(app, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::hide(app, None)?,
+                &PredefinedMenuItem::hide_others(app, None)?,
+                &PredefinedMenuItem::show_all(app, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::quit(app, None)?,
+            ],
+        )?;
+        builder = builder.item(&app_submenu);
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )))]
+    {
+        let file_submenu = Submenu::with_items(
+            app,
+            "File",
+            true,
+            &[
+                &PredefinedMenuItem::close_window(app, None)?,
+                #[cfg(not(target_os = "macos"))]
+                &PredefinedMenuItem::quit(app, None)?,
+            ],
+        )?;
+        builder = builder.item(&file_submenu);
+    }
+
+    builder = builder.item(&edit_menu);
+
+    #[cfg(target_os = "macos")]
+    {
+        let view_menu = Submenu::with_items(
+            app,
+            "View",
+            true,
+            &[&PredefinedMenuItem::fullscreen(app, None)?],
+        )?;
+        builder = builder.item(&view_menu);
+    }
+
+    let menu = builder.item(&window_menu).build()?;
+    app.set_menu(menu)?;
+
+    let _ = app_name;
+    app.on_menu_event(|app_handle, event| {
+        if event.id() == "er.select_all" {
+            if let Some(wv) = app_handle.get_webview_window("main") {
+                let _ = wv.eval("document.execCommand('selectAll')");
+            }
+        }
+    });
+
+    Ok(())
 }
 
 fn main() {
@@ -927,6 +1041,9 @@ fn main() {
                     *h = Some(app.handle().clone());
                 }
             }
+
+            install_app_menu(app.handle())?;
+
             let window = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -1029,6 +1146,9 @@ fn main() {
             commands::add_ui_annotation,
             commands::delete_ui_annotation,
             commands::clear_ui_annotations,
+            commands::clear_ui_annotations_for_page,
+            commands::update_tab_browser,
+            commands::cycle_tab_browser_layout,
             commands::list_ui_annotations,
             commands::update_ui_annotation_anchors,
             commands::save_annotation_screenshot,

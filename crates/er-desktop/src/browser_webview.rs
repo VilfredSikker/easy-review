@@ -1,31 +1,53 @@
-//! Native child webview for the review browser (`review-browser` label).
+//! Per-tab native child webviews for the review browser (`review-browser-{n}` labels).
 //!
 //! Loads real `http://localhost` URLs so WKWebView handles auth redirects and cookies.
 //! The main window webview stays on top with a transparent browser pane; annotation
 //! UI receives messages via `browser://message` events.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
+use er_engine::app::{App, BrowserLayout};
 use tauri::webview::{PageLoadEvent, WebviewBuilder};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Url, WebviewUrl};
 
 use crate::frame_script::{BROWSER_MESSAGE_EVENT, FRAME_SCRIPT};
 
-pub const REVIEW_BROWSER_LABEL: &str = "review-browser";
+pub const REVIEW_BROWSER_LABEL_PREFIX: &str = "review-browser";
+
+pub fn webview_label(tab_idx: usize) -> String {
+    format!("{REVIEW_BROWSER_LABEL_PREFIX}-{tab_idx}")
+}
 
 pub struct BrowserWebviewState {
-    /// Whether the child webview has been created and attached to the main window.
-    pub created: Mutex<bool>,
-    /// Last annotate-mode flag requested by the UI (re-applied after each navigation).
-    pub annotate_mode: Mutex<bool>,
+    /// tab_idx → child webview has been created
+    created: Mutex<HashMap<usize, bool>>,
+    active_tab: Mutex<usize>,
+    /// Per-tab annotate flag (mirrors TabState; used on page load before engine lock).
+    annotate_by_tab: Mutex<HashMap<usize, bool>>,
 }
 
 impl BrowserWebviewState {
     pub fn new() -> Self {
         Self {
-            created: Mutex::new(false),
-            annotate_mode: Mutex::new(false),
+            created: Mutex::new(HashMap::new()),
+            active_tab: Mutex::new(0),
+            annotate_by_tab: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn set_tab_annotate_mode(&self, tab_idx: usize, active: bool) {
+        if let Ok(mut m) = self.annotate_by_tab.lock() {
+            m.insert(tab_idx, active);
+        }
+    }
+
+    pub fn tab_annotate_mode(&self, tab_idx: usize) -> bool {
+        self.annotate_by_tab
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&tab_idx).copied())
+            .unwrap_or(false)
     }
 }
 
@@ -34,8 +56,8 @@ fn main_tauri_window(app: &AppHandle) -> Result<tauri::Window, String> {
         .ok_or_else(|| "main window not found".to_string())
 }
 
-fn review_webview(app: &AppHandle) -> Option<tauri::Webview> {
-    app.get_webview(REVIEW_BROWSER_LABEL)
+fn tab_webview(app: &AppHandle, tab_idx: usize) -> Option<tauri::Webview> {
+    app.get_webview(&webview_label(tab_idx))
 }
 
 fn parse_nav_url(url: &str) -> Result<Url, String> {
@@ -51,8 +73,8 @@ fn parse_nav_url(url: &str) -> Result<Url, String> {
     Url::parse(&with_scheme).map_err(|e| e.to_string())
 }
 
-/// Push a host payload into the review page (direct API with MessageEvent fallback).
-pub fn post_message_to_review_webview(
+/// Push a host payload into a review page (direct API with MessageEvent fallback).
+pub fn post_message_to_webview(
     wv: &tauri::Webview,
     payload: &serde_json::Value,
 ) -> Result<(), String> {
@@ -63,52 +85,65 @@ pub fn post_message_to_review_webview(
     wv.eval(js).map_err(|e| e.to_string())
 }
 
-fn sync_annotate_mode_to_page(
-    app: &AppHandle,
-    browser_state: &BrowserWebviewState,
-) -> Result<(), String> {
-    let active = *browser_state
-        .annotate_mode
-        .lock()
-        .map_err(|e| e.to_string())?;
-    let Some(wv) = review_webview(app) else {
-        return Ok(());
-    };
-    post_message_to_review_webview(
-        &wv,
+fn sync_annotate_mode_to_page(wv: &tauri::Webview, active: bool) -> Result<(), String> {
+    post_message_to_webview(
+        wv,
         &serde_json::json!({ "__er_set_annotate_mode": active }),
     )
 }
 
-fn ensure_review_webview(
+/// (Re)inject the annotation frame script. `initialization_script` only runs when the
+/// child webview is first created — not on later `navigate()` — so we eval on each load.
+fn inject_frame_script(wv: &tauri::Webview) -> Result<(), String> {
+    wv.eval(FRAME_SCRIPT).map_err(|e| e.to_string())
+}
+
+fn on_review_page_loaded(
+    app: &AppHandle,
+    wv: &tauri::Webview,
+    browser_state: &BrowserWebviewState,
+    tab_idx: usize,
+) {
+    if inject_frame_script(wv).is_err() {
+        return;
+    }
+    let active = browser_state.tab_annotate_mode(tab_idx);
+    let _ = sync_annotate_mode_to_page(wv, active);
+    // Frame script reports __er_ready via IPC; emit from host too so the UI
+    // becomes ready even when invoke is slow or the page is still settling.
+    let _ = app.emit(
+        BROWSER_MESSAGE_EVENT,
+        serde_json::json!({ "__er_ready": true, "__er_host_inject": true }),
+    );
+}
+
+fn ensure_tab_webview(
     app: &AppHandle,
     browser_state: &BrowserWebviewState,
+    tab_idx: usize,
     url: &str,
-) -> Result<tauri::Webview, String> {
-    if let Some(wv) = review_webview(app) {
-        return Ok(wv);
+) -> Result<(tauri::Webview, bool), String> {
+    if let Some(wv) = tab_webview(app, tab_idx) {
+        return Ok((wv, false));
     }
 
     let parsed = parse_nav_url(url)?;
     let window = main_tauri_window(app)?;
+    let label = webview_label(tab_idx);
+    let tab_idx_capture = tab_idx;
     let app_for_load = app.clone();
 
-    let builder = WebviewBuilder::new(
-        REVIEW_BROWSER_LABEL,
-        WebviewUrl::External(parsed),
-    )
-    .initialization_script(FRAME_SCRIPT)
-    .devtools(cfg!(debug_assertions))
-    .on_page_load(move |wv, payload| {
-        if payload.event() != PageLoadEvent::Finished {
-            return;
-        }
-        if let Some(state) = app_for_load.try_state::<BrowserWebviewState>() {
-            let active = *state.annotate_mode.lock().unwrap_or_else(|e| e.into_inner());
-            let msg = serde_json::json!({ "__er_set_annotate_mode": active });
-            let _ = post_message_to_review_webview(&wv, &msg);
-        }
-    });
+    let builder = WebviewBuilder::new(label, WebviewUrl::External(parsed))
+        .initialization_script(FRAME_SCRIPT)
+        .devtools(cfg!(debug_assertions))
+        .on_page_load(move |wv, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            if let Some(state) = app_for_load.try_state::<BrowserWebviewState>() {
+                on_review_page_loaded(&app_for_load, &wv, &state, tab_idx_capture);
+            }
+        });
 
     let wv = window
         .add_child(
@@ -118,43 +153,177 @@ fn ensure_review_webview(
         )
         .map_err(|e| e.to_string())?;
 
-    *browser_state.created.lock().map_err(|e| e.to_string())? = true;
-    Ok(wv)
+    browser_state
+        .created
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(tab_idx, true);
+    Ok((wv, true))
 }
 
-/// Create or show the review browser child webview and navigate to `url`.
-#[tauri::command]
-pub fn browser_ensure(
-    app: AppHandle,
-    browser_state: State<'_, BrowserWebviewState>,
-    url: String,
+fn finish_browser_navigate(
+    app: &AppHandle,
+    browser_state: &BrowserWebviewState,
+    tab_idx: usize,
+    wv: &tauri::Webview,
+    url: &str,
+    newly_created: bool,
 ) -> Result<(), String> {
-    let wv = ensure_review_webview(&app, &browser_state, &url)?;
-    let parsed = parse_nav_url(&url)?;
-    wv.navigate(parsed).map_err(|e| e.to_string())?;
-    wv.show().map_err(|e| e.to_string())?;
+    if !newly_created {
+        let parsed = parse_nav_url(url)?;
+        wv.navigate(parsed).map_err(|e| e.to_string())?;
+    }
+    show_tab_webview(app, browser_state, tab_idx)?;
+    let active = browser_state.tab_annotate_mode(tab_idx);
+    sync_annotate_mode_to_page(wv, active)?;
     Ok(())
 }
 
-/// Hide the review browser child webview.
-#[tauri::command]
-pub fn browser_hide(app: AppHandle) -> Result<(), String> {
-    if let Some(wv) = review_webview(&app) {
-        wv.hide().map_err(|e| e.to_string())?;
+pub fn hide_all_webviews(
+    app: &AppHandle,
+    browser_state: &BrowserWebviewState,
+) -> Result<(), String> {
+    let created = browser_state
+        .created
+        .lock()
+        .map_err(|e| e.to_string())?;
+    for idx in created.keys() {
+        if let Some(wv) = tab_webview(app, *idx) {
+            let _ = wv.hide();
+        }
     }
     Ok(())
 }
 
-/// Position and size the review browser (logical pixels, relative to the main window).
+/// Close every per-tab review webview (e.g. after tab close/reorder).
+pub fn reset_all_tab_webviews(
+    app: &AppHandle,
+    browser_state: &BrowserWebviewState,
+) -> Result<(), String> {
+    let indices: Vec<usize> = browser_state
+        .created
+        .lock()
+        .map_err(|e| e.to_string())?
+        .keys()
+        .copied()
+        .collect();
+    for idx in indices {
+        destroy_tab_webview(app, idx)?;
+    }
+    browser_state
+        .created
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clear();
+    Ok(())
+}
+
+pub fn show_tab_webview(
+    app: &AppHandle,
+    browser_state: &BrowserWebviewState,
+    tab_idx: usize,
+) -> Result<(), String> {
+    hide_all_webviews(app, browser_state)?;
+    if let Some(wv) = tab_webview(app, tab_idx) {
+        wv.show().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn destroy_tab_webview(app: &AppHandle, tab_idx: usize) -> Result<(), String> {
+    let label = webview_label(tab_idx);
+    if let Some(wv) = app.get_webview(&label) {
+        let _ = wv.close();
+    }
+    Ok(())
+}
+
+/// After tab switch or layout change: hide others, show active tab's webview when visible.
+pub fn on_tab_selected(
+    app: &AppHandle,
+    browser_state: &BrowserWebviewState,
+    engine: &App,
+    tab_idx: usize,
+) -> Result<(), String> {
+    *browser_state
+        .active_tab
+        .lock()
+        .map_err(|e| e.to_string())? = tab_idx;
+    hide_all_webviews(app, browser_state)?;
+    let tab = engine
+        .tabs
+        .get(tab_idx)
+        .ok_or_else(|| format!("tab index {tab_idx} out of range"))?;
+    if tab.browser_layout == BrowserLayout::Hidden {
+        return Ok(());
+    }
+    let url = tab.browser_url.trim();
+    if url.is_empty() || url == "about:blank" {
+        return Ok(());
+    }
+    browser_state.set_tab_annotate_mode(tab_idx, tab.browser_annotate_mode);
+    let (wv, newly_created) = ensure_tab_webview(app, browser_state, tab_idx, url)?;
+    finish_browser_navigate(app, browser_state, tab_idx, &wv, url, newly_created)
+}
+
+/// Create or show a tab's review browser child webview and navigate to `url`.
 #[tauri::command]
+#[allow(non_snake_case)]
+pub fn browser_ensure(
+    app: AppHandle,
+    browser_state: State<'_, BrowserWebviewState>,
+    url: String,
+    tabIdx: Option<usize>,
+) -> Result<(), String> {
+    let idx = tabIdx.unwrap_or_else(|| {
+        browser_state
+            .active_tab
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(0)
+    });
+    let (wv, newly_created) = ensure_tab_webview(&app, &browser_state, idx, &url)?;
+    finish_browser_navigate(&app, &browser_state, idx, &wv, &url, newly_created)
+}
+
+/// Hide one tab's webview, or all when `tabIdx` is None.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub fn browser_hide(
+    app: AppHandle,
+    tabIdx: Option<usize>,
+    browser_state: State<'_, BrowserWebviewState>,
+) -> Result<(), String> {
+    if let Some(idx) = tabIdx {
+        if let Some(wv) = tab_webview(&app, idx) {
+            wv.hide().map_err(|e| e.to_string())?;
+        }
+    } else {
+        hide_all_webviews(&app, &browser_state)?;
+    }
+    Ok(())
+}
+
+/// Position and size a tab's review browser (logical pixels, relative to the main window).
+#[tauri::command]
+#[allow(non_snake_case)]
 pub fn browser_set_bounds(
     app: AppHandle,
+    tabIdx: Option<usize>,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
+    browser_state: State<'_, BrowserWebviewState>,
 ) -> Result<(), String> {
-    let Some(wv) = review_webview(&app) else {
+    let idx = tabIdx.unwrap_or(
+        browser_state
+            .active_tab
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(0),
+    );
+    let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
     wv.set_position(LogicalPosition::new(x, y))
@@ -164,48 +333,76 @@ pub fn browser_set_bounds(
     Ok(())
 }
 
-/// Navigate the review browser to a real HTTP(S) URL (creates the child webview if needed).
+/// Navigate a tab's review browser to a real HTTP(S) URL.
 #[tauri::command]
+#[allow(non_snake_case)]
 pub fn browser_navigate(
     app: AppHandle,
     browser_state: State<'_, BrowserWebviewState>,
     url: String,
+    tabIdx: Option<usize>,
 ) -> Result<(), String> {
-    let wv = ensure_review_webview(&app, &browser_state, &url)?;
-    let parsed = parse_nav_url(&url)?;
-    wv.navigate(parsed).map_err(|e| e.to_string())?;
-    wv.show().map_err(|e| e.to_string())?;
-    Ok(())
+    let idx = tabIdx.unwrap_or(
+        browser_state
+            .active_tab
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(0),
+    );
+    let (wv, newly_created) = ensure_tab_webview(&app, &browser_state, idx, &url)?;
+    finish_browser_navigate(&app, &browser_state, idx, &wv, &url, newly_created)
 }
 
-/// Enable or disable in-page annotation listeners (native review webview only).
+/// Enable or disable in-page annotation listeners for a tab's webview.
 #[tauri::command]
+#[allow(non_snake_case)]
 pub fn browser_set_annotate_mode(
     app: AppHandle,
-    browser_state: State<'_, BrowserWebviewState>,
     active: bool,
+    tabIdx: Option<usize>,
+    browser_state: State<'_, BrowserWebviewState>,
 ) -> Result<(), String> {
-    *browser_state
-        .annotate_mode
-        .lock()
-        .map_err(|e| e.to_string())? = active;
-    sync_annotate_mode_to_page(&app, &browser_state)
+    let idx = tabIdx.unwrap_or(
+        browser_state
+            .active_tab
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(0),
+    );
+    browser_state.set_tab_annotate_mode(idx, active);
+    let Some(wv) = tab_webview(&app, idx) else {
+        return Ok(());
+    };
+    sync_annotate_mode_to_page(&wv, active)
 }
 
-/// Called from the injected content script on the review browser page.
+/// Called from the injected content script on a review browser page.
 #[tauri::command]
 pub fn browser_host_message(app: AppHandle, payload: serde_json::Value) -> Result<(), String> {
     app.emit(BROWSER_MESSAGE_EVENT, payload)
         .map_err(|e| e.to_string())
 }
 
-/// Deliver a host message to the review browser page (same shape as `postMessage` payloads).
+/// Deliver a host message to a tab's review browser page.
 #[tauri::command]
-pub fn browser_send_to_page(app: AppHandle, payload: serde_json::Value) -> Result<(), String> {
-    let Some(wv) = review_webview(&app) else {
+#[allow(non_snake_case)]
+pub fn browser_send_to_page(
+    app: AppHandle,
+    payload: serde_json::Value,
+    tabIdx: Option<usize>,
+    browser_state: State<'_, BrowserWebviewState>,
+) -> Result<(), String> {
+    let idx = tabIdx.unwrap_or(
+        browser_state
+            .active_tab
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(0),
+    );
+    let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
-    post_message_to_review_webview(&wv, &payload)
+    post_message_to_webview(&wv, &payload)
 }
 
 #[cfg(test)]
@@ -218,5 +415,10 @@ mod tests {
         assert_eq!(u.scheme(), "http");
         assert_eq!(u.host_str(), Some("localhost"));
         assert_eq!(u.port(), Some(5173));
+    }
+
+    #[test]
+    fn webview_label_includes_tab_index() {
+        assert_eq!(webview_label(3), "review-browser-3");
     }
 }

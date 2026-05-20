@@ -116,4 +116,16 @@ describe("pageKey / annotationMatchesPage", () => {
   it("matches legacy path-only annotations for the current page", () => {
     expect(annotationMatchesPage("/dashboard", "http://localhost:5173/dashboard?x=1")).toBe(true);
   });
+
+  it("includes hash-router paths in page keys", () => {
+    expect(pageKey("http://localhost:5173/#/dashboard")).toBe(
+      "http://localhost:5173//dashboard",
+    );
+    expect(pageKey("http://localhost:5173/#/a")).not.toBe(pageKey("http://localhost:5173/#/b"));
+  });
+
+  it("keeps pathname-only pages without hash routes separate", () => {
+    expect(pageKey("http://localhost:5173/app")).toBe("http://localhost:5173/app");
+    expect(pageKey("http://localhost:5173/app#/x")).toBe("http://localhost:5173/app/x");
+  });
 });

@@ -270,6 +270,8 @@ export interface AppSnapshot {
   active_tab: number;
   /** Browser-view annotations for the active tab. */
   ui_annotations?: UiAnnotation[];
+  /** Per-tab browser pane (active tab only). */
+  browser?: BrowserSnapshot;
   /** Live GitHub status for the active tab (only when it's a remote PR with cached data). */
   github?: GithubStatusSnapshot | null;
   /** Which background fetches are currently in-flight. */
@@ -386,6 +388,14 @@ export interface PollResponse {
   revision: number;
   /** Full snapshot; `null` when revision is unchanged since last poll. */
   snapshot: AppSnapshot | null;
+}
+
+export interface BrowserSnapshot {
+  url: string;
+  layout: "hidden" | "split" | "fullscreen";
+  split_ratio: number;
+  annotate_mode: boolean;
+  show_tooltips: boolean;
 }
 
 export interface UiAnnotation {

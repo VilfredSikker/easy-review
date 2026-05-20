@@ -20,9 +20,16 @@
   } from "$lib/stores/browserHost";
   import type { UiDomContext } from "$lib/types";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
-  import { registerBrowserAnnotationComposerDismiss } from "$lib/stores/keyboard";
+  import { registerBrowserAnnotationComposerDismiss, triggerAiPalette } from "$lib/stores/keyboard";
+
+  const activeTabIdx = $derived(app.snapshot?.active_tab ?? 0);
+  const showBrowserPane = $derived(browser.open);
 
   let urlInput = $state(browser.url);
+  /** True while the URL bar has focus — blocks poll-driven overwrites while typing. */
+  let urlBarFocused = $state(false);
+  let lastUrlSyncTab = $state(-1);
+  let lastSnapUrl = $state(browser.url);
   /** Native child webview pane (transparent hole in the main UI). */
   let browserPaneEl = $state<HTMLDivElement | null>(null);
   let paneWidth = $state(0);
@@ -37,13 +44,13 @@
   let prefillDone = $state(false);
 
   async function syncPaneBounds() {
-    if (!browserPaneEl || !browser.open || useProxyFallback) return;
+    if (!browserPaneEl || !showBrowserPane || useProxyFallback) return;
     const rect = browserPaneEl.getBoundingClientRect();
     paneWidth = rect.width;
     paneHeight = rect.height;
     if (rect.width < 1 || rect.height < 1) return;
     try {
-      await browserSetBounds(rect.left, rect.top, rect.width, rect.height);
+      await browserSetBounds(rect.left, rect.top, rect.width, rect.height, activeTabIdx);
     } catch {
       // Native webview not available in web preview / tests.
     }
@@ -55,7 +62,7 @@
     paneLoading = true;
     markWaitingForReadiness();
     try {
-      await browserEnsure(url);
+      await browserEnsure(url, activeTabIdx);
       await syncPaneBounds();
     } catch (err) {
       console.warn("[er] native review browser unavailable, using proxy fallback", err);
@@ -74,7 +81,7 @@
     }
     try {
       // browser_ensure creates the child webview if navigate runs before initial open finishes
-      await browserEnsure(url);
+      await browserEnsure(url, activeTabIdx);
       await syncPaneBounds();
     } catch (err) {
       console.warn("[er] native review browser navigation failed, using proxy fallback", err);
@@ -84,7 +91,7 @@
   }
 
   $effect(() => {
-    if (!browser.open || !prefillDone) return;
+    if (!showBrowserPane || !prefillDone) return;
     const next = browser.url;
     if (!next.trim() || next === BLANK_BROWSER_URL) return;
     if (useProxyFallback) {
@@ -101,9 +108,9 @@
   });
 
   $effect(() => {
-    if (!browser.open) {
+    if (!showBrowserPane) {
       prefillDone = false;
-      void browserHide();
+      void browserHide(activeTabIdx);
       return;
     }
     if (prefillDone) return;
@@ -144,6 +151,12 @@
   type AnnotationReadiness = "waiting" | "ready" | "unsupported";
   let annotationReadiness = $state<AnnotationReadiness>("waiting");
   let readinessTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Avoid re-arming the readiness timer on every snapshot poll. */
+  let readinessContextKey = $state<string | null>(null);
+
+  function annotationReadinessKey(): string {
+    return `${activeTabIdx}|${browser.url}|${browser.annotateMode}`;
+  }
 
   function clearHoverState() {
     hoveredEl = null;
@@ -166,7 +179,7 @@
     }
   }
 
-  async function sendToPage(payload: Record<string, unknown>) {
+  async function sendToPage(payload: Record<string, unknown>): Promise<void> {
     if (useProxyFallback && iframeEl?.contentWindow) {
       try {
         iframeEl.contentWindow.postMessage(payload, "*");
@@ -176,10 +189,23 @@
       return;
     }
     try {
-      await browserSendToPage(payload);
+      await browserSendToPage(payload, activeTabIdx);
     } catch (err) {
       console.warn("[er] browserSendToPage failed", err);
     }
+  }
+
+  function currentPageUrl(): string {
+    return browser.url.trim() || urlInput.trim();
+  }
+
+  async function clearInPageAnnotationUi() {
+    closePageComposer();
+    clearHoverState();
+    allPinRects = {};
+    if (!showBrowserPane) return;
+    await sendToPage({ __er_clear_pins: true });
+    await sendToPage({ __er_sync_pins: true, items: [] });
   }
 
   function queryHoverAt(x: number, y: number) {
@@ -187,7 +213,7 @@
   }
 
   function syncPinsToPage() {
-    if (!browser.open || !browser.url.trim() || browser.url === BLANK_BROWSER_URL) {
+    if (!showBrowserPane || !browser.url.trim() || browser.url === BLANK_BROWSER_URL) {
       void sendToPage({ __er_clear_pins: true });
       return;
     }
@@ -261,11 +287,11 @@
   }
 
   async function syncAnnotateModeToPage() {
-    if (!browser.open) return;
+    if (!showBrowserPane) return;
     const active = browser.annotateMode;
     if (pageHandlesAnnotate) {
       try {
-        await browserSetAnnotateMode(active);
+        await browserSetAnnotateMode(active, activeTabIdx);
       } catch (err) {
         console.warn("[er] browserSetAnnotateMode failed", err);
       }
@@ -289,9 +315,8 @@
   }
 
   function close() {
-    browser.open = false;
-    browser.annotateMode = false;
-    void browserHide();
+    void browser.setLayout("hidden");
+    void browser.setAnnotateMode(false);
   }
 
   async function openSignInHelper() {
@@ -304,13 +329,28 @@
     }
   }
 
-  async function clearAnnotations() {
+  async function clearAnnotationsPage() {
+    const all = app.snapshot?.ui_annotations ?? [];
+    const onPage = all.filter((a) => annotationMatchesPage(a.url, currentPageUrl()));
+    const count = onPage.length;
+    if (count === 0) return;
+    const ok = window.confirm(
+      `Clear ${count} annotation${count === 1 ? "" : "s"} on this page?`,
+    );
+    if (!ok) return;
+    await clearInPageAnnotationUi();
+    await app.cmd("clear_ui_annotations_for_page", { pageUrl: pageKey(currentPageUrl()) });
+    syncPinsToPage();
+  }
+
+  async function clearAnnotationsAll() {
     const count = app.snapshot?.ui_annotations?.length ?? 0;
     if (count === 0) return;
-    const ok = window.confirm(`Clear ${count} UI annotation${count === 1 ? "" : "s"} for this review?`);
+    const ok = window.confirm(
+      `Clear all ${count} UI annotation${count === 1 ? "" : "s"} on this review tab?`,
+    );
     if (!ok) return;
-    clearHoverState();
-    allPinRects = {};
+    await clearInPageAnnotationUi();
     await app.cmd("clear_ui_annotations", {});
     syncPinsToPage();
   }
@@ -397,8 +437,13 @@
       return;
     }
 
+    if ((data as { __er_shortcut?: string }).__er_shortcut === "ai-hub") {
+      triggerAiPalette();
+      return;
+    }
+
     if ((data as { __er_composer_cancel?: boolean }).__er_composer_cancel) {
-      composerOpenInPage = false;
+      closePageComposer();
       clearHoverState();
       return;
     }
@@ -422,7 +467,7 @@
         if (real === "about:blank") return;
         urlInput = real;
         if (!sameBrowserUrl(real, browser.url)) {
-          browser.url = real;
+          void browser.setUrl(real);
         }
       }
       return;
@@ -571,20 +616,39 @@
     void browserHide();
   });
 
+  // Sync URL bar from tab state when switching tabs or when committed URL changes
+  // (Go, in-page navigation) — never while the user is typing (snapshot polls).
   $effect(() => {
-    urlInput = browser.url;
+    const tab = activeTabIdx;
+    const snapUrl = browser.url;
+    if (tab !== lastUrlSyncTab) {
+      lastUrlSyncTab = tab;
+      lastSnapUrl = snapUrl;
+      urlInput = snapUrl;
+      return;
+    }
+    if (urlBarFocused) return;
+    if (snapUrl !== lastSnapUrl) {
+      lastSnapUrl = snapUrl;
+      urlInput = snapUrl;
+    }
   });
 
   $effect(() => {
     if (!browser.annotateMode) {
+      readinessContextKey = null;
       clearHoverState();
       closePageComposer();
       syncAnnotateModeToPage();
       return;
     }
-    if (browser.open) {
-      if (annotationReadiness !== "ready") {
-        markWaitingForReadiness();
+    if (showBrowserPane) {
+      const key = annotationReadinessKey();
+      if (readinessContextKey !== key) {
+        readinessContextKey = key;
+        if (annotationReadiness !== "ready") {
+          markWaitingForReadiness();
+        }
       }
       queryAllAnnotationRects();
       syncAnnotateModeToPage();
@@ -646,8 +710,18 @@
   });
 
   $effect(() => {
-    void browser.open;
+    void showBrowserPane;
+    void activeTabIdx;
     void syncPaneBounds();
+  });
+
+  $effect(() => {
+    void activeTabIdx;
+    void browser.url;
+    if (showBrowserPane) {
+      syncPinsToPage();
+      void syncAnnotateModeToPage();
+    }
   });
 </script>
 
@@ -656,10 +730,11 @@
   role="region"
   aria-label="Browser view"
 >
-  <div class="flex items-center gap-2 px-3 py-2 border-b border-hairline">
-    <span class="text-[11px] uppercase tracking-wider text-muted">Browser</span>
+  <div class="flex items-center gap-2 px-3 py-2 border-b border-hairline shrink-0">
     <input
       bind:value={urlInput}
+      onfocus={() => { urlBarFocused = true; }}
+      onblur={() => { urlBarFocused = false; }}
       onkeydown={onUrlKeydown}
       class="flex-1 bg-bg border border-hairline rounded px-2 py-1 text-sm outline-none mono"
       placeholder="http://localhost:5173"
@@ -690,7 +765,7 @@
     <button
       type="button"
       class="text-xs px-2 py-1 rounded {browser.annotateMode ? 'bg-accent text-white' : 'bg-hover'}"
-      onclick={() => browser.setAnnotateMode(!browser.annotateMode)}
+      onclick={() => void browser.setAnnotateMode(!browser.annotateMode)}
       title="Click elements on the page to leave an annotation"
     >
       {browser.annotateMode ? "Annotating…" : "Annotate"}
@@ -698,7 +773,7 @@
     <button
       type="button"
       class="text-xs px-2 py-1 rounded {browser.showAnnotationTooltips ? 'bg-hover text-fg' : 'hover:bg-hover text-muted'}"
-      onclick={() => browser.setShowAnnotationTooltips(!browser.showAnnotationTooltips)}
+      onclick={() => void browser.setShowAnnotationTooltips(!browser.showAnnotationTooltips)}
       title="Show note bubbles for all visible annotations"
       aria-pressed={browser.showAnnotationTooltips}
     >
@@ -706,12 +781,23 @@
     </button>
     <button
       type="button"
-      class="text-xs px-2 py-1 rounded hover:bg-red-900/30 text-muted hover:text-red-300 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
-      onclick={clearAnnotations}
-      disabled={(app.snapshot?.ui_annotations?.length ?? 0) === 0}
-      title="Clear all UI annotations for this review"
+      class="text-xs px-2 py-1 rounded hover:bg-red-900/30 text-muted hover:text-red-300 disabled:opacity-40"
+      onclick={clearAnnotationsPage}
+      disabled={!(app.snapshot?.ui_annotations ?? []).some((a) =>
+        annotationMatchesPage(a.url, currentPageUrl()),
+      )}
+      title="Clear annotations on this page"
     >
-      Clear
+      Clear page
+    </button>
+    <button
+      type="button"
+      class="text-xs px-2 py-1 rounded hover:bg-red-900/30 text-muted hover:text-red-300 disabled:opacity-40"
+      onclick={clearAnnotationsAll}
+      disabled={(app.snapshot?.ui_annotations?.length ?? 0) === 0}
+      title="Clear all UI annotations on this review tab"
+    >
+      Clear all
     </button>
     <button
       type="button"

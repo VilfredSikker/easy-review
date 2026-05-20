@@ -80,10 +80,11 @@
       },
       {
         id: "open-browser-view",
-        label: browser.open ? "Close browser view" : "Open browser view",
-        description: "Embedded iframe — click elements to annotate",
+        label: browser.open ? "Cycle browser layout" : "Open browser (split)",
+        description: "Per-tab embedded browser — ⌘B cycles hidden → split → fullscreen",
         group: "Actions",
-        run: () => { close(); browser.toggleOpen(); },
+        kbd: "⌘B",
+        run: () => { close(); void (browser.open ? browser.cycleLayout() : browser.setLayout("split")); },
       },
       {
         id: "next-unreviewed",

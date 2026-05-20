@@ -1,14 +1,33 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "browser-remote",
-  "description": "Review browser child webview — localhost dev servers only",
-  "webviews": ["review-browser"],
+  "description": "Review browser child webviews — dev servers and arbitrary http(s) pages for annotation IPC",
+  "webviews": [
+    "review-browser-0",
+    "review-browser-1",
+    "review-browser-2",
+    "review-browser-3",
+    "review-browser-4",
+    "review-browser-5",
+    "review-browser-6",
+    "review-browser-7",
+    "review-browser-8",
+    "review-browser-9",
+    "review-browser-10",
+    "review-browser-11",
+    "review-browser-12",
+    "review-browser-13",
+    "review-browser-14",
+    "review-browser-15"
+  ],
   "remote": {
     "urls": [
       "http://localhost:*",
       "http://127.0.0.1:*",
       "https://localhost:*",
-      "https://127.0.0.1:*"
+      "https://127.0.0.1:*",
+      "http://*/*",
+      "https://*/*"
     ]
   },
   "permissions": [

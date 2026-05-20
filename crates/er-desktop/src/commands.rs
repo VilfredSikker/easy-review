@@ -7,7 +7,7 @@ use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
 use er_engine::ai::{CommentType, ErReview};
-use er_engine::app::{App, DiffMode, InputMode};
+use er_engine::app::{App, BrowserLayout, DiffMode, InputMode};
 use er_engine::highlight::Highlighter;
 
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
@@ -4322,19 +4322,75 @@ pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
 }
 
 #[tauri::command]
-pub fn close_tab(idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
+pub fn close_tab(
+    idx: usize,
+    app_handle: tauri::AppHandle,
+    state: State<AppState>,
+    browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
+) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.close_tab_at(idx);
+    crate::browser_webview::reset_all_tab_webviews(&app_handle, &browser_state)?;
+    let active = app.active_tab;
+    crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, active)?;
+    kick_active_gh_status(&app, &state);
     Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
-pub fn select_tab(idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
+pub fn select_tab(
+    idx: usize,
+    app_handle: tauri::AppHandle,
+    state: State<AppState>,
+    browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
+) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.select_tab(idx);
     kick_active_gh_status(&app, &state);
+    crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, idx)?;
+    Ok(snap_from(&app, &mut hl, &state))
+}
+
+#[tauri::command]
+pub fn update_tab_browser(
+    layout: Option<String>,
+    url: Option<String>,
+    annotate: Option<bool>,
+    tooltips: Option<bool>,
+    split_ratio: Option<f32>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    let tab = app.tab_mut();
+    if let Some(l) = layout.as_deref() {
+        tab.browser_layout = BrowserLayout::from_str(l);
+    }
+    if let Some(u) = url {
+        tab.browser_url = u;
+    }
+    if let Some(a) = annotate {
+        tab.browser_annotate_mode = a;
+    }
+    if let Some(t) = tooltips {
+        tab.browser_show_tooltips = t;
+    }
+    if let Some(r) = split_ratio {
+        tab.browser_split_ratio = r.clamp(0.35, 0.65);
+    }
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    Ok(snap_from(&app, &mut hl, &state))
+}
+
+#[tauri::command]
+pub fn cycle_tab_browser_layout(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    let tab = app.tab_mut();
+    tab.browser_layout = tab.browser_layout.cycle();
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &mut hl, &state))
 }
 
@@ -4409,6 +4465,7 @@ pub fn add_ui_annotation(
         dom_context: domContext,
     });
     er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &mut hl, &state))
 }
 
@@ -4539,6 +4596,30 @@ pub fn delete_ui_annotation(id: String, state: State<AppState>) -> Result<AppSna
     let mut anns = er_engine::ai::load_ui_annotations(&dir);
     anns.retain(|a| a.id != id);
     er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    Ok(snap_from(&app, &mut hl, &state))
+}
+
+#[tauri::command]
+pub fn clear_ui_annotations_for_page(
+    page_url: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    let dir = app.tab().comments_dir();
+    let anns = er_engine::ai::load_ui_annotations(&dir);
+    let removed: Vec<_> = anns
+        .iter()
+        .filter(|a| a.url == page_url)
+        .filter_map(|a| a.screenshot_path.as_deref())
+        .collect();
+    for path in removed {
+        let _ = std::fs::remove_file(path);
+    }
+    let kept: Vec<_> = anns.into_iter().filter(|a| a.url != page_url).collect();
+    er_engine::ai::save_ui_annotations(&dir, &kept).map_err(|e| e.to_string())?;
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &mut hl, &state))
 }
 
@@ -4552,6 +4633,7 @@ pub fn clear_ui_annotations(state: State<AppState>) -> Result<AppSnapshot, Strin
         let _ = std::fs::remove_file(path);
     }
     er_engine::ai::save_ui_annotations(&dir, &[]).map_err(|e| e.to_string())?;
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &mut hl, &state))
 }
 
