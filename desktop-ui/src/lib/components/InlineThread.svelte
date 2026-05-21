@@ -27,6 +27,7 @@
   let askAiTextarea: HTMLTextAreaElement | null = $state(null);
 
   let justCopied = $state(false);
+  let pushing = $state(false);
 
   // Auto-focus the textarea when a composer opens. Opening one closes the other.
   $effect(() => {
@@ -129,6 +130,16 @@
     await writeText(text);
     justCopied = true;
     setTimeout(() => (justCopied = false), 1500);
+  }
+
+  async function pushOnlyThis() {
+    if (pushing || thread.synced || isQuestion) return;
+    pushing = true;
+    try {
+      await app.cmd("push_github_comment_thread", { id: thread.id });
+    } finally {
+      pushing = false;
+    }
   }
 
   async function resolveThread() {
@@ -342,9 +353,15 @@
       <button onclick={resolveThread} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Resolve</button>
     {/if}
     {#if !isQuestion && !thread.synced}
-      <button class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1">
+      <button
+        type="button"
+        onclick={() => void pushOnlyThis()}
+        disabled={pushing}
+        title="Push this thread to GitHub (not a full review)"
+        class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1 disabled:opacity-40"
+      >
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-        Push only this
+        {pushing ? "Pushing…" : "Push only this"}
       </button>
     {/if}
     {#if isQuestion && !isPromoted}

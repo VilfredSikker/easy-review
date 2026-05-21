@@ -20,10 +20,18 @@
   } from "$lib/stores/browserHost";
   import type { UiDomContext } from "$lib/types";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
-  import { registerBrowserAnnotationComposerDismiss, triggerAiPalette } from "$lib/stores/keyboard";
+  import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
+  import { openExportModal } from "$lib/components/ExportModal.svelte";
+  import {
+    dismissBrowserAnnotationComposerNow,
+    registerBrowserAnnotationComposerDismiss,
+    triggerAiPalette,
+  } from "$lib/stores/keyboard";
+  import { overlay } from "$lib/stores/overlay.svelte";
 
   const activeTabIdx = $derived(app.snapshot?.active_tab ?? 0);
   const showBrowserPane = $derived(browser.open);
+  const nativeWebviewVisible = $derived(showBrowserPane && !overlay.blocksNativeBrowser);
 
   let urlInput = $state(browser.url);
   /** True while the URL bar has focus — blocks poll-driven overwrites while typing. */
@@ -44,7 +52,7 @@
   let prefillDone = $state(false);
 
   async function syncPaneBounds() {
-    if (!browserPaneEl || !showBrowserPane || useProxyFallback) return;
+    if (!browserPaneEl || !nativeWebviewVisible || useProxyFallback) return;
     const rect = browserPaneEl.getBoundingClientRect();
     paneWidth = rect.width;
     paneHeight = rect.height;
@@ -108,8 +116,8 @@
   });
 
   $effect(() => {
-    if (!showBrowserPane) {
-      prefillDone = false;
+    if (!nativeWebviewVisible) {
+      if (!showBrowserPane) prefillDone = false;
       void browserHide(activeTabIdx);
       return;
     }
@@ -213,6 +221,7 @@
   }
 
   function syncPinsToPage() {
+    if (composerOpenInPage) return;
     if (!showBrowserPane || !browser.url.trim() || browser.url === BLANK_BROWSER_URL) {
       void sendToPage({ __er_clear_pins: true });
       return;
@@ -437,8 +446,28 @@
       return;
     }
 
-    if ((data as { __er_shortcut?: string }).__er_shortcut === "ai-hub") {
+    const shortcut = typeof (data as { __er_shortcut?: unknown }).__er_shortcut === "string"
+      ? (data as { __er_shortcut: string }).__er_shortcut
+      : null;
+    if (shortcut === "ai-hub") {
       triggerAiPalette();
+      return;
+    }
+    if (shortcut === "browser-cycle") {
+      void browser.cycleLayout();
+      return;
+    }
+    if (shortcut === "browser-fullscreen") {
+      void browser.setLayout(browser.layout === "fullscreen" ? "hidden" : "fullscreen");
+      return;
+    }
+    if (shortcut === "export-review") {
+      openExportModal();
+      return;
+    }
+    if (shortcut === "dismiss-overlay") {
+      closeAiActionPalette();
+      dismissBrowserAnnotationComposerNow();
       return;
     }
 
@@ -659,17 +688,18 @@
     if (!pageHandlesAnnotate) return;
     const p = browser.pendingIframeClick;
     if (!p || !browser.annotateMode || composerOpenInPage) return;
-    const rect = hoveredEl?.rect;
+    const hovered = hoveredEl;
+    const rect = hovered?.rect;
     openPageComposer(
-      rect
+      rect && hovered
         ? {
             x: rect.left,
             y: rect.top,
             w: rect.width,
             h: rect.height,
-            selector: p.selector ?? hoveredEl.selector,
-            element_context: p.element_context ?? hoveredEl.element_context ?? null,
-            dom_context: p.dom_context ?? hoveredEl.dom_context ?? null,
+            selector: p.selector ?? hovered.selector,
+            element_context: p.element_context ?? hovered.element_context ?? null,
+            dom_context: p.dom_context ?? hovered.dom_context ?? null,
           }
         : {
             x: p.x,
@@ -710,7 +740,7 @@
   });
 
   $effect(() => {
-    void showBrowserPane;
+    void nativeWebviewVisible;
     void activeTabIdx;
     void syncPaneBounds();
   });

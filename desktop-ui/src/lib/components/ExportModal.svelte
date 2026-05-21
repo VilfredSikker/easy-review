@@ -1,8 +1,11 @@
 <script lang="ts" module>
+  import { prepareOverlayFocus } from "$lib/stores/overlay.svelte";
+
   /** Global flag toggled from CommandPalette + keyboard. Imported by App.svelte
    * so the modal is mounted once at the root and any caller can flip it. */
   let openState = $state(false);
-  export function openExportModal() {
+  export async function openExportModal() {
+    await prepareOverlayFocus();
     openState = true;
   }
   export function closeExportModal() {
@@ -18,6 +21,7 @@
   import { onMount } from "svelte";
   import { copyToClipboard } from "$lib/clipboard";
   import { app } from "$lib/stores/app.svelte";
+  import { overlay } from "$lib/stores/overlay.svelte";
 
   /** Optional preview override — used by Storybook to render without a Tauri host. */
   interface Props {
@@ -67,6 +71,11 @@
     if (!openState) return;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(refreshPreview, 200);
+  });
+
+  $effect(() => {
+    if (!openState) return;
+    return overlay.acquire();
   });
 
   onMount(() => {

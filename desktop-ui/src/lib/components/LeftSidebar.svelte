@@ -55,6 +55,8 @@
   let pendingBranchKey = $state<string | null>(null);
   let pendingPrKey = $state<string | null>(null);
   let prRevealCountByProject = $state<Record<string, number>>({});
+  let prSavedRevealCountByProject = $state<Record<string, number>>({});
+  let prRecentRevealCountByProject = $state<Record<string, number>>({});
   let sidebarSearch = $state("");
 
   const sidebarSearchNeedle = $derived(sidebarSearch.trim().toLowerCase());
@@ -66,8 +68,10 @@
       : projects.filter((project) => {
           if (matchesSearch(project.name)) return true;
           if (project.local_branches.some((br) => matchesSearch(br.name))) return true;
+          if (project.saved_prs?.some((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))) return true;
           if (project.my_prs.some((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))) return true;
           if (project.prs_to_review.some((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))) return true;
+          if (project.recent_prs?.some((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))) return true;
           if (project.recently_merged.some((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))) return true;
           return false;
         }),
@@ -170,6 +174,20 @@
     return searchActive ? project.local_branches.filter((br) => matchesSearch(br.name)) : project.local_branches;
   }
 
+  function visibleSavedPrs(project: ProjectSnapshot) {
+    const list = project.saved_prs ?? [];
+    return searchActive
+      ? list.filter((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))
+      : list;
+  }
+
+  function visibleRecentPrs(project: ProjectSnapshot) {
+    const list = project.recent_prs ?? [];
+    return searchActive
+      ? list.filter((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))
+      : list;
+  }
+
   function visibleMyPrs(project: ProjectSnapshot) {
     return searchActive
       ? project.my_prs.filter((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))
@@ -261,7 +279,17 @@
   const PR_HOVER_PREFETCH_DELAY_MS = 150;
   const prPrefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  function buildPrHint(pr: PrInfo) {
+  function buildPrHint(pr: PrInfo): {
+    baseRef: string;
+    headRef: string;
+    headOid: string;
+    updatedAt: string;
+    title: string;
+    author: string;
+  } | undefined {
+    if (!pr.base_ref?.trim() || !pr.head_ref?.trim() || !pr.head_oid?.trim()) {
+      return undefined;
+    }
     return {
       baseRef: pr.base_ref,
       headRef: pr.head_ref,
@@ -303,13 +331,37 @@
     }
   }
 
+  function visibleRevealCount(map: Record<string, number>, projectId: string): number {
+    return map[projectId] ?? 5;
+  }
+
+  function revealMore(map: Record<string, number>, projectId: string): Record<string, number> {
+    const next = visibleRevealCount(map, projectId) + 5;
+    return { ...map, [projectId]: next };
+  }
+
   function visibleToReviewCount(projectId: string): number {
-    return prRevealCountByProject[projectId] ?? 5;
+    return visibleRevealCount(prRevealCountByProject, projectId);
   }
 
   function revealMoreToReview(projectId: string) {
-    const next = visibleToReviewCount(projectId) + 5;
-    prRevealCountByProject = { ...prRevealCountByProject, [projectId]: next };
+    prRevealCountByProject = revealMore(prRevealCountByProject, projectId);
+  }
+
+  function visibleSavedCount(projectId: string): number {
+    return visibleRevealCount(prSavedRevealCountByProject, projectId);
+  }
+
+  function revealMoreSaved(projectId: string) {
+    prSavedRevealCountByProject = revealMore(prSavedRevealCountByProject, projectId);
+  }
+
+  function visibleRecentCount(projectId: string): number {
+    return visibleRevealCount(prRecentRevealCountByProject, projectId);
+  }
+
+  function revealMoreRecent(projectId: string) {
+    prRecentRevealCountByProject = revealMore(prRecentRevealCountByProject, projectId);
   }
 
 </script>
@@ -676,6 +728,23 @@
                 </div>
               {/snippet}
 
+              {#if visibleSavedPrs(project).length > 0}
+                {@render prSectionLabel("Saved")}
+                {@const savedVisible = visibleSavedPrs(project).slice(0, visibleSavedCount(project.id))}
+                {#each savedVisible as pr (pr.number)}
+                  {@render prRow(pr)}
+                {/each}
+                {#if visibleSavedPrs(project).length > savedVisible.length}
+                  <button
+                    type="button"
+                    onclick={() => revealMoreSaved(project.id)}
+                    class="w-full text-left px-2 py-1 rounded-md text-xs text-fg-3 hover:bg-hover"
+                  >
+                    Show more
+                  </button>
+                {/if}
+              {/if}
+
               {#if visibleMyPrs(project).length > 0 || (loadingPrList && project.my_prs?.length === 0 && !searchActive)}
                 {@render prSectionLabel("My PRs")}
                 {#each visibleMyPrs(project) as pr (pr.number)}
@@ -693,6 +762,23 @@
                   <button
                     type="button"
                     onclick={() => revealMoreToReview(project.id)}
+                    class="w-full text-left px-2 py-1 rounded-md text-xs text-fg-3 hover:bg-hover"
+                  >
+                    Show more
+                  </button>
+                {/if}
+              {/if}
+
+              {#if visibleRecentPrs(project).length > 0}
+                {@render prSectionLabel("Recent")}
+                {@const recentVisible = visibleRecentPrs(project).slice(0, visibleRecentCount(project.id))}
+                {#each recentVisible as pr (pr.number)}
+                  {@render prRow(pr)}
+                {/each}
+                {#if visibleRecentPrs(project).length > recentVisible.length}
+                  <button
+                    type="button"
+                    onclick={() => revealMoreRecent(project.id)}
                     class="w-full text-left px-2 py-1 rounded-md text-xs text-fg-3 hover:bg-hover"
                   >
                     Show more

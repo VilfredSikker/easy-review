@@ -21,6 +21,7 @@
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import { browser } from "$lib/stores/browser.svelte";
+  import { browserHide } from "$lib/stores/browserHost";
   const panels = $derived(app.snapshot?.panels);
   /** No snapshot yet, explicit welcome, or no repo/diff and no saved projects. */
   const isEmpty = $derived(
@@ -112,15 +113,24 @@
   const browserLayout = $derived(browser.layout);
   const showDiff = $derived(browserLayout !== "fullscreen");
   const showBrowser = $derived(browserLayout === "split" || browserLayout === "fullscreen");
+
+  // Belt-and-suspenders: when the browser pane is closed in the UI, park every
+  // native child webview. BrowserView's onDestroy also hides, but unmount can
+  // race behind the layout command — a stale webview otherwise blocks modals/keys.
+  $effect(() => {
+    if (!showBrowser) {
+      void browserHide();
+    }
+  });
+  let browserSplitRatio = $state(0.45);
+  let resizingBrowserSplit = $state(false);
+  let splitDebounce: ReturnType<typeof setTimeout> | null = null;
+
   /** Diff column only shares width with the browser in split mode. */
   const browserSplitWithDiff = $derived(showBrowser && browserLayout === "split");
   const diffColumnFlex = $derived(
     browserSplitWithDiff ? `${browserSplitRatio} 1 0%` : "1 1 0%",
   );
-
-  let browserSplitRatio = $state(0.45);
-  let resizingBrowserSplit = $state(false);
-  let splitDebounce: ReturnType<typeof setTimeout> | null = null;
 
   $effect(() => {
     const r = app.snapshot?.browser?.split_ratio;
@@ -184,6 +194,8 @@
     };
   });
 </script>
+
+<PrUrlModal />
 
 {#if isEmpty && !app.loading}
   <EmptyState />
@@ -311,6 +323,5 @@
   <CommandPalette />
   <AiActionPalette />
   <ExportModal />
-  <PrUrlModal />
 </div>
 {/if}

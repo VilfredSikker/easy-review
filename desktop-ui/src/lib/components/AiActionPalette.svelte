@@ -1,13 +1,24 @@
+<script lang="ts" module>
+  let dismissPalette: (() => void) | null = null;
+
+  /** Close the AI Hub palette from anywhere (e.g. when a review command starts). */
+  export function closeAiActionPalette(): void {
+    dismissPalette?.();
+  }
+</script>
+
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import { registerAiPaletteOpener } from "$lib/stores/keyboard";
+  import { overlay, prepareOverlayFocus } from "$lib/stores/overlay.svelte";
   import type { AiProviderInfo } from "$lib/types";
 
   type SubView = "main" | "providers" | "models";
 
   let open = $state(false);
+  let panelEl = $state<HTMLDivElement | null>(null);
   let selectedIdx = $state(0);
   let subView = $state<SubView>("main");
   let providers = $state<AiProviderInfo[]>([]);
@@ -29,13 +40,24 @@
     selectedProvider = null;
   }
 
+  function dismissAndRun(fn: () => void) {
+    close();
+    queueMicrotask(fn);
+  }
+
   function openPalette() {
-    open = true;
     selectedIdx = 0;
     subView = "main";
     providers = [];
     selectedProvider = null;
-    tick().then(() => {});
+    open = true;
+  }
+
+  async function openPaletteFromOutside() {
+    await prepareOverlayFocus();
+    openPalette();
+    await tick();
+    panelEl?.focus({ preventScroll: true });
   }
 
   function goBack() {
@@ -91,37 +113,37 @@
       id: "review-branch",
       label: "Run review: branch",
       description: "Review all changes on this branch vs base",
-      run: () => { close(); app.cmd("run_ai_review", { scope: "branch" }); },
+      run: () => dismissAndRun(() => void app.cmd("run_ai_review", { scope: "branch" })),
     },
     {
       id: "review-unstaged",
       label: "Run review: unstaged",
       description: "Review only unstaged (working tree) changes",
-      run: () => { close(); app.cmd("run_ai_review", { scope: "unstaged" }); },
+      run: () => dismissAndRun(() => void app.cmd("run_ai_review", { scope: "unstaged" })),
     },
     {
       id: "review-staged",
       label: "Run review: staged",
       description: "Review only staged changes",
-      run: () => { close(); app.cmd("run_ai_review", { scope: "staged" }); },
+      run: () => dismissAndRun(() => void app.cmd("run_ai_review", { scope: "staged" })),
     },
     {
       id: "validate-branch",
       label: "Validate / re-anchor review: branch",
       description: "Re-check existing findings and re-anchor moved code",
-      run: () => { close(); app.cmd("run_ai_validate", { scope: "branch" }); },
+      run: () => dismissAndRun(() => void app.cmd("run_ai_validate", { scope: "branch" })),
     },
     {
       id: "validate-unstaged",
       label: "Validate / re-anchor review: unstaged",
       description: "Validate findings against working tree changes",
-      run: () => { close(); app.cmd("run_ai_validate", { scope: "unstaged" }); },
+      run: () => dismissAndRun(() => void app.cmd("run_ai_validate", { scope: "unstaged" })),
     },
     {
       id: "validate-staged",
       label: "Validate / re-anchor review: staged",
       description: "Validate findings against staged changes",
-      run: () => { close(); app.cmd("run_ai_validate", { scope: "staged" }); },
+      run: () => dismissAndRun(() => void app.cmd("run_ai_validate", { scope: "staged" })),
     },
     {
       id: "open-output",
@@ -129,13 +151,13 @@
       description: runningCommands.length > 0
         ? `${runningCommands.length} command(s) running — view live output`
         : "View the agent log from the last run",
-      run: () => { close(); app.setMainView("agent-output"); },
+      run: () => dismissAndRun(() => app.setMainView("agent-output")),
     },
     {
       id: "copy-context",
       label: "Copy review context",
       description: "Export current diff context to clipboard",
-      run: () => { close(); app.cmd("export_to_agent"); },
+      run: () => dismissAndRun(() => void app.cmd("export_to_agent")),
     },
     {
       id: "change-model",
@@ -200,10 +222,25 @@
     }
   }
 
+  $effect(() => {
+    if (!open) return;
+    const release = overlay.acquire();
+    let cancelled = false;
+    void tick().then(() => {
+      if (!cancelled) panelEl?.focus({ preventScroll: true });
+    });
+    return () => {
+      cancelled = true;
+      release();
+    };
+  });
+
   onMount(() => {
-    const cleanup = registerAiPaletteOpener(openPalette);
+    dismissPalette = close;
+    const cleanup = registerAiPaletteOpener(openPaletteFromOutside);
     window.addEventListener("keydown", handleKeydown, { capture: true });
     return () => {
+      dismissPalette = null;
       cleanup();
       window.removeEventListener("keydown", handleKeydown, { capture: true });
     };
@@ -215,10 +252,23 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     data-modal
-    class="fixed inset-0 z-[100] flex items-start justify-center pt-[15vh]"
-    onclick={(e) => { if (e.target === e.currentTarget) close(); }}
+    class="fixed inset-0 z-[250] bg-black/50"
+    style="backdrop-filter: blur(2px);"
+    role="presentation"
+    onmousedown={(e) => {
+      if (e.target === e.currentTarget) close();
+    }}
+  ></div>
+
+  <div
+    bind:this={panelEl}
+    tabindex="-1"
+    role="dialog"
+    aria-modal="true"
+    aria-label={subViewTitle}
+    class="fixed left-1/2 -translate-x-1/2 top-[15vh] z-[251] bg-ink-800 border border-ink-500 rounded-lg shadow-2xl w-[480px] max-w-[calc(100vw-2rem)] overflow-hidden outline-none"
+    onmousedown={(e) => e.stopPropagation()}
   >
-    <div class="bg-ink-800 border border-ink-500 rounded-lg shadow-2xl w-[480px] overflow-hidden">
       <!-- header -->
       <div class="px-4 pt-3 pb-2 border-b border-ink-600 flex items-center gap-2">
         {#if subView !== "main"}
@@ -267,6 +317,5 @@
           </div>
         {/each}
       </div>
-    </div>
   </div>
 {/if}

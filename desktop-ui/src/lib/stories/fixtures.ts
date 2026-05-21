@@ -298,6 +298,8 @@ export const prDraft: PrSnapshot = {
   state: "draft",
   base: "main",
   head: "show-experiment-params",
+  url: "https://github.com/reshape/easy-review/pull/1090",
+  author: "vilfred",
 };
 
 // ─── worktrees + commits ────────────────────────────────────────────────────

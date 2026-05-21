@@ -5,6 +5,7 @@
   import { openExportModal } from "$lib/components/ExportModal.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
+  import { overlay, prepareOverlayFocus } from "$lib/stores/overlay.svelte";
   import { copyToClipboard } from "$lib/clipboard";
 
   interface CommandItem {
@@ -153,7 +154,7 @@
         id: "run-ai-review-branch",
         label: "Run AI review (branch)",
         group: "Actions",
-        run: () => { close(); app.cmd("run_ai_review", { scope: "branch" }); },
+        run: () => { close(); void app.cmd("run_ai_review", { scope: "branch" }); },
       },
       {
         id: "run-ai-review-unstaged",
@@ -280,9 +281,10 @@
   }
 
   async function openPalette() {
-    open = true;
     selectedIdx = 0;
     query = "";
+    await prepareOverlayFocus();
+    open = true;
     await tick();
     inputEl?.focus();
   }
@@ -299,6 +301,11 @@
     else if (e.key === "ArrowUp") { e.preventDefault(); selectedIdx = Math.max(selectedIdx - 1, 0); }
     else if (e.key === "Enter") { e.preventDefault(); flat[selectedIdx]?.run(); }
   }
+
+  $effect(() => {
+    if (!open) return;
+    return overlay.acquire();
+  });
 
   onMount(() => {
     window.addEventListener("keydown", onKeydown);

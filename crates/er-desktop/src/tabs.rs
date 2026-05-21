@@ -296,6 +296,8 @@ mod tests {
                 pr_head_ref: None,
                 base_ref: None,
                 local_branch_diff_ref: None,
+                browser_url: None,
+                browser_layout: None,
             },
             TabDescriptor {
                 kind: TabKind::LocalBranch,
@@ -307,6 +309,8 @@ mod tests {
                 pr_head_ref: None,
                 base_ref: None,
                 local_branch_diff_ref: None,
+                browser_url: None,
+                browser_layout: None,
             },
             TabDescriptor {
                 kind: TabKind::RemotePr,
@@ -318,6 +322,8 @@ mod tests {
                 pr_head_ref: None,
                 base_ref: None,
                 local_branch_diff_ref: None,
+                browser_url: None,
+                browser_layout: None,
             },
             TabDescriptor {
                 kind: TabKind::LocalPr,
@@ -329,6 +335,8 @@ mod tests {
                 pr_head_ref: Some("refs/er/pr/1110/head".to_string()),
                 base_ref: Some("origin/main".to_string()),
                 local_branch_diff_ref: None,
+                browser_url: None,
+                browser_layout: None,
             },
         ];
         let file = TabsFile {

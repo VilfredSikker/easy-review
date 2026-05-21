@@ -27,6 +27,11 @@ export async function browserHide(tabIdx?: number): Promise<void> {
   await invoke("browser_hide", { tabIdx: tabIdx ?? null });
 }
 
+/** Destroy all review child webviews so modals receive clicks (macOS). */
+export async function browserSuspendForOverlay(): Promise<void> {
+  await invoke("browser_suspend_for_overlay");
+}
+
 export async function browserNavigate(url: string, tabIdx?: number): Promise<void> {
   await invoke("browser_navigate", { url, tabIdx: activeTabIdx(tabIdx) });
 }

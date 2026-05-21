@@ -847,6 +847,175 @@ impl App {
         }
         Ok(())
     }
+
+    /// Push one local comment thread (root + unsynced replies) to GitHub.
+    pub fn push_github_comment_thread(&mut self, thread_id: &str) -> Result<()> {
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let explicit_pr_number = tab.pr_number;
+        let is_remote = tab.is_remote();
+        let remote_repo = tab.remote_repo.clone();
+
+        let (owner, repo_name, pr_number) = if is_remote {
+            if let (Some(ref slug), Some(n)) = (&remote_repo, explicit_pr_number) {
+                let parts: Vec<&str> = slug.split('/').collect();
+                if parts.len() == 2 {
+                    (parts[0].to_string(), parts[1].to_string(), n)
+                } else {
+                    anyhow::bail!("Invalid remote repo slug");
+                }
+            } else {
+                anyhow::bail!("No PR info for remote mode");
+            }
+        } else {
+            let pr_info = github::get_pr_info(&repo_root)
+                .map_err(|_| anyhow::anyhow!("No PR found for current branch"))?;
+            if let Some(n) = explicit_pr_number {
+                (pr_info.0, pr_info.1, n)
+            } else {
+                pr_info
+            }
+        };
+
+        let comments_path = self.tab().github_comments_path();
+        let mut gc: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(gc) => gc,
+                Err(e) => anyhow::bail!("Failed to parse github-comments.json: {e}"),
+            },
+            Err(_) => anyhow::bail!("No github-comments.json found"),
+        };
+
+        let parent_idx = gc
+            .comments
+            .iter()
+            .position(|c| c.id == thread_id)
+            .ok_or_else(|| anyhow::anyhow!("Comment not found: {thread_id}"))?;
+        let parent = &gc.comments[parent_idx];
+        if parent.source != "local" {
+            anyhow::bail!("Only local comments can be pushed");
+        }
+        if parent.synced {
+            anyhow::bail!("Comment already pushed");
+        }
+        if parent.in_reply_to.is_some() {
+            anyhow::bail!("Use Push only this on the thread root, not a reply");
+        }
+
+        let push_parent = |comment: &ai::GitHubReviewComment| -> Result<u64> {
+            if comment.file.is_empty() {
+                if is_remote {
+                    github::gh_pr_general_comment_remote(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        &comment.comment,
+                    )
+                } else {
+                    github::gh_pr_general_comment(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        &comment.comment,
+                        &repo_root,
+                    )
+                }
+            } else {
+                let line = comment.line_start.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Comment has no line anchor; add it on a diff line before pushing"
+                    )
+                })?;
+                if is_remote {
+                    github::gh_pr_push_comment_remote(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        &comment.file,
+                        line,
+                        &comment.comment,
+                    )
+                } else {
+                    github::gh_pr_push_comment(
+                        &owner,
+                        &repo_name,
+                        pr_number,
+                        &comment.file,
+                        line,
+                        &comment.comment,
+                        &repo_root,
+                    )
+                }
+            }
+        };
+
+        let github_id =
+            push_parent(parent).map_err(|e| anyhow::anyhow!("Failed to push comment: {e}"))?;
+        gc.comments[parent_idx].github_id = Some(github_id);
+        gc.comments[parent_idx].synced = true;
+
+        let reply_ids: Vec<String> = gc
+            .comments
+            .iter()
+            .filter(|c| {
+                c.source == "local" && !c.synced && c.in_reply_to.as_deref() == Some(thread_id)
+            })
+            .map(|c| c.id.clone())
+            .collect();
+
+        let mut reply_failed = 0u32;
+        for rid in reply_ids {
+            let Some(comment) = gc.comments.iter().find(|c| c.id == rid).cloned() else {
+                continue;
+            };
+            match if is_remote {
+                github::gh_pr_reply_comment_remote(
+                    &owner,
+                    &repo_name,
+                    pr_number,
+                    github_id,
+                    &comment.comment,
+                )
+            } else {
+                github::gh_pr_reply_comment(
+                    &owner,
+                    &repo_name,
+                    pr_number,
+                    github_id,
+                    &comment.comment,
+                    &repo_root,
+                )
+            } {
+                Ok(reply_gh_id) => {
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == rid) {
+                        c.github_id = Some(reply_gh_id);
+                        c.synced = true;
+                    }
+                }
+                Err(_) => reply_failed += 1,
+            }
+        }
+
+        let json = serde_json::to_string_pretty(&gc)?;
+        let tmp_path = format!("{}.tmp", comments_path);
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, &comments_path)?;
+        if is_remote {
+            self.tab_mut().reload_remote_comments();
+        } else {
+            self.tab_mut().reload_ai_state();
+        }
+
+        if reply_failed > 0 {
+            self.notify(&format!(
+                "Comment pushed; {reply_failed} repl{} failed",
+                if reply_failed == 1 { "y" } else { "ies" }
+            ));
+        } else {
+            self.notify("Comment pushed to GitHub");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

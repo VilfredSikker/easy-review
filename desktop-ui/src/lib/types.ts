@@ -103,6 +103,8 @@ export interface PrSnapshot {
   state: string;
   base: string;
   head: string;
+  url: string;
+  author: string;
 }
 
 export interface Panels {
@@ -160,10 +162,14 @@ export interface ProjectSnapshot {
   local_branches: BranchInfo[];
   /** Recently-active local branches not already tracked (kept for internal use). */
   auto_branches: BranchInfo[];
+  /** Manually bookmarked PRs. */
+  saved_prs: PrInfo[];
   /** Open PRs authored by the current user. */
   my_prs: PrInfo[];
   /** Open PRs from others the current user hasn't approved yet (max 5). */
   prs_to_review: PrInfo[];
+  /** PRs opened for review recently. */
+  recent_prs: PrInfo[];
   /** Most recently merged PRs (max 5). */
   recently_merged: PrInfo[];
   /** True when cached PR data is older than TTL. */
@@ -237,6 +243,7 @@ export interface GithubStatusSnapshot {
   recent_reviews: GhReviewSummary[];
   /** Unix seconds of last successful fetch, as a string. */
   last_updated: string | null;
+  is_authored_by_me: boolean;
 }
 
 export interface AppSnapshot {

@@ -60,32 +60,38 @@
   let actionsOpen = $state(false);
   let reviewBody = $state("");
   let submitting = $state(false);
+  const ownPrApprovalBlocked = $derived(github?.is_authored_by_me === true);
+  const effectiveGithubUrl = $derived(github?.url ?? github_url ?? pr?.url ?? null);
 
   // GitHub itself rejects REQUEST_CHANGES with an empty body and a plain comment
   // needs a body too — gate locally so we don't round-trip just to fail.
   const canSubmit = $derived.by(() => ({
     comment: !submitting && reviewBody.trim().length > 0,
-    approve: !submitting,
+    approve: !submitting && !ownPrApprovalBlocked,
     changes: !submitting && reviewBody.trim().length > 0,
   }));
 
   async function submitAction(kind: "comment" | "approve" | "changes") {
     if (submitting) return;
+    if (kind === "approve" && !canSubmit.approve) return;
     const body = reviewBody.trim();
     submitting = true;
-    if (kind === "comment") {
-      await app.cmd("post_github_pr_comment", { body });
-    } else {
-      // Use the decision-only command so pending inline drafts (which may have
-      // stale line anchors) aren't bundled and 422'd by GitHub.
-      const mode = kind === "approve" ? "APPROVE" : "REQUEST_CHANGES";
-      await app.cmd("submit_github_pr_decision", { mode, summary: body });
+    try {
+      if (kind === "comment") {
+        await app.cmd("post_github_pr_comment", { body });
+      } else {
+        // Use the decision-only command so pending inline drafts (which may have
+        // stale line anchors) aren't bundled and 422'd by GitHub.
+        const mode = kind === "approve" ? "APPROVE" : "REQUEST_CHANGES";
+        await app.cmd("submit_github_pr_decision", { mode, summary: body });
+      }
+      // Errors surface via the global toast (app.cmd swallows + showsToast); close
+      // the drawer either way so the user sees the updated state on next refresh.
+      reviewBody = "";
+      actionsOpen = false;
+    } finally {
+      submitting = false;
     }
-    submitting = false;
-    // Errors surface via the global toast (app.cmd swallows + showsToast); close
-    // the drawer either way so the user sees the updated state on next refresh.
-    reviewBody = "";
-    actionsOpen = false;
   }
   const watchStatus = $derived(app.snapshot?.watch_status ?? null);
   const isWatching = $derived(watchStatus?.active === true);
@@ -157,17 +163,52 @@
   }
 
   async function onOpenPr() {
-    const url = github?.url ?? github_url;
-    if (url) await app.cmd("open_url_in_browser", { url });
+    if (effectiveGithubUrl) await app.cmd("open_url_in_browser", { url: effectiveGithubUrl });
+  }
+
+  const activeProject = $derived(app.snapshot?.projects?.find((p) => p.is_active) ?? null);
+  const effectivePrNumber = $derived(
+    pr_number ?? app.snapshot?.github?.number ?? pr?.number ?? null,
+  );
+  const isSaved = $derived(
+    effectivePrNumber !== null &&
+      (activeProject?.saved_prs ?? []).some((p) => p.number === effectivePrNumber),
+  );
+
+  async function toggleSaved() {
+    if (!activeProject || effectivePrNumber === null) return;
+    const title = github?.title ?? pr?.title ?? "";
+    if (isSaved) {
+      await app.cmd("unsave_pr", {
+        projectId: activeProject.id,
+        prNumber: effectivePrNumber,
+      });
+    } else {
+      await app.cmd("save_pr", {
+        projectId: activeProject.id,
+        prNumber: effectivePrNumber,
+        title,
+      });
+    }
   }
 </script>
 
 <Card>
   <div class="flex items-center justify-between mb-3">
     <SectionLabel>Branch</SectionLabel>
-    <button aria-label="Pin review" title="Pin review" class="text-muted hover:text-fg-2">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17v5M9 10.76V19l3 2 3-2v-8.24"/><path d="M3 7l9-5 9 5"/></svg>
-    </button>
+    {#if effectivePrNumber !== null && activeProject}
+      <button
+        type="button"
+        aria-label={isSaved ? "Remove from saved" : "Save PR"}
+        title={isSaved ? "Remove from saved" : "Save PR"}
+        onclick={toggleSaved}
+        class="{isSaved ? 'text-accent' : 'text-muted'} hover:text-fg-2"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="{isSaved ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+        </svg>
+      </button>
+    {/if}
   </div>
   <div class="text-sm mono mb-3 truncate text-fg-2 flex items-center gap-1.5">
     <span class="truncate">{branch}</span>
@@ -400,7 +441,7 @@
                   onclick={() => submitAction("approve")}
                   disabled={!canSubmit.approve}
                   class="px-2 py-1 rounded text-[11px] font-medium bg-add-fg text-black hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Submit an approving review (body optional)"
+                  title={ownPrApprovalBlocked ? "GitHub does not allow approving your own PR" : "Submit an approving review (body optional)"}
                 >Approve</button>
                 <button
                   type="button"
@@ -416,6 +457,9 @@
                   class="ml-auto text-[11px] text-fg-3 hover:text-fg-1 px-2 py-1 rounded disabled:opacity-50"
                 >Cancel</button>
               </div>
+              {#if ownPrApprovalBlocked}
+                <div class="mt-1.5 text-[10px] text-fg-3">GitHub does not allow approving your own PR.</div>
+              {/if}
               {#if submitting}
                 <div class="mt-1.5 text-[10px] text-fg-3">Submitting…</div>
               {/if}
@@ -425,22 +469,26 @@
       </div>
     {:else}
       <!-- Fallback: simple PR and checks rows when no live GitHub data -->
-      {#if pr}
-        {#if github_url}
+      {#if effectivePrNumber !== null}
+        {#if effectiveGithubUrl}
           <button
             class="w-full flex items-center gap-2 hover:bg-ink-700/40 rounded px-1 -mx-1 transition-colors"
-            onclick={() => app.cmd("open_url_in_browser", { url: github_url })}
-            aria-label="Open PR #{pr.number} on GitHub"
+            onclick={onOpenPr}
+            aria-label="Open PR #{effectivePrNumber} on GitHub"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h9"/></svg>
-            <span class="text-fg-2">PR #{pr.number}</span>
-            <span class="ml-auto text-muted text-xs">{pr.state}</span>
+            <span class="text-fg-2">PR #{effectivePrNumber}</span>
+            {#if pr?.state}
+              <span class="ml-auto text-muted text-xs">{pr.state}</span>
+            {/if}
           </button>
         {:else}
           <div class="flex items-center gap-2">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h9"/></svg>
-            <span class="text-fg-2">PR #{pr.number}</span>
-            <span class="ml-auto text-muted text-xs">{pr.state}</span>
+            <span class="text-fg-2">PR #{effectivePrNumber}</span>
+            {#if pr?.state}
+              <span class="ml-auto text-muted text-xs">{pr.state}</span>
+            {/if}
           </div>
         {/if}
       {/if}

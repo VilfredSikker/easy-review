@@ -251,10 +251,16 @@ pub struct ProjectSnapshot {
     pub is_active: bool,
     pub local_branches: Vec<BranchInfo>,
     pub auto_branches: Vec<BranchInfo>,
+    /// Manually bookmarked PRs (sorted by saved_at desc).
+    #[serde(default)]
+    pub saved_prs: Vec<PrInfo>,
     /// Open PRs authored by the current user.
     pub my_prs: Vec<PrInfo>,
     /// Open PRs from others that the current user hasn't approved yet (max 5).
     pub prs_to_review: Vec<PrInfo>,
+    /// PRs opened for review recently (sorted by viewed_at desc).
+    #[serde(default)]
+    pub recent_prs: Vec<PrInfo>,
     /// Most recently merged PRs (max 5, sorted by merged_at desc).
     pub recently_merged: Vec<PrInfo>,
     #[serde(default)]
@@ -493,6 +499,8 @@ pub struct GithubStatusSnapshot {
     pub recent_comments: Vec<GhCommentSummary>,
     pub recent_reviews: Vec<GhReviewSummary>,
     pub last_updated: Option<String>,
+    #[serde(default)]
+    pub is_authored_by_me: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -502,6 +510,8 @@ pub struct PrSnapshot {
     pub state: String,
     pub base: String,
     pub head: String,
+    pub url: String,
+    pub author: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -956,7 +966,13 @@ pub fn build_snapshot(
                 .and_then(|c| c.lock().ok())
                 .and_then(|g| g.get(&key).cloned())
         })
-    };
+    }
+    .map(|mut status| {
+        if let Some(login) = gh_user.and_then(|g| g.lock().ok().and_then(|v| v.clone())) {
+            status.is_authored_by_me = status.author.eq_ignore_ascii_case(&login);
+        }
+        status
+    });
 
     let diff_source = build_diff_source_snapshot(tab, pr_cache, meta_cache);
 
@@ -1359,6 +1375,69 @@ fn build_auto_branches(
     result
 }
 
+fn minimal_pr_info(number: u64, title: &str) -> PrInfo {
+    PrInfo {
+        number,
+        title: title.to_string(),
+        head_ref: String::new(),
+        state: String::new(),
+        is_draft: false,
+        author: String::new(),
+        assignees: Vec::new(),
+        reviewers: Vec::new(),
+        checks_state: None,
+        review_decision: None,
+        merged_at: None,
+        approved_by_me: false,
+        base_ref: String::new(),
+        head_oid: String::new(),
+        updated_at: String::new(),
+        latest_reviewer_states: Vec::new(),
+    }
+}
+
+fn resolve_saved_prs(
+    entries: &[projects::SavedPrEntry],
+    cache_prs: Option<&[PrInfo]>,
+) -> Vec<PrInfo> {
+    let mut out = Vec::new();
+    let mut sorted: Vec<&projects::SavedPrEntry> = entries.iter().collect();
+    sorted.sort_by(|a, b| b.saved_at_ms.cmp(&a.saved_at_ms));
+    for entry in sorted {
+        if let Some(cache) = cache_prs {
+            if let Some(pr) = cache.iter().find(|p| p.number == entry.number) {
+                out.push(pr.clone());
+                continue;
+            }
+        }
+        if !entry.title.is_empty() {
+            out.push(minimal_pr_info(entry.number, &entry.title));
+        }
+    }
+    out
+}
+
+fn resolve_recent_prs(
+    entries: &[projects::RecentPrEntry],
+    cache_prs: Option<&[PrInfo]>,
+) -> Vec<PrInfo> {
+    let mut out = Vec::new();
+    let mut sorted: Vec<&projects::RecentPrEntry> = entries.iter().collect();
+    sorted.sort_by(|a, b| b.viewed_at_ms.cmp(&a.viewed_at_ms));
+    for entry in sorted {
+        if let Some(cache) = cache_prs {
+            if let Some(pr) = cache.iter().find(|p| p.number == entry.number) {
+                out.push(pr.clone());
+                continue;
+            }
+        }
+        if !entry.title.is_empty() {
+            out.push(minimal_pr_info(entry.number, &entry.title));
+        }
+    }
+    out
+}
+
 fn build_projects(
     tab: &TabState,
     pr_cache: Option<&PrCache>,
@@ -1407,6 +1486,15 @@ fn build_projects(
                     b.is_current = b.name == viewed_branch;
                 }
             }
+
+            let cache_slice = p.remote.as_ref().and_then(|remote| {
+                pr_map
+                    .as_ref()
+                    .and_then(|m| m.get(remote).map(|v| v.as_slice()))
+            });
+
+            let saved_prs = resolve_saved_prs(&p.saved_prs, cache_slice);
+            let recent_prs = resolve_recent_prs(&p.recent_prs, cache_slice);
 
             let (my_prs, prs_to_review, recently_merged, pr_cache_stale, pr_cache_age_ms) =
                 if let (Some(remote), Some(ref cache)) = (&p.remote, &pr_map) {
@@ -1491,8 +1579,10 @@ fn build_projects(
                 is_active,
                 local_branches: meta.local_branches,
                 auto_branches: meta.auto_branches,
+                saved_prs,
                 my_prs,
                 prs_to_review,
+                recent_prs,
                 recently_merged,
                 pr_cache_stale,
                 pr_cache_age_ms,
@@ -2048,7 +2138,9 @@ fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
         title: pr.title.clone(),
         state: pr.state.clone(),
         base: pr.base_branch.clone(),
-        head: tab.current_branch.clone(),
+        head: pr.head_branch.clone(),
+        url: pr.url.clone(),
+        author: pr.author.clone(),
     })
 }
 
@@ -2168,5 +2260,32 @@ mod tests {
         );
 
         assert!(thread.stale);
+    }
+
+    #[test]
+    fn pr_snapshot_includes_url_and_author_from_pr_data() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_data = Some(er_engine::github::PrOverviewData {
+            number: 878,
+            title: "Data table sorting".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "VilfredSikker".to_string(),
+            url: "https://github.com/reshapebiotech/discovery/pull/878".to_string(),
+            base_branch: "main".to_string(),
+            head_branch: "DEV-3884/data-table-sorting".to_string(),
+            checks: Vec::new(),
+            reviewers: Vec::new(),
+        });
+
+        let pr = build_pr_snapshot(&tab).expect("pr snapshot");
+
+        assert_eq!(pr.number, 878);
+        assert_eq!(pr.author, "VilfredSikker");
+        assert_eq!(
+            pr.url,
+            "https://github.com/reshapebiotech/discovery/pull/878"
+        );
+        assert_eq!(pr.head, "DEV-3884/data-table-sorting");
     }
 }

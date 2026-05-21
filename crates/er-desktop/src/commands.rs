@@ -314,6 +314,44 @@ fn active_github_key(app: &App, state: &AppState) -> Option<(String, String, u64
     })
 }
 
+fn active_pr_author(
+    app: &App,
+    state: &AppState,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Option<String> {
+    let tab = app.tab();
+    if tab.pr_number == Some(number) {
+        if let Some(author) = tab
+            .pr_data
+            .as_ref()
+            .map(|pr| pr.author.trim())
+            .filter(|author| !author.is_empty())
+        {
+            return Some(author.to_string());
+        }
+    }
+
+    let key = (owner.to_string(), repo.to_string(), number);
+    state
+        .gh_status_cache
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&key).map(|status| status.author.clone()))
+        .filter(|author| !author.trim().is_empty())
+}
+
+fn own_pr_approval_error() -> String {
+    "GitHub does not allow approving your own pull request.".to_string()
+}
+
+fn is_own_pr_approval_error(raw: &str) -> bool {
+    let lower = raw.to_lowercase();
+    lower.contains("can not approve your own pull request")
+        || lower.contains("cannot approve your own pull request")
+}
+
 fn process_ai_task_inbox(app: &App, state: &AppState) {
     let now = now_ms();
     let tasks = app.background_task_snapshots();
@@ -472,6 +510,7 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         recent_comments,
         recent_reviews,
         last_updated,
+        is_authored_by_me: false,
     })
 }
 
@@ -1549,9 +1588,48 @@ pub fn push_github_comments(state: State<AppState>) -> Result<AppSnapshot, Strin
     Ok(snap_from(&app, &mut hl, &state))
 }
 
+/// Push a single local comment thread (root + replies) to GitHub.
+#[tauri::command]
+pub fn push_github_comment_thread(
+    id: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    app.push_github_comment_thread(&id)
+        .map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &mut hl, &state))
+}
+
 /// Submit pending local comments as a GitHub PR review with an explicit decision.
 /// `mode` must be "COMMENT", "APPROVE", or "REQUEST_CHANGES".
 /// `summary` is the top-level review body sent to GitHub.
+fn gh_review_submit_err(e: anyhow::Error) -> String {
+    let raw = e.to_string();
+    if is_own_pr_approval_error(&raw) {
+        return own_pr_approval_error();
+    }
+    let mut hints = Vec::new();
+    if raw.contains("422") || raw.to_lowercase().contains("unprocessable") {
+        hints.push("blank review payload");
+        hints.push("invalid or stale line anchor");
+        hints.push("comment position no longer matches PR head");
+    }
+    if hints.is_empty() {
+        format!("GitHub review submission failed: {raw}")
+    } else {
+        format!(
+            "GitHub review submission failed: {raw}\nLikely causes: {}",
+            hints.join("; ")
+        )
+    }
+}
+
+fn is_gh_review_422(err: &anyhow::Error) -> bool {
+    let raw = err.to_string();
+    raw.contains("422") || raw.to_lowercase().contains("unprocessable")
+}
+
 #[tauri::command]
 pub fn submit_github_review(
     mode: String,
@@ -1569,6 +1647,33 @@ pub fn submit_github_review(
             ))
         }
     };
+
+    // Fast preflight for the common desktop PR-review path: if the active tab
+    // already carries PR metadata, avoid refreshing the diff and waiting for
+    // GitHub only to get the known own-PR approval rejection.
+    if event == "APPROVE" {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some((owner, repo, number)) = active_github_key(&app, &state) {
+            let me = state.gh_user.lock().ok().and_then(|login| login.clone());
+            if let (Some(me), Some(author)) =
+                (me, active_pr_author(&app, &state, &owner, &repo, number))
+            {
+                if author.eq_ignore_ascii_case(&me) {
+                    return Err(own_pr_approval_error());
+                }
+            }
+        }
+    }
+
+    // Refresh the local diff so line anchors are checked against the latest tree.
+    {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if !app.tab().is_remote() {
+            app.tab_mut()
+                .refetch_and_refresh_diff()
+                .map_err(|e| e.to_string())?;
+        }
+    }
 
     let (
         owner,
@@ -1617,6 +1722,17 @@ pub fn submit_github_review(
             let pr_info = github::get_pr_info(&repo_root).map_err(|e| e.to_string())?;
             (pr_info.0, pr_info.1, pr_info.2)
         };
+        if event == "APPROVE" {
+            let me = state.gh_user.lock().ok().and_then(|login| login.clone());
+            if let (Some(me), Some(author)) = (
+                me,
+                active_pr_author(&app, &state, &owner, &repo_name, pr_number),
+            ) {
+                if author.eq_ignore_ascii_case(&me) {
+                    return Err(own_pr_approval_error());
+                }
+            }
+        }
         (
             owner,
             repo_name,
@@ -1666,11 +1782,18 @@ pub fn submit_github_review(
         side: String,
     }
 
-    // Collect all line-anchored pending candidates.
+    // Only top-level line comments belong in a review batch — replies use the reply API.
     let candidates: Vec<BatchEntry> = gc
         .comments
         .iter()
-        .filter(|c| c.source == "local" && !c.synced && !c.file.is_empty())
+        .filter(|c| {
+            c.source == "local"
+                && !c.synced
+                && !c.file.is_empty()
+                && c.in_reply_to.is_none()
+                && c.anchor_status != "lost"
+                && !c.outdated
+        })
         .filter_map(|c| {
             c.line_start.map(|l| BatchEntry {
                 id: c.id.clone(),
@@ -1734,49 +1857,51 @@ pub fn submit_github_review(
         ));
     }
 
-    let submit_err = |e: anyhow::Error| -> String {
-        let raw = e.to_string();
-        let mut hints = Vec::new();
-        if raw.contains("422") || raw.to_lowercase().contains("unprocessable") {
-            hints.push("blank review payload");
-            hints.push("invalid or stale line anchor");
-            hints.push("comment position no longer matches PR head");
-        }
-        if hints.is_empty() {
-            format!("GitHub review submission failed: {raw}")
+    let submit_review = |comments: &[github::ReviewBatchEntry]| -> Result<(), anyhow::Error> {
+        if is_remote {
+            github::gh_pr_submit_review_remote(
+                &owner,
+                &repo_name,
+                pr_number,
+                comments,
+                event,
+                &summary_trimmed,
+            )
         } else {
-            format!(
-                "GitHub review submission failed: {raw}\nLikely causes: {}",
-                hints.join("; ")
+            github::gh_pr_submit_review(
+                &owner,
+                &repo_name,
+                pr_number,
+                comments,
+                &repo_root,
+                event,
+                &summary_trimmed,
             )
         }
     };
 
-    let submit_result = if is_remote {
-        github::gh_pr_submit_review_remote(
-            &owner,
-            &repo_name,
-            pr_number,
-            &batch,
-            event,
-            &summary_trimmed,
-        )
-    } else {
-        github::gh_pr_submit_review(
-            &owner,
-            &repo_name,
-            pr_number,
-            &batch,
-            &repo_root,
-            event,
-            &summary_trimmed,
-        )
-    };
-    submit_result.map_err(submit_err)?;
+    let mut decision_only_fallback = false;
+    match submit_review(&batch) {
+        Ok(()) => {}
+        Err(e)
+            if !batch.is_empty()
+                && is_gh_review_422(&e)
+                && (event == "APPROVE" || event == "REQUEST_CHANGES") =>
+        {
+            submit_review(&[]).map_err(gh_review_submit_err)?;
+            decision_only_fallback = true;
+        }
+        Err(e) => return Err(gh_review_submit_err(e)),
+    }
 
-    // Mark only comments that were actually submitted in this review as synced.
-    if !submitted_ids.is_empty() {
-        let mut gc_to_write = gc;
+    let mut gc_to_write = gc;
+    if decision_only_fallback {
+        let skipped = batch.len();
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.notify(&format!(
+            "{event} submitted, but {skipped} inline comment(s) could not be bundled (stale vs PR head). Refresh the diff, then push them individually."
+        ));
+    } else if !submitted_ids.is_empty() {
         let submitted: std::collections::HashSet<String> = submitted_ids.into_iter().collect();
         let mut touched = false;
         for c in &mut gc_to_write.comments {
@@ -1835,6 +1960,16 @@ pub fn submit_github_pr_decision(
         let repo_root = tab.repo_root.clone();
         let (owner, repo, number) = active_github_key(&app, &state)
             .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?;
+        if event == "APPROVE" {
+            let me = state.gh_user.lock().ok().and_then(|login| login.clone());
+            if let (Some(me), Some(author)) =
+                (me, active_pr_author(&app, &state, &owner, &repo, number))
+            {
+                if author.eq_ignore_ascii_case(&me) {
+                    return Err(own_pr_approval_error());
+                }
+            }
+        }
         (owner, repo, number, is_remote, repo_root)
     };
 
@@ -1851,7 +1986,7 @@ pub fn submit_github_pr_decision(
             &summary_trimmed,
         )
     };
-    submit_result.map_err(|e| format!("GitHub review submission failed: {e}"))?;
+    submit_result.map_err(gh_review_submit_err)?;
 
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
@@ -3148,6 +3283,14 @@ fn freshness_from_hint(hint: &PrOpenHint) -> PrOpenFreshness {
     }
 }
 
+/// Sidebar hints can omit fields (e.g. Recent entries resolved without pr_cache).
+/// Incomplete hints must not skip `gh pr view` — that leaves `base_branch` empty.
+fn pr_open_hint_is_complete(hint: &PrOpenHint) -> bool {
+    !hint.base_ref.trim().is_empty()
+        && !hint.head_ref.trim().is_empty()
+        && !hint.head_oid.trim().is_empty()
+}
+
 fn load_pr_open_inputs(
     project_id: &str,
     pr_number: u64,
@@ -3165,6 +3308,7 @@ fn load_pr_open_inputs(
     let repo_slug = proj.remote.clone();
     let branch_label = format!("pr-{}", pr_number);
     let key = pr_open_cache_key(project_id, &repo_root, pr_number);
+    let hint = hint.filter(|h| pr_open_hint_is_complete(h));
 
     // ── Hint path: skip the `gh pr view` round-trip entirely ──
     if let Some(hint) = hint {
@@ -3432,6 +3576,12 @@ pub fn open_pr_review(
             e
         })?;
     let cache_hit = inputs.cache_hit;
+    let recent_title = hint
+        .as_ref()
+        .map(|h| h.title.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| inputs.metadata.pr_data.title.clone());
     let new_tab = er_engine::app::TabState::new_local_pr_from_github_diff(
         inputs.repo_root,
         pr_number,
@@ -3458,6 +3608,7 @@ pub fn open_pr_review(
     let t_place_tab = std::time::Instant::now();
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
+    let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
     let snapshot = snap_from(&app, &mut hl, &state);
@@ -3916,6 +4067,74 @@ pub fn track_pr(
     snap!(state)
 }
 
+fn resolve_pr_title_for_project(
+    project_id: &str,
+    pr_number: u64,
+    title: Option<String>,
+    state: &AppState,
+) -> Result<String, String> {
+    if let Some(t) = title {
+        let trimmed = t.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+    }
+    let file = projects::load();
+    let proj = file
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?;
+    if let Some(remote) = proj.remote.as_ref() {
+        if let Ok(cache) = state.pr_cache.lock() {
+            if let Some(prs) = cache.get(remote) {
+                if let Some(pr) = prs.iter().find(|p| p.number == pr_number) {
+                    if !pr.title.is_empty() {
+                        return Ok(pr.title.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(format!("PR #{pr_number}"))
+}
+
+#[tauri::command]
+pub fn save_pr(
+    project_id: String,
+    pr_number: u64,
+    title: Option<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let title = resolve_pr_title_for_project(&project_id, pr_number, title, &state)?;
+    projects::save_pr(&project_id, pr_number, &title).map_err(|e| e.to_string())?;
+    let root = state
+        .app
+        .lock()
+        .ok()
+        .map(|a| a.tab().repo_root.clone())
+        .unwrap_or_default();
+    kick_meta_refresh(&state, root);
+    snap!(state)
+}
+
+#[tauri::command]
+pub fn unsave_pr(
+    project_id: String,
+    pr_number: u64,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    projects::unsave_pr(&project_id, pr_number).map_err(|e| e.to_string())?;
+    let root = state
+        .app
+        .lock()
+        .ok()
+        .map(|a| a.tab().repo_root.clone())
+        .unwrap_or_default();
+    kick_meta_refresh(&state, root);
+    snap!(state)
+}
+
 #[tauri::command]
 pub fn untrack_pr(
     project_id: String,
@@ -4360,10 +4579,13 @@ pub fn update_tab_browser(
     annotate: Option<bool>,
     tooltips: Option<bool>,
     split_ratio: Option<f32>,
+    app_handle: tauri::AppHandle,
+    browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    let tab_idx = app.active_tab;
     let tab = app.tab_mut();
     if let Some(l) = layout.as_deref() {
         tab.browser_layout = BrowserLayout::from_str(l);
@@ -4380,16 +4602,23 @@ pub fn update_tab_browser(
     if let Some(r) = split_ratio {
         tab.browser_split_ratio = r.clamp(0.35, 0.65);
     }
+    crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, tab_idx)?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &mut hl, &state))
 }
 
 #[tauri::command]
-pub fn cycle_tab_browser_layout(state: State<AppState>) -> Result<AppSnapshot, String> {
+pub fn cycle_tab_browser_layout(
+    app_handle: tauri::AppHandle,
+    browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    let tab_idx = app.active_tab;
     let tab = app.tab_mut();
     tab.browser_layout = tab.browser_layout.cycle();
+    crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, tab_idx)?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &mut hl, &state))
 }
@@ -5198,6 +5427,16 @@ mod tests {
     #[test]
     fn review_submit_validation_accepts_comment_batch() {
         validate_review_submission(2, "").unwrap();
+    }
+
+    #[test]
+    fn own_pr_approval_error_is_detected_from_github_422() {
+        let raw = r#"Failed to submit review: gh: Unprocessable Entity (HTTP 422) ({"errors":["Review Can not approve your own pull request"]})"#;
+        assert!(is_own_pr_approval_error(raw));
+        assert_eq!(
+            gh_review_submit_err(anyhow::anyhow!(raw)),
+            "GitHub does not allow approving your own pull request."
+        );
     }
 
     #[test]

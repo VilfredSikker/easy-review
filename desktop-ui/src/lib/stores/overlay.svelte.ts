@@ -1,0 +1,35 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { browserSuspendForOverlay } from "./browserHost";
+
+/** Blocks the native review-browser webview while app modals are open (z-index cannot cover it). */
+class OverlayStore {
+  #depth = $state(0);
+
+  get blocksNativeBrowser(): boolean {
+    return this.#depth > 0;
+  }
+
+  /** Call the returned function when the overlay closes. */
+  acquire(): () => void {
+    this.#depth += 1;
+    void prepareOverlayFocus();
+    return () => {
+      this.#depth = Math.max(0, this.#depth - 1);
+    };
+  }
+}
+
+export const overlay = new OverlayStore();
+
+/**
+ * Destroy review child webviews and focus the main window before showing a modal.
+ * `hide()` is unreliable on macOS — suspended webviews can still steal clicks/focus.
+ */
+export async function prepareOverlayFocus(): Promise<void> {
+  try {
+    await browserSuspendForOverlay();
+    await getCurrentWindow().setFocus();
+  } catch {
+    // Not running inside Tauri (storybook / tests).
+  }
+}

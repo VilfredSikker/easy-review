@@ -38,6 +38,7 @@ function baseGithub(overrides: Partial<GithubStatusSnapshot> = {}): GithubStatus
     recent_comments: [],
     recent_reviews: [],
     last_updated: String(Math.floor(Date.now() / 1000)),
+    is_authored_by_me: false,
     ...overrides,
   };
 }
@@ -72,7 +73,15 @@ export const ChecksPending: Story = {
   args: {
     branch: "wip/refactor",
     base: "main",
-    pr: { number: 99, title: "WIP refactor", state: "draft", base: "main", head: "wip/refactor" },
+    pr: {
+      number: 99,
+      title: "WIP refactor",
+      state: "draft",
+      base: "main",
+      head: "wip/refactor",
+      url: "https://github.com/reshape/easy-review/pull/99",
+      author: "vilfred",
+    },
     reviewed_count: 1,
     total_count: 4,
     additions: 100,

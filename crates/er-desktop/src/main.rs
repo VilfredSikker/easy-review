@@ -3,9 +3,9 @@
 mod browser_proxy;
 mod browser_webview;
 mod commands;
-mod frame_script;
 mod er_storage;
 mod export;
+mod frame_script;
 mod inbox;
 mod pr_cache;
 mod projects;
@@ -233,9 +233,7 @@ fn proxy_transport_error_response(e: &ureq::Error) -> tauri::http::Response<Vec<
     tauri::http::Response::builder()
         .status(status)
         .header("Content-Type", "text/html")
-        .body(
-            format!("<html><body><p>{}: {}</p></body></html>", label, e).into_bytes(),
-        )
+        .body(format!("<html><body><p>{}: {}</p></body></html>", label, e).into_bytes())
         .unwrap()
 }
 
@@ -264,12 +262,7 @@ fn proxied_response(
 ) -> tauri::http::Response<Vec<u8>> {
     let uri = request.uri();
     let target = upstream_url_for_proxy(uri, upstream_scheme);
-    eprintln!(
-        "[erp] request: {} {} -> {}",
-        request.method(),
-        uri,
-        target
-    );
+    eprintln!("[erp] request: {} {} -> {}", request.method(), uri, target);
     // Document navigations: see `browser_proxy` module for redirect policy.
     let agent = ureq::AgentBuilder::new()
         .redirects(0)
@@ -1029,12 +1022,8 @@ fn main() {
         .manage(BrowserWebviewState::new())
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
         // proxies `https://host/path`. HTML responses get the annotation script.
-        .register_uri_scheme_protocol("erp", |_app, request| {
-            proxied_response(&request, "http")
-        })
-        .register_uri_scheme_protocol("erps", |_app, request| {
-            proxied_response(&request, "https")
-        })
+        .register_uri_scheme_protocol("erp", |_app, request| proxied_response(&request, "http"))
+        .register_uri_scheme_protocol("erps", |_app, request| proxied_response(&request, "https"))
         .setup(|app| {
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
@@ -1098,6 +1087,7 @@ fn main() {
             commands::refresh_github_status,
             commands::pull_github_comments,
             commands::push_github_comments,
+            commands::push_github_comment_thread,
             commands::submit_github_review,
             commands::submit_github_pr_decision,
             commands::post_github_pr_comment,
@@ -1133,6 +1123,8 @@ fn main() {
             commands::dismiss_remote_pr,
             commands::track_pr,
             commands::untrack_pr,
+            commands::save_pr,
+            commands::unsave_pr,
             commands::list_available_prs,
             commands::set_active_project,
             commands::add_tracked_branch,
@@ -1162,6 +1154,7 @@ fn main() {
             commands::get_background_task_log,
             browser_webview::browser_ensure,
             browser_webview::browser_hide,
+            browser_webview::browser_suspend_for_overlay,
             browser_webview::browser_set_bounds,
             browser_webview::browser_navigate,
             browser_webview::browser_host_message,

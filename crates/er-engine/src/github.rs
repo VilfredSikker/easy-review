@@ -521,6 +521,14 @@ pub fn verify_remote_matches(repo_root: &str, pr_ref: &PrRef) -> Result<()> {
 /// Returns the ref name that actually resolves — may be `origin/<base>` if
 /// no local branch exists.
 pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<String> {
+    let base_branch = base_branch.trim();
+    let base_branch = if base_branch.is_empty() {
+        crate::git::detect_base_branch_in(repo_root)
+            .context("PR has no base branch; could not detect a default base")?
+    } else {
+        base_branch.to_string()
+    };
+
     let rev_parse_ok = |refname: &str| -> Result<bool> {
         let out = Command::new("git")
             .args(["rev-parse", "--verify", refname])
@@ -531,8 +539,8 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
     };
 
     // Local branch exists — use it directly
-    if rev_parse_ok(base_branch)? {
-        return Ok(base_branch.to_string());
+    if rev_parse_ok(&base_branch)? {
+        return Ok(base_branch.clone());
     }
 
     // Remote-tracking ref exists — use it (no fetch needed)
@@ -543,7 +551,7 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
 
     // Fetch from origin
     let fetch = Command::new("git")
-        .args(["fetch", "origin", base_branch])
+        .args(["fetch", "origin", base_branch.as_str()])
         .current_dir(repo_root)
         .output()
         .context("Failed to fetch base branch from origin")?;
@@ -563,8 +571,8 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
     }
 
     // Fallback: the fetch may have created a local ref via FETCH_HEAD
-    if rev_parse_ok(base_branch)? {
-        return Ok(base_branch.to_string());
+    if rev_parse_ok(&base_branch)? {
+        return Ok(base_branch.clone());
     }
 
     anyhow::bail!(
@@ -1031,11 +1039,61 @@ fn remote_matches_repo(remote: &str, owner: &str, repo: &str) -> bool {
     remote.contains(&format!("/{}", expected)) || remote.contains(&format!(":{}", expected))
 }
 
+/// Remote-only PRs above these limits are rejected up front with a clear message.
+const REMOTE_PR_MAX_CHANGED_FILES: u64 = 400;
+const REMOTE_PR_MAX_LINE_CHANGES: u64 = 300_000;
+
+/// Quick size check via `gh pr view` so we do not clone multi‑GB repos for hopeless PRs.
+pub fn gh_pr_size_check_remote(owner: &str, repo: &str, number: u64) -> Result<()> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "additions,deletions,changedFiles",
+            "--jq",
+            r#"{additions: .additions, deletions: .deletions, files: .changedFiles}"#,
+        ])
+        .output()
+        .context("Failed to check PR size")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to check PR #{} size: {}", number, stderr.trim());
+    }
+
+    let v: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).context("PR size JSON")?;
+    let additions = v["additions"].as_u64().unwrap_or(0);
+    let deletions = v["deletions"].as_u64().unwrap_or(0);
+    let files = v["files"].as_u64().unwrap_or(0);
+    let lines = additions.saturating_add(deletions);
+
+    if files > REMOTE_PR_MAX_CHANGED_FILES || lines > REMOTE_PR_MAX_LINE_CHANGES {
+        anyhow::bail!(
+            "PR #{} is too large to review here ({} files, +{}/-{} lines). \
+             Open a smaller PR, or clone {}/{} locally.",
+            number,
+            files,
+            additions,
+            deletions,
+            owner,
+            repo
+        );
+    }
+    Ok(())
+}
+
 /// Get raw unified diff for a PR via `gh pr diff N --repo owner/repo`.
 /// Works without a local clone — uses GitHub API via gh CLI.
 /// Falls back to shallow clone + local git diff when the PR exceeds GitHub's
 /// API line limit (HTTP 406 / diff_too_large).
 pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String> {
+    gh_pr_size_check_remote(owner, repo, number)?;
     let repo_slug = format!("{}/{}", owner, repo);
     let output = Command::new("gh")
         .args(["pr", "diff", &number.to_string(), "--repo", &repo_slug])
@@ -1075,10 +1133,48 @@ pub fn gh_pr_diff(pr_number: u64, repo_root: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Base and head commit SHAs for a PR (from `gh pr view`). Works for merged PRs and
+/// deleted head branches — unlike branch names, which may no longer exist on origin.
+pub fn gh_pr_commit_shas_remote(owner: &str, repo: &str, number: u64) -> Result<(String, String)> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "baseRefOid,headRefOid",
+            "--jq",
+            r#"[.baseRefOid, .headRefOid] | @tsv"#,
+        ])
+        .output()
+        .context("Failed to get PR commit SHAs")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Failed to get PR #{} commit SHAs: {}",
+            number,
+            stderr.trim()
+        );
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let (base_sha, head_sha) = text
+        .split_once('\t')
+        .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {}", text))?;
+    if base_sha.is_empty() || head_sha.is_empty() {
+        anyhow::bail!("Missing base or head SHA for PR #{}", number);
+    }
+    Ok((base_sha.to_string(), head_sha.to_string()))
+}
+
 /// Fallback for large PRs: shallow-clone the repo into a temp dir, fetch both
-/// refs, and produce the diff locally. The temp dir is cleaned up automatically.
+/// commits by SHA, and produce the diff locally. The temp dir is cleaned up automatically.
 fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> {
-    let (base_ref, head_ref) = gh_pr_metadata_remote(owner, repo, number)?;
+    let (base_sha, head_sha) = gh_pr_commit_shas_remote(owner, repo, number)?;
     let repo_url = format!("https://github.com/{}/{}.git", owner, repo);
     let tmp_dir = std::env::temp_dir().join(format!("er-remote-{}-{}-{}", owner, repo, number));
     let tmp_path = tmp_dir
@@ -1108,7 +1204,7 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
         anyhow::bail!("Shallow clone failed: {}", stderr.trim());
     }
 
-    // Fetch the base and head refs
+    // Fetch exact base/head commits (branch names fail for merged/deleted heads and some forks).
     let fetch = Command::new("git")
         .args([
             "-C",
@@ -1116,16 +1212,16 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
             "fetch",
             "--depth=1",
             "origin",
-            &base_ref,
-            &head_ref,
+            &base_sha,
+            &head_sha,
         ])
         .output()
-        .context("Failed to fetch PR refs")?;
+        .context("Failed to fetch PR commits")?;
 
     if !fetch.status.success() {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         let stderr = String::from_utf8_lossy(&fetch.stderr);
-        anyhow::bail!("Failed to fetch PR refs: {}", stderr.trim());
+        anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
     }
 
     // Generate the diff
@@ -1135,8 +1231,8 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
             "-C",
             &tmp_path,
             "diff",
-            &format!("origin/{}", base_ref),
-            &format!("origin/{}", head_ref),
+            &base_sha,
+            &head_sha,
             &unified_arg,
             "--no-color",
             "--no-ext-diff",
@@ -1545,49 +1641,86 @@ pub fn gh_pr_submit_review(
         anyhow::bail!("Failed to get HEAD SHA: empty output");
     }
 
-    // Build the review JSON payload
-    let comment_values: Vec<serde_json::Value> = comments
-        .iter()
-        .map(|entry| {
-            serde_json::json!({
-                "path": entry.file,
-                "line": entry.line,
-                "side": entry.side,
-                "body": entry.body
-            })
-        })
-        .collect();
+    post_pr_review(
+        owner,
+        repo,
+        pr,
+        &commit_id,
+        event,
+        body,
+        comments,
+        Some(repo_root),
+    )
+}
 
-    let payload = serde_json::json!({
+fn pr_review_payload_json(
+    commit_id: &str,
+    event: &str,
+    body: &str,
+    comments: &[ReviewBatchEntry],
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
         "commit_id": commit_id,
         "event": event,
         "body": body,
-        "comments": comment_values
     });
+    if !comments.is_empty() {
+        let comment_values: Vec<serde_json::Value> = comments
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "path": entry.file,
+                    "line": entry.line,
+                    "side": entry.side,
+                    "body": entry.body
+                })
+            })
+            .collect();
+        payload["comments"] = serde_json::Value::Array(comment_values);
+    }
+    payload
+}
 
-    // Write to temp file and pass via --input
+fn post_pr_review(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    commit_id: &str,
+    event: &str,
+    body: &str,
+    comments: &[ReviewBatchEntry],
+    repo_root: Option<&str>,
+) -> Result<()> {
+    let payload = pr_review_payload_json(commit_id, event, body, comments);
     let tmp_path = format!("/tmp/er_review_payload_{}.json", std::process::id());
     std::fs::write(&tmp_path, serde_json::to_string(&payload)?)
         .context("Failed to write review payload")?;
 
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "POST",
-            &format!("repos/{}/{}/pulls/{}/reviews", owner, repo, pr),
-            "--input",
-            &tmp_path,
-        ])
-        .current_dir(repo_root)
-        .output()
-        .context("Failed to submit PR review")?;
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "api",
+        "-X",
+        "POST",
+        &format!("repos/{}/{}/pulls/{}/reviews", owner, repo, pr),
+        "--input",
+        &tmp_path,
+    ]);
+    if let Some(root) = repo_root {
+        cmd.current_dir(root);
+    }
+    let output = cmd.output().context("Failed to submit PR review")?;
 
     let _ = std::fs::remove_file(&tmp_path);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to submit review: {}", stderr.trim());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stdout.trim().is_empty() {
+            stderr.trim().to_string()
+        } else {
+            format!("{} ({})", stderr.trim(), stdout.trim())
+        };
+        anyhow::bail!("Failed to submit review: {}", detail);
     }
 
     Ok(())
@@ -1630,49 +1763,7 @@ pub fn gh_pr_submit_review_remote(
         anyhow::bail!("Failed to get HEAD SHA: empty output");
     }
 
-    let comment_values: Vec<serde_json::Value> = comments
-        .iter()
-        .map(|entry| {
-            serde_json::json!({
-                "path": entry.file,
-                "line": entry.line,
-                "side": entry.side,
-                "body": entry.body
-            })
-        })
-        .collect();
-
-    let payload = serde_json::json!({
-        "commit_id": commit_id,
-        "event": event,
-        "body": body,
-        "comments": comment_values
-    });
-
-    let tmp_path = format!("/tmp/er_review_payload_{}.json", std::process::id());
-    std::fs::write(&tmp_path, serde_json::to_string(&payload)?)
-        .context("Failed to write review payload")?;
-
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "POST",
-            &format!("repos/{}/{}/pulls/{}/reviews", owner, repo, pr),
-            "--input",
-            &tmp_path,
-        ])
-        .output()
-        .context("Failed to submit PR review")?;
-
-    let _ = std::fs::remove_file(&tmp_path);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to submit review: {}", stderr.trim());
-    }
-
-    Ok(())
+    post_pr_review(owner, repo, pr, &commit_id, event, body, comments, None)
 }
 
 /// Post a general comment on a PR (not attached to any file/line).

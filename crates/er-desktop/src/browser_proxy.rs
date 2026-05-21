@@ -60,10 +60,7 @@ pub fn url_has_transient_oauth_query(url: &str) -> bool {
     let Some(q_start) = url.find('?') else {
         return false;
     };
-    let query = url[q_start + 1..]
-        .split('#')
-        .next()
-        .unwrap_or("");
+    let query = url[q_start + 1..].split('#').next().unwrap_or("");
     if query.is_empty() {
         return false;
     }
@@ -90,7 +87,11 @@ pub fn redirect_visit_key(url: &str) -> String {
     } else {
         rest[..path_end].to_string()
     };
-    let path = if path.is_empty() { "/".to_string() } else { path };
+    let path = if path.is_empty() {
+        "/".to_string()
+    } else {
+        path
+    };
 
     let query = if let Some(q_start) = rest.find('?') {
         let q_end = rest[q_start + 1..]
@@ -249,7 +250,12 @@ pub fn webview_navigation_handoff(http_location: &str) -> http::Response<Vec<u8>
 
 #[allow(dead_code)] // reserved for client-side redirect-loop detection
 pub fn redirect_loop_error_response(visited: &HashSet<String>) -> http::Response<Vec<u8>> {
-    let hops = visited.iter().take(8).cloned().collect::<Vec<_>>().join("\n  ");
+    let hops = visited
+        .iter()
+        .take(8)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n  ");
     log::warn!("[erp] redirect loop:\n  {hops}");
     let body = format!(
         concat!(
@@ -312,12 +318,8 @@ pub fn fetch_upstream_get(
     initial_target: &str,
     forward_cookies: bool,
 ) -> Result<UpstreamFetch, UpstreamFetchError> {
-    log::info!(
-        "[erp] document_get url={initial_target} cookies={forward_cookies}"
-    );
-    let mut req = agent
-        .get(initial_target)
-        .set("Accept-Encoding", "identity");
+    log::info!("[erp] document_get url={initial_target} cookies={forward_cookies}");
+    let mut req = agent.get(initial_target).set("Accept-Encoding", "identity");
     for (name, value) in forward_headers {
         if !forward_cookies && name.eq_ignore_ascii_case("cookie") {
             continue;
@@ -337,7 +339,10 @@ pub fn fetch_upstream_get(
             .find(|h| h.name.eq_ignore_ascii_case("location"))
             .map(|h| h.value.as_str())
         else {
-            return Ok(UpstreamFetch { response: resp, headers });
+            return Ok(UpstreamFetch {
+                response: resp,
+                headers,
+            });
         };
         let next = resolve_upstream_redirect_location(location, initial_target);
         if same_upstream_origin(initial_target, &next) {

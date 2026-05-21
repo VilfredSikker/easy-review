@@ -37,17 +37,38 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
   }
 
   // Forward host-level keyboard shortcuts (e.g. ⌘A for the AI palette) that
-  // would otherwise be eaten by WebKit's native handling because focus is in
-  // this native child webview, not the desktop-ui parent. Claimed globally so
-  // the shortcut is consistent with desktop-ui's keyboard handler.
+  // Desktop shortcuts while focus is in this native child webview (not parent UI).
   document.addEventListener('keydown',function(ev){
-    if(!(ev.metaKey||ev.ctrlKey))return;
-    if(ev.shiftKey||ev.altKey)return;
+    if(!(ev.metaKey||ev.ctrlKey)||ev.altKey)return;
     var k=ev.key;
-    if(k!=='a'&&k!=='A')return;
+    if(ev.shiftKey&&(k==='b'||k==='B')){
+      ev.preventDefault();ev.stopPropagation();
+      reportToHost({__er_shortcut:'browser-fullscreen'});
+      return;
+    }
+    if(ev.shiftKey&&(k==='e'||k==='E')){
+      ev.preventDefault();ev.stopPropagation();
+      reportToHost({__er_shortcut:'export-review'});
+      return;
+    }
+    if(!ev.shiftKey&&(k==='b'||k==='B')){
+      ev.preventDefault();ev.stopPropagation();
+      reportToHost({__er_shortcut:'browser-cycle'});
+      return;
+    }
+    if(!ev.shiftKey&&(k==='a'||k==='A')){
+      ev.preventDefault();ev.stopPropagation();
+      reportToHost({__er_shortcut:'ai-hub'});
+    }
+  },true);
+
+  // Escape → host (close AI Hub / modals). Skip when the in-page composer is open.
+  document.addEventListener('keydown',function(ev){
+    if(ev.key!=='Escape')return;
+    if(composerEl)return;
     ev.preventDefault();
     ev.stopPropagation();
-    reportToHost({__er_shortcut:'ai-hub'});
+    reportToHost({__er_shortcut:'dismiss-overlay'});
   },true);
 
   function useProxyScheme(){
@@ -289,7 +310,6 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
   function shouldIgnoreAnnotateEvent(ev){
     if(!annotateActive)return true;
     if(isErOverlayTarget(ev.target))return true;
-    if(composerEl)return true;
     return false;
   }
   function onAnnotatePointerDown(ev){
@@ -331,7 +351,7 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     }else{
       try{document.documentElement.style.cursor='';}catch(_){}
       hideHoverBox();
-      hideComposer();
+      hideComposer(true);
       document.removeEventListener('pointerdown',onAnnotatePointerDown,true);
       document.removeEventListener('mousedown',onAnnotatePointerDown,true);
       document.removeEventListener('pointermove',onAnnotateMove,true);
@@ -371,7 +391,7 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     if(pinsLayerEl&&pinsLayerEl.isConnected)return pinsLayerEl;
     pinsLayerEl=document.createElement('div');
     pinsLayerEl.id='__er_pins_layer';
-    pinsLayerEl.setAttribute('style','position:fixed;inset:0;pointer-events:none;z-index:2147483645;');
+    pinsLayerEl.setAttribute('style','position:fixed;inset:0;pointer-events:none;overflow:visible;z-index:2147483645;');
     (document.documentElement||document.body).appendChild(pinsLayerEl);
     return pinsLayerEl;
   }
@@ -424,20 +444,65 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     });
   }
 
+  var COMPOSER_EST_W=272;
+  var COMPOSER_EST_H=210;
+  var POPOVER_EST_W=260;
+  var POPOVER_EST_H=120;
+  var OVERLAY_MARGIN=8;
+  var OVERLAY_GAP=8;
+
+  function viewportSize(){
+    return{
+      w:window.innerWidth||document.documentElement.clientWidth||800,
+      h:window.innerHeight||document.documentElement.clientHeight||600
+    };
+  }
+
+  /** Keep floating panels inside the review webview; flip left/up when near edges. */
+  function clampOverlayPosition(s,el,estW,estH){
+    var vp=viewportSize();
+    var m=OVERLAY_MARGIN;
+    var gap=OVERLAY_GAP;
+    var w=el&&el.offsetWidth>0?el.offsetWidth:estW;
+    var h=el&&el.offsetHeight>0?el.offsetHeight:estH;
+    var maxW=Math.max(160,vp.w-m*2);
+    if(el&&w>maxW){
+      el.style.maxWidth=maxW+'px';
+      w=el.offsetWidth>0?el.offsetWidth:maxW;
+    }
+    var rightLeft=s.left+s.width+gap;
+    var leftLeft=s.left-w-gap;
+    var left;
+    if(rightLeft+w+m<=vp.w)left=rightLeft;
+    else if(leftLeft>=m)left=leftLeft;
+    else left=Math.max(m,Math.min(rightLeft,vp.w-w-m));
+    left=Math.max(m,Math.min(left,vp.w-w-m));
+    var belowTop=s.top+s.height+gap;
+    var aboveTop=s.top-h-gap;
+    var top;
+    if(belowTop+h+m<=vp.h)top=belowTop;
+    else if(aboveTop>=m)top=aboveTop;
+    else top=Math.max(m,Math.min(belowTop,vp.h-h-m));
+    top=Math.max(m,Math.min(top,vp.h-h-m));
+    return{left:left,top:top};
+  }
+
+  function applyOverlayPosition(el,pos){
+    el.style.left=pos.left+'px';
+    el.style.top=pos.top+'px';
+  }
+
   function positionComposerEl(){
     if(!composerEl||!composerState)return;
     var s=layoutPinItem({box:composerState.box,viewport:composerState.viewport,selector:composerState.selector});
-    var left=Math.min(Math.max(8,s.left+s.width+8),(window.innerWidth||800)-272);
-    var top=Math.max(8,Math.min(s.top+s.height+8,(window.innerHeight||600)-200));
-    composerEl.style.left=left+'px';
-    composerEl.style.top=top+'px';
+    applyOverlayPosition(composerEl,clampOverlayPosition(s,composerEl,COMPOSER_EST_W,COMPOSER_EST_H));
   }
 
   function renderPins(){
     var layer=ensurePinsLayer();
     layer.innerHTML='';
     if(!pinsCache.length){
-      hideComposer();
+      if(!composerEl)hideComposer(true);
       unbindPinsRelayoutListeners();
       return;
     }
@@ -483,14 +548,13 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
 
   function clearPinsLayer(){
     hidePopover();
-    hideComposer();
+    hideComposer(true);
     pinsCache=[];
     unbindPinsRelayoutListeners();
     if(pinsLayerEl)pinsLayerEl.innerHTML='';
   }
 
   function syncPinsToPage(items){
-    hideComposer();
     hidePopover();
     pinsCache=Array.isArray(items)?items:[];
     renderPins();
@@ -506,10 +570,8 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     hidePopover();
     var s=layoutPinItem({box:opts.box||[0,0,24,24],viewport:opts.viewport,selector:opts.selector});
     var layer=ensurePinsLayer();
-    var left=Math.min(Math.max(8,s.left+s.width+8),(window.innerWidth||800)-260);
-    var top=Math.max(8,Math.min(s.top+s.height+8,(window.innerHeight||600)-120));
     popoverEl=document.createElement('div');
-    popoverEl.setAttribute('style','position:absolute;left:'+left+'px;top:'+top+'px;width:16rem;max-width:min(16rem,calc(100vw - 2rem));padding:8px 10px;background:rgba(0,0,0,0.92);color:white;border:1px solid rgba(255,255,255,0.25);border-radius:8px;font-size:12px;line-height:1.4;pointer-events:none;z-index:2147483647;box-shadow:0 8px 24px rgba(0,0,0,0.35);');
+    popoverEl.setAttribute('style','position:absolute;left:0;top:0;width:16rem;box-sizing:border-box;padding:8px 10px;background:rgba(0,0,0,0.92);color:white;border:1px solid rgba(255,255,255,0.25);border-radius:8px;font-size:12px;line-height:1.4;pointer-events:none;z-index:2147483647;box-shadow:0 8px 24px rgba(0,0,0,0.35);');
     var label=opts.element_context||opts.label;
     if(label){
       var h=document.createElement('div');
@@ -522,23 +584,37 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     p.textContent=opts.text||'';
     popoverEl.appendChild(p);
     layer.appendChild(popoverEl);
+    applyOverlayPosition(popoverEl,clampOverlayPosition(s,popoverEl,POPOVER_EST_W,POPOVER_EST_H));
     popoverTimer=setTimeout(hidePopover,8000);
   }
 
   var composerEl=null;
   var composerState=null;
+  var composerViewportListenersBound=false;
 
-  function hideComposer(){
+  function bindComposerViewportListeners(){
+    if(composerViewportListenersBound)return;
+    composerViewportListenersBound=true;
+    function relayoutComposer(){
+      if(composerEl)positionComposerEl();
+    }
+    window.addEventListener('resize',relayoutComposer);
+    window.addEventListener('scroll',relayoutComposer,true);
+  }
+
+  function hideComposer(notifyHost){
+    var had=!!composerEl;
     if(composerEl&&composerEl.parentNode)composerEl.parentNode.removeChild(composerEl);
     composerEl=null;
     composerState=null;
+    if(notifyHost&&had)reportToHost({__er_composer_cancel:true});
   }
 
   function submitComposer(){
     if(!composerState||!composerEl)return;
     var ta=composerEl.querySelector('textarea');
     var text=ta?ta.value.trim():'';
-    if(!text){hideComposer();reportToHost({__er_composer_cancel:true});return;}
+    if(!text){hideComposer(true);return;}
     reportToHost({
       __er_composer_submit:true,
       box:composerState.box,
@@ -563,14 +639,9 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
       dom_context:opts.dom_context||null
     };
     var layer=ensurePinsLayer();
-    var left=Math.min(Math.max(8,s.left+s.width+8),(window.innerWidth||800)-272);
-    var top=Math.max(8,Math.min(s.top+s.height+8,(window.innerHeight||600)-200));
     composerEl=document.createElement('div');
     composerEl.setAttribute('data-er-overlay','composer');
-    composerEl.setAttribute('style','position:absolute;left:'+left+'px;top:'+top+'px;width:16rem;max-width:min(16rem,calc(100vw - 2rem));padding:8px 10px;background:rgba(15,15,20,0.96);color:white;border:1px solid rgba(255,255,255,0.3);border-radius:8px;font-size:12px;line-height:1.4;pointer-events:auto;z-index:2147483647;box-shadow:0 8px 24px rgba(0,0,0,0.45);font-family:system-ui,sans-serif;');
-    ['pointerdown','mousedown','click'].forEach(function(evt){
-      composerEl.addEventListener(evt,function(ev){ev.stopPropagation();},{capture:true});
-    });
+    composerEl.setAttribute('style','position:absolute;left:0;top:0;width:16rem;box-sizing:border-box;padding:8px 10px;background:rgba(15,15,20,0.96);color:white;border:1px solid rgba(255,255,255,0.3);border-radius:8px;font-size:12px;line-height:1.4;pointer-events:auto;z-index:2147483647;box-shadow:0 8px 24px rgba(0,0,0,0.45);font-family:system-ui,sans-serif;');
     var label=opts.element_context||opts.label;
     if(label){
       var h=document.createElement('div');
@@ -582,7 +653,7 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     ta.setAttribute('style','width:100%;min-height:4.5rem;resize:vertical;background:rgba(0,0,0,0.35);color:white;border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:6px;font-size:12px;outline:none;box-sizing:border-box;');
     ta.placeholder="What's wrong here?";
     ta.addEventListener('keydown',function(ev){
-      if(ev.key==='Escape'){ev.preventDefault();ev.stopPropagation();hideComposer();reportToHost({__er_composer_cancel:true});return;}
+      if(ev.key==='Escape'){ev.preventDefault();ev.stopPropagation();hideComposer(true);return;}
       if(ev.key==='Enter'&&(ev.metaKey||ev.ctrlKey)){ev.preventDefault();ev.stopPropagation();submitComposer();}
     });
     composerEl.appendChild(ta);
@@ -592,12 +663,22 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     cancelBtn.type='button';
     cancelBtn.textContent='Cancel';
     cancelBtn.setAttribute('style','font-size:11px;padding:4px 10px;border-radius:4px;border:none;background:rgba(255,255,255,0.1);color:white;cursor:pointer;');
-    cancelBtn.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();hideComposer();reportToHost({__er_composer_cancel:true});});
+    cancelBtn.addEventListener('click',function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      hideComposer(true);
+    });
     var saveBtn=document.createElement('button');
     saveBtn.type='button';
     saveBtn.textContent='Save';
     saveBtn.setAttribute('style','font-size:11px;padding:4px 10px;border-radius:4px;border:none;background:rgb(59,130,246);color:white;cursor:pointer;font-weight:600;');
-    saveBtn.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();submitComposer();});
+    saveBtn.addEventListener('click',function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      submitComposer();
+    });
     row.appendChild(cancelBtn);
     row.appendChild(saveBtn);
     composerEl.appendChild(row);
@@ -606,6 +687,8 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     hint.textContent='⌘↩ save · esc cancel';
     composerEl.appendChild(hint);
     layer.appendChild(composerEl);
+    applyOverlayPosition(composerEl,clampOverlayPosition(s,composerEl,COMPOSER_EST_W,COMPOSER_EST_H));
+    bindComposerViewportListeners();
     setTimeout(function(){try{ta.focus();}catch(_){}},0);
   }
 

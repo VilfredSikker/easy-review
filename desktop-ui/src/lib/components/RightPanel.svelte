@@ -30,6 +30,12 @@
     app.snapshot?.worktrees.find((w) => w.is_current) ?? null
   );
 
+  const activeTab = $derived(app.snapshot?.tabs?.find((t) => t.is_active) ?? null);
+  const displayPrNumber = $derived(
+    currentWorktree?.pr_number ?? app.snapshot?.github?.number ?? pr?.number ?? activeTab?.pr_number ?? null,
+  );
+  const displayPrUrl = $derived(app.snapshot?.github?.url ?? pr?.url ?? null);
+
   const checksStatus = $derived.by((): "success" | "pending" | "failure" | null => {
     const checks = app.snapshot?.github?.checks;
     if (!checks || checks.length === 0) return null;
@@ -74,10 +80,10 @@
         additions={totalAdds}
         deletions={totalDels}
         checks_status={checksStatus}
-        is_pr={currentWorktree?.is_pr ?? false}
-        pr_number={currentWorktree?.pr_number ?? null}
+        is_pr={(currentWorktree?.is_pr ?? false) || displayPrNumber !== null}
+        pr_number={displayPrNumber}
         is_merged={currentWorktree?.is_merged ?? false}
-        github_url={app.snapshot?.github?.url ?? null}
+        github_url={displayPrUrl}
         github={app.snapshot?.github ?? null}
       />
     {/if}

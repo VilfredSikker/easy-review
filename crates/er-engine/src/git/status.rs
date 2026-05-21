@@ -1296,8 +1296,8 @@ mod tests {
             .output()
             .unwrap();
 
-        let combined = append_untracked_synthetic_diffs(root.to_str().unwrap(), String::new())
-            .unwrap();
+        let combined =
+            append_untracked_synthetic_diffs(root.to_str().unwrap(), String::new()).unwrap();
         assert!(combined.contains("new.txt"));
         assert!(combined.contains("+hello"));
     }

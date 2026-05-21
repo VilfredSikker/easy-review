@@ -1,3 +1,4 @@
+import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
 import { tick } from "svelte";
@@ -263,6 +264,9 @@ class AppStore {
   }
 
   async cmd(command: string, args?: Record<string, unknown>) {
+    if (command === "run_ai_review" || command === "run_ai_validate") {
+      closeAiActionPalette();
+    }
     const tStart = performance.now();
     const isSlow = SLOW_COMMANDS.has(command);
     const isForceRefresh = command === "force_refresh_diff";

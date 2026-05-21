@@ -1,16 +1,26 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
   import { startWindowDrag } from "$lib/windowDrag";
 
   let prUrl = $state("");
+  let prUrlInput: HTMLInputElement | null = $state(null);
+
+  const canSubmitPrUrl = $derived(prUrl.trim().length > 0);
+
+  function syncPrUrlFromInput() {
+    if (prUrlInput) prUrl = prUrlInput.value;
+  }
 
   const projects = $derived(app.snapshot?.projects ?? []);
   let selectedProjectId = $state<string>("");
   let branchName = $state<string>("");
 
   async function openPrUrl() {
-    if (!prUrl.trim()) return;
-    await app.cmd("open_pr_url", { url: prUrl.trim() });
+    syncPrUrlFromInput();
+    const url = (prUrlInput?.value ?? prUrl).trim();
+    if (!url) return;
+    await app.cmd("open_pr_url", { url });
     prUrl = "";
     app.showEmptyState = false;
   }
@@ -64,7 +74,11 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-5 9 5v10l-9 5-9-5V7z"/></svg>
         Add project
       </button>
-      <button class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-3 flex items-center gap-2">
+      <button
+        type="button"
+        onclick={() => void openPrUrlModal()}
+        class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-3 flex items-center gap-2"
+      >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>
         Open PR by URL
       </button>
@@ -108,15 +122,24 @@
         </div>
 
         <!-- Paste field -->
-        <div class="rounded-xl border border-border bg-surface p-3 flex items-center gap-3 mb-8">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5e5e5e" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/></svg>
+        <div class="rounded-xl border border-border bg-surface p-3 flex items-center gap-3 mb-8 min-w-0">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5e5e5e" stroke-width="2" class="shrink-0"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/></svg>
           <input
+            bind:this={prUrlInput}
             bind:value={prUrl}
-            onkeydown={(e) => e.key === "Enter" && openPrUrl()}
-            class="flex-1 bg-transparent text-sm outline-none placeholder:text-muted mono"
+            oninput={syncPrUrlFromInput}
+            onpaste={() => queueMicrotask(syncPrUrlFromInput)}
+            onchange={syncPrUrlFromInput}
+            onkeydown={(e) => e.key === "Enter" && void openPrUrl()}
+            class="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted mono"
             placeholder="Paste a GitHub PR URL…"
           />
-          <button onclick={openPrUrl} disabled={!prUrl.trim()} class="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-black text-xs font-medium">
+          <button
+            type="button"
+            onclick={openPrUrl}
+            disabled={!canSubmitPrUrl}
+            class="shrink-0 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-black text-xs font-medium"
+          >
             Review
           </button>
         </div>

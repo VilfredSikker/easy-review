@@ -1487,8 +1487,8 @@ impl TabState {
         if config.features.view_branch {
             modes.push(DiffMode::Branch);
         }
-        let read_only =
-            self.is_remote() || (self.is_local_branch_view() && self.local_branch_checkout_root.is_none());
+        let read_only = self.is_remote()
+            || (self.is_local_branch_view() && self.local_branch_checkout_root.is_none());
         if config.features.view_unstaged && !read_only && self.pr_head_ref.is_none() {
             modes.push(DiffMode::Unstaged);
         }
@@ -1891,12 +1891,9 @@ impl TabState {
                 }
             } else if let Some(checkout_root) = self.local_branch_checkout_root.clone() {
                 return match scope {
-                    "unstaged" | "staged" => crate::git::git_diff_raw(
-                        scope,
-                        &base,
-                        &checkout_root,
-                        None,
-                    ),
+                    "unstaged" | "staged" => {
+                        crate::git::git_diff_raw(scope, &base, &checkout_root, None)
+                    }
                     _ => crate::git::git_diff_checkout_against_base(&checkout_root, &base),
                 };
             } else {

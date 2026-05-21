@@ -42,10 +42,15 @@
 
   async function submitReview() {
     submitting = true;
-    await app.cmd("submit_github_review", { mode: ghEvent, summary });
-    submitting = false;
-    pushMode = null;
-    summary = "";
+    try {
+      // Sync local diff with remote before bundling inline comments into the review.
+      await app.cmd("force_refresh_diff", {});
+      await app.cmd("submit_github_review", { mode: ghEvent, summary });
+      pushMode = null;
+      summary = "";
+    } finally {
+      submitting = false;
+    }
   }
 
   async function submitIndividual() {

@@ -3,8 +3,9 @@ import { app } from "./app.svelte";
 import { diffSel } from "./diffSelection.svelte";
 import { terminal } from "./terminal.svelte";
 import { browser } from "./browser.svelte";
+import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
 import { openExportModal } from "$lib/components/ExportModal.svelte";
-import { openPrUrlModal } from "$lib/components/PrUrlModal.svelte";
+import { closePrUrlModal, isPrUrlModalOpen, openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 
 // Callbacks registered by AiActionPalette to open itself
@@ -16,7 +17,7 @@ export function registerAiPaletteOpener(fn: () => void): () => void {
 }
 
 export function triggerAiPalette(): void {
-  openAiPaletteCallback?.();
+  void openAiPaletteCallback?.();
 }
 
 let dismissBrowserAnnotationComposer: (() => void) | null = null;
@@ -24,6 +25,11 @@ let dismissBrowserAnnotationComposer: (() => void) | null = null;
 /** AnnotationOverlay registers while the browser note composer is open. */
 export function registerBrowserAnnotationComposerDismiss(fn: (() => void) | null): void {
   dismissBrowserAnnotationComposer = fn;
+}
+
+/** Close the in-page annotation composer (e.g. after deleting from the side panel). */
+export function dismissBrowserAnnotationComposerNow(): void {
+  dismissBrowserAnnotationComposer?.();
 }
 
 function blurActiveField(): boolean {
@@ -215,8 +221,14 @@ export function initKeyboard(): () => void {
     }
 
     // Always-fire shortcuts (work even when focus is in a text field):
-    // Esc dismisses the diff composer first; then blurs any focused input.
+    // Esc dismisses AI Hub, diff composer, then blurs focused inputs.
     if (e.key === "Escape") {
+      if (isPrUrlModalOpen()) {
+        closePrUrlModal();
+        e.preventDefault();
+        return;
+      }
+      closeAiActionPalette();
       if (diffSel.active) {
         diffSel.clear();
         e.preventDefault();
@@ -249,8 +261,13 @@ export function initKeyboard(): () => void {
       openAiPaletteCallback?.();
       return;
     }
-    // ⌘B — cycle browser layout: hidden → split → fullscreen → hidden.
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "b" || e.key === "B") && !inField) {
+    // ⌘B — cycle browser layout (also from modals, including while typing in export).
+    if (
+      (e.metaKey || e.ctrlKey) &&
+      !e.shiftKey &&
+      (e.key === "b" || e.key === "B") &&
+      (!inField || !!document.querySelector("[data-modal]"))
+    ) {
       e.preventDefault();
       void browser.cycleLayout();
       return;
@@ -264,7 +281,7 @@ export function initKeyboard(): () => void {
     // ⌘⇧E — open the export-review modal.
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "e" || e.key === "E")) {
       e.preventDefault();
-      openExportModal();
+      void openExportModal();
       return;
     }
     // ⌘O — open a local repo (EmptyState shortcut). Gated on !inField so

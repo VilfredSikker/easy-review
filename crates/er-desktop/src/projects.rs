@@ -27,6 +27,95 @@ pub struct ProjectRecord {
     /// also includes the currently-checked-out branch on top of this list.
     #[serde(default)]
     pub tracked_branches: Vec<String>,
+    /// PRs the user has opened for review, most recent first (max 50 persisted).
+    #[serde(default)]
+    pub recent_prs: Vec<RecentPrEntry>,
+    /// PRs the user has manually bookmarked (max 50 persisted).
+    #[serde(default)]
+    pub saved_prs: Vec<SavedPrEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentPrEntry {
+    pub number: u64,
+    pub viewed_at_ms: u64,
+    #[serde(default)]
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPrEntry {
+    pub number: u64,
+    pub saved_at_ms: u64,
+    #[serde(default)]
+    pub title: String,
+}
+
+const MAX_PR_HISTORY: usize = 50;
+
+fn now_epoch_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub fn record_recent_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
+    let mut file = load();
+    let proj = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+    let now = now_epoch_ms();
+    proj.recent_prs.retain(|e| e.number != pr_number);
+    proj.recent_prs.insert(
+        0,
+        RecentPrEntry {
+            number: pr_number,
+            viewed_at_ms: now,
+            title: title.to_string(),
+        },
+    );
+    proj.recent_prs.truncate(MAX_PR_HISTORY);
+    save(&file)
+}
+
+pub fn save_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
+    let mut file = load();
+    let proj = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+    let now = now_epoch_ms();
+    proj.saved_prs.retain(|e| e.number != pr_number);
+    proj.saved_prs.insert(
+        0,
+        SavedPrEntry {
+            number: pr_number,
+            saved_at_ms: now,
+            title: title.to_string(),
+        },
+    );
+    proj.saved_prs.truncate(MAX_PR_HISTORY);
+    save(&file)
+}
+
+pub fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
+    let mut file = load();
+    let proj = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+    let before = proj.saved_prs.len();
+    proj.saved_prs.retain(|e| e.number != pr_number);
+    if proj.saved_prs.len() != before {
+        save(&file)?;
+    }
+    Ok(())
 }
 
 pub fn config_path() -> PathBuf {
@@ -154,6 +243,8 @@ pub fn auto_register(root_path: &str) -> ProjectRecord {
         dismissed_prs: Vec::new(),
         tracked_prs: Vec::new(),
         tracked_branches,
+        recent_prs: Vec::new(),
+        saved_prs: Vec::new(),
     };
     file.projects.push(record.clone());
     if file.active_id.is_none() {

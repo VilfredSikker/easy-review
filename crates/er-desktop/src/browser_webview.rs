@@ -86,10 +86,7 @@ pub fn post_message_to_webview(
 }
 
 fn sync_annotate_mode_to_page(wv: &tauri::Webview, active: bool) -> Result<(), String> {
-    post_message_to_webview(
-        wv,
-        &serde_json::json!({ "__er_set_annotate_mode": active }),
-    )
+    post_message_to_webview(wv, &serde_json::json!({ "__er_set_annotate_mode": active }))
 }
 
 /// (Re)inject the annotation frame script. `initialization_script` only runs when the
@@ -179,19 +176,31 @@ fn finish_browser_navigate(
     Ok(())
 }
 
+/// Move a child webview off-screen and shrink it so a stale `hide()` cannot keep
+/// intercepting clicks or keyboard focus over the main UI.
+fn park_tab_webview(wv: &tauri::Webview) {
+    let _ = wv.set_position(LogicalPosition::new(-10_000.0, -10_000.0));
+    let _ = wv.set_size(LogicalSize::new(1.0, 1.0));
+    let _ = wv.hide();
+}
+
+fn refocus_main_window(app: &AppHandle) {
+    if let Ok(window) = main_tauri_window(app) {
+        let _ = window.set_focus();
+    }
+}
+
 pub fn hide_all_webviews(
     app: &AppHandle,
     browser_state: &BrowserWebviewState,
 ) -> Result<(), String> {
-    let created = browser_state
-        .created
-        .lock()
-        .map_err(|e| e.to_string())?;
+    let created = browser_state.created.lock().map_err(|e| e.to_string())?;
     for idx in created.keys() {
         if let Some(wv) = tab_webview(app, *idx) {
-            let _ = wv.hide();
+            park_tab_webview(&wv);
         }
     }
+    refocus_main_window(app);
     Ok(())
 }
 
@@ -245,10 +254,7 @@ pub fn on_tab_selected(
     engine: &App,
     tab_idx: usize,
 ) -> Result<(), String> {
-    *browser_state
-        .active_tab
-        .lock()
-        .map_err(|e| e.to_string())? = tab_idx;
+    *browser_state.active_tab.lock().map_err(|e| e.to_string())? = tab_idx;
     hide_all_webviews(app, browser_state)?;
     let tab = engine
         .tabs
@@ -275,15 +281,21 @@ pub fn browser_ensure(
     url: String,
     tabIdx: Option<usize>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or_else(|| {
-        browser_state
-            .active_tab
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(0)
-    });
+    let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let (wv, newly_created) = ensure_tab_webview(&app, &browser_state, idx, &url)?;
     finish_browser_navigate(&app, &browser_state, idx, &wv, &url, newly_created)
+}
+
+/// Tear down all review child webviews before showing a Svelte modal. `hide()` alone
+/// is not always enough on macOS — destroyed webviews cannot intercept clicks.
+#[tauri::command]
+pub fn browser_suspend_for_overlay(
+    app: AppHandle,
+    browser_state: State<'_, BrowserWebviewState>,
+) -> Result<(), String> {
+    reset_all_tab_webviews(&app, &browser_state)?;
+    refocus_main_window(&app);
+    Ok(())
 }
 
 /// Hide one tab's webview, or all when `tabIdx` is None.
@@ -296,8 +308,9 @@ pub fn browser_hide(
 ) -> Result<(), String> {
     if let Some(idx) = tabIdx {
         if let Some(wv) = tab_webview(&app, idx) {
-            wv.hide().map_err(|e| e.to_string())?;
+            park_tab_webview(&wv);
         }
+        refocus_main_window(&app);
     } else {
         hide_all_webviews(&app, &browser_state)?;
     }
@@ -316,13 +329,7 @@ pub fn browser_set_bounds(
     height: f64,
     browser_state: State<'_, BrowserWebviewState>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or(
-        browser_state
-            .active_tab
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(0),
-    );
+    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
@@ -342,13 +349,7 @@ pub fn browser_navigate(
     url: String,
     tabIdx: Option<usize>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or(
-        browser_state
-            .active_tab
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(0),
-    );
+    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let (wv, newly_created) = ensure_tab_webview(&app, &browser_state, idx, &url)?;
     finish_browser_navigate(&app, &browser_state, idx, &wv, &url, newly_created)
 }
@@ -362,13 +363,7 @@ pub fn browser_set_annotate_mode(
     tabIdx: Option<usize>,
     browser_state: State<'_, BrowserWebviewState>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or(
-        browser_state
-            .active_tab
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(0),
-    );
+    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     browser_state.set_tab_annotate_mode(idx, active);
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
@@ -392,13 +387,7 @@ pub fn browser_send_to_page(
     tabIdx: Option<usize>,
     browser_state: State<'_, BrowserWebviewState>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or(
-        browser_state
-            .active_tab
-            .lock()
-            .map(|g| *g)
-            .unwrap_or(0),
-    );
+    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
