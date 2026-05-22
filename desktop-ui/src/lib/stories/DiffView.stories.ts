@@ -38,13 +38,13 @@ export const Split: Story = {
 export const WordDiff: Story = {
   args: (() => {
     const ctx = (o: number, n: number, t: string): LineSnapshot => ({
-      old_num: o, new_num: n, kind: "context", spans: [{ text: t, color: "" }],
+      old_num: o, new_num: n, kind: "context", text: t, spans: [{ text: t, color: "" }],
     });
     const del = (o: number, t: string): LineSnapshot => ({
-      old_num: o, new_num: null, kind: "del", spans: [{ text: t, color: "" }],
+      old_num: o, new_num: null, kind: "del", text: t, spans: [{ text: t, color: "" }],
     });
     const add = (n: number, t: string): LineSnapshot => ({
-      old_num: null, new_num: n, kind: "add", spans: [{ text: t, color: "" }],
+      old_num: null, new_num: n, kind: "add", text: t, spans: [{ text: t, color: "" }],
     });
     const hunk: HunkSnapshot = {
       header: "@@ -1,8 +1,8 @@ word-diff demo",
@@ -73,6 +73,7 @@ export const WordDiff: Story = {
       finding_count: 0, comment_count: 0, question_count: 0,
       hunks: [hunk],
       source_index: 0,
+      cache_key: "",
     };
     const snap: AppSnapshot = JSON.parse(JSON.stringify(richSnapshot));
     snap.files = [file];
@@ -86,13 +87,13 @@ export const WordDiff: Story = {
 export const WordDiffUnified: Story = {
   args: (() => {
     const ctx = (o: number, n: number, t: string): LineSnapshot => ({
-      old_num: o, new_num: n, kind: "context", spans: [{ text: t, color: "" }],
+      old_num: o, new_num: n, kind: "context", text: t, spans: [{ text: t, color: "" }],
     });
     const del = (o: number, t: string): LineSnapshot => ({
-      old_num: o, new_num: null, kind: "del", spans: [{ text: t, color: "" }],
+      old_num: o, new_num: null, kind: "del", text: t, spans: [{ text: t, color: "" }],
     });
     const add = (n: number, t: string): LineSnapshot => ({
-      old_num: null, new_num: n, kind: "add", spans: [{ text: t, color: "" }],
+      old_num: null, new_num: n, kind: "add", text: t, spans: [{ text: t, color: "" }],
     });
     const hunk: HunkSnapshot = {
       header: "@@ -1,6 +1,6 @@ word-diff demo (unified)",
@@ -115,6 +116,7 @@ export const WordDiffUnified: Story = {
       finding_count: 0, comment_count: 0, question_count: 0,
       hunks: [hunk],
       source_index: 0,
+      cache_key: "",
     };
     const snap: AppSnapshot = JSON.parse(JSON.stringify(richSnapshot));
     snap.files = [file];
@@ -133,13 +135,13 @@ export const WordDiffUnified: Story = {
 export const LongLinesHorizontalScroll: Story = {
   args: (() => {
     const ctx = (o: number, n: number, t: string): LineSnapshot => ({
-      old_num: o, new_num: n, kind: "context", spans: [{ text: t, color: "" }],
+      old_num: o, new_num: n, kind: "context", text: t, spans: [{ text: t, color: "" }],
     });
     const del = (o: number, t: string): LineSnapshot => ({
-      old_num: o, new_num: null, kind: "del", spans: [{ text: t, color: "" }],
+      old_num: o, new_num: null, kind: "del", text: t, spans: [{ text: t, color: "" }],
     });
     const add = (n: number, t: string): LineSnapshot => ({
-      old_num: null, new_num: n, kind: "add", spans: [{ text: t, color: "" }],
+      old_num: null, new_num: n, kind: "add", text: t, spans: [{ text: t, color: "" }],
     });
     const veryLong =
       "const veryLongIdentifierName = await some.deeply.nested.module.invokeRemoteProcedureWithManyParameters(firstArgument, secondArgument, thirdArgument, fourthArgument, fifthArgument, sixthArgument, seventhArgument, eighthArgument);";
@@ -171,6 +173,7 @@ export const LongLinesHorizontalScroll: Story = {
       finding_count: 0, comment_count: 0, question_count: 0,
       hunks: [hunk],
       source_index: 0,
+      cache_key: "",
     };
     const snap: AppSnapshot = JSON.parse(JSON.stringify(richSnapshot));
     snap.files = [file];

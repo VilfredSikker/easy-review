@@ -148,7 +148,7 @@ pub fn ocean_depth() -> Theme {
         relocated_indicator: Color::Rgb(100, 200, 150),
         lost_indicator: Color::Rgb(180, 100, 100),
 
-        syntect_theme: "base16-ocean.dark".to_string(),
+        syntect_theme: "OneHalfDark".to_string(),
     }
 }
 
@@ -197,7 +197,7 @@ pub fn moonlight() -> Theme {
         relocated_indicator: Color::Rgb(90, 175, 135),
         lost_indicator: Color::Rgb(165, 98, 98),
 
-        syntect_theme: "base16-ocean.dark".to_string(),
+        syntect_theme: "OneHalfDark".to_string(),
     }
 }
 
@@ -293,7 +293,7 @@ pub fn high_contrast() -> Theme {
         relocated_indicator: Color::Rgb(0, 230, 130),
         lost_indicator: Color::Rgb(220, 80, 80),
 
-        syntect_theme: "base16-ocean.dark".to_string(),
+        syntect_theme: "OneHalfDark".to_string(),
     }
 }
 
@@ -346,7 +346,7 @@ pub fn tokyo_night() -> Theme {
         relocated_indicator: Color::Rgb(115, 218, 202), // #73daca (green1)
         lost_indicator: Color::Rgb(219, 75, 75), // #db4b4b (red1)
 
-        syntect_theme: "base16-ocean.dark".to_string(),
+        syntect_theme: "OneHalfDark".to_string(),
     }
 }
 
@@ -396,7 +396,7 @@ pub fn tokyo_night_storm() -> Theme {
         relocated_indicator: Color::Rgb(115, 218, 202), // #73daca (green1)
         lost_indicator: Color::Rgb(219, 75, 75), // #db4b4b (red1)
 
-        syntect_theme: "base16-ocean.dark".to_string(),
+        syntect_theme: "OneHalfDark".to_string(),
     }
 }
 
@@ -446,7 +446,7 @@ pub fn tokyo_night_moon() -> Theme {
         relocated_indicator: Color::Rgb(79, 214, 190), // #4fd6be (green1/teal)
         lost_indicator: Color::Rgb(197, 59, 83), // #c53b53 (red1)
 
-        syntect_theme: "base16-ocean.dark".to_string(),
+        syntect_theme: "OneHalfDark".to_string(),
     }
 }
 
@@ -610,6 +610,6 @@ mod tests {
         assert_eq!(t.unmerged, Color::Rgb(255, 140, 0));
         assert_eq!(t.relocated_indicator, Color::Rgb(100, 200, 150));
         assert_eq!(t.lost_indicator, Color::Rgb(180, 100, 100));
-        assert_eq!(t.syntect_theme, "base16-ocean.dark");
+        assert_eq!(t.syntect_theme, "OneHalfDark");
     }
 }

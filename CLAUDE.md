@@ -55,6 +55,9 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 - **Post-commit diff view.** After committing, `er` automatically switches to a view of the just-committed diff (using `git diff HEAD~1 HEAD`). Lets you review exactly what was committed before moving on.
 - **Config via TOML, not CLI flags.** Per-repo (`.er-config.toml`) overrides global (`~/.config/er/config.toml`) overrides built-in defaults. Every feature is gated behind `config.features.*`. Settings overlay applies changes live; `s` persists, Esc reverts.
 - **Watched files for git-ignored paths.** `.er-config.toml` with `[watched]` section specifies glob patterns for files to monitor (e.g., `.work/` agent sync folders). Two diff modes: "content" (show file contents) and "snapshot" (diff against saved baseline). Gitignore safety check warns if watched files aren't ignored.
+- **Remote PR size limits.** `REMOTE_PR_MAX_CHANGED_FILES = 10_000` / `REMOTE_PR_MAX_LINE_CHANGES = 5_000_000` in `github.rs`. These guard against only truly pathological cases — the IPC line budget (`SNAPSHOT_DIFF_LINE_BUDGET = 15_000`) already limits what reaches the UI.
+- **Viewport-driven lazy loading (desktop).** When an `is_lazy_stub` file enters the desktop viewport, the frontend invokes `request_file_content(source_index)` which parses the file and returns the full snapshot immediately, bypassing the 2s poll cycle. The `_requestingFiles` Set in `DiffView.svelte` deduplicates concurrent requests.
+- **On-demand syntax highlighting (desktop).** `build_hunks` always populates `LineSnapshot.text` (plain text). Spans are included inline only for files ≤150 lines. Larger files are highlighted on demand via `highlight_file` Tauri command, which runs Syntect under a separate `HighlightState` mutex — decoupled from the poll path. The frontend `highlightCache.ts` (LRU, 50 files) and `DiffView.svelte` manage the request lifecycle.
 
 ## Code Conventions
 
@@ -70,7 +73,7 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 - Unified query via `CommentRef` enum: query methods on `AiState` return `Vec<CommentRef>` which wraps either a `ReviewQuestion`, `GitHubReviewComment`, or legacy `FeedbackComment`.
 - Diff parsing: the parser in `git/diff.rs` has unit tests. Run them with `cargo test`. For large diffs, `parse_diff_headers()` provides a fast header-only scan; `parse_file_at_offset()` parses a single file on demand.
 - Compaction: `DiffFile.compacted` flag indicates a file whose hunks have been cleared. `compact_files()` applies pattern + size threshold. `expand_compacted_file()` re-fetches from git on demand. Glob matching via `glob_match()` in `diff.rs`.
-- Performance state: `HunkOffsets`, `MemoryBudget`, `FileTreeCache`, and `lazy_mode` flag live on `TabState`. The `ensure_file_parsed()` method triggers on-demand parsing in lazy mode.
+- Performance state: `HunkOffsets`, `MemoryBudget`, `FileTreeCache`, and `lazy_mode` flag live on `TabState`. The `ensure_file_parsed()` / `ensure_file_parsed_at(index)` methods trigger on-demand parsing in lazy mode. `ensure_file_parsed_at` parses any file by index without changing navigation state — used by the desktop's viewport-driven lazy loader (`request_file_content` Tauri command).
 - Configuration: TOML via `toml` crate + `dirs` for platform config paths. All config types in `src/config.rs`. Feature flags default to `true` except `blame_annotations`. New features should add a flag to `FeatureFlags` and a `SettingsItem` entry in `settings_items()`.
 - Config file: `.er-config.toml` in repo root, parsed with `toml` crate + `serde::Deserialize`. Watched file globs use the `glob` crate.
 
@@ -103,7 +106,7 @@ crates/er-tui/src/ui/utils.rs          Shared utilities (word_wrap)
 
 ## Current State
 
-v1.5 with dynamic tab numbering (assigned sequentially based on visible modes). Building v0.3.0 release branch. Earlier: v1.4 with `.er/` directory migration, auto-unmark reviewed, post-commit diff view, cleanup commands, sticky file path header, and lazy comment index. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log` and shows memory budget in the status bar. Test fixtures via `scripts/generate-test-fixtures.sh`.
+v1.5 with dynamic tab numbering (assigned sequentially based on visible modes). Building v0.3.0 release branch. Earlier: v1.4 with `.er/` directory migration, auto-unmark reviewed, post-commit diff view, cleanup commands, sticky file path header, and lazy comment index. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log` and shows memory budget in the status bar. Test fixtures via `scripts/generate-test-fixtures.sh`. Desktop profiling: `ER_DESKTOP_PROFILE_POLL=1` logs `build_snapshot_ms`, `lines_in_ipc`, `max_file_lines`, `budget_omitted` to stderr; frontend mount timing logs to devtools console in dev builds.
 
 ## Roadmap
 

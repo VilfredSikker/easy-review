@@ -23,8 +23,8 @@ import type { AppSnapshot, FileSnapshot, HunkSnapshot, LineSnapshot } from "$lib
 
 function hunk(start: number): HunkSnapshot {
   const lines: LineSnapshot[] = [
-    { old_num: start, new_num: start, kind: "context", spans: [{ text: "ctx", color: "" }] },
-    { old_num: null, new_num: start + 1, kind: "add", spans: [{ text: "+", color: "" }] },
+    { old_num: start, new_num: start, kind: "context", text: "ctx", spans: [{ text: "ctx", color: "" }] },
+    { old_num: null, new_num: start + 1, kind: "add", text: "+", spans: [{ text: "+", color: "" }] },
   ];
   return {
     header: `@@ -${start},1 +${start},2 @@`,
@@ -50,6 +50,8 @@ function makeFile(path: string, hunks: HunkSnapshot[], compacted = false): FileS
     comment_count: 0,
     question_count: 0,
     hunks,
+    source_index: 0,
+    cache_key: "",
   };
 }
 

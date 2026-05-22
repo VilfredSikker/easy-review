@@ -2,12 +2,12 @@
 //!
 //! `tauri-plugin-window-state` restores position if any window corner lies on a
 //! monitor, which can still leave most of the window off-screen (e.g. after
-//! display layout changes). We re-center when too little of the window is visible.
+//! display layout changes). We clamp the position to fit on the best monitor.
 
-use tauri::{Monitor, WebviewWindow};
+use tauri::{Monitor, PhysicalPosition, WebviewWindow};
 
-/// Minimum fraction of the window area that must lie on some monitor.
-const MIN_VISIBLE_FRACTION: f64 = 0.55;
+/// Below this visible fraction, the window is recentered instead of clamped.
+const RECENTER_FRACTION: f64 = 0.30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RectI32 {
@@ -54,7 +54,20 @@ fn visible_fraction(window: RectI32, monitors: &[Monitor]) -> f64 {
     visible as f64 / total as f64
 }
 
-/// If the window is mostly off-screen after restore, center it on the current monitor.
+/// Clamp `window` so all four sides fit inside `monitor`. If the window is
+/// larger than the monitor in some dimension, prefer the top-left edge.
+fn clamp_to_monitor(window: RectI32, monitor: RectI32) -> RectI32 {
+    let max_x = (monitor.x + monitor.w - window.w).max(monitor.x);
+    let max_y = (monitor.y + monitor.h - window.h).max(monitor.y);
+    RectI32 {
+        x: window.x.clamp(monitor.x, max_x),
+        y: window.y.clamp(monitor.y, max_y),
+        w: window.w,
+        h: window.h,
+    }
+}
+
+/// Clamp the window to fit fully on the best monitor; recenter if hopelessly off-screen.
 pub fn ensure_window_visible(window: &WebviewWindow) -> tauri::Result<()> {
     let pos = window.outer_position()?;
     let size = window.outer_size()?;
@@ -66,8 +79,27 @@ pub fn ensure_window_visible(window: &WebviewWindow) -> tauri::Result<()> {
     };
 
     let monitors = window.available_monitors()?;
-    if monitors.is_empty() || visible_fraction(window_rect, &monitors) < MIN_VISIBLE_FRACTION {
+    if monitors.is_empty() {
+        return Ok(());
+    }
+
+    // If hopelessly off-screen, recenter on primary monitor.
+    if visible_fraction(window_rect, &monitors) < RECENTER_FRACTION {
         window.center()?;
+        return Ok(());
+    }
+
+    // Pick the monitor with most overlap, clamp the window into its bounds.
+    let best_monitor = monitors
+        .iter()
+        .max_by_key(|m| intersect_area(window_rect, monitor_rect(m)));
+
+    if let Some(monitor) = best_monitor {
+        let m_rect = monitor_rect(monitor);
+        let clamped = clamp_to_monitor(window_rect, m_rect);
+        if clamped.x != window_rect.x || clamped.y != window_rect.y {
+            window.set_position(PhysicalPosition::new(clamped.x, clamped.y))?;
+        }
     }
 
     Ok(())
@@ -78,47 +110,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fully_on_screen_counts_as_visible() {
-        let window = RectI32 {
-            x: 100,
-            y: 100,
-            w: 800,
-            h: 600,
-        };
-        let monitors = [RectI32 {
-            x: 0,
-            y: 0,
-            w: 1920,
-            h: 1080,
-        }];
-        let frac = visible_fraction(window, &monitors);
-        assert!(frac >= MIN_VISIBLE_FRACTION);
+    fn clamp_pushes_window_left_when_right_edge_off_screen() {
+        let monitor = RectI32 { x: 0, y: 0, w: 1920, h: 1080 };
+        let window = RectI32 { x: 1500, y: 100, w: 1400, h: 900 };
+        let clamped = clamp_to_monitor(window, monitor);
+        assert_eq!(clamped.x, 1920 - 1400);
+        assert_eq!(clamped.y, 100);
+        assert_eq!(clamped.w, 1400);
+        assert_eq!(clamped.h, 900);
     }
 
     #[test]
-    fn corner_only_is_not_enough() {
-        let window = RectI32 {
-            x: 1800,
-            y: 1000,
-            w: 800,
-            h: 600,
-        };
-        let monitors = [RectI32 {
-            x: 0,
-            y: 0,
-            w: 1920,
-            h: 1080,
-        }];
-        let frac = visible_fraction(window, &monitors);
-        assert!(frac < MIN_VISIBLE_FRACTION);
+    fn clamp_pulls_window_into_negative_origin_monitor() {
+        let monitor = RectI32 { x: -1920, y: 0, w: 1920, h: 1080 };
+        let window = RectI32 { x: 100, y: 100, w: 800, h: 600 };
+        let clamped = clamp_to_monitor(window, monitor);
+        assert_eq!(clamped.x, -1920 + 1920 - 800);
+        assert!(clamped.x + clamped.w <= monitor.x + monitor.w);
     }
 
-    fn visible_fraction(window: RectI32, monitors: &[RectI32]) -> f64 {
-        let total = i64::from(window.w) * i64::from(window.h);
-        let visible = monitors
-            .iter()
-            .map(|m| intersect_area(window, *m))
-            .sum::<i64>();
-        visible as f64 / total as f64
+    #[test]
+    fn clamp_noop_when_fully_inside() {
+        let monitor = RectI32 { x: 0, y: 0, w: 1920, h: 1080 };
+        let window = RectI32 { x: 100, y: 100, w: 800, h: 600 };
+        let clamped = clamp_to_monitor(window, monitor);
+        assert_eq!(clamped, window);
     }
 }

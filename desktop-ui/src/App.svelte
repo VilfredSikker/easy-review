@@ -12,7 +12,6 @@
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import AiActionPalette from "$lib/components/AiActionPalette.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
-  import ExportModal from "$lib/components/ExportModal.svelte";
   import PrUrlModal from "$lib/components/PrUrlModal.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
   import BranchContextBar from "$lib/components/BranchContextBar.svelte";
@@ -20,6 +19,7 @@
   import { terminal } from "$lib/stores/terminal.svelte";
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
+  import ExportReviewView from "$lib/components/ExportReviewView.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { browserHide } from "$lib/stores/browserHost";
   const panels = $derived(app.snapshot?.panels);
@@ -243,8 +243,10 @@
             {#if app.mainView === "diff"}
               <FileTree collapsed={!panels?.tree} />
               <DiffView />
-            {:else}
+            {:else if app.mainView === "agent-output"}
               <AgentOutputView />
+            {:else}
+              <ExportReviewView />
             {/if}
           </div>
         {/if}
@@ -322,6 +324,5 @@
   {/if}
   <CommandPalette />
   <AiActionPalette />
-  <ExportModal />
 </div>
 {/if}

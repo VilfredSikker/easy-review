@@ -6,6 +6,7 @@ mod commands;
 mod er_storage;
 mod export;
 mod frame_script;
+mod highlight_state;
 mod inbox;
 mod pr_cache;
 mod projects;
@@ -566,6 +567,7 @@ fn main() {
         watch_status: Arc::clone(&watch_status),
         inbox: Arc::clone(&inbox),
         tauri_app_handle: Arc::clone(&tauri_app_handle),
+        highlight_state: crate::highlight_state::HighlightState::new(),
     };
 
     match pr_cache::load_persisted_pr_cache() {
@@ -1015,6 +1017,13 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED
+                        | tauri_plugin_window_state::StateFlags::FULLSCREEN
+                        | tauri_plugin_window_state::StateFlags::DECORATIONS,
+                )
                 .skip_initial_state("main")
                 .build(),
         )
@@ -1049,8 +1058,18 @@ fn main() {
             .build()?;
 
             use tauri_plugin_window_state::{StateFlags, WindowExt};
-            window.restore_state(StateFlags::all())?;
+            // Restore size+position+maximized only — NOT visibility. The
+            // window stays hidden (`.visible(false)`) until we've clamped it
+            // onto a valid monitor, then we show. Restoring VISIBLE would
+            // flash the window at the stale off-screen position.
+            let flags = StateFlags::SIZE
+                | StateFlags::POSITION
+                | StateFlags::MAXIMIZED
+                | StateFlags::FULLSCREEN
+                | StateFlags::DECORATIONS;
+            window.restore_state(flags)?;
             window_placement::ensure_window_visible(&window)?;
+            window.show()?;
 
             Ok(())
         })
@@ -1058,6 +1077,8 @@ fn main() {
             commands::start_window_drag,
             commands::get_snapshot,
             commands::toggle_panel,
+            commands::request_file_content,
+            commands::highlight_file,
             commands::select_file,
             commands::next_file,
             commands::prev_file,
@@ -1130,6 +1151,7 @@ fn main() {
             commands::add_tracked_branch,
             commands::remove_tracked_branch,
             commands::list_available_branches,
+            commands::delete_project,
             commands::open_project_branch,
             commands::new_tab,
             commands::close_tab,

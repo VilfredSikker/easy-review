@@ -3,6 +3,7 @@ pub mod commands;
 pub mod er_storage;
 pub mod export;
 pub mod frame_script;
+pub mod highlight_state;
 pub mod inbox;
 pub mod pr_cache;
 pub mod projects;

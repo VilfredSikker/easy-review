@@ -4,6 +4,7 @@ import {
   richSnapshot,
   emptySnapshot,
   multiFolderSnapshot,
+  remoteOnlyProjectSnapshot,
   prDraft,
   commitsRich,
   tabsWorkingActive,
@@ -117,6 +118,13 @@ export const MultiProject: Story = {
       { name: "marketing-site", branches: [] },
     ],
     titlebarSubtitle: "discovery-platform",
+  },
+};
+
+export const RemoteOnlyProjectRecent: Story = {
+  args: {
+    snapshot: remoteOnlyProjectSnapshot,
+    titlebarSubtitle: "owner/repo",
   },
 };
 

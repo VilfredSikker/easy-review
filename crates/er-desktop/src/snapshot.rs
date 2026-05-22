@@ -1,5 +1,11 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+static LAST_RENDERED_HUNKS: AtomicUsize = AtomicUsize::new(usize::MAX);
+static LAST_LINES_IN_IPC: AtomicUsize = AtomicUsize::new(usize::MAX);
+static LAST_BUDGET_OMITTED: AtomicUsize = AtomicUsize::new(usize::MAX);
+static LAST_HIGHLIGHTED_FILES: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
@@ -248,6 +254,8 @@ pub struct ProjectSnapshot {
     pub name: String,
     pub root_path: String,
     pub remote: Option<String>,
+    #[serde(default)]
+    pub remote_only: bool,
     pub is_active: bool,
     pub local_branches: Vec<BranchInfo>,
     pub auto_branches: Vec<BranchInfo>,
@@ -351,6 +359,9 @@ pub struct FileSnapshot {
     /// `select_file` — `files` may be filtered, so positional indices into the
     /// frontend snapshot do not match the engine's selection index.
     pub source_index: usize,
+    /// Stable content hash for the desktop highlight cache. Advances when the
+    /// diff changes. Frontend uses this to detect stale highlight responses.
+    pub cache_key: String,
 }
 
 /// Lightweight commit metadata for the file viewer's history scroller.
@@ -387,7 +398,13 @@ pub struct LineSnapshot {
     pub old_num: Option<usize>,
     pub new_num: Option<usize>,
     pub kind: String,
-    pub spans: Vec<SpanSnapshot>,
+    /// Always-present plain text for the line (no syntax coloring).
+    /// Used directly when spans are absent; also feeds word-diff.
+    pub text: String,
+    /// Syntax-highlighted spans. Present for files ≤150 lines (inline);
+    /// absent for larger files — the frontend requests them via `highlight_file`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spans: Option<Vec<SpanSnapshot>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -832,6 +849,7 @@ pub fn build_snapshot(
                     || budget_omitted,
                 hunks,
                 source_index,
+                cache_key: er_engine::cache::file_cache_key(&tab.branch_diff_hash, &f.path),
             }
         })
         .collect();
@@ -1081,12 +1099,71 @@ pub fn build_snapshot(
             .unwrap_or(0),
     };
     if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {
-        eprintln!(
-            "er-desktop build_snapshot_ms={} files={} rendered_hunks={}",
-            t0.elapsed().as_millis(),
-            out.files.len(),
-            out.files.iter().map(|f| f.hunks.len()).sum::<usize>()
-        );
+        let total_lines: usize = out
+            .files
+            .iter()
+            .flat_map(|f| f.hunks.iter())
+            .map(|h| h.lines.len())
+            .sum();
+        let max_file_lines: usize = out
+            .files
+            .iter()
+            .map(|f| f.hunks.iter().map(|h| h.lines.len()).sum::<usize>())
+            .max()
+            .unwrap_or(0);
+        let budget_omitted = out
+            .files
+            .iter()
+            .filter(|f| f.is_lazy_stub && !f.compacted)
+            .count();
+        // Files with hunks but no spans on the first line were highlighted inline.
+        let highlighted_files = out
+            .files
+            .iter()
+            .filter(|f| {
+                f.hunks
+                    .first()
+                    .and_then(|h| h.lines.first())
+                    .map(|l| l.spans.is_some())
+                    .unwrap_or(false)
+            })
+            .count();
+        let highlighted_lines: usize = out
+            .files
+            .iter()
+            .filter(|f| {
+                f.hunks
+                    .first()
+                    .and_then(|h| h.lines.first())
+                    .map(|l| l.spans.is_some())
+                    .unwrap_or(false)
+            })
+            .flat_map(|f| f.hunks.iter())
+            .map(|h| h.lines.len())
+            .sum();
+        let rendered_hunks = out.files.iter().map(|f| f.hunks.len()).sum::<usize>();
+        // Only log when something meaningful changed — avoids flooding in steady state.
+        let prev_hunks = LAST_RENDERED_HUNKS.swap(rendered_hunks, Ordering::Relaxed);
+        let prev_lines = LAST_LINES_IN_IPC.swap(total_lines, Ordering::Relaxed);
+        let prev_omitted = LAST_BUDGET_OMITTED.swap(budget_omitted, Ordering::Relaxed);
+        let prev_hl_files = LAST_HIGHLIGHTED_FILES.swap(highlighted_files, Ordering::Relaxed);
+        if rendered_hunks != prev_hunks
+            || total_lines != prev_lines
+            || budget_omitted != prev_omitted
+            || highlighted_files != prev_hl_files
+        {
+            eprintln!(
+                "er-desktop build_snapshot_ms={} files={} rendered_hunks={} lines_in_ipc={} max_file_lines={} budget_omitted={} highlighted_files={} highlighted_lines={}",
+                t0.elapsed().as_millis(),
+                out.files.len(),
+                rendered_hunks,
+                total_lines,
+                max_file_lines,
+                budget_omitted,
+                highlighted_files,
+                highlighted_lines,
+            );
+        }
     }
     out
 }
@@ -1438,6 +1515,18 @@ fn resolve_recent_prs(
     out
 }
 
+fn normalize_remote_slug(remote: &str) -> String {
+    let trimmed = remote.trim();
+    let without_scheme = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+        .unwrap_or(trimmed);
+    without_scheme
+        .trim_end_matches(".git")
+        .trim_matches('/')
+        .to_ascii_lowercase()
+}
+
 fn build_projects(
     tab: &TabState,
     pr_cache: Option<&PrCache>,
@@ -1446,7 +1535,26 @@ fn build_projects(
     gh_user: Option<&GhUser>,
 ) -> Vec<ProjectSnapshot> {
     let file = projects::load();
+    build_projects_from_file(
+        &file,
+        tab,
+        pr_cache,
+        pr_cache_fetched_at,
+        meta_cache,
+        gh_user,
+    )
+}
+
+fn build_projects_from_file(
+    file: &projects::ProjectsFile,
+    tab: &TabState,
+    pr_cache: Option<&PrCache>,
+    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
+    meta_cache: Option<&MetaCache>,
+    gh_user: Option<&GhUser>,
+) -> Vec<ProjectSnapshot> {
     let active_root = &tab.repo_root;
+    let active_remote = tab.remote_repo.as_deref().map(normalize_remote_slug);
 
     let pr_map: Option<HashMap<String, Vec<PrInfo>>> =
         pr_cache.and_then(|m| m.lock().ok().map(|g| g.clone()));
@@ -1471,10 +1579,20 @@ fn build_projects(
 
     file.projects
         .iter()
-        .filter(|p| !p.root_path.is_empty())
         .map(|p| {
-            let is_active = &p.root_path == active_root;
-            let mut meta = meta_map.get(&p.id).cloned().unwrap_or_default();
+            let remote_only = p.root_path.is_empty() && p.remote.is_some();
+            let project_remote = p.remote.as_deref().map(normalize_remote_slug);
+            let is_active = if remote_only {
+                active_remote.as_deref().is_some()
+                    && active_remote.as_deref() == project_remote.as_deref()
+            } else {
+                &p.root_path == active_root
+            };
+            let mut meta = if remote_only {
+                ProjectMeta::default()
+            } else {
+                meta_map.get(&p.id).cloned().unwrap_or_default()
+            };
 
             // For the active project, recompute is_current per branch using the
             // viewed branch instead of the worktree's HEAD.
@@ -1497,7 +1615,9 @@ fn build_projects(
             let recent_prs = resolve_recent_prs(&p.recent_prs, cache_slice);
 
             let (my_prs, prs_to_review, recently_merged, pr_cache_stale, pr_cache_age_ms) =
-                if let (Some(remote), Some(ref cache)) = (&p.remote, &pr_map) {
+                if remote_only {
+                    (Vec::new(), Vec::new(), Vec::new(), false, None)
+                } else if let (Some(remote), Some(ref cache)) = (&p.remote, &pr_map) {
                     let mut all: Vec<PrInfo> = cache
                         .get(remote)
                         .cloned()
@@ -1576,6 +1696,7 @@ fn build_projects(
                 name: p.name.clone(),
                 root_path: p.root_path.clone(),
                 remote: p.remote.clone(),
+                remote_only,
                 is_active,
                 local_branches: meta.local_branches,
                 auto_branches: meta.auto_branches,
@@ -1633,6 +1754,7 @@ fn build_hunks(
     highlighter: &mut Highlighter,
     pending: Option<&PendingAiReplies>,
 ) -> Vec<HunkSnapshot> {
+    let t_hl = std::time::Instant::now();
     let filename = std::path::Path::new(&file.path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -1640,8 +1762,11 @@ fn build_hunks(
 
     let is_python = file.path.ends_with(".py");
     let mut in_python_docstring = false;
+    let total_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+    let inline_spans = total_lines <= 150;
 
-    file.hunks
+    let result = file
+        .hunks
         .iter()
         .enumerate()
         .map(|(hunk_idx, hunk)| {
@@ -1655,9 +1780,9 @@ fn build_hunks(
                         LineType::Context => "context",
                         LineType::Fold(_) => "fold",
                     };
-                    let spans = if kind != "fold" {
+                    let spans: Option<Vec<SpanSnapshot>> = if inline_spans && kind != "fold" {
                         let mut spans: Vec<SpanSnapshot> = highlighter
-                            .highlight_line(&line.content, filename, "base16-ocean.dark")
+                            .highlight_line(&line.content, filename, "OneHalfDark")
                             .into_iter()
                             .map(|hs| SpanSnapshot {
                                 text: hs.text,
@@ -1704,17 +1829,28 @@ fn build_hunks(
                             in_python_docstring = !in_python_docstring;
                         }
 
-                        spans
-                    } else {
-                        vec![SpanSnapshot {
+                        Some(spans)
+                    } else if kind == "fold" {
+                        Some(vec![SpanSnapshot {
                             text: line.content.clone(),
                             color: String::new(),
-                        }]
+                        }])
+                    } else {
+                        // Large file: no inline spans. Maintain python docstring state for correctness.
+                        if is_python {
+                            let triple_single = line.content.matches("'''").count();
+                            let triple_double = line.content.matches("\"\"\"").count();
+                            if (triple_single + triple_double) % 2 == 1 {
+                                in_python_docstring = !in_python_docstring;
+                            }
+                        }
+                        None
                     };
                     LineSnapshot {
                         old_num: line.old_num,
                         new_num: line.new_num,
                         kind: kind.to_string(),
+                        text: line.content.clone(),
                         spans,
                     }
                 })
@@ -1761,7 +1897,10 @@ fn build_hunks(
                 threads,
             }
         })
-        .collect()
+        .collect();
+
+    let _ = t_hl; // timing reserved for aggregate profiling in build_snapshot
+    result
 }
 
 fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSnapshot {
@@ -2287,5 +2426,73 @@ mod tests {
             "https://github.com/reshapebiotech/discovery/pull/878"
         );
         assert_eq!(pr.head, "DEV-3884/data-table-sorting");
+    }
+
+    #[test]
+    fn projects_snapshot_includes_remote_only_project_with_recent_pr() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.pr_number = Some(123);
+
+        let file = projects::ProjectsFile {
+            projects: vec![projects::ProjectRecord {
+                id: "remote-owner-repo".to_string(),
+                name: "owner/repo".to_string(),
+                root_path: String::new(),
+                remote: Some("owner/repo".to_string()),
+                dismissed_prs: Vec::new(),
+                tracked_prs: Vec::new(),
+                tracked_branches: Vec::new(),
+                recent_prs: vec![projects::RecentPrEntry {
+                    number: 123,
+                    viewed_at_ms: 10,
+                    title: "Cached title fallback".to_string(),
+                }],
+                saved_prs: Vec::new(),
+            }],
+            active_id: None,
+        };
+        let cached_recent = PrInfo {
+            number: 123,
+            title: "Remote PR title".to_string(),
+            head_ref: "feature".to_string(),
+            state: "OPEN".to_string(),
+            is_draft: false,
+            author: "octo".to_string(),
+            assignees: Vec::new(),
+            reviewers: Vec::new(),
+            checks_state: None,
+            review_decision: None,
+            merged_at: None,
+            approved_by_me: false,
+            base_ref: "main".to_string(),
+            head_oid: "abc123".to_string(),
+            updated_at: "2026-05-22T00:00:00Z".to_string(),
+            latest_reviewer_states: Vec::new(),
+        };
+        let pr_cache = Arc::new(Mutex::new(HashMap::from([(
+            "owner/repo".to_string(),
+            vec![
+                cached_recent.clone(),
+                PrInfo {
+                    number: 456,
+                    title: "Another cached repo PR".to_string(),
+                    ..cached_recent
+                },
+            ],
+        )])));
+
+        let projects = build_projects_from_file(&file, &tab, Some(&pr_cache), None, None, None);
+
+        assert_eq!(projects.len(), 1);
+        assert!(projects[0].remote_only);
+        assert!(projects[0].is_active);
+        assert!(projects[0].local_branches.is_empty());
+        assert!(projects[0].auto_branches.is_empty());
+        assert!(projects[0].my_prs.is_empty());
+        assert!(projects[0].prs_to_review.is_empty());
+        assert!(projects[0].recently_merged.is_empty());
+        assert_eq!(projects[0].recent_prs.len(), 1);
+        assert_eq!(projects[0].recent_prs[0].title, "Remote PR title");
     }
 }

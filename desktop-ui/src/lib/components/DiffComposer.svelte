@@ -2,6 +2,12 @@
   import { app } from "$lib/stores/app.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
 
+  interface Props {
+    /** Absolute top position in px. When set, renders absolute (flat mode); otherwise sticky. */
+    topPx?: number;
+  }
+  const { topPx }: Props = $props();
+
   const canSubmit = $derived(diffSel.text.trim().length > 0);
   let composerEl: HTMLTextAreaElement | null = $state(null);
   let didFocusForSelection = $state(false);
@@ -72,7 +78,8 @@
   aria-label="Add comment or question"
   tabindex="-1"
   onkeydown={() => {}}
-  class="sticky bottom-0 left-0 right-0 mx-4 mb-4 mt-2 rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_rgba(255,255,255,0.04)]
+  style={topPx !== undefined ? `position:absolute;top:${topPx}px;left:1rem;right:1rem;z-index:20` : undefined}
+  class="{topPx === undefined ? 'sticky bottom-0 left-0 right-0 mx-4 mb-4 mt-2' : 'mb-4 mt-2'} rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_rgba(255,255,255,0.04)]
          {diffSel.kind === 'question'
            ? 'border border-question/40 bg-card'
            : 'border border-blue-500/40 bg-card'}"

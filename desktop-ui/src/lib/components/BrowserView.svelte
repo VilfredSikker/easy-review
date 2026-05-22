@@ -21,7 +21,6 @@
   import type { UiDomContext } from "$lib/types";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
   import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
-  import { openExportModal } from "$lib/components/ExportModal.svelte";
   import {
     dismissBrowserAnnotationComposerNow,
     registerBrowserAnnotationComposerDismiss,
@@ -462,7 +461,8 @@
       return;
     }
     if (shortcut === "export-review") {
-      openExportModal();
+      app.setMainView("export-review");
+      if (browser.layout === "fullscreen") void browser.setLayout("hidden");
       return;
     }
     if (shortcut === "dismiss-overlay") {

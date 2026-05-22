@@ -138,9 +138,10 @@
     </div>
   {/if}
 
-<!-- Tabs scroll container: overflow here, but explicitly no-drag so tabs stay interactive. -->
+<!-- Tabs scroll container: overflow here, but explicitly no-drag so tabs stay interactive.
+     Use shrink (not flex-1) so leftover space goes to the drag spacer that follows. -->
 <div
-  class="flex items-center gap-1 pr-1 min-w-0 overflow-x-auto tabstrip-no-drag {showToolbar ? 'flex-1' : 'max-w-full'}"
+  class="flex items-center gap-1 pr-1 min-w-0 overflow-x-auto tabstrip-no-drag {showToolbar ? 'shrink max-w-full' : 'max-w-full'}"
 >
   {#each tabs as tab, i (tab.idx)}
     {#if dragFrom !== null && dropAt === i}

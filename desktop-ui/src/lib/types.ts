@@ -7,7 +7,11 @@ export interface LineSnapshot {
   old_num: number | null;
   new_num: number | null;
   kind: "context" | "add" | "del" | "fold";
-  spans: SpanSnapshot[];
+  /** Always-present plain text — use directly when spans are absent. */
+  text: string;
+  /** Syntax-highlighted spans. Present for files ≤150 lines; absent for larger
+   *  files where the frontend requests highlights via `highlight_file`. */
+  spans?: SpanSnapshot[];
 }
 
 export interface ThreadMessage {
@@ -59,6 +63,8 @@ export interface FileSnapshot {
   is_lazy_stub?: boolean;
   /** Index into the backend's full file list — pass to `select_file`. */
   source_index: number;
+  /** Stable hash for the frontend highlight cache. Changes when the diff changes. */
+  cache_key: string;
 }
 
 export interface FilterSuggestionSnapshot {
@@ -157,6 +163,7 @@ export interface ProjectSnapshot {
   name: string;
   root_path: string;
   remote: string | null;
+  remote_only?: boolean;
   is_active: boolean;
   /** Curated list — only the current branch plus user-added tracked branches. */
   local_branches: BranchInfo[];

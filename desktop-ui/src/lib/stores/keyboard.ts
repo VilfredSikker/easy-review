@@ -4,9 +4,9 @@ import { diffSel } from "./diffSelection.svelte";
 import { terminal } from "./terminal.svelte";
 import { browser } from "./browser.svelte";
 import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
-import { openExportModal } from "$lib/components/ExportModal.svelte";
 import { closePrUrlModal, isPrUrlModalOpen, openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
+import { diffNav } from "$lib/stores/diffNav.svelte";
 
 // Callbacks registered by AiActionPalette to open itself
 let openAiPaletteCallback: (() => void) | null = null;
@@ -18,6 +18,11 @@ export function registerAiPaletteOpener(fn: () => void): () => void {
 
 export function triggerAiPalette(): void {
   void openAiPaletteCallback?.();
+}
+
+function openExportReviewView(): void {
+  app.setMainView("export-review");
+  if (browser.layout === "fullscreen") void browser.setLayout("hidden");
 }
 
 let dismissBrowserAnnotationComposer: (() => void) | null = null;
@@ -148,27 +153,28 @@ function nextHunkAcrossFiles() {
   const lastHunk = (file?.hunks.length ?? 0) - 1;
   if (file && cur < lastHunk) {
     app.cmd("next_hunk");
-    scrollFocusedHunkIntoView();
+    // Use cur+1 — snapshot hasn't updated yet when we scroll.
+    diffNav.scrollToHunk(file.path, cur + 1);
     return;
   }
   // At last hunk — jump to next file's first hunk.
   const nextVisibleIdx = snap.selected_file + 1;
   if (nextVisibleIdx < snap.files.length) {
-    app.cmd("select_file", { idx: snap.files[nextVisibleIdx].source_index });
-    // next_hunk on a fresh file leaves current_hunk at 0 by default — explicitly
-    // ensure we're at hunk 0 by no-op'ing (select_file resets current_hunk to 0
-    // in the engine). Scroll into view.
-    setTimeout(scrollFocusedHunkIntoView, 0);
+    const nextFile = snap.files[nextVisibleIdx];
+    app.cmd("select_file", { idx: nextFile.source_index });
+    diffNav.scrollToHunk(nextFile.path, 0);
   }
 }
 
 function prevHunkAcrossFiles() {
   const snap = app.snapshot;
   if (!snap) return;
+  const file = snap.files[snap.selected_file];
   const cur = snap.current_hunk ?? 0;
-  if (cur > 0) {
+  if (file && cur > 0) {
     app.cmd("prev_hunk");
-    scrollFocusedHunkIntoView();
+    // Use cur-1 — snapshot hasn't updated yet when we scroll.
+    diffNav.scrollToHunk(file.path, cur - 1);
     return;
   }
   // At first hunk — jump to previous file's last hunk.
@@ -177,30 +183,15 @@ function prevHunkAcrossFiles() {
     const prevFile = snap.files[prevVisibleIdx];
     const lastHunk = Math.max(0, (prevFile?.hunks.length ?? 1) - 1);
     app.cmd("select_file", { idx: prevFile.source_index });
-    // Walk forward to the last hunk if there are any.
     for (let i = 0; i < lastHunk; i++) {
       app.cmd("next_hunk");
     }
-    setTimeout(scrollFocusedHunkIntoView, 0);
+    diffNav.scrollToHunk(prevFile.path, lastHunk);
   }
 }
 
-function scrollFocusedHunkIntoView() {
-  const snap = app.snapshot;
-  if (!snap) return;
-  const file = snap.files[snap.selected_file];
-  if (!file) return;
-  // Anchor on the file section — the per-file sticky header keeps the user
-  // oriented even when only the file changes.
-  document
-    .getElementById(`file-${file.path}`)
-    ?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
 function scrollDiff(to: "top" | "bottom") {
-  const el = document.querySelector<HTMLElement>(".mono.text-\\[13px\\]");
-  if (!el) return;
-  el.scrollTo({ top: to === "top" ? 0 : el.scrollHeight, behavior: "smooth" });
+  diffNav.scrollToEdge(to);
 }
 
 export function initKeyboard(): () => void {
@@ -223,6 +214,9 @@ export function initKeyboard(): () => void {
     // Always-fire shortcuts (work even when focus is in a text field):
     // Esc dismisses AI Hub, diff composer, then blurs focused inputs.
     if (e.key === "Escape") {
+      if (document.querySelector("[data-modal]")) {
+        return;
+      }
       if (isPrUrlModalOpen()) {
         closePrUrlModal();
         e.preventDefault();
@@ -278,10 +272,10 @@ export function initKeyboard(): () => void {
       void browser.setLayout(browser.layout === "fullscreen" ? "hidden" : "fullscreen");
       return;
     }
-    // ⌘⇧E — open the export-review modal.
+    // ⌘⇧E — open the export-review workspace view.
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "e" || e.key === "E")) {
       e.preventDefault();
-      void openExportModal();
+      openExportReviewView();
       return;
     }
     // ⌘O — open a local repo (EmptyState shortcut). Gated on !inField so

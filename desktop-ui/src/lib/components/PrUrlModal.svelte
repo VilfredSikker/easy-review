@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import { closePrUrlModal, prUrlModal } from "$lib/stores/prUrlModal.svelte";
 
   let inputEl: HTMLInputElement | null = $state(null);
@@ -9,17 +8,6 @@
   const canSubmit = $derived(
     prUrlModal.url.trim().length > 0 && !prUrlModal.submitting,
   );
-
-  $effect(() => {
-    if (!prUrlModal.open) return;
-    let cancelled = false;
-    void tick().then(() => {
-      if (!cancelled) inputEl?.focus({ preventScroll: true });
-    });
-    return () => {
-      cancelled = true;
-    };
-  });
 
   function onUrlInput(e: Event) {
     prUrlModal.url = (e.currentTarget as HTMLInputElement).value;
@@ -41,12 +29,6 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (!prUrlModal.open) return;
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      closePrUrlModal();
-      return;
-    }
     if (e.key === "Enter") {
       const target = e.target as HTMLElement | null;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") {
@@ -55,39 +37,18 @@
       }
     }
   }
-
-  onMount(() => {
-    window.addEventListener("keydown", handleKeydown, { capture: true });
-    return () => window.removeEventListener("keydown", handleKeydown, { capture: true });
-  });
 </script>
 
-{#if prUrlModal.open}
-  <!-- Backdrop -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    data-modal="pr-url"
-    class="fixed inset-0 z-[9998] bg-black/55 pointer-events-auto"
-    style="backdrop-filter: blur(2px);"
-    role="presentation"
-    onmousedown={(e) => {
-      if (e.target === e.currentTarget) closePrUrlModal();
-    }}
-    onclick={(e) => {
-      if (e.target === e.currentTarget) closePrUrlModal();
-    }}
-  ></div>
-
-  <!-- Panel -->
-  <div
-    data-modal="pr-url"
-    tabindex="-1"
-    role="dialog"
-    aria-modal="true"
-    aria-label="Open PR by URL"
-    class="fixed left-1/2 -translate-x-1/2 top-[16vh] z-[9999] w-[620px] max-w-[calc(100vw-2rem)] rounded-xl bg-card border border-border shadow-2xl overflow-hidden outline-none pointer-events-auto"
-  >
+<ModalShell
+  open={prUrlModal.open}
+  ariaLabel="Open PR by URL"
+  onClose={closePrUrlModal}
+  onKeydown={handleKeydown}
+  focusSelector="input"
+  dataModal="pr-url"
+  backdropClass="fixed inset-0 z-[9998] bg-black/55 pointer-events-auto"
+  panelClass="fixed left-1/2 -translate-x-1/2 top-[16vh] z-[9999] w-[620px] max-w-[calc(100vw-2rem)] rounded-xl bg-card border border-border shadow-2xl overflow-hidden outline-none pointer-events-auto"
+>
     <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
       <span class="text-sm text-fg font-medium">Open PR by URL</span>
       <button
@@ -121,5 +82,4 @@
         </button>
       </div>
     </div>
-  </div>
-{/if}
+</ModalShell>

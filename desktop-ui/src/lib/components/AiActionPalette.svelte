@@ -8,17 +8,16 @@
 </script>
 
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import { registerAiPaletteOpener } from "$lib/stores/keyboard";
-  import { overlay, prepareOverlayFocus } from "$lib/stores/overlay.svelte";
+  import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import type { AiProviderInfo } from "$lib/types";
 
   type SubView = "main" | "providers" | "models";
 
   let open = $state(false);
-  let panelEl = $state<HTMLDivElement | null>(null);
   let selectedIdx = $state(0);
   let subView = $state<SubView>("main");
   let providers = $state<AiProviderInfo[]>([]);
@@ -53,11 +52,8 @@
     open = true;
   }
 
-  async function openPaletteFromOutside() {
-    await prepareOverlayFocus();
+  function openPaletteFromOutside() {
     openPalette();
-    await tick();
-    panelEl?.focus({ preventScroll: true });
   }
 
   function goBack() {
@@ -222,53 +218,24 @@
     }
   }
 
-  $effect(() => {
-    if (!open) return;
-    const release = overlay.acquire();
-    let cancelled = false;
-    void tick().then(() => {
-      if (!cancelled) panelEl?.focus({ preventScroll: true });
-    });
-    return () => {
-      cancelled = true;
-      release();
-    };
-  });
-
   onMount(() => {
     dismissPalette = close;
     const cleanup = registerAiPaletteOpener(openPaletteFromOutside);
-    window.addEventListener("keydown", handleKeydown, { capture: true });
     return () => {
       dismissPalette = null;
       cleanup();
-      window.removeEventListener("keydown", handleKeydown, { capture: true });
     };
   });
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    data-modal
-    class="fixed inset-0 z-[250] bg-black/50"
-    style="backdrop-filter: blur(2px);"
-    role="presentation"
-    onmousedown={(e) => {
-      if (e.target === e.currentTarget) close();
-    }}
-  ></div>
-
-  <div
-    bind:this={panelEl}
-    tabindex="-1"
-    role="dialog"
-    aria-modal="true"
-    aria-label={subViewTitle}
-    class="fixed left-1/2 -translate-x-1/2 top-[15vh] z-[251] bg-ink-800 border border-ink-500 rounded-lg shadow-2xl w-[480px] max-w-[calc(100vw-2rem)] overflow-hidden outline-none"
-    onmousedown={(e) => e.stopPropagation()}
-  >
+<ModalShell
+  {open}
+  ariaLabel={subViewTitle}
+  onClose={close}
+  onKeydown={handleKeydown}
+  closeOnEscape={false}
+  panelClass="fixed left-1/2 -translate-x-1/2 top-[15vh] z-[251] bg-ink-800 border border-ink-500 rounded-lg shadow-2xl w-[480px] max-w-[calc(100vw-2rem)] overflow-hidden outline-none"
+>
       <!-- header -->
       <div class="px-4 pt-3 pb-2 border-b border-ink-600 flex items-center gap-2">
         {#if subView !== "main"}
@@ -317,5 +284,4 @@
           </div>
         {/each}
       </div>
-  </div>
-{/if}
+</ModalShell>

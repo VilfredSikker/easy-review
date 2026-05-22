@@ -495,17 +495,24 @@ impl TabState {
     /// In lazy mode, ensure the currently selected file has its hunks parsed.
     /// No-op in eager mode or if already parsed.
     pub fn ensure_file_parsed(&mut self) {
+        let idx = self.selected_file;
+        self.ensure_file_parsed_at(idx);
+    }
+
+    /// Parse a specific file by its index in `self.files` without changing navigation state.
+    /// Used to pre-load in-viewport lazy stubs without disturbing the selection.
+    pub fn ensure_file_parsed_at(&mut self, index: usize) {
         if !self.lazy_mode {
             return;
         }
-        if let Some(file) = self.files.get(self.selected_file) {
+        if let Some(file) = self.files.get(index) {
             // Already parsed (has hunks) or is compacted — skip
             if !file.hunks.is_empty() || file.compacted {
                 return;
             }
         }
         // Parse on demand from raw diff — look up header by path (not index) to handle mtime sort
-        let path = self.files.get(self.selected_file).map(|f| f.path.clone());
+        let path = self.files.get(index).map(|f| f.path.clone());
         let header_idx = path
             .as_ref()
             .and_then(|p| self.file_headers.iter().position(|h| h.path == *p));
@@ -513,7 +520,7 @@ impl TabState {
             let header = &self.file_headers[idx];
             let parsed = git::parse_file_at_offset(raw, header);
             if !parsed.hunks.is_empty() {
-                if let Some(file) = self.files.get_mut(self.selected_file) {
+                if let Some(file) = self.files.get_mut(index) {
                     file.hunks = parsed.hunks;
                     file.adds = parsed.adds;
                     file.dels = parsed.dels;
@@ -526,7 +533,7 @@ impl TabState {
         // Fallback: offset parse returned no hunks but file has changes — fetch from git directly
         // Skip git fallback in remote mode — raw_diff is our only source
         if !self.is_remote() {
-            if let Some(file) = self.files.get(self.selected_file) {
+            if let Some(file) = self.files.get(index) {
                 if file.adds + file.dels > 0 {
                     let path = file.path.clone();
                     let repo_root = self.repo_root.clone();
@@ -543,7 +550,7 @@ impl TabState {
                     ) {
                         let parsed = git::parse_diff(&raw);
                         if let Some(p) = parsed.into_iter().next() {
-                            if let Some(file) = self.files.get_mut(self.selected_file) {
+                            if let Some(file) = self.files.get_mut(index) {
                                 file.hunks = p.hunks;
                                 file.adds = p.adds;
                                 file.dels = p.dels;

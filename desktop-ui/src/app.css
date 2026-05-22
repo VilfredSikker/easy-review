@@ -23,16 +23,16 @@
   --color-ink-300: #5e5e5e;
   --color-ink-200: #999999;
   --color-ink-100: #cccccc;
-  --color-ink-50:  #e8e8e8;
+  --color-ink-50:  #f5f5f5;
 
   --color-accent:        #ff6a3d;
   --color-accent-soft:   rgba(255,106,61,0.12);
   --color-accent-border: rgba(255,106,61,0.30);
 
-  --color-add-bg: #0d2116;
-  --color-add-fg: #7ee2a8;
-  --color-del-bg: #270f0f;
-  --color-del-fg: #f4a3a3;
+  --color-add-bg: #182e24;
+  --color-add-fg: #07c480;
+  --color-del-bg: #2c1618;
+  --color-del-fg: #ff2e3f;
 
   --color-risk-high: #ef4444;
   --color-risk-med:  #fbbf24;
@@ -126,7 +126,14 @@ body {
 .diff-row.is-selected > div.gutter:first-child {
   box-shadow: inset 3px 0 0 0 #3b82f6;
 }
-.gutter { color: #444; user-select: none; position: relative; }
+.gutter { color: #737373; user-select: none; position: relative; }
+.diff-add { background-color: var(--color-add-bg); }
+.diff-del { background-color: var(--color-del-bg); }
+/* First gutter per panel gets the left accent border — unified nth-child(1), split left nth-child(1), split right nth-child(3) */
+.diff-row > .gutter:nth-child(1).diff-add,
+.diff-row > .gutter:nth-child(3).diff-add { box-shadow: inset 3px 0 0 0 var(--color-add-fg); }
+.diff-row > .gutter:nth-child(1).diff-del,
+.diff-row > .gutter:nth-child(3).diff-del { box-shadow: inset 3px 0 0 0 var(--color-del-fg); }
 
 /* Add-comment "+" button — shown in gutter on row hover. */
 .add-comment-btn {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import Button from "$lib/components/ui/Button.svelte";
 
   interface Props {
@@ -57,33 +58,22 @@
   }
 
   function handleKey(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      onClose();
-    } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       submit();
     }
   }
 </script>
 
-{#if open}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_interactive_supports_focus -->
-  <div
-    data-modal
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) onClose();
-    }}
-  >
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      tabindex="-1"
-      class="w-full max-w-xl rounded-lg border border-border bg-surface shadow-xl"
-      onkeydown={handleKey}
-    >
+<ModalShell
+  {open}
+  ariaLabel={title}
+  onClose={onClose}
+  onKeydown={handleKey}
+  focusSelector="textarea"
+  backdropClass="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+  panelClass="fixed left-1/2 top-1/2 z-[51] w-full max-w-xl -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface shadow-xl outline-none"
+>
       <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-comment"
           ><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
@@ -121,6 +111,4 @@
           {submitting ? "Promoting…" : "Promote"}
         </Button>
       </div>
-    </div>
-  </div>
-{/if}
+</ModalShell>

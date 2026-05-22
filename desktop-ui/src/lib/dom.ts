@@ -1,21 +1,24 @@
 import { tick } from "svelte";
 import { app } from "$lib/stores/app.svelte";
+import { diffNav } from "$lib/stores/diffNav.svelte";
 import type { FlatFinding, ThreadSnapshot } from "$lib/types";
 
 /**
- * Smooth-scroll an element into view and pulse its outline.
- * Used to navigate from list-style references (e.g. AI Review tile, Comments
- * card thread row) to the inline block that lives inside the diff.
+ * Scroll an element into view and pulse its outline.
+ * Retained for callers that flash arbitrary IDs (not threads/findings).
  *
  * IDs follow the mock conventions:
  * - finding cards: `finding-<id>` (e.g. `finding-medium-1`)
  * - comment threads: `thread-comment-<id>` or just `thread-<id>`
  * - question threads: `thread-question-<id>`
+ *
+ * `behavior: "auto"` (not "smooth") — smooth scroll through long virtualized
+ * lists triggers IntersectionObserver storms during the animation.
  */
 export function jumpTo(id: string): void {
   const el = document.getElementById(id);
   if (!el) return;
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.scrollIntoView({ behavior: "auto", block: "center" });
   el.classList.remove("flash");
   // Force a reflow so the animation restarts when jumping to the same element twice.
   void el.offsetWidth;
@@ -29,7 +32,8 @@ export const scrollFlash = jumpTo;
 /**
  * Navigate to a thread, switching files first if needed. The Rust
  * `select_file` command takes a file index (not a path), so we look up the
- * index from the current snapshot before invoking.
+ * index from the current snapshot before invoking. Engine sync runs FIRST
+ * (reviewed flags, navigation cursor) before the visual scroll.
  */
 export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
   const snap = app.snapshot;
@@ -42,7 +46,7 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
       await tick();
     }
   }
-  jumpTo(thread.id);
+  await diffNav.scrollToThread(thread.id);
 }
 
 /**
@@ -59,5 +63,5 @@ export async function navigateToFinding(finding: FlatFinding): Promise<void> {
       await tick();
     }
   }
-  jumpTo(`finding-${finding.id}`);
+  await diffNav.scrollToFinding(finding.id, { flashId: `finding-${finding.id}` });
 }

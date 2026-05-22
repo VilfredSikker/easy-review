@@ -1,9 +1,12 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { browserSuspendForOverlay } from "./browserHost";
 
+let nextModalId = 1;
+
 /** Blocks the native review-browser webview while app modals are open (z-index cannot cover it). */
 class OverlayStore {
   #depth = $state(0);
+  #modalStack = $state<number[]>([]);
 
   get blocksNativeBrowser(): boolean {
     return this.#depth > 0;
@@ -16,6 +19,21 @@ class OverlayStore {
     return () => {
       this.#depth = Math.max(0, this.#depth - 1);
     };
+  }
+
+  registerModal(): { id: number; unregister: () => void } {
+    const id = nextModalId++;
+    this.#modalStack = [...this.#modalStack, id];
+    return {
+      id,
+      unregister: () => {
+        this.#modalStack = this.#modalStack.filter((modalId) => modalId !== id);
+      },
+    };
+  }
+
+  isTopModal(id: number): boolean {
+    return this.#modalStack[this.#modalStack.length - 1] === id;
   }
 }
 

@@ -36,7 +36,7 @@ function isFolder(n: MutableFolder | MutableFile): n is MutableFolder {
  * Returns a pre-order flat array of `TreeNode`s in render order, with `depth`
  * set so the caller can apply `pl-{depth*4}` (or similar) indentation.
  */
-export function buildTree(files: FileSnapshot[]): TreeNode[] {
+function _buildTree(files: FileSnapshot[]): TreeNode[] {
   // 1. Build a nested map of folders + files.
   const root: MutableFolder = { name: "", fullPath: "", children: new Map() };
 
@@ -106,6 +106,17 @@ export function buildTree(files: FileSnapshot[]): TreeNode[] {
 
   walk(root, 0);
   return out;
+}
+
+let _memoKey = "";
+let _memoResult: TreeNode[] = [];
+
+export function buildTree(files: FileSnapshot[]): TreeNode[] {
+  const key = files.map((f) => f.path).join("\0");
+  if (key === _memoKey) return _memoResult;
+  _memoKey = key;
+  _memoResult = _buildTree(files);
+  return _memoResult;
 }
 
 /**

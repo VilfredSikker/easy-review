@@ -21,10 +21,10 @@ type Story = StoryObj<typeof meta>;
 // continuous-scroll story has real content for all three files.
 function makeHunk(label: string, startLine: number): HunkSnapshot {
   const lines: LineSnapshot[] = [
-    { old_num: startLine, new_num: startLine, kind: "context", spans: [{ text: `// ${label} — context`, color: "" }] },
-    { old_num: null, new_num: startLine + 1, kind: "add", spans: [{ text: `  added line in ${label}`, color: "" }] },
-    { old_num: startLine + 1, new_num: null, kind: "del", spans: [{ text: `  removed line in ${label}`, color: "" }] },
-    { old_num: startLine + 2, new_num: startLine + 2, kind: "context", spans: [{ text: `// trailing context`, color: "" }] },
+    { old_num: startLine, new_num: startLine, kind: "context", text: `// ${label} — context`, spans: [{ text: `// ${label} — context`, color: "" }] },
+    { old_num: null, new_num: startLine + 1, kind: "add", text: `  added line in ${label}`, spans: [{ text: `  added line in ${label}`, color: "" }] },
+    { old_num: startLine + 1, new_num: null, kind: "del", text: `  removed line in ${label}`, spans: [{ text: `  removed line in ${label}`, color: "" }] },
+    { old_num: startLine + 2, new_num: startLine + 2, kind: "context", text: `// trailing context`, spans: [{ text: `// trailing context`, color: "" }] },
   ];
   return {
     header: `@@ -${startLine},3 +${startLine},3 @@ ${label}`,
@@ -80,6 +80,7 @@ function makeBigFile(idx: number): FileSnapshot {
     question_count: 0,
     hunks: [makeHunk(`file-${idx}`, 10), makeHunk(`file-${idx} #2`, 60)],
     source_index: idx,
+    cache_key: "",
   };
 }
 

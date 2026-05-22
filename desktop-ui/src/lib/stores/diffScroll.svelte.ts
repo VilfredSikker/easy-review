@@ -1,18 +1,20 @@
 /**
  * Shared store for continuous-scroll diff view.
  *
- * - `currentFilePath`: the file whose section is closest to the top of the
- *   scrolling viewport (driven by an IntersectionObserver in DiffView).
- *   FileTree reads this to highlight whichever file the user is currently
- *   looking at, in addition to the selected_file cursor.
  * - `scrollTopByMode`: last-known scroll-top per diff mode, so switching tabs
  *   (e.g. branch → unstaged) and back restores position.
+ * - `currentFilePath`: idle-debounced file path visible at the top of the flat
+ *   diff view (FlatDiffView writes after 200ms scroll silence). Used by
+ *   FileTree to highlight and auto-scroll-into-view the viewport file.
+ *   Written at most once per 200ms scroll stop — zero writes during active
+ *   scrolling preserves 60fps.
  */
 type DiffMode = string;
 
 class DiffScrollStore {
-  currentFilePath = $state<string | null>(null);
   scrollTopByMode = $state<Record<DiffMode, number>>({});
+  /** File path at the top of the flat virtualizer viewport; null = unknown. */
+  currentFilePath = $state<string | null>(null);
 
   setScrollTop(mode: DiffMode, top: number) {
     this.scrollTopByMode[mode] = top;

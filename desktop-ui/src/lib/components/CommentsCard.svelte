@@ -3,7 +3,6 @@
   import { app } from "$lib/stores/app.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
-  import { openExportModal } from "$lib/components/ExportModal.svelte";
   import InlineThread from "$lib/components/InlineThread.svelte";
 
   interface Props {
@@ -217,7 +216,7 @@
   </div>
 
   <button
-    onclick={openExportModal}
+    onclick={() => app.setMainView("export-review")}
     class="mt-3 w-full px-3 py-1.5 text-xs rounded-md border border-border hover:bg-hover text-fg-2 flex items-center justify-center gap-2"
   >
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>

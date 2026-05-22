@@ -6,18 +6,21 @@ const ctx = (oldN: number, newN: number, text = "ctx"): LineSnapshot => ({
   old_num: oldN,
   new_num: newN,
   kind: "context",
+  text,
   spans: [{ text, color: "" }],
 });
 const add = (newN: number, text = "add"): LineSnapshot => ({
   old_num: null,
   new_num: newN,
   kind: "add",
+  text,
   spans: [{ text, color: "" }],
 });
 const del = (oldN: number, text = "del"): LineSnapshot => ({
   old_num: oldN,
   new_num: null,
   kind: "del",
+  text,
   spans: [{ text, color: "" }],
 });
 

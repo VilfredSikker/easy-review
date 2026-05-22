@@ -1040,8 +1040,10 @@ fn remote_matches_repo(remote: &str, owner: &str, repo: &str) -> bool {
 }
 
 /// Remote-only PRs above these limits are rejected up front with a clear message.
-const REMOTE_PR_MAX_CHANGED_FILES: u64 = 400;
-const REMOTE_PR_MAX_LINE_CHANGES: u64 = 300_000;
+/// The IPC line budget (SNAPSHOT_DIFF_LINE_BUDGET) enforces what reaches the UI;
+/// these gates only guard against pathological network / memory usage.
+const REMOTE_PR_MAX_CHANGED_FILES: u64 = 10_000;
+const REMOTE_PR_MAX_LINE_CHANGES: u64 = 5_000_000;
 
 /// Quick size check via `gh pr view` so we do not clone multi‑GB repos for hopeless PRs.
 pub fn gh_pr_size_check_remote(owner: &str, repo: &str, number: u64) -> Result<()> {

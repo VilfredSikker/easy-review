@@ -20,7 +20,7 @@ export interface LogEntry {
 const MAX_LOGS = 500;
 
 export type DiffViewMode = "unified" | "split";
-export type MainViewMode = "diff" | "agent-output";
+export type MainViewMode = "diff" | "agent-output" | "export-review";
 const DIFF_VIEW_MODE_KEY = "er.diffViewMode";
 const COMMENT_VISIBILITY_KEY = "er.commentVisibility";
 const COMPACT_LINES_KEY = "er.compactLines";

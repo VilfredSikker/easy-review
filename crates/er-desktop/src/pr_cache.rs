@@ -109,6 +109,14 @@ pub(crate) fn merge_pr_results(
     }
 }
 
+fn refreshable_remotes(file: &projects::ProjectsFile) -> Vec<String> {
+    file.projects
+        .iter()
+        .filter(|p| !p.root_path.is_empty())
+        .filter_map(|p| p.remote.clone())
+        .collect()
+}
+
 /// Refresh PRs for every project with a remote. Fetches all remotes in parallel.
 /// Preserves stale cache entries for remotes that fail.
 pub(crate) async fn refresh_pr_cache(
@@ -116,11 +124,7 @@ pub(crate) async fn refresh_pr_cache(
     fetched_at: &PrCacheFetchedAtMap,
 ) -> Vec<String> {
     let file = projects::load();
-    let remotes: Vec<String> = file
-        .projects
-        .iter()
-        .filter_map(|p| p.remote.clone())
-        .collect();
+    let remotes = refreshable_remotes(&file);
 
     if remotes.is_empty() {
         return Vec::new();
@@ -358,5 +362,38 @@ mod tests {
 
         assert_eq!(cache["org/a"][0].number, 3, "a should be updated");
         assert_eq!(cache["org/b"][0].number, 2, "b should be preserved");
+    }
+
+    #[test]
+    fn refreshable_remotes_excludes_remote_only_projects() {
+        let file = projects::ProjectsFile {
+            projects: vec![
+                projects::ProjectRecord {
+                    id: "local".to_string(),
+                    name: "local".to_string(),
+                    root_path: "/tmp/local".to_string(),
+                    remote: Some("owner/local".to_string()),
+                    dismissed_prs: Vec::new(),
+                    tracked_prs: Vec::new(),
+                    tracked_branches: Vec::new(),
+                    recent_prs: Vec::new(),
+                    saved_prs: Vec::new(),
+                },
+                projects::ProjectRecord {
+                    id: "remote-owner-bun".to_string(),
+                    name: "owner/bun".to_string(),
+                    root_path: String::new(),
+                    remote: Some("owner/bun".to_string()),
+                    dismissed_prs: Vec::new(),
+                    tracked_prs: Vec::new(),
+                    tracked_branches: Vec::new(),
+                    recent_prs: Vec::new(),
+                    saved_prs: Vec::new(),
+                },
+            ],
+            active_id: None,
+        };
+
+        assert_eq!(refreshable_remotes(&file), vec!["owner/local".to_string()]);
     }
 }

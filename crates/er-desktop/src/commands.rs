@@ -95,6 +95,9 @@ pub struct AppState {
     pub watch_status: WatchStatusState,
     pub inbox: InboxHandle,
     pub tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
+    /// Separate highlight state decoupled from the poll path.
+    /// Holds its own Highlighter so highlight_file never blocks poll.
+    pub highlight_state: crate::highlight_state::HighlightState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -558,6 +561,176 @@ pub fn toggle_panel(panel: String, state: State<AppState>) -> Result<AppSnapshot
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
+
+/// Parse a lazy stub file and return the updated snapshot without changing the
+/// navigation selection. Used by the frontend to pre-load in-viewport files.
+#[tauri::command]
+pub fn request_file_content(
+    source_index: usize,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
+    {
+        let tab = app.tab_mut();
+        if tab.mode != er_engine::app::DiffMode::History && source_index < tab.files.len() {
+            tab.ensure_file_parsed_at(source_index);
+        }
+    }
+    Ok(snap_from(&app, &mut hl, &state))
+}
+
+#[tauri::command]
+pub async fn highlight_file(
+    file_path: String,
+    cache_key: String,
+    syntax_theme: String,
+    state: State<'_, AppState>,
+) -> Result<crate::highlight_state::HighlightResult, String> {
+    use crate::highlight_state::HunkHighlight;
+    use crate::snapshot::SpanSnapshot;
+    use er_engine::git::LineType;
+
+    // Clone hunk text while briefly holding AppState lock — validate cache_key first.
+    let (hunk_texts, filename, validated_cache_key) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab = app.tab();
+        let file = tab
+            .files
+            .iter()
+            .find(|f| f.path == file_path)
+            .ok_or_else(|| "file not found".to_string())?;
+        let current_key = er_engine::cache::file_cache_key(&tab.branch_diff_hash, &file.path);
+        if current_key != cache_key {
+            return Err("stale".to_string());
+        }
+        let texts: Vec<Vec<(String, String)>> = file
+            .hunks
+            .iter()
+            .map(|h| {
+                h.lines
+                    .iter()
+                    .map(|l| {
+                        let kind = match l.line_type {
+                            LineType::Add => "add",
+                            LineType::Delete => "del",
+                            LineType::Context => "context",
+                            LineType::Fold(_) => "fold",
+                        };
+                        (l.content.clone(), kind.to_string())
+                    })
+                    .collect()
+            })
+            .collect();
+        let fname = std::path::Path::new(&file.path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&file.path)
+            .to_string();
+        (texts, fname, current_key)
+    }; // AppState lock released here
+
+    // Check backend LRU cache after validation — key is now proven current.
+    if let Some(hunks) =
+        state
+            .highlight_state
+            .get_cached(&file_path, &validated_cache_key, &syntax_theme)
+    {
+        return Ok(crate::highlight_state::HighlightResult {
+            cache_key: validated_cache_key,
+            syntax_theme,
+            hunks,
+        });
+    }
+
+    // Run Syntect under HighlightState lock (separate from AppState — doesn't block poll)
+    let hunks: Vec<HunkHighlight> = {
+        let mut hl = state
+            .highlight_state
+            .highlighter
+            .lock()
+            .map_err(|e| e.to_string())?;
+        let is_python = file_path.ends_with(".py");
+        let mut in_python_docstring = false;
+
+        hunk_texts
+            .iter()
+            .enumerate()
+            .map(|(hunk_idx, lines)| {
+                let line_spans: Vec<Vec<SpanSnapshot>> = lines
+                    .iter()
+                    .map(|(content, kind)| {
+                        if kind == "fold" {
+                            return vec![SpanSnapshot {
+                                text: content.clone(),
+                                color: String::new(),
+                            }];
+                        }
+                        let mut spans: Vec<SpanSnapshot> = hl
+                            .highlight_line(content, &filename, &syntax_theme)
+                            .into_iter()
+                            .map(|hs| SpanSnapshot {
+                                text: hs.text,
+                                color: hs.color,
+                            })
+                            .collect();
+
+                        let trimmed = content.trim_start();
+                        let is_line_comment = trimmed.starts_with('#')
+                            || trimmed.starts_with("//")
+                            || trimmed.starts_with("/*")
+                            || trimmed.starts_with('*')
+                            || trimmed.starts_with("*/");
+
+                        let triple_single = content.matches("'''").count();
+                        let triple_double = content.matches("\"\"\"").count();
+                        let has_triple = triple_single > 0 || triple_double > 0;
+                        let in_docstring_now = is_python && (in_python_docstring || has_triple);
+
+                        if is_line_comment || in_docstring_now {
+                            spans = vec![SpanSnapshot {
+                                text: content.clone(),
+                                color: "#a7b1ba".to_string(),
+                            }];
+                        } else if !trimmed.is_empty()
+                            && trimmed
+                                .chars()
+                                .all(|c| matches!(c, ')' | ']' | '}' | ',' | ' ' | '\t'))
+                        {
+                            spans = vec![SpanSnapshot {
+                                text: content.clone(),
+                                color: "#c0c5ce".to_string(),
+                            }];
+                        }
+
+                        if is_python && has_triple && ((triple_single + triple_double) % 2 == 1) {
+                            in_python_docstring = !in_python_docstring;
+                        }
+
+                        spans
+                    })
+                    .collect();
+                HunkHighlight {
+                    hunk_index: hunk_idx,
+                    lines: line_spans,
+                }
+            })
+            .collect()
+    }; // HighlightState lock released here
+
+    state.highlight_state.insert_cache(
+        &file_path,
+        &validated_cache_key,
+        &syntax_theme,
+        hunks.clone(),
+    );
+
+    Ok(crate::highlight_state::HighlightResult {
+        cache_key: validated_cache_key,
+        syntax_theme,
+        hunks,
+    })
+}
 
 #[tauri::command]
 pub fn select_file(idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
@@ -2655,6 +2828,9 @@ fn normalize_remote_slug(remote: &str) -> String {
 fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) -> Option<String> {
     let target = normalize_remote_slug(remote_slug);
     file.projects.iter().find_map(|p| {
+        if p.root_path.is_empty() {
+            return None;
+        }
         p.remote
             .as_ref()
             .filter(|r| normalize_remote_slug(r) == target)
@@ -2767,6 +2943,39 @@ fn fetch_single_pr_for_remote(remote: &str, pr_number: u64) -> Result<PrInfo, St
     })
 }
 
+fn cache_single_pr_for_remote(
+    state: &State<AppState>,
+    remote: &str,
+    pr_number: u64,
+) -> Result<PrInfo, String> {
+    let fetched_pr = fetch_single_pr_for_remote(remote, pr_number)?;
+    if let Ok(mut cache) = state.pr_cache.lock() {
+        let entry = cache.entry(remote.to_string()).or_default();
+        if let Some(idx) = entry.iter().position(|pr| pr.number == pr_number) {
+            entry[idx] = fetched_pr.clone();
+        } else {
+            entry.push(fetched_pr.clone());
+        }
+    }
+    if let Ok(mut fetched) = state.pr_cache_fetched_at.lock() {
+        fetched.insert(remote.to_string(), now_epoch_ms());
+    }
+    crate::pr_cache::save_persisted_pr_cache(&state.pr_cache, &state.pr_cache_fetched_at);
+    Ok(fetched_pr)
+}
+
+fn record_remote_recent_pr(
+    state: &State<AppState>,
+    remote: &str,
+    pr_number: u64,
+) -> Result<String, String> {
+    let fetched_pr = cache_single_pr_for_remote(state, remote, pr_number)?;
+    let project_id = projects::ensure_remote_project(remote).map_err(|e| e.to_string())?;
+    projects::record_recent_pr(&project_id, pr_number, &fetched_pr.title)
+        .map_err(|e| e.to_string())?;
+    Ok(project_id)
+}
+
 #[tauri::command]
 pub fn open_remote_pr(
     owner: String,
@@ -2775,6 +2984,8 @@ pub fn open_remote_pr(
     replace: Option<bool>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
+    let remote = format!("{owner}/{repo}");
+    let _project_id = record_remote_recent_pr(&state, &remote, number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(&mut app, &owner, &repo, number, replace.unwrap_or(false))?;
@@ -2810,24 +3021,13 @@ pub fn open_pr_url(
                 .unwrap_or(false);
         }
         if !has_cached {
-            let fetched_pr = fetch_single_pr_for_remote(&remote, pr_ref.number)?;
-            if let Ok(mut cache) = state.pr_cache.lock() {
-                let entry = cache.entry(remote.clone()).or_default();
-                if let Some(idx) = entry.iter().position(|pr| pr.number == pr_ref.number) {
-                    entry[idx] = fetched_pr;
-                } else {
-                    entry.push(fetched_pr);
-                }
-            }
-            if let Ok(mut fetched) = state.pr_cache_fetched_at.lock() {
-                fetched.insert(remote.clone(), now_epoch_ms());
-            }
-            crate::pr_cache::save_persisted_pr_cache(&state.pr_cache, &state.pr_cache_fetched_at);
+            cache_single_pr_for_remote(&state, &remote, pr_ref.number)?;
         }
         projects::track_pr(&project_id, pr_ref.number).map_err(|e| e.to_string())?;
         return open_pr_review(project_id, pr_ref.number, replace, None, state);
     }
 
+    let _project_id = record_remote_recent_pr(&state, &remote, pr_ref.number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(
@@ -3998,6 +4198,37 @@ pub fn list_available_branches(project_id: String) -> Result<Vec<String>, String
         .filter(|n| n != &current && !proj.tracked_branches.iter().any(|t| t == n))
         .collect();
     Ok(names)
+}
+
+#[tauri::command]
+pub fn delete_project(project_id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let before = projects::load();
+    let deleted_remote = before
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .and_then(|p| p.remote.clone());
+    projects::delete_project(&project_id).map_err(|e| e.to_string())?;
+    if let Some(remote) = deleted_remote {
+        let remaining = projects::load();
+        let target = normalize_remote_slug(&remote);
+        let remote_still_used = remaining.projects.iter().any(|p| {
+            p.remote
+                .as_ref()
+                .is_some_and(|r| normalize_remote_slug(r) == target)
+        });
+        if !remote_still_used {
+            if let Ok(mut cache) = state.pr_cache.lock() {
+                cache.retain(|r, _| normalize_remote_slug(r) != target);
+            }
+            if let Ok(mut fetched_at) = state.pr_cache_fetched_at.lock() {
+                fetched_at.retain(|r, _| normalize_remote_slug(r) != target);
+            }
+            crate::pr_cache::save_persisted_pr_cache(&state.pr_cache, &state.pr_cache_fetched_at);
+        }
+    }
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    snap!(state)
 }
 
 #[tauri::command]

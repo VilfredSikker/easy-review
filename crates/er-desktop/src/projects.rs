@@ -68,6 +68,11 @@ pub fn record_recent_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow
         .iter_mut()
         .find(|p| p.id == project_id)
         .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+    record_recent_pr_on_project(proj, pr_number, title);
+    save(&file)
+}
+
+fn record_recent_pr_on_project(proj: &mut ProjectRecord, pr_number: u64, title: &str) {
     let now = now_epoch_ms();
     proj.recent_prs.retain(|e| e.number != pr_number);
     proj.recent_prs.insert(
@@ -79,6 +84,89 @@ pub fn record_recent_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow
         },
     );
     proj.recent_prs.truncate(MAX_PR_HISTORY);
+}
+
+fn normalize_remote_slug(remote: &str) -> Option<String> {
+    let trimmed = remote.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_scheme = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+        .unwrap_or(trimmed);
+    let slug = without_scheme
+        .trim_end_matches(".git")
+        .trim_matches('/')
+        .to_ascii_lowercase();
+    if slug.split('/').count() == 2 {
+        Some(slug)
+    } else {
+        None
+    }
+}
+
+fn remote_project_id(remote: &str) -> String {
+    format!("remote-{}", sanitize_id(remote))
+}
+
+fn ensure_remote_project_in_file(file: &mut ProjectsFile, remote: &str) -> anyhow::Result<String> {
+    let remote = normalize_remote_slug(remote)
+        .ok_or_else(|| anyhow::anyhow!("Invalid GitHub remote slug: {remote}"))?;
+    if let Some(existing) = file.projects.iter().find(|p| {
+        p.remote
+            .as_deref()
+            .and_then(normalize_remote_slug)
+            .is_some_and(|existing| existing == remote)
+    }) {
+        return Ok(existing.id.clone());
+    }
+
+    let base_id = remote_project_id(&remote);
+    let mut unique_id = base_id.clone();
+    let mut n = 2;
+    while file.projects.iter().any(|p| p.id == unique_id) {
+        unique_id = format!("{}-{}", base_id, n);
+        n += 1;
+    }
+
+    let record = ProjectRecord {
+        id: unique_id.clone(),
+        name: remote.clone(),
+        root_path: String::new(),
+        remote: Some(remote),
+        dismissed_prs: Vec::new(),
+        tracked_prs: Vec::new(),
+        tracked_branches: Vec::new(),
+        recent_prs: Vec::new(),
+        saved_prs: Vec::new(),
+    };
+    file.projects.push(record);
+    Ok(unique_id)
+}
+
+pub fn ensure_remote_project(remote: &str) -> anyhow::Result<String> {
+    let mut file = load();
+    let project_id = ensure_remote_project_in_file(&mut file, remote)?;
+    save(&file)?;
+    Ok(project_id)
+}
+
+fn delete_project_in_file(file: &mut ProjectsFile, project_id: &str) -> anyhow::Result<()> {
+    let before = file.projects.len();
+    file.projects.retain(|p| p.id != project_id);
+    if file.projects.len() == before {
+        return Err(anyhow::anyhow!("Project not found: {project_id}"));
+    }
+    if file.active_id.as_deref() == Some(project_id) {
+        file.active_id = file.projects.first().map(|p| p.id.clone());
+    }
+    Ok(())
+}
+
+pub fn delete_project(project_id: &str) -> anyhow::Result<()> {
+    let mut file = load();
+    delete_project_in_file(&mut file, project_id)?;
     save(&file)
 }
 
@@ -330,6 +418,87 @@ pub fn remove_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()>
         save(&file)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local_project(id: &str, remote: Option<&str>) -> ProjectRecord {
+        ProjectRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            root_path: format!("/tmp/{id}"),
+            remote: remote.map(|r| r.to_string()),
+            dismissed_prs: Vec::new(),
+            tracked_prs: Vec::new(),
+            tracked_branches: Vec::new(),
+            recent_prs: Vec::new(),
+            saved_prs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn ensure_remote_project_creates_one_record_per_normalized_remote() {
+        let mut file = ProjectsFile::default();
+        let first = ensure_remote_project_in_file(&mut file, "Owner/Repo").unwrap();
+        let second =
+            ensure_remote_project_in_file(&mut file, "https://github.com/owner/repo.git").unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(file.projects.len(), 1);
+        assert_eq!(file.projects[0].root_path, "");
+        assert_eq!(file.projects[0].remote.as_deref(), Some("owner/repo"));
+        assert_eq!(file.projects[0].name, "owner/repo");
+    }
+
+    #[test]
+    fn ensure_remote_project_reuses_existing_local_project() {
+        let mut file = ProjectsFile {
+            projects: vec![local_project("local", Some("Owner/Repo"))],
+            active_id: None,
+        };
+
+        let project_id = ensure_remote_project_in_file(&mut file, "owner/repo").unwrap();
+
+        assert_eq!(project_id, "local");
+        assert_eq!(file.projects.len(), 1);
+        assert_eq!(file.projects[0].root_path, "/tmp/local");
+    }
+
+    #[test]
+    fn record_recent_pr_moves_duplicate_to_top() {
+        let mut project = local_project("remote-owner-repo", Some("owner/repo"));
+
+        record_recent_pr_on_project(&mut project, 1, "first");
+        record_recent_pr_on_project(&mut project, 2, "second");
+        record_recent_pr_on_project(&mut project, 1, "first updated");
+
+        let numbers: Vec<u64> = project
+            .recent_prs
+            .iter()
+            .map(|entry| entry.number)
+            .collect();
+        assert_eq!(numbers, vec![1, 2]);
+        assert_eq!(project.recent_prs[0].title, "first updated");
+    }
+
+    #[test]
+    fn delete_project_removes_record_and_updates_active_id() {
+        let mut file = ProjectsFile {
+            projects: vec![
+                local_project("first", Some("owner/first")),
+                local_project("second", Some("owner/second")),
+            ],
+            active_id: Some("first".to_string()),
+        };
+
+        delete_project_in_file(&mut file, "first").unwrap();
+
+        assert_eq!(file.projects.len(), 1);
+        assert_eq!(file.projects[0].id, "second");
+        assert_eq!(file.active_id.as_deref(), Some("second"));
+    }
 }
 
 pub fn set_active(id: &str) {

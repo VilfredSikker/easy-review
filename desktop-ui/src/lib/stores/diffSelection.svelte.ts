@@ -22,6 +22,10 @@ class DiffSelection {
    * In split mode, only cells on this side are highlighted by `sel()`.
    */
   side = $state<SelectionSide>(null);
+  /** Flat-model row index where drag started. Used by FlatDiffView for file-clamp. */
+  startRowIdx = $state<number | null>(null);
+  /** Source index of the file the drag started in. Used by FlatDiffView to clamp cross-file. */
+  startFileIndex = $state<number | null>(null);
 
   /**
    * Start (or extend, when shift is held) a selection at the given line.
@@ -79,6 +83,8 @@ class DiffSelection {
     this.kind = "comment";
     this.dragging = false;
     this.side = null;
+    this.startRowIdx = null;
+    this.startFileIndex = null;
   }
 
   /** True when there is an active selection that should reveal the composer. */

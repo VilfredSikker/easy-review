@@ -21,7 +21,7 @@ function estimateHeight(file: FileSnapshot): number {
 }
 
 function line(): LineSnapshot {
-  return { old_num: 1, new_num: 1, kind: "context", spans: [{ text: "x", color: "" }] };
+  return { old_num: 1, new_num: 1, kind: "context", text: "x", spans: [{ text: "x", color: "" }] };
 }
 
 function hunk(lineCount: number): HunkSnapshot {
@@ -51,6 +51,8 @@ function makeFile(hunks: HunkSnapshot[]): FileSnapshot {
     comment_count: 0,
     question_count: 0,
     hunks,
+    source_index: 0,
+    cache_key: "",
   };
 }
 

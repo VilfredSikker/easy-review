@@ -5,7 +5,9 @@ import type {
   FileSnapshot,
   HunkSnapshot,
   LineSnapshot,
+  PrInfo,
   PrSnapshot,
+  ProjectSnapshot,
   SpanSnapshot,
   TabSummary,
   ThreadSnapshot,
@@ -20,18 +22,21 @@ const ctx = (old_num: number, new_num: number, text: string, color = ""): LineSn
   old_num,
   new_num,
   kind: "context",
+  text,
   spans: [span(text, color)],
 });
 const add = (new_num: number, text: string, color = ""): LineSnapshot => ({
   old_num: null,
   new_num,
   kind: "add",
+  text,
   spans: [span(text, color)],
 });
 const del = (old_num: number, text: string, color = ""): LineSnapshot => ({
   old_num,
   new_num: null,
   kind: "del",
+  text,
   spans: [span(text, color)],
 });
 
@@ -163,6 +168,7 @@ const fileBase: Omit<FileSnapshot, "path" | "additions" | "deletions"> = {
   question_count: 0,
   hunks: [],
   source_index: 0,
+  cache_key: "",
 };
 
 export const fileMediaCombobox: FileSnapshot = {
@@ -377,6 +383,60 @@ const baseSnapshot: AppSnapshot = {
 
 /** Snapshot used for full-page mock recreation. */
 export const richSnapshot: AppSnapshot = { ...baseSnapshot };
+
+const remoteOnlyRecentPr: PrInfo = {
+  number: 123,
+  title: "Fix flaky auth callback",
+  head_ref: "fix-auth-callback",
+  state: "OPEN",
+  is_draft: false,
+  author: "octocat",
+  assignees: [],
+  reviewers: [],
+  checks_state: null,
+  review_decision: null,
+  merged_at: null,
+  approved_by_me: false,
+  base_ref: "main",
+  head_oid: "abc123",
+  updated_at: "2026-05-22T10:00:00Z",
+};
+
+export const remoteOnlyProject: ProjectSnapshot = {
+  id: "remote-owner-repo",
+  name: "owner/repo",
+  root_path: "",
+  remote: "owner/repo",
+  remote_only: true,
+  is_active: true,
+  local_branches: [],
+  auto_branches: [],
+  saved_prs: [],
+  my_prs: [],
+  prs_to_review: [],
+  recent_prs: [remoteOnlyRecentPr],
+  recently_merged: [],
+  pr_cache_stale: false,
+  pr_cache_age_ms: 30_000,
+};
+
+export const remoteOnlyProjectSnapshot: AppSnapshot = {
+  ...baseSnapshot,
+  branch: "PR #123",
+  projects: [remoteOnlyProject],
+  tabs: [
+    {
+      idx: 0,
+      label: "owner/repo#123",
+      kind: "remote_pr",
+      branch: null,
+      pr_number: 123,
+      repo_root: "",
+      is_active: true,
+    },
+  ],
+  active_tab: 0,
+};
 
 /** Snapshot for the "empty / no AI data" scenario. */
 export const emptySnapshot: AppSnapshot = {

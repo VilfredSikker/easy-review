@@ -1,11 +1,10 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount } from "svelte";
   import { app } from "$lib/stores/app.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
-  import { openExportModal } from "$lib/components/ExportModal.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
-  import { overlay, prepareOverlayFocus } from "$lib/stores/overlay.svelte";
+  import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import { copyToClipboard } from "$lib/clipboard";
 
   interface CommandItem {
@@ -31,6 +30,11 @@
     open = false;
     query = "";
     selectedIdx = 0;
+  }
+
+  function openExportReviewView() {
+    app.setMainView("export-review");
+    if (browser.layout === "fullscreen") void browser.setLayout("hidden");
   }
 
   function buildItems(): CommandItem[] {
@@ -66,11 +70,11 @@
       },
       {
         id: "export-review-copy",
-        label: "Export review (copy)",
-        description: "Open export modal — copy markdown to clipboard",
+        label: "Export review",
+        description: "Open export view for copy, save, and preview",
         group: "Actions",
         kbd: "⌘⇧E",
-        run: () => { close(); openExportModal(); },
+        run: () => { close(); openExportReviewView(); },
       },
       {
         id: "export-review-file",
@@ -280,21 +284,21 @@
     ];
   }
 
-  async function openPalette() {
+  function openPalette() {
     selectedIdx = 0;
     query = "";
-    await prepareOverlayFocus();
     open = true;
-    await tick();
-    inputEl?.focus();
   }
 
-  function onKeydown(e: KeyboardEvent) {
+  function onGlobalKeydown(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {
       e.preventDefault();
       open ? close() : openPalette();
       return;
     }
+  }
+
+  function onModalKeydown(e: KeyboardEvent) {
     if (!open) return;
     if (e.key === "Escape") { e.preventDefault(); close(); }
     else if (e.key === "ArrowDown") { e.preventDefault(); selectedIdx = Math.min(selectedIdx + 1, flat.length - 1); }
@@ -302,14 +306,9 @@
     else if (e.key === "Enter") { e.preventDefault(); flat[selectedIdx]?.run(); }
   }
 
-  $effect(() => {
-    if (!open) return;
-    return overlay.acquire();
-  });
-
   onMount(() => {
-    window.addEventListener("keydown", onKeydown);
-    return () => window.removeEventListener("keydown", onKeydown);
+    window.addEventListener("keydown", onGlobalKeydown);
+    return () => window.removeEventListener("keydown", onGlobalKeydown);
   });
 
   function basename(path: string): string {
@@ -318,19 +317,16 @@
   }
 </script>
 
-{#if open}
-  <!-- Backdrop -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    data-modal
-    class="fixed inset-0 z-[100] bg-black/50"
-    style="backdrop-filter: blur(2px);"
-    onclick={close}
-  ></div>
-
-  <!-- Palette -->
-  <div class="fixed left-1/2 -translate-x-1/2 top-[12vh] w-[640px] z-[101] rounded-xl bg-card border border-border shadow-2xl overflow-hidden">
+<ModalShell
+  {open}
+  ariaLabel="Command palette"
+  onClose={close}
+  onKeydown={onModalKeydown}
+  closeOnEscape={false}
+  focusSelector="input"
+  backdropClass="fixed inset-0 z-[100] bg-black/50"
+  panelClass="fixed left-1/2 -translate-x-1/2 top-[12vh] w-[640px] z-[101] rounded-xl bg-card border border-border shadow-2xl overflow-hidden outline-none"
+>
     <div class="flex items-center gap-3 px-4 py-3 border-b border-hairline">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5e5e5e" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input
@@ -395,5 +391,4 @@
         <span class="kbd">@</span><span>symbols</span>
       </span>
     </div>
-  </div>
-{/if}
+</ModalShell>

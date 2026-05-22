@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import type { InboxItemSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
@@ -135,7 +136,7 @@
   }
 
   function projectBadge(p: ProjectSnapshot): number {
-    return p.local_branches.length + p.my_prs.length + p.prs_to_review.length + p.recently_merged.length;
+    return p.local_branches.length + p.my_prs.length + p.prs_to_review.length + (p.recent_prs?.length ?? 0) + p.recently_merged.length;
   }
 
   function formatCacheAge(ms?: number | null): string {
@@ -210,6 +211,14 @@
     expandedProject = expandedProject === p.id ? null : p.id;
   }
 
+  async function deleteProject(project: ProjectSnapshot, e: MouseEvent) {
+    e.stopPropagation();
+    const ok = confirm(`Remove ${project.name} from Easy Review? This will not delete files or GitHub data.`);
+    if (!ok) return;
+    addingTo = null;
+    await app.cmd("delete_project", { projectId: project.id });
+  }
+
   function branchRowAction(projectId: string, name: string, e: MouseEvent) {
     e.stopPropagation();
     app.cmd("remove_tracked_branch", { projectId, name });
@@ -253,7 +262,20 @@
     }
   }
 
-  async function openPr(projectId: string, prNumber: number, _headRef: string, e: MouseEvent, hint?: PrInfo) {
+  function remoteParts(project: ProjectSnapshot): { owner: string; repo: string } | null {
+    const remote = project.remote?.trim();
+    if (!remote) return null;
+    const withoutScheme = remote
+      .replace(/^https?:\/\/github\.com\//, "")
+      .replace(/\.git$/, "")
+      .replace(/^\/+|\/+$/g, "");
+    const [owner, repo] = withoutScheme.split("/");
+    if (!owner || !repo) return null;
+    return { owner, repo };
+  }
+
+  async function openPr(project: ProjectSnapshot, prNumber: number, _headRef: string, e: MouseEvent, hint?: PrInfo) {
+    const projectId = project.id;
     const prKey = `${projectId}:${prNumber}`;
     if (pendingPrKey === prKey) return;
     pendingPrKey = prKey;
@@ -261,12 +283,23 @@
     cancelPrPrefetch(projectId, prNumber);
     try {
       await yieldForPendingPaint();
-      await app.cmd("open_pr_review", {
-        projectId,
-        prNumber,
-        replace: shouldReplaceTab(e),
-        hint: hint ? buildPrHint(hint) : undefined,
-      });
+      if (project.remote_only) {
+        const parts = remoteParts(project);
+        if (!parts) return;
+        await app.cmd("open_remote_pr", {
+          owner: parts.owner,
+          repo: parts.repo,
+          number: prNumber,
+          replace: shouldReplaceTab(e),
+        });
+      } else {
+        await app.cmd("open_pr_review", {
+          projectId,
+          prNumber,
+          replace: shouldReplaceTab(e),
+          hint: hint ? buildPrHint(hint) : undefined,
+        });
+      }
     } finally {
       if (pendingPrKey === prKey) pendingPrKey = null;
     }
@@ -525,39 +558,35 @@
   {/if}
 
   {#if selectedInboxMessage}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="fixed inset-0 z-[250] bg-black/60" onclick={closeInboxMessageModal}></div>
-    <div
-      class="fixed inset-0 z-[251] flex items-center justify-center p-6"
-      onclick={(e) => {
-        if (e.target === e.currentTarget) closeInboxMessageModal();
-      }}
+    <ModalShell
+      open={true}
+      ariaLabel={selectedInboxMessage.title}
+      onClose={closeInboxMessageModal}
+      backdropClass="fixed inset-0 z-[250] bg-black/60"
+      panelClass="fixed left-1/2 top-1/2 z-[251] w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface shadow-xl outline-none"
     >
-      <div class="w-full max-w-2xl rounded-lg border border-border bg-surface shadow-xl">
-        <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
-          <span class={selectedInboxMessage.severity === "error" ? "text-del-fg" : selectedInboxMessage.severity === "warning" ? "text-amber-300" : "text-muted"}>●</span>
-          <div class="text-sm text-fg-1 truncate">{selectedInboxMessage.title}</div>
-          <button class="ml-auto text-muted hover:text-fg px-2" onclick={closeInboxMessageModal}>×</button>
-        </div>
-        <div class="px-4 py-3 text-sm text-fg-2 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto">
-          {selectedInboxMessage.body || "(No message body)"}
-        </div>
-        <div class="px-4 py-3 border-t border-hairline flex items-center justify-end gap-2">
-          <button class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
-          <button
-            class="px-3 py-1.5 rounded bg-accent text-black text-sm hover:opacity-90"
-            onclick={() => {
-              if (!selectedInboxMessage) return;
-              app.cmd("open_inbox_item", { id: selectedInboxMessage.id });
-              closeInboxMessageModal();
-            }}
-          >
-            Open target
-          </button>
-        </div>
+      <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
+        <span class={selectedInboxMessage.severity === "error" ? "text-del-fg" : selectedInboxMessage.severity === "warning" ? "text-amber-300" : "text-muted"}>●</span>
+        <div class="text-sm text-fg-1 truncate">{selectedInboxMessage.title}</div>
+        <button class="ml-auto text-muted hover:text-fg px-2" onclick={closeInboxMessageModal}>×</button>
       </div>
-    </div>
+      <div class="px-4 py-3 text-sm text-fg-2 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto">
+        {selectedInboxMessage.body || "(No message body)"}
+      </div>
+      <div class="px-4 py-3 border-t border-hairline flex items-center justify-end gap-2">
+        <button class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
+        <button
+          class="px-3 py-1.5 rounded bg-accent text-black text-sm hover:opacity-90"
+          onclick={() => {
+            if (!selectedInboxMessage) return;
+            app.cmd("open_inbox_item", { id: selectedInboxMessage.id });
+            closeInboxMessageModal();
+          }}
+        >
+          Open target
+        </button>
+      </div>
+    </ModalShell>
   {/if}
 
   <!-- Projects -->
@@ -600,16 +629,25 @@
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-5 9 5v10l-9 5-9-5V7z"/><path d="m3 7 9 5 9-5M12 22V12"/></svg>
               <span class="truncate">{project.name}</span>
               {#if badge > 0}
-                <span class="font-mono text-[10px] text-muted ml-auto pr-5">{badge}</span>
+                <span class="font-mono text-[10px] text-muted ml-auto {project.remote_only ? 'pr-5' : 'pr-8'}">{badge}</span>
               {/if}
             </button>
+            {#if !project.remote_only}
+              <button
+                type="button"
+                onclick={(e) => openBranchPicker(project.id, e)}
+                title="Track another branch"
+                aria-label="Track another branch in {project.name}"
+                class="absolute right-5 opacity-0 group-hover:opacity-100 px-1 text-muted hover:text-fg"
+              >+</button>
+            {/if}
             <button
               type="button"
-              onclick={(e) => openBranchPicker(project.id, e)}
-              title="Track another branch"
-              aria-label="Track another branch in {project.name}"
-              class="absolute right-1 opacity-0 group-hover:opacity-100 px-1 text-muted hover:text-fg"
-            >+</button>
+              onclick={(e) => deleteProject(project, e)}
+              title="Remove project"
+              aria-label="Remove project {project.name}"
+              class="absolute right-1 opacity-0 group-hover:opacity-100 px-1 text-muted hover:text-del-fg"
+            >×</button>
             {#if addingTo === project.id}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -690,16 +728,16 @@
               {/if}
 
               {#snippet prRow(pr: PrInfo)}
-                {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number) ||
+                {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number && project.is_active) ||
                   (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
                 {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
                 <button
                   type="button"
                   title="{pr.title} #{pr.number}"
-                  onclick={(e) => openPr(project.id, pr.number, pr.head_ref, e, pr)}
-                  onauxclick={(e) => { if (e.button === 1) openPr(project.id, pr.number, pr.head_ref, e, pr); }}
-                  onmouseenter={() => schedulePrPrefetch(project.id, pr)}
-                  onmouseleave={() => cancelPrPrefetch(project.id, pr.number)}
+                  onclick={(e) => openPr(project, pr.number, pr.head_ref, e, pr)}
+                  onauxclick={(e) => { if (e.button === 1) openPr(project, pr.number, pr.head_ref, e, pr); }}
+                  onmouseenter={() => { if (!project.remote_only) schedulePrPrefetch(project.id, pr); }}
+                  onmouseleave={() => { if (!project.remote_only) cancelPrPrefetch(project.id, pr.number); }}
                   class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left {(isActivePr || prPending) ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
                 >
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="{prIconColor(pr)} shrink-0">
@@ -825,10 +863,13 @@
 <svelte:window onkeydown={onSettingsKey} />
 
 {#if settingsOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="fixed inset-0 z-[200] bg-black/50" onclick={() => (settingsOpen = false)}></div>
-  <div class="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[201] w-[420px] rounded-xl bg-card border border-border shadow-2xl p-5">
+  <ModalShell
+    open={true}
+    ariaLabel="Settings"
+    onClose={() => (settingsOpen = false)}
+    backdropClass="fixed inset-0 z-[200] bg-black/50"
+    panelClass="fixed left-1/2 top-1/2 z-[201] w-[420px] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-card border border-border shadow-2xl p-5 outline-none"
+  >
     <div class="text-base font-semibold text-fg mb-4">Settings</div>
     <label class="block text-xs uppercase tracking-wider text-muted mb-1">
       AI model
@@ -841,5 +882,5 @@
         <option value="haiku">Haiku</option>
       </select>
     </label>
-  </div>
+  </ModalShell>
 {/if}

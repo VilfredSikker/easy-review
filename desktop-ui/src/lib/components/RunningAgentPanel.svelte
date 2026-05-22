@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BackgroundTaskSnapshot, AgentLogEntry } from "$lib/types";
   import { sourceColor } from "$lib/utils/agentLog";
+  import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import { invoke } from "@tauri-apps/api/core";
 
   interface Props {
@@ -70,15 +71,6 @@
     }
   });
 
-  // Escape key handler
-  $effect(() => {
-    function handleKeydown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", handleKeydown);
-    return () => document.removeEventListener("keydown", handleKeydown);
-  });
-
   // Timer for elapsed time
   let now = $state(Date.now());
   $effect(() => {
@@ -116,15 +108,13 @@
   }
 </script>
 
-<!-- Backdrop -->
-<div class="fixed inset-0 z-39" onclick={onClose} aria-hidden="true"></div>
-
-<!-- Panel -->
-<div
-  class="fixed z-40 w-[360px] max-h-[260px] flex flex-col bg-ink-900/95 border border-ink-500/40 rounded-lg shadow-xl overflow-hidden"
-  style="bottom: 64px; right: {rightOffset}px"
-  role="dialog"
-  aria-label="Running agent output"
+<ModalShell
+  open={tasks.length > 0}
+  ariaLabel="Running agent output"
+  {onClose}
+  backdropClass="fixed inset-0 z-[39]"
+  panelClass="fixed z-[40] w-[360px] max-h-[260px] flex flex-col bg-ink-900/95 border border-ink-500/40 rounded-lg shadow-xl overflow-hidden outline-none"
+  panelStyle="bottom: 64px; right: {rightOffset}px"
 >
   <!-- Tab strip -->
   <div class="flex items-center gap-0.5 px-1.5 pt-1.5 pb-0 shrink-0 overflow-x-auto">
@@ -181,4 +171,4 @@
       {/if}
     </div>
   {/if}
-</div>
+</ModalShell>
