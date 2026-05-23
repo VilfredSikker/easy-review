@@ -20,6 +20,7 @@
     "svelte": "^5"
   },
   "devDependencies": {
+    "@pierre/trees": "1.0.0-beta.4",
     "@storybook/svelte": "^10",
     "@storybook/svelte-vite": "^10",
     "@sveltejs/vite-plugin-svelte": "^4",
