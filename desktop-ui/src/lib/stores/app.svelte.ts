@@ -1,7 +1,9 @@
 import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
 import { tick } from "svelte";
+import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
 import type { AppSnapshot, PollResponse } from "../types";
 
 export interface ToastMessage {
@@ -94,14 +96,22 @@ class AppStore {
   /** Tighter line-height in the diff view. Persisted to localStorage. */
   compactLines = $state<boolean>(loadCompactLines());
   commentVisibility = $state<CommentVisibility>(loadCommentVisibility());
+  /** Shiki syntax theme id — picker UI wires here later. */
+  currentSyntaxTheme = $state(DEFAULT_SYNTAX_THEME_ID);
   mainView = $state<MainViewMode>("diff");
 
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private toastId = 0;
   private lastSnapshotNotification: string | null = null;
-  private pollIntervalMs = 2000;
+  // Safety-net interval — the backend pushes a `er://revision` event on every
+  // state change, so this is just a fallback in case an event is dropped or
+  // the listener hasn't attached yet. Used to be 2s when polling was the
+  // primary mechanism.
+  private pollIntervalMs = 30_000;
   private lastPollRevision: number | null = null;
+  private revisionUnlisten: UnlistenFn | null = null;
+  private pollInFlight = false;
 
   /** Cycle unified → split → unified. Persists the choice. */
   toggleDiffViewMode() {
@@ -213,27 +223,51 @@ class AppStore {
     }
   }
 
-  startPolling(intervalMs = 2000) {
+  /**
+   * Push model: the backend emits `er://revision` whenever its desktop_revision
+   * counter advances. We respond by calling `poll` to fetch the updated
+   * snapshot. A long-interval safety timer covers the rare case where an event
+   * is missed (window mid-resume, dropped from queue, etc.).
+   *
+   * Coalesce concurrent calls with `pollInFlight` so a burst of events at
+   * startup doesn't spam the backend mutex.
+   */
+  startPolling(intervalMs = 30_000) {
     if (this.pollTimer !== null) return;
     this.pollIntervalMs = intervalMs;
-    const tick = async () => {
-      if (this.pollTimer === null) return;
+
+    const doPoll = async () => {
+      if (this.pollInFlight) return;
+      this.pollInFlight = true;
       try {
         const next = await invoke<PollResponse>("poll");
         if (this.lastPollRevision !== next.revision) {
           this.lastPollRevision = next.revision;
-          // snapshot is null when only the revision changed on the backend
-          // but no full snapshot was built (unchanged poll optimization).
-          // That shouldn't happen since revision != lastPollRevision implies
-          // the backend built a snapshot, but guard defensively.
           if (next.snapshot !== null) {
             this.snapshot = next.snapshot;
             this.syncSnapshotToast(this.snapshot);
           }
         }
       } catch {
-        // Silently ignore poll errors (window may be closing)
+        // Silently ignore poll errors (window may be closing).
+      } finally {
+        this.pollInFlight = false;
       }
+    };
+
+    // Event-driven: react to backend revision bumps. listen() is async but
+    // we don't await — events that fire before the listener attaches are
+    // safely covered by the safety-net interval and the initial load().
+    listen<number>("er://revision", () => {
+      void doPoll();
+    }).then((unlisten) => {
+      this.revisionUnlisten = unlisten;
+    });
+
+    // Safety-net poll — long interval; only fires if events were missed.
+    const tick = async () => {
+      if (this.pollTimer === null) return;
+      await doPoll();
       if (this.pollTimer !== null) {
         this.pollTimer = setTimeout(tick, this.pollIntervalMs);
       }
@@ -245,6 +279,10 @@ class AppStore {
     if (this.pollTimer !== null) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
+    }
+    if (this.revisionUnlisten !== null) {
+      this.revisionUnlisten();
+      this.revisionUnlisten = null;
     }
   }
 

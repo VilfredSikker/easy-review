@@ -5,12 +5,6 @@ export interface HunkHighlight {
   lines: SpanSnapshot[][];
 }
 
-export interface HighlightResult {
-  cache_key: string;
-  syntax_theme: string;
-  hunks: HunkHighlight[];
-}
-
 interface CacheEntry {
   generation: number;
   hunks: HunkHighlight[];
@@ -40,7 +34,6 @@ class HighlightCache {
 
   set(k: string, hunks: HunkHighlight[]): void {
     if (this.map.size >= this.capacity && !this.map.has(k)) {
-      // Evict least-recently-used
       let lruKey: string | undefined;
       let lruGen = Infinity;
       for (const [ek, ev] of this.map) {

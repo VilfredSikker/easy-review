@@ -18,7 +18,7 @@
 
 - `AppState.app` is the engine state behind a mutex. Keep lock scopes small.
 - `pr_cache`, `gh_status_cache`, `loading`, `watch_status`, `terminals`, and `pending_ai_replies` are desktop-owned state. Mutations here must be reflected in snapshots and usually need `desktop_revision` bumps.
-- `Highlighter` is snapshot-time state and is protected separately. Do not hold it across slow work.
+- Syntax highlighting is client-side (Shiki Web Worker). Snapshots carry plain `text` only — never add span generation back into `build_snapshot`.
 - Network/subprocess operations should run outside the `App` mutex. Capture context first, then run `gh`, `git`, or agent commands in the background.
 
 ## Snapshot Contract

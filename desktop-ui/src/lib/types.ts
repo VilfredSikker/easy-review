@@ -9,8 +9,7 @@ export interface LineSnapshot {
   kind: "context" | "add" | "del" | "fold";
   /** Always-present plain text — use directly when spans are absent. */
   text: string;
-  /** Syntax-highlighted spans. Present for files ≤150 lines; absent for larger
-   *  files where the frontend requests highlights via `highlight_file`. */
+  /** Syntax-highlighted spans — populated client-side by Shiki (not sent over IPC). */
   spans?: SpanSnapshot[];
 }
 

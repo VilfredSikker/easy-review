@@ -223,7 +223,13 @@ pub fn apply_managed_root(tab: &mut er_engine::app::TabState) {
 
 /// Rebuild a `TabState` from a descriptor. Skips work that needs the network
 /// (e.g. PR overview fetch) — that's done lazily when the tab is focused.
-pub fn rebuild_tab(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
+///
+/// When `lazy` is true, LocalBranch tabs are built without the initial
+/// `refresh_diff()` and instead get `needs_initial_refresh = true`. The tab
+/// will run its first diff the next time it gains focus (or when a background
+/// warmer reaches it). Other kinds already defer their heavy work — `lazy` is
+/// a no-op for them.
+pub fn rebuild_tab_with(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
     let mut tab = match d.kind {
         TabKind::Working => er_engine::app::TabState::new(d.repo_root.clone()),
         TabKind::LocalBranch => {
@@ -240,14 +246,20 @@ pub fn rebuild_tab(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
             // Build the tab with `local_branch_diff_ref` set before the initial
             // refresh so the diff is computed against the refreshed ref directly,
             // avoiding a wasted git-diff against the stale local branch.
-            let mut tab = er_engine::app::TabState::new_with_base(
-                d.repo_root.clone(),
-                er_engine::git::detect_base_branch_in(&d.repo_root)?,
-            )?;
+            let base = er_engine::git::detect_base_branch_in(&d.repo_root)?;
+            let mut tab = if lazy {
+                er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?
+            } else {
+                er_engine::app::TabState::new_with_base(d.repo_root.clone(), base)?
+            };
             tab.local_branch_view = Some(branch);
             tab.mode = er_engine::app::DiffMode::Branch;
             tab.local_branch_diff_ref = resolved_ref;
-            tab.refresh_diff()?;
+            if lazy {
+                tab.needs_initial_refresh = true;
+            } else {
+                tab.refresh_diff()?;
+            }
             Ok(tab)
         }
         TabKind::RemotePr => {
@@ -272,6 +284,18 @@ pub fn rebuild_tab(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
     apply_managed_root(&mut tab);
     apply_descriptor_browser(&mut tab, d);
     Ok(tab)
+}
+
+/// Backwards-compatible eager rebuild (legacy callers).
+pub fn rebuild_tab(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
+    rebuild_tab_with(d, false)
+}
+
+/// Lazy rebuild: returns a stub for LocalBranch tabs without running the
+/// initial `refresh_diff()`. The tab's `needs_initial_refresh` flag is set so
+/// a focus handler (or background warmer) can run the diff later.
+pub fn rebuild_tab_stub(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
+    rebuild_tab_with(d, true)
 }
 
 #[cfg(test)]

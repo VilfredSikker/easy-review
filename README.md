@@ -60,7 +60,7 @@ Base branch is auto-detected from upstream tracking, falling back to main/master
 - **Review tracking** — Mark files reviewed with `Space`, filter to unreviewed with `u`, jump to next unreviewed with `U`.
 - **Composable filters** — `f` to filter by glob/status/size (`+*.rs,-*.lock,>50`). `F` for presets and history.
 - **Multi-repo tabs** — Open multiple repos or worktrees as tabs. Switch with `]`/`[`.
-- **Syntax highlighting** — Language-aware coloring via syntect with content-hash caching.
+- **Syntax highlighting** — TUI: syntect with content-hash caching. Desktop: Shiki in a Web Worker with per-file LRU cache.
 - **Editor integration** — Jump to the current file in `$EDITOR` with `e`. Copy hunk with `y`.
 - **Configurable** — Per-repo or global `.er-config.toml`. In-app settings overlay (`S`) with live preview.
 

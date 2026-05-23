@@ -2,6 +2,7 @@
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { wordDiff } from "$lib/wordDiff";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
+  import { remapSpanColor } from "$lib/spanColorRemap";
   import type { LineSnapshot } from "$lib/types";
 
   interface Props {
@@ -11,19 +12,6 @@
     filePath: string;
   }
   const { row, line, partner, filePath }: Props = $props();
-
-  const spanColorRemap: Record<string, string> = {
-    // OneHalfDark colors that need adjustment on our dark bg
-    "#5c6370": "#a7b1ba",  // OneHalfDark comment → readable gray
-    "#98c379": "#d4f0e4",  // OneHalfDark green string on add-bg → light teal
-    // Ocean Dark fallbacks (kept for safety)
-    "#4f5b66": "#a7b1ba", "#343d46": "#a7b1ba", "#65737e": "#a7b1ba",
-    "#6b6b6b": "#a7b1ba", "#5e5e5e": "#a7b1ba",
-    "#99c794": "#d4f0e4", "#a3be8c": "#d4f0e4",
-  };
-  function remapColor(c: string): string {
-    return c ? (spanColorRemap[c.toLowerCase()] ?? c) : c;
-  }
 
   function lineClass(kind: string) {
     if (kind === "add") return "diff-add";
@@ -59,7 +47,6 @@
   class="grid grid-cols-[40px_minmax(0,1fr)] diff-row {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}"
   style="height:{row.height}px"
   data-row-identity={row.identity}
-  onmouseenter={() => { if (ln !== null && diffSel.file === filePath) diffSel.extend(ln); }}
 >
   <div class="leading-6 text-right pr-2 gutter {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}">
     {line.kind === "del" ? (line.old_num ?? "") : (line.new_num ?? line.old_num ?? "")}
@@ -89,7 +76,7 @@
     {:else if line.spans}
       {#each line.spans as span}
         {#if span.color}
-          <span style="color: {remapColor(span.color)}">{span.text}</span>
+          <span style="color: {remapSpanColor(span.color)}">{span.text}</span>
         {:else}
           {span.text}
         {/if}

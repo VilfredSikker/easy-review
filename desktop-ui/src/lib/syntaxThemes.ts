@@ -1,0 +1,21 @@
+/** Registry entry for a syntax-highlighting theme (Shiki bundled name or custom JSON). */
+export interface SyntaxTheme {
+  id: string;
+  label: string;
+  shikiName: string;
+  customJson?: Record<string, unknown>;
+}
+
+export const SYNTAX_THEMES: SyntaxTheme[] = [
+  {
+    id: "one-dark-pro",
+    label: "One Dark Pro",
+    shikiName: "one-dark-pro",
+  },
+];
+
+export const DEFAULT_SYNTAX_THEME_ID = "one-dark-pro";
+
+export function syntaxThemeById(id: string): SyntaxTheme {
+  return SYNTAX_THEMES.find((t) => t.id === id) ?? SYNTAX_THEMES[0];
+}

@@ -18,6 +18,9 @@ const forceReload = {
 
 export default defineConfig({
   plugins: [svelte(), tailwindcss(), forceReload],
+  worker: {
+    format: "es",
+  },
   resolve: {
     alias: {
       $lib: fileURLToPath(new URL("./src/lib", import.meta.url)),

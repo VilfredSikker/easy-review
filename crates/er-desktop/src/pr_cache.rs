@@ -109,6 +109,45 @@ pub(crate) fn merge_pr_results(
     }
 }
 
+/// Return the remote slug for the currently-active project, if any.
+pub fn active_project_remote() -> Option<String> {
+    let file = projects::load();
+    let active_id = file.active_id.as_ref()?;
+    file.projects
+        .iter()
+        .find(|p| &p.id == active_id)
+        .and_then(|p| p.remote.clone())
+        .filter(|s| !s.is_empty())
+}
+
+/// Refresh a single remote and merge into the cache. Used at startup so the
+/// active project's PR list is hot before the full multi-remote sweep runs.
+pub async fn refresh_pr_cache_for_remote(
+    remote: &str,
+    cache: &PrCacheMap,
+    fetched_at: &PrCacheFetchedAtMap,
+) -> bool {
+    let t = std::time::Instant::now();
+    let result = fetch_prs_for_remote(remote).await;
+    let ms = t.elapsed().as_millis();
+    let success = result.is_some();
+    if let Some(ref prs) = result {
+        log::info!("pr_list fetch {} PRs from {} in {}ms", prs.len(), remote, ms);
+    } else {
+        log::warn!("pr_list fetch failed for {} after {}ms", remote, ms);
+    }
+    if let Ok(mut guard) = cache.lock() {
+        merge_pr_results(&mut guard, vec![(remote.to_string(), result)]);
+    }
+    if success {
+        if let Ok(mut fetched_guard) = fetched_at.lock() {
+            fetched_guard.insert(remote.to_string(), now_epoch_ms());
+        }
+    }
+    save_persisted_pr_cache(cache, fetched_at);
+    success
+}
+
 fn refreshable_remotes(file: &projects::ProjectsFile) -> Vec<String> {
     file.projects
         .iter()
@@ -376,6 +415,7 @@ mod tests {
                     dismissed_prs: Vec::new(),
                     tracked_prs: Vec::new(),
                     tracked_branches: Vec::new(),
+                    dismissed_branches: Vec::new(),
                     recent_prs: Vec::new(),
                     saved_prs: Vec::new(),
                 },
@@ -387,6 +427,7 @@ mod tests {
                     dismissed_prs: Vec::new(),
                     tracked_prs: Vec::new(),
                     tracked_branches: Vec::new(),
+                    dismissed_branches: Vec::new(),
                     recent_prs: Vec::new(),
                     saved_prs: Vec::new(),
                 },

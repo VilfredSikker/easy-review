@@ -8,7 +8,6 @@ use tauri_plugin_notification::NotificationExt;
 
 use er_engine::ai::{CommentType, ErReview};
 use er_engine::app::{App, BrowserLayout, DiffMode, InputMode};
-use er_engine::highlight::Highlighter;
 
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
@@ -61,7 +60,6 @@ pub struct OpenSourceResult {
 
 pub struct AppState {
     pub app: Arc<Mutex<App>>,
-    pub highlighter: Mutex<Highlighter>,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     pub pr_cache_fetched_at: PrCacheFetchedAtMap,
     pub pr_open_cache: Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
@@ -95,9 +93,6 @@ pub struct AppState {
     pub watch_status: WatchStatusState,
     pub inbox: InboxHandle,
     pub tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
-    /// Separate highlight state decoupled from the poll path.
-    /// Holds its own Highlighter so highlight_file never blocks poll.
-    pub highlight_state: crate::highlight_state::HighlightState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -162,10 +157,8 @@ pub fn start_window_drag(window: tauri::Window) -> Result<(), String> {
 macro_rules! snap {
     ($state:expr) => {{
         let app = $state.app.lock().map_err(|e| e.to_string())?;
-        let mut hl = $state.highlighter.lock().map_err(|e| e.to_string())?;
         Ok(build_snapshot(
             &app,
-            &mut hl,
             Some(&$state.pr_cache),
             Some(&$state.pr_cache_fetched_at),
             Some(&$state.meta_cache),
@@ -180,10 +173,9 @@ macro_rules! snap {
 }
 
 /// Build a snapshot using the lock guards directly (when callers already hold them).
-fn snap_from(app: &App, hl: &mut Highlighter, state: &AppState) -> AppSnapshot {
+fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     build_snapshot(
         app,
-        hl,
         Some(&state.pr_cache),
         Some(&state.pr_cache_fetched_at),
         Some(&state.meta_cache),
@@ -555,9 +547,8 @@ pub fn get_snapshot(state: State<AppState>) -> Result<AppSnapshot, String> {
 #[tauri::command]
 pub fn toggle_panel(panel: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.toggle_panel(&panel);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -570,172 +561,18 @@ pub fn request_file_content(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     {
         let tab = app.tab_mut();
         if tab.mode != er_engine::app::DiffMode::History && source_index < tab.files.len() {
             tab.ensure_file_parsed_at(source_index);
         }
     }
-    Ok(snap_from(&app, &mut hl, &state))
-}
-
-#[tauri::command]
-pub async fn highlight_file(
-    file_path: String,
-    cache_key: String,
-    syntax_theme: String,
-    state: State<'_, AppState>,
-) -> Result<crate::highlight_state::HighlightResult, String> {
-    use crate::highlight_state::HunkHighlight;
-    use crate::snapshot::SpanSnapshot;
-    use er_engine::git::LineType;
-
-    // Clone hunk text while briefly holding AppState lock — validate cache_key first.
-    let (hunk_texts, filename, validated_cache_key) = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab = app.tab();
-        let file = tab
-            .files
-            .iter()
-            .find(|f| f.path == file_path)
-            .ok_or_else(|| "file not found".to_string())?;
-        let current_key = er_engine::cache::file_cache_key(&tab.branch_diff_hash, &file.path);
-        if current_key != cache_key {
-            return Err("stale".to_string());
-        }
-        let texts: Vec<Vec<(String, String)>> = file
-            .hunks
-            .iter()
-            .map(|h| {
-                h.lines
-                    .iter()
-                    .map(|l| {
-                        let kind = match l.line_type {
-                            LineType::Add => "add",
-                            LineType::Delete => "del",
-                            LineType::Context => "context",
-                            LineType::Fold(_) => "fold",
-                        };
-                        (l.content.clone(), kind.to_string())
-                    })
-                    .collect()
-            })
-            .collect();
-        let fname = std::path::Path::new(&file.path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&file.path)
-            .to_string();
-        (texts, fname, current_key)
-    }; // AppState lock released here
-
-    // Check backend LRU cache after validation — key is now proven current.
-    if let Some(hunks) =
-        state
-            .highlight_state
-            .get_cached(&file_path, &validated_cache_key, &syntax_theme)
-    {
-        return Ok(crate::highlight_state::HighlightResult {
-            cache_key: validated_cache_key,
-            syntax_theme,
-            hunks,
-        });
-    }
-
-    // Run Syntect under HighlightState lock (separate from AppState — doesn't block poll)
-    let hunks: Vec<HunkHighlight> = {
-        let mut hl = state
-            .highlight_state
-            .highlighter
-            .lock()
-            .map_err(|e| e.to_string())?;
-        let is_python = file_path.ends_with(".py");
-        let mut in_python_docstring = false;
-
-        hunk_texts
-            .iter()
-            .enumerate()
-            .map(|(hunk_idx, lines)| {
-                let line_spans: Vec<Vec<SpanSnapshot>> = lines
-                    .iter()
-                    .map(|(content, kind)| {
-                        if kind == "fold" {
-                            return vec![SpanSnapshot {
-                                text: content.clone(),
-                                color: String::new(),
-                            }];
-                        }
-                        let mut spans: Vec<SpanSnapshot> = hl
-                            .highlight_line(content, &filename, &syntax_theme)
-                            .into_iter()
-                            .map(|hs| SpanSnapshot {
-                                text: hs.text,
-                                color: hs.color,
-                            })
-                            .collect();
-
-                        let trimmed = content.trim_start();
-                        let is_line_comment = trimmed.starts_with('#')
-                            || trimmed.starts_with("//")
-                            || trimmed.starts_with("/*")
-                            || trimmed.starts_with('*')
-                            || trimmed.starts_with("*/");
-
-                        let triple_single = content.matches("'''").count();
-                        let triple_double = content.matches("\"\"\"").count();
-                        let has_triple = triple_single > 0 || triple_double > 0;
-                        let in_docstring_now = is_python && (in_python_docstring || has_triple);
-
-                        if is_line_comment || in_docstring_now {
-                            spans = vec![SpanSnapshot {
-                                text: content.clone(),
-                                color: "#a7b1ba".to_string(),
-                            }];
-                        } else if !trimmed.is_empty()
-                            && trimmed
-                                .chars()
-                                .all(|c| matches!(c, ')' | ']' | '}' | ',' | ' ' | '\t'))
-                        {
-                            spans = vec![SpanSnapshot {
-                                text: content.clone(),
-                                color: "#c0c5ce".to_string(),
-                            }];
-                        }
-
-                        if is_python && has_triple && ((triple_single + triple_double) % 2 == 1) {
-                            in_python_docstring = !in_python_docstring;
-                        }
-
-                        spans
-                    })
-                    .collect();
-                HunkHighlight {
-                    hunk_index: hunk_idx,
-                    lines: line_spans,
-                }
-            })
-            .collect()
-    }; // HighlightState lock released here
-
-    state.highlight_state.insert_cache(
-        &file_path,
-        &validated_cache_key,
-        &syntax_theme,
-        hunks.clone(),
-    );
-
-    Ok(crate::highlight_state::HighlightResult {
-        cache_key: validated_cache_key,
-        syntax_theme,
-        hunks,
-    })
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn select_file(idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     {
         let tab = app.tab_mut();
         if tab.mode == er_engine::app::DiffMode::History {
@@ -750,29 +587,26 @@ pub fn select_file(idx: usize, state: State<AppState>) -> Result<AppSnapshot, St
             tab.rebuild_hunk_offsets();
         }
     }
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn next_file(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().next_file();
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn prev_file(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().prev_file();
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn jump_to_unreviewed(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     {
         let tab = app.tab_mut();
         let visible: Vec<usize> = tab
@@ -791,7 +625,7 @@ pub fn jump_to_unreviewed(state: State<AppState>) -> Result<AppSnapshot, String>
             tab.rebuild_hunk_offsets();
         }
     }
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Hunk navigation ──────────────────────────────────────────────────────────
@@ -799,27 +633,24 @@ pub fn jump_to_unreviewed(state: State<AppState>) -> Result<AppSnapshot, String>
 #[tauri::command]
 pub fn next_hunk(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().next_hunk();
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn prev_hunk(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().prev_hunk();
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn toggle_compacted(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut()
         .toggle_compacted()
         .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
@@ -827,7 +658,6 @@ pub fn toggle_compacted(state: State<AppState>) -> Result<AppSnapshot, String> {
 #[tauri::command]
 pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let diff_mode = match mode.as_str() {
         "unstaged" => DiffMode::Unstaged,
         "staged" => DiffMode::Staged,
@@ -835,7 +665,7 @@ pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, Str
         _ => DiffMode::Branch,
     };
     app.tab_mut().set_mode(diff_mode);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Reviewed state ────────────────────────────────────────────────────────────
@@ -843,15 +673,13 @@ pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, Str
 #[tauri::command]
 pub fn toggle_reviewed(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.toggle_reviewed().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn mark_reviewed(file_idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     {
         let tab = app.tab_mut();
         if let Some(file) = tab.files.get(file_idx) {
@@ -865,13 +693,12 @@ pub fn mark_reviewed(file_idx: usize, state: State<AppState>) -> Result<AppSnaps
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn unmark_reviewed(file_idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     {
         let tab = app.tab_mut();
         if let Some(file) = tab.files.get(file_idx) {
@@ -880,7 +707,7 @@ pub fn unmark_reviewed(file_idx: usize, state: State<AppState>) -> Result<AppSna
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Editor ────────────────────────────────────────────────────────────────────
@@ -1497,17 +1324,15 @@ pub fn read_review_json(
 #[tauri::command]
 pub fn set_filter(query: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().apply_filter_expr(&query);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn clear_filter(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().apply_filter_expr("");
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Threads ───────────────────────────────────────────────────────────────────
@@ -1522,7 +1347,6 @@ pub fn add_comment(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     // Set side before submit so submit_github_comment can consume it
     if let Some(ref s) = side {
         app.tab_mut().comment_side = Some(s.clone());
@@ -1537,7 +1361,7 @@ pub fn add_comment(
         None,
     )
     .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -1549,7 +1373,6 @@ pub fn add_question(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.submit_comment_text(
         file,
         hunk_idx,
@@ -1560,7 +1383,7 @@ pub fn add_question(
         None,
     )
     .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -1570,7 +1393,6 @@ pub fn reply_to_thread(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let (file, hunk_idx, line_num, comment_type) = {
         let tab = app.tab();
         if parent_id.starts_with("q-") {
@@ -1615,15 +1437,14 @@ pub fn reply_to_thread(
         None,
     )
     .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn delete_thread(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 fn write_json_atomic<T: serde::Serialize>(path: &str, value: &T) -> Result<(), String> {
@@ -1664,7 +1485,6 @@ fn mark_thread_resolved_in_files(id: &str, q_path: &str, gc_path: &str) -> Resul
 #[tauri::command]
 pub fn resolve_thread(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     let tab = app.tab();
     let q_path = format!("{}/questions.json", tab.er_dir());
@@ -1674,7 +1494,7 @@ pub fn resolve_thread(id: String, state: State<AppState>) -> Result<AppSnapshot,
         return Err(format!("Thread not found or already resolved: {id}"));
     }
     app.tab_mut().reload_ai_state();
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 fn validate_review_submission(
@@ -1706,20 +1526,18 @@ fn is_anchor_in_current_diff(
 #[tauri::command]
 pub fn refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn force_refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.tab_mut()
         .refetch_and_refresh_diff()
         .map_err(|e| e.to_string())?;
     kick_meta_refresh(&state, app.tab().repo_root.clone());
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 /// Trigger an immediate background refresh of the GitHub status for the active tab.
@@ -1747,18 +1565,16 @@ pub fn refresh_github_status(state: State<AppState>) -> Result<AppSnapshot, Stri
 #[tauri::command]
 pub fn pull_github_comments(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.sync_github_comments().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn push_github_comments(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.push_all_comments_to_github()
         .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 /// Push a single local comment thread (root + replies) to GitHub.
@@ -1770,8 +1586,7 @@ pub fn push_github_comment_thread(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.push_github_comment_thread(&id)
         .map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 /// Submit pending local comments as a GitHub PR review with an explicit decision.
@@ -2090,8 +1905,7 @@ pub fn submit_github_review(
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.tab_mut().reload_ai_state();
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 /// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
@@ -2172,8 +1986,7 @@ pub fn submit_github_pr_decision(
     );
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 /// Post a PR-wide (issue-stream) comment on the active tab's PR. Used by the
@@ -2207,8 +2020,7 @@ pub fn post_github_pr_comment(body: String, state: State<AppState>) -> Result<Ap
     );
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── AI integration ───────────────────────────────────────────────────────────
@@ -2216,7 +2028,6 @@ pub fn post_github_pr_comment(body: String, state: State<AppState>) -> Result<Ap
 #[tauri::command]
 pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
         let tab = app.tab();
@@ -2275,7 +2086,7 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let snap = snap_from(&app, &mut hl, &state);
+    let snap = snap_from(&app, &state);
     if debug_bg {
         eprintln!(
             "[bg] run_ai_review snapshot.background_tasks.len()={}",
@@ -2288,7 +2099,6 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
 #[tauri::command]
 pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     if app.tab().is_remote() {
         return Err("Validate review is local-only. Check out the PR locally first.".to_string());
@@ -2318,20 +2128,19 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn set_ai_model(model: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     let repo_root = app.tab().repo_root.clone();
     let mut cfg = er_engine::config::load_config(&repo_root);
     cfg.agent.model = model;
     er_engine::config::save_config(&cfg).map_err(|e| e.to_string())?;
 
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── AI provider / model selection ───────────────────────────────────────────
@@ -2391,7 +2200,6 @@ pub fn set_ai_selection(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     let hub = &app.config.ai_hub;
     if !hub.providers.contains_key(&provider_id) {
@@ -2412,7 +2220,7 @@ pub fn set_ai_selection(
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Promote question to GitHub comment ──────────────────────────────────────
@@ -2440,7 +2248,6 @@ pub fn promote_to_comment(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     // 1. Resolve the source question + already-promoted guard.
     let (file, hunk_idx, line_start, default_body, questions_path) = {
@@ -2529,7 +2336,7 @@ pub fn promote_to_comment(
         app.tab_mut().reload_ai_state();
     }
 
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Finding promotions sidecar ───────────────────────────────────────────────
@@ -2583,7 +2390,6 @@ pub fn ask_ai(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     let (file, hunk_idx, line_num, comment_type, context) = {
         let tab = app.tab();
@@ -2676,11 +2482,9 @@ pub fn ask_ai(
 
     // Build snapshot before releasing locks (test path expects synchronous
     // visibility of the pending state).
-    let snap = snap_from(&app, &mut hl, &state);
+    let snap = snap_from(&app, &state);
 
-    // Release locks before spawning so the subprocess runs without holding
-    // the App mutex.
-    drop(hl);
+    // Release lock before spawning so the subprocess runs without holding the App mutex.
     drop(app);
 
     std::thread::spawn(move || {
@@ -2987,7 +2791,6 @@ pub fn open_remote_pr(
     let remote = format!("{owner}/{repo}");
     let _project_id = record_remote_recent_pr(&state, &remote, number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(&mut app, &owner, &repo, number, replace.unwrap_or(false))?;
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_github_status_refresh(
@@ -2999,7 +2802,7 @@ pub fn open_remote_pr(
         repo,
         number,
     );
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -3029,7 +2832,6 @@ pub fn open_pr_url(
 
     let _project_id = record_remote_recent_pr(&state, &remote, pr_ref.number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(
         &mut app,
         &pr_ref.owner,
@@ -3047,7 +2849,7 @@ pub fn open_pr_url(
         pr_ref.repo,
         pr_ref.number,
     );
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Worktree picker (stub — no dialog dep) ──────────────────────────────────
@@ -3070,11 +2872,10 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
         .map_err(|e| format!("Failed to refresh {path_str}: {e}"))?;
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.open_tab(new_tab);
     let _ = projects::auto_register(&path_str);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Project commands ─────────────────────────────────────────────────────────
@@ -3248,7 +3049,6 @@ pub fn open_local_branch(
     log_branch_open_phase(&project_id, &branch_name, "tab_build", t_tab_build);
     let t_app_lock = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     log_branch_open_phase(&project_id, &branch_name, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
@@ -3268,10 +3068,9 @@ pub fn open_local_branch(
     let repo_root = app.tab().repo_root.clone();
     let base_branch = app.tab().base_branch.clone();
     let t_snapshot = std::time::Instant::now();
-    let snapshot = snap_from(&app, &mut hl, &state);
+    let snapshot = snap_from(&app, &state);
     log_branch_open_phase(&project_id, &branch_name, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_name, "total", t_total);
-    drop(hl);
     drop(app);
     kick_background_branch_refresh(
         Arc::clone(&state.app),
@@ -3803,7 +3602,6 @@ pub fn open_pr_review(
     );
     let t_app_lock = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     log_branch_open_phase(&project_id, &branch_label, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
@@ -3811,7 +3609,7 @@ pub fn open_pr_review(
     let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
-    let snapshot = snap_from(&app, &mut hl, &state);
+    let snapshot = snap_from(&app, &state);
     log_branch_open_phase(&project_id, &branch_label, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_label, "total", t_total);
     kick_active_gh_status(&app, &state);
@@ -3929,7 +3727,6 @@ pub fn set_diff_source(source: String, state: State<AppState>) -> Result<AppSnap
         other => return Err(format!("Invalid diff source: {other}")),
     };
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     {
         let available = app.tab().available_diff_sources();
         if !available.contains(&diff_source) {
@@ -3941,7 +3738,7 @@ pub fn set_diff_source(source: String, state: State<AppState>) -> Result<AppSnap
     app.tab_mut()
         .set_diff_source(diff_source)
         .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 /// Trigger a manual PR-list refresh. Returns the current snapshot immediately
@@ -4256,12 +4053,11 @@ pub fn open_project_branch(
     refresh_branch_open_diff(&mut new_tab)?;
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     projects::set_active(&project_id);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_active_gh_status(&app, &state);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -4440,7 +4236,6 @@ pub fn list_available_prs(
 #[tauri::command]
 pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let file = projects::load();
     let proj = file
         .projects
@@ -4455,7 +4250,7 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
     projects::set_active(&id);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_active_gh_status(&app, &state);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Findings: dismiss / promote / reply (v1 stubs) ──────────────────────────
@@ -4463,7 +4258,6 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
 #[tauri::command]
 pub fn dismiss_finding(finding_id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     let er_dir = app.tab().er_dir();
     let mut removed = false;
@@ -4493,7 +4287,7 @@ pub fn dismiss_finding(finding_id: String, state: State<AppState>) -> Result<App
             .map_err(|e| format!("Failed to update finding promotions: {e}"))?;
     }
 
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -4503,7 +4297,6 @@ pub fn promote_finding_to_comment(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     let er_dir = app.tab().er_dir();
 
@@ -4581,7 +4374,7 @@ pub fn promote_finding_to_comment(
         app.tab_mut().reload_ai_state();
     }
 
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -4592,7 +4385,6 @@ pub fn reply_to_finding(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
 
     // v1: create a github comment that references the finding's location.
     let (target, finding_text) = {
@@ -4646,7 +4438,6 @@ pub fn reply_to_finding(
         } else {
             prompt
         };
-        drop(hl);
         drop(app);
         return ask_ai(root_id, enriched_prompt, state);
     } else {
@@ -4662,7 +4453,7 @@ pub fn reply_to_finding(
         .map_err(|e| e.to_string())?;
     }
 
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Review export (markdown) ─────────────────────────────────────────────────
@@ -4716,8 +4507,7 @@ pub fn export_to_agent(state: State<AppState>) -> Result<AppSnapshot, String> {
     };
     let _ = path;
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Commit composer ──────────────────────────────────────────────────────────
@@ -4725,9 +4515,8 @@ pub fn export_to_agent(state: State<AppState>) -> Result<AppSnapshot, String> {
 #[tauri::command]
 pub fn open_commit_composer(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.input_mode = InputMode::Commit;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── History: select commit ──────────────────────────────────────────────────
@@ -4735,7 +4524,6 @@ pub fn open_commit_composer(state: State<AppState>) -> Result<AppSnapshot, Strin
 #[tauri::command]
 pub fn select_commit(sha: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     {
         let tab = app.tab_mut();
         // Switching into History mode lazily initializes HistoryState with the
@@ -4751,7 +4539,7 @@ pub fn select_commit(sha: String, state: State<AppState>) -> Result<AppSnapshot,
             }
         }
     }
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Tab management ──────────────────────────────────────────────────────────
@@ -4759,7 +4547,6 @@ pub fn select_commit(sha: String, state: State<AppState>) -> Result<AppSnapshot,
 #[tauri::command]
 pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     // Spawn a working-tree tab cloned from the active tab's repo root.
     // If that fails (e.g. deleted repo), fall back to the first tab's root.
     let root = app.tab().repo_root.clone();
@@ -4768,7 +4555,7 @@ pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
         .map_err(|e| format!("Failed to open new tab: {e}"))?;
     app.open_tab(tab);
     kick_meta_refresh(&state, root);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -4779,13 +4566,13 @@ pub fn close_tab(
     browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.close_tab_at(idx);
+    ensure_active_tab_loaded(&mut app);
     crate::browser_webview::reset_all_tab_webviews(&app_handle, &browser_state)?;
     let active = app.active_tab;
     crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, active)?;
     kick_active_gh_status(&app, &state);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -4796,11 +4583,27 @@ pub fn select_tab(
     browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.select_tab(idx);
+    ensure_active_tab_loaded(&mut app);
     kick_active_gh_status(&app, &state);
     crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, idx)?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
+}
+
+/// If the active tab was restored as a lazy stub, run its first `refresh_diff()`
+/// now and clear the flag. No-op for tabs that already have their diff loaded.
+pub(crate) fn ensure_active_tab_loaded(app: &mut App) {
+    let tab = app.tab_mut();
+    if !tab.needs_initial_refresh {
+        return;
+    }
+    tab.needs_initial_refresh = false;
+    let t = std::time::Instant::now();
+    if let Err(e) = tab.refresh_diff() {
+        log::error!("er-desktop: lazy tab refresh failed: {e}");
+    } else {
+        log::info!("lazy tab refresh done in {}ms", t.elapsed().as_millis());
+    }
 }
 
 #[tauri::command]
@@ -4815,7 +4618,6 @@ pub fn update_tab_browser(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let tab_idx = app.active_tab;
     let tab = app.tab_mut();
     if let Some(l) = layout.as_deref() {
@@ -4835,7 +4637,7 @@ pub fn update_tab_browser(
     }
     crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, tab_idx)?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -4845,13 +4647,12 @@ pub fn cycle_tab_browser_layout(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let tab_idx = app.active_tab;
     let tab = app.tab_mut();
     tab.browser_layout = tab.browser_layout.cycle();
     crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, tab_idx)?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -4862,11 +4663,10 @@ pub fn reorder_tabs(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     app.reorder_tabs(fromIdx, toIdx);
     // Persistence: the exit hook in main.rs flushes tab descriptors on app
     // exit, which captures any reorders. No mid-session save needed.
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── UI annotations (browser view) ───────────────────────────────────────────
@@ -4885,7 +4685,6 @@ pub fn add_ui_annotation(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let dir = app.tab().comments_dir();
     let mut anns = er_engine::ai::load_ui_annotations(&dir);
     let id = format!(
@@ -4926,7 +4725,7 @@ pub fn add_ui_annotation(
     });
     er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 /// Decode a `data:image/png;base64,<payload>` URL into raw PNG bytes. Returns
@@ -5051,13 +4850,12 @@ fn base64_encode(input: &[u8]) -> String {
 #[tauri::command]
 pub fn delete_ui_annotation(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let dir = app.tab().comments_dir();
     let mut anns = er_engine::ai::load_ui_annotations(&dir);
     anns.retain(|a| a.id != id);
     er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -5066,7 +4864,6 @@ pub fn clear_ui_annotations_for_page(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let dir = app.tab().comments_dir();
     let anns = er_engine::ai::load_ui_annotations(&dir);
     let removed: Vec<_> = anns
@@ -5080,13 +4877,12 @@ pub fn clear_ui_annotations_for_page(
     let kept: Vec<_> = anns.into_iter().filter(|a| a.url != page_url).collect();
     er_engine::ai::save_ui_annotations(&dir, &kept).map_err(|e| e.to_string())?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn clear_ui_annotations(state: State<AppState>) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let dir = app.tab().comments_dir();
     let anns = er_engine::ai::load_ui_annotations(&dir);
     for path in anns.iter().filter_map(|a| a.screenshot_path.as_deref()) {
@@ -5094,7 +4890,7 @@ pub fn clear_ui_annotations(state: State<AppState>) -> Result<AppSnapshot, Strin
     }
     er_engine::ai::save_ui_annotations(&dir, &[]).map_err(|e| e.to_string())?;
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[derive(serde::Deserialize)]
@@ -5129,10 +4925,9 @@ pub fn update_ui_annotation_anchors(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     let dir = app.tab().comments_dir();
     apply_anchor_updates(&dir, &updates).map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &mut hl, &state))
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -5164,7 +4959,6 @@ fn chrono_like_timestamp() -> String {
 pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     let t0 = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let mut hl = state.highlighter.lock().map_err(|e| e.to_string())?;
     // Drain pending agent log entries and check for completed commands.
     app.drain_agent_log();
     // Consume completed command receivers — updates command_status to done/failed
@@ -5202,7 +4996,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
         });
     }
 
-    let snapshot = snap_from(&app, &mut hl, &state);
+    let snapshot = snap_from(&app, &state);
     state.last_sent_revision.store(revision, Ordering::Relaxed);
 
     if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {

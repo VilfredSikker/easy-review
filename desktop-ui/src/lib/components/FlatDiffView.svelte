@@ -28,7 +28,10 @@
   } from "$lib/virtualWindow";
   import { buildAnnotationIndex } from "$lib/diffAnnotations";
   import { makeScrollThrottle } from "$lib/scrollThrottle";
-  import { highlightCache, type HighlightResult } from "$lib/highlightCache";
+  import { highlightCache, type HunkHighlight } from "$lib/highlightCache";
+  import { highlightFile } from "$lib/highlightFile";
+  import { warmHighlightWorker } from "$lib/highlightClient";
+  import { syntaxThemeById } from "$lib/syntaxThemes";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
   import type { AppSnapshot, FileSnapshot, SpanSnapshot } from "$lib/types";
 
@@ -265,16 +268,47 @@
     }
   });
 
-  // ── Highlight effect ──────────────────────────────────────────────────────
-  const HIGHLIGHT_THEME = "OneHalfDark";
+  // ── Highlight effect (Shiki web worker) ───────────────────────────────────
+  const syntaxTheme = $derived(syntaxThemeById(app.currentSyntaxTheme));
   // Reactive counter — incrementing re-triggers the effect so newly-unblocked
   // files get picked up when the 4-concurrent cap frees up.
   let _highlightGeneration = $state(0);
+  /** Bumped when spans are applied — Svelte won't re-render on in-place line mutation otherwise. */
+  let highlightApplyGen = $state(0);
   const _highlightInFlight = new Set<string>();
+  let _visibleFilePaths = $state(new Set<string>());
+
+  onMount(() => {
+    warmHighlightWorker(syntaxThemeById(app.currentSyntaxTheme));
+  });
+
+  function isFileInViewport(filePath: string): boolean {
+    return _visibleFilePaths.has(filePath);
+  }
+
+  /** True when at least one content line lacks colored syntax spans. */
+  function snapFileNeedsSpans(snapFile: FileSnapshot): boolean {
+    for (const hunk of snapFile.hunks) {
+      for (const line of hunk.lines) {
+        if (line.kind === "fold") continue;
+        return !(line.spans?.some((s) => s.color));
+      }
+    }
+    return true;
+  }
+
+  function hunksHaveColor(hunks: HunkHighlight[]): boolean {
+    for (const h of hunks) {
+      for (const lineSpans of h.lines) {
+        if (lineSpans.some((s) => s.color)) return true;
+      }
+    }
+    return false;
+  }
 
   function applyHunkSpans(
     snapFile: FileSnapshot,
-    hunks: { hunk_index: number; lines: SpanSnapshot[][] }[],
+    hunks: HunkHighlight[],
   ): void {
     const spansByHunkIdx = new Map<number, SpanSnapshot[][]>();
     for (const hh of hunks) spansByHunkIdx.set(hh.hunk_index, hh.lines);
@@ -288,42 +322,47 @@
         ),
       };
     });
+    highlightApplyGen++;
   }
 
   $effect(() => {
     _highlightGeneration; // reactive dep: re-runs when a request completes
     const rows = windowedRows;
     const visiblePaths = new Set(rows.map((r) => r.filePath));
+    _visibleFilePaths = visiblePaths;
     for (const filePath of visiblePaths) {
       const file = files.find((f) => f.path === filePath);
       if (!file || file.is_lazy_stub || file.hunks.length === 0) continue;
       const firstContentLine = file.hunks[0]?.lines.find((l) => l.kind !== "fold");
-      if (!firstContentLine || firstContentLine.spans !== undefined) continue;
-      const cacheKey = highlightCache.key(file.path, file.cache_key, HIGHLIGHT_THEME);
-      // Cache hit: backend poll wiped spans from the snapshot, but we still
-      // have the highlight result cached. Re-apply it instead of re-requesting.
+      if (!firstContentLine) continue;
+      const cacheKey = highlightCache.key(file.path, file.cache_key, syntaxTheme.id);
+      // Cache hit: backend poll wiped client-side spans, but we still have the
+      // highlight result — re-apply instead of re-tokenizing.
       const cachedHunks = highlightCache.get(cacheKey);
       if (cachedHunks) {
         const snapFile = app.snapshot?.files?.find((f) => f.path === file.path);
-        if (snapFile) applyHunkSpans(snapFile, cachedHunks);
+        if (snapFile && snapFileNeedsSpans(snapFile) && hunksHaveColor(cachedHunks)) {
+          applyHunkSpans(snapFile, cachedHunks);
+        }
         continue;
       }
       if (_highlightInFlight.has(file.path)) continue;
       if (_highlightInFlight.size >= 4) continue;
       _highlightInFlight.add(file.path);
-      invoke<HighlightResult>("highlight_file", {
-        filePath: file.path,
-        cacheKey: file.cache_key,
-        syntaxTheme: HIGHLIGHT_THEME,
-      })
-        .then((result) => {
+      const requestCacheKey = file.cache_key;
+      highlightFile(file, syntaxTheme)
+        .then((hunks) => {
           _highlightInFlight.delete(file.path);
           _highlightGeneration++; // wake effect for remaining files
-          if (!result || !app.snapshot) return;
+          if (!app.snapshot) return;
           const snapFile = app.snapshot.files?.find((f) => f.path === file.path);
-          if (!snapFile || result.cache_key !== snapFile.cache_key) return;
-          highlightCache.set(cacheKey, result.hunks);
-          applyHunkSpans(snapFile, result.hunks);
+          if (!snapFile || requestCacheKey !== snapFile.cache_key) return;
+          if (!hunksHaveColor(hunks)) return;
+          highlightCache.set(cacheKey, hunks);
+          if (!isFileInViewport(file.path)) return;
+          if (snapFileNeedsSpans(snapFile)) {
+            applyHunkSpans(snapFile, hunks);
+          }
         })
         .catch(() => {
           _highlightInFlight.delete(file.path);
@@ -373,6 +412,7 @@
   $effect(() => {
     const top = composerTopPx;
     if (top === undefined || !scrollEl) return;
+    if (diffSel.dragging) return;
     const LINE_H = 20;
     const viewBottom = scrollTopPx + viewportHeightPx;
     // If the last selected line (just above `top`) is below the viewport midpoint
@@ -411,7 +451,8 @@
   function onMouseMove(e: MouseEvent) {
     if (!diffSel.dragging || !scrollEl) return;
     const rect = scrollEl.getBoundingClientRect();
-    const yPx = e.clientY - rect.top + scrollTopPx;
+    const rawY = e.clientY - rect.top + scrollTopPx;
+    const yPx = Math.max(0, Math.min(rawY, effectiveGeometry.totalHeight - 1));
     const idx = rowIndexAtOffset(effectiveGeometry, yPx);
     if (idx < 0 || idx >= crossFileModel.rows.length) return;
     const row = crossFileModel.rows[idx];
@@ -610,16 +651,20 @@
             {:else if row.type === "hunk-header"}
               <HunkHeaderRow {row} />
             {:else if row.type === "content-unified"}
-              {@const line = getUnifiedLine(row)}
-              {@const partner = getUnifiedPartner(row)}
-              {#if line}
-                <UnifiedRow {row} {line} {partner} filePath={row.filePath} />
-              {/if}
+              {#key `${row.identity}:${highlightApplyGen}`}
+                {@const line = getUnifiedLine(row)}
+                {@const partner = getUnifiedPartner(row)}
+                {#if line}
+                  <UnifiedRow {row} {line} {partner} filePath={row.filePath} />
+                {/if}
+              {/key}
             {:else if row.type === "content-split"}
-              {@const splitRow = getSplitRow(row)}
-              {#if splitRow}
-                <SplitContentRow {row} {splitRow} filePath={row.filePath} />
-              {/if}
+              {#key `${row.identity}:${highlightApplyGen}`}
+                {@const splitRow = getSplitRow(row)}
+                {#if splitRow}
+                  <SplitContentRow {row} {splitRow} filePath={row.filePath} />
+                {/if}
+              {/key}
             {:else if row.type === "compacted-stub"}
               <CompactedStubRow {row} />
             {:else if row.type === "lazy-stub"}

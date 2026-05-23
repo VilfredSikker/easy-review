@@ -6,7 +6,6 @@ mod commands;
 mod er_storage;
 mod export;
 mod frame_script;
-mod highlight_state;
 mod inbox;
 mod pr_cache;
 mod projects;
@@ -23,7 +22,6 @@ use tauri::Manager;
 use browser_webview::BrowserWebviewState;
 use commands::AppState;
 use er_engine::app::App;
-use er_engine::highlight::Highlighter;
 use frame_script::FRAME_SCRIPT;
 use snapshot::{
     GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot,
@@ -462,10 +460,57 @@ fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 fn main() {
-    let mut app = App::new_with_args(&[]).unwrap_or_else(|e| {
-        eprintln!("er-desktop: failed to init engine: {e}"); // before logger is up
-        std::process::exit(1);
-    });
+    // When a persisted tabs.json exists we're going to replace `app.tabs`
+    // entirely below, so the engine init only needs a placeholder tab —
+    // running the initial `refresh_diff()` here would be wasted work
+    // (~900ms on a large repo). Use the unloaded constructor in that case.
+    let has_persisted_tabs = tabs::load_tabs()
+        .map(|f| !f.tabs.is_empty())
+        .unwrap_or(false);
+    let cwd_repo_root = er_engine::git::get_repo_root().ok();
+
+    let mut app = match (has_persisted_tabs, cwd_repo_root.clone()) {
+        (true, Some(root)) => App::new_unloaded(root).unwrap_or_else(|e| {
+            eprintln!("er-desktop: failed to init engine: {e}");
+            std::process::exit(1);
+        }),
+        (true, None) => {
+            // No CWD repo but we have tabs to restore: open against the last
+            // active project so the engine has a valid root.
+            let fallback = active_root_from_projects();
+            match fallback.as_deref().map(|p| App::new_unloaded(p.to_string())) {
+                Some(Ok(a)) => a,
+                _ => {
+                    eprintln!(
+                        "er-desktop: cwd not a repo and no active project on disk; aborting"
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        (false, _) => match App::new_with_args(&[]) {
+            Ok(a) => a,
+            Err(cwd_err) => {
+                let fallback = active_root_from_projects();
+                match fallback
+                    .as_deref()
+                    .map(|p| App::new_with_args(&[p.to_string()]))
+                {
+                    Some(Ok(a)) => {
+                        log::info!(
+                            "er-desktop: cwd not a repo ({cwd_err}); opened last active project: {}",
+                            fallback.as_deref().unwrap_or("?")
+                        );
+                        a
+                    }
+                    _ => {
+                        eprintln!("er-desktop: failed to init engine: {cwd_err}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        },
+    };
 
     // Auto-register the current repo on launch.
     {
@@ -477,11 +522,30 @@ fn main() {
 
     // Restore persisted tab list, if present. Failures are non-fatal: we
     // simply keep the default single-tab launch.
+    //
+    // Two-phase startup: refresh the diff eagerly only for the single restored
+    // active tab. Every other tab is rebuilt as a stub (`needs_initial_refresh`
+    // set) so a fresh launch with many tabs across many repos doesn't pay N
+    // cold `git diff` calls before the window appears. Each stub is upgraded
+    // when its tab gains focus (see `commands::ensure_active_tab_loaded`).
+    let mut deferred_tab_indices: Vec<usize> = Vec::new();
     if let Some(file) = tabs::load_tabs() {
+        let active_idx = file.active_idx.min(file.tabs.len().saturating_sub(1));
         let mut rebuilt: Vec<er_engine::app::TabState> = Vec::new();
-        for d in &file.tabs {
-            match tabs::rebuild_tab(d) {
-                Ok(t) => rebuilt.push(t),
+        for (i, d) in file.tabs.iter().enumerate() {
+            let eager = i == active_idx;
+            let result = if eager {
+                tabs::rebuild_tab(d)
+            } else {
+                tabs::rebuild_tab_stub(d)
+            };
+            match result {
+                Ok(t) => {
+                    if !eager {
+                        deferred_tab_indices.push(rebuilt.len());
+                    }
+                    rebuilt.push(t);
+                }
                 Err(e) => log::warn!(
                     "er-desktop: skipping persisted tab {:?} ({}): {e}",
                     d.kind,
@@ -491,8 +555,7 @@ fn main() {
         }
         if !rebuilt.is_empty() {
             app.tabs = rebuilt;
-            let clamped = file.active_idx.min(app.tabs.len() - 1);
-            app.active_tab = clamped;
+            app.active_tab = active_idx.min(app.tabs.len() - 1);
         }
     }
 
@@ -550,7 +613,6 @@ fn main() {
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let state = AppState {
         app: Arc::clone(&app_arc),
-        highlighter: Mutex::new(Highlighter::new()),
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
         pr_open_cache: Arc::clone(&pr_open_cache),
@@ -567,7 +629,6 @@ fn main() {
         watch_status: Arc::clone(&watch_status),
         inbox: Arc::clone(&inbox),
         tauri_app_handle: Arc::clone(&tauri_app_handle),
-        highlight_state: crate::highlight_state::HighlightState::new(),
     };
 
     match pr_cache::load_persisted_pr_cache() {
@@ -586,88 +647,86 @@ fn main() {
         }
     }
 
-    // Startup GitHub-status kick. Remote-PR tabs have enough metadata to fetch
-    // immediately; local-branch PR matching waits until the sidebar lazily loads
-    // that repo's PR cache.
-    {
-        let gh_status_startup = Arc::clone(&gh_status_cache);
-        let app_startup = Arc::clone(&app_arc);
-        let pr_cache_startup = Arc::clone(&pr_cache);
-        let desktop_rev_startup = Arc::clone(&desktop_revision);
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(5));
-            let key: Option<(String, String, u64)> = match app_startup.lock() {
-                Ok(g) => {
-                    let tab = g.tab();
-                    if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-                        slug.split_once('/')
-                            .map(|(o, r)| (o.to_string(), r.to_string(), n))
-                    } else {
-                        let branch = tab
-                            .local_branch_view
-                            .as_deref()
-                            .unwrap_or(&tab.current_branch)
-                            .to_string();
-                        pr_cache_startup.lock().ok().and_then(|cache| {
-                            cache.iter().find_map(|(slug, prs)| {
-                                prs.iter()
-                                    .filter(|p| p.head_ref == branch)
-                                    .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-                                    .and_then(|p| {
-                                        slug.split_once('/')
-                                            .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-                                    })
-                            })
-                        })
-                    }
-                }
-                Err(_) => None,
-            };
-            if let Some((owner, repo, number)) = key {
-                if let Some(snap) = commands::fetch_github_status(&owner, &repo, number) {
-                    if let Ok(mut g) = gh_status_startup.lock() {
-                        g.insert((owner, repo, number), snap);
-                    }
-                    desktop_rev_startup.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-        });
-    }
+    // The 30s `gh_status` loop below runs its first iteration immediately and
+    // shares dedup state via `gh_status_in_flight`, so a separate startup kick
+    // here would be a redundant duplicate fetch on the same identity.
 
-    // Spawn background remote-PR diff refresh: every 45s, if the active tab
-    // points at a remote PR, re-fetch its diff. Lets `gh pr diff` updates land
-    // without user action. Local-branch tabs update via the engine's notify
-    // watcher; remote PRs have no filesystem surface to watch.
-    let remote_app = Arc::clone(&app_arc);
-    let remote_loading = Arc::clone(&loading);
-    let remote_desktop_rev = Arc::clone(&desktop_revision);
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(45));
-        // Use try_lock so a busy app skips this cycle instead of blocking.
-        let mut guard = match remote_app.try_lock() {
-            Ok(g) => g,
-            Err(_) => continue,
-        };
-        if guard.tab().is_remote() {
+    // Background remote-PR diff refresh on a 60s cadence. Three-phase design
+    // mirrors the comment-sync loop so we never hold the App mutex across
+    // network I/O:
+    //   Phase 1 (brief lock) — snapshot identity + last_head_oid from active tab.
+    //                          Cross-reference pr_cache to find expected head_oid.
+    //   Phase 2 (no lock)    — `fetch_remote_diff_data` (shells out to `gh pr diff`,
+    //                          parses, hashes). Returns Ok(None) on head_oid match.
+    //   Phase 3 (brief lock) — `apply_remote_diff_result` swaps files + raw_diff.
+    {
+        let remote_app = Arc::clone(&app_arc);
+        let remote_loading = Arc::clone(&loading);
+        let remote_desktop_rev = Arc::clone(&desktop_revision);
+        let remote_pr_cache = Arc::clone(&pr_cache);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+
+            // Phase 1: brief lock — snapshot identity + last_head_oid.
+            let ctx = {
+                let guard = match remote_app.try_lock() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                let mut ctx = guard.snapshot_for_remote_diff_refresh();
+                drop(guard);
+                if let Some(ref mut c) = ctx {
+                    // Look up the expected head_oid from pr_cache. None ⇒ fetch
+                    // anyway (no cache entry yet means we have no comparison
+                    // point and shouldn't suppress the refresh).
+                    if let Ok(cache) = remote_pr_cache.lock() {
+                        let slug = format!("{}/{}", c.owner, c.repo);
+                        c.expected_head_oid = cache
+                            .get(&slug)
+                            .and_then(|prs| prs.iter().find(|p| p.number == c.pr_number))
+                            .map(|p| p.head_oid.clone())
+                            .filter(|s| !s.is_empty());
+                    }
+                }
+                ctx
+            };
+
+            let Some(ctx) = ctx else {
+                continue;
+            };
+
+            // Phase 2: no lock — fetch or short-circuit on head_oid match.
             if let Ok(mut f) = remote_loading.lock() {
-                f.gh_status = true;
+                f.remote_pr_diff = true;
             }
             remote_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let t = std::time::Instant::now();
-            if let Err(e) = guard.tab_mut().refresh_diff() {
-                log::error!("remote PR refresh failed: {e}");
-            } else {
-                log::info!(
-                    "remote PR diff refresh done in {}ms",
-                    t.elapsed().as_millis()
-                );
-            }
+            let result = er_engine::app::fetch_remote_diff_data(&ctx);
             if let Ok(mut f) = remote_loading.lock() {
-                f.gh_status = false;
+                f.remote_pr_diff = false;
             }
             remote_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-    });
+
+            match result {
+                Ok(Some(r)) => {
+                    // Phase 3: brief lock — apply.
+                    if let Ok(mut g) = remote_app.lock() {
+                        g.apply_remote_diff_result(r);
+                    }
+                    remote_desktop_rev
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    log::info!(
+                        "remote PR diff refresh done in {}ms",
+                        t.elapsed().as_millis()
+                    );
+                }
+                Ok(None) => {
+                    // head_oid unchanged — nothing to do.
+                }
+                Err(e) => log::error!("remote PR diff refresh failed: {e}"),
+            }
+        });
+    }
 
     // Spawn background GitHub-status refresh: every 30s, identify the active
     // tab's PR identity (briefly locking app), then shell out to gh and update
@@ -968,7 +1027,32 @@ fn main() {
             bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         };
 
-        // Initial startup pass.
+        // Startup: fetch the active project's remote first so its sidebar PR
+        // list lights up quickly. The full multi-remote sweep follows.
+        if let Some(active_remote) = pr_cache::active_project_remote() {
+            if let Ok(mut f) = bg_loading.lock() {
+                f.pr_list = true;
+            }
+            bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            rt.block_on(async {
+                pr_cache::refresh_pr_cache_for_remote(&active_remote, &bg_cache, &bg_fetched_at)
+                    .await
+            });
+            commands::process_inbox_after_pr_refresh(
+                &bg_cache,
+                &bg_gh_user,
+                &bg_inbox,
+                &bg_desktop_rev,
+                &bg_handle,
+                Some(active_remote),
+            );
+            if let Ok(mut f) = bg_loading.lock() {
+                f.pr_list = false;
+            }
+            bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Full sweep across all remotes.
         run_refresh();
 
         // Conservative cadence: every 10 minutes.
@@ -989,7 +1073,17 @@ fn main() {
             .build()
             .expect("failed to build tokio runtime");
         rt.block_on(async move {
-            // First pass uses launch-time root.
+            // Startup: refresh only the active project so its sidebar is ready
+            // ASAP. Then a short delay before the full sweep covers everyone else.
+            let active_id = projects::load().active_id.clone();
+            if let Some(id) = active_id.as_deref() {
+                meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                snapshot::refresh_meta_cache_for_project(id, &bg_meta);
+                meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            // First full pass — slight delay so we don't compete with the
+            // active tab's diff refresh for git CPU during the first frame.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             snapshot::refresh_meta_cache(&launch_root, &bg_meta);
             meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1005,6 +1099,61 @@ fn main() {
             }
         });
     });
+
+    // Background warmer: refresh persisted tab stubs that belong to the
+    // **active project**. Tabs from other projects stay stubs until the user
+    // focuses them (`commands::ensure_active_tab_loaded` runs the diff then).
+    // Avoids paying `git diff` cost on launch for repos the user didn't open.
+    if !deferred_tab_indices.is_empty() {
+        let warmer_app = Arc::clone(&app_arc);
+        let warmer_rev = Arc::clone(&desktop_revision);
+        // Snapshot the active project root once. If unknown, warm every stub
+        // (preserves single-project users' warmup behavior).
+        let warmer_active_root = active_root_from_projects();
+        std::thread::spawn(move || {
+            // Brief grace period so the active tab's diff + the first frame land
+            // before we start consuming CPU on background tabs.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            loop {
+                let next_idx: Option<usize> = match warmer_app.try_lock() {
+                    Ok(g) => g.tabs.iter().position(|t| {
+                        if !t.needs_initial_refresh {
+                            return false;
+                        }
+                        match warmer_active_root.as_deref() {
+                            Some(root) => t.repo_root == root,
+                            None => true,
+                        }
+                    }),
+                    Err(_) => None,
+                };
+                let Some(idx) = next_idx else {
+                    break;
+                };
+                let Ok(mut g) = warmer_app.lock() else { break };
+                if idx >= g.tabs.len() || !g.tabs[idx].needs_initial_refresh {
+                    continue;
+                }
+                g.tabs[idx].needs_initial_refresh = false;
+                let t = std::time::Instant::now();
+                let res = g.tabs[idx].refresh_diff();
+                drop(g);
+                match res {
+                    Ok(()) => {
+                        log::info!(
+                            "background tab warmup {}/?? done in {}ms",
+                            idx,
+                            t.elapsed().as_millis()
+                        );
+                        warmer_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Err(e) => log::warn!("background tab warmup failed: {e}"),
+                }
+                // Yield between tabs so the UI thread can grab the mutex if needed.
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+        });
+    }
 
     let persist_app = Arc::clone(&app_arc);
     let tauri_app = tauri::Builder::default()
@@ -1038,6 +1187,32 @@ fn main() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());
                 }
+                // Revision watcher: emit a Tauri event whenever the backend's
+                // `desktop_revision` advances. The frontend listens and only
+                // calls `poll` on demand instead of every 2s — cuts idle
+                // backend mutex/lock contention to ~zero, and lets the UI
+                // react within ~50ms of a real change.
+                let watch_handle = app.handle().clone();
+                let watch_rev = Arc::clone(&state.desktop_revision);
+                std::thread::spawn(move || {
+                    use tauri::Emitter;
+                    let mut last_emitted = u64::MAX;
+                    loop {
+                        let current = watch_rev.load(std::sync::atomic::Ordering::Relaxed);
+                        if current != last_emitted {
+                            // Brief debounce to coalesce bursts (e.g. several
+                            // background threads bumping the revision at once).
+                            std::thread::sleep(std::time::Duration::from_millis(40));
+                            let coalesced =
+                                watch_rev.load(std::sync::atomic::Ordering::Relaxed);
+                            last_emitted = coalesced;
+                            if let Err(e) = watch_handle.emit("er://revision", coalesced) {
+                                log::warn!("revision watcher emit failed: {e}");
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(80));
+                    }
+                });
             }
 
             install_app_menu(app.handle())?;
@@ -1078,7 +1253,6 @@ fn main() {
             commands::get_snapshot,
             commands::toggle_panel,
             commands::request_file_content,
-            commands::highlight_file,
             commands::select_file,
             commands::next_file,
             commands::prev_file,

@@ -27,6 +27,10 @@ pub struct ProjectRecord {
     /// also includes the currently-checked-out branch on top of this list.
     #[serde(default)]
     pub tracked_branches: Vec<String>,
+    /// Branches hidden from the sidebar via "Remove from view" (worktree-backed
+    /// branches stay dismissed until re-tracked or the user views that branch).
+    #[serde(default)]
+    pub dismissed_branches: Vec<String>,
     /// PRs the user has opened for review, most recent first (max 50 persisted).
     #[serde(default)]
     pub recent_prs: Vec<RecentPrEntry>,
@@ -138,6 +142,7 @@ fn ensure_remote_project_in_file(file: &mut ProjectsFile, remote: &str) -> anyho
         dismissed_prs: Vec::new(),
         tracked_prs: Vec::new(),
         tracked_branches: Vec::new(),
+        dismissed_branches: Vec::new(),
         recent_prs: Vec::new(),
         saved_prs: Vec::new(),
     };
@@ -213,10 +218,27 @@ pub fn config_path() -> PathBuf {
 
 pub fn load() -> ProjectsFile {
     let path = config_path();
+    // Skip JSON parse when mtime hasn't advanced since the last load. The file
+    // is hit on every snapshot build; with multiple polls per second under
+    // user input, parsing it repeatedly is wasted work.
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<(std::time::SystemTime, ProjectsFile)>> = Mutex::new(None);
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    if let (Some(mtime), Ok(guard)) = (mtime, CACHE.lock()) {
+        if let Some((cached_mtime, cached_file)) = guard.as_ref() {
+            if *cached_mtime == mtime {
+                return cached_file.clone();
+            }
+        }
+    }
     let Ok(bytes) = std::fs::read(&path) else {
         return ProjectsFile::default();
     };
-    serde_json::from_slice(&bytes).unwrap_or_default()
+    let parsed: ProjectsFile = serde_json::from_slice(&bytes).unwrap_or_default();
+    if let (Some(mtime), Ok(mut guard)) = (mtime, CACHE.lock()) {
+        *guard = Some((mtime, parsed.clone()));
+    }
+    parsed
 }
 
 pub fn save(file: &ProjectsFile) -> anyhow::Result<()> {
@@ -331,6 +353,7 @@ pub fn auto_register(root_path: &str) -> ProjectRecord {
         dismissed_prs: Vec::new(),
         tracked_prs: Vec::new(),
         tracked_branches,
+        dismissed_branches: Vec::new(),
         recent_prs: Vec::new(),
         saved_prs: Vec::new(),
     };
@@ -391,6 +414,20 @@ pub fn untrack_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn add_tracked_branch_on_project(proj: &mut ProjectRecord, name: &str) -> bool {
+    let mut changed = false;
+    if !proj.tracked_branches.iter().any(|n| n == name) {
+        proj.tracked_branches.push(name.to_string());
+        changed = true;
+    }
+    let before = proj.dismissed_branches.len();
+    proj.dismissed_branches.retain(|n| n != name);
+    if proj.dismissed_branches.len() != before {
+        changed = true;
+    }
+    changed
+}
+
 pub fn add_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()> {
     let mut file = load();
     let proj = file
@@ -398,11 +435,24 @@ pub fn add_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()> {
         .iter_mut()
         .find(|p| p.id == project_id)
         .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    if !proj.tracked_branches.iter().any(|n| n == name) {
-        proj.tracked_branches.push(name.to_string());
+    if add_tracked_branch_on_project(proj, name) {
         save(&file)?;
     }
     Ok(())
+}
+
+fn remove_tracked_branch_on_project(proj: &mut ProjectRecord, name: &str) -> bool {
+    let mut changed = false;
+    let before_tracked = proj.tracked_branches.len();
+    proj.tracked_branches.retain(|n| n != name);
+    if proj.tracked_branches.len() != before_tracked {
+        changed = true;
+    }
+    if !proj.dismissed_branches.iter().any(|n| n == name) {
+        proj.dismissed_branches.push(name.to_string());
+        changed = true;
+    }
+    changed
 }
 
 pub fn remove_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()> {
@@ -412,9 +462,7 @@ pub fn remove_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()>
         .iter_mut()
         .find(|p| p.id == project_id)
         .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    let before = proj.tracked_branches.len();
-    proj.tracked_branches.retain(|n| n != name);
-    if proj.tracked_branches.len() != before {
+    if remove_tracked_branch_on_project(proj, name) {
         save(&file)?;
     }
     Ok(())
@@ -433,6 +481,7 @@ mod tests {
             dismissed_prs: Vec::new(),
             tracked_prs: Vec::new(),
             tracked_branches: Vec::new(),
+            dismissed_branches: Vec::new(),
             recent_prs: Vec::new(),
             saved_prs: Vec::new(),
         }
@@ -481,6 +530,33 @@ mod tests {
             .collect();
         assert_eq!(numbers, vec![1, 2]);
         assert_eq!(project.recent_prs[0].title, "first updated");
+    }
+
+    #[test]
+    fn remove_tracked_branch_dismisses_even_when_not_tracked() {
+        let mut project = local_project("bun", Some("oven-sh/bun"));
+        project.tracked_branches.clear();
+
+        assert!(remove_tracked_branch_on_project(&mut project, "feature-a"));
+
+        assert!(project.tracked_branches.is_empty());
+        assert_eq!(project.dismissed_branches, vec!["feature-a"]);
+    }
+
+    #[test]
+    fn add_tracked_branch_clears_prior_dismiss() {
+        let mut project = local_project("bun", Some("oven-sh/bun"));
+        project
+            .dismissed_branches
+            .push("feature-a".to_string());
+
+        assert!(add_tracked_branch_on_project(&mut project, "feature-a"));
+
+        assert!(project
+            .dismissed_branches
+            .iter()
+            .all(|n| n != "feature-a"));
+        assert!(project.tracked_branches.iter().any(|n| n == "feature-a"));
     }
 
     #[test]

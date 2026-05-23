@@ -5,12 +5,10 @@ use std::sync::{Arc, Mutex};
 static LAST_RENDERED_HUNKS: AtomicUsize = AtomicUsize::new(usize::MAX);
 static LAST_LINES_IN_IPC: AtomicUsize = AtomicUsize::new(usize::MAX);
 static LAST_BUDGET_OMITTED: AtomicUsize = AtomicUsize::new(usize::MAX);
-static LAST_HIGHLIGHTED_FILES: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
 use er_engine::git::{DiffFile, FileStatus, LineType};
-use er_engine::highlight::Highlighter;
 use serde::Serialize;
 
 use crate::inbox::InboxHandle;
@@ -28,6 +26,9 @@ pub struct LoadingFlags {
     pub gh_status: bool,
     /// Inline GitHub comment sync for the active tab.
     pub gh_comments: bool,
+    /// Background remote-PR diff refresh for the active tab.
+    #[serde(default)]
+    pub remote_pr_diff: bool,
 }
 
 pub type LoadingState = Arc<Mutex<LoadingFlags>>;
@@ -401,16 +402,6 @@ pub struct LineSnapshot {
     /// Always-present plain text for the line (no syntax coloring).
     /// Used directly when spans are absent; also feeds word-diff.
     pub text: String,
-    /// Syntax-highlighted spans. Present for files ≤150 lines (inline);
-    /// absent for larger files — the frontend requests them via `highlight_file`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spans: Option<Vec<SpanSnapshot>>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SpanSnapshot {
-    pub text: String,
-    pub color: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -711,50 +702,82 @@ pub type MetaCache = std::sync::Arc<Mutex<HashMap<String, ProjectMeta>>>;
 /// Refresh the per-project metadata cache by shelling out to git for each
 /// known project. MUST NOT hold `AppState.app` — runs on a background thread.
 pub fn refresh_meta_cache(active_root: &str, cache: &MetaCache) {
+    refresh_meta_cache_filtered(active_root, cache, None);
+}
+
+/// Variant that refreshes a single project (by id), leaving entries for other
+/// projects untouched. Used at startup so the active project's branches show
+/// up immediately without paying for `git branch / worktree list / base
+/// detection` on every other registered project first.
+pub fn refresh_meta_cache_for_project(project_id: &str, cache: &MetaCache) {
+    refresh_meta_cache_filtered("", cache, Some(project_id));
+}
+
+fn refresh_meta_cache_filtered(
+    active_root: &str,
+    cache: &MetaCache,
+    only_project_id: Option<&str>,
+) {
     let file = projects::load();
-    let mut next: HashMap<String, ProjectMeta> = HashMap::new();
-    for p in &file.projects {
-        if p.root_path.is_empty() {
-            continue;
-        }
-        let current_branch = detect_current_branch(&p.root_path);
-        let base_branch = detect_base_branch(&p.root_path);
-        let raw_worktrees = er_engine::git::list_worktrees(&p.root_path).unwrap_or_default();
-        let local_branches = build_tracked_branches(
-            &p.root_path,
-            &base_branch,
-            &current_branch,
-            &p.tracked_branches,
-            &raw_worktrees,
-        );
-        let auto_branches = build_auto_branches(
-            &p.root_path,
-            &base_branch,
-            &current_branch,
-            &p.tracked_branches,
-            10,
-            &raw_worktrees,
-        );
-        let _ = active_root; // active_root is unused now that ProjectMeta drops worktrees.
-        next.insert(
-            p.id.clone(),
-            ProjectMeta {
-                current_branch,
-                base_branch,
-                local_branches,
-                auto_branches,
-            },
-        );
-    }
+    let updates: Vec<(String, ProjectMeta)> = file
+        .projects
+        .iter()
+        .filter(|p| !p.root_path.is_empty())
+        .filter(|p| only_project_id.is_none_or(|id| p.id == id))
+        .map(|p| {
+            let current_branch = detect_current_branch(&p.root_path);
+            let base_branch = detect_base_branch(&p.root_path);
+            let raw_worktrees =
+                er_engine::git::list_worktrees(&p.root_path).unwrap_or_default();
+            let local_branches = build_tracked_branches(
+                &p.root_path,
+                &base_branch,
+                &current_branch,
+                &p.tracked_branches,
+                &p.dismissed_branches,
+                &raw_worktrees,
+            );
+            let auto_branches = build_auto_branches(
+                &p.root_path,
+                &base_branch,
+                &current_branch,
+                &p.tracked_branches,
+                &p.dismissed_branches,
+                10,
+                &raw_worktrees,
+            );
+            (
+                p.id.clone(),
+                ProjectMeta {
+                    current_branch,
+                    base_branch,
+                    local_branches,
+                    auto_branches,
+                },
+            )
+        })
+        .collect();
+    let _ = active_root; // active_root is unused now that ProjectMeta drops worktrees.
     if let Ok(mut g) = cache.lock() {
-        *g = next;
+        if only_project_id.is_some() {
+            // Partial update — merge into the existing cache.
+            for (id, meta) in updates {
+                g.insert(id, meta);
+            }
+        } else {
+            // Full sweep — replace, so deleted projects drop out.
+            let mut next: HashMap<String, ProjectMeta> = HashMap::new();
+            for (id, meta) in updates {
+                next.insert(id, meta);
+            }
+            *g = next;
+        }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn build_snapshot(
     app: &App,
-    highlighter: &mut Highlighter,
     pr_cache: Option<&PrCache>,
     pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
     meta_cache: Option<&MetaCache>,
@@ -806,7 +829,7 @@ pub fn build_snapshot(
             let budget_omitted = !f.compacted && !include_hunks;
             let hunks = if include_hunks {
                 diff_line_budget = diff_line_budget.saturating_sub(line_count);
-                build_hunks(f, tab, highlighter, pending_ai)
+                build_hunks(f, tab, pending_ai)
             } else {
                 vec![]
             };
@@ -1116,52 +1139,23 @@ pub fn build_snapshot(
             .iter()
             .filter(|f| f.is_lazy_stub && !f.compacted)
             .count();
-        // Files with hunks but no spans on the first line were highlighted inline.
-        let highlighted_files = out
-            .files
-            .iter()
-            .filter(|f| {
-                f.hunks
-                    .first()
-                    .and_then(|h| h.lines.first())
-                    .map(|l| l.spans.is_some())
-                    .unwrap_or(false)
-            })
-            .count();
-        let highlighted_lines: usize = out
-            .files
-            .iter()
-            .filter(|f| {
-                f.hunks
-                    .first()
-                    .and_then(|h| h.lines.first())
-                    .map(|l| l.spans.is_some())
-                    .unwrap_or(false)
-            })
-            .flat_map(|f| f.hunks.iter())
-            .map(|h| h.lines.len())
-            .sum();
         let rendered_hunks = out.files.iter().map(|f| f.hunks.len()).sum::<usize>();
         // Only log when something meaningful changed — avoids flooding in steady state.
         let prev_hunks = LAST_RENDERED_HUNKS.swap(rendered_hunks, Ordering::Relaxed);
         let prev_lines = LAST_LINES_IN_IPC.swap(total_lines, Ordering::Relaxed);
         let prev_omitted = LAST_BUDGET_OMITTED.swap(budget_omitted, Ordering::Relaxed);
-        let prev_hl_files = LAST_HIGHLIGHTED_FILES.swap(highlighted_files, Ordering::Relaxed);
         if rendered_hunks != prev_hunks
             || total_lines != prev_lines
             || budget_omitted != prev_omitted
-            || highlighted_files != prev_hl_files
         {
             eprintln!(
-                "er-desktop build_snapshot_ms={} files={} rendered_hunks={} lines_in_ipc={} max_file_lines={} budget_omitted={} highlighted_files={} highlighted_lines={}",
+                "er-desktop build_snapshot_ms={} files={} rendered_hunks={} lines_in_ipc={} max_file_lines={} budget_omitted={}",
                 t0.elapsed().as_millis(),
                 out.files.len(),
                 rendered_hunks,
                 total_lines,
                 max_file_lines,
                 budget_omitted,
-                highlighted_files,
-                highlighted_lines,
             );
         }
     }
@@ -1287,6 +1281,7 @@ fn build_tracked_branches(
     base_branch: &str,
     current_branch: &str,
     tracked: &[String],
+    dismissed: &[String],
     worktrees: &[er_engine::git::Worktree],
 ) -> Vec<BranchInfo> {
     let out = std::process::Command::new("git")
@@ -1350,8 +1345,11 @@ fn build_tracked_branches(
 
     let worktree_branches: std::collections::HashSet<&str> =
         worktrees.iter().map(|w| w.branch.as_str()).collect();
+    let dismissed_set: std::collections::HashSet<&str> =
+        dismissed.iter().map(|s| s.as_str()).collect();
 
-    // Visibility set: {current} ∪ tracked ∪ {branches with an active worktree}.
+    // Visibility set: {current} ∪ tracked ∪ {branches with an active worktree},
+    // minus dismissed (current branch is always shown).
     let mut visible: Vec<BranchInfo> = Vec::new();
     let mut seen = std::collections::HashSet::<String>::new();
 
@@ -1361,6 +1359,9 @@ fn build_tracked_branches(
     }
     for b in &all {
         if seen.contains(&b.name) {
+            continue;
+        }
+        if dismissed_set.contains(b.name.as_str()) {
             continue;
         }
         let in_tracked = tracked.iter().any(|t| t == &b.name);
@@ -1378,6 +1379,7 @@ fn build_auto_branches(
     base_branch: &str,
     current_branch: &str,
     tracked: &[String],
+    dismissed: &[String],
     limit: usize,
     worktrees: &[er_engine::git::Worktree],
 ) -> Vec<BranchInfo> {
@@ -1401,6 +1403,8 @@ fn build_auto_branches(
     let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
 
     let tracked_set: std::collections::HashSet<&str> = tracked.iter().map(|s| s.as_str()).collect();
+    let dismissed_set: std::collections::HashSet<&str> =
+        dismissed.iter().map(|s| s.as_str()).collect();
 
     let mut result: Vec<BranchInfo> = Vec::new();
     for line in text.lines() {
@@ -1415,6 +1419,9 @@ fn build_auto_branches(
             continue;
         }
         if name == current_branch {
+            continue;
+        }
+        if dismissed_set.contains(name.as_str()) {
             continue;
         }
         if tracked_set.contains(name.as_str()) {
@@ -1534,15 +1541,135 @@ fn build_projects(
     meta_cache: Option<&MetaCache>,
     gh_user: Option<&GhUser>,
 ) -> Vec<ProjectSnapshot> {
+    // Cache layer: the per-project iteration in build_projects_from_file
+    // dominates the snapshot cost on machines with several projects (full
+    // clones of pr_cache + meta_cache). We avoid paying it twice when the
+    // inputs are unchanged between consecutive snapshots.
+    let key = build_projects_cache_key(
+        tab,
+        pr_cache,
+        pr_cache_fetched_at,
+        meta_cache,
+        gh_user,
+    );
+    if let Some(cached) = projects_cache_lookup(&key) {
+        return cached;
+    }
     let file = projects::load();
-    build_projects_from_file(
+    let value = build_projects_from_file(
         &file,
         tab,
         pr_cache,
         pr_cache_fetched_at,
         meta_cache,
         gh_user,
-    )
+    );
+    projects_cache_store(key, &value);
+    value
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectsCacheKey {
+    projects_mtime_ns: u128,
+    pr_cache_fingerprint: u64,
+    meta_cache_fingerprint: u64,
+    active_root: String,
+    active_remote: Option<String>,
+    viewed_branch: String,
+    gh_user: Option<String>,
+}
+
+fn build_projects_cache_key(
+    tab: &TabState,
+    pr_cache: Option<&PrCache>,
+    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
+    meta_cache: Option<&MetaCache>,
+    gh_user: Option<&GhUser>,
+) -> ProjectsCacheKey {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let projects_mtime_ns = std::fs::metadata(projects::config_path())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+
+    // pr_cache fingerprint: combine remote names, len per remote, and last
+    // fetched timestamps. Any fetch bumps the timestamp, so this catches all
+    // mutations without needing a separate revision counter.
+    let mut h = DefaultHasher::new();
+    if let Some(cache) = pr_cache.and_then(|m| m.lock().ok()) {
+        let mut entries: Vec<(&String, usize)> =
+            cache.iter().map(|(k, v)| (k, v.len())).collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (k, n) in entries {
+            k.hash(&mut h);
+            n.hash(&mut h);
+        }
+    }
+    if let Some(fetched) = pr_cache_fetched_at.and_then(|m| m.lock().ok()) {
+        let mut entries: Vec<(&String, u64)> =
+            fetched.iter().map(|(k, v)| (k, *v)).collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (k, ts) in entries {
+            k.hash(&mut h);
+            ts.hash(&mut h);
+        }
+    }
+    let pr_cache_fingerprint = h.finish();
+
+    // meta_cache fingerprint: project id + branch counts. Branch list changes
+    // bump the count or the current_branch string; both included.
+    let mut h = DefaultHasher::new();
+    if let Some(meta) = meta_cache.and_then(|m| m.lock().ok()) {
+        let mut entries: Vec<(&String, &ProjectMeta)> = meta.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (k, v) in entries {
+            k.hash(&mut h);
+            v.current_branch.hash(&mut h);
+            v.base_branch.hash(&mut h);
+            v.local_branches.len().hash(&mut h);
+            v.auto_branches.len().hash(&mut h);
+        }
+    }
+    let meta_cache_fingerprint = h.finish();
+
+    let me: Option<String> = gh_user.and_then(|g| g.lock().ok().and_then(|v| v.clone()));
+    let viewed_branch = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+
+    ProjectsCacheKey {
+        projects_mtime_ns,
+        pr_cache_fingerprint,
+        meta_cache_fingerprint,
+        active_root: tab.repo_root.clone(),
+        active_remote: tab.remote_repo.clone(),
+        viewed_branch,
+        gh_user: me,
+    }
+}
+
+static PROJECTS_CACHE: Mutex<Option<(ProjectsCacheKey, Vec<ProjectSnapshot>)>> =
+    Mutex::new(None);
+
+fn projects_cache_lookup(key: &ProjectsCacheKey) -> Option<Vec<ProjectSnapshot>> {
+    let guard = PROJECTS_CACHE.lock().ok()?;
+    let (cached_key, value) = guard.as_ref()?;
+    if cached_key == key {
+        Some(value.clone())
+    } else {
+        None
+    }
+}
+
+fn projects_cache_store(key: ProjectsCacheKey, value: &[ProjectSnapshot]) {
+    if let Ok(mut guard) = PROJECTS_CACHE.lock() {
+        *guard = Some((key, value.to_vec()));
+    }
 }
 
 fn build_projects_from_file(
@@ -1751,22 +1878,9 @@ fn detect_base_branch(repo_root: &str) -> String {
 fn build_hunks(
     file: &DiffFile,
     tab: &TabState,
-    highlighter: &mut Highlighter,
     pending: Option<&PendingAiReplies>,
 ) -> Vec<HunkSnapshot> {
-    let t_hl = std::time::Instant::now();
-    let filename = std::path::Path::new(&file.path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&file.path);
-
-    let is_python = file.path.ends_with(".py");
-    let mut in_python_docstring = false;
-    let total_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
-    let inline_spans = total_lines <= 150;
-
-    let result = file
-        .hunks
+    file.hunks
         .iter()
         .enumerate()
         .map(|(hunk_idx, hunk)| {
@@ -1780,78 +1894,11 @@ fn build_hunks(
                         LineType::Context => "context",
                         LineType::Fold(_) => "fold",
                     };
-                    let spans: Option<Vec<SpanSnapshot>> = if inline_spans && kind != "fold" {
-                        let mut spans: Vec<SpanSnapshot> = highlighter
-                            .highlight_line(&line.content, filename, "OneHalfDark")
-                            .into_iter()
-                            .map(|hs| SpanSnapshot {
-                                text: hs.text,
-                                color: hs.color,
-                            })
-                            .collect();
-
-                        // Keep comment/docstring lines semantically plain:
-                        // don't allow intra-line keyword highlighting for words
-                        // like "if"/"for"/"order" inside comments or docstrings.
-                        let trimmed = line.content.trim_start();
-                        let is_line_comment = trimmed.starts_with('#')
-                            || trimmed.starts_with("//")
-                            || trimmed.starts_with("/*")
-                            || trimmed.starts_with('*')
-                            || trimmed.starts_with("*/");
-
-                        let triple_single = line.content.matches("'''").count();
-                        let triple_double = line.content.matches("\"\"\"").count();
-                        let has_triple = triple_single > 0 || triple_double > 0;
-                        let in_docstring_now = is_python && (in_python_docstring || has_triple);
-
-                        if is_line_comment || in_docstring_now {
-                            spans = vec![SpanSnapshot {
-                                text: line.content.clone(),
-                                color: "#a7b1ba".to_string(),
-                            }];
-                        } else if !trimmed.is_empty()
-                            && trimmed
-                                .chars()
-                                .all(|c| matches!(c, ')' | ']' | '}' | ',' | ' ' | '\t'))
-                        {
-                            // Bare closing-bracket lines lose context when highlighted
-                            // line-by-line (HighlightLines is re-created per line), so
-                            // syntect dims them. Force the theme's default fg to match
-                            // the opening bracket on its source line.
-                            spans = vec![SpanSnapshot {
-                                text: line.content.clone(),
-                                color: "#c0c5ce".to_string(),
-                            }];
-                        }
-
-                        if is_python && has_triple && ((triple_single + triple_double) % 2 == 1) {
-                            in_python_docstring = !in_python_docstring;
-                        }
-
-                        Some(spans)
-                    } else if kind == "fold" {
-                        Some(vec![SpanSnapshot {
-                            text: line.content.clone(),
-                            color: String::new(),
-                        }])
-                    } else {
-                        // Large file: no inline spans. Maintain python docstring state for correctness.
-                        if is_python {
-                            let triple_single = line.content.matches("'''").count();
-                            let triple_double = line.content.matches("\"\"\"").count();
-                            if (triple_single + triple_double) % 2 == 1 {
-                                in_python_docstring = !in_python_docstring;
-                            }
-                        }
-                        None
-                    };
                     LineSnapshot {
                         old_num: line.old_num,
                         new_num: line.new_num,
                         kind: kind.to_string(),
                         text: line.content.clone(),
-                        spans,
                     }
                 })
                 .collect();
@@ -1897,10 +1944,7 @@ fn build_hunks(
                 threads,
             }
         })
-        .collect();
-
-    let _ = t_hl; // timing reserved for aggregate profiling in build_snapshot
-    result
+        .collect()
 }
 
 fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSnapshot {
@@ -2443,6 +2487,7 @@ mod tests {
                 dismissed_prs: Vec::new(),
                 tracked_prs: Vec::new(),
                 tracked_branches: Vec::new(),
+                dismissed_branches: Vec::new(),
                 recent_prs: vec![projects::RecentPrEntry {
                     number: 123,
                     viewed_at_ms: 10,

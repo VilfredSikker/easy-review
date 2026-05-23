@@ -2,6 +2,7 @@ pub mod background;
 pub(super) mod comments;
 pub mod github_sync;
 pub(super) mod navigation;
+pub mod remote_diff_sync;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, WatchedConfig};
@@ -654,6 +655,17 @@ pub struct TabState {
     /// Origin if a refreshed ref already exists.
     pub has_upstream: Option<bool>,
 
+    /// Desktop-only: marks a tab restored as a stub (no diff loaded) that needs
+    /// a `refresh_diff()` the first time it gains focus. Used by the desktop
+    /// startup path to defer non-active-project tabs.
+    pub needs_initial_refresh: bool,
+
+    /// For remote PR tabs: the head_oid the current `files`/`raw_diff` were
+    /// fetched against. The background remote-PR refresh loop compares this
+    /// against the latest head_oid in pr_cache; equal ⇒ skip the network
+    /// round-trip. Set by `apply_remote_diff_result`. None means "force fetch".
+    pub last_diff_head_oid: Option<String>,
+
     // ── Agent log state (per-tab) ──
     /// Receivers for running background commands (keyed by command name)
     pub command_rx: std::collections::HashMap<String, std::sync::mpsc::Receiver<Result<()>>>,
@@ -1183,6 +1195,8 @@ impl TabState {
             browser_split_ratio: 0.45,
             browser_annotate_mode: false,
             browser_show_tooltips: false,
+            needs_initial_refresh: false,
+            last_diff_head_oid: None,
         };
 
         // Build hunk offsets for initial selection
@@ -1298,6 +1312,8 @@ impl TabState {
             browser_split_ratio: 0.45,
             browser_annotate_mode: false,
             browser_show_tooltips: false,
+            needs_initial_refresh: false,
+            last_diff_head_oid: None,
         };
 
         if refresh_initial_diff {
@@ -1406,6 +1422,8 @@ impl TabState {
             browser_split_ratio: 0.45,
             browser_annotate_mode: false,
             browser_show_tooltips: false,
+            needs_initial_refresh: false,
+            last_diff_head_oid: None,
         }
     }
 
@@ -3598,6 +3616,40 @@ impl App {
 
         Ok(App {
             tabs,
+            active_tab: 0,
+            input_mode: InputMode::Normal,
+            should_quit: false,
+            overlay: None,
+            watching: false,
+            watch_message: None,
+            watch_message_ticks: 0,
+            watch_message_max_ticks: 20,
+            ai_poll_counter: 0,
+            remote_url_input: String::new(),
+            config: er_config,
+            current_ai_provider,
+            current_ai_model,
+            pending_hub_action: None,
+            last_terminal_width: 0,
+            panels_visible: PanelsVisible::default(),
+            background_tasks: std::collections::HashMap::new(),
+            recent_background_tasks: Vec::new(),
+        })
+    }
+
+    /// Create an App with a single unloaded tab for `repo_root` — skips the
+    /// initial `refresh_diff()`. Used by the desktop's startup path when a
+    /// persisted tabs.json is about to replace `app.tabs` anyway: paying for
+    /// the initial diff here is wasted work, and on machines launching
+    /// outside a repo CWD this lets us still open a window backed by the
+    /// last-active project's root.
+    pub fn new_unloaded(repo_root: String) -> Result<Self> {
+        let base = git::detect_base_branch_in(&repo_root)?;
+        let tab = TabState::new_with_base_unloaded(repo_root, base)?;
+        let er_config = crate::config::load_global_config();
+        let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
+        Ok(App {
+            tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
             should_quit: false,
@@ -6194,6 +6246,8 @@ mod tests {
             browser_split_ratio: 0.45,
             browser_annotate_mode: false,
             browser_show_tooltips: false,
+            needs_initial_refresh: false,
+            last_diff_head_oid: None,
         }
     }
 

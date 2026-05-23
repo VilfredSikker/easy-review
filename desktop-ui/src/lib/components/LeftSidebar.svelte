@@ -211,10 +211,25 @@
     expandedProject = expandedProject === p.id ? null : p.id;
   }
 
+  let pendingDeleteProjectId = $state<string | null>(null);
+  let pendingDeleteTimer: ReturnType<typeof setTimeout> | null = null;
+
   async function deleteProject(project: ProjectSnapshot, e: MouseEvent) {
     e.stopPropagation();
-    const ok = confirm(`Remove ${project.name} from Easy Review? This will not delete files or GitHub data.`);
-    if (!ok) return;
+    if (pendingDeleteProjectId !== project.id) {
+      pendingDeleteProjectId = project.id;
+      if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
+      pendingDeleteTimer = setTimeout(() => {
+        pendingDeleteProjectId = null;
+        pendingDeleteTimer = null;
+      }, 3000);
+      return;
+    }
+    if (pendingDeleteTimer) {
+      clearTimeout(pendingDeleteTimer);
+      pendingDeleteTimer = null;
+    }
+    pendingDeleteProjectId = null;
     addingTo = null;
     await app.cmd("delete_project", { projectId: project.id });
   }
@@ -644,10 +659,10 @@
             <button
               type="button"
               onclick={(e) => deleteProject(project, e)}
-              title="Remove project"
+              title={pendingDeleteProjectId === project.id ? "Click again to confirm" : "Remove project"}
               aria-label="Remove project {project.name}"
-              class="absolute right-1 opacity-0 group-hover:opacity-100 px-1 text-muted hover:text-del-fg"
-            >×</button>
+              class="absolute right-1 px-1 {pendingDeleteProjectId === project.id ? 'opacity-100 text-del-fg text-[10px] font-semibold' : 'opacity-0 group-hover:opacity-100 text-muted hover:text-del-fg'}"
+            >{pendingDeleteProjectId === project.id ? "Confirm?" : "×"}</button>
             {#if addingTo === project.id}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -694,7 +709,7 @@
                       title={br.name}
                       onclick={(e) => openBranch(project.id, br.name, e)}
                       onauxclick={(e) => { if (e.button === 1) openBranch(project.id, br.name, e); }}
-                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-sm text-left {(isActiveView || branchPending) ? 'bg-accent/15 text-fg font-medium' : 'text-fg-3 hover:bg-hover'}"
+                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-sm text-left {(isActiveView || branchPending) ? 'bg-accent/15 text-fg font-medium' : 'text-fg-3 hover:bg-hover'} {!br.is_current ? 'pr-6' : ''}"
                     >
                       {#if isActiveView}
                         <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-purple-400' : 'bg-accent'} shrink-0"></span>
