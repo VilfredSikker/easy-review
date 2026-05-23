@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
-  import { buildTree } from "$lib/treeFromPaths";
+  import { buildTree, filesByPathMap, resolveTreeFile } from "$lib/treeFromPaths";
   import ScopeSelector from "./ScopeSelector.svelte";
   import { onDestroy } from "svelte";
   import { windowFromScroll } from "$lib/virtualWindow";
@@ -15,6 +15,7 @@
 
   const snapshot = $derived(app.snapshot);
   const files = $derived(snapshot?.files ?? []);
+  const filesByPath = $derived(filesByPathMap(files));
   const ai = $derived(snapshot?.ai);
   const tree = $derived(buildTree(files));
   const selectedFile = $derived(snapshot ? files[snapshot.selected_file] : null);
@@ -247,7 +248,7 @@
               <span class="truncate">{node.name}</span>
             </div>
           {:else if node.file}
-            {@const file = node.file}
+            {@const file = resolveTreeFile(filesByPath, node)!}
             {@const selected = selectedFile?.path === file.path}
             {@const inViewport = !selected && viewportPath === file.path}
             <div

@@ -1,10 +1,29 @@
 import { describe, expect, it } from "bun:test";
-import { buildTree, flattenForNav } from "./treeFromPaths";
+import {
+  buildTree,
+  filesByPathMap,
+  flattenForNav,
+  resolveTreeFile,
+} from "./treeFromPaths";
 import type { FileSnapshot } from "./types";
 
-function file(path: string): FileSnapshot {
-  // Only `path` matters for tree shape; cast satisfies the test.
-  return { path } as unknown as FileSnapshot;
+function file(path: string, overrides: Partial<FileSnapshot> = {}): FileSnapshot {
+  return {
+    path,
+    status: "modified",
+    additions: 0,
+    deletions: 0,
+    reviewed: false,
+    compacted: false,
+    risk: null,
+    finding_count: 0,
+    comment_count: 0,
+    question_count: 0,
+    hunks: [],
+    source_index: 0,
+    cache_key: path,
+    ...overrides,
+  };
 }
 
 describe("flattenForNav", () => {
@@ -48,6 +67,24 @@ describe("flattenForNav", () => {
       "routes/users/+page.server.ts",
       "routes/users/+page.svelte",
     ]);
+  });
+
+  it("resolveTreeFile reads fresh stats when buildTree cache is stale", () => {
+    const first = [file("src/a.ts", { additions: 1, deletions: 2 })];
+    const tree = buildTree(first);
+    const node = tree.find((n) => n.kind === "file" && n.fullPath === "src/a.ts");
+    expect(node).toBeDefined();
+
+    const second = [file("src/a.ts", { additions: 99, deletions: 0 })];
+    const cachedAgain = buildTree(second);
+    expect(cachedAgain).toBe(tree);
+
+    const stale = resolveTreeFile(filesByPathMap(first), node!);
+    expect(stale?.additions).toBe(1);
+
+    const fresh = resolveTreeFile(filesByPathMap(second), node!);
+    expect(fresh?.additions).toBe(99);
+    expect(fresh?.deletions).toBe(0);
   });
 
   it("handles mixed depths with folders sorted before files at each level", () => {

@@ -10,6 +10,9 @@ pub type PrCacheMap = Arc<Mutex<HashMap<String, Vec<PrInfo>>>>;
 pub type PrCacheFetchedAtMap = Arc<Mutex<HashMap<String, u64>>>;
 
 const PR_CACHE_SCHEMA_VERSION: u32 = 1;
+/// If every configured remote was fetched within this window, skip the startup
+/// full multi-remote sweep (the active project's remote is still refreshed first).
+const PR_CACHE_STARTUP_MAX_AGE_MS: u64 = 10 * 60 * 1000;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PersistedPrCacheFile {
@@ -107,6 +110,24 @@ pub(crate) fn merge_pr_results(
         }
         // On failure: leave the existing entry untouched (stale is better than gone)
     }
+}
+
+/// Whether the startup full PR sweep should run (any configured remote missing
+/// or older than [`PR_CACHE_STARTUP_MAX_AGE_MS`]).
+pub fn startup_full_refresh_due(fetched_at: &PrCacheFetchedAtMap) -> bool {
+    let file = projects::load();
+    let remotes = refreshable_remotes(&file);
+    if remotes.is_empty() {
+        return false;
+    }
+    let now = now_epoch_ms();
+    let guard = fetched_at.lock().ok();
+    remotes.iter().any(|remote| {
+        match guard.as_ref().and_then(|g| g.get(remote)) {
+            None => true,
+            Some(ts) => now.saturating_sub(*ts) > PR_CACHE_STARTUP_MAX_AGE_MS,
+        }
+    })
 }
 
 /// Return the remote slug for the currently-active project, if any.

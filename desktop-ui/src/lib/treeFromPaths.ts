@@ -134,3 +134,19 @@ export function flattenForNav(tree: TreeNode[]): string[] {
   }
   return out;
 }
+
+/**
+ * Current `FileSnapshot` for a tree row. `buildTree` memoizes shape by path only;
+ * always resolve through the latest `files` list (or map) before rendering metadata.
+ */
+export function resolveTreeFile(
+  filesByPath: Map<string, FileSnapshot>,
+  node: TreeNode,
+): FileSnapshot | undefined {
+  if (node.kind !== "file") return undefined;
+  return filesByPath.get(node.fullPath) ?? node.file;
+}
+
+export function filesByPathMap(files: FileSnapshot[]): Map<string, FileSnapshot> {
+  return new Map(files.map((f) => [f.path, f]));
+}

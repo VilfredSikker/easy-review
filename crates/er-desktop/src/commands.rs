@@ -1536,6 +1536,7 @@ pub fn force_refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String>
     app.tab_mut()
         .refetch_and_refresh_diff()
         .map_err(|e| e.to_string())?;
+    crate::tabs::persist_app_tabs(&app);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     Ok(snap_from(&app, &state))
 }
@@ -2584,6 +2585,7 @@ pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: b
     } else {
         app.open_tab(tab);
     }
+    crate::tabs::persist_app_tabs(app);
 }
 
 /// Internal helper: open a remote PR view. If the same PR is already open,
@@ -2873,6 +2875,7 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.open_tab(new_tab);
+    crate::tabs::persist_app_tabs(&app);
     let _ = projects::auto_register(&path_str);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     Ok(snap_from(&app, &state))
@@ -4247,6 +4250,7 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
         .map_err(|e| format!("Failed to open {}: {e}", proj.root_path))?;
     app.open_tab(new_tab);
     app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
+    crate::tabs::persist_app_tabs(&app);
     projects::set_active(&id);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_active_gh_status(&app, &state);
@@ -4554,6 +4558,7 @@ pub fn new_tab(state: State<AppState>) -> Result<AppSnapshot, String> {
         .or_else(|_| er_engine::app::TabState::new(app.tabs[0].repo_root.clone()))
         .map_err(|e| format!("Failed to open new tab: {e}"))?;
     app.open_tab(tab);
+    crate::tabs::persist_app_tabs(&app);
     kick_meta_refresh(&state, root);
     Ok(snap_from(&app, &state))
 }
@@ -4571,6 +4576,7 @@ pub fn close_tab(
     crate::browser_webview::reset_all_tab_webviews(&app_handle, &browser_state)?;
     let active = app.active_tab;
     crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, active)?;
+    crate::tabs::persist_app_tabs(&app);
     kick_active_gh_status(&app, &state);
     Ok(snap_from(&app, &state))
 }
@@ -4587,6 +4593,7 @@ pub fn select_tab(
     ensure_active_tab_loaded(&mut app);
     kick_active_gh_status(&app, &state);
     crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, idx)?;
+    crate::tabs::persist_app_tabs(&app);
     Ok(snap_from(&app, &state))
 }
 
@@ -4599,7 +4606,13 @@ pub(crate) fn ensure_active_tab_loaded(app: &mut App) {
     }
     tab.needs_initial_refresh = false;
     let t = std::time::Instant::now();
-    if let Err(e) = tab.refresh_diff() {
+    let is_local_pr = tab.pr_number.is_some() && !tab.is_remote();
+    let result = if is_local_pr {
+        tab.refetch_and_refresh_diff()
+    } else {
+        tab.refresh_diff()
+    };
+    if let Err(e) = result {
         log::error!("er-desktop: lazy tab refresh failed: {e}");
     } else {
         log::info!("lazy tab refresh done in {}ms", t.elapsed().as_millis());
@@ -4664,8 +4677,7 @@ pub fn reorder_tabs(
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.reorder_tabs(fromIdx, toIdx);
-    // Persistence: the exit hook in main.rs flushes tab descriptors on app
-    // exit, which captures any reorders. No mid-session save needed.
+    crate::tabs::persist_app_tabs(&app);
     Ok(snap_from(&app, &state))
 }
 

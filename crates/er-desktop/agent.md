@@ -7,7 +7,7 @@
 - `src/commands.rs`: Tauri command surface. Most frontend actions enter here.
 - `src/snapshot.rs`: Rust wire contract for `desktop-ui/src/lib/types.ts`.
 - `src/main.rs`: Tauri setup, browser proxy/content script, background loops, command registration.
-- `src/tabs.rs`: persisted desktop tab descriptors and tab reconstruction.
+- `src/tabs.rs`: persisted desktop tab descriptors and tab reconstruction (`tabs.json` under the platform config dir).
 - `src/projects.rs`: persisted project list, tracked branches, tracked/dismissed PRs.
 - `src/pr_cache.rs`: GitHub PR list fetching/caching helpers.
 - `src/export.rs`: pure Markdown renderer for comments, questions, findings, and UI annotations.
@@ -30,6 +30,12 @@
 3. Add the matching TypeScript type in `desktop-ui/src/lib/types.ts`.
 4. Ensure missing/default values do not break older frontend assumptions.
 5. Confirm polling revision changes when the field can change asynchronously.
+
+## Tab persistence
+
+Open tabs (repo, branch/PR identity, active index, optional `local_branch_diff_ref` and browser fields) are written to `tabs.json` via `tabs::persist_app_tabs` whenever the tab strip changes: open/close/reorder, branch or PR open (`place_tab`), project switch, tab select, and force-refresh (updates the refreshed branch ref). The same save runs on main-window `CloseRequested` and app exit as a safety net.
+
+On launch, `main.rs` restores from `tabs.json` when present (eager diff for the active tab only; other tabs are lazy stubs). Call `persist_app_tabs` after any new code path that mutates `app.tabs` or `app.active_tab`. Do not persist from `poll` / `get_snapshot`.
 
 ## Polling And Invalidation
 

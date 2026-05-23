@@ -559,6 +559,17 @@ fn main() {
         }
     }
 
+    // Scope background tab warmup to the active project (or the restored active
+    // tab's repo). Never warm cross-project stubs when active_id is missing.
+    let warmer_scope_root: Option<String> = active_root_from_projects()
+        .or_else(|| {
+            app.tabs
+                .get(app.active_tab)
+                .map(|t| t.repo_root.clone())
+                .filter(|r| !r.is_empty())
+        })
+        .or(cwd_repo_root);
+
     let pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>> = Arc::new(Mutex::new(HashMap::new()));
     let pr_cache_fetched_at: Arc<Mutex<HashMap<String, u64>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -1052,8 +1063,12 @@ fn main() {
             bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
-        // Full sweep across all remotes.
-        run_refresh();
+        // Full sweep across all remotes — skip when persisted cache is still fresh.
+        if pr_cache::startup_full_refresh_due(&bg_fetched_at) {
+            run_refresh();
+        } else {
+            log::info!("pr_list: skipping startup full sweep (cache still fresh)");
+        }
 
         // Conservative cadence: every 10 minutes.
         loop {
@@ -1107,9 +1122,7 @@ fn main() {
     if !deferred_tab_indices.is_empty() {
         let warmer_app = Arc::clone(&app_arc);
         let warmer_rev = Arc::clone(&desktop_revision);
-        // Snapshot the active project root once. If unknown, warm every stub
-        // (preserves single-project users' warmup behavior).
-        let warmer_active_root = active_root_from_projects();
+        let warmer_scope_root = warmer_scope_root;
         std::thread::spawn(move || {
             // Brief grace period so the active tab's diff + the first frame land
             // before we start consuming CPU on background tabs.
@@ -1120,10 +1133,9 @@ fn main() {
                         if !t.needs_initial_refresh {
                             return false;
                         }
-                        match warmer_active_root.as_deref() {
-                            Some(root) => t.repo_root == root,
-                            None => true,
-                        }
+                        warmer_scope_root
+                            .as_deref()
+                            .is_some_and(|root| t.repo_root == root)
                     }),
                     Err(_) => None,
                 };
@@ -1136,7 +1148,13 @@ fn main() {
                 }
                 g.tabs[idx].needs_initial_refresh = false;
                 let t = std::time::Instant::now();
-                let res = g.tabs[idx].refresh_diff();
+                let is_local_pr =
+                    g.tabs[idx].pr_number.is_some() && !g.tabs[idx].is_remote();
+                let res = if is_local_pr {
+                    g.tabs[idx].refetch_and_refresh_diff()
+                } else {
+                    g.tabs[idx].refresh_diff()
+                };
                 drop(g);
                 match res {
                     Ok(()) => {
@@ -1156,6 +1174,7 @@ fn main() {
     }
 
     let persist_app = Arc::clone(&app_arc);
+    let persist_app_on_close = Arc::clone(&app_arc);
     let tauri_app = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -1182,6 +1201,16 @@ fn main() {
         // proxies `https://host/path`. HTML responses get the annotation script.
         .register_uri_scheme_protocol("erp", |_app, request| proxied_response(&request, "http"))
         .register_uri_scheme_protocol("erps", |_app, request| proxied_response(&request, "https"))
+        .on_window_event(move |window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if let Ok(guard) = persist_app_on_close.lock() {
+                    tabs::persist_app_tabs(&guard);
+                }
+            }
+        })
         .setup(|app| {
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
@@ -1362,16 +1391,8 @@ fn main() {
 
     tauri_app.run(move |_handle, event| {
         if let tauri::RunEvent::ExitRequested { .. } = event {
-            // Best-effort persistence of the open tab list. We must not block
-            // exit on save errors — log and move on.
             if let Ok(guard) = persist_app.lock() {
-                let descriptors: Vec<tabs::TabDescriptor> =
-                    guard.tabs.iter().map(tabs::descriptor_from_tab).collect();
-                let active = guard.active_tab;
-                drop(guard);
-                if let Err(e) = tabs::save_tabs(&descriptors, active) {
-                    log::error!("er-desktop: failed to save tabs: {e}");
-                }
+                tabs::persist_app_tabs(&guard);
             }
             // Kill any live shell sessions. Drop runs PtySession::drop on
             // each, which kills + reaps the child.

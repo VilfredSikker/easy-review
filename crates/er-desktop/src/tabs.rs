@@ -86,6 +86,24 @@ pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
     Ok(())
 }
 
+/// Serialize the live tab list and active index to disk.
+pub fn save_app_tabs(app: &er_engine::app::App) -> Result<()> {
+    let descriptors: Vec<TabDescriptor> = app
+        .tabs
+        .iter()
+        .map(descriptor_from_tab)
+        .collect();
+    let active = app.active_tab.min(app.tabs.len().saturating_sub(1));
+    save_tabs(&descriptors, active)
+}
+
+/// Best-effort [`save_app_tabs`]; logs a warning on failure.
+pub fn persist_app_tabs(app: &er_engine::app::App) {
+    if let Err(e) = save_app_tabs(app) {
+        log::warn!("er-desktop: failed to persist tabs: {e}");
+    }
+}
+
 /// Load persisted tabs. Returns `None` if the file is missing or unreadable —
 /// callers fall back to the default single-tab launch.
 pub fn load_tabs() -> Option<TabsFile> {
@@ -141,7 +159,12 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
         };
     }
     // Local PR review (fetched head ref, no checkout)
-    if let (Some(head_ref), Some(num)) = (tab.pr_head_ref.as_ref(), tab.pr_number) {
+    if let Some(num) = tab.pr_number.filter(|_| !tab.is_remote()) {
+        let base_ref = if tab.base_branch.is_empty() {
+            None
+        } else {
+            Some(tab.base_branch.clone())
+        };
         return TabDescriptor {
             kind: TabKind::LocalPr,
             repo_root: tab.repo_root.clone(),
@@ -149,8 +172,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_owner: None,
             pr_repo: None,
             pr_number: Some(num),
-            pr_head_ref: Some(head_ref.clone()),
-            base_ref: Some(tab.base_branch.clone()),
+            pr_head_ref: tab.pr_head_ref.clone(),
+            base_ref,
             local_branch_diff_ref: None,
             browser_url: browser_url.clone(),
             browser_layout: browser_layout.clone(),
@@ -221,66 +244,86 @@ pub fn apply_managed_root(tab: &mut er_engine::app::TabState) {
     tab.er_root = er_storage::resolve_managed_root_from_slugs(&repo_slug, &branch_slug);
 }
 
+fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
+    let branch = d
+        .branch
+        .clone()
+        .context("local_branch descriptor missing branch")?;
+    let resolved_ref = d.local_branch_diff_ref.clone().or_else(|| {
+        er_engine::github::refreshed_branch_ref_if_exists(&d.repo_root, &branch)
+    });
+    let base = er_engine::git::detect_base_branch_in(&d.repo_root)?;
+    let mut tab = er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
+    tab.local_branch_view = Some(branch);
+    tab.mode = er_engine::app::DiffMode::Branch;
+    tab.local_branch_diff_ref = resolved_ref;
+    if lazy {
+        tab.needs_initial_refresh = true;
+    } else {
+        tab.refresh_diff()?;
+    }
+    Ok(tab)
+}
+
+fn rebuild_local_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
+    let number = d
+        .pr_number
+        .context("local_pr descriptor missing pr_number")?;
+    if !lazy {
+        return er_engine::app::TabState::new_local_pr(d.repo_root.clone(), number);
+    }
+    let base = match d.base_ref.clone() {
+        Some(b) if !b.is_empty() => b,
+        _ => er_engine::git::detect_base_branch_in(&d.repo_root)?,
+    };
+    let mut tab = er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
+    tab.local_branch_view = d.branch.clone().or_else(|| Some(format!("pr/{}", number)));
+    tab.pr_number = Some(number);
+    tab.pr_head_ref = d.pr_head_ref.clone();
+    tab.mode = er_engine::app::DiffMode::Branch;
+    tab.needs_initial_refresh = true;
+    Ok(tab)
+}
+
+fn rebuild_remote_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
+    let owner = d.pr_owner.clone().context("remote_pr missing owner")?;
+    let repo = d.pr_repo.clone().context("remote_pr missing repo")?;
+    let number = d.pr_number.context("remote_pr missing number")?;
+    let pr_ref = er_engine::github::PrRef {
+        owner,
+        repo,
+        number,
+    };
+    if lazy {
+        er_engine::app::TabState::new_remote_stub(&pr_ref)
+    } else {
+        er_engine::app::TabState::new_remote(&pr_ref)
+    }
+}
+
 /// Rebuild a `TabState` from a descriptor. Skips work that needs the network
 /// (e.g. PR overview fetch) — that's done lazily when the tab is focused.
 ///
-/// When `lazy` is true, LocalBranch tabs are built without the initial
-/// `refresh_diff()` and instead get `needs_initial_refresh = true`. The tab
-/// will run its first diff the next time it gains focus (or when a background
-/// warmer reaches it). Other kinds already defer their heavy work — `lazy` is
-/// a no-op for them.
+/// When `lazy` is true, tabs are built without their initial diff load and get
+/// `needs_initial_refresh = true`. The first diff runs when the tab gains focus
+/// (or when the background warmer reaches a same-project stub).
 pub fn rebuild_tab_with(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
     let mut tab = match d.kind {
-        TabKind::Working => er_engine::app::TabState::new(d.repo_root.clone()),
-        TabKind::LocalBranch => {
-            let branch = d
-                .branch
-                .clone()
-                .context("local_branch descriptor missing branch")?;
-            // Resolve the refreshed diff ref to use: prefer the persisted ref from
-            // the descriptor, then fall back to whatever Easy Review ref currently
-            // exists on disk (covers branches refreshed in a prior session).
-            let resolved_ref = d.local_branch_diff_ref.clone().or_else(|| {
-                er_engine::github::refreshed_branch_ref_if_exists(&d.repo_root, &branch)
-            });
-            // Build the tab with `local_branch_diff_ref` set before the initial
-            // refresh so the diff is computed against the refreshed ref directly,
-            // avoiding a wasted git-diff against the stale local branch.
-            let base = er_engine::git::detect_base_branch_in(&d.repo_root)?;
-            let mut tab = if lazy {
-                er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?
-            } else {
-                er_engine::app::TabState::new_with_base(d.repo_root.clone(), base)?
-            };
-            tab.local_branch_view = Some(branch);
-            tab.mode = er_engine::app::DiffMode::Branch;
-            tab.local_branch_diff_ref = resolved_ref;
+        TabKind::Working => {
             if lazy {
+                let base = er_engine::git::detect_base_branch_in(&d.repo_root)?;
+                let mut tab =
+                    er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
                 tab.needs_initial_refresh = true;
+                tab
             } else {
-                tab.refresh_diff()?;
+                er_engine::app::TabState::new(d.repo_root.clone())?
             }
-            Ok(tab)
         }
-        TabKind::RemotePr => {
-            let owner = d.pr_owner.clone().context("remote_pr missing owner")?;
-            let repo = d.pr_repo.clone().context("remote_pr missing repo")?;
-            let number = d.pr_number.context("remote_pr missing number")?;
-            let pr_ref = er_engine::github::PrRef {
-                owner,
-                repo,
-                number,
-            };
-            er_engine::app::TabState::new_remote(&pr_ref)
-        }
-        TabKind::LocalPr => {
-            let number = d
-                .pr_number
-                .context("local_pr descriptor missing pr_number")?;
-            // Re-fetch the PR head so the ref is up-to-date after restart.
-            er_engine::app::TabState::new_local_pr(d.repo_root.clone(), number)
-        }
-    }?;
+        TabKind::LocalBranch => rebuild_local_branch(d, lazy)?,
+        TabKind::RemotePr => rebuild_remote_pr(d, lazy)?,
+        TabKind::LocalPr => rebuild_local_pr(d, lazy)?,
+    };
     apply_managed_root(&mut tab);
     apply_descriptor_browser(&mut tab, d);
     Ok(tab)
@@ -291,9 +334,9 @@ pub fn rebuild_tab(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
     rebuild_tab_with(d, false)
 }
 
-/// Lazy rebuild: returns a stub for LocalBranch tabs without running the
-/// initial `refresh_diff()`. The tab's `needs_initial_refresh` flag is set so
-/// a focus handler (or background warmer) can run the diff later.
+/// Lazy rebuild: returns a stub without running the initial `refresh_diff()`.
+/// The tab's `needs_initial_refresh` flag is set so a focus handler (or
+/// background warmer) can run the diff later.
 pub fn rebuild_tab_stub(d: &TabDescriptor) -> Result<er_engine::app::TabState> {
     rebuild_tab_with(d, true)
 }
@@ -386,5 +429,85 @@ mod tests {
         assert_eq!(loaded.tabs.len(), 4);
         assert_eq!(loaded.tabs, tabs);
         assert_eq!(loaded.active_idx, 1);
+    }
+
+    fn init_git_repo(path: &std::path::Path) {
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "er@test.local"])
+            .current_dir(path)
+            .status()
+            .expect("git config email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "er-test"])
+            .current_dir(path)
+            .status()
+            .expect("git config name");
+        std::fs::write(path.join("README"), "x").expect("write readme");
+        std::process::Command::new("git")
+            .args(["add", "README"])
+            .current_dir(path)
+            .status()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git commit");
+    }
+
+    #[test]
+    fn descriptor_local_pr_without_head_ref() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        let root = tmp.path().to_string_lossy().to_string();
+        let mut tab =
+            er_engine::app::TabState::new_with_base_unloaded(root, "main".to_string()).expect("tab");
+        tab.pr_number = Some(42);
+        tab.local_branch_view = Some("dependabot/cargo-abc".to_string());
+        let d = descriptor_from_tab(&tab);
+        assert_eq!(d.kind, TabKind::LocalPr);
+        assert_eq!(d.pr_number, Some(42));
+        assert!(d.pr_head_ref.is_none());
+        assert_eq!(d.branch.as_deref(), Some("dependabot/cargo-abc"));
+    }
+
+    #[test]
+    fn descriptor_local_branch_preserves_diff_ref() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        let root = tmp.path().to_string_lossy().to_string();
+        let mut tab =
+            er_engine::app::TabState::new_with_base_unloaded(root, "main".to_string()).expect("tab");
+        tab.local_branch_view = Some("feat/x".to_string());
+        tab.local_branch_diff_ref = Some("refs/er/branches/feat/x/head".to_string());
+        let d = descriptor_from_tab(&tab);
+        assert_eq!(d.kind, TabKind::LocalBranch);
+        assert_eq!(d.branch.as_deref(), Some("feat/x"));
+        assert_eq!(
+            d.local_branch_diff_ref.as_deref(),
+            Some("refs/er/branches/feat/x/head")
+        );
+    }
+
+    #[test]
+    fn save_app_tabs_clamps_active_index() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        let root = tmp.path().to_string_lossy().to_string();
+        let mut app = er_engine::app::App::new_unloaded(root).expect("app");
+        app.active_tab = 99;
+        let descriptors: Vec<_> = app.tabs.iter().map(descriptor_from_tab).collect();
+        let active = app.active_tab.min(app.tabs.len().saturating_sub(1));
+        assert_eq!(active, 0);
+        assert_eq!(descriptors.len(), 1);
     }
 }

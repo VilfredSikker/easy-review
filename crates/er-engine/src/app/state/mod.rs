@@ -1207,6 +1207,112 @@ impl TabState {
         Ok(tab)
     }
 
+    /// Remote PR tab shell without network I/O. Call `refresh_diff()` (or focus
+    /// via desktop `ensure_active_tab_loaded`) to load `gh pr diff`.
+    pub fn new_remote_stub(pr_ref: &crate::github::PrRef) -> Result<Self> {
+        let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
+        let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
+        let er_config = crate::config::ErConfig::default();
+        let repo_root_remote = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+
+        Ok(TabState {
+            mode: DiffMode::Branch,
+            base_branch: String::new(),
+            current_branch: String::new(),
+            er_root: ErRoot::RepoLocal(repo_root_remote.clone()),
+            repo_root: repo_root_remote,
+            files: Vec::new(),
+            selected_file: 0,
+            current_hunk: 0,
+            current_line: None,
+            selection_anchor: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+            split_focus: SplitSide::New,
+            h_scroll_old: 0,
+            h_scroll_new: 0,
+            layers: InlineLayers::default(),
+            panel: None,
+            panel_scroll: 0,
+            panel_focus: false,
+            file_tree_width: 32,
+            panel_width: 40,
+            focused_comment_id: None,
+            focused_finding_id: None,
+            user_expanded: HashSet::new(),
+            review_focus: ReviewFocus::Files,
+            review_cursor: 0,
+            search_query: String::new(),
+            filter_expr: String::new(),
+            filter_rules: Vec::new(),
+            filter_input: String::new(),
+            filter_history: Vec::new(),
+            reviewed: HashMap::new(),
+            current_per_file_hashes: HashMap::new(),
+            show_unreviewed_only: false,
+            sort_by_mtime: false,
+            mtime_cache: HashMap::new(),
+            search_query_lower: String::new(),
+            ai: AiState::default(),
+            diff_hash: String::new(),
+            branch_diff_hash: String::new(),
+            last_ai_check: None,
+            comment_textarea: TextArea::default(),
+            comment_file: String::new(),
+            comment_hunk: 0,
+            comment_reply_to: None,
+            comment_line_num: None,
+            comment_type: CommentType::GitHubComment,
+            comment_edit_id: None,
+            comment_finding_ref: None,
+            comment_author_override: None,
+            comment_side: None,
+            pr_data: None,
+            pr_head_ref: None,
+            pr_number: Some(pr_ref.number),
+            history: None,
+            watched_config: er_config.watched.clone(),
+            watched_files: Vec::new(),
+            selected_watched: None,
+            show_watched: false,
+            watched_not_ignored: Vec::new(),
+            commit_input: String::new(),
+            merge_active: false,
+            unresolved_count: 0,
+            compaction_config: CompactionConfig::default(),
+            hunk_offsets: None,
+            file_tree_cache: None,
+            mem_budget: MemoryBudget::default(),
+            lazy_mode: false,
+            file_headers: Vec::new(),
+            raw_diff: None,
+            symbol_refs: None,
+            pending_unmark_count: 0,
+            committed_unpushed: false,
+            context_overrides: HashMap::new(),
+            remote_repo: Some(repo_slug),
+            local_branch_view: None,
+            local_branch_checkout_root: None,
+            local_branch_diff_ref: None,
+            has_upstream: None,
+            command_rx: std::collections::HashMap::new(),
+            command_status: std::collections::HashMap::new(),
+            log_tx: agent_log_tx,
+            log_rx: agent_log_rx,
+            agent_log: std::collections::VecDeque::new(),
+            agent_log_auto_scroll: true,
+            browser_url: String::new(),
+            browser_layout: BrowserLayout::default(),
+            browser_split_ratio: 0.45,
+            browser_annotate_mode: false,
+            browser_show_tooltips: false,
+            needs_initial_refresh: true,
+            last_diff_head_oid: None,
+        })
+    }
+
     fn new_inner(
         repo_root: String,
         current_branch: String,
@@ -1698,8 +1804,7 @@ impl TabState {
     /// refreshing the diff. For all other tab types, behaves like `refresh_diff`.
     pub fn refetch_and_refresh_diff(&mut self) -> Result<()> {
         let t_total = Instant::now();
-        let is_local_pr =
-            self.pr_number.is_some() && self.pr_head_ref.is_some() && !self.is_remote();
+        let is_local_pr = self.pr_number.is_some() && !self.is_remote();
 
         if let (true, Some(pr_number)) = (is_local_pr, self.pr_number) {
             let t = Instant::now();
