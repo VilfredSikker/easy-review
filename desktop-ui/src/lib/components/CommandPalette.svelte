@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { app } from "$lib/stores/app.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { browser } from "$lib/stores/browser.svelte";
@@ -38,6 +37,18 @@
   }
 
   function buildItems(): CommandItem[] {
+    const mode = snapshot?.mode;
+    const reviewScope =
+      mode === "branch" || mode === "unstaged" || mode === "staged" ? mode : null;
+    const scopeDescription =
+      mode === "branch"
+        ? "All changes vs base"
+        : mode === "unstaged"
+          ? "Working tree changes"
+          : mode === "staged"
+            ? "Staged changes only"
+            : "Switch to All changes, Unstaged, or Staged";
+
     const items: CommandItem[] = [
       {
         id: "comment-current-hunk",
@@ -154,43 +165,30 @@
         kbd: "]",
         run: () => { close(); app.togglePanel("right"); },
       },
-      {
-        id: "run-ai-review-branch",
-        label: "Run AI review (branch)",
-        group: "Actions",
-        run: () => { close(); void app.cmd("run_ai_review", { scope: "branch" }); },
-      },
-      {
-        id: "run-ai-review-unstaged",
-        label: "Run AI review (unstaged)",
-        description: "Review working tree changes",
-        group: "Actions",
-        run: () => { close(); app.cmd("run_ai_review", { scope: "unstaged" }); },
-      },
-      {
-        id: "run-ai-review-staged",
-        label: "Run AI review (staged only)",
-        group: "Actions",
-        run: () => { close(); app.cmd("run_ai_review", { scope: "staged" }); },
-      },
-      {
-        id: "run-ai-validate-branch",
-        label: "Validate / re-anchor review (branch)",
-        group: "Actions",
-        run: () => { close(); app.cmd("run_ai_validate", { scope: "branch" }); },
-      },
-      {
-        id: "run-ai-validate-unstaged",
-        label: "Validate / re-anchor review (unstaged)",
-        group: "Actions",
-        run: () => { close(); app.cmd("run_ai_validate", { scope: "unstaged" }); },
-      },
-      {
-        id: "run-ai-validate-staged",
-        label: "Validate / re-anchor review (staged only)",
-        group: "Actions",
-        run: () => { close(); app.cmd("run_ai_validate", { scope: "staged" }); },
-      },
+      ...(reviewScope
+        ? [
+            {
+              id: "run-ai-review-current",
+              label: "Run AI review (current view)",
+              description: scopeDescription,
+              group: "Actions" as const,
+              run: () => {
+                close();
+                void app.cmd("run_ai_review", { scope: reviewScope });
+              },
+            },
+            {
+              id: "run-ai-validate-current",
+              label: "Validate / re-anchor review (current view)",
+              description: scopeDescription,
+              group: "Actions" as const,
+              run: () => {
+                close();
+                void app.cmd("run_ai_validate", { scope: reviewScope });
+              },
+            },
+          ]
+        : []),
       {
         id: "set-ai-model-opus",
         label: "Change AI model: Opus",
@@ -290,14 +288,6 @@
     open = true;
   }
 
-  function onGlobalKeydown(e: KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-      e.preventDefault();
-      open ? close() : openPalette();
-      return;
-    }
-  }
-
   function onModalKeydown(e: KeyboardEvent) {
     if (!open) return;
     if (e.key === "Escape") { e.preventDefault(); close(); }
@@ -306,7 +296,14 @@
     else if (e.key === "Enter") { e.preventDefault(); flat[selectedIdx]?.run(); }
   }
 
-  onMount(() => {
+  $effect(() => {
+    function onGlobalKeydown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        if (open) close();
+        else openPalette();
+      }
+    }
     window.addEventListener("keydown", onGlobalKeydown);
     return () => window.removeEventListener("keydown", onGlobalKeydown);
   });

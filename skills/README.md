@@ -50,6 +50,12 @@ done
 | Skill | What it does |
 |-------|-------------|
 | `er-review` | Full review: risk levels, findings, order, checklist, summary |
+| `er-review-security` | Expert: security findings → `.er/experts/security.json` |
+| `er-review-performance` | Expert: performance → `.er/experts/performance.json` |
+| `er-review-reliability` | Expert: reliability → `.er/experts/reliability.json` |
+| `er-review-testing` | Expert: testing → `.er/experts/testing.json` |
+| `er-review-api` | Expert: API/contracts → `.er/experts/api.json` |
+| `er-review-patterns` | Expert: pattern consistency → `.er/experts/patterns.json` |
 | `er-questions` | Process human feedback, respond to comments, add new findings |
 | `er-risk-sort` | Re-sort file review order by P0→P1→P2, cosmetic files last |
 | `er-summary` | Regenerate the markdown summary (P0/P1 focus, no cosmetic noise) |

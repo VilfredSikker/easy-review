@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick, type Snippet } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import { overlay } from "$lib/stores/overlay.svelte";
 
   interface Props {
@@ -18,88 +18,80 @@
     dataModal?: string;
   }
 
-  const {
-    open,
-    children,
-    ariaLabel,
-    onClose,
-    onKeydown,
-    closeOnEscape = true,
-    closeOnBackdrop = true,
-    focusSelector,
-    backdropClass = "fixed inset-0 z-[250] bg-black/50",
-    backdropStyle = "backdrop-filter: blur(2px);",
-    panelClass = "fixed left-1/2 -translate-x-1/2 top-[15vh] z-[251] bg-card border border-border rounded-lg shadow-2xl overflow-hidden outline-none",
-    panelStyle = "",
-    dataModal = "",
-  }: Props = $props();
+  const props: Props = $props();
 
   let panelEl = $state<HTMLDivElement | null>(null);
-  let modalId = 0;
 
   function dataModalValue(): string | true {
-    return dataModal || true;
+    return props.dataModal || true;
   }
 
   function focusModal() {
-    const target = focusSelector
-      ? panelEl?.querySelector<HTMLElement>(focusSelector)
+    const target = props.focusSelector
+      ? panelEl?.querySelector<HTMLElement>(props.focusSelector)
       : null;
     (target ?? panelEl)?.focus({ preventScroll: true });
   }
 
   function closeFromBackdrop(e: MouseEvent | PointerEvent) {
-    if (!closeOnBackdrop || e.target !== e.currentTarget) return;
+    if (!(props.closeOnBackdrop ?? true)) return;
+    if (e.target !== e.currentTarget) return;
     e.preventDefault();
     e.stopPropagation();
-    onClose();
+    props.onClose();
   }
 
-  function handleWindowKeydown(e: KeyboardEvent) {
-    if (!open || !overlay.isTopModal(modalId)) return;
-    if (closeOnEscape && e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      onClose();
-      return;
-    }
-    onKeydown?.(e);
-  }
-
+  // Track only `open`. Overlay acquire/register and keydown wiring run inside untrack
+  // so depth/stack updates cannot retrigger this effect (infinite loop + depth runaway).
   $effect(() => {
-    if (!open) return;
-    const releaseOverlay = overlay.acquire();
-    const registration = overlay.registerModal();
+    if (!props.open) return;
+
+    const releaseOverlay = untrack(() => overlay.acquire());
+    const registration = untrack(() =>
+      overlay.registerModal(() => props.onClose()),
+    );
+    const modalId = registration.id;
     const previousFocus = document.activeElement as HTMLElement | null;
-    modalId = registration.id;
     let cancelled = false;
+
+    function handleWindowKeydown(e: KeyboardEvent) {
+      if (!overlay.isTopModal(modalId)) return;
+      const closeOnEscape = props.closeOnEscape ?? true;
+      if (closeOnEscape && e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        props.onClose();
+        return;
+      }
+      props.onKeydown?.(e);
+    }
+
+    window.addEventListener("keydown", handleWindowKeydown, { capture: true });
     void tick().then(() => {
       if (!cancelled) focusModal();
     });
+
     return () => {
       cancelled = true;
-      registration.unregister();
-      releaseOverlay();
+      window.removeEventListener("keydown", handleWindowKeydown, { capture: true });
+      untrack(() => {
+        registration.unregister();
+        releaseOverlay();
+      });
       if (previousFocus?.isConnected) {
         queueMicrotask(() => previousFocus.focus({ preventScroll: true }));
       }
-      modalId = 0;
     };
-  });
-
-  onMount(() => {
-    window.addEventListener("keydown", handleWindowKeydown, { capture: true });
-    return () => window.removeEventListener("keydown", handleWindowKeydown, { capture: true });
   });
 </script>
 
-{#if open}
+{#if props.open}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     data-modal={dataModalValue()}
-    class={backdropClass}
-    style={backdropStyle}
+    class={props.backdropClass ?? "fixed inset-0 z-[250] bg-black/50"}
+    style={props.backdropStyle ?? "backdrop-filter: blur(2px);"}
     role="presentation"
     onpointerdown={closeFromBackdrop}
     onmousedown={closeFromBackdrop}
@@ -112,12 +104,13 @@
     tabindex="-1"
     role="dialog"
     aria-modal="true"
-    aria-label={ariaLabel}
-    class={panelClass}
-    style={panelStyle}
+    aria-label={props.ariaLabel}
+    class={props.panelClass ??
+      "fixed left-1/2 -translate-x-1/2 top-[15vh] z-[251] bg-card border border-border rounded-lg shadow-2xl overflow-hidden outline-none"}
+    style={props.panelStyle ?? ""}
     onpointerdown={(e) => e.stopPropagation()}
     onmousedown={(e) => e.stopPropagation()}
   >
-    {@render children()}
+    {@render props.children()}
   </div>
 {/if}

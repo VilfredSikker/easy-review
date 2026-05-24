@@ -13,14 +13,16 @@
   import { app } from "$lib/stores/app.svelte";
   import { registerAiPaletteOpener } from "$lib/stores/keyboard";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
-  import type { AiProviderInfo } from "$lib/types";
+  import { openAiReviewFilesModal } from "$lib/components/AiReviewFilesModal.svelte";
+  import type { AiProviderInfo, ExpertInfo } from "$lib/types";
 
-  type SubView = "main" | "providers" | "models";
+  type SubView = "main" | "providers" | "models" | "experts";
 
   let open = $state(false);
   let selectedIdx = $state(0);
   let subView = $state<SubView>("main");
   let providers = $state<AiProviderInfo[]>([]);
+  let experts = $state<ExpertInfo[]>([]);
   let selectedProvider = $state<AiProviderInfo | null>(null);
 
   interface AiAction {
@@ -28,6 +30,7 @@
     label: string;
     description: string;
     kbd?: string;
+    disabled?: boolean;
     run: () => void;
   }
 
@@ -48,6 +51,7 @@
     selectedIdx = 0;
     subView = "main";
     providers = [];
+    experts = [];
     selectedProvider = null;
     open = true;
   }
@@ -61,10 +65,32 @@
       subView = "providers";
       selectedIdx = providers.findIndex((p) => p.id === selectedProvider?.id);
       if (selectedIdx < 0) selectedIdx = 0;
-    } else if (subView === "providers") {
+    } else if (subView === "providers" || subView === "experts") {
       subView = "main";
       selectedIdx = 0;
     }
+  }
+
+  async function openExpertPicker() {
+    if (!reviewScope) return;
+    try {
+      experts = await invoke<ExpertInfo[]>("list_ai_experts");
+      if (experts.length === 0) {
+        app.showToast("error", "No expert reviewers configured");
+        return;
+      }
+      subView = "experts";
+      selectedIdx = 0;
+    } catch (e) {
+      app.showToast("error", `list_ai_experts: ${e}`);
+    }
+  }
+
+  function runExpert(expert: ExpertInfo) {
+    if (!reviewScope) return;
+    dismissAndRun(() =>
+      void app.cmd("run_ai_expert_review", { scope: reviewScope, expertId: expert.id }),
+    );
   }
 
   async function openProviderPicker() {
@@ -100,46 +126,66 @@
 
   const activeAiLabel = $derived(app.snapshot?.active_ai_label ?? "");
 
+  const mode = $derived(app.snapshot?.mode);
+  const reviewScope = $derived(
+    mode === "branch" || mode === "unstaged" || mode === "staged" ? mode : null,
+  );
+  const scopeDescription = $derived(
+    mode === "branch"
+      ? "All changes vs base"
+      : mode === "unstaged"
+        ? "Working tree changes"
+        : mode === "staged"
+          ? "Staged changes only"
+          : "Switch to All changes, Unstaged, or Staged",
+  );
+
   const runningCommands = $derived(
     (app.snapshot?.agent_commands ?? []).filter((c) => c.status === "running")
   );
 
   const actions = $derived<AiAction[]>([
     {
-      id: "review-branch",
-      label: "Run review: branch",
-      description: "Review all changes on this branch vs base",
-      run: () => dismissAndRun(() => void app.cmd("run_ai_review", { scope: "branch" })),
+      id: "review-current",
+      label: "Run review",
+      description: reviewScope
+        ? `Full review — risk, order, checklist, summary (${scopeDescription.toLowerCase()})`
+        : "Not available in this view",
+      run: () => {
+        if (!reviewScope) return;
+        dismissAndRun(() => void app.cmd("run_ai_review", { scope: reviewScope }));
+      },
     },
     {
-      id: "review-unstaged",
-      label: "Run review: unstaged",
-      description: "Review only unstaged (working tree) changes",
-      run: () => dismissAndRun(() => void app.cmd("run_ai_review", { scope: "unstaged" })),
+      id: "review-expert",
+      label: "Run specialized review",
+      description: reviewScope
+        ? "Focused expert lens (security, patterns, …) — findings only"
+        : "Not available in this view",
+      run: () => {
+        if (!reviewScope) return;
+        void openExpertPicker();
+      },
     },
     {
-      id: "review-staged",
-      label: "Run review: staged",
-      description: "Review only staged changes",
-      run: () => dismissAndRun(() => void app.cmd("run_ai_review", { scope: "staged" })),
+      id: "validate-current",
+      label: "Validate / re-anchor review",
+      description: reviewScope ? scopeDescription : "Not available in this view",
+      run: () => {
+        if (!reviewScope) return;
+        dismissAndRun(() => void app.cmd("run_ai_validate", { scope: reviewScope }));
+      },
     },
     {
-      id: "validate-branch",
-      label: "Validate / re-anchor review: branch",
-      description: "Re-check existing findings and re-anchor moved code",
-      run: () => dismissAndRun(() => void app.cmd("run_ai_validate", { scope: "branch" })),
-    },
-    {
-      id: "validate-unstaged",
-      label: "Validate / re-anchor review: unstaged",
-      description: "Validate findings against working tree changes",
-      run: () => dismissAndRun(() => void app.cmd("run_ai_validate", { scope: "unstaged" })),
-    },
-    {
-      id: "validate-staged",
-      label: "Validate / re-anchor review: staged",
-      description: "Validate findings against staged changes",
-      run: () => dismissAndRun(() => void app.cmd("run_ai_validate", { scope: "staged" })),
+      id: "review-select-files",
+      label: "Review select files",
+      description: reviewScope
+        ? `Choose files to review (${scopeDescription.toLowerCase()})`
+        : "Not available in this view",
+      run: () => {
+        if (!reviewScope) return;
+        dismissAndRun(() => openAiReviewFilesModal());
+      },
     },
     {
       id: "open-output",
@@ -163,7 +209,7 @@
     },
   ]);
 
-  const currentItems = $derived.by((): { label: string; description: string; onSelect: () => void }[] => {
+  const currentItems = $derived.by((): { label: string; description: string; disabled?: boolean; onSelect: () => void }[] => {
     if (subView === "providers") {
       return providers.map((p) => ({
         label: p.label,
@@ -180,12 +226,25 @@
         onSelect: () => selectModel(m.id),
       }));
     }
-    return actions.map((a) => ({ label: a.label, description: a.description, onSelect: a.run }));
+    if (subView === "experts") {
+      return experts.map((e) => ({
+        label: e.label,
+        description: e.description,
+        onSelect: () => runExpert(e),
+      }));
+    }
+    return actions.map((a) => ({
+      label: a.label,
+      description: a.description,
+      disabled: a.disabled ?? (!reviewScope && (a.id === "review-current" || a.id === "validate-current" || a.id === "review-select-files")),
+      onSelect: a.run,
+    }));
   });
 
   const subViewTitle = $derived(
     subView === "providers" ? "Select provider" :
     subView === "models" ? `${selectedProvider?.label ?? "Select model"}` :
+    subView === "experts" ? "Specialized review" :
     "AI Actions"
   );
 
@@ -213,7 +272,8 @@
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      currentItems[selectedIdx]?.onSelect();
+      const item = currentItems[selectedIdx];
+      if (item && !item.disabled) item.onSelect();
       return;
     }
   }
@@ -268,8 +328,8 @@
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
-            class="px-4 py-2.5 flex items-start gap-3 cursor-pointer transition-colors {i === selectedIdx ? 'bg-ink-700' : 'hover:bg-ink-750'}"
-            onclick={item.onSelect}
+            class="px-4 py-2.5 flex items-start gap-3 transition-colors {item.disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'} {i === selectedIdx ? 'bg-ink-700' : item.disabled ? '' : 'hover:bg-ink-750'}"
+            onclick={() => { if (!item.disabled) item.onSelect(); }}
             onmouseenter={() => { selectedIdx = i; }}
           >
             <div class="flex flex-col min-w-0">

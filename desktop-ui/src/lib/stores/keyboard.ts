@@ -4,7 +4,8 @@ import { diffSel } from "./diffSelection.svelte";
 import { terminal } from "./terminal.svelte";
 import { browser } from "./browser.svelte";
 import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
-import { closePrUrlModal, isPrUrlModalOpen, openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
+import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
+import { overlay } from "./overlay.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -215,11 +216,7 @@ export function initKeyboard(): () => void {
     // Always-fire shortcuts (work even when focus is in a text field):
     // Esc dismisses AI Hub, diff composer, then blurs focused inputs.
     if (e.key === "Escape") {
-      if (document.querySelector("[data-modal]")) {
-        return;
-      }
-      if (isPrUrlModalOpen()) {
-        closePrUrlModal();
+      if (overlay.dismissTopModal()) {
         e.preventDefault();
         return;
       }

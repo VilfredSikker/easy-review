@@ -3,10 +3,16 @@ import { browserSuspendForOverlay } from "./browserHost";
 
 let nextModalId = 1;
 
+type ModalEntry = {
+  id: number;
+  onClose: () => void;
+};
+
 /** Blocks the native review-browser webview while app modals are open (z-index cannot cover it). */
 class OverlayStore {
   #depth = $state(0);
-  #modalStack = $state<number[]>([]);
+  /** Plain array — stack changes must not retrigger unrelated Svelte effects. */
+  #modalStack: ModalEntry[] = [];
 
   get blocksNativeBrowser(): boolean {
     return this.#depth > 0;
@@ -14,26 +20,35 @@ class OverlayStore {
 
   /** Call the returned function when the overlay closes. */
   acquire(): () => void {
+    const first = this.#depth === 0;
     this.#depth += 1;
-    void prepareOverlayFocus();
+    if (first) void prepareOverlayFocus();
     return () => {
       this.#depth = Math.max(0, this.#depth - 1);
     };
   }
 
-  registerModal(): { id: number; unregister: () => void } {
+  registerModal(onClose: () => void): { id: number; unregister: () => void } {
     const id = nextModalId++;
-    this.#modalStack = [...this.#modalStack, id];
+    this.#modalStack.push({ id, onClose });
     return {
       id,
       unregister: () => {
-        this.#modalStack = this.#modalStack.filter((modalId) => modalId !== id);
+        this.#modalStack = this.#modalStack.filter((modal) => modal.id !== id);
       },
     };
   }
 
   isTopModal(id: number): boolean {
-    return this.#modalStack[this.#modalStack.length - 1] === id;
+    return this.#modalStack[this.#modalStack.length - 1]?.id === id;
+  }
+
+  /** Invoke the top modal's onClose. Returns true if a modal was dismissed. */
+  dismissTopModal(): boolean {
+    const top = this.#modalStack[this.#modalStack.length - 1];
+    if (!top) return false;
+    top.onClose();
+    return true;
   }
 }
 

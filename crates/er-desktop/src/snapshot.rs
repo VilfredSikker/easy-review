@@ -436,6 +436,8 @@ pub struct FlatFinding {
     pub line: Option<usize>,
     pub hunk_index: Option<usize>,
     pub severity: String, // "high" | "med" | "low"
+    /// Set when finding comes from a specialized expert (`category` = expert id).
+    pub expert_label: Option<String>,
     pub title: String,
     pub message_markdown: String,
     /// GitHub comment id this finding was promoted to (if any).
@@ -2139,6 +2141,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         line: f.line_start,
                         hunk_index: f.hunk_index,
                         severity: severity_str(&f.severity).to_string(),
+                        expert_label: er_engine::ai::expert_label_for_category(&f.category)
+                            .map(|s| s.to_string()),
                         title: f.title.clone(),
                         message_markdown: f.description.clone(),
                         promoted_to: promotions

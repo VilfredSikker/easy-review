@@ -72,12 +72,20 @@ export interface FilterSuggestionSnapshot {
   expr: string;
 }
 
+export interface ExpertInfo {
+  id: string;
+  label: string;
+  description: string;
+}
+
 export interface FlatFinding {
   id: string;
   file: string;
   line: number | null;
   hunk_index: number | null;
   severity: "high" | "med" | "low";
+  /** Specialized expert label when finding.category is an expert id. */
+  expert_label: string | null;
   title: string;
   message_markdown: string;
   /** Id of the GitHub comment this finding was promoted to. */

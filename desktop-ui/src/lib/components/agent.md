@@ -8,15 +8,26 @@ This directory contains Desktop feature components. Most components are thin vie
 - `BranchContextBar.svelte`: active branch chip, base label, copy branch/path actions (row below tab strip).
 - `LeftSidebar.svelte`: projects, tracked branches, PR buckets, refresh/dismiss/track actions.
 - `BranchCard.svelte`: active branch/PR summary, GitHub status, checks/reviews, watcher state, GitHub refresh.
-- `FileTree.svelte`: file index, reviewed toggles, continuous diff jump-to-file behavior.
+- `FileTree.svelte`: file index, reviewed toggles, continuous diff jump-to-file behavior; optional `pickerMode` with checkboxes for multi-select (used by `AiReviewFilesModal`).
 - `DiffView.svelte`: continuous diff rendering, split/unified modes, windowed file bodies, inline findings/threads, diff selection and composers.
 - `InlineThread.svelte`, `InlineFinding.svelte`, `DiffComposer.svelte`, `PromoteModal.svelte`: comments, questions, replies, finding promotion, and line selection composition.
-- `AiReviewCard.svelte`, `AiActionPalette.svelte`, `AgentOutputCard.svelte`, `BackgroundTasks.svelte`: AI review controls, active model actions, per-tab logs, app-level background tasks.
+- `AiReviewCard.svelte`, `AiActionPalette.svelte`, `AiReviewFilesModal.svelte`, `AgentOutputCard.svelte`, `BackgroundTasks.svelte`: AI review controls (current-view scope, file-picker subset review), active model actions, per-tab logs, app-level background tasks.
 - `BrowserView.svelte`, `AnnotationOverlay.svelte`, `UiAnnotationsCard.svelte`: embedded browser, DOM annotation capture, re-anchor, visibility, and annotation list actions.
 - `CommandPalette.svelte`: global command discovery and command execution.
 - `ExportModal.svelte`: Markdown export preview/copy/write flow.
 - `Terminal.svelte`: PTY drawer UI.
 - `Toast.svelte`, `BottomHints.svelte`, `EmptyState.svelte`: global shell feedback.
+
+## `$effect` conventions
+
+Follow [`ui/ModalShell.svelte`](ui/ModalShell.svelte) and [`stores/overlay.svelte.ts`](../stores/overlay.svelte.ts) when wiring overlays, listeners, or IPC:
+
+- Track **one primary dependency** per effect (e.g. `open`, `visible`). Avoid synchronously reading unstable prop callbacks (`onClose={close}` is fine; `onClose={() => …}` in the effect body is not).
+- Wrap writes to external stores / overlay depth in **`untrack()`** so the effect does not re-run on its own side effects.
+- Prefer **non-reactive** stacks/maps for modal IDs and dismiss callbacks; only `$state` what the UI must render from (e.g. overlay `#depth` for hiding the native webview).
+- Use **`onMount` / `onDestroy`** for one-time global listeners; use **`$effect`** when deps change (`visible`, `containerEl`, tab index).
+- Always **clean up**: `removeEventListener`, `clearInterval`, `clearTimeout`, abort flags on async work, `ResizeObserver.disconnect`.
+- Event handlers and `queueMicrotask` may read latest props at invoke time; do not read reactive state inside them during effect setup unless intentional.
 
 ## Component Rules
 

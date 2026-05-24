@@ -2026,9 +2026,164 @@ pub fn post_github_pr_comment(body: String, state: State<AppState>) -> Result<Ap
 
 // ── AI integration ───────────────────────────────────────────────────────────
 
+fn resolve_review_scope(scope: &str, tab: &er_engine::app::TabState) -> Result<String, String> {
+    let resolved = if scope == "current" {
+        match tab.mode {
+            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => tab.mode.git_mode().to_string(),
+            _ => {
+                return Err(format!(
+                    "AI review not available in {} view — switch to All changes, Unstaged, or Staged",
+                    tab.mode.git_mode()
+                ));
+            }
+        }
+    } else if matches!(scope, "branch" | "unstaged" | "staged") {
+        scope.to_string()
+    } else {
+        return Err(format!("Invalid review scope: {scope}"));
+    };
+    Ok(resolved)
+}
+
+#[tauri::command]
+pub fn list_diff_paths(state: State<AppState>) -> Result<Vec<String>, String> {
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let tab = app.tab();
+    match tab.mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {}
+        _ => {
+            return Err(format!(
+                "File list not available in {} view",
+                tab.mode.git_mode()
+            ));
+        }
+    }
+    Ok(tab
+        .active_diff_files()
+        .iter()
+        .map(|f| f.path.clone())
+        .collect())
+}
+
 #[tauri::command]
 pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let scope = resolve_review_scope(&scope, app.tab())?;
+
+    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+        let tab = app.tab();
+        let branch_label = tab
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| tab.current_branch.clone());
+        (
+            tab.repo_root.clone(),
+            branch_label,
+            tab.base_branch.clone(),
+            tab.er_dir(),
+            tab.pr_number,
+            tab.remote_repo.clone(),
+            tab.remote_repo.is_some(),
+        )
+    };
+
+    std::fs::create_dir_all(&er_dir)
+        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+
+    let raw = app
+        .tab()
+        .raw_diff_for_review(&scope)
+        .map_err(|e| e.to_string())?;
+    spawn_ai_review_with_diff(
+        &mut app,
+        &state,
+        &scope,
+        &er_dir,
+        repo_root,
+        branch_label,
+        base_branch,
+        pr_number,
+        remote_repo,
+        is_remote,
+        raw,
+    )?;
+    Ok(snap_from(&app, &state))
+}
+
+fn spawn_ai_review_with_diff(
+    app: &mut er_engine::app::App,
+    state: &AppState,
+    scope: &str,
+    er_dir: &str,
+    repo_root: String,
+    branch_label: String,
+    base_branch: String,
+    pr_number: Option<u64>,
+    remote_repo: Option<String>,
+    is_remote: bool,
+    raw: String,
+) -> Result<(), String> {
+    if raw.trim().is_empty() {
+        return Err("Nothing to review".to_string());
+    }
+    std::fs::write(std::path::Path::new(er_dir).join("diff-tmp"), &raw)
+        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
+
+    let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(scope, er_dir);
+
+    let target = er_engine::app::BackgroundTaskTarget {
+        repo_root,
+        er_dir: er_dir.to_string(),
+        branch_label,
+        base_branch,
+        scope: scope.to_string(),
+        pr_number,
+        remote_repo,
+        managed_local: !is_remote,
+    };
+
+    app.spawn_background_review(target, prompt, true)
+        .map_err(|e| e.to_string())?;
+
+    let debug_bg = er_engine::app::debug_bg_enabled();
+    if debug_bg {
+        eprintln!(
+            "[bg] run_ai_review post-spawn snapshots={}",
+            app.background_task_snapshots().len()
+        );
+    }
+
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if debug_bg {
+        let snap = snap_from(app, state);
+        eprintln!(
+            "[bg] run_ai_review snapshot.background_tasks.len()={}",
+            snap.background_tasks.len()
+        );
+    }
+    Ok(())
+}
+
+pub use er_engine::ai::ExpertInfo;
+
+#[tauri::command]
+pub fn list_ai_experts() -> Vec<ExpertInfo> {
+    er_engine::ai::list_expert_info()
+}
+
+#[tauri::command]
+pub fn run_ai_expert_review(
+    scope: String,
+    expert_id: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    if er_engine::ai::expert_by_id(&expert_id).is_none() {
+        return Err(format!("Unknown expert: {expert_id}"));
+    }
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let scope = resolve_review_scope(&scope, app.tab())?;
 
     let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
         let tab = app.tab();
@@ -2060,46 +2215,107 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
     std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
         .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
 
-    let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(&scope, &er_dir);
+    let prompt =
+        er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(&scope, &er_dir, &expert_id);
 
     let target = er_engine::app::BackgroundTaskTarget {
         repo_root,
-        er_dir,
+        er_dir: er_dir.clone(),
         branch_label,
         base_branch,
-        scope: scope.clone(),
+        scope: scope.to_string(),
         pr_number,
         remote_repo,
         managed_local: !is_remote,
     };
 
-    app.spawn_background_review(target, prompt, true)
+    app.spawn_background_expert_review(&expert_id, target, prompt, true)
         .map_err(|e| e.to_string())?;
-
-    let debug_bg = er_engine::app::debug_bg_enabled();
-    if debug_bg {
-        eprintln!(
-            "[bg] run_ai_review post-spawn snapshots={}",
-            app.background_task_snapshots().len()
-        );
-    }
 
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let snap = snap_from(&app, &state);
-    if debug_bg {
-        eprintln!(
-            "[bg] run_ai_review snapshot.background_tasks.len()={}",
-            snap.background_tasks.len()
-        );
+    Ok(snap_from(&app, &state))
+}
+
+#[tauri::command]
+pub fn run_ai_review_files(
+    scope: String,
+    paths: Vec<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if paths.is_empty() {
+        return Err("No files selected".to_string());
     }
-    Ok(snap)
+
+    let scope = resolve_review_scope(&scope, app.tab())?;
+
+    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+        let tab = app.tab();
+        let branch_label = tab
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| tab.current_branch.clone());
+        (
+            tab.repo_root.clone(),
+            branch_label,
+            tab.base_branch.clone(),
+            tab.er_dir(),
+            tab.pr_number,
+            tab.remote_repo.clone(),
+            tab.remote_repo.is_some(),
+        )
+    };
+
+    std::fs::create_dir_all(&er_dir)
+        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+
+    let raw = app
+        .tab()
+        .raw_diff_for_review(&scope)
+        .map_err(|e| e.to_string())?;
+    let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
+    if filtered.trim().is_empty() {
+        return Err("No diff for selected files".to_string());
+    }
+
+    let mut sorted_paths = paths;
+    sorted_paths.sort();
+    let manifest = sorted_paths.join("\n");
+    std::fs::write(
+        std::path::Path::new(&er_dir).join("review-files.txt"),
+        format!("{manifest}\n"),
+    )
+    .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+
+    spawn_ai_review_with_diff(
+        &mut app,
+        &state,
+        &scope,
+        &er_dir,
+        repo_root,
+        branch_label,
+        base_branch,
+        pr_number,
+        remote_repo,
+        is_remote,
+        filtered,
+    )?;
+
+    let n = sorted_paths.len();
+    app.notify(&format!(
+        "Review started for {n} selected file{} (see review-files.txt in review dir)",
+        if n == 1 { "" } else { "s" }
+    ));
+
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
 pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let scope = resolve_review_scope(&scope, app.tab())?;
 
     if app.tab().is_remote() {
         return Err("Validate review is local-only. Check out the PR locally first.".to_string());

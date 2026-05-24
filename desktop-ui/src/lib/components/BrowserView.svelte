@@ -122,6 +122,7 @@
     }
     if (prefillDone) return;
     const url = browser.url.trim();
+    let cancelled = false;
     void (async () => {
       if (url && url !== BLANK_BROWSER_URL) {
         await openNativeBrowser(url);
@@ -129,8 +130,11 @@
         urlInput = "";
         await browserHide();
       }
-      prefillDone = true;
+      if (!cancelled) prefillDone = true;
     })();
+    return () => {
+      cancelled = true;
+    };
   });
 
   let loadingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -243,6 +247,18 @@
         index: i + 1,
       }));
     void sendToPage({ __er_sync_pins: true, items });
+  }
+
+  const SYNC_PINS_DEBOUNCE_MS = 120;
+  let syncPinsTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Debounced pin sync for poll/resize-driven updates; imperative syncPinsToPage() stays immediate. */
+  function scheduleSyncPins() {
+    if (syncPinsTimer !== null) clearTimeout(syncPinsTimer);
+    syncPinsTimer = setTimeout(() => {
+      syncPinsTimer = null;
+      syncPinsToPage();
+    }, SYNC_PINS_DEBOUNCE_MS);
   }
 
   function showSavedPopover(
@@ -641,6 +657,7 @@
     unlistenBrowser?.();
     resizeObserver?.disconnect();
     if (readinessTimer !== null) clearTimeout(readinessTimer);
+    if (syncPinsTimer !== null) clearTimeout(syncPinsTimer);
     void sendToPage({ __er_clear_pins: true });
     void browserHide();
   });
@@ -720,23 +737,27 @@
     syncAnnotateModeToPage();
   });
 
+  // Single debounced path for poll/resize-driven pin sync (avoids triple IPC per snapshot).
   $effect(() => {
-    void app.snapshot?.ui_annotations?.length;
-    if (pageHandlesAnnotate) {
-      syncPinsToPage();
-    } else {
-      queryAllAnnotationRects();
-    }
-  });
-
-  $effect(() => {
+    if (!showBrowserPane) return;
+    void activeTabIdx;
     void pageHandlesAnnotate;
     void browser.url;
     void browser.showAnnotationTooltips;
-    void app.snapshot?.ui_annotations;
+    void app.snapshot?.ui_annotations?.length;
     void paneWidth;
     void paneHeight;
-    syncPinsToPage();
+    if (pageHandlesAnnotate) {
+      scheduleSyncPins();
+    } else {
+      queryAllAnnotationRects();
+    }
+    return () => {
+      if (syncPinsTimer !== null) {
+        clearTimeout(syncPinsTimer);
+        syncPinsTimer = null;
+      }
+    };
   });
 
   $effect(() => {
@@ -748,10 +769,7 @@
   $effect(() => {
     void activeTabIdx;
     void browser.url;
-    if (showBrowserPane) {
-      syncPinsToPage();
-      void syncAnnotateModeToPage();
-    }
+    if (showBrowserPane) void syncAnnotateModeToPage();
   });
 </script>
 

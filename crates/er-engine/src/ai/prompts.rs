@@ -3,6 +3,9 @@
 /// These replicate the logic from the external Claude Code skills
 /// (`/er-review`, `/er-questions`) so the TUI can invoke them directly
 /// via the configured agent command without requiring skill files.
+///
+/// Shared rules live in `skills/REVIEW_RULES.md` and `review_rules_preamble()`.
+use super::experts::{expert_by_id, FindingCaps};
 /// Returns true if the value contains only characters safe for shell interpolation.
 /// Allows alphanumeric, dots, underscores, hyphens, colons, slashes, and @.
 #[cfg(test)]
@@ -48,66 +51,94 @@ fn annotate_diff_command(input: &str, output: &str) -> String {
     )
 }
 
-/// Build the review prompt with repo context substituted.
+/// Canonical review rules block (aligned with `skills/REVIEW_RULES.md`).
 ///
-/// The prompt instructs the agent to:
-/// 1. Read the diff via `git diff`
-/// 2. Analyse all files
-/// 3. Write `.er/review.json`, `.er/order.json`, `.er/checklist.json`, `.er/summary.md`
-pub fn build_review_prompt(base_branch: &str, scope: &str) -> String {
-    let safe_base_branch = sanitize_for_shell(base_branch);
-    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
-    let base_branch = base_branch.replace('{', "{{").replace('}', "}}");
-    let diff_args = match scope {
-        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
-        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
-        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+/// When `prepared_diff` is false, pass `git_diff_capture` as the full step-1 shell command
+/// (e.g. `git diff main --unified=20 ... > .er/diff-tmp && shasum ...`).
+pub fn review_rules_preamble(
+    output_dir: &str,
+    prepared_diff: bool,
+    caps: FindingCaps,
+    git_diff_capture: Option<&str>,
+) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let diff_tmp = format!("{output_dir}/diff-tmp");
+    let diff_annotated = format!("{output_dir}/diff-annotated");
+    let annotate = annotate_diff_command(&diff_tmp, &diff_annotated);
+    let hash_step = if prepared_diff {
+        format!(
+            "1. Run: `(sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`\n   - Save the SHA-256 hash as `diff_hash` (do **not** run `git diff` — the diff is already prepared)"
+        )
+    } else {
+        let capture = git_diff_capture.unwrap_or(
+            "git diff <base> --unified=20 --no-color --no-ext-diff > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)",
+        );
+        format!(
+            "1. Run: `{capture}`\n   - Use a **two-dot** diff (`git diff <base>`), never three-dot (`main...HEAD`)\n   - Always `--unified=20 --no-color --no-ext-diff`\n   - Save the SHA-256 hash as `diff_hash`"
+        )
     };
-    let annotate = annotate_diff_command(".er/diff-tmp", ".er/diff-annotated");
-
+    let categories = if caps.is_expert {
+        "Set `category` to the expert id for every finding — only report issues in that lens."
+    } else {
+        "Categories: `security`, `logic`, `performance`, `correctness`, `error-handling`, `testing`, `api` — **no `style`**."
+    };
+    let speed = if caps.is_expert {
+        "Target: complete in under 2 minutes."
+    } else {
+        "Target: complete in under 3 minutes."
+    };
     format!(
-        r#"You are a code reviewer. Perform a thorough review of the current git diff and write results to the `.er/` directory.
+        r#"## Review rules (required)
 
-## Instructions
+### Diff and hash
+{hash_step}
+2. Annotate: `{annotate}`
+3. Read `{safe_output_dir}/diff-annotated` — each line has `[h<hunk> L<file_line>]` tags (20 lines of context per hunk).
 
-1. Run: `git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)`
-   - Save the SHA-256 hash as `diff_hash`
-2. Annotate the diff with file line numbers: `{annotate}`
-3. Read `.er/diff-annotated` to get the diff with `[h<hunk> L<file_line>]` tags on every line. The diff includes 20 lines of context around each change so you can see surrounding functions, imports, and helpers.
-4. Analyse every changed file. **Findings target only `+` or `-` lines** — the wider context is for comprehension. For each file determine:
+### Annotate and anchor
+- Findings **only** on `+` or `-` lines in the annotated diff
+- Copy `hunk_index` from `[h<N>]` and `line_start` from `[h<N> L<M>]` — **never** count or infer line numbers
+- Set `outside_diff: false`; drop findings you cannot anchor to a tagged line
+
+### Severity (P0 / P1 / P2)
+- P0 → `high` — must fix (security, data loss, broken contract)
+- P1 → `medium` — should fix (logic gap, missing edge case, shallow test)
+- P2 → `low` — nice to fix
+- `info` — observation only
+
+**Do not flag:** naming, formatting, style, import order, file moves without logic change, comment nits.
+**Gate:** "Does this affect correctness, security, or reliability?" — if no, skip.
+
+### Confidence and verification
+- `confidence`: `confirmed` | `informational` | `tentative` (with `verification_plan`)
+- `evidence`: cite files/ranges read; budget ~5 reads per finding, ~30 total
+
+### Finding caps
+- Max {per_file} findings per file, max {total} total
+- {categories}
+
+### Speed
+{speed}
+Short-circuit obvious issues. Read source files to verify, not to expand scope."#,
+        per_file = caps.per_file,
+        total = caps.total,
+    )
+}
+
+fn general_review_instructions_read_analyze() -> &'static str {
+    r#"4. Analyse every changed file. **Findings target only `+` or `-` lines** — context is for comprehension. Per file:
    - `risk`: "high" | "medium" | "low" | "info"
    - `risk_reason`: why this risk level
    - `summary`: one-line description of changes
-   - `findings`: array of issues found (max 3-4 per file)
-5. **Verify findings agentically.** When a finding's significance depends on something not visible in the diff, read or grep:
-   - "Does this new function follow the established pattern?" → read 1–2 sibling files in the same directory
-   - "Will this break callers?" → grep for the symbol; read the top 2–3 hits
-   - "Is this covered by tests?" → look for `tests/test_<name>.py` (or analogue)
-   - Append each read/grep finding as an `EvidenceItem` on the relevant `Finding`
-   - Budget: ~5 file reads per finding, ~30 reads total. If you run out, mark the finding `tentative` with a `verification_plan` describing what remains.
-6. Set `confidence` on every finding:
-   - `confirmed` — evidence supports the finding; reviewer should act
-   - `informational` — real but pre-existing or low-impact relative to this PR
-   - `tentative` — couldn't verify within budget; `verification_plan` is required
-7. Write these four files:
+   - `findings`: array of issues (within caps)
+5. **Verify findings agentically** when significance depends on code outside the diff — read/grep sibling files, callers, tests; append `evidence` entries; mark `tentative` if budget runs out.
+6. Set `confidence` on every finding: `confirmed`, `informational`, or `tentative` (with `verification_plan`)."#
+}
 
-### `.er/review.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256 from step 1>",
-  "diff_scope": "{scope}",
-  "created_at": "<ISO 8601>",
-  "base_branch": "{base_branch}",
-  "head_branch": "<current branch>",
-  "file_hashes": {{}},
-  "files": {{
-    "path/to/file.rs": {{
-      "risk": "medium",
-      "risk_reason": "Modifies error handling logic",
-      "summary": "Adds retry mechanism for network calls",
-      "findings": [
-        {{
+fn general_review_json_example() -> &'static str {
+    r#"        {{
           "id": "f-1",
           "severity": "medium",
           "category": "correctness",
@@ -132,16 +163,48 @@ pub fn build_review_prompt(base_branch: &str, scope: &str) -> String {
           "resolved": false,
           "resolved_note": "",
           "resolved_at": ""
-        }}
+        }}"#
+}
+
+fn general_review_outputs_section(
+    output_dir: &str,
+    scope: &str,
+    base_branch: &str,
+    head_branch_hint: &str,
+) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let example = general_review_json_example();
+    format!(
+        r#"7. Write these four files:
+
+### `{safe_output_dir}/review.json`
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256 from step 1>",
+  "diff_scope": "{scope}",
+  "created_at": "<ISO 8601>",
+  "base_branch": "{base_branch}",
+  "head_branch": "{head_branch_hint}",
+  "file_hashes": {{}},
+  "files": {{
+    "path/to/file.rs": {{
+      "risk": "medium",
+      "risk_reason": "Modifies error handling logic",
+      "summary": "Adds retry mechanism for network calls",
+      "findings": [
+{example}
       ]
     }}
   }}
 }}
 ```
 
-`resolved` / `resolved_note` / `resolved_at` are populated by the `validate` pass — leave them at defaults during review.
+`resolved` / `resolved_note` / `resolved_at` are populated by the validate pass — leave defaults during review.
 
-### `.er/order.json`
+### `{safe_output_dir}/order.json`
 ```json
 {{
   "version": 1,
@@ -155,7 +218,7 @@ pub fn build_review_prompt(base_branch: &str, scope: &str) -> String {
 }}
 ```
 
-### `.er/checklist.json`
+### `{safe_output_dir}/checklist.json`
 ```json
 {{
   "version": 1,
@@ -173,30 +236,111 @@ pub fn build_review_prompt(base_branch: &str, scope: &str) -> String {
 }}
 ```
 
-### `.er/summary.md`
+### `{safe_output_dir}/summary.md`
 A 3-5 paragraph markdown summary of the overall changes.
 
-## Guidelines
+- Be specific and actionable; titles under 60 characters.
+- Risk: high = likely bug/security, medium = missing edge case, low = minor quality, info = observation only.
+- Checklist items are for the human reviewer to verify manually."#
+    )
+}
 
-- Be specific. "Check error handling" is bad. "Handle the None case in parse_token() at line 42" is good.
-- `hunk_index`: copy the number from the `[h<N>]` tag in `.er/diff-annotated`. It is 0-based per file (first `@@` in a file = 0, second = 1). Never compute it yourself.
-- `line_start`: copy the number from the `[h<N> L<M>]` tag on the relevant `+` or context line in `.er/diff-annotated`. **Never infer, count, or compute line numbers** — copy the tag verbatim from the line you are pointing at. If the line you want to reference has no `L<M>` tag (e.g. it is a deleted line tagged `L-<M>`), pick the nearest `+` or context line instead.
-- **Findings MUST anchor to a `+` or `-` line.** The 20 lines of surrounding context exist so you can understand the change — not so you can find issues in unchanged code. Set `outside_diff: false` for review-pass findings; if an issue lives entirely in unchanged code, drop it (the `validate` pass can re-add it as informational later).
-- Findings MUST point to a line tagged `[h<N> L<M>]` in `.er/diff-annotated`. If you cannot anchor a finding to any tagged line, drop it rather than guessing.
-- `confidence` and `evidence`: see step 6. Use `confirmed` when you read enough to verify it, `informational` when the issue is real but minor or pre-existing, `tentative` when you ran out of budget. `evidence` should cite the actual files/ranges you read.
-- `verification_plan`: required for `tentative`; one line saying what would resolve it (e.g. "grep `parse_token` and check whether any callers pass user input directly").
-- Risk levels: high = likely bug or security issue, medium = code smell or missing edge case, low = style, info = observation.
-- Keep finding titles under 60 characters.
-- The `suggestion` field should be actionable.
-- Max 3-4 findings per file, max 15 total.
-- The checklist should be things the reviewer should manually verify.
-- Categories: security, logic, performance, correctness, error-handling, style, testing.
-- Ensure `.er/` directory exists before writing: `mkdir -p .er`
+fn expert_lens_instructions(expert_id: &str) -> String {
+    let def = expert_by_id(expert_id).unwrap_or_else(|| {
+        panic!("unknown expert_id: {expert_id}");
+    });
+    let mut lens = format!(
+        r#"## Expert lens: {label}
 
-## Speed
+Focus only on **{id}** issues in this diff. Ignore problems outside this lens (other experts or general review cover them).
 
-Target: complete in under 3 minutes. Agentic verification adds time vs. the old diff-only flow; that's the trade for higher-confidence findings. Short-circuit when findings are obvious — you don't need to grep for a typo or an unambiguous null deref.
-Reading source files IS allowed and expected (within the read budget above). Use it to verify, not to expand scope."#
+{description}
+
+Write **only** findings — do not write order.json, checklist.json, or summary.md."#,
+        label = def.label,
+        id = def.id,
+        description = def.description,
+    );
+    if expert_id == "patterns" {
+        lens.push_str(
+            r#"
+
+**Patterns workflow:**
+1. Identify symbols/patterns introduced or changed in the diff
+2. `grep` / read 2–5 similar usages elsewhere (same directory or module first)
+3. Flag only deviations that affect correctness or maintainability (no naming/style nits)
+4. Cite established pattern locations in `evidence` (file + line range + note)"#,
+        );
+    }
+    lens
+}
+
+fn expert_review_output_section(output_dir: &str, expert_id: &str) -> String {
+    let def = expert_by_id(expert_id).expect("unknown expert");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let example = general_review_json_example();
+    format!(
+        r#"7. Write **only** `{safe_output_dir}/experts/{expert_id}.json`:
+
+```json
+{{
+  "version": 1,
+  "expert_id": "{expert_id}",
+  "diff_hash": "<sha256 from step 1>",
+  "diff_scope": "<scope>",
+  "created_at": "<ISO 8601>",
+  "files": {{
+    "path/to/file.rs": {{
+      "findings": [
+{example}
+      ]
+    }}
+  }}
+}}
+```
+
+- Finding `id` prefix: `{prefix}-` (e.g. `{prefix}-1`)
+- Finding `category`: `{expert_id}`
+- `mkdir -p {safe_output_dir}/experts` before writing"#,
+        prefix = def.id_prefix,
+    )
+}
+
+/// Build the review prompt with repo context substituted.
+///
+/// The prompt instructs the agent to:
+/// 1. Read the diff via `git diff`
+/// 2. Analyse all files
+/// 3. Write `.er/review.json`, `.er/order.json`, `.er/checklist.json`, `.er/summary.md`
+pub fn build_review_prompt(base_branch: &str, scope: &str) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch);
+    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
+    let base_branch = base_branch.replace('{', "{{").replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+    };
+    let capture = format!(
+        "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
+    );
+    let preamble =
+        review_rules_preamble(".er", false, FindingCaps::general(), Some(&capture));
+    let outputs = general_review_outputs_section(".er", scope, &base_branch, "<current branch>");
+
+    format!(
+        r#"You are a code reviewer. Perform a thorough review of the current git diff and write results to `.er/`.
+
+Ensure `.er/` exists: `mkdir -p .er`
+
+{preamble}
+
+{analyze}
+
+{outputs}"#,
+        analyze = general_review_instructions_read_analyze(),
     )
 }
 
@@ -222,141 +366,26 @@ pub fn build_review_prompt_local_managed(
         "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
         _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
     };
-    let annotate = annotate_diff_command(
-        &format!("{output_dir}/diff-tmp"),
-        &format!("{output_dir}/diff-annotated"),
+    let capture = format!(
+        "mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
+    );
+    let preamble =
+        review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
+    let outputs = general_review_outputs_section(
+        output_dir,
+        scope,
+        &base_branch_escaped,
+        "<current branch>",
     );
     format!(
         r#"You are a code reviewer. Perform a thorough review of the current git diff and write results to `{safe_output_dir}/`.
 
-## Instructions
+{preamble}
 
-1. Run: `mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
-   - Save the SHA-256 hash as `diff_hash`
-2. Annotate the diff with file line numbers: `{annotate}`
-3. Read `{safe_output_dir}/diff-annotated` to get the diff with `[h<hunk> L<file_line>]` tags on every line. The diff includes 20 lines of context around each change so you can see surrounding functions, imports, and helpers.
-4. Analyse every changed file. **Findings target only `+` or `-` lines** — the wider context is for comprehension. For each file determine:
-   - `risk`: "high" | "medium" | "low" | "info"
-   - `risk_reason`: why this risk level
-   - `summary`: one-line description of changes
-   - `findings`: array of issues found (max 3-4 per file)
-5. **Verify findings agentically.** When a finding's significance depends on something not visible in the diff, read or grep:
-   - "Does this new function follow the established pattern?" → read 1–2 sibling files in the same directory
-   - "Will this break callers?" → grep for the symbol; read the top 2–3 hits
-   - "Is this covered by tests?" → look for `tests/test_<name>.py` (or analogue)
-   - Append each read/grep finding as an `EvidenceItem` on the relevant `Finding`
-   - Budget: ~5 file reads per finding, ~30 reads total. If you run out, mark the finding `tentative` with a `verification_plan` describing what remains.
-6. Set `confidence` on every finding:
-   - `confirmed` — evidence supports the finding; reviewer should act
-   - `informational` — real but pre-existing or low-impact relative to this PR
-   - `tentative` — couldn't verify within budget; `verification_plan` is required
-7. Write these four files:
+{analyze}
 
-### `{safe_output_dir}/review.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256 from step 1>",
-  "diff_scope": "{scope}",
-  "created_at": "<ISO 8601>",
-  "base_branch": "{base_branch_escaped}",
-  "head_branch": "<current branch>",
-  "file_hashes": {{}},
-  "files": {{
-    "path/to/file.rs": {{
-      "risk": "medium",
-      "risk_reason": "Modifies error handling logic",
-      "summary": "Adds retry mechanism for network calls",
-      "findings": [
-        {{
-          "id": "f-1",
-          "severity": "medium",
-          "category": "correctness",
-          "title": "Short title (max 60 chars)",
-          "description": "What the issue is and why it matters",
-          "hunk_index": 0,
-          "line_start": 42,
-          "suggestion": "What to do about it",
-          "related_files": [],
-          "outside_diff": false,
-          "confidence": "confirmed",
-          "verification_plan": "",
-          "evidence": [
-            {{
-              "file": "src/api.py",
-              "line_start": 110,
-              "line_end": 118,
-              "note": "All three callers pass user-controlled input directly."
-            }}
-          ],
-          "responses": [],
-          "resolved": false,
-          "resolved_note": "",
-          "resolved_at": ""
-        }}
-      ]
-    }}
-  }}
-}}
-```
-
-`resolved` / `resolved_note` / `resolved_at` are populated by the `validate` pass — leave them at defaults during review.
-
-### `{safe_output_dir}/order.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256>",
-  "order": [
-    {{"path": "src/file.rs", "reason": "Core change", "group": "main"}}
-  ],
-  "groups": {{
-    "main": {{"label": "Main Changes", "color": "red"}}
-  }}
-}}
-```
-
-### `{safe_output_dir}/checklist.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256>",
-  "items": [
-    {{
-      "id": "c-1",
-      "text": "Verify error handling covers all edge cases",
-      "category": "correctness",
-      "checked": false,
-      "related_findings": ["f-1"],
-      "related_files": ["src/file.rs"]
-    }}
-  ]
-}}
-```
-
-### `{safe_output_dir}/summary.md`
-A 3-5 paragraph markdown summary of the overall changes.
-
-## Guidelines
-
-- Be specific. "Check error handling" is bad. "Handle the None case in parse_token() at line 42" is good.
-- `hunk_index`: copy the number from the `[h<N>]` tag in `{safe_output_dir}/diff-annotated`. It is 0-based per file (first `@@` in a file = 0, second = 1). Never compute it yourself.
-- `line_start`: copy the number from the `[h<N> L<M>]` tag on the relevant `+` or context line in `{safe_output_dir}/diff-annotated`. **Never infer, count, or compute line numbers** — copy the tag verbatim from the line you are pointing at. If the line you want to reference has no `L<M>` tag (e.g. it is a deleted line tagged `L-<M>`), pick the nearest `+` or context line instead.
-- **Findings MUST anchor to a `+` or `-` line.** The 20 lines of surrounding context exist so you can understand the change — not so you can find issues in unchanged code. Set `outside_diff: false` for review-pass findings; if an issue lives entirely in unchanged code, drop it (the `validate` pass can re-add it as informational later).
-- Findings MUST point to a line tagged `[h<N> L<M>]` in `{safe_output_dir}/diff-annotated`. If you cannot anchor a finding to any tagged line, drop it rather than guessing.
-- `confidence` and `evidence`: see step 6. Use `confirmed` when you read enough to verify it, `informational` when the issue is real but minor or pre-existing, `tentative` when you ran out of budget. `evidence` should cite the actual files/ranges you read.
-- `verification_plan`: required for `tentative`; one line saying what would resolve it (e.g. "grep `parse_token` and check whether any callers pass user input directly").
-- Risk levels: high = likely bug or security issue, medium = code smell or missing edge case, low = style, info = observation.
-- Keep finding titles under 60 characters.
-- The `suggestion` field should be actionable.
-- Max 3-4 findings per file, max 15 total.
-- The checklist should be things the reviewer should manually verify.
-- Categories: security, logic, performance, correctness, error-handling, style, testing.
-
-## Speed
-
-Target: complete in under 3 minutes. Agentic verification adds time vs. the old diff-only flow; that's the trade for higher-confidence findings. Short-circuit when findings are obvious — you don't need to grep for a typo or an unambiguous null deref.
-Reading source files IS allowed and expected (within the read budget above). Use it to verify, not to expand scope."#
+{outputs}"#,
+        analyze = general_review_instructions_read_analyze(),
     )
 }
 
@@ -368,141 +397,82 @@ pub fn build_review_prompt_prepared_diff(scope: &str, output_dir: &str) -> Strin
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
-    let annotate = annotate_diff_command(
-        &format!("{output_dir}/diff-tmp"),
-        &format!("{output_dir}/diff-annotated"),
+    let preamble = review_rules_preamble(output_dir, true, FindingCaps::general(), None);
+    let outputs = general_review_outputs_section(
+        output_dir,
+        scope,
+        "<base branch if known>",
+        "<head branch if known>",
     );
     format!(
         r#"You are a code reviewer. Perform a thorough review of the prepared diff and write results to `{safe_output_dir}/`.
 
-## Instructions
+{preamble}
 
-1. Run: `(sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
-   - Save the SHA-256 hash as `diff_hash`
-2. Annotate the diff with file line numbers: `{annotate}`
-3. Read `{safe_output_dir}/diff-annotated` to get the diff with `[h<hunk> L<file_line>]` tags on every line. The diff includes 20 lines of context around each change so you can see surrounding functions, imports, and helpers.
-4. Analyse every changed file. **Findings target only `+` or `-` lines** — the wider context is for comprehension. For each file determine:
-   - `risk`: "high" | "medium" | "low" | "info"
-   - `risk_reason`: why this risk level
-   - `summary`: one-line description of changes
-   - `findings`: array of issues found (max 3-4 per file)
-5. **Verify findings agentically.** When a finding's significance depends on something not visible in the diff, read or grep:
-   - "Does this new function follow the established pattern?" → read 1–2 sibling files in the same directory
-   - "Will this break callers?" → grep for the symbol; read the top 2–3 hits
-   - "Is this covered by tests?" → look for `tests/test_<name>.py` (or analogue)
-   - Append each read/grep finding as an `EvidenceItem` on the relevant `Finding`
-   - Budget: ~5 file reads per finding, ~30 reads total. If you run out, mark the finding `tentative` with a `verification_plan` describing what remains.
-6. Set `confidence` on every finding:
-   - `confirmed` — evidence supports the finding; reviewer should act
-   - `informational` — real but pre-existing or low-impact relative to this PR
-   - `tentative` — couldn't verify within budget; `verification_plan` is required
-7. Write these four files:
+{analyze}
 
-### `{safe_output_dir}/review.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256 from step 1>",
-  "diff_scope": "{scope}",
-  "created_at": "<ISO 8601>",
-  "base_branch": "<base branch if known>",
-  "head_branch": "<head branch if known>",
-  "file_hashes": {{}},
-  "files": {{
-    "path/to/file.rs": {{
-      "risk": "medium",
-      "risk_reason": "Modifies error handling logic",
-      "summary": "Adds retry mechanism for network calls",
-      "findings": [
-        {{
-          "id": "f-1",
-          "severity": "medium",
-          "category": "correctness",
-          "title": "Short title (max 60 chars)",
-          "description": "What the issue is and why it matters",
-          "hunk_index": 0,
-          "line_start": 42,
-          "suggestion": "What to do about it",
-          "related_files": [],
-          "outside_diff": false,
-          "confidence": "confirmed",
-          "verification_plan": "",
-          "evidence": [
-            {{
-              "file": "src/api.py",
-              "line_start": 110,
-              "line_end": 118,
-              "note": "All three callers pass user-controlled input directly."
-            }}
-          ],
-          "responses": [],
-          "resolved": false,
-          "resolved_note": "",
-          "resolved_at": ""
-        }}
-      ]
-    }}
-  }}
-}}
-```
+{outputs}"#,
+        analyze = general_review_instructions_read_analyze(),
+    )
+}
 
-`resolved` / `resolved_note` / `resolved_at` are populated by the `validate` pass — leave them at defaults during review.
+/// Specialized expert review (TUI / skill path — runs `git diff`).
+pub fn build_expert_review_prompt(base_branch: &str, scope: &str, expert_id: &str) -> String {
+    let _ = expert_by_id(expert_id).expect("unknown expert_id");
+    let safe_base_branch = sanitize_for_shell(base_branch);
+    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+    };
+    let capture = format!(
+        "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
+    );
+    let preamble =
+        review_rules_preamble(".er", false, FindingCaps::expert(), Some(&capture));
+    let lens = expert_lens_instructions(expert_id);
+    let output = expert_review_output_section(".er", expert_id);
+    format!(
+        r#"You are a specialized code reviewer. Write expert findings to `.er/experts/`.
 
-### `{safe_output_dir}/order.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256>",
-  "order": [
-    {{"path": "src/file.rs", "reason": "Core change", "group": "main"}}
-  ],
-  "groups": {{
-    "main": {{"label": "Main Changes", "color": "red"}}
-  }}
-}}
-```
+Ensure `.er/` exists: `mkdir -p .er/experts`
 
-### `{safe_output_dir}/checklist.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256>",
-  "items": [
-    {{
-      "id": "c-1",
-      "text": "Verify error handling covers all edge cases",
-      "category": "correctness",
-      "checked": false,
-      "related_findings": ["f-1"],
-      "related_files": ["src/file.rs"]
-    }}
-  ]
-}}
-```
+{preamble}
 
-### `{safe_output_dir}/summary.md`
-A 3-5 paragraph markdown summary of the overall changes.
+{lens}
 
-## Guidelines
+{analyze}
 
-- Be specific. "Check error handling" is bad. "Handle the None case in parse_token() at line 42" is good.
-- `hunk_index`: copy the number from the `[h<N>]` tag in `{safe_output_dir}/diff-annotated`. It is 0-based per file (first `@@` in a file = 0, second = 1). Never compute it yourself.
-- `line_start`: copy the number from the `[h<N> L<M>]` tag on the relevant `+` or context line in `{safe_output_dir}/diff-annotated`. **Never infer, count, or compute line numbers** — copy the tag verbatim from the line you are pointing at. If the line you want to reference has no `L<M>` tag (e.g. it is a deleted line tagged `L-<M>`), pick the nearest `+` or context line instead.
-- **Findings MUST anchor to a `+` or `-` line.** The 20 lines of surrounding context exist so you can understand the change — not so you can find issues in unchanged code. Set `outside_diff: false` for review-pass findings; if an issue lives entirely in unchanged code, drop it (the `validate` pass can re-add it as informational later).
-- Findings MUST point to a line tagged `[h<N> L<M>]` in `{safe_output_dir}/diff-annotated`. If you cannot anchor a finding to any tagged line, drop it rather than guessing.
-- `confidence` and `evidence`: see step 6. Use `confirmed` when you read enough to verify it, `informational` when the issue is real but minor or pre-existing, `tentative` when you ran out of budget. `evidence` should cite the actual files/ranges you read.
-- `verification_plan`: required for `tentative`; one line saying what would resolve it (e.g. "grep `parse_token` and check whether any callers pass user input directly").
-- Risk levels: high = likely bug or security issue, medium = code smell or missing edge case, low = style, info = observation.
-- Keep finding titles under 60 characters.
-- The `suggestion` field should be actionable.
-- Max 3-4 findings per file, max 15 total.
-- The checklist should be things the reviewer should manually verify.
-- Categories: security, logic, performance, correctness, error-handling, style, testing.
+{output}"#,
+        analyze = general_review_instructions_read_analyze(),
+    )
+}
 
-## Speed
+/// Specialized expert review when `{output_dir}/diff-tmp` is already prepared (desktop).
+pub fn build_expert_review_prompt_prepared_diff(
+    scope: &str,
+    output_dir: &str,
+    expert_id: &str,
+) -> String {
+    let _ = expert_by_id(expert_id).expect("unknown expert_id");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let preamble = review_rules_preamble(output_dir, true, FindingCaps::expert(), None);
+    let lens = expert_lens_instructions(expert_id);
+    let output = expert_review_output_section(output_dir, expert_id);
+    format!(
+        r#"You are a specialized code reviewer for scope `{scope}`. Write expert findings to `{safe_output_dir}/experts/`.
 
-Target: complete in under 3 minutes. Agentic verification adds time vs. the old diff-only flow; that's the trade for higher-confidence findings. Short-circuit when findings are obvious — you don't need to grep for a typo or an unambiguous null deref.
-Reading source files IS allowed and expected (within the read budget above). Use it to verify, not to expand scope."#
+{preamble}
+
+{lens}
+
+{analyze}
+
+{output}"#,
+        analyze = general_review_instructions_read_analyze(),
     )
 }
 
@@ -765,139 +735,25 @@ pub fn build_review_prompt_remote(
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
-    // pr_number is u64 — inherently numeric, no sanitization needed
-    let annotate = annotate_diff_command(
-        &format!("{output_dir}/diff-tmp"),
-        &format!("{output_dir}/diff-annotated"),
+    let capture = format!(
+        "mkdir -p {safe_output_dir} && gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
     );
+    let preamble =
+        review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
+    let outputs = general_review_outputs_section(output_dir, "branch", "", "");
     format!(
         r#"You are a code reviewer. Perform a thorough review of the GitHub PR diff and write results to `{safe_output_dir}/`.
 
-## Instructions
+Note: `gh pr diff` returns less context than local `git diff` — agentic verification matters more.
 
-1. Run: `gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
-   - Save the SHA-256 hash as `diff_hash`
-2. Annotate the diff with file line numbers: `{annotate}`
-3. Read `{safe_output_dir}/diff-annotated` — each content line carries `[h<hunk> L<file_line>]` tags. (Note: `gh pr diff` returns ~3 lines of context — agentic verification matters more here than in local review.)
-4. Analyse every changed file. **Findings target only `+` or `-` lines** — surrounding context is for comprehension. For each file determine:
-   - `risk`: "high" | "medium" | "low" | "info"
-   - `risk_reason`: why this risk level
-   - `summary`: one-line description of changes
-   - `findings`: array of issues found (max 3-4 per file)
-5. **Verify findings agentically.** When a finding's significance depends on something not in the diff:
-   - If the PR branch is checked out locally, read sibling files / grep callers / inspect tests directly.
-   - If not, attempt `gh pr checkout {pr_number}` once, then proceed. If that fails, mark the finding `tentative` with a `verification_plan` describing what would resolve it.
-   - Cap: ~5 file reads per finding, ~30 reads total.
-6. Set `confidence` on every finding:
-   - `confirmed` — evidence supports the finding
-   - `informational` — real but pre-existing or low-impact
-   - `tentative` — couldn't verify within budget; `verification_plan` is required
-7. Write these four files:
+{preamble}
 
-### `{safe_output_dir}/review.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256 from step 1>",
-  "diff_scope": "branch",
-  "created_at": "<ISO 8601>",
-  "base_branch": "",
-  "head_branch": "",
-  "file_hashes": {{}},
-  "files": {{
-    "path/to/file.rs": {{
-      "risk": "medium",
-      "risk_reason": "Modifies error handling logic",
-      "summary": "Adds retry mechanism for network calls",
-      "findings": [
-        {{
-          "id": "f-1",
-          "severity": "medium",
-          "category": "correctness",
-          "title": "Short title (max 60 chars)",
-          "description": "What the issue is and why it matters",
-          "hunk_index": 0,
-          "line_start": 42,
-          "suggestion": "What to do about it",
-          "related_files": [],
-          "outside_diff": false,
-          "confidence": "confirmed",
-          "verification_plan": "",
-          "evidence": [
-            {{
-              "file": "src/api.py",
-              "line_start": 110,
-              "line_end": 118,
-              "note": "All three callers pass user-controlled input directly."
-            }}
-          ],
-          "responses": [],
-          "resolved": false,
-          "resolved_note": "",
-          "resolved_at": ""
-        }}
-      ]
-    }}
-  }}
-}}
-```
+{analyze}
 
-### `{safe_output_dir}/order.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256>",
-  "order": [
-    {{"path": "src/file.rs", "reason": "Core change", "group": "main"}}
-  ],
-  "groups": {{
-    "main": {{"label": "Main Changes", "color": "red"}}
-  }}
-}}
-```
+{outputs}
 
-### `{safe_output_dir}/checklist.json`
-```json
-{{
-  "version": 1,
-  "diff_hash": "<sha256>",
-  "items": [
-    {{
-      "id": "c-1",
-      "text": "Verify error handling covers all edge cases",
-      "category": "correctness",
-      "checked": false,
-      "related_findings": ["f-1"],
-      "related_files": ["src/file.rs"]
-    }}
-  ]
-}}
-```
-
-### `{safe_output_dir}/summary.md`
-A 3-5 paragraph markdown summary of the overall changes.
-
-## Guidelines
-
-- Be specific. "Check error handling" is bad. "Handle the None case in parse_token() at line 42" is good.
-- `hunk_index`: copy the number from the `[h<N>]` tag in the annotated diff. Per file, 0-based. Never compute it.
-- `line_start`: copy the number from the `[h<N> L<M>]` tag on the relevant `+` or `-` line in the annotated diff. **Never infer or count lines yourself** — always copy a tag verbatim.
-- **Findings MUST anchor to a `+` or `-` line.** Set `outside_diff: false` for review-pass findings; if an issue lives entirely in unchanged code, drop it (validate can re-add it as informational).
-- If no `[h<N> L<M>]` tag exists for a finding, drop the finding rather than guessing.
-- `confidence` and `evidence`: see step 6. Cite the actual files/ranges you read in `evidence`.
-- `verification_plan`: required for `tentative`; one line describing what would resolve it.
-- Risk levels: high = likely bug or security issue, medium = code smell or missing edge case, low = style, info = observation.
-- Keep finding titles under 60 characters.
-- The `suggestion` field should be actionable.
-- Max 3-4 findings per file, max 15 total.
-- The checklist should be things the reviewer should manually verify.
-- Categories: security, logic, performance, correctness, error-handling, style, testing.
-- Ensure `{safe_output_dir}/` directory exists before writing: `mkdir -p {safe_output_dir}`
-
-## Speed
-
-Target: complete in under 3 minutes. Agentic verification adds time but produces higher-confidence findings. Short-circuit when findings are obvious.
-Reading source files IS allowed and expected (within the read budget above) once the PR is checked out."#
+Ensure `{safe_output_dir}/` exists before writing: `mkdir -p {safe_output_dir}`"#,
+        analyze = general_review_instructions_read_analyze(),
     )
 }
 
@@ -1179,7 +1035,7 @@ mod tests {
             "annotation writes annotated diff"
         );
         assert!(prompt.contains("[h<hunk> L<file_line>]"));
-        assert!(prompt.contains("Read `.er/diff-annotated`"));
+        assert!(prompt.contains("diff-annotated"));
     }
 
     #[test]
@@ -1224,7 +1080,7 @@ mod tests {
     #[test]
     fn review_prompt_requires_findings_to_anchor_to_plus_or_minus() {
         let prompt = build_review_prompt("main", "branch");
-        assert!(prompt.contains("Findings MUST anchor to a `+` or `-` line"));
+        assert!(prompt.contains("Findings **only** on `+` or `-` lines"));
     }
 
     #[test]
@@ -1288,7 +1144,7 @@ mod tests {
         let prompt = build_review_prompt_prepared_diff("branch", "/tmp/er-managed");
         assert!(prompt.contains("'/tmp/er-managed/diff-tmp'"));
         assert!(prompt.contains("sha256sum"));
-        assert!(!prompt.contains("git diff"));
+        assert!(prompt.contains("do **not** run `git diff`"));
         assert!(!prompt.contains("gh pr diff"));
     }
 
@@ -1305,5 +1161,52 @@ mod tests {
         assert!(prompt.contains("'/tmp/out/diff-tmp'"));
         assert!(!prompt.contains("git diff"));
         assert!(!prompt.contains("gh pr"));
+    }
+
+    // ── review_rules_preamble + experts ──
+
+    #[test]
+    fn review_rules_preamble_no_style_category() {
+        let preamble =
+            review_rules_preamble(".er", false, FindingCaps::general(), None);
+        assert!(!preamble.contains("Categories: security, logic, performance, correctness, error-handling, style, testing"));
+        assert!(preamble.contains("**no `style`**"));
+        assert!(preamble.contains("P0"));
+        assert!(preamble.contains("two-dot"));
+    }
+
+    #[test]
+    fn review_rules_preamble_expert_caps_stricter() {
+        let expert = review_rules_preamble(".er", true, FindingCaps::expert(), None);
+        let general = review_rules_preamble(".er", true, FindingCaps::general(), None);
+        assert!(expert.contains("Max 2 findings per file, max 10 total"));
+        assert!(general.contains("Max 4 findings per file, max 15 total"));
+    }
+
+    #[test]
+    fn general_prompt_still_requests_four_output_files() {
+        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out");
+        assert!(prompt.contains("review.json"));
+        assert!(prompt.contains("order.json"));
+        assert!(prompt.contains("checklist.json"));
+        assert!(prompt.contains("summary.md"));
+        assert!(!prompt.contains("experts/"));
+    }
+
+    #[test]
+    fn expert_prepared_prompt_targets_expert_json_only() {
+        let prompt = build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security");
+        assert!(prompt.contains("Expert lens: Security"));
+        assert!(prompt.contains("experts/security.json"));
+        assert!(prompt.contains("Max 2 findings per file, max 10 total"));
+        assert!(prompt.contains("Write **only**"));
+        assert!(!prompt.contains("### '/tmp/out'/review.json"));
+    }
+
+    #[test]
+    fn patterns_expert_prompt_requires_grep() {
+        let prompt = build_expert_review_prompt("main", "branch", "patterns");
+        assert!(prompt.contains("grep"));
+        assert!(prompt.contains("Expert lens: Patterns"));
     }
 }

@@ -101,6 +101,7 @@ function finding(id: string, fileP: string, ln: number | null, extra: Partial<Fl
     line: ln,
     hunk_index: null,
     severity: "low",
+    expert_label: null,
     title: "",
     message_markdown: "",
     promoted_to: null,

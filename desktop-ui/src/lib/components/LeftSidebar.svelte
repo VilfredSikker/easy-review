@@ -111,11 +111,9 @@
   }
 
   function onSettingsKey(e: KeyboardEvent) {
-    if (e.key === "Escape") settingsOpen = false;
-    if (e.key === "Escape") {
-      inboxPopoverOpen = false;
-      selectedInboxMessage = null;
-    }
+    if (e.key !== "Escape") return;
+    inboxPopoverOpen = false;
+    closeBranchPicker();
   }
 
   function openInboxPopover() {

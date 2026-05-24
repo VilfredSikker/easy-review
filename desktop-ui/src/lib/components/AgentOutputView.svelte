@@ -14,6 +14,7 @@
 
   let revisions = $state<RevisionSummary[]>([]);
   let selectedRevisionId = $state<string>("");
+  let lastRevisionsTab = $state(-1);
 
   const commands = $derived(app.snapshot?.agent_commands ?? []);
   const log = $derived(app.snapshot?.agent_log ?? []);
@@ -35,7 +36,9 @@
   }
 
   $effect(() => {
-    app.snapshot?.active_tab;
+    const tab = app.snapshot?.active_tab ?? -1;
+    if (tab === lastRevisionsTab) return;
+    lastRevisionsTab = tab;
     void loadRevisions();
   });
 </script>

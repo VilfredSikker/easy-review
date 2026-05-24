@@ -256,6 +256,14 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
             }
         }
+        HubAction::OpenAiExpertPicker => {
+            app.open_ai_expert_picker();
+        }
+        HubAction::RunExpertReview { expert_id } => {
+            if let Some(prompt) = build_agent_expert_prompt(app, &expert_id) {
+                app.spawn_agent_prompt(&format!("expert-{expert_id}"), &prompt)?;
+            }
+        }
         HubAction::PromptReview => {
             let has_review = app.tab().ai.review.is_some();
             if has_review {
@@ -366,6 +374,9 @@ fn execute_ai_action(app: &mut App, action: AiActionKind) -> Result<()> {
 
     match action {
         AiActionKind::Review => dispatch_hub_action(app, HubAction::PromptReview),
+        AiActionKind::ExpertReview { expert_id } => {
+            dispatch_hub_action(app, HubAction::RunExpertReview { expert_id })?;
+        }
         AiActionKind::Validate => dispatch_hub_action(app, HubAction::PromptValidate),
         AiActionKind::Questions => dispatch_hub_action(app, HubAction::PromptQuestions),
         AiActionKind::Summary => {
@@ -632,6 +643,30 @@ pub fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Build a specialized expert review prompt (local diff modes only).
+pub(super) fn build_agent_expert_prompt(app: &mut App, expert_id: &str) -> Option<String> {
+    if er_engine::ai::expert_by_id(expert_id).is_none() {
+        app.notify(&format!("Unknown expert: {expert_id}"));
+        return None;
+    }
+    let tab = app.tab();
+    if tab.is_remote() {
+        app.notify("Specialized expert review is local-only in v1 — checkout the PR first");
+        return None;
+    }
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
+            er_engine::ai::prompts::build_expert_review_prompt(&base, mode.git_mode(), expert_id),
+        ),
+        _ => {
+            app.notify("Expert review not available in this mode");
+            None
+        }
+    }
 }
 
 /// Build the review agent prompt, using remote mode if applicable.

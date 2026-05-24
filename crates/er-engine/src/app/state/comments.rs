@@ -1899,34 +1899,41 @@ impl App {
         let is_remote = self.tab().is_remote();
         self.sync_ai_selection();
 
-        let (agent_cmd, config_args, is_claude_compatible) = if let Some(provider_id) = self
-            .config
-            .ai_hub
-            .resolve_provider_id(self.current_ai_provider.as_deref())
-        {
-            let provider = self
+        let (agent_cmd, config_args, is_claude_compatible, is_stream_json) =
+            if let Some(provider_id) = self
                 .config
                 .ai_hub
-                .providers
-                .get(&provider_id)
-                .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
-            let mut args = provider.args.clone();
-            if let Some(model_id) = self
-                .config
-                .ai_hub
-                .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
+                .resolve_provider_id(self.current_ai_provider.as_deref())
             {
-                if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
-                    args.extend(model.args.clone());
+                let provider = self
+                    .config
+                    .ai_hub
+                    .providers
+                    .get(&provider_id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
+                let mut args = provider.args.clone();
+                if let Some(model_id) = self
+                    .config
+                    .ai_hub
+                    .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
+                {
+                    if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
+                        args.extend(model.args.clone());
+                    }
                 }
-            }
-            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
-            (provider.command.clone(), args, is_claude)
-        } else {
-            let cmd = self.config.agent.command.clone();
-            let is_claude = cmd.ends_with("claude") || cmd == "claude";
-            (cmd, self.config.agent.args.clone(), is_claude)
-        };
+                let is_claude =
+                    provider.command.ends_with("claude") || provider.command == "claude";
+                (provider.command.clone(), args, is_claude, provider.uses_stream_json_log())
+            } else {
+                let cmd = self.config.agent.command.clone();
+                let is_claude = cmd.ends_with("claude") || cmd == "claude";
+                (
+                    cmd.clone(),
+                    self.config.agent.args.clone(),
+                    is_claude,
+                    crate::config::agent_command_uses_stream_json(&cmd),
+                )
+            };
 
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
@@ -1958,16 +1965,16 @@ impl App {
                 // agent log panel can show real-time tool calls and progress. This is
                 // injected here (not in config defaults) so user configs that override
                 // agent.args still get streaming without manual changes.
-                if is_claude_compatible {
+                if is_stream_json {
                     if !agent_args.iter().any(|a| a == "--output-format") {
                         agent_args.push("--output-format".to_string());
                         agent_args.push("stream-json".to_string());
                     }
-                    // --verbose is required when combining --print with stream-json
+                    // --verbose is required when combining --print with stream-json (Claude only)
                     let has_print = agent_args.iter().any(|a| a == "--print");
                     let has_stream = agent_args.iter().any(|a| a == "stream-json");
                     let has_verbose = agent_args.iter().any(|a| a == "--verbose");
-                    if has_print && has_stream && !has_verbose {
+                    if is_claude_compatible && has_print && has_stream && !has_verbose {
                         agent_args.push("--verbose".to_string());
                     }
                 }
@@ -2019,7 +2026,7 @@ impl App {
                         for line in reader.lines().map_while(Result::ok) {
                             lines.push(line.clone());
                             // Try to parse as stream-json event
-                            let display = if is_claude_compatible {
+                            let display = if is_stream_json {
                                 parse_stream_json_line(&line)
                             } else {
                                 Some(truncate_str(line.trim(), 120))
@@ -2104,65 +2111,106 @@ impl App {
         }
     }
 
-    /// Spawn an app-level background AI *review* keyed by `target`.
-    ///
-    /// Unlike `spawn_agent_prompt` (which is tab-local), this task lives on
-    /// `App` and survives tab switches. Same-target dedup: if a Running task
-    /// already exists for `target`, returns an error. Different targets run
-    /// concurrently.
+    /// Spawn an app-level background general review (`kind` = `review`).
     pub fn spawn_background_review(
         &mut self,
         target: super::background::BackgroundTaskTarget,
         prompt: String,
         prepared_diff: bool,
     ) -> Result<()> {
+        self.spawn_background_agent_task(
+            "review".to_string(),
+            "review",
+            target,
+            prompt,
+            prepared_diff,
+        )
+    }
+
+    /// Spawn a specialized expert review (`kind` = `expert:{id}`). General and
+    /// multiple experts can run concurrently on the same target.
+    pub fn spawn_background_expert_review(
+        &mut self,
+        expert_id: &str,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+    ) -> Result<()> {
+        let def = crate::ai::expert_by_id(expert_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown expert: {expert_id}"))?;
+        self.spawn_background_agent_task(
+            crate::ai::expert_task_kind(expert_id),
+            &format!("expert-{}", def.id),
+            target,
+            prompt,
+            prepared_diff,
+        )
+    }
+
+    /// App-level background agent task (review or expert).
+    fn spawn_background_agent_task(
+        &mut self,
+        kind: String,
+        command_name: &str,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+    ) -> Result<()> {
         use super::background::{BackgroundTask, BackgroundTaskHandle};
 
-        // Dedup: refuse to start another review on the same target while one
-        // is in flight.
-        let already_running = self
-            .background_tasks
-            .values()
-            .any(|h| h.task.target == target && matches!(h.task.status, CommandStatus::Running));
+        let already_running = self.background_tasks.values().any(|h| {
+            h.task.kind == kind
+                && h.task.target == target
+                && matches!(h.task.status, CommandStatus::Running)
+        });
         if already_running {
-            anyhow::bail!("review already running for {}", target.display_label());
+            anyhow::bail!(
+                "{command_name} already running for {}",
+                target.display_label()
+            );
         }
 
         self.sync_ai_selection();
 
-        let (agent_cmd, config_args, is_claude_compatible) = if let Some(provider_id) = self
-            .config
-            .ai_hub
-            .resolve_provider_id(self.current_ai_provider.as_deref())
-        {
-            let provider = self
+        let (agent_cmd, config_args, is_claude_compatible, is_stream_json) =
+            if let Some(provider_id) = self
                 .config
                 .ai_hub
-                .providers
-                .get(&provider_id)
-                .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
-            let mut args = provider.args.clone();
-            if let Some(model_id) = self
-                .config
-                .ai_hub
-                .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
+                .resolve_provider_id(self.current_ai_provider.as_deref())
             {
-                if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
-                    args.extend(model.args.clone());
+                let provider = self
+                    .config
+                    .ai_hub
+                    .providers
+                    .get(&provider_id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
+                let mut args = provider.args.clone();
+                if let Some(model_id) = self
+                    .config
+                    .ai_hub
+                    .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
+                {
+                    if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
+                        args.extend(model.args.clone());
+                    }
                 }
-            }
-            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
-            (provider.command.clone(), args, is_claude)
-        } else {
-            let cmd = self.config.agent.command.clone();
-            let is_claude = cmd.ends_with("claude") || cmd == "claude";
-            (cmd, self.config.agent.args.clone(), is_claude)
-        };
+                let is_claude =
+                    provider.command.ends_with("claude") || provider.command == "claude";
+                (provider.command.clone(), args, is_claude, provider.uses_stream_json_log())
+            } else {
+                let cmd = self.config.agent.command.clone();
+                let is_claude = cmd.ends_with("claude") || cmd == "claude";
+                (
+                    cmd.clone(),
+                    self.config.agent.args.clone(),
+                    is_claude,
+                    crate::config::agent_command_uses_stream_json(&cmd),
+                )
+            };
 
         std::fs::create_dir_all(&target.er_dir)?;
 
-        // Build the background task descriptor + channels before spawning.
-        let task = BackgroundTask::new("review".to_string(), target.clone());
+        let task = BackgroundTask::new(kind.clone(), target.clone());
         let task_id = task.id.clone();
         let er_dir = target.er_dir.clone();
         let repo_root = target.repo_root.clone();
@@ -2177,12 +2225,15 @@ impl App {
 
         let _ = log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: "review".to_string(),
+            command_name: command_name.to_string(),
             source: AgentLogSource::Status,
-            text: format!("review started ({})", target.display_label()),
+            text: format!("{command_name} started ({})", target.display_label()),
         });
 
         let log_tx_thread = log_tx.clone();
+        let command_name_stdout = command_name.to_string();
+        let command_name_stderr = command_name.to_string();
+        let command_name_fail = command_name.to_string();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
                 let debug_path = std::path::Path::new(&er_dir).join("debug-review.log");
@@ -2192,7 +2243,7 @@ impl App {
                     .map(|a| a.replace("{prompt}", &prompt))
                     .collect();
 
-                if is_claude_compatible {
+                if is_stream_json {
                     if !agent_args.iter().any(|a| a == "--output-format") {
                         agent_args.push("--output-format".to_string());
                         agent_args.push("stream-json".to_string());
@@ -2200,7 +2251,7 @@ impl App {
                     let has_print = agent_args.iter().any(|a| a == "--print");
                     let has_stream = agent_args.iter().any(|a| a == "stream-json");
                     let has_verbose = agent_args.iter().any(|a| a == "--verbose");
-                    if has_print && has_stream && !has_verbose {
+                    if is_claude_compatible && has_print && has_stream && !has_verbose {
                         agent_args.push("--verbose".to_string());
                     }
                 }
@@ -2262,7 +2313,7 @@ impl App {
                         let reader = std::io::BufReader::new(pipe);
                         for line in reader.lines().map_while(Result::ok) {
                             lines.push(line.clone());
-                            let display = if is_claude_compatible {
+                            let display = if is_stream_json {
                                 parse_stream_json_line(&line)
                             } else {
                                 Some(truncate_str(line.trim(), 120))
@@ -2270,7 +2321,7 @@ impl App {
                             if let Some(text) = display.filter(|t| !t.is_empty()) {
                                 let _ = log_tx_out.send(AgentLogEntry {
                                     timestamp: std::time::Instant::now(),
-                                    command_name: "review".to_string(),
+                                    command_name: command_name_stdout.clone(),
                                     source: AgentLogSource::Stdout,
                                     text,
                                 });
@@ -2289,7 +2340,7 @@ impl App {
                         for line in reader.lines().map_while(Result::ok) {
                             let _ = log_tx_err.send(AgentLogEntry {
                                 timestamp: std::time::Instant::now(),
-                                command_name: "review".to_string(),
+                                command_name: command_name_stderr.clone(),
                                 source: AgentLogSource::Stderr,
                                 text: line.clone(),
                             });
@@ -2316,7 +2367,10 @@ impl App {
                 let _ = std::fs::write(&debug_path, &debug_content);
 
                 if !status.success() {
-                    anyhow::bail!("review failed (see {}/debug-review.log)", er_dir);
+                    anyhow::bail!(
+                        "{command_name_fail} failed (see {}/debug-review.log)",
+                        er_dir
+                    );
                 }
                 Ok(())
             })();
@@ -2342,7 +2396,10 @@ impl App {
             );
         }
 
-        self.notify(&format!("review started ({})", target.display_label()));
+        self.notify(&format!(
+            "{command_name} started ({})",
+            target.display_label()
+        ));
         Ok(())
     }
 

@@ -58,7 +58,7 @@ args = ["--print", "-p", "{prompt}"]    # Arguments ({prompt} is replaced)
 
 ### `[ai_hub]`
 
-Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude and Codex without editing config mid-session. Selection is session-local; presets still come from TOML.
+Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, and Cursor without editing config mid-session. Selection is session-local; presets still come from TOML.
 
 ```toml
 [ai_hub]
@@ -84,6 +84,16 @@ args = ["exec", "{prompt}"]
 id = "gpt-5.4"
 label = "GPT-5.4"
 args = ["--model", "gpt-5.4"]
+
+[ai_hub.providers.cursor]
+label = "Cursor"
+command = "agent"
+args = ["--print", "--trust", "--force", "--output-format", "stream-json", "-p", "{prompt}"]
+
+[[ai_hub.providers.cursor.models]]
+id = "composer-2.5"
+label = "Composer 2.5"
+args = ["--model", "composer-2.5"]
 ```
 
 Rules:
@@ -136,3 +146,22 @@ diff_mode = "snapshot"
 ```
 
 Result: `blame_annotations = true` and `wrap_lines = true` from global, `tab_width = 4` and extra watched paths from local.
+
+## `.er/` AI artifacts
+
+General review (AI Hub **Run review** or `/er-review`) writes:
+
+| File | Purpose |
+|------|---------|
+| `.er/review.json` | Per-file risk, summaries, findings |
+| `.er/order.json` | Suggested review order |
+| `.er/checklist.json` | Manual verification items |
+| `.er/summary.md` | Overall summary |
+
+**Specialized expert reviews** (AI Hub **Run specialized review** or `/er-review-<expert>`) write findings only to `.er/experts/<id>.json` (e.g. `security`, `patterns`). They do not overwrite general artifacts.
+
+At load time, `er` merges fresh expert sidecars (matching `diff_hash`) into the in-memory review so expert findings appear as **additional inline banners** labeled by expert (e.g. "Security finding"). Order/checklist/summary panels still require a general review run.
+
+Expert ids (v1): `security`, `performance`, `reliability`, `testing`, `api`, `patterns`.
+
+Shared prompt rules: `skills/REVIEW_RULES.md` (referenced by skills and engine spawn prompts).

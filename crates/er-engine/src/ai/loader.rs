@@ -1,4 +1,7 @@
 use super::comments::{ErFeedback, ErGitHubComments, ErQuestions};
+use super::experts::{
+    load_expert_reviews, merge_experts_into_review, synthesize_review_from_experts,
+};
 use super::review::*;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -157,6 +160,14 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str) -> AiState {
         }
     }
 
+    // Merge specialized expert sidecars into review (load-time only).
+    let experts = load_expert_reviews(er_dir);
+    if let Some(review) = state.review.as_mut() {
+        merge_experts_into_review(review, &experts, current_diff_hash);
+    } else if let Some(synthetic) = synthesize_review_from_experts(&experts, current_diff_hash) {
+        state.review = Some(synthetic);
+    }
+
     // Load legacy .er-feedback.json (only if new files don't exist — migration support)
     // TODO(risk:medium): TOCTOU window here: between the time `.er-questions.json` and
     // `.er-github-comments.json` were found to not exist (earlier reads) and this check,
@@ -194,16 +205,27 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
         "github-comments.json",
     ];
 
-    files
+    let mut latest = files
         .iter()
         .filter_map(|name| {
             let path = er_dir.join(name);
-            // TODO(risk:minor): `metadata().modified()` can fail on filesystems that do not
-            // support mtime (e.g. FAT32, some network mounts). The `ok()?` silently drops
-            // these files from the max calculation, meaning their updates are never detected.
             std::fs::metadata(&path).ok()?.modified().ok()
         })
-        .max()
+        .max();
+
+    let experts_dir = er_dir.join("experts");
+    if let Ok(entries) = std::fs::read_dir(&experts_dir) {
+        for entry in entries.flatten() {
+            if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
+                latest = Some(match latest {
+                    Some(prev) => prev.max(m),
+                    None => m,
+                });
+            }
+        }
+    }
+
+    latest
 }
 
 #[cfg(test)]

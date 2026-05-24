@@ -77,6 +77,24 @@ id = "gpt-5.3-codex"
 label = "GPT-5.3 Codex"
 args = ["--model", "gpt-5.3-codex"]
 
+[ai_hub.providers.cursor]
+label = "Cursor"
+command = "agent"
+args = [
+    "--print",
+    "--trust",
+    "--force",
+    "--output-format",
+    "stream-json",
+    "-p",
+    "{prompt}",
+]
+
+[[ai_hub.providers.cursor.models]]
+id = "composer-2.5"
+label = "Composer 2.5"
+args = ["--model", "composer-2.5"]
+
 # ── Summary ────────────────────────────────────────────────────────────
 # Diff summary / changelog generation (AI hub).
 [summary]

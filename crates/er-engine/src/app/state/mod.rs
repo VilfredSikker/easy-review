@@ -265,6 +265,7 @@ pub enum OverlayData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiActionKind {
     Review,
+    ExpertReview { expert_id: String },
     Validate,
     Questions,
     Summary,
@@ -279,6 +280,7 @@ pub enum HubKind {
     Ai,
     AiProvider,
     AiModel,
+    AiExpert,
     Verify,
     VerifyPackage,
     Help,
@@ -293,6 +295,7 @@ impl HubKind {
             HubKind::Ai => "AI",
             HubKind::AiProvider => "AI PROVIDER",
             HubKind::AiModel => "AI MODEL",
+            HubKind::AiExpert => "SPECIALIZED REVIEW",
             HubKind::Verify => "VERIFY",
             HubKind::VerifyPackage => "VERIFY",
             HubKind::Help => "HELP",
@@ -356,6 +359,12 @@ pub enum HubAction {
         action: Option<AiActionKind>,
         provider_id: String,
         model_id: String,
+    },
+    /// Open expert reviewer picker (specialized review)
+    OpenAiExpertPicker,
+    /// Run a specialized expert review
+    RunExpertReview {
+        expert_id: String,
     },
     /// Run AI review via configured agent command
     PromptReview,
@@ -4296,6 +4305,29 @@ impl App {
         });
     }
 
+    /// Open the specialized expert reviewer picker.
+    pub fn open_ai_expert_picker(&mut self) {
+        let items: Vec<HubItem> = crate::ai::EXPERTS
+            .iter()
+            .map(|e| HubItem {
+                label: e.label.to_string(),
+                hint: String::new(),
+                description: e.description.to_string(),
+                action: HubAction::RunExpertReview {
+                    expert_id: e.id.to_string(),
+                },
+                is_header: false,
+                enabled: true,
+            })
+            .collect();
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::AiExpert,
+            title: None,
+            items,
+            selected: 0,
+        });
+    }
+
     /// Open the AI modal hub
     pub fn open_ai_hub(&mut self) {
         let has_ai = self.tab().ai.has_data();
@@ -4318,11 +4350,19 @@ impl App {
                 label: "Review work".into(),
                 hint: "".into(),
                 description: if has_review {
-                    format!("Run AI review via {selection_label} (will ask to clear previous)")
+                    format!("Full AI review via {selection_label} (will ask to clear previous)")
                 } else {
-                    format!("Run AI code review on current diff via {selection_label}")
+                    format!("Full review: risk, order, checklist, summary via {selection_label}")
                 },
                 action: HubAction::RunAiAction(AiActionKind::Review),
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Specialized review".into(),
+                hint: "".into(),
+                description: "Focused expert lens — security, patterns, testing, …".into(),
+                action: HubAction::OpenAiExpertPicker,
                 is_header: false,
                 enabled: true,
             },

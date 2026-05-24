@@ -11,6 +11,7 @@
   import BottomHints from "$lib/components/BottomHints.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import AiActionPalette from "$lib/components/AiActionPalette.svelte";
+  import AiReviewFilesModal from "$lib/components/AiReviewFilesModal.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import PrUrlModal from "$lib/components/PrUrlModal.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
@@ -133,8 +134,11 @@
   );
 
   $effect(() => {
+    if (resizingBrowserSplit) return;
     const r = app.snapshot?.browser?.split_ratio;
-    if (r != null && Number.isFinite(r)) browserSplitRatio = r;
+    if (r == null || !Number.isFinite(r)) return;
+    if (Math.abs(browserSplitRatio - r) < 0.001) return;
+    browserSplitRatio = r;
   });
 
   function onBrowserSplitResizeStart(e: MouseEvent) {
@@ -324,5 +328,6 @@
   {/if}
   <CommandPalette />
   <AiActionPalette />
+  <AiReviewFilesModal />
 </div>
 {/if}

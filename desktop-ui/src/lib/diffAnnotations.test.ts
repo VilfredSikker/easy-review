@@ -44,6 +44,7 @@ function mkFinding(opts: Partial<FlatFinding> & Pick<FlatFinding, "id" | "file">
     line: null,
     hunk_index: null,
     severity: "med",
+    expert_label: null,
     title: "t",
     message_markdown: "",
     promoted_to: null,

@@ -12,6 +12,7 @@
 /// github-comments.json
 /// reviewed
 /// diff-tmp, diff-annotated
+/// review-files.txt — path list for selective (run_ai_review_files) runs only
 /// debug-*.log
 /// ```
 ///

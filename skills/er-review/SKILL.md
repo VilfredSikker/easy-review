@@ -2,6 +2,8 @@
 
 Quick AI code review for the current git diff, producing `.er/` sidecar files that the `er` TUI reads.
 
+**Apply [`../REVIEW_RULES.md`](../REVIEW_RULES.md) in full** for diff, annotate, anchors, severity, confidence, and caps. This skill adds incremental cache, feedback-aware mode, and tool-budget steps below.
+
 ## Trigger
 
 Run as `/er-review` or `/er-review [scope] [base-branch]`.
@@ -10,9 +12,9 @@ Run as `/er-review` or `/er-review [scope] [base-branch]`.
 
 `/er-review [scope]`
 
-- `branch` or `1` (default) — full branch diff: `git diff <base> --unified=3 --no-color --no-ext-diff`
-- `unstaged` or `2` — uncommitted changes: `git diff --unified=3 --no-color --no-ext-diff`
-- `staged` or `3` — staged changes: `git diff --staged --unified=3 --no-color --no-ext-diff`
+- `branch` or `1` (default) — full branch diff: `git diff <base> --unified=20 --no-color --no-ext-diff`
+- `unstaged` or `2` — uncommitted changes: `git diff --unified=20 --no-color --no-ext-diff`
+- `staged` or `3` — staged changes: `git diff --staged --unified=20 --no-color --no-ext-diff`
 
 Numbers match the er TUI keybindings (1/2/3 to switch modes).
 
@@ -24,7 +26,7 @@ If no base branch is given, detect main or master.
 Both `/er-review` and `/review-pr` MUST use the same diff command that `er` uses internally:
 
 ```
-git diff <base> --unified=3 --no-color --no-ext-diff
+git diff <base> --unified=20 --no-color --no-ext-diff
 ```
 
 **This is a two-dot diff** (`git diff main`), comparing the base branch to the **working tree**.
@@ -86,9 +88,9 @@ Parse scope from arguments (default: branch):
 Base branch: use second argument if provided, else detect main/master.
 
 Scope args (used in all git diff commands below):
-- branch:   main --unified=3 --no-color --no-ext-diff
-- unstaged: --unified=3 --no-color --no-ext-diff
-- staged:   --staged --unified=3 --no-color --no-ext-diff
+- branch:   main --unified=20 --no-color --no-ext-diff
+- unstaged: --unified=20 --no-color --no-ext-diff
+- staged:   --staged --unified=20 --no-color --no-ext-diff
 
 TOOL CALL 1 — Bash (all setup via helper script):
   For branch scope:

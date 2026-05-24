@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { copyToClipboard } from "$lib/clipboard";
+  import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { app } from "$lib/stores/app.svelte";
 
   type ExportOpts = {
@@ -24,6 +25,7 @@
   let savedPath = $state<string | null>(null);
   let savedAt = $state(0);
   let previewRequestId = 0;
+  let lastPreviewTab = $state(-1);
 
   function currentExportOpts(): ExportOpts {
     return {
@@ -51,19 +53,37 @@
     }
   }
 
-  function setExportOption(key: ExportOptionKey, checked: boolean) {
-    const nextOpts = {
-      ...currentExportOpts(),
-      [key]: checked,
-    };
-
+  function applyExportOpts(nextOpts: ExportOpts) {
     includeComments = nextOpts.includeComments;
     includeQuestions = nextOpts.includeQuestions;
     includeFindings = nextOpts.includeFindings;
     includeAnnotations = nextOpts.includeAnnotations;
     onlyUnresolved = nextOpts.onlyUnresolved;
-
     void refreshPreview(nextOpts);
+  }
+
+  function setExportOption(key: ExportOptionKey, checked: boolean) {
+    applyExportOpts({ ...currentExportOpts(), [key]: checked });
+  }
+
+  function includeAllOptions() {
+    applyExportOpts({
+      includeComments: true,
+      includeQuestions: true,
+      includeFindings: true,
+      includeAnnotations: true,
+      onlyUnresolved: false,
+    });
+  }
+
+  function excludeAllOptions() {
+    applyExportOpts({
+      includeComments: false,
+      includeQuestions: false,
+      includeFindings: false,
+      includeAnnotations: false,
+      onlyUnresolved: false,
+    });
   }
 
   function onExportOptionChange(key: ExportOptionKey, e: Event) {
@@ -109,8 +129,13 @@
   }
 
   $effect(() => {
-    if (app.mainView !== "export-review") return;
-    app.snapshot?.active_tab;
+    if (app.mainView !== "export-review") {
+      lastPreviewTab = -1;
+      return;
+    }
+    const tab = app.snapshot?.active_tab ?? -1;
+    if (tab === lastPreviewTab) return;
+    lastPreviewTab = tab;
     void refreshPreview();
   });
 </script>
@@ -184,6 +209,21 @@
       />
       <span>Only unresolved</span>
     </label>
+    <span class="w-px h-4 bg-hairline" aria-hidden="true"></span>
+    <button
+      type="button"
+      class="px-2 py-0.5 text-xs border border-border rounded hover:bg-hover text-fg-2"
+      onclick={includeAllOptions}
+    >
+      Include all
+    </button>
+    <button
+      type="button"
+      class="px-2 py-0.5 text-xs border border-border rounded hover:bg-hover text-fg-2"
+      onclick={excludeAllOptions}
+    >
+      Exclude all
+    </button>
     {#if savedPath}
       <span class="text-[11px] text-add-fg mono">{savedPath}</span>
     {/if}
@@ -194,8 +234,45 @@
 
   <div class="flex-1 min-h-0 overflow-y-auto p-4">
     <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Preview</div>
-    <pre
-      class="min-h-full text-[12px] mono text-fg-2 bg-bg border border-hairline rounded p-3 whitespace-pre-wrap break-words"
-    >{preview || (loadingPreview ? "(loading…)" : error ? `(error) ${error}` : "No preview.")}</pre>
+    <div class="min-h-full text-[12px] text-fg-2 bg-bg border border-hairline rounded p-3 break-words export-preview">
+      {#if preview}
+        <MarkdownText text={preview} className="export-preview-markdown" />
+      {:else if loadingPreview}
+        <p class="text-muted mono">(loading…)</p>
+      {:else if error}
+        <p class="text-del-fg mono">(error) {error}</p>
+      {:else}
+        <p class="text-muted">No preview.</p>
+      {/if}
+    </div>
   </div>
 </div>
+
+<style>
+  .export-preview :global(.export-preview-markdown h1) {
+    font-size: 1.15rem;
+    color: var(--color-fg);
+  }
+  .export-preview :global(.export-preview-markdown h2) {
+    font-size: 0.95rem;
+    color: var(--color-fg-2);
+    font-family: "JetBrains Mono", monospace;
+  }
+  .export-preview :global(.export-preview-markdown h3) {
+    font-size: 0.85rem;
+    color: var(--color-fg-2);
+  }
+  .export-preview :global(.export-preview-markdown blockquote) {
+    color: var(--color-fg-3);
+  }
+  .export-preview :global(.export-preview-markdown code) {
+    color: var(--color-add-fg);
+    background: rgba(34, 197, 94, 0.08);
+    padding: 0.05rem 0.25rem;
+    border-radius: 3px;
+  }
+  .export-preview :global(.export-preview-markdown pre) {
+    background: var(--color-ink-870);
+    font-size: 0.9em;
+  }
+</style>

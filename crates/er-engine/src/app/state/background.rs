@@ -84,10 +84,9 @@ impl BackgroundTask {
 }
 
 /// Whether to emit `[bg]` debug logs about background task lifecycle.
-/// Auto-on in debug builds (e.g. `cargo tauri dev`); release builds require
-/// `ER_DESKTOP_DEBUG_BG=1`.
+/// Opt-in only — set `ER_DESKTOP_DEBUG_BG=1` (poll/snapshot logging is very noisy).
 pub fn debug_bg_enabled() -> bool {
-    cfg!(debug_assertions) || std::env::var("ER_DESKTOP_DEBUG_BG").as_deref() == Ok("1")
+    std::env::var("ER_DESKTOP_DEBUG_BG").as_deref() == Ok("1")
 }
 
 pub fn unix_now_ms() -> u128 {

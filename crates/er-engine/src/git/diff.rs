@@ -166,6 +166,25 @@ pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
     headers
 }
 
+/// Keep only file sections whose paths appear in `paths`.
+///
+/// Uses header byte offsets from [`parse_diff_headers`] — no full re-parse.
+pub fn filter_raw_diff_by_paths(raw: &str, paths: &[String]) -> String {
+    if raw.is_empty() || paths.is_empty() {
+        return String::new();
+    }
+    let path_set: std::collections::HashSet<&str> = paths.iter().map(|s| s.as_str()).collect();
+    let headers = parse_diff_headers(raw);
+    let mut out = String::new();
+    for h in headers {
+        if path_set.contains(h.path.as_str()) {
+            let end = (h.byte_offset + h.byte_length).min(raw.len());
+            out.push_str(&raw[h.byte_offset..end]);
+        }
+    }
+    out
+}
+
 /// Parse hunks for a single file from a raw diff section.
 /// Used for on-demand (lazy) parsing when a file is selected.
 pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
@@ -1326,6 +1345,33 @@ index aaa..bbb 100644
         let file_b = parse_file_at_offset(raw, &headers[1]);
         assert_eq!(file_b.path, "b.rs");
         assert!(!file_b.hunks.is_empty());
+    }
+
+    // ── filter_raw_diff_by_paths ──
+
+    #[test]
+    fn filter_raw_diff_by_paths_single_file() {
+        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,2 @@\n ctx\n+added\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1,2 +1,1 @@\n ctx\n-removed\n";
+        let filtered = filter_raw_diff_by_paths(raw, &["a.rs".to_string()]);
+        assert!(filtered.contains("diff --git a/a.rs"));
+        assert!(filtered.contains("+added"));
+        assert!(!filtered.contains("b.rs"));
+    }
+
+    #[test]
+    fn filter_raw_diff_by_paths_subset() {
+        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n x\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n y\ndiff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n z\n";
+        let filtered =
+            filter_raw_diff_by_paths(raw, &["a.rs".to_string(), "c.rs".to_string()]);
+        assert!(filtered.contains("a.rs"));
+        assert!(filtered.contains("c.rs"));
+        assert!(!filtered.contains("b.rs"));
+    }
+
+    #[test]
+    fn filter_raw_diff_by_paths_empty_paths_returns_empty() {
+        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n x\n";
+        assert!(filter_raw_diff_by_paths(raw, &[]).is_empty());
     }
 
     // ── header_to_stub ──

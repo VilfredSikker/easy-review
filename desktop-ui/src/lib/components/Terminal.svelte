@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onDestroy } from "svelte";
   import { Terminal as XTerm } from "@xterm/xterm";
   import "@xterm/xterm/css/xterm.css";
   import { app } from "$lib/stores/app.svelte";
@@ -165,16 +165,13 @@
 
   // Mount when first visible. If `visible` flips false, we tear down — the
   // shell dies (spec is fine with no scrollback persistence across toggle).
+  // Single mount path: $effect reacts to visible + containerEl (onMount alone races bind:this).
   $effect(() => {
     if (visible && containerEl && !term) {
-      mountTerminal();
+      void mountTerminal();
     } else if (!visible && term) {
-      teardown();
+      void teardown();
     }
-  });
-
-  onMount(() => {
-    if (visible) mountTerminal();
   });
 
   onDestroy(() => {

@@ -10,30 +10,67 @@
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
+  import type { FileSnapshot } from "$lib/types";
 
   interface Props {
     /** When true, render narrow icon-only rail (mock lines 414–421). */
     collapsed?: boolean;
+    /** Checkbox multi-select for AI file picker modals. */
+    pickerMode?: boolean;
+    /** Fill parent flex area (no fixed sidebar width). */
+    embedded?: boolean;
+    /** Override file list (picker uses full diff paths, not filtered snapshot). */
+    files?: FileSnapshot[];
+    /** Checked paths when `pickerMode` is true. */
+    selectedPaths?: Set<string>;
+    onSelectedPathsChange?: (paths: Set<string>) => void;
+    /** Enter in picker mode (e.g. run review). */
+    onPickerEnter?: () => void;
   }
-  const { collapsed = false }: Props = $props();
+  const {
+    collapsed = false,
+    pickerMode = false,
+    embedded = false,
+    files: filesOverride,
+    selectedPaths,
+    onSelectedPathsChange,
+    onPickerEnter,
+  }: Props = $props();
 
   const snapshot = $derived(app.snapshot);
-  const files = $derived(snapshot?.files ?? []);
-  const filesByPath = $derived(filesByPathMap(files));
-  const ai = $derived(snapshot?.ai);
-  const tree = $derived(buildTree(files));
-  const displayTree = $derived(visibleTree(tree, fileTreeCollapse.collapsed));
-  const selectedFile = $derived(snapshot ? files[snapshot.selected_file] : null);
-  const totalFindings = $derived(files.reduce((s, f) => s + f.finding_count, 0));
 
   // ── Filter input state ────────────────────────────────────────────────────
   let filterDraft = $state("");
   let inputFocused = $state(false);
+
+  const sourceFiles = $derived(
+    pickerMode && filesOverride !== undefined ? filesOverride : (snapshot?.files ?? []),
+  );
+
+  function localFilterFiles(list: FileSnapshot[], query: string): FileSnapshot[] {
+    const q = query.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((f) => f.path.toLowerCase().includes(q));
+  }
+
+  const files = $derived(
+    pickerMode ? localFilterFiles(sourceFiles, filterDraft) : sourceFiles,
+  );
+  const filesByPath = $derived(filesByPathMap(files));
+  const ai = $derived(snapshot?.ai);
+  const tree = $derived(buildTree(files));
+  const displayTree = $derived(visibleTree(tree, fileTreeCollapse.collapsed));
+  const selectedFile = $derived(
+    pickerMode ? null : snapshot ? sourceFiles[snapshot.selected_file] : null,
+  );
+  const totalFindings = $derived(files.reduce((s, f) => s + f.finding_count, 0));
+  let pickerFocusIdx = $state(0);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let inputEl: HTMLInputElement | null = $state(null);
   const DEBOUNCE_MS = 180;
 
   $effect(() => {
+    if (pickerMode) return;
     const backendValue = snapshot?.filter ?? "";
     if (!inputFocused || filterDraft === backendValue) {
       filterDraft = backendValue;
@@ -56,6 +93,7 @@
 
   function onFilterInput(e: Event) {
     filterDraft = (e.target as HTMLInputElement).value;
+    if (pickerMode) return;
     clearTimer();
     const v = filterDraft;
     debounceTimer = setTimeout(() => {
@@ -67,11 +105,13 @@
   function onFilterKeydown(e: KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
+      if (pickerMode) return;
       applyFilter(filterDraft);
       inputEl?.blur();
     } else if (e.key === "Escape") {
       e.preventDefault();
       filterDraft = "";
+      if (pickerMode) return;
       clearTimer();
       app.cmd("clear_filter");
       inputEl?.blur();
@@ -118,6 +158,104 @@
     app.cmd("select_file", { idx: sourceIdx });
   }
 
+  function toggleSelection(path: string) {
+    const cur = selectedPaths ?? new Set<string>();
+    const next = new Set(cur);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    onSelectedPathsChange?.(next);
+  }
+
+  function isPathSelected(path: string): boolean {
+    return selectedPaths?.has(path) ?? false;
+  }
+
+  /** All file paths under `folderPath` (this folder and nested subfolders). */
+  function filePathsUnderFolder(folderPath: string): string[] {
+    const prefix = `${folderPath}/`;
+    return files.filter((f) => f.path.startsWith(prefix)).map((f) => f.path);
+  }
+
+  type FolderCheckState = "all" | "none" | "partial";
+
+  function folderCheckState(folderPath: string): FolderCheckState {
+    const under = filePathsUnderFolder(folderPath);
+    if (under.length === 0) return "none";
+    let selected = 0;
+    for (const p of under) {
+      if (selectedPaths?.has(p)) selected++;
+    }
+    if (selected === 0) return "none";
+    if (selected === under.length) return "all";
+    return "partial";
+  }
+
+  function toggleFolderSelection(folderPath: string) {
+    const under = filePathsUnderFolder(folderPath);
+    if (under.length === 0) return;
+    const next = new Set(selectedPaths ?? []);
+    const state = folderCheckState(folderPath);
+    for (const p of under) {
+      if (state === "all") next.delete(p);
+      else next.add(p);
+    }
+    onSelectedPathsChange?.(next);
+  }
+
+  /** Sets the native `indeterminate` property (not an HTML attribute). */
+  function indeterminateCheckbox(
+    node: HTMLInputElement,
+    indeterminate: boolean,
+  ): { update: (indeterminate: boolean) => void } {
+    node.indeterminate = indeterminate;
+    return {
+      update(indeterminate: boolean) {
+        node.indeterminate = indeterminate;
+      },
+    };
+  }
+
+  const visibleFilePaths = $derived(
+    displayTree
+      .filter((n): n is typeof n & { file: FileSnapshot } => n.kind === "file" && !!n.file)
+      .map((n) => n.file.path),
+  );
+
+  $effect(() => {
+    if (!pickerMode) return;
+    pickerFocusIdx = 0;
+  });
+
+  $effect(() => {
+    if (!pickerMode) return;
+    const max = visibleFilePaths.length;
+    if (max === 0) pickerFocusIdx = 0;
+    else if (pickerFocusIdx >= max) pickerFocusIdx = max - 1;
+  });
+
+  function onPickerListKeydown(e: KeyboardEvent) {
+    if (!pickerMode || visibleFilePaths.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+      pickerFocusIdx = (pickerFocusIdx + 1) % visibleFilePaths.length;
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      e.stopPropagation();
+      pickerFocusIdx =
+        (pickerFocusIdx - 1 + visibleFilePaths.length) % visibleFilePaths.length;
+    } else if (e.key === " ") {
+      e.preventDefault();
+      e.stopPropagation();
+      const path = visibleFilePaths[pickerFocusIdx];
+      if (path) toggleSelection(path);
+    } else if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      onPickerEnter?.();
+    }
+  }
+
   function toggleFolder(folderPath: string) {
     fileTreeCollapse.toggle(folderPath);
   }
@@ -136,9 +274,29 @@
   const hasAiMeta = $derived(
     ai && (ai.comments > 0 || ai.questions > 0 || totalFindings > 0),
   );
+
+  const showTreeContent = $derived(
+    pickerMode
+      ? sourceFiles.length > 0 && displayTree.length > 0
+      : !!snapshot && displayTree.length > 0,
+  );
+
+  const treeEmptyMessage = $derived(
+    pickerMode
+      ? sourceFiles.length === 0
+        ? "No files"
+        : displayTree.length === 0
+          ? "No matching files"
+          : null
+      : !snapshot
+        ? "Loading…"
+        : displayTree.length === 0
+          ? "No files"
+          : null,
+  );
 </script>
 
-{#if collapsed}
+{#if collapsed && !pickerMode}
   <div class="w-10 border-r border-hairline bg-surface flex flex-col items-center py-3 gap-2 transition-[width] duration-200">
     <button
       onclick={() => app.togglePanel("tree")}
@@ -155,7 +313,11 @@
     {/if}
   </div>
 {:else}
-<div class="w-64 border-r border-hairline bg-surface flex flex-col overflow-hidden transition-[width] duration-200">
+<div
+  class="{embedded
+    ? 'flex flex-col flex-1 min-h-0 overflow-hidden bg-surface'
+    : 'w-64 border-r border-hairline bg-surface flex flex-col overflow-hidden transition-[width] duration-200'}"
+>
   <div class="relative shrink-0 border-b border-hairline">
     <div class="flex items-center gap-2 px-3 py-2">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" class="shrink-0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
@@ -171,7 +333,7 @@
       />
       <span class="kbd">/</span>
     </div>
-    {#if inputFocused && (snapshot?.filter_suggestions?.length ?? 0) > 0}
+    {#if !pickerMode && inputFocused && (snapshot?.filter_suggestions?.length ?? 0) > 0}
       <div class="absolute left-0 right-0 top-full z-10 bg-surface border border-hairline border-t-0 max-h-64 overflow-y-auto shadow-lg">
         {#each snapshot?.filter_suggestions ?? [] as sug}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -193,10 +355,14 @@
     {/if}
   </div>
 
-  {#if snapshot}
+  {#if snapshot || pickerMode}
     <div class="flex items-center flex-wrap gap-x-2 gap-y-0.5 px-3 py-1.5 border-b border-hairline text-[10px] mono text-muted shrink-0">
       <span>{files.length} files</span>
-      {#if hasRiskCounts}
+      {#if pickerMode && selectedPaths}
+        <span class="text-ink-400" aria-hidden="true">|</span>
+        <span>{selectedPaths.size} selected</span>
+      {/if}
+      {#if !pickerMode && hasRiskCounts}
         <span class="text-ink-400" aria-hidden="true">|</span>
         {#if ai && ai.high > 0}
           <span class="flex items-center gap-1 text-risk-high"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>{ai.high}</span>
@@ -208,7 +374,7 @@
           <span class="flex items-center gap-1 text-risk-low"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>{ai.low}</span>
         {/if}
       {/if}
-      {#if hasAiMeta}
+      {#if !pickerMode && hasAiMeta}
         <span class="text-ink-400" aria-hidden="true">|</span>
         {#if ai && ai.comments > 0}
           <span class="flex items-center gap-1 text-comment">
@@ -234,20 +400,19 @@
 
   <div
     role="tree"
-    aria-label="Changed files"
+    aria-label={pickerMode ? "Select files to review" : "Changed files"}
     bind:this={listEl}
-    class="flex-1 overflow-y-auto text-[13px]"
+    class="flex-1 overflow-y-auto text-[13px] outline-none"
+    tabindex={pickerMode ? 0 : undefined}
     onscroll={() => (scrollTop = listEl?.scrollTop ?? 0)}
+    onkeydown={pickerMode ? onPickerListKeydown : undefined}
   >
-    {#if !snapshot}
-      <div class="flex items-center justify-center h-full text-muted text-sm">Loading…</div>
-    {:else if displayTree.length === 0}
-      <div class="flex items-center justify-center h-full text-muted text-sm">No files</div>
-    {:else}
+    {#if showTreeContent}
       <div style="padding-top: {vw.paddingTop}px; padding-bottom: {vw.paddingBottom}px;">
         {#each visibleNodes as node (node.fullPath)}
           {#if node.kind === "folder"}
             {@const folderCollapsed = fileTreeCollapse.isCollapsed(node.fullPath)}
+            {@const folderState = pickerMode ? folderCheckState(node.fullPath) : null}
             <div
               role="treeitem"
               aria-level={node.depth + 1}
@@ -256,9 +421,23 @@
               tabindex="-1"
               class="flex items-center gap-1 pr-3 h-[28px] text-fg-3 cursor-pointer hover:bg-card"
               style="padding-left: {indentPx(node.depth)};"
-              onclick={() => toggleFolder(node.fullPath)}
+              onclick={(e) => {
+                if (pickerMode && (e.target as HTMLElement).closest("input[type=checkbox]")) return;
+                toggleFolder(node.fullPath);
+              }}
               onkeydown={(e) => e.key === "Enter" && toggleFolder(node.fullPath)}
             >
+              {#if pickerMode && folderState}
+                <input
+                  type="checkbox"
+                  class="shrink-0 size-3.5 accent-accent"
+                  checked={folderState === "all"}
+                  use:indeterminateCheckbox={folderState === "partial"}
+                  onclick={(e) => e.stopPropagation()}
+                  onchange={() => toggleFolderSelection(node.fullPath)}
+                  aria-label="Select all files in {node.name}"
+                />
+              {/if}
               <svg
                 width="10"
                 height="10"
@@ -276,18 +455,37 @@
           {:else if node.file}
             {@const file = resolveTreeFile(filesByPath, node)!}
             {@const status = fileStatusDisplay(file.status)}
-            {@const selected = selectedFile?.path === file.path}
-            {@const inViewport = !selected && viewportPath === file.path}
+            {@const selected = !pickerMode && selectedFile?.path === file.path}
+            {@const inViewport = !pickerMode && !selected && viewportPath === file.path}
+            {@const pickerFocused = pickerMode && visibleFilePaths[pickerFocusIdx] === file.path}
+            {@const checked = pickerMode && isPathSelected(file.path)}
             <div
               role="treeitem"
               aria-level={node.depth + 1}
-              aria-selected={selected}
+              aria-selected={pickerMode ? checked : selected}
               tabindex={selected ? 0 : -1}
-              class="flex items-center gap-1.5 pr-3 h-[28px] cursor-pointer border-l-2 {selected ? 'bg-tree-selected border-accent' : inViewport ? 'border-accent/40 bg-card/60' : 'border-transparent hover:bg-card'}"
+              class="flex items-center gap-1.5 pr-3 h-[28px] cursor-pointer border-l-2 {pickerFocused ? 'bg-ink-700 border-accent/60' : selected ? 'bg-tree-selected border-accent' : inViewport ? 'border-accent/40 bg-card/60' : checked ? 'bg-card/40 border-transparent' : 'border-transparent hover:bg-card'}"
               style="padding-left: {indentPx(node.depth)};"
-              onclick={() => jumpToFile(file.path, file.source_index)}
-              onkeydown={(e) => e.key === "Enter" && jumpToFile(file.path, file.source_index)}
+              onclick={() =>
+                pickerMode
+                  ? toggleSelection(file.path)
+                  : jumpToFile(file.path, file.source_index)}
+              onkeydown={(e) => {
+                if (e.key !== "Enter") return;
+                if (pickerMode) toggleSelection(file.path);
+                else jumpToFile(file.path, file.source_index);
+              }}
             >
+              {#if pickerMode}
+                <input
+                  type="checkbox"
+                  class="shrink-0 size-3.5 accent-accent"
+                  checked={checked}
+                  onclick={(e) => e.stopPropagation()}
+                  onchange={() => toggleSelection(file.path)}
+                  aria-label="Include {node.name} in review"
+                />
+              {/if}
               <FileStatusIcon kind={status.icon} class={status.className} title={status.title} />
 
               <span class="truncate flex-1 min-w-0 flex items-center gap-1">
@@ -337,10 +535,12 @@
           {/if}
         {/each}
       </div>
+    {:else if treeEmptyMessage}
+      <div class="flex items-center justify-center h-full text-muted text-sm">{treeEmptyMessage}</div>
     {/if}
   </div>
 
-  {#if snapshot}
+  {#if snapshot && !pickerMode}
     <ScopeSelector
       mode={snapshot.mode}
       total_count={snapshot.total_count}

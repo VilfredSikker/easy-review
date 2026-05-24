@@ -332,6 +332,18 @@ impl AiProviderConfig {
             .clone()
             .unwrap_or_else(|| title_case(provider_id))
     }
+
+    /// True when this provider's CLI emits Claude/Cursor-style `stream-json` on stdout.
+    pub fn uses_stream_json_log(&self) -> bool {
+        agent_command_uses_stream_json(&self.command)
+    }
+}
+
+/// CLI commands that emit Claude/Cursor-style `stream-json` on stdout.
+pub fn agent_command_uses_stream_json(command: &str) -> bool {
+    matches!(command, "claude" | "agent")
+        || command.ends_with("/claude")
+        || command.ends_with("/agent")
 }
 
 impl AiModelConfig {

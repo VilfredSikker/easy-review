@@ -356,7 +356,7 @@ fn render_modal_hub(
     let title_color = match kind {
         HubKind::Git => styles::GREEN(),
         HubKind::Ai => styles::PURPLE(),
-        HubKind::AiProvider | HubKind::AiModel => styles::PURPLE(),
+        HubKind::AiProvider | HubKind::AiModel | HubKind::AiExpert => styles::PURPLE(),
         HubKind::Verify | HubKind::VerifyPackage => styles::YELLOW(),
         HubKind::Help => styles::CYAN(),
         HubKind::Open => styles::BLUE(),

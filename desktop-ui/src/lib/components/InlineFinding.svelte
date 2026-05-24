@@ -95,7 +95,9 @@
   <!-- Header -->
   <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs">
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={severityColor} stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></svg>
-    <span class="font-medium" style="color: {severityColor}">AI finding</span>
+    <span class="font-medium" style="color: {severityColor}">
+      {finding.expert_label ? `${finding.expert_label} finding` : "AI finding"}
+    </span>
     <span class="px-1.5 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-medium" style="background: {severityColor}26; color: {severityColor}">
       {finding.severity}
     </span>
