@@ -2,7 +2,7 @@
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { wordDiff } from "$lib/wordDiff";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
-  import { remapSpanColor } from "$lib/spanColorRemap";
+  import DiffLineContent from "./DiffLineContent.svelte";
   import type { SplitRow } from "$lib/splitRows";
 
   interface Props {
@@ -76,17 +76,12 @@
       {:else}
         <span>&nbsp;</span>
       {/if}
-      {#if wd}
-        {#each wd.old as wspan}
-          {#if wspan.changed}<span class="bg-del-fg/30">{wspan.text}</span>{:else}{wspan.text}{/if}
-        {/each}
-      {:else if left.spans}
-        {#each left.spans as span}
-          {#if span.color}<span style="color: {remapSpanColor(span.color)}">{span.text}</span>{:else}{span.text}{/if}
-        {/each}
-      {:else}
-        {left.text}
-      {/if}
+      <DiffLineContent
+        text={left.text}
+        wordSpans={wd?.old ?? null}
+        syntaxSpans={left.spans}
+        changedBgClass="bg-del-fg/30"
+      />
     {:else}
       <span>&nbsp;</span>
     {/if}
@@ -113,17 +108,12 @@
       {:else}
         <span>&nbsp;</span>
       {/if}
-      {#if wd}
-        {#each wd.new as wspan}
-          {#if wspan.changed}<span class="bg-add-fg/30">{wspan.text}</span>{:else}{wspan.text}{/if}
-        {/each}
-      {:else if right.spans}
-        {#each right.spans as span}
-          {#if span.color}<span style="color: {remapSpanColor(span.color)}">{span.text}</span>{:else}{span.text}{/if}
-        {/each}
-      {:else}
-        {right.text}
-      {/if}
+      <DiffLineContent
+        text={right.text}
+        wordSpans={wd?.new ?? null}
+        syntaxSpans={right.spans}
+        changedBgClass="bg-add-fg/30"
+      />
     {:else}
       <span>&nbsp;</span>
     {/if}

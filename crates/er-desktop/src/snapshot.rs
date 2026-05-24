@@ -1888,17 +1888,20 @@ fn build_hunks(
                 .lines
                 .iter()
                 .map(|line| {
-                    let kind = match line.line_type {
-                        LineType::Add => "add",
-                        LineType::Delete => "del",
-                        LineType::Context => "context",
-                        LineType::Fold(_) => "fold",
+                    let (kind, text) = match line.line_type {
+                        LineType::Add => ("add", line.content.clone()),
+                        LineType::Delete => ("del", line.content.clone()),
+                        LineType::Context => ("context", line.content.clone()),
+                        LineType::Fold(hidden) => (
+                            "fold",
+                            format!("··· {hidden} unchanged lines ···"),
+                        ),
                     };
                     LineSnapshot {
                         old_num: line.old_num,
                         new_num: line.new_num,
                         kind: kind.to_string(),
-                        text: line.content.clone(),
+                        text,
                     }
                 })
                 .collect();

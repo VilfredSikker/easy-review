@@ -1,21 +1,18 @@
 import { langForPath } from "./extToLang";
 import { highlightLines } from "./highlightClient";
 import type { HunkHighlight } from "./highlightCache";
+import {
+  buildHighlightSides,
+  fileHasDeletions,
+  fileNeedsSyntaxSpans,
+  spansToHunksFromSides,
+} from "./highlightPlan";
 import type { SyntaxTheme } from "./syntaxThemes";
 import type { FileSnapshot, SpanSnapshot } from "./types";
 
-function flattenHighlightLines(file: FileSnapshot): string[] {
-  const lines: string[] = [];
-  for (const hunk of file.hunks) {
-    for (const line of hunk.lines) {
-      if (line.kind === "fold") continue;
-      lines.push(line.text);
-    }
-  }
-  return lines;
-}
+export { fileNeedsSyntaxSpans, lineNeedsSyntaxSpans } from "./highlightPlan";
 
-/** Convert per-line worker spans back into per-hunk layout for `applyHunkSpans`. */
+/** Convert flat worker spans (legacy single-buffer layout) into per-hunk layout. */
 export function spansToHunks(file: FileSnapshot, lineSpans: SpanSnapshot[][]): HunkHighlight[] {
   let cursor = 0;
   return file.hunks.map((hunk, hunk_index) => ({
@@ -33,9 +30,18 @@ export async function highlightFile(
   file: FileSnapshot,
   theme: SyntaxTheme,
 ): Promise<HunkHighlight[]> {
-  const texts = flattenHighlightLines(file);
-  if (texts.length === 0) return [];
+  const { newSide, oldSide } = buildHighlightSides(file);
+  if (newSide.texts.length === 0 && oldSide.texts.length === 0) return [];
+
   const lang = langForPath(file.path);
-  const lineSpans = await highlightLines(texts, lang, theme);
-  return spansToHunks(file, lineSpans);
+  const needOld = fileHasDeletions(file) && oldSide.texts.length > 0;
+
+  const [newSpans, oldSpans] = await Promise.all([
+    newSide.texts.length > 0
+      ? highlightLines(newSide.texts, lang, theme)
+      : Promise.resolve([] as SpanSnapshot[][]),
+    needOld ? highlightLines(oldSide.texts, lang, theme) : Promise.resolve([] as SpanSnapshot[][]),
+  ]);
+
+  return spansToHunksFromSides(file, newSide, newSpans, oldSide, oldSpans);
 }

@@ -10,7 +10,10 @@ const EXT_TO_LANG: Record<string, string> = {
   rs: "rust",
   py: "python",
   pyw: "python",
-  svelte: "svelte",
+  // SFCs: Shiki's svelte/vue grammars break on diff fragments; match TUI (typescript).
+  svelte: "typescript",
+  vue: "typescript",
+  astro: "typescript",
   html: "html",
   htm: "html",
   css: "css",

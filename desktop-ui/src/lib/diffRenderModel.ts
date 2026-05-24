@@ -48,7 +48,7 @@ export const NO_CHANGES_HEIGHT = 44;
 const LEGACY_CACHE_LIMIT = 100;
 const _legacyCache = new Map<string, FileRenderModel>();
 
-function computeUnifiedPairs(hunk: HunkSnapshot): UnifiedPair[] {
+export function computeUnifiedPairs(hunk: HunkSnapshot): UnifiedPair[] {
   const lines = hunk.lines;
   const pairs: UnifiedPair[] = new Array(lines.length).fill(null).map(() => ({ partner: null }));
   let i = 0;
@@ -160,6 +160,15 @@ export type CrossFileFlatRow =
       filePath: string;
       hunkIdx: number;
       lineIdx: number;
+      height: number;
+      identity: string;
+    }
+  | {
+      type: "content-fold";
+      filePath: string;
+      hunkIdx: number;
+      lineIdx: number;
+      label: string;
       height: number;
       identity: string;
     }
@@ -293,11 +302,27 @@ function visBits(v: CommentVisibility): number {
   return (v.hideAll ? 1 : 0) | (v.hideResolved ? 2 : 0) | (v.hideOutdated ? 4 : 0);
 }
 
+/** Line count for cache invalidation when hunks grow (lazy load, poll refresh). */
+export function diffLineCount(file: FileSnapshot): number {
+  let n = 0;
+  for (const hunk of file.hunks) {
+    n += hunk.lines.length;
+  }
+  return n;
+}
+
+/** Fingerprint for cross-file model cache — busts when any file diff changes. */
+export function filesRenderFingerprint(files: FileSnapshot[]): string {
+  return files
+    .map((f) => `${f.path}:${f.cache_key}:${diffLineCount(f)}:${f.is_lazy_stub ? 1 : 0}`)
+    .join("|");
+}
+
 const _blockCache = new WeakMap<FileSnapshot, Map<string, FileBlock>>();
 
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
-  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}`;
+  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}`;
 
   let perFile = _blockCache.get(file);
   if (!perFile) {
@@ -366,6 +391,18 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
       if (viewMode === "unified") {
         for (let lineIdx = 0; lineIdx < hunk.lines.length; lineIdx++) {
           const line = hunk.lines[lineIdx];
+          if (line.kind === "fold") {
+            rows.push({
+              type: "content-fold",
+              filePath: file.path,
+              hunkIdx,
+              lineIdx,
+              label: line.text || "··· folded lines ···",
+              height: LINE_HEIGHT,
+              identity: `cf:${file.path}:${hunkIdx}:${lineIdx}`,
+            });
+            continue;
+          }
           rows.push({
             type: "content-unified",
             filePath: file.path,
@@ -617,7 +654,7 @@ function emptyCrossFileModel(identity: string): CrossFileModel {
 
 export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   const { files, viewMode, mode, annotationIndex, commentVisibility, snapshotKey } = input;
-  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}`;
+  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${filesRenderFingerprint(files)}`;
 
   const cached = _crossFileLru.get(identity);
   if (cached) {

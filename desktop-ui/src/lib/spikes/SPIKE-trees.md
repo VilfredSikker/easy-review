@@ -59,4 +59,4 @@ Live updates use `setGitStatus` + `resetPaths` with fresh `preparedInput` (see h
 
 ## Recommendation
 
-Use this spike to decide **product** fit (folder expand/collapse, search UX, icons). The recent er +/− bug was a **memo bug** in `treeFromPaths.ts`, not a missing virtualization library — keep production `FileTree` until spike sign-off.
+**Do not adopt for production.** er `FileTree` uses the classic layout (git status SVGs, `›` folder breadcrumbs, sparkle findings, collapsible folders) and fresh +/− via `resolveTreeFile`. Use this spike only as a scroll/icon benchmark.

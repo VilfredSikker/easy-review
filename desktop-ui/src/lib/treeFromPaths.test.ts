@@ -3,7 +3,9 @@ import {
   buildTree,
   filesByPathMap,
   flattenForNav,
+  formatFolderLabel,
   resolveTreeFile,
+  visibleTree,
 } from "./treeFromPaths";
 import type { FileSnapshot } from "./types";
 
@@ -25,6 +27,21 @@ function file(path: string, overrides: Partial<FileSnapshot> = {}): FileSnapshot
     ...overrides,
   };
 }
+
+describe("formatFolderLabel", () => {
+  it("joins segments with ›", () => {
+    expect(formatFolderLabel(["a", "b"])).toBe("a › b");
+    expect(formatFolderLabel(["packages", "discovery-platform", "src"])).toBe(
+      "packages › discovery-platform › src",
+    );
+  });
+
+  it("ellipsis middle when 4+ segments", () => {
+    expect(formatFolderLabel(["admin", "lib", "auth", "middleware"])).toBe(
+      "admin › … › middleware",
+    );
+  });
+});
 
 describe("flattenForNav", () => {
   it("returns empty for empty input", () => {
@@ -85,6 +102,32 @@ describe("flattenForNav", () => {
     const fresh = resolveTreeFile(filesByPathMap(second), node!);
     expect(fresh?.additions).toBe(99);
     expect(fresh?.deletions).toBe(0);
+  });
+
+  it("visibleTree hides descendants of collapsed folders", () => {
+    const paths = [
+      "src/lib/a.ts",
+      "src/lib/nested/b.ts",
+      "src/other.ts",
+    ];
+    const tree = buildTree(paths.map(file));
+    const libFolder = tree.find((n) => n.kind === "folder" && n.fullPath === "src/lib");
+    expect(libFolder).toBeDefined();
+
+    const collapsed = new Set(["src/lib"]);
+    const visible = visibleTree(tree, collapsed);
+    const filePaths = visible.filter((n) => n.kind === "file").map((n) => n.fullPath);
+    expect(filePaths).not.toContain("src/lib/a.ts");
+    expect(filePaths).not.toContain("src/lib/nested/b.ts");
+    expect(filePaths).toContain("src/other.ts");
+    expect(flattenForNav(tree, collapsed)).toEqual(["src/other.ts"]);
+  });
+
+  it("uses › in collapsed folder row names", () => {
+    const paths = ["apps/admin/src/lib/auth/middleware.ts"];
+    const tree = buildTree(paths.map(file));
+    const folder = tree.find((n) => n.kind === "folder");
+    expect(folder?.name).toBe("apps › … › auth");
   });
 
   it("handles mixed depths with folders sorted before files at each level", () => {

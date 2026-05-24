@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
@@ -9,6 +9,7 @@
   import FileHeaderRow from "./diff-rows/FileHeaderRow.svelte";
   import HunkHeaderRow from "./diff-rows/HunkHeaderRow.svelte";
   import UnifiedRow from "./diff-rows/UnifiedRow.svelte";
+  import FoldLineRow from "./diff-rows/FoldLineRow.svelte";
   import SplitContentRow from "./diff-rows/SplitContentRow.svelte";
   import CompactedStubRow from "./diff-rows/CompactedStubRow.svelte";
   import LazyStubRow from "./diff-rows/LazyStubRow.svelte";
@@ -17,10 +18,12 @@
   import FindingRow from "./diff-rows/FindingRow.svelte";
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
   import {
+    computeUnifiedPairs,
     getCrossFileModel,
     type CrossFileModel,
     type CrossFileFlatRow,
   } from "$lib/diffRenderModel";
+  import { splitRows } from "$lib/splitRows";
   import {
     windowFromScrollVariable,
     rowIndexAtOffset,
@@ -29,11 +32,43 @@
   import { buildAnnotationIndex } from "$lib/diffAnnotations";
   import { makeScrollThrottle } from "$lib/scrollThrottle";
   import { highlightCache, type HunkHighlight } from "$lib/highlightCache";
-  import { highlightFile } from "$lib/highlightFile";
+  import { fileNeedsSyntaxSpans, highlightFile } from "$lib/highlightFile";
+  import {
+    applyHunkSpansIfChanged,
+    cacheWouldImproveFile,
+    shouldSkipHighlightApply,
+  } from "$lib/highlightPlan";
   import { warmHighlightWorker } from "$lib/highlightClient";
   import { syntaxThemeById } from "$lib/syntaxThemes";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
-  import type { AppSnapshot, FileSnapshot, SpanSnapshot } from "$lib/types";
+  import type { AppSnapshot, FileSnapshot } from "$lib/types";
+
+  /** Prevents highlight $effect from re-applying spans in a reactive loop. */
+  const _spansAppliedKeys = new Set<string>();
+
+  const FIXED_HEIGHT_ROW_TYPES = new Set<CrossFileFlatRow["type"]>([
+    "file-header",
+    "hunk-header",
+    "content-unified",
+    "content-fold",
+    "content-split",
+    "compacted-stub",
+    "lazy-stub",
+    "no-changes",
+  ]);
+
+  function setsEqual(a: Set<string>, b: Set<string>): boolean {
+    if (a.size !== b.size) return false;
+    for (const x of a) if (!b.has(x)) return false;
+    return true;
+  }
+
+  function evictSpanKeysForPath(filePath: string): void {
+    const prefix = `${filePath}::`;
+    for (const key of _spansAppliedKeys) {
+      if (key.startsWith(prefix)) _spansAppliedKeys.delete(key);
+    }
+  }
 
   interface Props {
     viewModeOverride?: DiffViewMode | null;
@@ -183,11 +218,14 @@
 
   // ── Virtual window ────────────────────────────────────────────────────────
   const OVERSCAN = 5;
+  /** Sticky file-path bar in .vscroll (h-10) — row offsets live inside .hscroll below it. */
+  const STICKY_HEADER_PX = 40;
+  const rowScrollTopPx = $derived(Math.max(0, scrollTopPx - STICKY_HEADER_PX));
   const vw = $derived(
     windowFromScrollVariable(
       effectiveGeometry.cumulativeOffsets,
       effectiveGeometry.totalHeight,
-      scrollTopPx,
+      rowScrollTopPx,
       viewportHeightPx,
       OVERSCAN,
     ),
@@ -196,18 +234,18 @@
 
   // ── Visible file (for sticky header) ─────────────────────────────────────
   const visibleFilePath = $derived.by(() => {
-    const idx = rowIndexAtOffset(effectiveGeometry, scrollTopPx);
+    const idx = rowIndexAtOffset(effectiveGeometry, rowScrollTopPx);
     if (idx < 0 || idx >= crossFileModel.rows.length) return null;
     return crossFileModel.rows[idx].filePath ?? null;
   });
 
-  // Hide sticky overlay when the real file-header row is in [scrollTopPx, scrollTopPx+40).
+  // Hide sticky overlay when the real file-header row is in the top band of the row viewport.
   const stickyHeaderHidden = $derived.by(() => {
     if (!visibleFilePath) return false;
     const startRow = crossFileModel.fileStartRow.get(visibleFilePath);
     if (startRow === undefined) return false;
     const headerTop = effectiveGeometry.cumulativeOffsets[startRow] ?? 0;
-    return headerTop >= scrollTopPx && headerTop < scrollTopPx + 40;
+    return headerTop >= rowScrollTopPx && headerTop < rowScrollTopPx + STICKY_HEADER_PX;
   });
 
   // ── Selection clear on file change ───────────────────────────────────────
@@ -249,6 +287,7 @@
       oldFile.additions = newFile.additions;
       oldFile.deletions = newFile.deletions;
       oldFile.cache_key = newFile.cache_key;
+      evictSpanKeysForPath(oldFile.path);
       // Wake the highlight $effect — its previous run early-exited on
       // `is_lazy_stub`, so it didn't subscribe to the deep line-level
       // properties that just changed. Bump the counter to force a re-run.
@@ -273,9 +312,8 @@
   // Reactive counter — incrementing re-triggers the effect so newly-unblocked
   // files get picked up when the 4-concurrent cap frees up.
   let _highlightGeneration = $state(0);
-  /** Bumped when spans are applied — Svelte won't re-render on in-place line mutation otherwise. */
-  let highlightApplyGen = $state(0);
   const _highlightInFlight = new Set<string>();
+  let _lastSnapshotRef: AppSnapshot | null = null;
   let _visibleFilePaths = $state(new Set<string>());
 
   onMount(() => {
@@ -286,16 +324,7 @@
     return _visibleFilePaths.has(filePath);
   }
 
-  /** True when at least one content line lacks colored syntax spans. */
-  function snapFileNeedsSpans(snapFile: FileSnapshot): boolean {
-    for (const hunk of snapFile.hunks) {
-      for (const line of hunk.lines) {
-        if (line.kind === "fold") continue;
-        return !(line.spans?.some((s) => s.color));
-      }
-    }
-    return true;
-  }
+  const snapFileNeedsSpans = fileNeedsSyntaxSpans;
 
   function hunksHaveColor(hunks: HunkHighlight[]): boolean {
     for (const h of hunks) {
@@ -306,46 +335,93 @@
     return false;
   }
 
-  function applyHunkSpans(
+  /** Apply spans when they change live lines; returns true when hunks were updated. */
+  function tryApplyHighlightSpans(
     snapFile: FileSnapshot,
     hunks: HunkHighlight[],
-  ): void {
-    const spansByHunkIdx = new Map<number, SpanSnapshot[][]>();
-    for (const hh of hunks) spansByHunkIdx.set(hh.hunk_index, hh.lines);
-    snapFile.hunks = snapFile.hunks.map((hunk, hIdx) => {
-      const spans = spansByHunkIdx.get(hIdx);
-      if (!spans) return hunk;
-      return {
-        ...hunk,
-        lines: hunk.lines.map((line, lIdx) =>
-          spans[lIdx] !== undefined ? { ...line, spans: spans[lIdx] } : line,
-        ),
-      };
-    });
-    highlightApplyGen++;
+    spanKey: string,
+  ): boolean {
+    if (shouldSkipHighlightApply(snapFile, _spansAppliedKeys.has(spanKey))) return false;
+    if (!hunksHaveColor(hunks)) {
+      _spansAppliedKeys.add(spanKey);
+      return false;
+    }
+    if (!snapFileNeedsSpans(snapFile)) {
+      _spansAppliedKeys.add(spanKey);
+      return false;
+    }
+
+    const changed = applyHunkSpansIfChanged(snapFile, hunks);
+    if (changed) {
+      _spansAppliedKeys.add(spanKey);
+      return true;
+    }
+
+    // Cache apply made no progress — stop cache re-apply; fall through to worker if still needed.
+    if (!cacheWouldImproveFile(snapFile, hunks)) {
+      _spansAppliedKeys.add(spanKey);
+    } else {
+      _spansAppliedKeys.delete(spanKey);
+    }
+    return false;
   }
+
+  function setVisibleFilePaths(next: Set<string>): void {
+    if (setsEqual(_visibleFilePaths, next)) return;
+    _visibleFilePaths = next;
+  }
+
+  // Poll replaces snapshot objects — evict applied keys so cache can re-apply once.
+  $effect(() => {
+    if (snapshot === _lastSnapshotRef) return;
+    _lastSnapshotRef = snapshot;
+    for (const f of snapshot?.files ?? []) {
+      if (fileNeedsSyntaxSpans(f)) {
+        _spansAppliedKeys.delete(highlightCache.key(f.path, f.cache_key, syntaxTheme.id));
+      }
+    }
+  });
+
+  // Drop applied-span keys when files leave the snapshot or cache_key changes.
+  $effect(() => {
+    const list = snapshot?.files ?? [];
+    const valid = new Set(
+      list.map((f) => highlightCache.key(f.path, f.cache_key, syntaxTheme.id)),
+    );
+    for (const key of _spansAppliedKeys) {
+      if (!valid.has(key)) _spansAppliedKeys.delete(key);
+    }
+  });
 
   $effect(() => {
     _highlightGeneration; // reactive dep: re-runs when a request completes
     const rows = windowedRows;
     const visiblePaths = new Set(rows.map((r) => r.filePath));
-    _visibleFilePaths = visiblePaths;
+    setVisibleFilePaths(visiblePaths);
     for (const filePath of visiblePaths) {
       const file = files.find((f) => f.path === filePath);
       if (!file || file.is_lazy_stub || file.hunks.length === 0) continue;
-      const firstContentLine = file.hunks[0]?.lines.find((l) => l.kind !== "fold");
-      if (!firstContentLine) continue;
-      const cacheKey = highlightCache.key(file.path, file.cache_key, syntaxTheme.id);
-      // Cache hit: backend poll wiped client-side spans, but we still have the
-      // highlight result — re-apply instead of re-tokenizing.
-      const cachedHunks = highlightCache.get(cacheKey);
+      const spanKey = highlightCache.key(file.path, file.cache_key, syntaxTheme.id);
+      const snapFile = app.snapshot?.files?.find((f) => f.path === file.path);
+      if (!snapFile) continue;
+      if (shouldSkipHighlightApply(snapFile, _spansAppliedKeys.has(spanKey))) continue;
+
+      const cachedHunks = highlightCache.get(spanKey);
       if (cachedHunks) {
-        const snapFile = app.snapshot?.files?.find((f) => f.path === file.path);
-        if (snapFile && snapFileNeedsSpans(snapFile) && hunksHaveColor(cachedHunks)) {
-          applyHunkSpans(snapFile, cachedHunks);
+        const cacheExhausted =
+          _spansAppliedKeys.has(spanKey) && !cacheWouldImproveFile(snapFile, cachedHunks);
+        if (!cacheExhausted) {
+          queueMicrotask(() => {
+            untrack(() => {
+              const live = app.snapshot?.files?.find((f) => f.path === file.path);
+              if (!live) return;
+              tryApplyHighlightSpans(live, cachedHunks, spanKey);
+            });
+          });
+          continue;
         }
-        continue;
       }
+
       if (_highlightInFlight.has(file.path)) continue;
       if (_highlightInFlight.size >= 4) continue;
       _highlightInFlight.add(file.path);
@@ -355,14 +431,12 @@
           _highlightInFlight.delete(file.path);
           _highlightGeneration++; // wake effect for remaining files
           if (!app.snapshot) return;
-          const snapFile = app.snapshot.files?.find((f) => f.path === file.path);
-          if (!snapFile || requestCacheKey !== snapFile.cache_key) return;
+          const live = app.snapshot.files?.find((f) => f.path === file.path);
+          if (!live || requestCacheKey !== live.cache_key) return;
           if (!hunksHaveColor(hunks)) return;
-          highlightCache.set(cacheKey, hunks);
+          highlightCache.set(spanKey, hunks);
           if (!isFileInViewport(file.path)) return;
-          if (snapFileNeedsSpans(snapFile)) {
-            applyHunkSpans(snapFile, hunks);
-          }
+          untrack(() => tryApplyHighlightSpans(live, hunks, spanKey));
         })
         .catch(() => {
           _highlightInFlight.delete(file.path);
@@ -480,6 +554,8 @@
   let devRo: ResizeObserver | null = null;
   $effect(() => {
     if (!import.meta.env.DEV || !scrollEl) return;
+    void vw.start;
+    void vw.end;
     devRo?.disconnect();
     devRo = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -488,21 +564,18 @@
         if (!identity) continue;
         const actual = Math.round(entry.contentRect.height);
         const row = crossFileModel.rows.find((r) => r.identity === identity);
-        const expected = row ? (overlayHeights.get(identity) ?? row.height) : null;
-        if (expected !== null && Math.abs(actual - expected) > 1) {
+        if (!row || FIXED_HEIGHT_ROW_TYPES.has(row.type)) continue;
+        const expected = overlayHeights.get(identity) ?? row.height;
+        if (Math.abs(actual - expected) > 1) {
           console.error(`[er-dev] height mismatch: ${identity} expected=${expected} actual=${actual}`);
           onHeightChange(identity, actual);
         }
       }
     });
-    // Re-observe windowed rows each render tick.
-    const reattach = () => {
-      if (!scrollEl || !devRo) return;
-      scrollEl.querySelectorAll<HTMLElement>("[data-row-identity]").forEach((el) => {
-        devRo!.observe(el);
-      });
-    };
-    reattach();
+    if (!scrollEl || !devRo) return () => devRo?.disconnect();
+    scrollEl.querySelectorAll<HTMLElement>("[data-row-identity]").forEach((el) => {
+      devRo!.observe(el);
+    });
     return () => devRo?.disconnect();
   });
 
@@ -530,12 +603,17 @@
   }
 
   function getUnifiedPartner(row: Extract<CrossFileFlatRow, { type: "content-unified" }>) {
-    const pairs = crossFileModel.unifiedPairsByFile.get(row.filePath)?.[row.hunkIdx];
-    return pairs?.[row.lineIdx]?.partner ?? null;
+    const file = files.find((f) => f.path === row.filePath);
+    const hunk = file?.hunks[row.hunkIdx];
+    if (!hunk) return null;
+    return computeUnifiedPairs(hunk)[row.lineIdx]?.partner ?? null;
   }
 
   function getSplitRow(row: Extract<CrossFileFlatRow, { type: "content-split" }>) {
-    return crossFileModel.splitRowsByFile.get(row.filePath)?.[row.hunkIdx]?.[row.splitRowIdx] ?? null;
+    const file = files.find((f) => f.path === row.filePath);
+    const hunk = file?.hunks[row.hunkIdx];
+    if (!hunk) return null;
+    return splitRows(hunk.lines)[row.splitRowIdx] ?? null;
   }
 
   function getThread(threadId: string) {
@@ -650,21 +728,19 @@
               <FileHeaderRow {row} />
             {:else if row.type === "hunk-header"}
               <HunkHeaderRow {row} />
+            {:else if row.type === "content-fold"}
+              <FoldLineRow {row} />
             {:else if row.type === "content-unified"}
-              {#key `${row.identity}:${highlightApplyGen}`}
-                {@const line = getUnifiedLine(row)}
-                {@const partner = getUnifiedPartner(row)}
-                {#if line}
-                  <UnifiedRow {row} {line} {partner} filePath={row.filePath} />
-                {/if}
-              {/key}
+              {@const line = getUnifiedLine(row)}
+              {@const partner = getUnifiedPartner(row)}
+              {#if line}
+                <UnifiedRow {row} {line} {partner} filePath={row.filePath} />
+              {/if}
             {:else if row.type === "content-split"}
-              {#key `${row.identity}:${highlightApplyGen}`}
-                {@const splitRow = getSplitRow(row)}
-                {#if splitRow}
-                  <SplitContentRow {row} {splitRow} filePath={row.filePath} />
-                {/if}
-              {/key}
+              {@const splitRow = getSplitRow(row)}
+              {#if splitRow}
+                <SplitContentRow {row} {splitRow} filePath={row.filePath} />
+              {/if}
             {:else if row.type === "compacted-stub"}
               <CompactedStubRow {row} />
             {:else if row.type === "lazy-stub"}

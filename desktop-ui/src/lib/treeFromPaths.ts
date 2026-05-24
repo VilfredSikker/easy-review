@@ -28,6 +28,15 @@ function isFolder(n: MutableFolder | MutableFile): n is MutableFolder {
   return "children" in n;
 }
 
+const FOLDER_SEP = " › ";
+
+/** Display label for a collapsed single-child folder chain. */
+export function formatFolderLabel(parts: string[]): string {
+  if (parts.length === 0) return "";
+  if (parts.length < 4) return parts.join(FOLDER_SEP);
+  return `${parts[0]}${FOLDER_SEP}…${FOLDER_SEP}${parts[parts.length - 1]}`;
+}
+
 /**
  * Build a folder tree from a flat list of files. VS Code-style collapsing:
  * single-child folder chains get joined into one row
@@ -86,7 +95,7 @@ function _buildTree(files: FileSnapshot[]): TreeNode[] {
           cur = only;
         }
         out.push({
-          name: parts.join("/"),
+          name: formatFolderLabel(parts),
           fullPath: cur.fullPath,
           depth,
           kind: "folder",
@@ -127,9 +136,34 @@ export function buildTree(files: FileSnapshot[]): TreeNode[] {
  * Used by keyboard navigation so `j`/`k` step through files in the order the
  * user sees them, not the path-sorted backend order.
  */
-export function flattenForNav(tree: TreeNode[]): string[] {
-  const out: string[] = [];
+/**
+ * Hide file rows under collapsed folders. Folder rows stay visible.
+ * `collapsedPaths` uses folder `fullPath` keys from `buildTree`.
+ */
+export function visibleTree(
+  tree: TreeNode[],
+  collapsedPaths: ReadonlySet<string>,
+): TreeNode[] {
+  if (collapsedPaths.size === 0) return tree;
+  const out: TreeNode[] = [];
+  let hideBelowDepth = Infinity;
   for (const node of tree) {
+    if (node.depth >= hideBelowDepth) continue;
+    hideBelowDepth = Infinity;
+    out.push(node);
+    if (node.kind === "folder" && collapsedPaths.has(node.fullPath)) {
+      hideBelowDepth = node.depth + 1;
+    }
+  }
+  return out;
+}
+
+export function flattenForNav(
+  tree: TreeNode[],
+  collapsedPaths: ReadonlySet<string> = new Set(),
+): string[] {
+  const out: string[] = [];
+  for (const node of visibleTree(tree, collapsedPaths)) {
     if (node.kind === "file") out.push(node.fullPath);
   }
   return out;

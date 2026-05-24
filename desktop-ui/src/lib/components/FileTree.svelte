@@ -1,11 +1,15 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
-  import { buildTree, filesByPathMap, resolveTreeFile } from "$lib/treeFromPaths";
+  import { fileStatusDisplay } from "$lib/fileStatus";
+  import FileStatusIcon from "$lib/components/FileStatusIcon.svelte";
+  import TreeIcons from "$lib/components/icons/TreeIcons.svelte";
+  import { buildTree, filesByPathMap, resolveTreeFile, visibleTree } from "$lib/treeFromPaths";
   import ScopeSelector from "./ScopeSelector.svelte";
   import { onDestroy } from "svelte";
   import { windowFromScroll } from "$lib/virtualWindow";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
+  import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 
   interface Props {
     /** When true, render narrow icon-only rail (mock lines 414–421). */
@@ -18,19 +22,17 @@
   const filesByPath = $derived(filesByPathMap(files));
   const ai = $derived(snapshot?.ai);
   const tree = $derived(buildTree(files));
+  const displayTree = $derived(visibleTree(tree, fileTreeCollapse.collapsed));
   const selectedFile = $derived(snapshot ? files[snapshot.selected_file] : null);
+  const totalFindings = $derived(files.reduce((s, f) => s + f.finding_count, 0));
 
   // ── Filter input state ────────────────────────────────────────────────────
-  // Local draft separates UI from backend so typing stays responsive while
-  // the expensive snapshot rebuild is debounced. Apply on settle / Enter /
-  // suggestion click; clear immediately on Escape.
   let filterDraft = $state("");
   let inputFocused = $state(false);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let inputEl: HTMLInputElement | null = $state(null);
   const DEBOUNCE_MS = 180;
 
-  // Sync draft from backend, unless the user is actively typing.
   $effect(() => {
     const backendValue = snapshot?.filter ?? "";
     if (!inputFocused || filterDraft === backendValue) {
@@ -85,7 +87,7 @@
 
   // ── Virtualization ────────────────────────────────────────────────────────
   const VIRTUALIZE_THRESHOLD = 1000;
-  const ROW_HEIGHT = 26;
+  const ROW_HEIGHT = 28;
   let listEl: HTMLDivElement | null = $state(null);
   let scrollTop = $state(0);
   let viewportHeight = $state(0);
@@ -100,41 +102,43 @@
     return () => ro.disconnect();
   });
 
-  const shouldVirtualize = $derived(tree.length >= VIRTUALIZE_THRESHOLD);
+  const shouldVirtualize = $derived(displayTree.length >= VIRTUALIZE_THRESHOLD);
   const vw = $derived(
     shouldVirtualize
-      ? windowFromScroll(tree.length, ROW_HEIGHT, scrollTop, viewportHeight)
-      : { start: 0, end: tree.length, paddingTop: 0, paddingBottom: 0 },
+      ? windowFromScroll(displayTree.length, ROW_HEIGHT, scrollTop, viewportHeight)
+      : { start: 0, end: displayTree.length, paddingTop: 0, paddingBottom: 0 },
   );
-  const visibleNodes = $derived(tree.slice(vw.start, vw.end));
+  const visibleNodes = $derived(displayTree.slice(vw.start, vw.end));
 
-  // Viewport-follow: dim-highlight the file currently visible in the diff scroll area.
   const viewportPath = $derived(diffScroll.currentFilePath);
 
   function jumpToFile(path: string, sourceIdx: number) {
-    // Routed through diffNav — legacy mode falls back to `getElementById +
-    // scrollIntoView({ behavior: "auto" })` to avoid the IntersectionObserver
-    // stampede smooth scroll caused in 2k-file PRs.
+    fileTreeCollapse.expandAncestorsOf(path);
     diffNav.scrollToFile(path);
-    // Keep the focus cursor in sync for keyboard nav / Mark reviewed.
     app.cmd("select_file", { idx: sourceIdx });
   }
 
-  /** `pl-3` (base) + 16px per additional depth, mirroring the mock's pl-7 → pl-11 progression. */
+  function toggleFolder(folderPath: string) {
+    fileTreeCollapse.toggle(folderPath);
+  }
+
   function indentPx(depth: number): string {
     return `${12 + depth * 16}px`;
   }
 
-  function findingColor(risk: string | null): string {
-    if (risk === "high") return "#ef4444";
-    if (risk === "med") return "#fbbf24";
-    if (risk === "low") return "#60a5fa";
-    return "#5e5e5e";
+  function filenameClass(file: { reviewed: boolean; status: string }, selected: boolean): string {
+    if (file.status === "deleted" || file.reviewed) return "text-muted line-through";
+    if (selected) return "font-semibold text-fg";
+    return "text-fg-2";
   }
+
+  const hasRiskCounts = $derived(ai && (ai.high > 0 || ai.med > 0 || ai.low > 0));
+  const hasAiMeta = $derived(
+    ai && (ai.comments > 0 || ai.questions > 0 || totalFindings > 0),
+  );
 </script>
 
 {#if collapsed}
-  <!-- Collapsed rail (mock lines 414–421) -->
   <div class="w-10 border-r border-hairline bg-surface flex flex-col items-center py-3 gap-2 transition-[width] duration-200">
     <button
       onclick={() => app.togglePanel("tree")}
@@ -152,7 +156,6 @@
   </div>
 {:else}
 <div class="w-64 border-r border-hairline bg-surface flex flex-col overflow-hidden transition-[width] duration-200">
-  <!-- Search header -->
   <div class="relative shrink-0 border-b border-hairline">
     <div class="flex items-center gap-2 px-3 py-2">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" class="shrink-0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
@@ -190,36 +193,45 @@
     {/if}
   </div>
 
-  <!-- Summary header -->
   {#if snapshot}
-    <div class="flex items-center gap-3 px-3 py-1.5 border-b border-hairline text-[10px] mono text-muted shrink-0">
+    <div class="flex items-center flex-wrap gap-x-2 gap-y-0.5 px-3 py-1.5 border-b border-hairline text-[10px] mono text-muted shrink-0">
       <span>{files.length} files</span>
-      {#if ai && ai.high > 0}
-        <span class="flex items-center gap-1 text-risk-high"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>{ai.high}</span>
+      {#if hasRiskCounts}
+        <span class="text-ink-400" aria-hidden="true">|</span>
+        {#if ai && ai.high > 0}
+          <span class="flex items-center gap-1 text-risk-high"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>{ai.high}</span>
+        {/if}
+        {#if ai && ai.med > 0}
+          <span class="flex items-center gap-1 text-risk-med"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>{ai.med}</span>
+        {/if}
+        {#if ai && ai.low > 0}
+          <span class="flex items-center gap-1 text-risk-low"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>{ai.low}</span>
+        {/if}
       {/if}
-      {#if ai && ai.med > 0}
-        <span class="flex items-center gap-1 text-risk-med"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>{ai.med}</span>
-      {/if}
-      {#if ai && ai.low > 0}
-        <span class="flex items-center gap-1 text-risk-low"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>{ai.low}</span>
-      {/if}
-      {#if ai && (ai.comments > 0 || ai.questions > 0)}<span class="text-ink-400">·</span>{/if}
-      {#if ai && ai.comments > 0}
-        <span class="flex items-center gap-1 text-comment">
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          {ai.comments}
-        </span>
-      {/if}
-      {#if ai && ai.questions > 0}
-        <span class="flex items-center gap-1 text-question">
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
-          {ai.questions}
-        </span>
+      {#if hasAiMeta}
+        <span class="text-ink-400" aria-hidden="true">|</span>
+        {#if ai && ai.comments > 0}
+          <span class="flex items-center gap-1 text-comment">
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            {ai.comments}
+          </span>
+        {/if}
+        {#if ai && ai.questions > 0}
+          <span class="flex items-center gap-1 text-question">
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
+            {ai.questions}
+          </span>
+        {/if}
+        {#if totalFindings > 0}
+          <span class="flex items-center gap-1 text-finding">
+            <TreeIcons name="sparkle" size={9} />
+            {totalFindings}
+          </span>
+        {/if}
       {/if}
     </div>
   {/if}
 
-  <!-- Tree -->
   <div
     role="tree"
     aria-label="Changed files"
@@ -229,26 +241,41 @@
   >
     {#if !snapshot}
       <div class="flex items-center justify-center h-full text-muted text-sm">Loading…</div>
-    {:else if tree.length === 0}
+    {:else if displayTree.length === 0}
       <div class="flex items-center justify-center h-full text-muted text-sm">No files</div>
     {:else}
       <div style="padding-top: {vw.paddingTop}px; padding-bottom: {vw.paddingBottom}px;">
         {#each visibleNodes as node (node.fullPath)}
           {#if node.kind === "folder"}
+            {@const folderCollapsed = fileTreeCollapse.isCollapsed(node.fullPath)}
             <div
               role="treeitem"
               aria-level={node.depth + 1}
-              aria-expanded={true}
+              aria-expanded={!folderCollapsed}
               aria-selected={false}
               tabindex="-1"
-              class="flex items-center gap-1.5 pr-3 h-[26px] text-fg-3 cursor-default"
+              class="flex items-center gap-1 pr-3 h-[28px] text-fg-3 cursor-pointer hover:bg-card"
               style="padding-left: {indentPx(node.depth)};"
+              onclick={() => toggleFolder(node.fullPath)}
+              onkeydown={(e) => e.key === "Enter" && toggleFolder(node.fullPath)}
             >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                class="shrink-0 transition-transform {folderCollapsed ? '' : 'rotate-90'}"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="shrink-0 opacity-80"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
               <span class="truncate">{node.name}</span>
             </div>
           {:else if node.file}
             {@const file = resolveTreeFile(filesByPath, node)!}
+            {@const status = fileStatusDisplay(file.status)}
             {@const selected = selectedFile?.path === file.path}
             {@const inViewport = !selected && viewportPath === file.path}
             <div
@@ -256,50 +283,56 @@
               aria-level={node.depth + 1}
               aria-selected={selected}
               tabindex={selected ? 0 : -1}
-              class="flex items-center gap-1.5 pr-3 h-[26px] cursor-pointer relative {selected ? 'bg-hover' : inViewport ? 'bg-card/60' : 'hover:bg-card'}"
+              class="flex items-center gap-1.5 pr-3 h-[28px] cursor-pointer border-l-2 {selected ? 'bg-tree-selected border-accent' : inViewport ? 'border-accent/40 bg-card/60' : 'border-transparent hover:bg-card'}"
               style="padding-left: {indentPx(node.depth)};"
               onclick={() => jumpToFile(file.path, file.source_index)}
               onkeydown={(e) => e.key === "Enter" && jumpToFile(file.path, file.source_index)}
             >
-              {#if selected}
-                <span class="absolute left-0 top-0 bottom-0 w-[3px] bg-accent"></span>
-              {:else if inViewport}
-                <span class="absolute left-0 top-0 bottom-0 w-[3px] bg-accent/40"></span>
-              {/if}
+              <FileStatusIcon kind={status.icon} class={status.className} title={status.title} />
 
-              <span
-                class="w-1.5 h-1.5 rounded-full shrink-0 {!file.reviewed && file.risk === 'high' ? 'bg-risk-high' : !file.reviewed && file.risk === 'med' ? 'bg-risk-med' : !file.reviewed && file.risk === 'low' ? 'bg-risk-low' : 'bg-transparent'}"
-              ></span>
+              <span class="truncate flex-1 min-w-0 flex items-center gap-1">
+                <span class="truncate {filenameClass(file, selected)}">{node.name}</span>
+                {#if !file.reviewed && file.risk}
+                  <span
+                    class="w-1.5 h-1.5 rounded-full shrink-0 {file.risk === 'high' ? 'bg-risk-high' : file.risk === 'med' ? 'bg-risk-med' : 'bg-risk-low'}"
+                  ></span>
+                {/if}
+              </span>
 
-              <span class="truncate flex-1 {file.reviewed ? 'text-muted line-through' : selected ? 'text-fg' : 'text-fg-2'}">{node.name}</span>
-
-              {#if file.reviewed}
-                <span class="text-[10px] text-muted shrink-0">✓ reviewed</span>
-              {:else}
-                {#if file.finding_count > 0}
-                  <span class="text-[10px] mono shrink-0" style="color: {findingColor(file.risk)};">{file.finding_count}</span>
-                {/if}
-                {#if file.comment_count > 0}
-                  <span class="flex items-center gap-0.5 text-[10px] mono text-comment shrink-0">
-                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>{file.comment_count}
-                  </span>
-                {/if}
-                {#if file.question_count > 0}
-                  <span class="flex items-center gap-0.5 text-[10px] mono text-question shrink-0">
-                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>{file.question_count}
-                  </span>
-                {/if}
-                {#if file.is_lazy_stub}
-                  <span class="text-[11px] mono text-muted shrink-0 opacity-40">···</span>
+              <span class="ml-auto flex items-center gap-1.5 shrink-0">
+                {#if file.reviewed}
+                  <span class="text-[10px] text-muted shrink-0">✓ reviewed</span>
                 {:else}
-                  {#if file.additions > 0}
-                    <span class="text-[11px] mono text-add-fg shrink-0">+{file.additions}</span>
+                  {#if file.finding_count > 0}
+                    <span class="flex items-center gap-0.5 text-[10px] mono text-finding shrink-0">
+                      <TreeIcons name="sparkle" size={9} />
+                      {file.finding_count}
+                    </span>
                   {/if}
-                  {#if file.deletions > 0}
-                    <span class="text-[11px] mono text-del-fg shrink-0">−{file.deletions}</span>
+                  {#if file.comment_count > 0}
+                    <span class="flex items-center gap-0.5 text-[10px] mono text-comment shrink-0">
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                      {file.comment_count}
+                    </span>
+                  {/if}
+                  {#if file.question_count > 0}
+                    <span class="flex items-center gap-0.5 text-[10px] mono text-question shrink-0">
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
+                      {file.question_count}
+                    </span>
+                  {/if}
+                  {#if file.is_lazy_stub}
+                    <span class="text-[11px] mono text-muted shrink-0 opacity-40">···</span>
+                  {:else}
+                    {#if file.additions > 0}
+                      <span class="text-[11px] mono text-add-fg shrink-0">+{file.additions}</span>
+                    {/if}
+                    {#if file.deletions > 0}
+                      <span class="text-[11px] mono text-del-fg shrink-0">−{file.deletions}</span>
+                    {/if}
                   {/if}
                 {/if}
-              {/if}
+              </span>
             </div>
           {/if}
         {/each}

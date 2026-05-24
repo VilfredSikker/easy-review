@@ -44,6 +44,9 @@
   --color-question-border: rgba(253,224,71,0.25);
   --color-ai: #fbbf24;
 
+  --color-tree-selected: rgba(88, 166, 255, 0.14);
+  --color-finding: #c9a3f5;
+
   /* Semantic surface aliases (consume the ink-* scale). Use these in
    * components instead of raw ink shades or inline hex. */
   --color-bg:        var(--color-ink-900);

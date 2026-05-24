@@ -6,6 +6,7 @@ import { browser } from "./browser.svelte";
 import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
 import { closePrUrlModal, isPrUrlModalOpen, openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
+import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 
 // Callbacks registered by AiActionPalette to open itself
@@ -129,7 +130,7 @@ function moveFile(direction: 1 | -1) {
   const snap = app.snapshot;
   if (!snap || snap.files.length === 0) return;
   const tree = buildTree(snap.files);
-  const order = flattenForNav(tree);
+  const order = flattenForNav(tree, fileTreeCollapse.collapsed);
   if (order.length === 0) return;
   const cur = snap.files[snap.selected_file]?.path;
   let i = cur ? order.indexOf(cur) : -1;

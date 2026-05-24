@@ -2,7 +2,7 @@
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { wordDiff } from "$lib/wordDiff";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
-  import { remapSpanColor } from "$lib/spanColorRemap";
+  import DiffLineContent from "./DiffLineContent.svelte";
   import type { LineSnapshot } from "$lib/types";
 
   interface Props {
@@ -65,24 +65,11 @@
     {:else}
       <span>&nbsp;</span>
     {/if}
-    {#if wdSpans}
-      {#each wdSpans as wspan}
-        {#if wspan.changed}
-          <span class={wdBg}>{wspan.text}</span>
-        {:else}
-          {wspan.text}
-        {/if}
-      {/each}
-    {:else if line.spans}
-      {#each line.spans as span}
-        {#if span.color}
-          <span style="color: {remapSpanColor(span.color)}">{span.text}</span>
-        {:else}
-          {span.text}
-        {/if}
-      {/each}
-    {:else}
-      {line.text}
-    {/if}
+    <DiffLineContent
+      text={line.text}
+      wordSpans={wdSpans}
+      syntaxSpans={line.spans}
+      changedBgClass={wdBg}
+    />
   </div>
 </div>

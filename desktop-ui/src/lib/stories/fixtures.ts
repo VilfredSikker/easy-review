@@ -456,3 +456,66 @@ export const multiFolderSnapshot: AppSnapshot = {
   total_count: multiFolderFiles.length,
   reviewed_count: 1,
 };
+
+/** Classic file-tree mock: mixed git statuses, findings, deep folder breadcrumb. */
+export const classicTreeFiles: FileSnapshot[] = [
+  {
+    ...fileBase,
+    path: "packages/discovery-platform/src/lib/components/combobox/media/MediaCombobox.svelte",
+    status: "modified",
+    additions: 39,
+    deletions: 0,
+    risk: "med",
+    finding_count: 1,
+    comment_count: 1,
+    question_count: 1,
+    source_index: 0,
+  },
+  {
+    ...fileBase,
+    path: "packages/discovery-platform/src/lib/variant-warning-copy.ts",
+    status: "added",
+    additions: 8,
+    deletions: 0,
+    risk: "high",
+    finding_count: 2,
+    source_index: 1,
+  },
+  {
+    ...fileBase,
+    path: "apps/admin/src/lib/auth/middleware.ts",
+    status: "modified",
+    additions: 7,
+    deletions: 2,
+    risk: "low",
+    finding_count: 0,
+    source_index: 2,
+  },
+  {
+    ...fileBase,
+    path: "packages/discovery-platform/src/routes/page.test.ts",
+    status: "deleted",
+    additions: 0,
+    deletions: 12,
+    reviewed: true,
+    source_index: 3,
+  },
+  {
+    ...fileBase,
+    path: "README.md",
+    status: "modified",
+    additions: 1,
+    deletions: 1,
+    reviewed: true,
+    source_index: 4,
+  },
+];
+
+export const classicTreeSnapshot: AppSnapshot = {
+  ...baseSnapshot,
+  files: classicTreeFiles,
+  selected_file: 0,
+  total_count: classicTreeFiles.length,
+  reviewed_count: 2,
+  ai: aiWithFindings,
+};

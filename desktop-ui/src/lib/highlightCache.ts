@@ -10,6 +10,9 @@ interface CacheEntry {
   hunks: HunkHighlight[];
 }
 
+/** Bump when highlight stitch / span-mapping logic changes (invalidates stale entries). */
+const HIGHLIGHT_CACHE_VERSION = "v3";
+
 /** LRU cache for file highlight results, keyed by "filePath::cacheKey::syntaxTheme". */
 class HighlightCache {
   private map = new Map<string, CacheEntry>();
@@ -21,7 +24,7 @@ class HighlightCache {
   }
 
   key(filePath: string, cacheKey: string, syntaxTheme: string): string {
-    return `${filePath}::${cacheKey}::${syntaxTheme}`;
+    return `${filePath}::${cacheKey}::${syntaxTheme}::${HIGHLIGHT_CACHE_VERSION}`;
   }
 
   get(k: string): HunkHighlight[] | undefined {

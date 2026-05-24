@@ -6,6 +6,8 @@ import {
   LINE_HEIGHT,
   NO_CHANGES_HEIGHT,
   estimateLazyStubHeight,
+  diffLineCount,
+  filesRenderFingerprint,
   getFileBlock,
   getCrossFileModel,
   type CrossFileFlatRow,
@@ -401,6 +403,27 @@ describe("getFileBlock — caching", () => {
     expect(u.modelKey).not.toBe(s.modelKey);
   });
 
+  it("busts cache when cache_key or hunk lines change on same file object", () => {
+    const f = file({
+      path: "a.ts",
+      cache_key: "k1",
+      hunks: [hunk({ lines: [line({ kind: "context", old_num: 1, new_num: 1 })] })],
+    });
+    const a = getFileBlock(mkInputs(f, [f], emptyAi()));
+    f.cache_key = "k2";
+    f.hunks = [
+      hunk({
+        lines: [
+          line({ kind: "context", old_num: 1, new_num: 1 }),
+          line({ kind: "add", new_num: 2, text: "x" }),
+        ],
+      }),
+    ];
+    const b = getFileBlock(mkInputs(f, [f], emptyAi()));
+    expect(a).not.toBe(b);
+    expect(b.rows.length).toBeGreaterThan(a.rows.length);
+  });
+
   it("changing commentVisibility busts the cache", () => {
     const h1 = hunk({
       lines: [line({ kind: "context", old_num: 1, new_num: 1 })],
@@ -555,6 +578,34 @@ describe("getCrossFileModel — identity & cache invalidation", () => {
     const a = mkCross([f0], emptyAi(), { snapshotKey: "hit" });
     const b = mkCross([f0], emptyAi(), { snapshotKey: "hit" });
     expect(a).toBe(b);
+  });
+
+  it("busts cross-file cache when file cache_key changes", () => {
+    const f0 = makeSimpleFile("a.ts", 1);
+    const a = mkCross([f0], emptyAi(), { snapshotKey: "same-tab" });
+    f0.cache_key = "updated";
+    f0.hunks = [
+      hunk({
+        lines: [
+          line({ kind: "context", old_num: 1, new_num: 1 }),
+          line({ kind: "add", new_num: 2, text: "new" }),
+        ],
+      }),
+    ];
+    const b = mkCross([f0], emptyAi(), { snapshotKey: "same-tab" });
+    expect(a).not.toBe(b);
+    expect(b.rows.length).toBeGreaterThan(a.rows.length);
+  });
+});
+
+describe("filesRenderFingerprint", () => {
+  it("changes when line count changes", () => {
+    const f = makeSimpleFile("a.ts", 1);
+    const fp1 = filesRenderFingerprint([f]);
+    f.hunks[0].lines.push(line({ kind: "add", new_num: 2, text: "x" }));
+    const fp2 = filesRenderFingerprint([f]);
+    expect(fp1).not.toBe(fp2);
+    expect(diffLineCount(f)).toBe(2);
   });
 });
 
