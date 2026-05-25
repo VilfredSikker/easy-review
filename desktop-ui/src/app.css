@@ -115,6 +115,26 @@ body {
   font-family: var(--font-mono);
 }
 
+/* Inline comments / questions / AI findings: stay viewport-wide inside wide diff bands. */
+.hscroll {
+  container-type: inline-size;
+  container-name: diff-hscroll;
+}
+.annotation-inline-row {
+  width: 100cqw;
+  max-width: 100cqw;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.annotation-body-scroll {
+  min-width: 0;
+  max-height: 12rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 /* Diff row hover + selection styles — required by drag-select (mock lines 33–43). */
 .diff-row { cursor: default; }
 .diff-row:hover > div:not(.gutter):not(.diff-add):not(.diff-del) {

@@ -272,12 +272,16 @@ export function estimateLazyStubHeight(file: FileSnapshot): number {
   return total;
 }
 
+/** Max scroll height for annotation body text (matches `.annotation-body-scroll`). */
+const ANNOTATION_BODY_MAX_PX = 192;
+
 export function estimateThreadHeight(thread: ThreadSnapshot): number {
   let h = 48; // header
   const messages: Array<{ body_markdown: string }> = [thread.root, ...thread.replies];
   for (const m of messages) {
     const body = m.body_markdown ?? "";
-    h += 24 + Math.ceil(body.length / 80) * 20 + 12;
+    const bodyH = Math.min(ANNOTATION_BODY_MAX_PX, Math.ceil(body.length / 80) * 20);
+    h += 24 + bodyH + 12;
   }
   // composer_open not present on ThreadSnapshot — composer state lives outside the model.
   // promoted_to !== null means promoted to a GitHub comment → "Promoted" badge in place of reply footer.
@@ -290,8 +294,13 @@ export function estimateThreadHeight(thread: ThreadSnapshot): number {
 }
 
 export function estimateFindingHeight(finding: FlatFinding): number {
+  const title = finding.title ?? "";
   const body = finding.message_markdown ?? "";
-  return 48 + Math.ceil(body.length / 80) * 20 + 24;
+  const textH = Math.min(
+    ANNOTATION_BODY_MAX_PX,
+    Math.ceil((title.length + body.length) / 80) * 20,
+  );
+  return 48 + textH + 24;
 }
 
 function lineNumOf(line: LineSnapshot): number | null {

@@ -1,3 +1,10 @@
+/// Read-budget line for card-level AI (Ask / Validate on a single thread).
+pub const CARD_AI_READ_BUDGET_LINE: &str = r#"### Investigation budget
+
+Up to **~10** file/range reads for **this** finding or thread only; **no global session cap**. Use `Read` / `grep` / `rg` under `repo_root`. Cite paths and line ranges in your reply.
+
+"#;
+
 /// Embedded prompt templates for guided AI actions.
 ///
 /// These replicate the logic from the external Claude Code skills
@@ -113,7 +120,7 @@ pub fn review_rules_preamble(
 
 ### Confidence and verification
 - `confidence`: `confirmed` | `informational` | `tentative` (with `verification_plan`)
-- `evidence`: cite files/ranges read; budget ~5 reads per finding, ~30 total
+- `evidence`: cite files/ranges read; budget ~10 reads per finding (no global session cap)
 
 ### Finding caps
 - Max {per_file} findings per file, max {total} total
@@ -270,6 +277,30 @@ Write **only** findings — do not write order.json, checklist.json, or summary.
 2. `grep` / read 2–5 similar usages elsewhere (same directory or module first)
 3. Flag only deviations that affect correctness or maintainability (no naming/style nits)
 4. Cite established pattern locations in `evidence` (file + line range + note)"#,
+        );
+    }
+    if expert_id == "simplifying" {
+        lens.push_str(
+            r#"
+
+**Simplifying workflow:**
+1. Flag code that is hard to understand from the diff alone: deep nesting, clever one-liners, implicit conventions, heavy indirection, dense generics/macros, or patterns that require tribal knowledge
+2. Prefer a concrete simplification in `suggestion` (flatten control flow, name intermediates, extract helper, replace abstraction with direct code)
+3. If simplification would change behavior or is too risky in this diff, ask for a brief comment instead — `suggestion` should quote the comment text to add
+4. Do not flag naming, formatting, or style-only nits
+5. `severity`: `medium` when complexity blocks review confidence; `low` when a comment would suffice; `info` for optional polish"#,
+        );
+    }
+    if expert_id == "mentorship" {
+        lens.push_str(
+            r#"
+
+**Mentorship workflow (positive-only):**
+1. Highlight **good** patterns in the diff: clear APIs, strong tests, thoughtful error handling, readable structure, safe defaults, useful types, or designs that match team quality bar
+2. Explain **why** it is exemplary in `description` so reviewers learn what to foster
+3. Use `suggestion` to name where to replicate the pattern elsewhere, or how to extend it — not fixes
+4. Do **not** report bugs, risks, or nitpicks (other reviewers cover those)
+5. `severity`: always `info`; `confidence`: `informational`"#,
         );
     }
     lens
@@ -476,6 +507,190 @@ pub fn build_expert_review_prompt_prepared_diff(
     )
 }
 
+/// When `review-files.txt` exists, agents must limit analysis to those paths.
+pub fn file_scope_appendix(output_dir: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    format!(
+        r#"
+## Scope: selected files only
+
+Read `{safe_output_dir}/review-files.txt` — analyze **only** those paths. Ignore all other files in the diff."#
+    )
+}
+
+fn professor_rules_preamble(output_dir: &str, prepared_diff: bool, git_diff_capture: Option<&str>) -> String {
+    let caps = FindingCaps {
+        per_file: 3,
+        total: 12,
+        is_expert: true,
+    };
+    let mut preamble = review_rules_preamble(output_dir, prepared_diff, caps, git_diff_capture);
+    preamble.push_str(
+        r#"
+
+### Professor mode (not a review)
+- **Do not** flag bugs, security issues, or style nits — `/er-review` covers those.
+- Teach: purpose, architecture, data flow, invariants, non-obvious design.
+- Every finding: `severity: "info"`, `confidence: "informational"`, `category: "professor"`.
+- Titles are concept labels; descriptions explain *how* and *why*."#,
+    );
+    preamble
+}
+
+fn professor_lens_instructions(user_focus: Option<&str>) -> String {
+    let mut lens = r#"## Professor lens: Learn the implementation
+
+Explain what this diff implements so a skilled developer can understand it without reading every line.
+
+**Highlight:** purpose of changes, how components connect, state/IO boundaries, design tradeoffs, what to read next (`related_files`).
+
+**Skip:** must-fix framing, naming/style, duplicate security/perf concerns.
+
+**Caps:** ~3 insights per file, ~12 total. Quality over quantity.
+
+Write **only** teaching insights — no order.json, checklist.json, or summary.md."#
+        .to_string();
+    if let Some(focus) = user_focus.filter(|s| !s.trim().is_empty()) {
+        lens.push_str("\n\n## Learner focus (user-provided)\n");
+        lens.push_str(focus.trim());
+        lens.push_str(
+            "\n\nPrioritize insights that answer this focus. Still note 1–2 other central mechanisms if needed.",
+        );
+    }
+    lens
+}
+
+fn professor_output_section(output_dir: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    format!(
+        r#"7. Write **only** `{safe_output_dir}/professor.json`:
+
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256 from step 1>",
+  "diff_scope": "<scope>",
+  "created_at": "<ISO 8601>",
+  "focus_prompt": "<user focus or empty string>",
+  "files": {{
+    "path/to/file.rs": {{
+      "findings": [
+        {{
+          "id": "prof-1",
+          "severity": "info",
+          "category": "professor",
+          "title": "Short concept label",
+          "description": "Teaching explanation (markdown ok)",
+          "hunk_index": 0,
+          "line_start": 42,
+          "suggestion": "",
+          "related_files": [],
+          "outside_diff": false,
+          "confidence": "informational",
+          "verification_plan": "",
+          "evidence": [],
+          "responses": [],
+          "resolved": false,
+          "resolved_note": "",
+          "resolved_at": ""
+        }}
+      ]
+    }}
+  }}
+}}
+```
+
+- Finding `id` prefix: `prof-` (e.g. `prof-1`)"#
+    )
+}
+
+/// Professor learning agent (TUI / skill — runs `git diff`).
+pub fn build_professor_review_prompt(
+    base_branch: &str,
+    scope: &str,
+    user_focus: Option<&str>,
+) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch);
+    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+    };
+    let capture = format!(
+        "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
+    );
+    let preamble = professor_rules_preamble(".er", false, Some(&capture));
+    let lens = professor_lens_instructions(user_focus);
+    let output = professor_output_section(".er");
+    let file_scope = file_scope_if_present(".er");
+    format!(
+        r#"You are a code professor. Teach what this diff implements; write insights to `.er/professor.json`.
+
+Ensure `.er/` exists: `mkdir -p .er`
+
+{preamble}
+
+{lens}
+
+{analyze}
+
+{output}{file_scope}"#,
+        analyze = general_review_instructions_read_analyze(),
+    )
+}
+
+/// Professor when `{output_dir}/diff-tmp` is already prepared (desktop).
+pub fn build_professor_review_prompt_prepared_diff(
+    scope: &str,
+    output_dir: &str,
+    user_focus: Option<&str>,
+    scoped_files: bool,
+) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let preamble = professor_rules_preamble(output_dir, true, None);
+    let lens = professor_lens_instructions(user_focus);
+    let output = professor_output_section(output_dir);
+    let file_scope = if scoped_files {
+        file_scope_appendix(output_dir)
+    } else {
+        file_scope_if_present(output_dir)
+    };
+    format!(
+        r#"You are a code professor for scope `{scope}`. Teach what this diff implements; write insights to `{safe_output_dir}/professor.json`.
+
+{preamble}
+
+{lens}
+
+{analyze}
+
+{output}{file_scope}"#,
+        analyze = general_review_instructions_read_analyze(),
+    )
+}
+
+fn file_scope_if_present(output_dir: &str) -> String {
+    let path = std::path::Path::new(output_dir).join("review-files.txt");
+    if path.exists() {
+        file_scope_appendix(output_dir)
+    } else {
+        String::new()
+    }
+}
+
+/// Append file-scope section to any prepared-diff prompt when manifest exists.
+pub fn append_file_scope_if_present(mut prompt: String, output_dir: &str) -> String {
+    prompt.push_str(&file_scope_if_present(output_dir));
+    prompt
+}
+
 /// Build the questions-answering prompt.
 ///
 /// The prompt instructs the agent to:
@@ -588,7 +803,7 @@ Do not create unrelated new findings in this action.
 
 ## Budget
 
-- ~5 file reads per finding, ~50 reads total across the review.
+- ~10 file reads per finding (no global session cap).
 
 ## Speed
 
@@ -631,7 +846,7 @@ Do not create unrelated new findings in this action.
 
 ## Budget
 
-- ~5 file reads per finding, ~50 reads total across the review.
+- ~10 file reads per finding (no global session cap).
 
 ## Speed
 
@@ -674,7 +889,7 @@ Do not create unrelated new findings in this action.
 
 ## Budget
 
-- ~5 file reads per finding, ~50 reads total across the review.
+- ~10 file reads per finding (no global session cap).
 
 ## Speed
 
@@ -1084,6 +1299,14 @@ mod tests {
     }
 
     #[test]
+    fn review_prompt_per_finding_read_budget_no_global_cap() {
+        let prompt = build_review_prompt("main", "branch");
+        assert!(prompt.contains("~10 reads per finding"));
+        assert!(!prompt.contains("~30 total"));
+        assert!(!prompt.contains("~50 total"));
+    }
+
+    #[test]
     fn review_prompt_includes_confidence_and_evidence() {
         let prompt = build_review_prompt("main", "branch");
         assert!(prompt.contains("\"confidence\""));
@@ -1208,5 +1431,48 @@ mod tests {
         let prompt = build_expert_review_prompt("main", "branch", "patterns");
         assert!(prompt.contains("grep"));
         assert!(prompt.contains("Expert lens: Patterns"));
+    }
+
+    #[test]
+    fn simplifying_expert_prompt_mentions_comments() {
+        let prompt = build_expert_review_prompt("main", "branch", "simplifying");
+        assert!(prompt.contains("Expert lens: Simplifying"));
+        assert!(prompt.contains("brief comment"));
+    }
+
+    #[test]
+    fn mentorship_expert_prompt_is_positive_only() {
+        let prompt = build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "mentorship");
+        assert!(prompt.contains("Expert lens: Mentorship"));
+        assert!(prompt.contains("positive-only"));
+        assert!(prompt.contains("experts/mentorship.json"));
+    }
+
+    #[test]
+    fn professor_prompt_targets_professor_json_only() {
+        let prompt = build_professor_review_prompt_prepared_diff("branch", "/tmp/out", None, false);
+        assert!(prompt.contains("Professor lens"));
+        assert!(prompt.contains("professor.json"));
+        assert!(prompt.contains("category: \"professor\""));
+        assert!(!prompt.contains("review.json"));
+    }
+
+    #[test]
+    fn professor_prompt_includes_focus_when_set() {
+        let prompt = build_professor_review_prompt_prepared_diff(
+            "branch",
+            "/tmp/out",
+            Some("auth flow"),
+            false,
+        );
+        assert!(prompt.contains("Learner focus"));
+        assert!(prompt.contains("auth flow"));
+    }
+
+    #[test]
+    fn file_scope_appendix_mentions_review_files() {
+        let appendix = file_scope_appendix("/tmp/out");
+        assert!(appendix.contains("review-files.txt"));
+        assert!(appendix.contains("selected files only"));
     }
 }

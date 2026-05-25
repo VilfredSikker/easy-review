@@ -1,5 +1,10 @@
+pub mod card_ai_context;
+pub mod card_ai_spawn;
 pub mod filter;
 mod state;
+
+pub use card_ai_context::{build_card_ai_system_context, CardAiContextParams};
+pub use card_ai_spawn::{plan_card_ai_invocation, run_card_ai_subprocess, CardAiInvocation};
 
 pub use crate::git::Worktree;
 pub use state::background::{

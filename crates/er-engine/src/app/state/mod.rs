@@ -266,6 +266,7 @@ pub enum OverlayData {
 pub enum AiActionKind {
     Review,
     ExpertReview { expert_id: String },
+    Professor,
     Validate,
     Questions,
     Summary,
@@ -366,6 +367,8 @@ pub enum HubAction {
     RunExpertReview {
         expert_id: String,
     },
+    /// Run the Professor learning agent
+    RunProfessorReview,
     /// Run AI review via configured agent command
     PromptReview,
     /// Re-validate an existing AI review (refreshes confidence + evidence)
@@ -4367,6 +4370,14 @@ impl App {
                 enabled: true,
             },
             HubItem {
+                label: "Professor".into(),
+                hint: "".into(),
+                description: "Learn the implementation — teaching insights, not a review".into(),
+                action: HubAction::RunProfessorReview,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
                 label: "Validate review".into(),
                 hint: "".into(),
                 description: if has_review {
@@ -8032,6 +8043,7 @@ mod tests {
                 in_reply_to: None,
                 author: "You".to_string(),
                 promoted_to: None,
+                finding_ref: None,
             }],
         });
         let mut app = make_test_app(tab);

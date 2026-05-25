@@ -1957,6 +1957,7 @@ mod tests {
             in_reply_to: None,
             author: "You".to_string(),
             promoted_to: None,
+            finding_ref: None,
         }
     }
 

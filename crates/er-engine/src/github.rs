@@ -871,6 +871,35 @@ pub fn gh_pr_reply_comment(
     Ok(resp.id)
 }
 
+/// Update a review comment body on a PR
+pub fn gh_pr_update_review_comment(
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    body: &str,
+    repo_root: &str,
+) -> Result<()> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "-X",
+            "PATCH",
+            &format!("repos/{}/{}/pulls/comments/{}", owner, repo, comment_id),
+            "-f",
+            &format!("body={}", body),
+        ])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to update comment on GitHub")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to update comment: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
 /// Delete a review comment from a PR
 pub fn gh_pr_delete_comment(
     owner: &str,

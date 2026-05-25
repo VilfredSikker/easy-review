@@ -272,6 +272,10 @@ pub struct ReviewQuestion {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub promoted_to: Option<String>,
+    /// When set, this question thread is tied to an AI finding (`prof-*`, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub finding_ref: Option<String>,
 }
 
 // ── .er-github-comments.json — GitHub PR comments ──
@@ -522,6 +526,7 @@ mod tests {
             in_reply_to: None,
             author: "You".into(),
             promoted_to: None,
+            finding_ref: None,
         }
     }
 

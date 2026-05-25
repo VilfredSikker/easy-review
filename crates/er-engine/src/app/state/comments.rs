@@ -267,6 +267,7 @@ impl App {
         );
 
         let is_reply = reply_to.is_some();
+        let finding_ref = self.tab().comment_finding_ref.clone();
         let author = self
             .tab_mut()
             .comment_author_override
@@ -291,6 +292,7 @@ impl App {
             in_reply_to: reply_to,
             author,
             promoted_to: None,
+            finding_ref,
         });
 
         // Write atomically
@@ -578,6 +580,69 @@ impl App {
     /// Used by the desktop app.
     pub fn delete_comment_direct(&mut self, comment_id: &str) -> Result<()> {
         self.confirm_delete_comment(comment_id)
+    }
+
+    /// Update comment/question body in `.er/` sidecars. Syncs to GitHub when `github_id` is set.
+    pub fn update_comment_text(&mut self, comment_id: &str, new_text: &str) -> Result<()> {
+        let er_dir = self.tab().er_dir();
+        let repo_root = self.tab().repo_root.clone();
+
+        if comment_id.starts_with("q-") {
+            let path = format!("{}/questions.json", er_dir);
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {path}"))?;
+            let mut qs: ai::ErQuestions =
+                serde_json::from_str(&content).context("Failed to parse questions.json")?;
+            let q = qs
+                .questions
+                .iter_mut()
+                .find(|q| q.id == comment_id)
+                .context("Question not found")?;
+            if q.author == "ai" {
+                anyhow::bail!("Cannot edit AI-generated text");
+            }
+            q.text = new_text.to_string();
+            let json = serde_json::to_string_pretty(&qs)?;
+            let tmp = format!("{path}.tmp");
+            std::fs::write(&tmp, json)?;
+            std::fs::rename(&tmp, &path)?;
+        } else {
+            let path = self.tab().github_comments_path();
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {path}"))?;
+            let mut gc: ai::ErGitHubComments =
+                serde_json::from_str(&content).context("Failed to parse github-comments.json")?;
+            let (github_id, gh_meta, author) = {
+                let c = gc
+                    .comments
+                    .iter()
+                    .find(|c| c.id == comment_id)
+                    .context("Comment not found")?;
+                (c.github_id, gc.github.clone(), c.author.clone())
+            };
+            if author == "ai" {
+                anyhow::bail!("Cannot edit AI-generated text");
+            }
+            if let (Some(gh_id), Some(ref gh)) = (github_id, gh_meta.as_ref()) {
+                crate::github::gh_pr_update_review_comment(
+                    &gh.owner,
+                    &gh.repo,
+                    gh_id,
+                    new_text,
+                    &repo_root,
+                )?;
+            }
+            if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
+                c.comment = new_text.to_string();
+            }
+            let json = serde_json::to_string_pretty(&gc)?;
+            let tmp = format!("{path}.tmp");
+            std::fs::write(&tmp, json)?;
+            std::fs::rename(&tmp, &path)?;
+        }
+
+        self.tab_mut().reload_ai_state();
+        Ok(())
     }
 
     /// Cancel comment input
@@ -2147,6 +2212,22 @@ impl App {
         )
     }
 
+    /// Spawn the Professor learning agent (`kind` = `professor`).
+    pub fn spawn_background_professor_review(
+        &mut self,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+    ) -> Result<()> {
+        self.spawn_background_agent_task(
+            crate::ai::professor_task_kind(),
+            "professor",
+            target,
+            prompt,
+            prepared_diff,
+        )
+    }
+
     /// App-level background agent task (review or expert).
     fn spawn_background_agent_task(
         &mut self,
@@ -2262,6 +2343,9 @@ impl App {
                             "Read",
                             "Write",
                             "Edit",
+                            "Bash(grep *)",
+                            "Bash(rg *)",
+                            "Bash(git grep*)",
                             "Bash(cp .er/*)",
                             "Bash(shasum*)",
                             "Bash(sha256sum*)",

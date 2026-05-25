@@ -56,6 +56,9 @@ done
 | `er-review-testing` | Expert: testing → `.er/experts/testing.json` |
 | `er-review-api` | Expert: API/contracts → `.er/experts/api.json` |
 | `er-review-patterns` | Expert: pattern consistency → `.er/experts/patterns.json` |
+| `er-review-simplifying` | Expert: readability/complexity → `.er/experts/simplifying.json` |
+| `er-review-mentorship` | Expert: exemplary patterns to foster → `.er/experts/mentorship.json` |
+| `er-professor` | Learning agent: teaching insights → `.er/professor.json` |
 | `er-questions` | Process human feedback, respond to comments, add new findings |
 | `er-risk-sort` | Re-sort file review order by P0→P1→P2, cosmetic files last |
 | `er-summary` | Regenerate the markdown summary (P0/P1 focus, no cosmetic noise) |

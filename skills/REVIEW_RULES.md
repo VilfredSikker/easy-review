@@ -38,7 +38,7 @@ Severity mapping (from REVIEW_PHILOSOPHY):
 - `confidence`: `confirmed` | `informational` | `tentative`
 - `verification_plan` required for `tentative`
 - `evidence`: cite files/ranges you read
-- Budget: ~5 reads per finding, ~30 total; short-circuit obvious issues
+- Budget: ~10 reads per finding (no global session cap); short-circuit obvious issues
 
 ## Finding caps
 

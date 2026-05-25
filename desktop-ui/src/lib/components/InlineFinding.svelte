@@ -2,6 +2,7 @@
   import type { FlatFinding, ThreadSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
+  import EditMessageModal from "$lib/components/EditMessageModal.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
 
   interface Props {
@@ -19,8 +20,22 @@
 
   const isPromoted = $derived(finding.promoted_to != null);
 
+  const agentLabel = $derived(finding.agent_label ?? finding.expert_label ?? "General");
+  const isProfessor = $derived(agentLabel === "Professor");
+  const headerKind = $derived(isProfessor ? "Insight" : "Finding");
+
+  const agentPillStyle = $derived(
+    agentLabel === "Professor"
+      ? "background: #f9731626; color: #fb923c; border-color: #f9731640"
+      : agentLabel === "General"
+        ? "background: #94a3b826; color: #94a3b8; border-color: #94a3b840"
+        : "background: #38bdf826; color: #38bdf8; border-color: #38bdf840",
+  );
+
   let replyText = $state("");
   let showPromote = $state(false);
+  let editMessageId = $state<string | null>(null);
+  let editInitialBody = $state("");
   let replyInputEl = $state<HTMLInputElement | null>(null);
 
   function focusReply() {
@@ -37,7 +52,6 @@
   }
   async function askAi() {
     if (thread) {
-      // Thread already exists — ask AI as a reply on that thread
       await app.cmd("ask_ai", {
         threadId: thread.id,
         prompt: "Elaborate on this and answer any question directly.",
@@ -49,7 +63,42 @@
         aiAssist: true,
       });
     }
-    replyText = "";
+  }
+
+  function openEdit(replyId: string, body: string) {
+    editMessageId = replyId;
+    editInitialBody = body;
+  }
+
+  async function submitEdit(body: string) {
+    if (!editMessageId) return;
+    await app.cmd("update_thread_message", { id: editMessageId, body });
+    editMessageId = null;
+  }
+
+  async function validateWithAi() {
+    if (thread) {
+      await app.cmd("validate_with_ai", { threadId: thread.id, findingId: null });
+    } else {
+      await app.cmd("validate_with_ai", { threadId: null, findingId: finding.id });
+    }
+  }
+
+  async function deleteReply(replyId: string) {
+    if (!replyId) return;
+    await app.cmd("delete_thread", { id: replyId });
+  }
+
+  async function deleteConversation() {
+    if (!thread) return;
+    const n = thread.replies.length;
+    const ok = confirm(
+      n > 0
+        ? `Remove this AI conversation (${n} ${n === 1 ? "reply" : "replies"})? The finding stays until you dismiss it.`
+        : "Remove this validation thread?",
+    );
+    if (!ok) return;
+    await app.cmd("delete_thread", { id: thread.id });
   }
 
   function buildPromoteBody(): string {
@@ -78,29 +127,27 @@
     } catch { return ts; }
   }
 
-  async function askAiOnThread() {
-    if (!thread) return;
-    await app.cmd("ask_ai", {
-      threadId: thread.id,
-      prompt: "Elaborate on this and answer any question directly.",
-    });
-  }
 </script>
 
 <div
   id="finding-{finding.id}"
-  class="mx-4 my-3 border rounded-lg overflow-hidden font-sans scroll-mt-16"
+  class="mx-4 my-3 border rounded-lg overflow-hidden font-sans scroll-mt-16 min-w-0 max-w-full"
   style="border-color: {severityColor}4d; background: {severityColor}0a;"
 >
   <!-- Header -->
-  <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs">
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={severityColor} stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></svg>
-    <span class="font-medium" style="color: {severityColor}">
-      {finding.expert_label ? `${finding.expert_label} finding` : "AI finding"}
-    </span>
-    <span class="px-1.5 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-medium" style="background: {severityColor}26; color: {severityColor}">
-      {finding.severity}
-    </span>
+  <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs flex-wrap">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={severityColor} stroke-width="2.5" class="shrink-0"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></svg>
+    <span class="font-medium shrink-0" style="color: {severityColor}">{headerKind}</span>
+    <span
+      class="px-1.5 py-0.5 rounded-full text-[9px] font-medium border shrink-0"
+      style={agentPillStyle}
+      title="Review agent"
+    >{agentLabel}</span>
+    {#if !isProfessor}
+      <span class="px-1.5 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-medium shrink-0" style="background: {severityColor}26; color: {severityColor}">
+        {finding.severity}
+      </span>
+    {/if}
     {#if finding.line !== null}
       <span class="text-muted">· line {finding.line}</span>
     {/if}
@@ -108,11 +155,13 @@
   </div>
 
   <!-- Body -->
-  <div class="px-3 py-2 text-sm text-fg-2">
-    <MarkdownText text={finding.title} className="text-sm text-fg-2" />
-    {#if finding.message_markdown}
-      <MarkdownText text={finding.message_markdown} className="text-fg-3 mt-1" />
-    {/if}
+  <div class="px-3 py-2 text-sm text-fg-2 min-w-0">
+    <div class="annotation-body-scroll">
+      <MarkdownText text={finding.title} className="text-sm text-fg-2" />
+      {#if finding.message_markdown}
+        <MarkdownText text={finding.message_markdown} className="text-fg-3 mt-1" />
+      {/if}
+    </div>
   </div>
 
   <!-- Inline AI thread replies (created via Ask AI) -->
@@ -126,7 +175,7 @@
         </div>
       {:else}
         {#each thread.replies as reply, i}
-          <div class="px-3 py-2.5 flex gap-2.5 {i > 0 ? 'border-t border-hairline' : ''}">
+          <div class="px-3 py-2.5 flex gap-2.5 group/row {i > 0 ? 'border-t border-hairline' : ''}">
             <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {reply.kind === 'ai' ? 'bg-ai/20' : 'bg-accent text-black'}">
               {#if reply.kind === "ai"}
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
@@ -142,9 +191,35 @@
               {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
                 <div class="text-sm text-fg-3 italic animate-pulse">…thinking</div>
               {:else}
-                <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
+                <div class="annotation-body-scroll">
+                  <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
+                </div>
               {/if}
             </div>
+            {#if reply.id}
+              <div class="self-start shrink-0 flex gap-0.5 opacity-0 group-hover/row:opacity-60">
+                {#if reply.kind === "you"}
+                  <button
+                    type="button"
+                    onclick={() => openEdit(reply.id, reply.body_markdown)}
+                    title="Edit reply"
+                    aria-label="Edit reply"
+                    class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-fg-2 hover:bg-hover transition"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  onclick={() => deleteReply(reply.id)}
+                  title="Delete this reply"
+                  aria-label="Delete reply"
+                  class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+                </button>
+              </div>
+            {/if}
           </div>
         {/each}
       {/if}
@@ -160,7 +235,33 @@
       </button>
     {/if}
     <button onclick={focusReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
-    <button type="button" onclick={dismiss} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Dismiss</button>
+    <button
+      type="button"
+      onclick={() => void askAi()}
+      title="Ask AI to elaborate on this finding"
+      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
+      Ask AI
+    </button>
+    <button
+      type="button"
+      onclick={() => void validateWithAi()}
+      title="Check this finding against the current code (local reply, not posted to GitHub)"
+      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+      Validate with AI
+    </button>
+    {#if thread}
+      <button
+        type="button"
+        onclick={() => void deleteConversation()}
+        title="Remove validation / AI replies on this finding"
+        class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg"
+      >Remove thread</button>
+    {/if}
+    <button type="button" onclick={dismiss} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg" title="Remove finding from review">Dismiss finding</button>
     <span class="ml-auto kbd">⇧R</span>
   </div>
 
@@ -173,17 +274,9 @@
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); reply(); }
         else if (e.key === "Escape") { replyText = ""; }
       }}
-      placeholder="Reply or ask follow-up…"
+      placeholder="Reply to this finding…"
       class="bg-transparent flex-1 text-[13px] outline-none placeholder:text-muted"
     />
-    <button
-      onclick={askAi}
-      class="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] hover:bg-hover font-medium"
-      style="color: {severityColor}"
-    >
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
-      Ask AI
-    </button>
   </div>
 
   {#if isPromoted}
@@ -202,4 +295,12 @@
   targetLineLabel={targetLineLabel}
   onSubmit={submitPromote}
   onClose={() => (showPromote = false)}
+/>
+
+<EditMessageModal
+  open={editMessageId != null}
+  messageId={editMessageId ?? ""}
+  initialBody={editInitialBody}
+  onSubmit={submitEdit}
+  onClose={() => (editMessageId = null)}
 />

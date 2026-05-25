@@ -7,7 +7,12 @@ use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
 use er_engine::ai::{CommentType, ErReview};
-use er_engine::app::{App, BrowserLayout, DiffMode, InputMode};
+use er_engine::app::{
+    build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
+    BrowserLayout, CardAiContextParams, DiffMode, InputMode,
+};
+#[cfg(test)]
+use er_engine::app::CardAiInvocation;
 
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
@@ -19,6 +24,18 @@ use crate::snapshot::{
 };
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
+
+/// Per-card validation: check whether a comment, question, or finding still holds.
+const VALIDATE_CARD_AI_PROMPT: &str = r#"Validate whether this review note is still accurate against the current code context provided.
+
+Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before concluding. Up to ~10 reads for this finding; cite file:line evidence.
+
+Reply in markdown with:
+1. **Verdict**: Confirmed | Outdated | Needs context | Unclear
+2. **Evidence**: What in the code supports your verdict (cite file:line when possible)
+3. **Recommendation**: What the reviewer should do next
+
+Be concise. If the concern is already addressed in the current diff, say so clearly."#;
 const REQUESTED_KINDS: &[&str] = &[
     "ai_review_done",
     "ai_review_failed",
@@ -2166,11 +2183,16 @@ fn spawn_ai_review_with_diff(
     Ok(())
 }
 
-pub use er_engine::ai::ExpertInfo;
+pub use er_engine::ai::{ExpertInfo, ReviewerInfo};
 
 #[tauri::command]
 pub fn list_ai_experts() -> Vec<ExpertInfo> {
     er_engine::ai::list_expert_info()
+}
+
+#[tauri::command]
+pub fn list_ai_reviewers() -> Vec<ReviewerInfo> {
+    er_engine::ai::list_ai_reviewers()
 }
 
 #[tauri::command]
@@ -2239,16 +2261,48 @@ pub fn run_ai_expert_review(
 }
 
 #[tauri::command]
+pub fn run_ai_professor_review(
+    scope: String,
+    focus_prompt: Option<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    run_ai_scoped_review(
+        scope,
+        vec![],
+        vec!["professor".to_string()],
+        focus_prompt,
+        state,
+    )
+}
+
+#[tauri::command]
 pub fn run_ai_review_files(
     scope: String,
     paths: Vec<String>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if paths.is_empty() {
-        return Err("No files selected".to_string());
+    run_ai_scoped_review(
+        scope,
+        paths,
+        vec!["general".to_string()],
+        None,
+        state,
+    )
+}
+
+#[tauri::command]
+pub fn run_ai_scoped_review(
+    scope: String,
+    paths: Vec<String>,
+    reviewer_kinds: Vec<String>,
+    focus_prompt: Option<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    if reviewer_kinds.is_empty() {
+        return Err("No reviewers selected".to_string());
     }
 
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let scope = resolve_review_scope(&scope, app.tab())?;
 
     let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
@@ -2275,41 +2329,153 @@ pub fn run_ai_review_files(
         .tab()
         .raw_diff_for_review(&scope)
         .map_err(|e| e.to_string())?;
-    let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
-    if filtered.trim().is_empty() {
-        return Err("No diff for selected files".to_string());
+    if raw.trim().is_empty() {
+        return Err("Nothing to review".to_string());
     }
 
-    let mut sorted_paths = paths;
-    sorted_paths.sort();
-    let manifest = sorted_paths.join("\n");
-    std::fs::write(
-        std::path::Path::new(&er_dir).join("review-files.txt"),
-        format!("{manifest}\n"),
-    )
-    .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+    let scoped_files = !paths.is_empty();
+    let file_count = paths.len();
+    let diff_body = if scoped_files {
+        let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
+        if filtered.trim().is_empty() {
+            return Err("No diff for selected files".to_string());
+        }
+        let mut sorted_paths = paths;
+        sorted_paths.sort();
+        let manifest = sorted_paths.join("\n");
+        std::fs::write(
+            std::path::Path::new(&er_dir).join("review-files.txt"),
+            format!("{manifest}\n"),
+        )
+        .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+        filtered
+    } else {
+        // Full-diff multi-reviewer run: no file manifest.
+        let _ = std::fs::remove_file(std::path::Path::new(&er_dir).join("review-files.txt"));
+        raw
+    };
 
-    spawn_ai_review_with_diff(
-        &mut app,
-        &state,
-        &scope,
-        &er_dir,
+    std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &diff_body)
+        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
+
+    let target = er_engine::app::BackgroundTaskTarget {
         repo_root,
+        er_dir: er_dir.clone(),
         branch_label,
         base_branch,
+        scope: scope.to_string(),
         pr_number,
         remote_repo,
-        is_remote,
-        filtered,
+        managed_local: !is_remote,
+    };
+
+    let (started, skipped) = spawn_scoped_reviewers(
+        &mut app,
+        &scope,
+        &er_dir,
+        target,
+        &reviewer_kinds,
+        focus_prompt.as_deref(),
+        scoped_files,
     )?;
 
-    let n = sorted_paths.len();
-    app.notify(&format!(
-        "Review started for {n} selected file{} (see review-files.txt in review dir)",
-        if n == 1 { "" } else { "s" }
-    ));
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    if started.is_empty() && !skipped.is_empty() {
+        return Err(format!("All selected reviewers already running: {}", skipped.join(", ")));
+    }
+
+    let file_note = if scoped_files {
+        format!(
+            " for {file_count} file{}",
+            if file_count == 1 { "" } else { "s" }
+        )
+    } else {
+        String::new()
+    };
+
+    let msg = if skipped.is_empty() {
+        format!("Started {} reviewer(s){file_note}: {}", started.len(), started.join(", "))
+    } else {
+        format!(
+            "Started {} reviewer(s){file_note}: {} (skipped: {})",
+            started.len(),
+            started.join(", "),
+            skipped.join(", ")
+        )
+    };
+    app.notify(&msg);
 
     Ok(snap_from(&app, &state))
+}
+
+fn spawn_scoped_reviewers(
+    app: &mut er_engine::app::App,
+    scope: &str,
+    er_dir: &str,
+    target: er_engine::app::BackgroundTaskTarget,
+    reviewer_kinds: &[String],
+    focus_prompt: Option<&str>,
+    scoped_files: bool,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    use er_engine::ai::{prompts, ReviewerKind};
+
+    let mut started = Vec::new();
+    let mut skipped = Vec::new();
+
+    for kind in reviewer_kinds {
+        let parsed = er_engine::ai::parse_reviewer_kind(kind)
+            .ok_or_else(|| format!("Unknown reviewer: {kind}"))?;
+        let label = er_engine::ai::list_ai_reviewers()
+            .into_iter()
+            .find(|r| r.kind == *kind)
+            .map(|r| r.label)
+            .unwrap_or_else(|| kind.clone());
+
+        let spawn_result = match &parsed {
+            ReviewerKind::General => {
+                let mut prompt =
+                    prompts::build_review_prompt_prepared_diff(scope, er_dir);
+                if scoped_files {
+                    prompt = prompts::append_file_scope_if_present(prompt, er_dir);
+                }
+                app.spawn_background_review(target.clone(), prompt, true)
+            }
+            ReviewerKind::Expert(id) => {
+                let mut prompt =
+                    prompts::build_expert_review_prompt_prepared_diff(scope, er_dir, id);
+                if scoped_files {
+                    prompt = prompts::append_file_scope_if_present(prompt, er_dir);
+                }
+                app.spawn_background_expert_review(id, target.clone(), prompt, true)
+            }
+            ReviewerKind::Professor => {
+                let prompt = prompts::build_professor_review_prompt_prepared_diff(
+                    scope,
+                    er_dir,
+                    focus_prompt,
+                    scoped_files,
+                );
+                app.spawn_background_professor_review(target.clone(), prompt, true)
+            }
+        };
+
+        match spawn_result {
+            Ok(()) => started.push(label),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("already running") {
+                    skipped.push(label);
+                } else {
+                    return Err(msg);
+                }
+            }
+        }
+    }
+
+    Ok((started, skipped))
 }
 
 #[tauri::command]
@@ -2467,7 +2633,7 @@ pub fn promote_to_comment(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
 
     // 1. Resolve the source question + already-promoted guard.
-    let (file, hunk_idx, line_start, default_body, questions_path) = {
+    let (file, hunk_idx, line_start, default_body) = {
         let tab = app.tab();
         let qs = tab
             .ai
@@ -2479,9 +2645,6 @@ pub fn promote_to_comment(
             .iter()
             .find(|q| q.id == id)
             .ok_or_else(|| format!("Question not found: {id}"))?;
-        if let Some(existing) = q.promoted_to.as_deref() {
-            return Err(format!("Already promoted to {existing}"));
-        }
 
         let replies: Vec<(&str, &str)> = qs
             .questions
@@ -2496,7 +2659,6 @@ pub fn promote_to_comment(
             q.hunk_index.unwrap_or(0),
             q.line_start,
             default,
-            format!("{}/questions.json", tab.er_dir()),
         )
     };
 
@@ -2535,22 +2697,9 @@ pub fn promote_to_comment(
         })
     };
 
-    // 5. Persist `promoted_to` back into questions.json and reload.
-    if let Some(new_id) = new_id.as_deref() {
-        if let Ok(content) = std::fs::read_to_string(&questions_path) {
-            if let Ok(mut qs) = serde_json::from_str::<er_engine::ai::ErQuestions>(&content) {
-                if let Some(q) = qs.questions.iter_mut().find(|q| q.id == id) {
-                    q.promoted_to = Some(new_id.to_string());
-                }
-                if let Ok(json) = serde_json::to_string_pretty(&qs) {
-                    let tmp = format!("{questions_path}.tmp");
-                    if std::fs::write(&tmp, json).is_ok() {
-                        let _ = std::fs::rename(&tmp, &questions_path);
-                    }
-                }
-            }
-        }
-        app.tab_mut().reload_ai_state();
+    // 5. Remove the source question thread (replaced by the new GitHub comment).
+    if new_id.is_some() {
+        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
     }
 
     Ok(snap_from(&app, &state))
@@ -2595,6 +2744,96 @@ fn save_review_json(er_dir: &str, review: &ErReview) -> std::io::Result<()> {
 
 // ── Ask AI ──────────────────────────────────────────────────────────────────
 
+/// Validate a comment, question, or finding with AI — adds a local reply on the card
+/// (questions.json for findings; never posts to GitHub until promoted/pushed).
+#[tauri::command]
+pub fn validate_with_ai(
+    thread_id: Option<String>,
+    finding_id: Option<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let resolved_thread = if let Some(tid) = thread_id {
+        tid
+    } else if let Some(fid) = finding_id {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let tid = resolve_or_create_finding_validation_thread(&mut app, &fid)?;
+        drop(app);
+        tid
+    } else {
+        return Err("thread_id or finding_id is required".to_string());
+    };
+    ask_ai(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), state)
+}
+
+/// Question-thread id for finding validation, creating a private question root if needed.
+fn resolve_or_create_finding_validation_thread(
+    app: &mut er_engine::app::App,
+    finding_id: &str,
+) -> Result<String, String> {
+    if let Some(id) = er_engine::ai::find_finding_thread_root(&app.tab().ai, finding_id) {
+        return Ok(id);
+    }
+
+    let (file, hunk_idx, line_start, title, description) = {
+        let tab = app.tab();
+        let mut result = None;
+        if let Some(review) = tab.ai.review.as_ref() {
+            'outer: for (path, fr) in review.files.iter() {
+                for f in fr.findings.iter() {
+                    if f.id == finding_id {
+                        result = Some((
+                            path.clone(),
+                            f.hunk_index.unwrap_or(0),
+                            f.line_start,
+                            f.title.clone(),
+                            f.description.clone(),
+                        ));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        result.ok_or_else(|| format!("Finding not found: {finding_id}"))?
+    };
+
+    let stub = if description.trim().is_empty() {
+        format!("**Finding:** {title}\n\n_AI validation requested._")
+    } else {
+        format!("**Finding:** {title}\n\n{description}\n\n_AI validation requested._")
+    };
+
+    let existing_q: std::collections::HashSet<String> = app
+        .tab()
+        .ai
+        .questions
+        .as_ref()
+        .map(|qs| qs.questions.iter().map(|q| q.id.clone()).collect())
+        .unwrap_or_default();
+
+    app.submit_comment_text(
+        file,
+        hunk_idx,
+        line_start,
+        stub,
+        er_engine::ai::CommentType::Question,
+        None,
+        Some(finding_id.to_string()),
+    )
+    .map_err(|e| e.to_string())?;
+
+    app.tab()
+        .ai
+        .questions
+        .as_ref()
+        .and_then(|qs| {
+            qs.questions
+                .iter()
+                .find(|q| !existing_q.contains(&q.id) && q.finding_ref.as_deref() == Some(finding_id))
+                .map(|q| q.id.clone())
+        })
+        .ok_or_else(|| "Failed to create validation thread for finding".to_string())
+}
+
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
 /// comment thread. The subprocess runs on a background thread so this command
 /// returns immediately — the reply is added asynchronously and picked up by
@@ -2606,10 +2845,43 @@ pub fn ask_ai(
     prompt: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    app.sync_ai_selection();
 
-    let (file, hunk_idx, line_num, comment_type, context) = {
+    let (
+        file,
+        hunk_idx,
+        line_num,
+        comment_type,
+        thread_body,
+        repo_root,
+        base_branch,
+        current_branch,
+        work_dir,
+        files,
+        raw_diff,
+        hunk_index,
+        line_content,
+        finding_title,
+        finding_description,
+        provider_id,
+        model_id,
+        agent_model_fallback,
+    ) = {
         let tab = app.tab();
+        let scope = match tab.mode {
+            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
+                tab.mode.git_mode().to_string()
+            }
+            _ => "branch".to_string(),
+        };
+        let raw_diff = tab.raw_diff_for_review(&scope).ok();
+        let work_dir = if tab.is_remote() {
+            tab.er_dir()
+        } else {
+            tab.repo_root.clone()
+        };
+
         if thread_id.starts_with("q-") {
             let q = tab
                 .ai
@@ -2617,25 +2889,44 @@ pub fn ask_ai(
                 .as_ref()
                 .and_then(|qs| qs.questions.iter().find(|q| q.id == thread_id))
                 .ok_or_else(|| "Question not found".to_string())?;
-            let mut ctx = String::new();
-            ctx.push_str(&format!("{}:{}\n", q.file, q.line_start.unwrap_or(0)));
-            ctx.push_str(&q.text);
-            // Append replies in order
+            let mut thread_body = String::new();
+            thread_body.push_str(&format!("{}:{}\n", q.file, q.line_start.unwrap_or(0)));
+            thread_body.push_str(&q.text);
             if let Some(qs) = &tab.ai.questions {
                 for r in qs
                     .questions
                     .iter()
                     .filter(|r| r.in_reply_to.as_deref() == Some(thread_id.as_str()))
                 {
-                    ctx.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
+                    thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
                 }
             }
+            let (finding_title, finding_description) =
+                finding_fields_for_ref(tab, q.finding_ref.as_deref());
+            let line_content = if q.line_content.trim().is_empty() {
+                None
+            } else {
+                Some(q.line_content.as_str())
+            };
             (
                 q.file.clone(),
                 q.hunk_index.unwrap_or(0),
                 q.line_start,
                 CommentType::Question,
-                ctx,
+                thread_body,
+                tab.repo_root.clone(),
+                tab.base_branch.clone(),
+                tab.current_branch.clone(),
+                work_dir,
+                tab.files.clone(),
+                raw_diff,
+                q.hunk_index.unwrap_or(0),
+                line_content,
+                finding_title,
+                finding_description,
+                app.current_ai_provider.clone(),
+                app.current_ai_model.clone(),
+                app.config.agent.model.clone(),
             )
         } else {
             let c = tab
@@ -2644,35 +2935,77 @@ pub fn ask_ai(
                 .as_ref()
                 .and_then(|gc| gc.comments.iter().find(|c| c.id == thread_id))
                 .ok_or_else(|| "Comment not found".to_string())?;
-            let mut ctx = String::new();
-            ctx.push_str(&format!("{}:{}\n", c.file, c.line_start.unwrap_or(0)));
-            ctx.push_str(&c.comment);
+            let mut thread_body = String::new();
+            thread_body.push_str(&format!("{}:{}\n", c.file, c.line_start.unwrap_or(0)));
+            thread_body.push_str(&c.comment);
             if let Some(gc) = &tab.ai.github_comments {
                 for r in gc
                     .comments
                     .iter()
                     .filter(|r| r.in_reply_to.as_deref() == Some(thread_id.as_str()))
                 {
-                    ctx.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.comment));
+                    thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.comment));
                 }
             }
+            let (finding_title, finding_description) =
+                finding_fields_for_ref(tab, c.finding_ref.as_deref());
+            let line_content = if c.line_content.trim().is_empty() {
+                None
+            } else {
+                Some(c.line_content.as_str())
+            };
             (
                 c.file.clone(),
                 c.hunk_index.unwrap_or(0),
                 c.line_start,
                 CommentType::GitHubComment,
-                ctx,
+                thread_body,
+                tab.repo_root.clone(),
+                tab.base_branch.clone(),
+                tab.current_branch.clone(),
+                work_dir,
+                tab.files.clone(),
+                raw_diff,
+                c.hunk_index.unwrap_or(0),
+                line_content,
+                finding_title,
+                finding_description,
+                app.current_ai_provider.clone(),
+                app.current_ai_model.clone(),
+                app.config.agent.model.clone(),
             )
         }
     };
 
-    let repo_root = app.tab().repo_root.clone();
+    let system_context = build_card_ai_system_context(&CardAiContextParams {
+        repo_root: &repo_root,
+        base_branch: &base_branch,
+        current_branch: &current_branch,
+        files: &files,
+        raw_diff: raw_diff.as_deref(),
+        file: &file,
+        hunk_index,
+        line_start: line_num,
+        line_content,
+        thread_body: &thread_body,
+        finding_title: finding_title.as_deref(),
+        finding_description: finding_description.as_deref(),
+    });
+
     let cfg = er_engine::config::load_config(&repo_root);
-    let model = if cfg.agent.model.trim().is_empty() {
-        "sonnet".to_string()
-    } else {
-        cfg.agent.model.clone()
-    };
+    let invocation = plan_card_ai_invocation(
+        &cfg,
+        provider_id.as_deref(),
+        model_id.as_deref(),
+        work_dir,
+    );
+    let model_for_subprocess: Option<String> = model_id.or_else(|| {
+        if agent_model_fallback.trim().is_empty() {
+            None
+        } else {
+            Some(agent_model_fallback)
+        }
+    });
 
     // Mark thread as pending BEFORE spawning. Snapshot reads this map to
     // inject the "…thinking" placeholder reply.
@@ -2696,6 +3029,8 @@ pub fn ask_ai(
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let thread_id_for_thread = thread_id.clone();
     let repo_root_for_thread = repo_root.clone();
+    let inv_for_thread = invocation;
+    let model_for_thread = model_for_subprocess;
 
     // Build snapshot before releasing locks (test path expects synchronous
     // visibility of the pending state).
@@ -2705,7 +3040,12 @@ pub fn ask_ai(
     drop(app);
 
     std::thread::spawn(move || {
-        let body = run_ask_ai_subprocess(&model, &context, &user_prompt);
+        let body = run_card_ai_subprocess(
+            &inv_for_thread,
+            &system_context,
+            &user_prompt,
+            model_for_thread.as_deref(),
+        );
         // Take App lock to submit the reply.
         if let Ok(mut app) = app_arc.lock() {
             let _ = app.submit_comment_text_as_author(
@@ -2729,55 +3069,24 @@ pub fn ask_ai(
     Ok(snap)
 }
 
-/// Invoke the `claude` CLI (or a sentinel for tests) and return the body to
-/// attach as a reply. Capped at 8KB. Never panics — any failure becomes a
-/// fallback error message in the returned body.
-fn run_ask_ai_subprocess(model: &str, context: &str, user_prompt: &str) -> String {
-    // Test sentinel — bypasses subprocess entirely so unit tests do not need
-    // the `claude` binary installed.
-    if let Ok(fake) = std::env::var("ER_FAKE_CLAUDE") {
-        return match fake.as_str() {
-            "fail" => "Pending — invoke via CLI (error: ER_FAKE_CLAUDE=fail)".to_string(),
-            "ok" => "mocked ok".to_string(),
-            other if !other.is_empty() => other.to_string(),
-            _ => "mocked ok".to_string(),
-        };
-    }
-
-    use std::process::Command;
-    let result = Command::new("claude")
-        .arg("--print")
-        .arg("--model")
-        .arg(model)
-        .arg("--append-system-prompt")
-        .arg(context)
-        .arg(user_prompt)
-        .output();
-
-    match result {
-        Ok(out) if out.status.success() => {
-            let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-            const MAX: usize = 8 * 1024;
-            if s.len() > MAX {
-                s.truncate(MAX);
-            }
-            let trimmed = s.trim().to_string();
-            if trimmed.is_empty() {
-                "Pending — invoke via CLI (empty response)".to_string()
-            } else {
-                trimmed
+fn finding_fields_for_ref(
+    tab: &er_engine::app::TabState,
+    finding_ref: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let Some(fid) = finding_ref else {
+        return (None, None);
+    };
+    let Some(review) = tab.ai.review.as_ref() else {
+        return (None, None);
+    };
+    for fr in review.files.values() {
+        for f in &fr.findings {
+            if f.id == fid {
+                return (Some(f.title.clone()), Some(f.description.clone()));
             }
         }
-        Ok(out) => {
-            let err = String::from_utf8_lossy(&out.stderr);
-            format!(
-                "Pending — invoke via CLI (claude exited {}: {})",
-                out.status.code().unwrap_or(-1),
-                err.trim()
-            )
-        }
-        Err(e) => format!("Pending — invoke via CLI (failed to spawn claude: {e})"),
     }
+    (None, None)
 }
 
 // ── PR URL open ──────────────────────────────────────────────────────────────
@@ -4480,32 +4789,21 @@ pub fn dismiss_finding(finding_id: String, state: State<AppState>) -> Result<App
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
 
     let er_dir = app.tab().er_dir();
-    let mut removed = false;
-    {
-        let tab = app.tab_mut();
-        if let Some(review) = tab.ai.review.as_mut() {
-            for file in review.files.values_mut() {
-                let before = file.findings.len();
-                file.findings.retain(|f| f.id != finding_id);
-                if file.findings.len() < before {
-                    removed = true;
-                }
-            }
-            if removed {
-                save_review_json(&er_dir, review)
-                    .map_err(|e| format!("Failed to save review.json: {e}"))?;
-            }
-        }
-    }
+    let removed = er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id)
+        .map_err(|e| format!("Failed to remove finding: {e}"))?;
     if !removed {
         return Err(format!("Finding not found: {finding_id}"));
     }
+
+    let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
 
     let mut promotions = load_finding_promotions(&er_dir);
     if promotions.remove(&finding_id).is_some() {
         save_finding_promotions(&er_dir, &promotions)
             .map_err(|e| format!("Failed to update finding promotions: {e}"))?;
     }
+
+    app.tab_mut().reload_ai_state();
 
     Ok(snap_from(&app, &state))
 }
@@ -4519,12 +4817,6 @@ pub fn promote_finding_to_comment(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
 
     let er_dir = app.tab().er_dir();
-
-    // Already-promoted guard via sidecar map.
-    let mut promotions = load_finding_promotions(&er_dir);
-    if let Some(existing) = promotions.get(&finding_id) {
-        return Err(format!("Already promoted to {existing}"));
-    }
 
     let found = {
         let tab = app.tab();
@@ -4586,16 +4878,21 @@ pub fn promote_finding_to_comment(
         })
     };
 
-    if let Some(new_id) = new_id {
-        promotions.insert(finding_id, new_id);
-        if let Err(e) = save_finding_promotions(&er_dir, &promotions) {
-            eprintln!("warn: failed to persist finding-promotions.json: {e}");
+    if new_id.is_some() {
+        er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id)
+            .map_err(|e| format!("Failed to remove finding after promote: {e}"))?;
+        let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
+        let mut promotions = load_finding_promotions(&er_dir);
+        if promotions.remove(&finding_id).is_some() {
+            let _ = save_finding_promotions(&er_dir, &promotions);
         }
         app.tab_mut().reload_ai_state();
     }
 
     Ok(snap_from(&app, &state))
 }
+
+const FINDING_THREAD_STUB: &str = "Follow-up on this finding.";
 
 #[tauri::command]
 pub fn reply_to_finding(
@@ -4634,12 +4931,64 @@ pub fn reply_to_finding(
         } else {
             body
         };
-        let default_root = "AI follow-up requested for this finding.".to_string();
+        let enriched_prompt = if let Some((title, desc)) = finding_text {
+            format!("Finding: {title}\n\n{desc}\n\n---\n\n{prompt}")
+        } else {
+            prompt
+        };
+
+        let root_id = if let Some(root) =
+            er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id)
+        {
+            root
+        } else {
+            app.submit_comment_text(
+                file.clone(),
+                hunk_idx,
+                line_start,
+                "AI follow-up requested for this finding.".to_string(),
+                CommentType::GitHubComment,
+                None,
+                Some(finding_id.clone()),
+            )
+            .map_err(|e| e.to_string())?;
+            app.tab()
+                .ai
+                .github_comments
+                .as_ref()
+                .and_then(|gc| {
+                    gc.comments
+                        .iter()
+                        .find(|c| {
+                            c.finding_ref.as_deref() == Some(finding_id.as_str())
+                                && c.in_reply_to.is_none()
+                        })
+                        .map(|c| c.id.clone())
+                })
+                .ok_or_else(|| "Failed to create finding comment thread".to_string())?
+        };
+        drop(app);
+        return ask_ai(root_id, enriched_prompt, state);
+    }
+
+    let root_id = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id);
+    if let Some(root_id) = root_id {
         app.submit_comment_text(
             file,
             hunk_idx,
             line_start,
-            default_root,
+            body,
+            CommentType::GitHubComment,
+            Some(root_id),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        app.submit_comment_text(
+            file.clone(),
+            hunk_idx,
+            line_start,
+            FINDING_THREAD_STUB.to_string(),
             CommentType::GitHubComment,
             None,
             Some(finding_id.clone()),
@@ -4650,29 +4999,69 @@ pub fn reply_to_finding(
             .ai
             .github_comments
             .as_ref()
-            .and_then(|gc| gc.comments.last().map(|c| c.id.clone()))
+            .and_then(|gc| {
+                gc.comments
+                    .iter()
+                    .find(|c| {
+                        c.finding_ref.as_deref() == Some(finding_id.as_str())
+                            && c.in_reply_to.is_none()
+                    })
+                    .map(|c| c.id.clone())
+            })
             .ok_or_else(|| "Failed to create finding comment thread".to_string())?;
-        // Prepend finding title + description so the AI subprocess has full context.
-        let enriched_prompt = if let Some((title, desc)) = finding_text {
-            format!("Finding: {title}\n\n{desc}\n\n---\n\n{prompt}")
-        } else {
-            prompt
-        };
-        drop(app);
-        return ask_ai(root_id, enriched_prompt, state);
-    } else {
         app.submit_comment_text(
             file,
             hunk_idx,
             line_start,
             body,
             CommentType::GitHubComment,
-            None,
+            Some(root_id),
             None,
         )
         .map_err(|e| e.to_string())?;
     }
 
+    Ok(snap_from(&app, &state))
+}
+
+#[tauri::command]
+pub fn update_thread_message(
+    id: String,
+    body: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let text = body.trim();
+    if text.is_empty() {
+        return Err("Message cannot be empty".to_string());
+    }
+
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let author = {
+        let tab = app.tab();
+        if id.starts_with("q-") {
+            tab.ai
+                .questions
+                .as_ref()
+                .and_then(|qs| qs.questions.iter().find(|q| q.id == id))
+                .map(|q| q.author.clone())
+        } else {
+            tab.ai
+                .github_comments
+                .as_ref()
+                .and_then(|gc| gc.comments.iter().find(|c| c.id == id))
+                .map(|c| c.author.clone())
+        }
+    };
+    let author = author.ok_or_else(|| format!("Thread message not found: {id}"))?;
+    if author == "ai" {
+        return Err("Cannot edit AI-generated text".to_string());
+    }
+    if !author.is_empty() && author != "You" {
+        return Err("Can only edit your own messages".to_string());
+    }
+
+    app.update_comment_text(&id, text)
+        .map_err(|e| e.to_string())?;
     Ok(snap_from(&app, &state))
 }
 
@@ -5643,14 +6032,31 @@ mod tests {
     }
 
     #[test]
-    fn ask_ai_subprocess_honors_fake_sentinel_ok() {
-        let body = with_fake_claude("ok", || run_ask_ai_subprocess("sonnet", "ctx", "prompt"));
+    fn card_ai_subprocess_honors_fake_sentinel_ok() {
+        let inv = CardAiInvocation {
+            command: "claude".into(),
+            args: vec![],
+            work_dir: "/tmp".into(),
+            is_claude_compatible: true,
+            uses_stream_json: false,
+        };
+        let body =
+            with_fake_claude("ok", || run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet")));
         assert_eq!(body, "mocked ok");
     }
 
     #[test]
-    fn ask_ai_subprocess_honors_fake_sentinel_fail() {
-        let body = with_fake_claude("fail", || run_ask_ai_subprocess("sonnet", "ctx", "prompt"));
+    fn card_ai_subprocess_honors_fake_sentinel_fail() {
+        let inv = CardAiInvocation {
+            command: "claude".into(),
+            args: vec![],
+            work_dir: "/tmp".into(),
+            is_claude_compatible: true,
+            uses_stream_json: false,
+        };
+        let body = with_fake_claude("fail", || {
+            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
+        });
         assert!(
             body.starts_with("Pending — invoke via CLI"),
             "expected fallback message, got: {body}"
@@ -5658,9 +6064,16 @@ mod tests {
     }
 
     #[test]
-    fn ask_ai_subprocess_returns_custom_sentinel_value() {
+    fn card_ai_subprocess_returns_custom_sentinel_value() {
+        let inv = CardAiInvocation {
+            command: "claude".into(),
+            args: vec![],
+            work_dir: "/tmp".into(),
+            is_claude_compatible: true,
+            uses_stream_json: false,
+        };
         let body = with_fake_claude("custom-response-text", || {
-            run_ask_ai_subprocess("sonnet", "ctx", "prompt")
+            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
         });
         assert_eq!(body, "custom-response-text");
     }
@@ -5719,6 +6132,7 @@ mod tests {
                 in_reply_to: None,
                 author: "You".to_string(),
                 promoted_to: None,
+                finding_ref: None,
             }],
         };
         std::fs::write(&q_path, serde_json::to_string_pretty(&questions).unwrap()).unwrap();

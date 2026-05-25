@@ -10,6 +10,6 @@
   const { row, thread }: Props = $props();
 </script>
 
-<div data-row-identity={row.identity}>
+<div data-row-identity={row.identity} class="annotation-inline-row">
   <InlineThread {thread} hunk_idx={row.hunkIdx} />
 </div>

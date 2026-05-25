@@ -95,7 +95,7 @@
   }
 </script>
 
-<div class={`markdown-text ${className}`}>
+<div class={`markdown-text min-w-0 max-w-full ${className}`}>
   {#each nodes as n}
     {#if n.t === "h"}
       {#if n.l === 1}<h1>{@html inline(n.v)}</h1>
@@ -119,6 +119,23 @@
 </div>
 
 <style>
+  .markdown-text {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .markdown-text :global(p),
+  .markdown-text :global(li),
+  .markdown-text :global(blockquote),
+  .markdown-text :global(h1),
+  .markdown-text :global(h2),
+  .markdown-text :global(h3),
+  .markdown-text :global(h4),
+  .markdown-text :global(h5),
+  .markdown-text :global(h6) {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    max-width: 100%;
+  }
   .markdown-text :global(p) { margin: 0 0 0.4rem 0; }
   .markdown-text :global(h1), .markdown-text :global(h2), .markdown-text :global(h3),
   .markdown-text :global(h4), .markdown-text :global(h5), .markdown-text :global(h6) {
@@ -127,7 +144,22 @@
   }
   .markdown-text :global(ul), .markdown-text :global(ol) { margin: 0.3rem 0 0.45rem 1.1rem; }
   .markdown-text :global(blockquote) { margin: 0.3rem 0; padding-left: 0.7rem; border-left: 2px solid rgba(148,163,184,.45); }
-  .markdown-text :global(code) { font-family: "JetBrains Mono", monospace; font-size: .9em; }
-  .markdown-text :global(pre) { margin: 0.4rem 0; padding: 0.55rem; border: 1px solid rgba(148,163,184,.25); border-radius: 6px; overflow: auto; }
+  .markdown-text :global(code) {
+    font-family: "JetBrains Mono", monospace;
+    font-size: .9em;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+  .markdown-text :global(pre) {
+    margin: 0.4rem 0;
+    padding: 0.55rem;
+    border: 1px solid rgba(148,163,184,.25);
+    border-radius: 6px;
+    overflow-x: auto;
+    max-width: 100%;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .markdown-text :global(a) { text-decoration: underline; }
 </style>

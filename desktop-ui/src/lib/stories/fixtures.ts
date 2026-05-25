@@ -243,6 +243,8 @@ export const aiWithFindings: AiSnapshot = {
       message_markdown: "",
       promoted_to: null,
       thread_id: null,
+      expert_label: null,
+      agent_label: "General",
     },
     {
       id: "finding-2",
@@ -254,6 +256,8 @@ export const aiWithFindings: AiSnapshot = {
       message_markdown: "",
       promoted_to: null,
       thread_id: null,
+      expert_label: null,
+      agent_label: "General",
     },
     {
       id: "finding-medium-1",
@@ -265,6 +269,8 @@ export const aiWithFindings: AiSnapshot = {
       message_markdown: "",
       promoted_to: null,
       thread_id: null,
+      expert_label: null,
+      agent_label: "General",
     },
     {
       id: "finding-4",
@@ -276,6 +282,8 @@ export const aiWithFindings: AiSnapshot = {
       message_markdown: "",
       promoted_to: null,
       thread_id: null,
+      expert_label: null,
+      agent_label: "General",
     },
   ],
 };

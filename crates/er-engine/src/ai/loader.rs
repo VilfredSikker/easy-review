@@ -2,6 +2,7 @@ use super::comments::{ErFeedback, ErGitHubComments, ErQuestions};
 use super::experts::{
     load_expert_reviews, merge_experts_into_review, synthesize_review_from_experts,
 };
+use super::professor::{load_professor_review, merge_professor_into_review};
 use super::review::*;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -166,6 +167,26 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str) -> AiState {
         merge_experts_into_review(review, &experts, current_diff_hash);
     } else if let Some(synthetic) = synthesize_review_from_experts(&experts, current_diff_hash) {
         state.review = Some(synthetic);
+    }
+
+    if let Some(prof) = load_professor_review(er_dir) {
+        if let Some(review) = state.review.as_mut() {
+            merge_professor_into_review(review, &prof, current_diff_hash);
+        } else {
+            let mut review = ErReview {
+                version: 1,
+                diff_hash: current_diff_hash.to_string(),
+                created_at: prof.created_at.clone(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files: HashMap::new(),
+                file_hashes: HashMap::new(),
+            };
+            merge_professor_into_review(&mut review, &prof, current_diff_hash);
+            if !review.files.is_empty() {
+                state.review = Some(review);
+            }
+        }
     }
 
     // Load legacy .er-feedback.json (only if new files don't exist — migration support)

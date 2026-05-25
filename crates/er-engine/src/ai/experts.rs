@@ -84,6 +84,20 @@ pub const EXPERTS: &[ExpertDef] = &[
         skill_name: "er-review-patterns",
         id_prefix: "pat",
     },
+    ExpertDef {
+        id: "simplifying",
+        label: "Simplifying",
+        description: "Hard-to-read complexity — simplify or document with comments",
+        skill_name: "er-review-simplifying",
+        id_prefix: "simp",
+    },
+    ExpertDef {
+        id: "mentorship",
+        label: "Mentorship",
+        description: "Exemplary patterns and quality worth fostering on the team",
+        skill_name: "er-review-mentorship",
+        id_prefix: "ment",
+    },
 ];
 
 pub fn expert_by_id(id: &str) -> Option<&'static ExpertDef> {
@@ -92,6 +106,66 @@ pub fn expert_by_id(id: &str) -> Option<&'static ExpertDef> {
 
 pub fn expert_label_for_category(category: &str) -> Option<&'static str> {
     expert_by_id(category).map(|e| e.label)
+}
+
+/// Display label for the agent that produced a finding (pill in UI).
+pub fn agent_label_for_category(category: &str) -> &'static str {
+    if category == super::professor::PROFESSOR_ID {
+        return super::professor::PROFESSOR_LABEL;
+    }
+    if let Some(def) = expert_by_id(category) {
+        return def.label;
+    }
+    "General"
+}
+
+/// One selectable reviewer in the AI Hub / file-review picker.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReviewerInfo {
+    pub kind: String,
+    pub label: String,
+    pub description: String,
+}
+
+pub fn list_ai_reviewers() -> Vec<ReviewerInfo> {
+    let mut out = vec![ReviewerInfo {
+        kind: "general".to_string(),
+        label: "General".to_string(),
+        description: "Risk, order, checklist, and summary".to_string(),
+    }];
+    for e in EXPERTS {
+        out.push(ReviewerInfo {
+            kind: format!("expert:{}", e.id),
+            label: e.label.to_string(),
+            description: e.description.to_string(),
+        });
+    }
+    out.push(ReviewerInfo {
+        kind: super::professor::PROFESSOR_ID.to_string(),
+        label: super::professor::PROFESSOR_LABEL.to_string(),
+        description: "Learn the implementation — key mechanisms in this diff".to_string(),
+    });
+    out
+}
+
+/// Parse `reviewer_kind` from UI/API.
+pub fn parse_reviewer_kind(kind: &str) -> Option<ReviewerKind> {
+    match kind {
+        "general" => Some(ReviewerKind::General),
+        "professor" => Some(ReviewerKind::Professor),
+        s if s.starts_with("expert:") => {
+            let id = s.strip_prefix("expert:")?;
+            expert_by_id(id).map(|_| ReviewerKind::Expert(id.to_string()))
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewerKind {
+    General,
+    Expert(String),
+    Professor,
 }
 
 /// Desktop / Tauri list payload.
@@ -309,6 +383,32 @@ mod tests {
         assert_eq!(f.findings.len(), 1);
         assert_eq!(f.findings[0].id, "sec-1");
         assert_eq!(f.findings[0].category, "security");
+    }
+
+    #[test]
+    fn agent_label_maps_general_expert_professor() {
+        assert_eq!(agent_label_for_category("security"), "Security");
+        assert_eq!(agent_label_for_category("professor"), "Professor");
+        assert_eq!(agent_label_for_category("logic"), "General");
+    }
+
+    #[test]
+    fn parse_reviewer_kind_accepts_all_kinds() {
+        assert_eq!(parse_reviewer_kind("general"), Some(ReviewerKind::General));
+        assert_eq!(
+            parse_reviewer_kind("expert:api"),
+            Some(ReviewerKind::Expert("api".to_string()))
+        );
+        assert_eq!(parse_reviewer_kind("professor"), Some(ReviewerKind::Professor));
+        assert!(parse_reviewer_kind("expert:unknown").is_none());
+    }
+
+    #[test]
+    fn list_ai_reviewers_includes_general_and_professor() {
+        let list = list_ai_reviewers();
+        assert!(list.iter().any(|r| r.kind == "general"));
+        assert!(list.iter().any(|r| r.kind == "professor"));
+        assert_eq!(list.len(), EXPERTS.len() + 2);
     }
 
     #[test]

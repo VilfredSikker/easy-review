@@ -2,6 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import type { ThreadSnapshot } from "$lib/types";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
+  import EditMessageModal from "$lib/components/EditMessageModal.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { navigateToThread } from "$lib/dom";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -21,6 +22,8 @@
   let showReply = $state(false);
   let replyTextarea: HTMLTextAreaElement | null = $state(null);
   let showPromote = $state(false);
+  let editMessageId = $state<string | null>(null);
+  let editInitialBody = $state("");
 
   let askAiText = $state("");
   let showAskAi = $state(false);
@@ -124,6 +127,10 @@
     await app.cmd("ask_ai", { threadId: thread.id, prompt });
   }
 
+  async function validateWithAi() {
+    await app.cmd("validate_with_ai", { threadId: thread.id, findingId: null });
+  }
+
   async function copyThread() {
     const header = thread.line > 0 ? `${thread.file}:${thread.line}` : thread.file;
     const text = `**${header}**\n\n${buildPromoteBody()}`;
@@ -147,6 +154,17 @@
     await app.cmd("resolve_thread", { id: thread.id });
   }
 
+  function openEdit(messageId: string, body: string) {
+    editMessageId = messageId;
+    editInitialBody = body;
+  }
+
+  async function submitEdit(body: string) {
+    if (!editMessageId) return;
+    await app.cmd("update_thread_message", { id: editMessageId, body });
+    editMessageId = null;
+  }
+
   const targetLineLabel = $derived(
     thread.line > 0 ? `${thread.file}:${thread.line}` : thread.file,
   );
@@ -154,7 +172,7 @@
 
 <div
   id={thread.id}
-  class="{variant === 'panel' ? '' : 'mx-4 my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 {thread.stale ? 'opacity-60' : ''} {isQuestion ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
+  class="{variant === 'panel' ? '' : 'mx-4 my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 min-w-0 max-w-full {thread.stale ? 'opacity-60' : ''} {isQuestion ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
 >
   <!-- Header -->
   <div class="px-3 py-2 border-b border-hairline flex items-center gap-2">
@@ -210,17 +228,32 @@
       <div class="text-[11px] font-mono text-muted mb-0.5">
         {thread.root.kind === "you" ? "you" : thread.root.author} · {formatTimestamp(thread.root.timestamp)}
       </div>
-      <MarkdownText text={thread.root.body_markdown} className="text-sm text-fg-2" />
+      <div class="annotation-body-scroll">
+        <MarkdownText text={thread.root.body_markdown} className="text-sm text-fg-2" />
+      </div>
     </div>
-    <button
-      type="button"
-      onclick={deleteThread}
-      title={thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
-      aria-label="Delete thread"
-      class="self-start shrink-0 p-0.5 rounded text-muted opacity-0 group-hover/row:opacity-60 hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
-    >
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
-    </button>
+    <div class="self-start shrink-0 flex gap-0.5 opacity-0 group-hover/row:opacity-60">
+      {#if thread.root.kind === "you"}
+        <button
+          type="button"
+          onclick={() => openEdit(thread.root.id, thread.root.body_markdown)}
+          title="Edit message"
+          aria-label="Edit message"
+          class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-fg-2 hover:bg-hover transition"
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+      {/if}
+      <button
+        type="button"
+        onclick={deleteThread}
+        title={thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
+        aria-label="Delete thread"
+        class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+      </button>
+    </div>
   </div>
 
   <!-- Replies -->
@@ -243,19 +276,34 @@
             {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
               <div class="text-sm text-fg-3 italic animate-pulse">…thinking</div>
             {:else}
-              <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
+              <div class="annotation-body-scroll">
+                <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
+              </div>
             {/if}
           </div>
           {#if reply.id}
-            <button
-              type="button"
-              onclick={() => deleteReply(reply.id)}
-              title="Delete this reply"
-              aria-label="Delete reply"
-              class="self-start shrink-0 p-0.5 rounded text-muted opacity-0 group-hover/row:opacity-60 hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
-            </button>
+            <div class="self-start shrink-0 flex gap-0.5 opacity-0 group-hover/row:opacity-60">
+              {#if reply.kind === "you"}
+                <button
+                  type="button"
+                  onclick={() => openEdit(reply.id, reply.body_markdown)}
+                  title="Edit reply"
+                  aria-label="Edit reply"
+                  class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-fg-2 hover:bg-hover transition"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+              {/if}
+              <button
+                type="button"
+                onclick={() => deleteReply(reply.id)}
+                title="Delete this reply"
+                aria-label="Delete reply"
+                class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+              </button>
+            </div>
           {/if}
         </div>
       {/each}
@@ -337,6 +385,15 @@
       <button onclick={openAskAi} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI…</button>
     {/if}
     <button
+      type="button"
+      onclick={() => void validateWithAi()}
+      title="Check this note against the current code (local reply, not posted to GitHub)"
+      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+      Validate with AI
+    </button>
+    <button
       onclick={copyThread}
       title="Copy thread as markdown"
       class="px-2 py-0.5 rounded hover:bg-hover flex items-center gap-1 {justCopied ? 'text-add-fg' : 'text-fg-3'}"
@@ -373,6 +430,12 @@
         Promote to comment
       </button>
     {/if}
+    <button
+      type="button"
+      onclick={deleteThread}
+      title={thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
+      class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg"
+    >Delete</button>
     {#if thread.replies.length > 0}
       <span class="ml-auto text-muted text-[10px]">{thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"}</span>
     {/if}
@@ -394,4 +457,12 @@
   targetLineLabel={targetLineLabel}
   onSubmit={submitPromote}
   onClose={() => (showPromote = false)}
+/>
+
+<EditMessageModal
+  open={editMessageId != null}
+  messageId={editMessageId ?? ""}
+  initialBody={editInitialBody}
+  onSubmit={submitEdit}
+  onClose={() => (editMessageId = null)}
 />
