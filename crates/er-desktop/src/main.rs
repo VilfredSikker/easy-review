@@ -1334,6 +1334,7 @@ fn main() {
             commands::open_remote_pr,
             commands::open_worktree,
             commands::dismiss_finding,
+            commands::remove_finding_thread,
             commands::promote_finding_to_comment,
             commands::reply_to_finding,
             commands::update_thread_message,

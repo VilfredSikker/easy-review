@@ -1461,6 +1461,60 @@ pub fn reply_to_thread(
 pub fn delete_thread(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+    if let Ok(mut p) = state.pending_ai_replies.lock() {
+        p.remove(&id);
+    }
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(snap_from(&app, &state))
+}
+
+/// Remove all question/github threads linked to a finding (`finding_ref`), keeping the finding.
+fn finding_linked_thread_ids(ai: &er_engine::ai::AiState, finding_id: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(qs) = ai.questions.as_ref() {
+        for q in &qs.questions {
+            if q.finding_ref.as_deref() == Some(finding_id) {
+                ids.push(q.id.clone());
+            }
+        }
+    }
+    if let Some(gc) = ai.github_comments.as_ref() {
+        for c in &gc.comments {
+            if c.finding_ref.as_deref() == Some(finding_id) {
+                ids.push(c.id.clone());
+            }
+        }
+    }
+    ids
+}
+
+#[tauri::command]
+pub fn remove_finding_thread(
+    finding_id: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let er_dir = app.tab().er_dir();
+
+    let pending_ids = finding_linked_thread_ids(&app.tab().ai, &finding_id);
+    er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id)
+        .map_err(|e| format!("Failed to remove finding thread: {e}"))?;
+
+    if let Ok(mut p) = state.pending_ai_replies.lock() {
+        for id in pending_ids {
+            p.remove(&id);
+        }
+        if let Some(root) = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id) {
+            p.remove(&root);
+        }
+    }
+
+    app.tab_mut().reload_ai_state();
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(snap_from(&app, &state))
 }
 

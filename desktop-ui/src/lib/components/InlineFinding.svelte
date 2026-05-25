@@ -90,15 +90,7 @@
   }
 
   async function deleteConversation() {
-    if (!thread) return;
-    const n = thread.replies.length;
-    const ok = confirm(
-      n > 0
-        ? `Remove this AI conversation (${n} ${n === 1 ? "reply" : "replies"})? The finding stays until you dismiss it.`
-        : "Remove this validation thread?",
-    );
-    if (!ok) return;
-    await app.cmd("delete_thread", { id: thread.id });
+    await app.cmd("remove_finding_thread", { findingId: finding.id });
   }
 
   function buildPromoteBody(): string {
@@ -164,6 +156,45 @@
     </div>
   </div>
 
+  <!-- Actions on the finding (not on replies below) -->
+  <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-2 text-[11px] flex-wrap">
+    {#if !isPromoted}
+      <button onclick={() => (showPromote = true)} class="px-2 py-0.5 rounded text-comment hover:bg-hover flex items-center gap-1">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Promote to comment
+      </button>
+    {/if}
+    <button onclick={focusReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
+    <button
+      type="button"
+      onclick={() => void askAi()}
+      title="Ask AI to elaborate on this finding"
+      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
+      Ask AI
+    </button>
+    <button
+      type="button"
+      onclick={() => void validateWithAi()}
+      title="Check this finding against the current code (local reply, not posted to GitHub)"
+      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+      Validate with AI
+    </button>
+    {#if thread}
+      <button
+        type="button"
+        onclick={() => void deleteConversation()}
+        title="Remove validation / AI replies on this finding"
+        class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg"
+      >Remove thread</button>
+    {/if}
+    <button type="button" onclick={dismiss} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg" title="Remove finding from review">Dismiss finding</button>
+    <span class="ml-auto kbd">⇧R</span>
+  </div>
+
   <!-- Inline AI thread replies (created via Ask AI) -->
   {#if thread}
     <div class="border-t border-hairline bg-surface">
@@ -225,45 +256,6 @@
       {/if}
     </div>
   {/if}
-
-  <!-- Action footer -->
-  <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-2 text-[11px] flex-wrap">
-    {#if !isPromoted}
-      <button onclick={() => (showPromote = true)} class="px-2 py-0.5 rounded text-comment hover:bg-hover flex items-center gap-1">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        Promote to comment
-      </button>
-    {/if}
-    <button onclick={focusReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
-    <button
-      type="button"
-      onclick={() => void askAi()}
-      title="Ask AI to elaborate on this finding"
-      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
-    >
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
-      Ask AI
-    </button>
-    <button
-      type="button"
-      onclick={() => void validateWithAi()}
-      title="Check this finding against the current code (local reply, not posted to GitHub)"
-      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
-    >
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
-      Validate with AI
-    </button>
-    {#if thread}
-      <button
-        type="button"
-        onclick={() => void deleteConversation()}
-        title="Remove validation / AI replies on this finding"
-        class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg"
-      >Remove thread</button>
-    {/if}
-    <button type="button" onclick={dismiss} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg" title="Remove finding from review">Dismiss finding</button>
-    <span class="ml-auto kbd">⇧R</span>
-  </div>
 
   <!-- Reply composer -->
   <div class="px-3 py-2 border-t border-hairline flex items-center gap-2">

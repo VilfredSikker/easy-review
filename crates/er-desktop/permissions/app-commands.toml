@@ -61,6 +61,7 @@ commands.allow = [
   "open_remote_pr",
   "open_worktree",
   "dismiss_finding",
+  "remove_finding_thread",
   "promote_finding_to_comment",
   "reply_to_finding",
   "update_thread_message",
