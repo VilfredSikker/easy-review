@@ -13,17 +13,22 @@
   import { app } from "$lib/stores/app.svelte";
   import { registerAiPaletteOpener } from "$lib/stores/keyboard";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
+  import ReviewerPickerList from "$lib/components/ReviewerPickerList.svelte";
   import { openAiReviewFilesModal } from "$lib/components/AiReviewFilesModal.svelte";
-  import type { AiProviderInfo, ExpertInfo } from "$lib/types";
+  import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
+  import type { AiProviderInfo } from "$lib/types";
 
-  type SubView = "main" | "providers" | "models" | "experts";
+  type SubView = "main" | "providers" | "models" | "reviewers";
 
   let open = $state(false);
   let selectedIdx = $state(0);
   let subView = $state<SubView>("main");
   let providers = $state<AiProviderInfo[]>([]);
-  let experts = $state<ExpertInfo[]>([]);
   let selectedProvider = $state<AiProviderInfo | null>(null);
+  let selectedReviewers = $state<Set<string>>(new Set());
+  let reviewerHighlight = $state(0);
+  let reviewerPickerRef = $state<{ moveHighlight: (d: number) => void; toggleHighlighted: () => void } | null>(null);
 
   interface AiAction {
     id: string;
@@ -40,6 +45,8 @@
     subView = "main";
     providers = [];
     selectedProvider = null;
+    selectedReviewers = new Set();
+    reviewerHighlight = 0;
   }
 
   function dismissAndRun(fn: () => void) {
@@ -51,8 +58,8 @@
     selectedIdx = 0;
     subView = "main";
     providers = [];
-    experts = [];
     selectedProvider = null;
+    selectedReviewers = new Set();
     open = true;
   }
 
@@ -65,31 +72,33 @@
       subView = "providers";
       selectedIdx = providers.findIndex((p) => p.id === selectedProvider?.id);
       if (selectedIdx < 0) selectedIdx = 0;
-    } else if (subView === "providers" || subView === "experts") {
+    } else if (subView === "providers" || subView === "reviewers") {
       subView = "main";
       selectedIdx = 0;
     }
   }
 
-  async function openExpertPicker() {
+  function openReviewerPicker() {
     if (!reviewScope) return;
-    try {
-      experts = await invoke<ExpertInfo[]>("list_ai_experts");
-      if (experts.length === 0) {
-        app.showToast("error", "No expert reviewers configured");
-        return;
-      }
-      subView = "experts";
-      selectedIdx = 0;
-    } catch (e) {
-      app.showToast("error", `list_ai_experts: ${e}`);
-    }
+    subView = "reviewers";
+    reviewerHighlight = 0;
   }
 
-  function runExpert(expert: ExpertInfo) {
-    if (!reviewScope) return;
+  async function runSelectedReviewers() {
+    if (!reviewScope || selectedReviewers.size === 0) return;
+    const scope = reviewScope;
+    const kinds = [...selectedReviewers];
+    if (kinds.includes("professor")) {
+      dismissAndRun(() => openProfessorFocusModal(scope, kinds, []));
+      return;
+    }
     dismissAndRun(() =>
-      void app.cmd("run_ai_expert_review", { scope: reviewScope, expertId: expert.id }),
+      void app.cmd("run_ai_scoped_review", {
+        scope,
+        paths: [],
+        reviewerKinds: kinds,
+        focusPrompt: null,
+      }),
     );
   }
 
@@ -125,6 +134,7 @@
   }
 
   const activeAiLabel = $derived(app.snapshot?.active_ai_label ?? "");
+  const reviewerCount = $derived(selectedReviewers.size);
 
   const mode = $derived(app.snapshot?.mode);
   const reviewScope = $derived(
@@ -149,7 +159,7 @@
       id: "review-current",
       label: "Run review",
       description: reviewScope
-        ? `Full review — risk, order, checklist, summary (${scopeDescription.toLowerCase()})`
+        ? `General review only — risk, order, checklist, summary (${scopeDescription.toLowerCase()})`
         : "Not available in this view",
       run: () => {
         if (!reviewScope) return;
@@ -157,14 +167,25 @@
       },
     },
     {
-      id: "review-expert",
-      label: "Run specialized review",
+      id: "review-reviewers",
+      label: "Run reviewers…",
       description: reviewScope
-        ? "Focused expert lens (security, patterns, …) — findings only"
+        ? "Multi-select General, experts, and Professor"
         : "Not available in this view",
       run: () => {
         if (!reviewScope) return;
-        void openExpertPicker();
+        openReviewerPicker();
+      },
+    },
+    {
+      id: "professor",
+      label: "Professor",
+      description: reviewScope
+        ? "Learn what this diff implements (not a code review)"
+        : "Not available in this view",
+      run: () => {
+        if (!reviewScope) return;
+        dismissAndRun(() => openProfessorFocusModal(reviewScope, ["professor"], []));
       },
     },
     {
@@ -180,7 +201,7 @@
       id: "review-select-files",
       label: "Review select files",
       description: reviewScope
-        ? `Choose files to review (${scopeDescription.toLowerCase()})`
+        ? `Choose files and reviewers (${scopeDescription.toLowerCase()})`
         : "Not available in this view",
       run: () => {
         if (!reviewScope) return;
@@ -226,17 +247,10 @@
         onSelect: () => selectModel(m.id),
       }));
     }
-    if (subView === "experts") {
-      return experts.map((e) => ({
-        label: e.label,
-        description: e.description,
-        onSelect: () => runExpert(e),
-      }));
-    }
     return actions.map((a) => ({
       label: a.label,
       description: a.description,
-      disabled: a.disabled ?? (!reviewScope && (a.id === "review-current" || a.id === "validate-current" || a.id === "review-select-files")),
+      disabled: a.disabled ?? (!reviewScope && (a.id === "review-current" || a.id === "validate-current" || a.id === "review-select-files" || a.id === "review-reviewers" || a.id === "professor")),
       onSelect: a.run,
     }));
   });
@@ -244,12 +258,42 @@
   const subViewTitle = $derived(
     subView === "providers" ? "Select provider" :
     subView === "models" ? `${selectedProvider?.label ?? "Select model"}` :
-    subView === "experts" ? "Specialized review" :
+    subView === "reviewers" ? "Choose reviewers" :
     "AI Actions"
+  );
+
+  const panelClass = $derived(
+    subView === "reviewers"
+      ? "fixed left-1/2 -translate-x-1/2 top-[12vh] z-[251] bg-ink-800 border border-ink-500 rounded-lg shadow-2xl w-[min(520px,calc(100vw-2rem))] h-[min(70vh,640px)] max-h-[calc(100vh-3rem)] flex flex-col overflow-hidden outline-none"
+      : "fixed left-1/2 -translate-x-1/2 top-[15vh] z-[251] bg-ink-800 border border-ink-500 rounded-lg shadow-2xl w-[480px] max-w-[calc(100vw-2rem)] overflow-hidden outline-none"
   );
 
   function handleKeydown(e: KeyboardEvent) {
     if (!open) return;
+    if (subView === "reviewers") {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        goBack();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        reviewerPickerRef?.moveHighlight(1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        reviewerPickerRef?.moveHighlight(-1);
+        return;
+      }
+      if (e.key === " " || e.key === "Enter") {
+        e.preventDefault();
+        if (e.key === "Enter" && reviewerCount > 0) void runSelectedReviewers();
+        else reviewerPickerRef?.toggleHighlighted();
+        return;
+      }
+      return;
+    }
     if (e.key === "Escape") {
       e.preventDefault();
       if (subView !== "main") { goBack(); } else { close(); }
@@ -294,54 +338,73 @@
   onClose={close}
   onKeydown={handleKeydown}
   closeOnEscape={false}
-  panelClass="fixed left-1/2 -translate-x-1/2 top-[15vh] z-[251] bg-ink-800 border border-ink-500 rounded-lg shadow-2xl w-[480px] max-w-[calc(100vw-2rem)] overflow-hidden outline-none"
+  {panelClass}
 >
-      <!-- header -->
-      <div class="px-4 pt-3 pb-2 border-b border-ink-600 flex items-center gap-2">
-        {#if subView !== "main"}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <span
-            class="text-ink-400 hover:text-ink-200 cursor-pointer text-xs font-mono"
-            onclick={goBack}
-          >←</span>
-        {:else}
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent shrink-0">
-            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
-          </svg>
-        {/if}
-        <span class="text-xs text-ink-300 font-mono">{subViewTitle}</span>
-        {#if subView === "main"}
-          {#if activeAiLabel}
-            <span class="ml-auto text-[10px] text-ink-400 font-mono truncate max-w-[180px]">{activeAiLabel}</span>
-          {/if}
-          {#if runningCommands.length > 0}
-            <span class="ml-1 w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0"></span>
-          {/if}
-        {/if}
-        <kbd class="ml-auto shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink-650 border border-ink-500 text-ink-400">Esc</kbd>
-      </div>
+  <div class="px-4 pt-3 pb-2 border-b border-ink-600 flex items-center gap-2 shrink-0">
+    {#if subView !== "main"}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <span
+        class="text-ink-400 hover:text-ink-200 cursor-pointer text-xs font-mono"
+        onclick={goBack}
+      >←</span>
+    {:else}
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent shrink-0">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+      </svg>
+    {/if}
+    <span class="text-xs text-ink-300 font-mono">{subViewTitle}</span>
+    {#if subView === "main"}
+      {#if activeAiLabel}
+        <span class="ml-auto text-[10px] text-ink-400 font-mono truncate max-w-[180px]">{activeAiLabel}</span>
+      {/if}
+      {#if runningCommands.length > 0}
+        <span class="ml-1 w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0"></span>
+      {/if}
+    {/if}
+    <kbd class="ml-auto shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink-650 border border-ink-500 text-ink-400">Esc</kbd>
+  </div>
 
-      <!-- items list -->
-      <div class="py-1">
-        {#each currentItems as item, i}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="px-4 py-2.5 flex items-start gap-3 transition-colors {item.disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'} {i === selectedIdx ? 'bg-ink-700' : item.disabled ? '' : 'hover:bg-ink-750'}"
-            onclick={() => { if (!item.disabled) item.onSelect(); }}
-            onmouseenter={() => { selectedIdx = i; }}
-          >
-            <div class="flex flex-col min-w-0">
-              <span class="text-sm text-ink-100">{item.label}</span>
-              {#if item.description}
-                <span class="text-xs text-ink-300 mt-0.5">{item.description}</span>
-              {/if}
-            </div>
-            {#if subView === "providers" && providers[i]?.models.length > 0}
-              <span class="ml-auto shrink-0 text-ink-400 text-xs">›</span>
+  {#if subView === "reviewers"}
+    <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <ReviewerPickerList
+        bind:this={reviewerPickerRef}
+        selected={selectedReviewers}
+        onSelectedChange={(s) => (selectedReviewers = s)}
+        bind:highlightIdx={reviewerHighlight}
+      />
+    </div>
+    <div class="px-4 py-3 border-t border-ink-600 flex items-center justify-end gap-2 shrink-0">
+      <Button variant="ghost" onclick={goBack}>Back</Button>
+      <Button
+        variant="primary"
+        disabled={reviewerCount === 0}
+        onclick={() => void runSelectedReviewers()}
+      >
+        Run {reviewerCount} reviewer{reviewerCount === 1 ? "" : "s"}
+      </Button>
+    </div>
+  {:else}
+    <div class="py-1">
+      {#each currentItems as item, i}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="px-4 py-2.5 flex items-start gap-3 transition-colors {item.disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'} {i === selectedIdx ? 'bg-ink-700' : item.disabled ? '' : 'hover:bg-ink-750'}"
+          onclick={() => { if (!item.disabled) item.onSelect(); }}
+          onmouseenter={() => { selectedIdx = i; }}
+        >
+          <div class="flex flex-col min-w-0">
+            <span class="text-sm text-ink-100">{item.label}</span>
+            {#if item.description}
+              <span class="text-xs text-ink-300 mt-0.5">{item.description}</span>
             {/if}
           </div>
-        {/each}
-      </div>
+          {#if subView === "providers" && providers[i]?.models.length > 0}
+            <span class="ml-auto shrink-0 text-ink-400 text-xs">›</span>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
 </ModalShell>

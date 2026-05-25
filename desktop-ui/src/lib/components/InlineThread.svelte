@@ -124,6 +124,10 @@
     await app.cmd("ask_ai", { threadId: thread.id, prompt });
   }
 
+  async function validateWithAi() {
+    await app.cmd("validate_with_ai", { threadId: thread.id, findingId: null });
+  }
+
   async function copyThread() {
     const header = thread.line > 0 ? `${thread.file}:${thread.line}` : thread.file;
     const text = `**${header}**\n\n${buildPromoteBody()}`;
@@ -154,7 +158,7 @@
 
 <div
   id={thread.id}
-  class="{variant === 'panel' ? '' : 'mx-4 my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 {thread.stale ? 'opacity-60' : ''} {isQuestion ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
+  class="{variant === 'panel' ? '' : 'mx-4 my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 min-w-0 max-w-full {thread.stale ? 'opacity-60' : ''} {isQuestion ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
 >
   <!-- Header -->
   <div class="px-3 py-2 border-b border-hairline flex items-center gap-2">
@@ -210,7 +214,9 @@
       <div class="text-[11px] font-mono text-muted mb-0.5">
         {thread.root.kind === "you" ? "you" : thread.root.author} · {formatTimestamp(thread.root.timestamp)}
       </div>
-      <MarkdownText text={thread.root.body_markdown} className="text-sm text-fg-2" />
+      <div class="annotation-body-scroll">
+        <MarkdownText text={thread.root.body_markdown} className="text-sm text-fg-2" />
+      </div>
     </div>
     <button
       type="button"
@@ -243,7 +249,9 @@
             {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
               <div class="text-sm text-fg-3 italic animate-pulse">…thinking</div>
             {:else}
-              <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
+              <div class="annotation-body-scroll">
+                <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
+              </div>
             {/if}
           </div>
           {#if reply.id}
@@ -336,6 +344,15 @@
     {#if !showAskAi}
       <button onclick={openAskAi} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI…</button>
     {/if}
+    <button
+      type="button"
+      onclick={() => void validateWithAi()}
+      title="Check this note against the current code (local reply, not posted to GitHub)"
+      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+      Validate with AI
+    </button>
     <button
       onclick={copyThread}
       title="Copy thread as markdown"

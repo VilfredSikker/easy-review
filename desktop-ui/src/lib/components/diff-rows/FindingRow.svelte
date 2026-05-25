@@ -11,6 +11,6 @@
   const { row, finding, thread }: Props = $props();
 </script>
 
-<div data-row-identity={row.identity}>
+<div data-row-identity={row.identity} class="annotation-inline-row">
   <InlineFinding {finding} {thread} />
 </div>

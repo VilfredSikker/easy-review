@@ -162,6 +162,10 @@ General review (AI Hub **Run review** or `/er-review`) writes:
 
 At load time, `er` merges fresh expert sidecars (matching `diff_hash`) into the in-memory review so expert findings appear as **additional inline banners** labeled by expert (e.g. "Security finding"). Order/checklist/summary panels still require a general review run.
 
-Expert ids (v1): `security`, `performance`, `reliability`, `testing`, `api`, `patterns`.
+Expert ids (v1): `security`, `performance`, `reliability`, `testing`, `api`, `patterns`, `simplifying`, `mentorship`.
+
+**Professor** (AI Hub **Professor** or `/er-professor`) writes teaching insights to `.er/professor.json` (merged inline at load; labeled with agent pill **Professor**). Not a code review — see `skills/PROFESSOR_PHILOSOPHY.md`.
+
+**Multi-reviewer runs** (AI Hub **Run reviewers…** or **Review select files** → choose reviewers): spawn General + any experts + Professor concurrently. Each finding shows an agent pill (`General`, `Security`, …).
 
 Shared prompt rules: `skills/REVIEW_RULES.md` (referenced by skills and engine spawn prompts).

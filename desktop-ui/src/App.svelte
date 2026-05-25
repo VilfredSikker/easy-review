@@ -12,6 +12,7 @@
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import AiActionPalette from "$lib/components/AiActionPalette.svelte";
   import AiReviewFilesModal from "$lib/components/AiReviewFilesModal.svelte";
+  import ProfessorFocusModal from "$lib/components/ProfessorFocusModal.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import PrUrlModal from "$lib/components/PrUrlModal.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
@@ -329,5 +330,6 @@
   <CommandPalette />
   <AiActionPalette />
   <AiReviewFilesModal />
+  <ProfessorFocusModal />
 </div>
 {/if}

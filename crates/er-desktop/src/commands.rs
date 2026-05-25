@@ -19,6 +19,16 @@ use crate::snapshot::{
 };
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
+
+/// Per-card validation: check whether a comment, question, or finding still holds.
+const VALIDATE_CARD_AI_PROMPT: &str = r#"Validate whether this review note is still accurate against the current code context provided.
+
+Reply in markdown with:
+1. **Verdict**: Confirmed | Outdated | Needs context | Unclear
+2. **Evidence**: What in the code supports your verdict (cite file:line when possible)
+3. **Recommendation**: What the reviewer should do next
+
+Be concise. If the concern is already addressed in the current diff, say so clearly."#;
 const REQUESTED_KINDS: &[&str] = &[
     "ai_review_done",
     "ai_review_failed",
@@ -2166,11 +2176,16 @@ fn spawn_ai_review_with_diff(
     Ok(())
 }
 
-pub use er_engine::ai::ExpertInfo;
+pub use er_engine::ai::{ExpertInfo, ReviewerInfo};
 
 #[tauri::command]
 pub fn list_ai_experts() -> Vec<ExpertInfo> {
     er_engine::ai::list_expert_info()
+}
+
+#[tauri::command]
+pub fn list_ai_reviewers() -> Vec<ReviewerInfo> {
+    er_engine::ai::list_ai_reviewers()
 }
 
 #[tauri::command]
@@ -2239,16 +2254,48 @@ pub fn run_ai_expert_review(
 }
 
 #[tauri::command]
+pub fn run_ai_professor_review(
+    scope: String,
+    focus_prompt: Option<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    run_ai_scoped_review(
+        scope,
+        vec![],
+        vec!["professor".to_string()],
+        focus_prompt,
+        state,
+    )
+}
+
+#[tauri::command]
 pub fn run_ai_review_files(
     scope: String,
     paths: Vec<String>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if paths.is_empty() {
-        return Err("No files selected".to_string());
+    run_ai_scoped_review(
+        scope,
+        paths,
+        vec!["general".to_string()],
+        None,
+        state,
+    )
+}
+
+#[tauri::command]
+pub fn run_ai_scoped_review(
+    scope: String,
+    paths: Vec<String>,
+    reviewer_kinds: Vec<String>,
+    focus_prompt: Option<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    if reviewer_kinds.is_empty() {
+        return Err("No reviewers selected".to_string());
     }
 
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let scope = resolve_review_scope(&scope, app.tab())?;
 
     let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
@@ -2275,41 +2322,153 @@ pub fn run_ai_review_files(
         .tab()
         .raw_diff_for_review(&scope)
         .map_err(|e| e.to_string())?;
-    let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
-    if filtered.trim().is_empty() {
-        return Err("No diff for selected files".to_string());
+    if raw.trim().is_empty() {
+        return Err("Nothing to review".to_string());
     }
 
-    let mut sorted_paths = paths;
-    sorted_paths.sort();
-    let manifest = sorted_paths.join("\n");
-    std::fs::write(
-        std::path::Path::new(&er_dir).join("review-files.txt"),
-        format!("{manifest}\n"),
-    )
-    .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+    let scoped_files = !paths.is_empty();
+    let file_count = paths.len();
+    let diff_body = if scoped_files {
+        let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
+        if filtered.trim().is_empty() {
+            return Err("No diff for selected files".to_string());
+        }
+        let mut sorted_paths = paths;
+        sorted_paths.sort();
+        let manifest = sorted_paths.join("\n");
+        std::fs::write(
+            std::path::Path::new(&er_dir).join("review-files.txt"),
+            format!("{manifest}\n"),
+        )
+        .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+        filtered
+    } else {
+        // Full-diff multi-reviewer run: no file manifest.
+        let _ = std::fs::remove_file(std::path::Path::new(&er_dir).join("review-files.txt"));
+        raw
+    };
 
-    spawn_ai_review_with_diff(
-        &mut app,
-        &state,
-        &scope,
-        &er_dir,
+    std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &diff_body)
+        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
+
+    let target = er_engine::app::BackgroundTaskTarget {
         repo_root,
+        er_dir: er_dir.clone(),
         branch_label,
         base_branch,
+        scope: scope.to_string(),
         pr_number,
         remote_repo,
-        is_remote,
-        filtered,
+        managed_local: !is_remote,
+    };
+
+    let (started, skipped) = spawn_scoped_reviewers(
+        &mut app,
+        &scope,
+        &er_dir,
+        target,
+        &reviewer_kinds,
+        focus_prompt.as_deref(),
+        scoped_files,
     )?;
 
-    let n = sorted_paths.len();
-    app.notify(&format!(
-        "Review started for {n} selected file{} (see review-files.txt in review dir)",
-        if n == 1 { "" } else { "s" }
-    ));
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    if started.is_empty() && !skipped.is_empty() {
+        return Err(format!("All selected reviewers already running: {}", skipped.join(", ")));
+    }
+
+    let file_note = if scoped_files {
+        format!(
+            " for {file_count} file{}",
+            if file_count == 1 { "" } else { "s" }
+        )
+    } else {
+        String::new()
+    };
+
+    let msg = if skipped.is_empty() {
+        format!("Started {} reviewer(s){file_note}: {}", started.len(), started.join(", "))
+    } else {
+        format!(
+            "Started {} reviewer(s){file_note}: {} (skipped: {})",
+            started.len(),
+            started.join(", "),
+            skipped.join(", ")
+        )
+    };
+    app.notify(&msg);
 
     Ok(snap_from(&app, &state))
+}
+
+fn spawn_scoped_reviewers(
+    app: &mut er_engine::app::App,
+    scope: &str,
+    er_dir: &str,
+    target: er_engine::app::BackgroundTaskTarget,
+    reviewer_kinds: &[String],
+    focus_prompt: Option<&str>,
+    scoped_files: bool,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    use er_engine::ai::{prompts, ReviewerKind};
+
+    let mut started = Vec::new();
+    let mut skipped = Vec::new();
+
+    for kind in reviewer_kinds {
+        let parsed = er_engine::ai::parse_reviewer_kind(kind)
+            .ok_or_else(|| format!("Unknown reviewer: {kind}"))?;
+        let label = er_engine::ai::list_ai_reviewers()
+            .into_iter()
+            .find(|r| r.kind == *kind)
+            .map(|r| r.label)
+            .unwrap_or_else(|| kind.clone());
+
+        let spawn_result = match &parsed {
+            ReviewerKind::General => {
+                let mut prompt =
+                    prompts::build_review_prompt_prepared_diff(scope, er_dir);
+                if scoped_files {
+                    prompt = prompts::append_file_scope_if_present(prompt, er_dir);
+                }
+                app.spawn_background_review(target.clone(), prompt, true)
+            }
+            ReviewerKind::Expert(id) => {
+                let mut prompt =
+                    prompts::build_expert_review_prompt_prepared_diff(scope, er_dir, id);
+                if scoped_files {
+                    prompt = prompts::append_file_scope_if_present(prompt, er_dir);
+                }
+                app.spawn_background_expert_review(id, target.clone(), prompt, true)
+            }
+            ReviewerKind::Professor => {
+                let prompt = prompts::build_professor_review_prompt_prepared_diff(
+                    scope,
+                    er_dir,
+                    focus_prompt,
+                    scoped_files,
+                );
+                app.spawn_background_professor_review(target.clone(), prompt, true)
+            }
+        };
+
+        match spawn_result {
+            Ok(()) => started.push(label),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("already running") {
+                    skipped.push(label);
+                } else {
+                    return Err(msg);
+                }
+            }
+        }
+    }
+
+    Ok((started, skipped))
 }
 
 #[tauri::command]
@@ -2594,6 +2753,107 @@ fn save_review_json(er_dir: &str, review: &ErReview) -> std::io::Result<()> {
 }
 
 // ── Ask AI ──────────────────────────────────────────────────────────────────
+
+/// Validate a comment, question, or finding with AI — adds a local reply on the card
+/// (questions.json for findings; never posts to GitHub until promoted/pushed).
+#[tauri::command]
+pub fn validate_with_ai(
+    thread_id: Option<String>,
+    finding_id: Option<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let resolved_thread = if let Some(tid) = thread_id {
+        tid
+    } else if let Some(fid) = finding_id {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let tid = resolve_or_create_finding_validation_thread(&mut app, &fid)?;
+        drop(app);
+        tid
+    } else {
+        return Err("thread_id or finding_id is required".to_string());
+    };
+    ask_ai(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), state)
+}
+
+/// Question-thread id for finding validation, creating a private question root if needed.
+fn resolve_or_create_finding_validation_thread(
+    app: &mut er_engine::app::App,
+    finding_id: &str,
+) -> Result<String, String> {
+    if let Some(qs) = app.tab().ai.questions.as_ref() {
+        if let Some(q) = qs.questions.iter().find(|q| {
+            q.finding_ref.as_deref() == Some(finding_id) && q.in_reply_to.is_none()
+        }) {
+            return Ok(q.id.clone());
+        }
+    }
+    if let Some(gc) = app.tab().ai.github_comments.as_ref() {
+        if let Some(c) = gc.comments.iter().find(|c| {
+            c.finding_ref.as_deref() == Some(finding_id) && c.in_reply_to.is_none()
+        }) {
+            return Ok(c.id.clone());
+        }
+    }
+
+    let (file, hunk_idx, line_start, title, description) = {
+        let tab = app.tab();
+        let mut result = None;
+        if let Some(review) = tab.ai.review.as_ref() {
+            'outer: for (path, fr) in review.files.iter() {
+                for f in fr.findings.iter() {
+                    if f.id == finding_id {
+                        result = Some((
+                            path.clone(),
+                            f.hunk_index.unwrap_or(0),
+                            f.line_start,
+                            f.title.clone(),
+                            f.description.clone(),
+                        ));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        result.ok_or_else(|| format!("Finding not found: {finding_id}"))?
+    };
+
+    let stub = if description.trim().is_empty() {
+        format!("**Finding:** {title}\n\n_AI validation requested._")
+    } else {
+        format!("**Finding:** {title}\n\n{description}\n\n_AI validation requested._")
+    };
+
+    let existing_q: std::collections::HashSet<String> = app
+        .tab()
+        .ai
+        .questions
+        .as_ref()
+        .map(|qs| qs.questions.iter().map(|q| q.id.clone()).collect())
+        .unwrap_or_default();
+
+    app.submit_comment_text(
+        file,
+        hunk_idx,
+        line_start,
+        stub,
+        er_engine::ai::CommentType::Question,
+        None,
+        Some(finding_id.to_string()),
+    )
+    .map_err(|e| e.to_string())?;
+
+    app.tab()
+        .ai
+        .questions
+        .as_ref()
+        .and_then(|qs| {
+            qs.questions
+                .iter()
+                .find(|q| !existing_q.contains(&q.id) && q.finding_ref.as_deref() == Some(finding_id))
+                .map(|q| q.id.clone())
+        })
+        .ok_or_else(|| "Failed to create validation thread for finding".to_string())
+}
 
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
 /// comment thread. The subprocess runs on a background thread so this command
@@ -5719,6 +5979,7 @@ mod tests {
                 in_reply_to: None,
                 author: "You".to_string(),
                 promoted_to: None,
+                finding_ref: None,
             }],
         };
         std::fs::write(&q_path, serde_json::to_string_pretty(&questions).unwrap()).unwrap();

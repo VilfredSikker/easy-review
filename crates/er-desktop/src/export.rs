@@ -412,6 +412,7 @@ mod tests {
             in_reply_to: None,
             author: "you".into(),
             promoted_to: None,
+            finding_ref: None,
         }
     }
 

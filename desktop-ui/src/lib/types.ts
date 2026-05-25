@@ -78,6 +78,12 @@ export interface ExpertInfo {
   description: string;
 }
 
+export interface ReviewerInfo {
+  kind: string;
+  label: string;
+  description: string;
+}
+
 export interface FlatFinding {
   id: string;
   file: string;
@@ -86,6 +92,8 @@ export interface FlatFinding {
   severity: "high" | "med" | "low";
   /** Specialized expert label when finding.category is an expert id. */
   expert_label: string | null;
+  /** Agent that produced this finding (General, Security, Professor, …). */
+  agent_label: string;
   title: string;
   message_markdown: string;
   /** Id of the GitHub comment this finding was promoted to. */

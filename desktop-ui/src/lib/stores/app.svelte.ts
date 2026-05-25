@@ -305,6 +305,9 @@ class AppStore {
     if (
       command === "run_ai_review"
       || command === "run_ai_expert_review"
+      || command === "run_ai_professor_review"
+      || command === "run_ai_scoped_review"
+      || command === "validate_with_ai"
       || command === "run_ai_validate"
       || command === "run_ai_review_files"
     ) {
@@ -374,6 +377,9 @@ function successToastForCommand(command: string): string | null {
       return null; // backend notify includes file count + review-files.txt hint
     case "run_ai_expert_review":
       return "Specialized review started";
+    case "run_ai_professor_review":
+    case "run_ai_scoped_review":
+      return null;
     default:
       return null;
   }

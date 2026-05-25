@@ -574,6 +574,7 @@ mod tests {
                 in_reply_to: None,
                 author: "You".to_string(),
                 promoted_to: None,
+                finding_ref: None,
             }],
         });
         app.tab_mut().focused_comment_id = Some("q-abc".to_string());

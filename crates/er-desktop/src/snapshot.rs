@@ -438,6 +438,8 @@ pub struct FlatFinding {
     pub severity: String, // "high" | "med" | "low"
     /// Set when finding comes from a specialized expert (`category` = expert id).
     pub expert_label: Option<String>,
+    /// Agent that produced this finding (pill label): General, Security, Professor, …
+    pub agent_label: String,
     pub title: String,
     pub message_markdown: String,
     /// GitHub comment id this finding was promoted to (if any).
@@ -2134,6 +2136,16 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                                     && c.in_reply_to.is_none()
                             })
                             .map(|c| c.id.clone())
+                    }).or_else(|| {
+                        ai.questions.as_ref().and_then(|qs| {
+                            qs.questions
+                                .iter()
+                                .find(|q| {
+                                    q.finding_ref.as_deref() == Some(f.id.as_str())
+                                        && q.in_reply_to.is_none()
+                                })
+                                .map(|q| q.id.clone())
+                        })
                     });
                     FlatFinding {
                         id: f.id.clone(),
@@ -2143,6 +2155,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         severity: severity_str(&f.severity).to_string(),
                         expert_label: er_engine::ai::expert_label_for_category(&f.category)
                             .map(|s| s.to_string()),
+                        agent_label: er_engine::ai::agent_label_for_category(&f.category)
+                            .to_string(),
                         title: f.title.clone(),
                         message_markdown: f.description.clone(),
                         promoted_to: promotions

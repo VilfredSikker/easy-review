@@ -264,6 +264,11 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 app.spawn_agent_prompt(&format!("expert-{expert_id}"), &prompt)?;
             }
         }
+        HubAction::RunProfessorReview => {
+            if let Some(prompt) = build_agent_professor_prompt(app) {
+                app.spawn_agent_prompt("professor", &prompt)?;
+            }
+        }
         HubAction::PromptReview => {
             let has_review = app.tab().ai.review.is_some();
             if has_review {
@@ -375,8 +380,9 @@ fn execute_ai_action(app: &mut App, action: AiActionKind) -> Result<()> {
     match action {
         AiActionKind::Review => dispatch_hub_action(app, HubAction::PromptReview),
         AiActionKind::ExpertReview { expert_id } => {
-            dispatch_hub_action(app, HubAction::RunExpertReview { expert_id })?;
+            dispatch_hub_action(app, HubAction::RunExpertReview { expert_id })
         }
+        AiActionKind::Professor => dispatch_hub_action(app, HubAction::RunProfessorReview),
         AiActionKind::Validate => dispatch_hub_action(app, HubAction::PromptValidate),
         AiActionKind::Questions => dispatch_hub_action(app, HubAction::PromptQuestions),
         AiActionKind::Summary => {
@@ -643,6 +649,26 @@ pub fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Build the Professor learning prompt (local diff modes only).
+pub(super) fn build_agent_professor_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    if tab.is_remote() {
+        app.notify("Professor is local-only in v1 — checkout the PR first");
+        return None;
+    }
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
+            er_engine::ai::prompts::build_professor_review_prompt(&base, mode.git_mode(), None),
+        ),
+        _ => {
+            app.notify("Professor not available in this mode");
+            None
+        }
+    }
 }
 
 /// Build a specialized expert review prompt (local diff modes only).

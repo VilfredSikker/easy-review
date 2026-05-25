@@ -267,6 +267,7 @@ impl App {
         );
 
         let is_reply = reply_to.is_some();
+        let finding_ref = self.tab().comment_finding_ref.clone();
         let author = self
             .tab_mut()
             .comment_author_override
@@ -291,6 +292,7 @@ impl App {
             in_reply_to: reply_to,
             author,
             promoted_to: None,
+            finding_ref,
         });
 
         // Write atomically
@@ -2141,6 +2143,22 @@ impl App {
         self.spawn_background_agent_task(
             crate::ai::expert_task_kind(expert_id),
             &format!("expert-{}", def.id),
+            target,
+            prompt,
+            prepared_diff,
+        )
+    }
+
+    /// Spawn the Professor learning agent (`kind` = `professor`).
+    pub fn spawn_background_professor_review(
+        &mut self,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+    ) -> Result<()> {
+        self.spawn_background_agent_task(
+            crate::ai::professor_task_kind(),
+            "professor",
             target,
             prompt,
             prepared_diff,
