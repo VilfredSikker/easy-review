@@ -1,10 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-
-static LAST_RENDERED_HUNKS: AtomicUsize = AtomicUsize::new(usize::MAX);
-static LAST_LINES_IN_IPC: AtomicUsize = AtomicUsize::new(usize::MAX);
-static LAST_BUDGET_OMITTED: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
@@ -705,23 +700,41 @@ pub type MetaCache = std::sync::Arc<Mutex<HashMap<String, ProjectMeta>>>;
 
 /// Refresh the per-project metadata cache by shelling out to git for each
 /// known project. MUST NOT hold `AppState.app` — runs on a background thread.
-pub fn refresh_meta_cache(active_root: &str, cache: &MetaCache) {
-    refresh_meta_cache_filtered(active_root, cache, None);
+pub fn refresh_meta_cache(active_root: &str, cache: &MetaCache) -> bool {
+    refresh_meta_cache_filtered(active_root, cache, None)
 }
 
 /// Variant that refreshes a single project (by id), leaving entries for other
 /// projects untouched. Used at startup so the active project's branches show
 /// up immediately without paying for `git branch / worktree list / base
 /// detection` on every other registered project first.
-pub fn refresh_meta_cache_for_project(project_id: &str, cache: &MetaCache) {
-    refresh_meta_cache_filtered("", cache, Some(project_id));
+pub fn refresh_meta_cache_for_project(project_id: &str, cache: &MetaCache) -> bool {
+    refresh_meta_cache_filtered("", cache, Some(project_id))
+}
+
+pub fn meta_cache_fingerprint(cache: &MetaCache) -> u64 {
+    use std::hash::Hash;
+    let Ok(g) = cache.lock() else {
+        return 0;
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    g.len().hash(&mut h);
+    for (id, m) in g.iter() {
+        id.hash(&mut h);
+        m.current_branch.hash(&mut h);
+        m.local_branches.len().hash(&mut h);
+        m.auto_branches.len().hash(&mut h);
+    }
+    crate::profile_log::finish_hash(h)
 }
 
 fn refresh_meta_cache_filtered(
     active_root: &str,
     cache: &MetaCache,
     only_project_id: Option<&str>,
-) {
+) -> bool {
+    let t0 = std::time::Instant::now();
+    let fp_before = meta_cache_fingerprint(cache);
     let file = projects::load();
     let updates: Vec<(String, ProjectMeta)> = file
         .projects
@@ -731,8 +744,7 @@ fn refresh_meta_cache_filtered(
         .map(|p| {
             let current_branch = detect_current_branch(&p.root_path);
             let base_branch = detect_base_branch(&p.root_path);
-            let raw_worktrees =
-                er_engine::git::list_worktrees(&p.root_path).unwrap_or_default();
+            let raw_worktrees = er_engine::git::list_worktrees(&p.root_path).unwrap_or_default();
             let local_branches = build_tracked_branches(
                 &p.root_path,
                 &base_branch,
@@ -777,6 +789,65 @@ fn refresh_meta_cache_filtered(
             *g = next;
         }
     }
+    let fp_after = meta_cache_fingerprint(cache);
+    let projects_count = file
+        .projects
+        .iter()
+        .filter(|p| !p.root_path.is_empty())
+        .filter(|p| only_project_id.is_none_or(|id| p.id == id))
+        .count();
+    crate::profile_log::profile_log(
+        "meta_refresh",
+        &[
+            ("refresh_ms", t0.elapsed().as_millis().to_string()),
+            ("projects", projects_count.to_string()),
+            (
+                "changed",
+                if fp_before != fp_after {
+                    "1".to_string()
+                } else {
+                    "0".to_string()
+                },
+            ),
+            (
+                "full_sweep",
+                if only_project_id.is_none() {
+                    "1".to_string()
+                } else {
+                    "0".to_string()
+                },
+            ),
+        ],
+    );
+    fp_before != fp_after
+}
+
+/// Fingerprint of PR list cache + fetch timestamps (chrome-only poll input).
+pub fn pr_cache_fingerprint(
+    pr_cache: Option<&PrCache>,
+    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
+) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hash;
+
+    let mut h = DefaultHasher::new();
+    if let Some(cache) = pr_cache.and_then(|m| m.lock().ok()) {
+        let mut entries: Vec<(&String, usize)> = cache.iter().map(|(k, v)| (k, v.len())).collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (k, n) in entries {
+            k.hash(&mut h);
+            n.hash(&mut h);
+        }
+    }
+    if let Some(fetched) = pr_cache_fetched_at.and_then(|m| m.lock().ok()) {
+        let mut entries: Vec<(&String, u64)> = fetched.iter().map(|(k, v)| (k, *v)).collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (k, ts) in entries {
+            k.hash(&mut h);
+            ts.hash(&mut h);
+        }
+    }
+    crate::profile_log::finish_hash(h)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -791,6 +862,63 @@ pub fn build_snapshot(
     loading: Option<&LoadingState>,
     watch_status: Option<&WatchStatusState>,
     inbox: Option<&InboxHandle>,
+) -> AppSnapshot {
+    build_snapshot_inner(
+        app,
+        pr_cache,
+        pr_cache_fetched_at,
+        meta_cache,
+        gh_user,
+        pending_ai,
+        gh_status_cache,
+        loading,
+        watch_status,
+        inbox,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_chrome_snapshot(
+    app: &App,
+    pr_cache: Option<&PrCache>,
+    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
+    meta_cache: Option<&MetaCache>,
+    gh_user: Option<&GhUser>,
+    pending_ai: Option<&PendingAiReplies>,
+    gh_status_cache: Option<&GhStatusCache>,
+    loading: Option<&LoadingState>,
+    watch_status: Option<&WatchStatusState>,
+    inbox: Option<&InboxHandle>,
+) -> AppSnapshot {
+    build_snapshot_inner(
+        app,
+        pr_cache,
+        pr_cache_fetched_at,
+        meta_cache,
+        gh_user,
+        pending_ai,
+        gh_status_cache,
+        loading,
+        watch_status,
+        inbox,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_snapshot_inner(
+    app: &App,
+    pr_cache: Option<&PrCache>,
+    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
+    meta_cache: Option<&MetaCache>,
+    gh_user: Option<&GhUser>,
+    pending_ai: Option<&PendingAiReplies>,
+    gh_status_cache: Option<&GhStatusCache>,
+    loading: Option<&LoadingState>,
+    watch_status: Option<&WatchStatusState>,
+    inbox: Option<&InboxHandle>,
+    chrome_only: bool,
 ) -> AppSnapshot {
     let t0 = std::time::Instant::now();
     let tab = app.tab();
@@ -823,63 +951,67 @@ pub fn build_snapshot(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(SNAPSHOT_DIFF_LINE_BUDGET);
-    let files: Vec<FileSnapshot> = visible
-        .iter()
-        .map(|(source_index, f)| {
-            let source_index = *source_index;
-            let line_count = f.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
-            let include_hunks =
-                !f.compacted && (source_index == active_selected || diff_line_budget > 0);
-            let budget_omitted = !f.compacted && !include_hunks;
-            let hunks = if include_hunks {
-                diff_line_budget = diff_line_budget.saturating_sub(line_count);
-                build_hunks(f, tab, pending_ai)
-            } else {
-                vec![]
-            };
+    let files: Vec<FileSnapshot> = if chrome_only {
+        Vec::new()
+    } else {
+        visible
+            .iter()
+            .map(|(source_index, f)| {
+                let source_index = *source_index;
+                let line_count = f.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
+                let include_hunks =
+                    !f.compacted && (source_index == active_selected || diff_line_budget > 0);
+                let budget_omitted = !f.compacted && !include_hunks;
+                let hunks = if include_hunks {
+                    diff_line_budget = diff_line_budget.saturating_sub(line_count);
+                    build_hunks(f, tab, pending_ai)
+                } else {
+                    vec![]
+                };
 
-            // Per-file counts from AI state
-            let finding_count = tab
-                .ai
-                .review
-                .as_ref()
-                .map(|r| {
-                    r.files
-                        .get(&f.path)
-                        .map(|fr| fr.findings.len())
-                        .unwrap_or(0)
-                })
-                .unwrap_or(0);
-            let comment_count = tab.ai.file_github_comment_count(&f.path);
-            let question_count = tab.ai.file_question_count(&f.path);
+                // Per-file counts from AI state
+                let finding_count = tab
+                    .ai
+                    .review
+                    .as_ref()
+                    .map(|r| {
+                        r.files
+                            .get(&f.path)
+                            .map(|fr| fr.findings.len())
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
+                let comment_count = tab.ai.file_github_comment_count(&f.path);
+                let question_count = tab.ai.file_question_count(&f.path);
 
-            // File-level risk from AI review
-            let risk = tab
-                .ai
-                .review
-                .as_ref()
-                .and_then(|r| r.files.get(&f.path))
-                .map(|fr| severity_str(&fr.risk).to_string());
+                // File-level risk from AI review
+                let risk = tab
+                    .ai
+                    .review
+                    .as_ref()
+                    .and_then(|r| r.files.get(&f.path))
+                    .map(|fr| severity_str(&fr.risk).to_string());
 
-            FileSnapshot {
-                path: f.path.clone(),
-                status: status_str(&f.status),
-                additions: f.adds,
-                deletions: f.dels,
-                reviewed: tab.reviewed.contains_key(&f.path),
-                compacted: f.compacted,
-                risk,
-                finding_count,
-                comment_count,
-                question_count,
-                is_lazy_stub: (tab.lazy_mode && f.hunks.is_empty() && !f.compacted)
-                    || budget_omitted,
-                hunks,
-                source_index,
-                cache_key: er_engine::cache::file_cache_key(&tab.branch_diff_hash, &f.path),
-            }
-        })
-        .collect();
+                FileSnapshot {
+                    path: f.path.clone(),
+                    status: status_str(&f.status),
+                    additions: f.adds,
+                    deletions: f.dels,
+                    reviewed: tab.reviewed.contains_key(&f.path),
+                    compacted: f.compacted,
+                    risk,
+                    finding_count,
+                    comment_count,
+                    question_count,
+                    is_lazy_stub: (tab.lazy_mode && f.hunks.is_empty() && !f.compacted)
+                        || budget_omitted,
+                    hunks,
+                    source_index,
+                    cache_key: er_engine::cache::file_cache_key(&tab.branch_diff_hash, &f.path),
+                }
+            })
+            .collect()
+    };
 
     // Translate backend selection (index into active diff files) into a
     // visible-list index. If the selected file is filtered out, fall back to 0.
@@ -908,10 +1040,22 @@ pub fn build_snapshot(
         out
     };
 
-    let ai = build_ai_snapshot(tab, pending_ai);
-    let pr = build_pr_snapshot(tab);
-    let commits = build_commits_snapshot(tab);
-    let selected_commit_sha = if matches!(tab.mode, DiffMode::History) {
+    let ai = if chrome_only {
+        empty_ai_snapshot()
+    } else {
+        build_ai_snapshot(tab, pending_ai)
+    };
+    let pr = if chrome_only {
+        None
+    } else {
+        build_pr_snapshot(tab)
+    };
+    let commits = if chrome_only {
+        Vec::new()
+    } else {
+        build_commits_snapshot(tab)
+    };
+    let selected_commit_sha = if !chrome_only && matches!(tab.mode, DiffMode::History) {
         tab.history
             .as_ref()
             .and_then(|h| h.commits.get(h.selected_commit))
@@ -953,7 +1097,9 @@ pub fn build_snapshot(
 
     // Browser-view UI annotations — read freshly from the active tab's
     // comments_dir so writes flow back to the UI on the next snapshot.
-    let ui_annotations: Vec<UiAnnotationSnapshot> =
+    let ui_annotations: Vec<UiAnnotationSnapshot> = if chrome_only {
+        Vec::new()
+    } else {
         er_engine::ai::load_ui_annotations(&tab.comments_dir())
             .into_iter()
             .map(|a| UiAnnotationSnapshot {
@@ -974,7 +1120,8 @@ pub fn build_snapshot(
                 element_context: a.element_context,
                 dom_context: a.dom_context,
             })
-            .collect();
+            .collect()
+    };
 
     // Resolve the active tab's GitHub status from the cache.
     // For remote PR tabs: use remote_repo + pr_number directly.
@@ -1052,7 +1199,11 @@ pub fn build_snapshot(
         watch_status: watch_status
             .and_then(|w| w.lock().ok().map(|g| g.clone()))
             .unwrap_or_default(),
-        worktrees: build_worktrees(&tab.repo_root, &tab.base_branch, &tab.repo_root),
+        worktrees: if chrome_only {
+            Vec::new()
+        } else {
+            build_worktrees(&tab.repo_root, &tab.base_branch, &tab.repo_root)
+        },
         projects: build_projects(tab, pr_cache, pr_cache_fetched_at, meta_cache, gh_user),
         notification: app.watch_message.clone(),
         local_branch: tab.local_branch_view.clone(),
@@ -1125,7 +1276,7 @@ pub fn build_snapshot(
             .and_then(|h| h.lock().ok().map(|g| g.last_refresh_ms))
             .unwrap_or(0),
     };
-    if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {
+    if crate::profile_log::profile_enabled() {
         let total_lines: usize = out
             .files
             .iter()
@@ -1144,26 +1295,43 @@ pub fn build_snapshot(
             .filter(|f| f.is_lazy_stub && !f.compacted)
             .count();
         let rendered_hunks = out.files.iter().map(|f| f.hunks.len()).sum::<usize>();
-        // Only log when something meaningful changed — avoids flooding in steady state.
-        let prev_hunks = LAST_RENDERED_HUNKS.swap(rendered_hunks, Ordering::Relaxed);
-        let prev_lines = LAST_LINES_IN_IPC.swap(total_lines, Ordering::Relaxed);
-        let prev_omitted = LAST_BUDGET_OMITTED.swap(budget_omitted, Ordering::Relaxed);
-        if rendered_hunks != prev_hunks
-            || total_lines != prev_lines
-            || budget_omitted != prev_omitted
-        {
-            eprintln!(
-                "er-desktop build_snapshot_ms={} files={} rendered_hunks={} lines_in_ipc={} max_file_lines={} budget_omitted={}",
-                t0.elapsed().as_millis(),
-                out.files.len(),
-                rendered_hunks,
-                total_lines,
-                max_file_lines,
-                budget_omitted,
-            );
-        }
+        let meta_fp = meta_cache.map(meta_cache_fingerprint).unwrap_or(0);
+        crate::profile_log::profile_log(
+            "build_snapshot",
+            &[
+                ("build_ms", t0.elapsed().as_millis().to_string()),
+                ("files", out.files.len().to_string()),
+                ("rendered_hunks", rendered_hunks.to_string()),
+                ("lines_in_ipc", total_lines.to_string()),
+                ("max_file_lines", max_file_lines.to_string()),
+                ("budget_omitted", budget_omitted.to_string()),
+                ("meta_fp", meta_fp.to_string()),
+                (
+                    "chrome_only",
+                    if chrome_only { "1" } else { "0" }.to_string(),
+                ),
+            ],
+        );
     }
     out
+}
+
+fn empty_ai_snapshot() -> AiSnapshot {
+    AiSnapshot {
+        fresh: true,
+        stale_reason: None,
+        summary_markdown: None,
+        high: 0,
+        med: 0,
+        low: 0,
+        local_comment_count: 0,
+        github_comment_count: 0,
+        comments: 0,
+        questions: 0,
+        unpushed: 0,
+        threads: Vec::new(),
+        findings: Vec::new(),
+    }
 }
 
 /// Load the most recent 10 commits on the current branch for the file viewer's
@@ -1549,13 +1717,7 @@ fn build_projects(
     // dominates the snapshot cost on machines with several projects (full
     // clones of pr_cache + meta_cache). We avoid paying it twice when the
     // inputs are unchanged between consecutive snapshots.
-    let key = build_projects_cache_key(
-        tab,
-        pr_cache,
-        pr_cache_fetched_at,
-        meta_cache,
-        gh_user,
-    );
+    let key = build_projects_cache_key(tab, pr_cache, pr_cache_fetched_at, meta_cache, gh_user);
     if let Some(cached) = projects_cache_lookup(&key) {
         return cached;
     }
@@ -1605,8 +1767,7 @@ fn build_projects_cache_key(
     // mutations without needing a separate revision counter.
     let mut h = DefaultHasher::new();
     if let Some(cache) = pr_cache.and_then(|m| m.lock().ok()) {
-        let mut entries: Vec<(&String, usize)> =
-            cache.iter().map(|(k, v)| (k, v.len())).collect();
+        let mut entries: Vec<(&String, usize)> = cache.iter().map(|(k, v)| (k, v.len())).collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (k, n) in entries {
             k.hash(&mut h);
@@ -1614,8 +1775,7 @@ fn build_projects_cache_key(
         }
     }
     if let Some(fetched) = pr_cache_fetched_at.and_then(|m| m.lock().ok()) {
-        let mut entries: Vec<(&String, u64)> =
-            fetched.iter().map(|(k, v)| (k, *v)).collect();
+        let mut entries: Vec<(&String, u64)> = fetched.iter().map(|(k, v)| (k, *v)).collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (k, ts) in entries {
             k.hash(&mut h);
@@ -1657,8 +1817,7 @@ fn build_projects_cache_key(
     }
 }
 
-static PROJECTS_CACHE: Mutex<Option<(ProjectsCacheKey, Vec<ProjectSnapshot>)>> =
-    Mutex::new(None);
+static PROJECTS_CACHE: Mutex<Option<(ProjectsCacheKey, Vec<ProjectSnapshot>)>> = Mutex::new(None);
 
 fn projects_cache_lookup(key: &ProjectsCacheKey) -> Option<Vec<ProjectSnapshot>> {
     let guard = PROJECTS_CACHE.lock().ok()?;
@@ -1896,10 +2055,9 @@ fn build_hunks(
                         LineType::Add => ("add", line.content.clone()),
                         LineType::Delete => ("del", line.content.clone()),
                         LineType::Context => ("context", line.content.clone()),
-                        LineType::Fold(hidden) => (
-                            "fold",
-                            format!("··· {hidden} unchanged lines ···"),
-                        ),
+                        LineType::Fold(hidden) => {
+                            ("fold", format!("··· {hidden} unchanged lines ···"))
+                        }
                     };
                     LineSnapshot {
                         old_num: line.old_num,
@@ -2128,25 +2286,27 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                 let promotions = &promotions;
                 let gh = ai.github_comments.as_ref();
                 fr.findings.iter().filter(|f| f.is_active()).map(move |f| {
-                    let thread_id = gh.and_then(|gc| {
-                        gc.comments
-                            .iter()
-                            .find(|c| {
-                                c.finding_ref.as_deref() == Some(f.id.as_str())
-                                    && c.in_reply_to.is_none()
-                            })
-                            .map(|c| c.id.clone())
-                    }).or_else(|| {
-                        ai.questions.as_ref().and_then(|qs| {
-                            qs.questions
+                    let thread_id = gh
+                        .and_then(|gc| {
+                            gc.comments
                                 .iter()
-                                .find(|q| {
-                                    q.finding_ref.as_deref() == Some(f.id.as_str())
-                                        && q.in_reply_to.is_none()
+                                .find(|c| {
+                                    c.finding_ref.as_deref() == Some(f.id.as_str())
+                                        && c.in_reply_to.is_none()
                                 })
-                                .map(|q| q.id.clone())
+                                .map(|c| c.id.clone())
                         })
-                    });
+                        .or_else(|| {
+                            ai.questions.as_ref().and_then(|qs| {
+                                qs.questions
+                                    .iter()
+                                    .find(|q| {
+                                        q.finding_ref.as_deref() == Some(f.id.as_str())
+                                            && q.in_reply_to.is_none()
+                                    })
+                                    .map(|q| q.id.clone())
+                            })
+                        });
                     FlatFinding {
                         id: f.id.clone(),
                         file: path.clone(),

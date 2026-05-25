@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
 import { tick } from "svelte";
+import { profileLog } from "../profileLog";
 import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
 import type { AppSnapshot, PollResponse } from "../types";
 
@@ -68,6 +69,30 @@ function timingSegmentMs(start: number, end: number): number {
   return Math.max(0, Math.round(end - start));
 }
 
+/** Patch chrome/sidebar fields from a poll snapshot while keeping diff hunks/spans. */
+function mergeChromeSnapshot(prev: AppSnapshot, next: AppSnapshot): AppSnapshot {
+  return {
+    ...next,
+    mode: prev.mode,
+    branch: prev.branch,
+    base: prev.base,
+    input_mode: prev.input_mode,
+    files: prev.files,
+    selected_file: prev.selected_file,
+    current_hunk: prev.current_hunk,
+    filter: prev.filter,
+    reviewed_count: prev.reviewed_count,
+    total_count: prev.total_count,
+    ai: prev.ai,
+    pr: prev.pr,
+    ui_annotations: prev.ui_annotations,
+    browser: prev.browser,
+    filter_suggestions: prev.filter_suggestions,
+    commits: prev.commits,
+    selected_commit_sha: prev.selected_commit_sha,
+  };
+}
+
 function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === "function") {
@@ -110,6 +135,8 @@ class AppStore {
   // primary mechanism.
   private pollIntervalMs = 30_000;
   private lastPollRevision: number | null = null;
+  private lastPollContentRevision: number | null = null;
+  private lastPollChromeRevision: number | null = null;
   private revisionUnlisten: UnlistenFn | null = null;
   private pollInFlight = false;
 
@@ -215,6 +242,8 @@ class AppStore {
       this.snapshot = await invoke<AppSnapshot>("get_snapshot");
       this.syncSnapshotToast(this.snapshot);
       this.lastPollRevision = null;
+      this.lastPollContentRevision = null;
+      this.lastPollChromeRevision = null;
     } catch (e) {
       this.error = String(e);
       this.showToast("error", String(e));
@@ -236,18 +265,53 @@ class AppStore {
     if (this.pollTimer !== null) return;
     this.pollIntervalMs = intervalMs;
 
-    const doPoll = async () => {
+    const doPoll = async (trigger: "revision_event" | "safety_timer" | "unknown" = "unknown") => {
       if (this.pollInFlight) return;
       this.pollInFlight = true;
+      const t0 = performance.now();
+      profileLog("poll_invoke_start", { trigger });
       try {
         const next = await invoke<PollResponse>("poll");
-        if (this.lastPollRevision !== next.revision) {
+        const invokeMs = Math.round(performance.now() - t0);
+        const hadSnapshot = next.snapshot !== null;
+        const contentChanged =
+          this.lastPollContentRevision !== next.content_revision;
+        const chromeChanged =
+          this.lastPollChromeRevision !== next.chrome_revision;
+        if (contentChanged || chromeChanged) {
           this.lastPollRevision = next.revision;
+          this.lastPollContentRevision = next.content_revision;
+          this.lastPollChromeRevision = next.chrome_revision;
           if (next.snapshot !== null) {
-            this.snapshot = next.snapshot;
+            const useMerge =
+              this.snapshot !== null &&
+              (next.chrome_only || !contentChanged);
+            if (useMerge) {
+              this.snapshot = mergeChromeSnapshot(this.snapshot!, next.snapshot);
+              profileLog("snapshot_chrome_merge", {
+                invoke_ms: invokeMs,
+                revision: next.revision,
+                chrome_only: next.chrome_only ? 1 : 0,
+                trigger,
+              });
+            } else {
+              this.snapshot = next.snapshot;
+              profileLog("snapshot_replace", {
+                invoke_ms: invokeMs,
+                revision: next.revision,
+                files: next.snapshot.files.length,
+                trigger,
+              });
+            }
             this.syncSnapshotToast(this.snapshot);
           }
         }
+        profileLog("poll_invoke_done", {
+          invoke_ms: invokeMs,
+          revision: next.revision,
+          had_snapshot: hadSnapshot ? 1 : 0,
+          trigger,
+        });
       } catch {
         // Silently ignore poll errors (window may be closing).
       } finally {
@@ -258,8 +322,9 @@ class AppStore {
     // Event-driven: react to backend revision bumps. listen() is async but
     // we don't await — events that fire before the listener attaches are
     // safely covered by the safety-net interval and the initial load().
-    listen<number>("er://revision", () => {
-      void doPoll();
+    listen<number>("er://revision", (event) => {
+      profileLog("revision_event", { coalesced_rev: event.payload });
+      void doPoll("revision_event");
     }).then((unlisten) => {
       this.revisionUnlisten = unlisten;
     });
@@ -267,7 +332,7 @@ class AppStore {
     // Safety-net poll — long interval; only fires if events were missed.
     const tick = async () => {
       if (this.pollTimer === null) return;
-      await doPoll();
+      await doPoll("safety_timer");
       if (this.pollTimer !== null) {
         this.pollTimer = setTimeout(tick, this.pollIntervalMs);
       }
@@ -336,6 +401,8 @@ class AppStore {
         if (message) this.showToast("success", message);
       }
       this.lastPollRevision = null;
+      this.lastPollContentRevision = null;
+      this.lastPollChromeRevision = null;
       const tSnapshotApplied = performance.now();
       const totalMs = timingSegmentMs(tStart, tSnapshotApplied);
       if (totalMs > 500) {

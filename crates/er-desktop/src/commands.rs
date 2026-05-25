@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -7,20 +7,20 @@ use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
 use er_engine::ai::{CommentType, ErReview};
+#[cfg(test)]
+use er_engine::app::CardAiInvocation;
 use er_engine::app::{
     build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
     BrowserLayout, CardAiContextParams, DiffMode, InputMode,
 };
-#[cfg(test)]
-use er_engine::app::CardAiInvocation;
 
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects;
 use crate::snapshot::{
-    build_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary, GhCommentSummary, GhReviewSummary,
-    GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState, MetaCache, PendingAiReplies, PrInfo,
-    WatchStatusState,
+    build_chrome_snapshot, build_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary,
+    GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState,
+    MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
 };
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
@@ -54,8 +54,13 @@ const REQUESTED_KINDS: &[&str] = &[
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PollResponse {
+    /// Legacy combined revision (`max(content_revision, chrome_revision)`).
     pub revision: u64,
-    /// Full snapshot — `None` when the revision is unchanged since the last poll.
+    pub content_revision: u64,
+    pub chrome_revision: u64,
+    /// When true, the frontend should merge chrome fields and keep existing file hunks/spans.
+    pub chrome_only: bool,
+    /// Full snapshot — `None` when both revisions are unchanged since the last poll.
     pub snapshot: Option<AppSnapshot>,
 }
 
@@ -99,12 +104,13 @@ pub struct AppState {
     /// Prevents duplicate background `gh` invocations when the user hovers
     /// the same row repeatedly.
     pub pr_open_prefetch_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
-    /// Monotonic counter bumped whenever background-owned state changes (caches,
-    /// loading flags) so that poll() can detect changes not visible in App state.
+    /// Monotonic counter bumped whenever background-owned durable state changes
+    /// so that poll() can detect changes not visible in App state.
     pub desktop_revision: Arc<AtomicU64>,
-    /// Last revision included in a poll response. Used to skip snapshot builds
-    /// when the app and desktop state are unchanged since the previous poll.
-    pub last_sent_revision: Arc<AtomicU64>,
+    /// Last content revision included in a poll response.
+    pub last_sent_content_revision: Arc<AtomicU64>,
+    /// Last chrome revision included in a poll response.
+    pub last_sent_chrome_revision: Arc<AtomicU64>,
     /// Active-branch watcher status. Read by `build_snapshot` so the UI can
     /// show `Watching` when the desktop watcher is following a checkout.
     pub watch_status: WatchStatusState,
@@ -205,6 +211,21 @@ fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     )
 }
 
+fn chrome_snap_from(app: &App, state: &AppState) -> AppSnapshot {
+    build_chrome_snapshot(
+        app,
+        Some(&state.pr_cache),
+        Some(&state.pr_cache_fetched_at),
+        Some(&state.meta_cache),
+        Some(&state.gh_user),
+        Some(&state.pending_ai_replies),
+        Some(&state.gh_status_cache),
+        Some(&state.loading),
+        Some(&state.watch_status),
+        Some(&state.inbox),
+    )
+}
+
 fn log_branch_open_phase(
     project_id: &str,
     branch: &str,
@@ -279,21 +300,20 @@ pub fn kick_github_status_refresh(
             flags.gh_status = true;
         }
     }
-    desktop_revision.fetch_add(1, Ordering::Relaxed); // in-flight started
     let in_flight_clone = Arc::clone(&in_flight);
     std::thread::spawn(move || {
         let snap = fetch_github_status(&owner, &repo, number);
         if let Some(snap) = snap {
             if let Ok(mut g) = cache.lock() {
-                g.insert((owner, repo, number), snap);
+                g.insert((owner.clone(), repo.clone(), number), snap);
             }
+            crate::profile_log::bump_desktop_revision(&desktop_revision, "gh_status_cache");
         }
         if let Some(loading) = &loading {
             if let Ok(mut flags) = loading.lock() {
                 flags.gh_status = false;
             }
         }
-        desktop_revision.fetch_add(1, Ordering::Relaxed); // completed (success or miss)
         if let Ok(mut set) = in_flight_clone.lock() {
             set.remove(&key);
         }
@@ -558,7 +578,17 @@ fn kick_meta_refresh(state: &AppState, root: String) {
 
 #[tauri::command]
 pub fn get_snapshot(state: State<AppState>) -> Result<AppSnapshot, String> {
-    snap!(state)
+    let t0 = std::time::Instant::now();
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let snap = snap_from(&app, &state);
+    crate::profile_log::profile_log(
+        "get_snapshot",
+        &[
+            ("build_ms", t0.elapsed().as_millis().to_string()),
+            ("files", snap.files.len().to_string()),
+        ],
+    );
+    Ok(snap)
 }
 
 #[tauri::command]
@@ -978,7 +1008,7 @@ pub fn process_inbox_after_pr_refresh(
             }
             drop(inbox);
             crate::inbox::save_inbox_state(inbox_handle);
-            desktop_revision.fetch_add(1, Ordering::Relaxed);
+            crate::profile_log::bump_desktop_revision(desktop_revision, "inbox_refresh_failed");
         }
         return;
     };
@@ -1271,7 +1301,7 @@ pub fn process_inbox_after_pr_refresh(
     }
     crate::inbox::save_inbox_state(inbox_handle);
     if emitted_any {
-        desktop_revision.fetch_add(1, Ordering::Relaxed);
+        crate::profile_log::bump_desktop_revision(desktop_revision, "inbox_items");
     }
 }
 
@@ -2100,7 +2130,9 @@ pub fn post_github_pr_comment(body: String, state: State<AppState>) -> Result<Ap
 fn resolve_review_scope(scope: &str, tab: &er_engine::app::TabState) -> Result<String, String> {
     let resolved = if scope == "current" {
         match tab.mode {
-            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => tab.mode.git_mode().to_string(),
+            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
+                tab.mode.git_mode().to_string()
+            }
             _ => {
                 return Err(format!(
                     "AI review not available in {} view — switch to All changes, Unstaged, or Staged",
@@ -2291,8 +2323,9 @@ pub fn run_ai_expert_review(
     std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
         .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
 
-    let prompt =
-        er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(&scope, &er_dir, &expert_id);
+    let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
+        &scope, &er_dir, &expert_id,
+    );
 
     let target = er_engine::app::BackgroundTaskTarget {
         repo_root,
@@ -2335,13 +2368,7 @@ pub fn run_ai_review_files(
     paths: Vec<String>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    run_ai_scoped_review(
-        scope,
-        paths,
-        vec!["general".to_string()],
-        None,
-        state,
-    )
+    run_ai_scoped_review(scope, paths, vec!["general".to_string()], None, state)
 }
 
 #[tauri::command]
@@ -2438,7 +2465,10 @@ pub fn run_ai_scoped_review(
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     if started.is_empty() && !skipped.is_empty() {
-        return Err(format!("All selected reviewers already running: {}", skipped.join(", ")));
+        return Err(format!(
+            "All selected reviewers already running: {}",
+            skipped.join(", ")
+        ));
     }
 
     let file_note = if scoped_files {
@@ -2451,7 +2481,11 @@ pub fn run_ai_scoped_review(
     };
 
     let msg = if skipped.is_empty() {
-        format!("Started {} reviewer(s){file_note}: {}", started.len(), started.join(", "))
+        format!(
+            "Started {} reviewer(s){file_note}: {}",
+            started.len(),
+            started.join(", ")
+        )
     } else {
         format!(
             "Started {} reviewer(s){file_note}: {} (skipped: {})",
@@ -2490,8 +2524,7 @@ fn spawn_scoped_reviewers(
 
         let spawn_result = match &parsed {
             ReviewerKind::General => {
-                let mut prompt =
-                    prompts::build_review_prompt_prepared_diff(scope, er_dir);
+                let mut prompt = prompts::build_review_prompt_prepared_diff(scope, er_dir);
                 if scoped_files {
                     prompt = prompts::append_file_scope_if_present(prompt, er_dir);
                 }
@@ -2882,7 +2915,9 @@ fn resolve_or_create_finding_validation_thread(
         .and_then(|qs| {
             qs.questions
                 .iter()
-                .find(|q| !existing_q.contains(&q.id) && q.finding_ref.as_deref() == Some(finding_id))
+                .find(|q| {
+                    !existing_q.contains(&q.id) && q.finding_ref.as_deref() == Some(finding_id)
+                })
                 .map(|q| q.id.clone())
         })
         .ok_or_else(|| "Failed to create validation thread for finding".to_string())
@@ -3047,12 +3082,8 @@ pub fn ask_ai(
     });
 
     let cfg = er_engine::config::load_config(&repo_root);
-    let invocation = plan_card_ai_invocation(
-        &cfg,
-        provider_id.as_deref(),
-        model_id.as_deref(),
-        work_dir,
-    );
+    let invocation =
+        plan_card_ai_invocation(&cfg, provider_id.as_deref(), model_id.as_deref(), work_dir);
     let model_for_subprocess: Option<String> = model_id.or_else(|| {
         if agent_model_fallback.trim().is_empty() {
             None
@@ -4348,7 +4379,6 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
         let gh_user = Arc::clone(&state.gh_user);
         let inbox = Arc::clone(&state.inbox);
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
-        desktop_rev.fetch_add(1, Ordering::Relaxed); // loading started
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -4379,7 +4409,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
             }
-            desktop_rev.fetch_add(1, Ordering::Relaxed); // loading finished / cache updated
+            crate::profile_log::bump_desktop_revision(&desktop_rev, "pr_cache_refresh_manual");
         });
     }
 
@@ -5629,7 +5659,9 @@ fn chrono_like_timestamp() -> String {
 #[tauri::command]
 pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     let t0 = std::time::Instant::now();
+    let lock_t0 = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let lock_wait_ms = lock_t0.elapsed().as_millis();
     // Drain pending agent log entries and check for completed commands.
     app.drain_agent_log();
     // Consume completed command receivers — updates command_status to done/failed
@@ -5656,39 +5688,132 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     app.tab_mut().check_ai_files_changed();
 
     let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
-    let revision = compute_poll_revision(&app, desktop_rev);
-    let last_sent = state.last_sent_revision.load(Ordering::Relaxed);
+    let content_revision = compute_content_revision(&app);
+    let chrome_revision = compute_chrome_revision(&state);
+    let revision = content_revision.max(chrome_revision);
+    let last_content = state.last_sent_content_revision.load(Ordering::Relaxed);
+    let last_chrome = state.last_sent_chrome_revision.load(Ordering::Relaxed);
 
-    if revision == last_sent {
-        // Nothing changed — skip the expensive snapshot build.
+    if content_revision == last_content && chrome_revision == last_chrome {
+        crate::profile_log::profile_log(
+            "poll_skip",
+            &[
+                ("revision", revision.to_string()),
+                ("content_revision", content_revision.to_string()),
+                ("chrome_revision", chrome_revision.to_string()),
+                ("desktop_rev", desktop_rev.to_string()),
+                ("lock_wait_ms", lock_wait_ms.to_string()),
+                ("poll_ms", t0.elapsed().as_millis().to_string()),
+            ],
+        );
         return Ok(PollResponse {
             revision,
+            content_revision,
+            chrome_revision,
+            chrome_only: false,
             snapshot: None,
         });
     }
 
-    let snapshot = snap_from(&app, &state);
-    state.last_sent_revision.store(revision, Ordering::Relaxed);
+    let chrome_only = content_revision == last_content && chrome_revision != last_chrome;
 
-    if std::env::var("ER_DESKTOP_PROFILE_POLL").as_deref() == Ok("1") {
-        eprintln!(
-            "er-desktop poll_ms={} files={} threads={}",
-            t0.elapsed().as_millis(),
-            snapshot.files.len(),
-            snapshot.ai.threads.len()
-        );
-    }
+    crate::profile_log::profile_log(
+        "poll_revision_change",
+        &[
+            ("old_content", last_content.to_string()),
+            ("new_content", content_revision.to_string()),
+            ("old_chrome", last_chrome.to_string()),
+            ("new_chrome", chrome_revision.to_string()),
+            (
+                "chrome_only",
+                if chrome_only { "1" } else { "0" }.to_string(),
+            ),
+            ("desktop_rev", desktop_rev.to_string()),
+            (
+                "diff_hash",
+                if app.tab().diff_hash.is_empty() {
+                    "empty".to_string()
+                } else {
+                    app.tab().diff_hash.chars().take(12).collect()
+                },
+            ),
+        ],
+    );
+
+    let snapshot = if chrome_only {
+        chrome_snap_from(&app, &state)
+    } else {
+        snap_from(&app, &state)
+    };
+    state
+        .last_sent_content_revision
+        .store(content_revision, Ordering::Relaxed);
+    state
+        .last_sent_chrome_revision
+        .store(chrome_revision, Ordering::Relaxed);
+
+    crate::profile_log::profile_log(
+        "poll",
+        &[
+            ("poll_ms", t0.elapsed().as_millis().to_string()),
+            ("revision", revision.to_string()),
+            ("content_revision", content_revision.to_string()),
+            ("chrome_revision", chrome_revision.to_string()),
+            (
+                "chrome_only",
+                if chrome_only { "1" } else { "0" }.to_string(),
+            ),
+            ("desktop_rev", desktop_rev.to_string()),
+            ("lock_wait_ms", lock_wait_ms.to_string()),
+            ("files", snapshot.files.len().to_string()),
+            ("threads", snapshot.ai.threads.len().to_string()),
+        ],
+    );
     Ok(PollResponse {
         revision,
+        content_revision,
+        chrome_revision,
+        chrome_only,
         snapshot: Some(snapshot),
     })
 }
 
-fn compute_poll_revision(app: &App, desktop_revision: u64) -> u64 {
+fn compute_chrome_revision(state: &AppState) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hash;
+
+    let mut h = DefaultHasher::new();
+    crate::snapshot::meta_cache_fingerprint(&state.meta_cache).hash(&mut h);
+    crate::snapshot::pr_cache_fingerprint(Some(&state.pr_cache), Some(&state.pr_cache_fetched_at))
+        .hash(&mut h);
+    if let Ok(g) = state.gh_status_cache.lock() {
+        let mut keys: Vec<_> = g.keys().collect();
+        keys.sort();
+        for k in keys {
+            k.hash(&mut h);
+            if let Some(v) = g.get(k) {
+                v.review_decision.hash(&mut h);
+                v.mergeable.hash(&mut h);
+                v.checks.len().hash(&mut h);
+                v.state.hash(&mut h);
+            }
+        }
+    }
+    if let Ok(w) = state.watch_status.lock() {
+        w.active.hash(&mut h);
+        w.branch.hash(&mut h);
+        w.root_path.hash(&mut h);
+    }
+    if let Ok(inbox) = state.inbox.lock() {
+        inbox.unread_count().hash(&mut h);
+        inbox.last_refresh_ms.hash(&mut h);
+    }
+    crate::profile_log::finish_hash(h)
+}
+
+fn compute_content_revision(app: &App) -> u64 {
     let tab = app.tab();
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    // Desktop-side background state (PR cache, gh status, loading flags)
-    desktop_revision.hash(&mut h);
     app.active_tab.hash(&mut h);
     tab.diff_hash.hash(&mut h);
     tab.branch_diff_hash.hash(&mut h);
@@ -5742,7 +5867,7 @@ fn compute_poll_revision(app: &App, desktop_revision: u64) -> u64 {
     if let Some(last) = tab.agent_log.back() {
         last.text.hash(&mut h);
     }
-    h.finish()
+    crate::profile_log::finish_hash(h)
 }
 
 // ── Terminal (in-app shell drawer) ───────────────────────────────────────────
@@ -6094,8 +6219,9 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
         };
-        let body =
-            with_fake_claude("ok", || run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet")));
+        let body = with_fake_claude("ok", || {
+            run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
+        });
         assert_eq!(body, "mocked ok");
     }
 

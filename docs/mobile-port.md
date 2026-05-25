@@ -240,9 +240,10 @@ Estimated relative effort (rough): GitHub API layer (35%) · mobile diff/comment
 
 ## Planning checklist
 
+- [ ] Read [github-sync-architecture.md](./github-sync-architecture.md) (webhooks, SSE, cache generations, `er-github` phases)
 - [ ] Decide: native vs cross-platform; thin GitHub client vs hosted er-engine API
 - [ ] Decide AI strategy: read-only sidecars vs cloud-run review vs on-device LLM API
-- [ ] Design GitHub REST/GraphQL module replacing gh subprocesses (diff, comments, PR list, review submit)
+- [ ] Design GitHub REST/GraphQL module replacing gh subprocesses (see [github-sync-architecture.md](./github-sync-architecture.md))
 - [ ] Extract `AppSnapshot` + poll/revision contract as shared mobile API (from `snapshot.rs`)
 - [ ] Spec touch diff UI: virtualized hunks, lazy files, inline threads/findings
 - [ ] Define per-PR sandbox paths and optional cross-device sync for questions/github-comments/review.json

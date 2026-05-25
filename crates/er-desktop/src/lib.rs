@@ -5,6 +5,7 @@ pub mod export;
 pub mod frame_script;
 pub mod inbox;
 pub mod pr_cache;
+pub mod profile_log;
 pub mod projects;
 pub mod snapshot;
 pub mod tabs;

@@ -41,6 +41,18 @@ On launch, `main.rs` restores from `tabs.json` when present (eager diff for the 
 
 `poll` drains per-tab commands and app-level background tasks, computes a revision, and returns `snapshot: null` when unchanged. The revision currently combines engine state with `desktop_revision`.
 
+### Idle CPU profiling (`ER_DESKTOP_PROFILE_POLL=1`)
+
+Opt-in stderr profiler in `src/profile_log.rs`. Each line includes `kind`, `ts_ms`, `since_last_ms` (cadence vs last same kind), plus kind-specific fields.
+
+```bash
+ER_DESKTOP_PROFILE_POLL=1 cargo tauri dev 2>&1 | tee /tmp/er_profile.log
+```
+
+Kinds: `meta_refresh`, `rev_bump`, `revision_emit`, `poll` / `poll_skip` / `poll_revision_change`, `build_snapshot`, `get_snapshot`, `bg_loop`.
+
+Frontend (devtools): `localStorage.setItem("erProfilePoll","1"); location.reload()` — logs `[er-profile]` for `revision_event`, `poll_invoke_*`, `snapshot_replace`, `highlight_*`, `span_keys_evicted`, `dev_height_fix`.
+
 Bump `desktop_revision` when changing:
 
 - PR list cache or PR refresh loading state.

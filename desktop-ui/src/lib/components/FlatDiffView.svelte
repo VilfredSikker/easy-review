@@ -40,6 +40,7 @@
   } from "$lib/highlightPlan";
   import { warmHighlightWorker } from "$lib/highlightClient";
   import { syntaxThemeById } from "$lib/syntaxThemes";
+  import { profileLog, profileLogRateLimited } from "$lib/profileLog";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
   import type { AppSnapshot, FileSnapshot } from "$lib/types";
 
@@ -371,14 +372,32 @@
     _visibleFilePaths = next;
   }
 
-  // Poll replaces snapshot objects — evict applied keys so cache can re-apply once.
+  // Evict highlight keys only when a file's cache_key changes (not on every poll chrome merge).
+  let _lastFileCacheKeys = new Map<string, string>();
   $effect(() => {
     if (snapshot === _lastSnapshotRef) return;
     _lastSnapshotRef = snapshot;
-    for (const f of snapshot?.files ?? []) {
-      if (fileNeedsSyntaxSpans(f)) {
-        _spansAppliedKeys.delete(highlightCache.key(f.path, f.cache_key, syntaxTheme.id));
+    const list = snapshot?.files ?? [];
+    let evicted = 0;
+    const nextKeys = new Map<string, string>();
+    for (const f of list) {
+      nextKeys.set(f.path, f.cache_key);
+      const prevKey = _lastFileCacheKeys.get(f.path);
+      if (prevKey !== undefined && prevKey !== f.cache_key && fileNeedsSyntaxSpans(f)) {
+        const key = highlightCache.key(f.path, prevKey, syntaxTheme.id);
+        if (_spansAppliedKeys.delete(key)) evicted += 1;
       }
+    }
+    for (const path of _lastFileCacheKeys.keys()) {
+      if (!nextKeys.has(path)) {
+        const prevKey = _lastFileCacheKeys.get(path)!;
+        const key = highlightCache.key(path, prevKey, syntaxTheme.id);
+        if (_spansAppliedKeys.delete(key)) evicted += 1;
+      }
+    }
+    _lastFileCacheKeys = nextKeys;
+    if (evicted > 0) {
+      profileLog("span_keys_evicted", { evicted_count: evicted });
     }
   });
 
@@ -398,13 +417,18 @@
     const rows = windowedRows;
     const visiblePaths = new Set(rows.map((r) => r.filePath));
     setVisibleFilePaths(visiblePaths);
+    let queued = 0;
+    let skippedApply = 0;
     for (const filePath of visiblePaths) {
       const file = files.find((f) => f.path === filePath);
       if (!file || file.is_lazy_stub || file.hunks.length === 0) continue;
       const spanKey = highlightCache.key(file.path, file.cache_key, syntaxTheme.id);
       const snapFile = app.snapshot?.files?.find((f) => f.path === file.path);
       if (!snapFile) continue;
-      if (shouldSkipHighlightApply(snapFile, _spansAppliedKeys.has(spanKey))) continue;
+      if (shouldSkipHighlightApply(snapFile, _spansAppliedKeys.has(spanKey))) {
+        skippedApply += 1;
+        continue;
+      }
 
       const cachedHunks = highlightCache.get(spanKey);
       if (cachedHunks) {
@@ -425,11 +449,18 @@
       if (_highlightInFlight.has(file.path)) continue;
       if (_highlightInFlight.size >= 4) continue;
       _highlightInFlight.add(file.path);
+      queued += 1;
       const requestCacheKey = file.cache_key;
+      const tHighlight = performance.now();
       highlightFile(file, syntaxTheme)
         .then((hunks) => {
           _highlightInFlight.delete(file.path);
           _highlightGeneration++; // wake effect for remaining files
+          profileLog("highlight_done", {
+            file: file.path,
+            highlight_ms: Math.round(performance.now() - tHighlight),
+            lines: hunks.reduce((n, h) => n + h.lines.length, 0),
+          });
           if (!app.snapshot) return;
           const live = app.snapshot.files?.find((f) => f.path === file.path);
           if (!live || requestCacheKey !== live.cache_key) return;
@@ -442,6 +473,14 @@
           _highlightInFlight.delete(file.path);
           _highlightGeneration++;
         });
+    }
+    if (queued > 0 || skippedApply > 0) {
+      profileLog("highlight_queue", {
+        visible_files: visiblePaths.size,
+        queued,
+        in_flight: _highlightInFlight.size,
+        skipped_apply: skippedApply,
+      });
     }
   });
 
@@ -568,7 +607,11 @@
         const expected = overlayHeights.get(identity) ?? row.height;
         if (Math.abs(actual - expected) > 1) {
           console.error(`[er-dev] height mismatch: ${identity} expected=${expected} actual=${actual}`);
-          onHeightChange(identity, actual);
+          profileLogRateLimited("dev_height_fix", {
+            identity,
+            expected,
+            actual,
+          });
         }
       }
     });

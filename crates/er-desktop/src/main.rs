@@ -8,6 +8,7 @@ mod export;
 mod frame_script;
 mod inbox;
 mod pr_cache;
+mod profile_log;
 mod projects;
 mod snapshot;
 mod tabs;
@@ -478,12 +479,13 @@ fn main() {
             // No CWD repo but we have tabs to restore: open against the last
             // active project so the engine has a valid root.
             let fallback = active_root_from_projects();
-            match fallback.as_deref().map(|p| App::new_unloaded(p.to_string())) {
+            match fallback
+                .as_deref()
+                .map(|p| App::new_unloaded(p.to_string()))
+            {
                 Some(Ok(a)) => a,
                 _ => {
-                    eprintln!(
-                        "er-desktop: cwd not a repo and no active project on disk; aborting"
-                    );
+                    eprintln!("er-desktop: cwd not a repo and no active project on disk; aborting");
                     std::process::exit(1);
                 }
             }
@@ -620,7 +622,9 @@ fn main() {
     let terminals_for_exit = Arc::clone(&terminals);
     let desktop_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let last_sent_revision: Arc<std::sync::atomic::AtomicU64> =
+    let last_sent_content_revision: Arc<std::sync::atomic::AtomicU64> =
+        Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+    let last_sent_chrome_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let state = AppState {
         app: Arc::clone(&app_arc),
@@ -636,7 +640,8 @@ fn main() {
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
         pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         desktop_revision: Arc::clone(&desktop_revision),
-        last_sent_revision: Arc::clone(&last_sent_revision),
+        last_sent_content_revision: Arc::clone(&last_sent_content_revision),
+        last_sent_chrome_revision: Arc::clone(&last_sent_chrome_revision),
         watch_status: Arc::clone(&watch_status),
         inbox: Arc::clone(&inbox),
         tauri_app_handle: Arc::clone(&tauri_app_handle),
@@ -650,7 +655,7 @@ fn main() {
             if let Ok(mut g) = pr_cache_fetched_at.lock() {
                 *g = cached_fetched_at;
             }
-            desktop_revision.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            profile_log::bump_desktop_revision(&desktop_revision, "pr_cache_restore");
         }
         Ok(None) => {}
         Err(e) => {
@@ -676,7 +681,11 @@ fn main() {
         let remote_desktop_rev = Arc::clone(&desktop_revision);
         let remote_pr_cache = Arc::clone(&pr_cache);
         std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(60));
+            let interval_secs = remote_app
+                .try_lock()
+                .map(|g| if g.tab().is_remote() { 300 } else { 60 })
+                .unwrap_or(60);
+            std::thread::sleep(std::time::Duration::from_secs(interval_secs));
 
             // Phase 1: brief lock — snapshot identity + last_head_oid.
             let ctx = {
@@ -710,13 +719,11 @@ fn main() {
             if let Ok(mut f) = remote_loading.lock() {
                 f.remote_pr_diff = true;
             }
-            remote_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let t = std::time::Instant::now();
             let result = er_engine::app::fetch_remote_diff_data(&ctx);
             if let Ok(mut f) = remote_loading.lock() {
                 f.remote_pr_diff = false;
             }
-            remote_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             match result {
                 Ok(Some(r)) => {
@@ -724,8 +731,7 @@ fn main() {
                     if let Ok(mut g) = remote_app.lock() {
                         g.apply_remote_diff_result(r);
                     }
-                    remote_desktop_rev
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    profile_log::bump_desktop_revision(&remote_desktop_rev, "remote_pr_diff_cache");
                     log::info!(
                         "remote PR diff refresh done in {}ms",
                         t.elapsed().as_millis()
@@ -792,16 +798,18 @@ fn main() {
                     if let Ok(mut f) = gh_status_loading.lock() {
                         f.gh_status = true;
                     }
-                    gh_status_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if let Some(snap) = commands::fetch_github_status(&owner, &repo, number) {
                         if let Ok(mut g) = gh_status_bg.lock() {
                             g.insert((owner.clone(), repo.clone(), number), snap);
                         }
+                        profile_log::bump_desktop_revision(
+                            &gh_status_desktop_rev,
+                            "gh_status_cache",
+                        );
                     }
                     if let Ok(mut f) = gh_status_loading.lock() {
                         f.gh_status = false;
                     }
-                    gh_status_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = gh_status_in_flight_bg
                         .lock()
                         .map(|mut s| s.remove(&(owner, repo, number)));
@@ -864,23 +872,34 @@ fn main() {
                 if let Ok(mut f) = comments_loading.lock() {
                     f.gh_comments = true;
                 }
-                comments_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let t = std::time::Instant::now();
-                match er_engine::app::fetch_comment_sync_data(&ctx) {
+                let applied = match er_engine::app::fetch_comment_sync_data(&ctx) {
                     Ok(result) => {
                         // Phase 3: brief lock — apply pre-fetched results to the correct tab.
                         match comments_app.lock() {
-                            Ok(mut g) => g.apply_comment_sync_result(result),
-                            Err(e) => log::error!("comment sync apply lock failed: {e}"),
+                            Ok(mut g) => {
+                                g.apply_comment_sync_result(result);
+                                true
+                            }
+                            Err(e) => {
+                                log::error!("comment sync apply lock failed: {e}");
+                                false
+                            }
                         }
-                        log::info!("gh comment sync done in {}ms", t.elapsed().as_millis());
                     }
-                    Err(e) => log::error!("github comment sync failed: {e}"),
-                }
+                    Err(e) => {
+                        log::error!("github comment sync failed: {e}");
+                        false
+                    }
+                };
                 if let Ok(mut f) = comments_loading.lock() {
                     f.gh_comments = false;
                 }
-                comments_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if applied {
+                    profile_log::bump_desktop_revision(
+                        &comments_desktop_rev,
+                        "comment_sync_applied",
+                    );
+                }
             }
         });
     }
@@ -942,14 +961,13 @@ fn main() {
                     // uses the working-tree helper.
                     if let Ok(mut g) = watcher_app.lock() {
                         let checkout_root = desired.as_ref().map(|(_, r)| r.clone());
-                        let active_branch = desired.as_ref().map(|(b, _)| b.clone());
-                        let tab = g.tab_mut();
-                        if tab.local_branch_view == active_branch {
-                            tab.local_branch_checkout_root = checkout_root;
+                        let desired_branch = desired.as_ref().map(|(b, _)| b.clone());
+                        if active_tab_watched_branch(&g) == desired_branch {
+                            g.tab_mut().local_branch_checkout_root = checkout_root;
                         }
                     }
                     current_key = desired;
-                    watcher_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    profile_log::bump_desktop_revision(&watcher_desktop_rev, "watcher_status");
                 }
 
                 // Drain any pending watch events. Coalesce — we only need to
@@ -970,7 +988,7 @@ fn main() {
                         let rev = Arc::clone(&watcher_desktop_rev);
                         std::thread::spawn(move || {
                             let result = app.lock().ok().and_then(|mut g| {
-                                if g.tab().local_branch_view.as_deref()
+                                if active_tab_watched_branch(&g).as_deref()
                                     != Some(watched_branch.as_str())
                                 {
                                     return None;
@@ -979,7 +997,7 @@ fn main() {
                             });
                             match result {
                                 Some(Ok(())) => {
-                                    rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    profile_log::bump_desktop_revision(&rev, "watcher_refresh");
                                 }
                                 Some(Err(e)) => {
                                     log::error!("active-branch watcher refresh failed: {e}");
@@ -1011,7 +1029,6 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
-            bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let failed =
                 rt.block_on(async { pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await });
             for remote in failed {
@@ -1035,7 +1052,7 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
             }
-            bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            profile_log::bump_desktop_revision(&bg_desktop_rev, "pr_cache_refresh");
         };
 
         // Startup: fetch the active project's remote first so its sidebar PR
@@ -1044,7 +1061,6 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
-            bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             rt.block_on(async {
                 pr_cache::refresh_pr_cache_for_remote(&active_remote, &bg_cache, &bg_fetched_at)
                     .await
@@ -1060,7 +1076,7 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
             }
-            bg_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            profile_log::bump_desktop_revision(&bg_desktop_rev, "pr_cache_active_remote");
         }
 
         // Full sweep across all remotes — skip when persisted cache is still fresh.
@@ -1082,6 +1098,7 @@ fn main() {
     // the AppState.app mutex.
     let bg_meta = Arc::clone(&meta_cache);
     let meta_desktop_rev = Arc::clone(&desktop_revision);
+    let meta_app = Arc::clone(&app_arc);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1092,25 +1109,30 @@ fn main() {
             // ASAP. Then a short delay before the full sweep covers everyone else.
             let active_id = projects::load().active_id.clone();
             if let Some(id) = active_id.as_deref() {
-                meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                snapshot::refresh_meta_cache_for_project(id, &bg_meta);
-                meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if snapshot::refresh_meta_cache_for_project(id, &bg_meta) {
+                    profile_log::bump_desktop_revision(&meta_desktop_rev, "meta_startup_project");
+                }
             }
             // First full pass — slight delay so we don't compete with the
             // active tab's diff refresh for git CPU during the first frame.
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            snapshot::refresh_meta_cache(&launch_root, &bg_meta);
-            meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if snapshot::refresh_meta_cache(&launch_root, &bg_meta) {
+                profile_log::bump_desktop_revision(&meta_desktop_rev, "meta_startup_full");
+            }
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                // Re-derive active root from the persistent projects file —
-                // avoids touching AppState.app.
-                let active_root =
-                    active_root_from_projects().unwrap_or_else(|| launch_root.clone());
-                meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                snapshot::refresh_meta_cache(&active_root, &bg_meta);
-                meta_desktop_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                profile_log::profile_log("bg_loop", &[("loop", "meta".to_string())]);
+                let interval_secs = if meta_app.try_lock().is_ok_and(|g| g.tab().is_remote()) {
+                    120
+                } else {
+                    60
+                };
+                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                let active_id = projects::load().active_id.clone();
+                if let Some(id) = active_id.as_deref() {
+                    if snapshot::refresh_meta_cache_for_project(id, &bg_meta) {
+                        profile_log::bump_desktop_revision(&meta_desktop_rev, "meta_tick");
+                    }
+                }
             }
         });
     });
@@ -1148,8 +1170,7 @@ fn main() {
                 }
                 g.tabs[idx].needs_initial_refresh = false;
                 let t = std::time::Instant::now();
-                let is_local_pr =
-                    g.tabs[idx].pr_number.is_some() && !g.tabs[idx].is_remote();
+                let is_local_pr = g.tabs[idx].pr_number.is_some() && !g.tabs[idx].is_remote();
                 let res = if is_local_pr {
                     g.tabs[idx].refetch_and_refresh_diff()
                 } else {
@@ -1163,7 +1184,7 @@ fn main() {
                             idx,
                             t.elapsed().as_millis()
                         );
-                        warmer_rev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        profile_log::bump_desktop_revision(&warmer_rev, "background_tab_warmup");
                     }
                     Err(e) => log::warn!("background tab warmup failed: {e}"),
                 }
@@ -1232,11 +1253,19 @@ fn main() {
                             // Brief debounce to coalesce bursts (e.g. several
                             // background threads bumping the revision at once).
                             std::thread::sleep(std::time::Duration::from_millis(40));
-                            let coalesced =
-                                watch_rev.load(std::sync::atomic::Ordering::Relaxed);
+                            let coalesced = watch_rev.load(std::sync::atomic::Ordering::Relaxed);
+                            let delta_rev = coalesced.wrapping_sub(last_emitted);
                             last_emitted = coalesced;
                             if let Err(e) = watch_handle.emit("er://revision", coalesced) {
                                 log::warn!("revision watcher emit failed: {e}");
+                            } else {
+                                profile_log::profile_log(
+                                    "revision_emit",
+                                    &[
+                                        ("coalesced_rev", coalesced.to_string()),
+                                        ("delta_rev", delta_rev.to_string()),
+                                    ],
+                                );
                             }
                         }
                         std::thread::sleep(std::time::Duration::from_millis(80));
@@ -1413,14 +1442,19 @@ fn main() {
     });
 }
 
-/// Compute the desired (branch, checkout_root) for the active local-branch
-/// tab. Returns None unless the active tab is a local-branch view (not a
-/// remote PR, not a local PR ref) AND that branch is checked out somewhere
-/// (project root via HEAD, or a linked worktree).
+/// Checkout root + branch for the active tab when that branch is checked out
+/// (project root HEAD or a linked worktree). Returns None for remote/read-only tabs.
 fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
     let tab = app.tab();
-    let branch = tab.local_branch_view.clone()?;
     if tab.remote_repo.is_some() || tab.pr_head_ref.is_some() {
+        return None;
+    }
+
+    let branch = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+    if branch.is_empty() {
         return None;
     }
 
@@ -1441,6 +1475,23 @@ fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
     let worktrees = er_engine::git::list_worktrees(&tab.repo_root).ok()?;
     let wt = worktrees.into_iter().find(|w| w.branch == branch)?;
     Some((branch, wt.path))
+}
+
+/// Branch name the active tab is reviewing (for watch refresh guard).
+fn active_tab_watched_branch(app: &App) -> Option<String> {
+    let tab = app.tab();
+    if tab.remote_repo.is_some() || tab.pr_head_ref.is_some() {
+        return None;
+    }
+    let branch = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+    if branch.is_empty() {
+        None
+    } else {
+        Some(branch)
+    }
 }
 
 /// Read the persisted active project's root path, if any.

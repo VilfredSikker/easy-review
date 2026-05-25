@@ -415,7 +415,11 @@ export interface AiProviderInfo {
 
 export interface PollResponse {
   revision: number;
-  /** Full snapshot; `null` when revision is unchanged since last poll. */
+  content_revision: number;
+  chrome_revision: number;
+  /** Merge sidebar/chrome only; keep existing file hunks and highlight spans. */
+  chrome_only: boolean;
+  /** Full snapshot; `null` when both revisions are unchanged since last poll. */
   snapshot: AppSnapshot | null;
 }
 
