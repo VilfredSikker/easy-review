@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn find_finding_thread_root_prefers_github_then_question() {
+    fn find_finding_thread_root_prefers_question_over_github() {
         use super::super::comments::{ErGitHubComments, ErQuestions, GitHubReviewComment, ReviewQuestion};
         use super::super::review::AiState;
 
