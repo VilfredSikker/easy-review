@@ -143,7 +143,11 @@
     if (pushing || thread.synced || isQuestion) return;
     pushing = true;
     try {
-      await app.cmd("push_github_comment_thread", { id: thread.id });
+      const activeTab = app.snapshot?.tabs?.find((t) => t.is_active) ?? null;
+      const currentWorktree = app.snapshot?.worktrees.find((w) => w.is_current) ?? null;
+      const prNumber =
+        activeTab?.pr_number ?? currentWorktree?.pr_number ?? app.snapshot?.github?.number ?? app.snapshot?.pr?.number ?? null;
+      await app.cmd("push_github_comment_thread", { id: thread.id, prNumber });
     } finally {
       pushing = false;
     }

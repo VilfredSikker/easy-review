@@ -23,9 +23,8 @@
   });
 
   /**
-   * Find which hunk the selected line range belongs to. The engine matches by
-   * `new_start..new_start+new_count`. Falls back to 0 if no match (shouldn't
-   * happen in practice because the user clicked on a line inside a rendered hunk).
+   * Find which hunk the selected line range belongs to. Old-side selections
+   * need old ranges; new-side selections use new ranges.
    */
   function findHunkIdx(): number {
     const snap = app.snapshot;
@@ -33,9 +32,12 @@
     const file = snap.files.find((f) => f.path === diffSel.file);
     if (!file) return 0;
     const ln = diffSel.first();
-    const idx = file.hunks.findIndex(
-      (h) => ln >= h.new_start && ln < h.new_start + h.new_count,
-    );
+    const idx = file.hunks.findIndex((h) => {
+      if (diffSel.side === "old") {
+        return ln >= h.old_start && ln < h.old_start + h.old_count;
+      }
+      return ln >= h.new_start && ln < h.new_start + h.new_count;
+    });
     return idx === -1 ? 0 : idx;
   }
 

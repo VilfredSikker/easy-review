@@ -71,6 +71,7 @@ function startSelectionFromHunk(kind: "comment" | "question") {
   diffSel.start = ln;
   diffSel.end = ln;
   diffSel.file = file.path;
+  diffSel.side = firstLine?.kind === "del" ? "old" : "new";
 }
 
 function focusInput(selector: string) {

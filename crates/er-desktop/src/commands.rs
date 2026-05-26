@@ -1688,10 +1688,11 @@ pub fn push_github_comments(state: State<AppState>) -> Result<AppSnapshot, Strin
 #[tauri::command]
 pub fn push_github_comment_thread(
     id: String,
+    pr_number: Option<u64>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.push_github_comment_thread(&id)
+    app.push_github_comment_thread(&id, pr_number)
         .map_err(|e| e.to_string())?;
     Ok(snap_from(&app, &state))
 }

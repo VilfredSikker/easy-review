@@ -20,6 +20,10 @@
     const i = p.lastIndexOf("/");
     return i === -1 ? p : p.slice(i + 1);
   }
+
+  function previewBody(thread: AiSnapshot["threads"][number]): string {
+    return thread.replies.at(-1)?.body_markdown ?? thread.root.body_markdown;
+  }
 </script>
 
 <Card>
@@ -46,7 +50,7 @@
             <span>{basename(thread.file)}:{thread.line}</span>
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ml-auto opacity-0 group-hover:opacity-100 transition text-accent"><path d="M7 17L17 7M7 7h10v10"/></svg>
           </div>
-          <MarkdownText text={thread.root.body_markdown} className="text-fg-2 text-left" />
+          <MarkdownText text={previewBody(thread)} className="text-fg-2 text-left" />
         </button>
         <button
           type="button"

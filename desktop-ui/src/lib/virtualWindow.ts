@@ -104,6 +104,21 @@ export interface EffectiveGeometry {
  * - Exact row-top boundary returns that row's index (not the predecessor).
  * - Empty geometry (`rowCount === 0`) → -1.
  */
+/**
+ * Map a viewport pointer Y to a document row offset (px into `effectiveGeometry`).
+ *
+ * `contentTopPx` is the non-scrollable band at the top of the scroll container
+ * (e.g. FlatDiffView's sticky file header, `STICKY_HEADER_PX = 40`).
+ */
+export function rowOffsetFromViewportY(
+  clientY: number,
+  containerTop: number,
+  scrollTopPx: number,
+  contentTopPx: number,
+): number {
+  return clientY - containerTop - contentTopPx + scrollTopPx;
+}
+
 export function rowIndexAtOffset(geom: EffectiveGeometry, offsetPx: number): number {
   if (geom.rowCount === 0) return -1;
   if (offsetPx <= 0) return 0;

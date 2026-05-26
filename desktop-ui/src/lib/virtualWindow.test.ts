@@ -2,10 +2,13 @@ import { describe, expect, it } from "bun:test";
 import {
   binarySearchLeft,
   rowIndexAtOffset,
+  rowOffsetFromViewportY,
   windowFromScroll,
   windowFromScrollVariable,
   type EffectiveGeometry,
 } from "./virtualWindow";
+
+const STICKY_HEADER_PX = 40;
 
 describe("windowFromScroll", () => {
   it("returns empty window for empty list", () => {
@@ -158,6 +161,67 @@ describe("rowIndexAtOffset", () => {
 
   it("negative offset returns row 0", () => {
     expect(rowIndexAtOffset(geom, -10)).toBe(0);
+  });
+});
+
+describe("rowOffsetFromViewportY", () => {
+  const containerTop = 100;
+
+  it("at scrollTopPx=0, pointer 40px below container top maps to offset 0", () => {
+    const clientY = containerTop + STICKY_HEADER_PX;
+    expect(
+      rowOffsetFromViewportY(clientY, containerTop, 0, STICKY_HEADER_PX),
+    ).toBe(0);
+  });
+
+  it("at scrollTopPx=120, pointer 40px below container top maps to offset 120, not 80", () => {
+    const clientY = containerTop + STICKY_HEADER_PX;
+    expect(
+      rowOffsetFromViewportY(clientY, containerTop, 120, STICKY_HEADER_PX),
+    ).toBe(120);
+    expect(
+      rowOffsetFromViewportY(clientY, containerTop, 120 - STICKY_HEADER_PX, STICKY_HEADER_PX),
+    ).toBe(80);
+  });
+
+  it("pointer inside the same visual line maps to that row after scrolling", () => {
+    const rowHeight = 26;
+    const geom: EffectiveGeometry = {
+      cumulativeOffsets: [0, rowHeight, rowHeight * 2, rowHeight * 3],
+      totalHeight: rowHeight * 3,
+      rowCount: 3,
+    };
+    const scrollTopPx = 50;
+    const targetRow = 2;
+    const rowMidOffset = geom.cumulativeOffsets[targetRow]! + rowHeight / 2;
+    const clientY =
+      containerTop + STICKY_HEADER_PX + (rowMidOffset - scrollTopPx);
+    const offset = rowOffsetFromViewportY(
+      clientY,
+      containerTop,
+      scrollTopPx,
+      STICKY_HEADER_PX,
+    );
+    expect(rowIndexAtOffset(geom, offset)).toBe(targetRow);
+  });
+
+  it("must use scrollTopPx, not scrollTopPx minus sticky header (regression)", () => {
+    const scrollTopPx = 120;
+    const clientY = containerTop + STICKY_HEADER_PX + 10;
+    const withScrollTop = rowOffsetFromViewportY(
+      clientY,
+      containerTop,
+      scrollTopPx,
+      STICKY_HEADER_PX,
+    );
+    const withRowScrollTop = rowOffsetFromViewportY(
+      clientY,
+      containerTop,
+      scrollTopPx - STICKY_HEADER_PX,
+      STICKY_HEADER_PX,
+    );
+    expect(withScrollTop).not.toBe(withRowScrollTop);
+    expect(withScrollTop - withRowScrollTop).toBe(STICKY_HEADER_PX);
   });
 });
 

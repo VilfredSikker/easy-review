@@ -65,11 +65,11 @@ class DiffNavStore {
     }
   }
 
-  async scrollToThread(threadId: string, opts: { flashId?: string } = {}): Promise<void> {
+  async scrollToThread(threadId: string, opts: { flashId?: string } = {}): Promise<boolean> {
     const flashId = opts.flashId ?? threadId;
     if (!this.nav) {
       domFlash(flashId);
-      return;
+      return typeof document !== "undefined" && document.getElementById(flashId) !== null;
     }
     const model = this.nav.getModel();
     if (model) {
@@ -78,15 +78,18 @@ class DiffNavStore {
         this.nav.scrollToRow(idx, "center");
         await tick();
         domFlash(flashId);
-        return;
+        return true;
       }
     }
     if (typeof document !== "undefined") {
-      document
-        .getElementById(flashId)
-        ?.scrollIntoView({ behavior: "auto", block: "center" });
+      const el = document.getElementById(flashId);
+      if (el) {
+        el.scrollIntoView({ behavior: "auto", block: "center" });
+        domFlash(flashId);
+        return true;
+      }
     }
-    domFlash(flashId);
+    return false;
   }
 
   scrollToEdge(to: "top" | "bottom"): void {

@@ -682,6 +682,23 @@ fn parse_owner_repo_from_remote(remote: &str) -> Result<(String, String)> {
     }
 }
 
+/// Get GitHub owner/repo from the repository's `origin` remote.
+pub fn get_repo_info(repo_root: &str) -> Result<(String, String)> {
+    let remote_output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to get origin remote")?;
+    if !remote_output.status.success() {
+        let stderr = String::from_utf8_lossy(&remote_output.stderr);
+        anyhow::bail!("Failed to get origin remote: {}", stderr.trim());
+    }
+    let remote = String::from_utf8_lossy(&remote_output.stdout)
+        .trim()
+        .to_string();
+    parse_owner_repo_from_remote(&remote)
+}
+
 /// Fetch all review comments for a PR
 pub fn gh_pr_comments(
     owner: &str,

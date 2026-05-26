@@ -46,7 +46,13 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
       await tick();
     }
   }
-  await diffNav.scrollToThread(thread.id);
+  const didScroll = await diffNav.scrollToThread(thread.id);
+  if (didScroll) return;
+
+  const owningFinding = snap.ai?.findings.find((f) => f.thread_id === thread.id);
+  if (owningFinding) {
+    await diffNav.scrollToFinding(owningFinding.id, { flashId: `finding-${owningFinding.id}` });
+  }
 }
 
 /**

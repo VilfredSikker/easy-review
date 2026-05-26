@@ -430,15 +430,40 @@ impl App {
         comment_line_num: Option<usize>,
     ) -> LineAnchor {
         let tab = self.tab();
-        if let Some(df) = tab.selected_diff_file() {
+        let diff_file = if tab.comment_file.is_empty() {
+            tab.selected_diff_file()
+        } else if tab.mode == DiffMode::History {
+            tab.history.as_ref().and_then(|history| {
+                history
+                    .commit_files
+                    .iter()
+                    .find(|f| f.path == tab.comment_file)
+            })
+        } else {
+            tab.files.iter().find(|f| f.path == tab.comment_file)
+        };
+
+        if let Some(df) = diff_file {
             if let Some(hunk) = df.hunks.get(hunk_index) {
                 if let Some(ln) = comment_line_num {
                     // Find the target line index within the hunk
-                    let target_idx = hunk
-                        .lines
-                        .iter()
-                        .position(|l| l.new_num == Some(ln))
-                        .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln)));
+                    let target_idx = match tab.comment_side.as_deref() {
+                        Some("LEFT") => hunk
+                            .lines
+                            .iter()
+                            .position(|l| l.old_num == Some(ln))
+                            .or_else(|| hunk.lines.iter().position(|l| l.new_num == Some(ln))),
+                        Some("RIGHT") => hunk
+                            .lines
+                            .iter()
+                            .position(|l| l.new_num == Some(ln))
+                            .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln))),
+                        _ => hunk
+                            .lines
+                            .iter()
+                            .position(|l| l.new_num == Some(ln))
+                            .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln))),
+                    };
                     let (line_content, old_line_start) = if let Some(idx) = target_idx {
                         let dl = &hunk.lines[idx];
                         (dl.content.clone(), dl.old_num)
@@ -589,8 +614,8 @@ impl App {
 
         if comment_id.starts_with("q-") {
             let path = format!("{}/questions.json", er_dir);
-            let content = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read {path}"))?;
+            let content =
+                std::fs::read_to_string(&path).with_context(|| format!("Failed to read {path}"))?;
             let mut qs: ai::ErQuestions =
                 serde_json::from_str(&content).context("Failed to parse questions.json")?;
             let q = qs
@@ -608,8 +633,8 @@ impl App {
             std::fs::rename(&tmp, &path)?;
         } else {
             let path = self.tab().github_comments_path();
-            let content = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read {path}"))?;
+            let content =
+                std::fs::read_to_string(&path).with_context(|| format!("Failed to read {path}"))?;
             let mut gc: ai::ErGitHubComments =
                 serde_json::from_str(&content).context("Failed to parse github-comments.json")?;
             let (github_id, gh_meta, author) = {
@@ -625,11 +650,7 @@ impl App {
             }
             if let (Some(gh_id), Some(ref gh)) = (github_id, gh_meta.as_ref()) {
                 crate::github::gh_pr_update_review_comment(
-                    &gh.owner,
-                    &gh.repo,
-                    gh_id,
-                    new_text,
-                    &repo_root,
+                    &gh.owner, &gh.repo, gh_id, new_text, &repo_root,
                 )?;
             }
             if let Some(c) = gc.comments.iter_mut().find(|c| c.id == comment_id) {
@@ -1988,7 +2009,12 @@ impl App {
                 }
                 let is_claude =
                     provider.command.ends_with("claude") || provider.command == "claude";
-                (provider.command.clone(), args, is_claude, provider.uses_stream_json_log())
+                (
+                    provider.command.clone(),
+                    args,
+                    is_claude,
+                    provider.uses_stream_json_log(),
+                )
             } else {
                 let cmd = self.config.agent.command.clone();
                 let is_claude = cmd.ends_with("claude") || cmd == "claude";
@@ -2277,7 +2303,12 @@ impl App {
                 }
                 let is_claude =
                     provider.command.ends_with("claude") || provider.command == "claude";
-                (provider.command.clone(), args, is_claude, provider.uses_stream_json_log())
+                (
+                    provider.command.clone(),
+                    args,
+                    is_claude,
+                    provider.uses_stream_json_log(),
+                )
             } else {
                 let cmd = self.config.agent.command.clone();
                 let is_claude = cmd.ends_with("claude") || cmd == "claude";

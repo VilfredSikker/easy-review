@@ -20,6 +20,7 @@
   }
 
   const ln = $derived(line.new_num ?? line.old_num);
+  const side = $derived(line.kind === "del" ? "old" : "new");
 
   const wdU = $derived.by(() => {
     if (!partner) return null;
@@ -30,7 +31,7 @@
   const wdSpans = $derived(wdU ? (line.kind === "del" ? wdU.old : wdU.new) : null);
   const wdBg = $derived(line.kind === "del" ? "bg-del-fg/30" : "bg-add-fg/30");
 
-  const isSelected = $derived(ln !== null && diffSel.file === filePath && diffSel.sel(ln));
+  const isSelected = $derived(ln !== null && diffSel.file === filePath && diffSel.sel(ln, side));
 
   function leadingWS(): string {
     const t = line.text;
@@ -53,7 +54,7 @@
     {#if ln !== null && line.kind !== "fold"}
       <button
         class="add-comment-btn"
-        onmousedown={(e) => diffSel.begin(ln, e.shiftKey, e, filePath)}
+        onmousedown={(e) => diffSel.begin(ln, e.shiftKey, e, filePath, side)}
       >+</button>
     {/if}
   </div>

@@ -438,6 +438,17 @@ fn find_local_line_for_diff_hunk(diff_hunk: &str, file: &git::DiffFile) -> Optio
     None
 }
 
+fn local_pr_target(
+    repo_root: &str,
+    explicit_pr_number: Option<u64>,
+) -> Result<(String, String, u64)> {
+    if let Some(n) = explicit_pr_number {
+        let (owner, repo_name) = github::get_repo_info(repo_root)?;
+        return Ok((owner, repo_name, n));
+    }
+    github::get_pr_info(repo_root)
+}
+
 impl App {
     /// Sync GitHub PR comments (pull)
     pub fn sync_github_comments(&mut self) -> Result<()> {
@@ -461,7 +472,7 @@ impl App {
                 return Ok(());
             }
         } else {
-            let pr_info = github::get_pr_info(&repo_root);
+            let pr_info = local_pr_target(&repo_root, explicit_pr_number);
             let pr_info = match pr_info {
                 Ok(info) => info,
                 Err(_) => {
@@ -469,12 +480,7 @@ impl App {
                     return Ok(());
                 }
             };
-            // If we're in no-checkout PR review mode, override the PR number
-            if let Some(n) = explicit_pr_number {
-                (pr_info.0, pr_info.1, n)
-            } else {
-                pr_info
-            }
+            pr_info
         };
 
         let gh_comments = if is_remote {
@@ -669,19 +675,14 @@ impl App {
                 return Ok(());
             }
         } else {
-            let pr_info = match github::get_pr_info(&repo_root) {
+            let pr_info = match local_pr_target(&repo_root, explicit_pr_number) {
                 Ok(info) => info,
                 Err(_) => {
                     self.notify("No PR found for current branch");
                     return Ok(());
                 }
             };
-            // If we're in no-checkout PR review mode, override the PR number
-            if let Some(n) = explicit_pr_number {
-                (pr_info.0, pr_info.1, n)
-            } else {
-                pr_info
-            }
+            pr_info
         };
 
         let comments_path = self.tab().github_comments_path();
@@ -849,10 +850,14 @@ impl App {
     }
 
     /// Push one local comment thread (root + unsynced replies) to GitHub.
-    pub fn push_github_comment_thread(&mut self, thread_id: &str) -> Result<()> {
+    pub fn push_github_comment_thread(
+        &mut self,
+        thread_id: &str,
+        pr_number_hint: Option<u64>,
+    ) -> Result<()> {
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();
-        let explicit_pr_number = tab.pr_number;
+        let explicit_pr_number = tab.pr_number.or(pr_number_hint);
         let is_remote = tab.is_remote();
         let remote_repo = tab.remote_repo.clone();
 
@@ -868,13 +873,8 @@ impl App {
                 anyhow::bail!("No PR info for remote mode");
             }
         } else {
-            let pr_info = github::get_pr_info(&repo_root)
-                .map_err(|_| anyhow::anyhow!("No PR found for current branch"))?;
-            if let Some(n) = explicit_pr_number {
-                (pr_info.0, pr_info.1, n)
-            } else {
-                pr_info
-            }
+            local_pr_target(&repo_root, explicit_pr_number)
+                .map_err(|_| anyhow::anyhow!("No PR found for current branch"))?
         };
 
         let comments_path = self.tab().github_comments_path();

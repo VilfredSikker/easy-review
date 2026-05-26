@@ -7727,6 +7727,34 @@ mod tests {
         assert_eq!(anchor.line_start, Some(99));
     }
 
+    #[test]
+    fn get_line_anchor_uses_comment_file_when_it_differs_from_selected_file() {
+        let selected_lines = vec![DiffLine {
+            line_type: LineType::Add,
+            content: "selected file line".to_string(),
+            old_num: None,
+            new_num: Some(2),
+        }];
+        let comment_lines = vec![DiffLine {
+            line_type: LineType::Add,
+            content: "comment target line".to_string(),
+            old_num: None,
+            new_num: Some(2),
+        }];
+        let mut tab = make_test_tab(vec![
+            make_file("first.rs", vec![make_hunk(selected_lines)], 1, 0),
+            make_file("second.rs", vec![make_hunk(comment_lines)], 1, 0),
+        ]);
+        tab.selected_file = 0;
+        tab.comment_file = "second.rs".to_string();
+        let app = make_test_app(tab);
+
+        let anchor = app.get_line_anchor(0, Some(2));
+
+        assert_eq!(anchor.line_content, "comment target line");
+        assert_eq!(anchor.line_start, Some(2));
+    }
+
     // ── split_diff_active ──
 
     #[test]

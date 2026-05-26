@@ -18,8 +18,8 @@ class DiffSelection {
   /** Path of the file the selection belongs to. Cleared when switching files. */
   file = $state<string | null>(null);
   /**
-   * Which split side the selection was captured on. `null` in unified mode.
-   * In split mode, only cells on this side are highlighted by `sel()`.
+   * Which diff side the selection was captured on. Unified mode also sets
+   * this so old/new rows with the same line number do not both highlight.
    */
   side = $state<SelectionSide>(null);
   /** Flat-model row index where drag started. Used by FlatDiffView for file-clamp. */
@@ -33,7 +33,7 @@ class DiffSelection {
    */
   begin(line: number, shift: boolean, e?: MouseEvent, file?: string | null, side: SelectionSide = null) {
     if (e) e.preventDefault();
-    if (shift && this.start !== null && this.file === file) {
+    if (shift && this.start !== null && this.file === file && this.side === side) {
       this.end = line;
     } else {
       this.start = line;
@@ -44,8 +44,9 @@ class DiffSelection {
     this.dragging = true;
   }
 
-  extend(line: number) {
+  extend(line: number, side: SelectionSide = this.side) {
     if (!this.dragging) return;
+    if (side !== this.side) return;
     this.end = line;
   }
 
@@ -54,8 +55,9 @@ class DiffSelection {
   }
 
   /** True when this line falls within the [start..end] selection range. */
-  sel(line: number): boolean {
+  sel(line: number, side: SelectionSide = null): boolean {
     if (this.start === null || this.end === null) return false;
+    if (side !== null && this.side !== side) return false;
     const lo = Math.min(this.start, this.end);
     const hi = Math.max(this.start, this.end);
     return line >= lo && line <= hi;

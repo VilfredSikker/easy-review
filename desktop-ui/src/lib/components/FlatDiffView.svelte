@@ -27,6 +27,7 @@
   import {
     windowFromScrollVariable,
     rowIndexAtOffset,
+    rowOffsetFromViewportY,
     type EffectiveGeometry,
   } from "$lib/virtualWindow";
   import { buildAnnotationIndex } from "$lib/diffAnnotations";
@@ -42,7 +43,7 @@
   import { syntaxThemeById } from "$lib/syntaxThemes";
   import { profileLog, profileLogRateLimited } from "$lib/profileLog";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
-  import type { AppSnapshot, FileSnapshot } from "$lib/types";
+  import type { AppSnapshot, FileSnapshot, LineSnapshot } from "$lib/types";
 
   /** Prevents highlight $effect from re-applying spans in a reactive loop. */
   const _spansAppliedKeys = new Set<string>();
@@ -73,6 +74,10 @@
 
   function syntaxHighlightingEnabled(): boolean {
     return true;
+  }
+
+  function unifiedLineSide(line: LineSnapshot): "old" | "new" {
+    return line.kind === "del" ? "old" : "new";
   }
 
   interface Props {
@@ -253,13 +258,27 @@
     return headerTop >= rowScrollTopPx && headerTop < rowScrollTopPx + STICKY_HEADER_PX;
   });
 
-  // ── Selection clear on file change ───────────────────────────────────────
+  // ── Selection validation ─────────────────────────────────────────────────
+  let selectionContextKey: string | null = $state(null);
+
   $effect(() => {
-    const selectedFile = snapshot?.files[snapshot.selected_file];
-    if (selectedFile && diffSel.file !== selectedFile.path) {
-      diffSel.clear();
-      diffSel.file = selectedFile.path;
+    if (!diffSel.active || diffSel.file === null) {
+      selectionContextKey = null;
+      return;
     }
+
+    const currentContextKey = snapshotKey;
+    const fileStillRendered = crossFileModel.fileStartRow.has(diffSel.file);
+    const contextChanged =
+      selectionContextKey !== null && selectionContextKey !== currentContextKey;
+
+    if (contextChanged || !fileStillRendered) {
+      diffSel.clear();
+      selectionContextKey = null;
+      return;
+    }
+
+    selectionContextKey = currentContextKey;
   });
 
   // ── Lazy-load effect ──────────────────────────────────────────────────────
@@ -603,11 +622,13 @@
         let lineNum: number | null = null;
         if (row.type === "content-unified") {
           const ln = file.hunks[row.hunkIdx]?.lines[row.lineIdx];
-          lineNum = ln ? (ln.new_num ?? ln.old_num ?? null) : null;
+          if (ln && unifiedLineSide(ln) === diffSel.side) {
+            lineNum = ln.new_num ?? ln.old_num ?? null;
+          }
         } else {
           const splitRowsByHunk = crossFileModel.splitRowsByFile.get(diffSel.file);
           const sr = splitRowsByHunk?.[row.hunkIdx]?.[row.splitRowIdx];
-          const activeSide = sr?.right ?? sr?.left;
+          const activeSide = diffSel.side === "old" ? sr?.left : sr?.right;
           lineNum = activeSide ? (activeSide.new_num ?? activeSide.old_num ?? null) : null;
         }
         if (lineNum === lastLn) {
@@ -663,7 +684,12 @@
   function onMouseMove(e: MouseEvent) {
     if (!diffSel.dragging || !scrollEl) return;
     const rect = scrollEl.getBoundingClientRect();
-    const rawY = e.clientY - rect.top + scrollTopPx;
+    const rawY = rowOffsetFromViewportY(
+      e.clientY,
+      rect.top,
+      scrollTopPx,
+      STICKY_HEADER_PX,
+    );
     const yPx = Math.max(0, Math.min(rawY, effectiveGeometry.totalHeight - 1));
     const idx = rowIndexAtOffset(effectiveGeometry, yPx);
     if (idx < 0 || idx >= crossFileModel.rows.length) return;
@@ -673,7 +699,8 @@
       const file = files.find((f) => f.path === row.filePath);
       const line = file?.hunks[row.hunkIdx]?.lines[row.lineIdx];
       const ln = line ? (line.new_num ?? line.old_num) : null;
-      if (ln !== null) diffSel.extend(ln);
+      const side = line ? unifiedLineSide(line) : null;
+      if (ln !== null) diffSel.extend(ln, side);
     } else if (row.type === "content-split") {
       const xPct = (e.clientX - rect.left) / rect.width;
       const side = xPct < 0.5 ? "old" : "new";
@@ -684,7 +711,7 @@
       const ln = side === "old"
         ? (splitRow.left ? (splitRow.left.new_num ?? splitRow.left.old_num) : null)
         : (splitRow.right ? (splitRow.right.new_num ?? splitRow.right.old_num) : null);
-      if (ln !== null && diffSel.side === side) diffSel.extend(ln);
+      if (ln !== null) diffSel.extend(ln, side);
     }
   }
 
