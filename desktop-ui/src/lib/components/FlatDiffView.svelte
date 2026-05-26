@@ -71,6 +71,15 @@
     }
   }
 
+  function syntaxHighlightingEnabled(): boolean {
+    if (!import.meta.env.DEV) return true;
+    try {
+      return globalThis.localStorage?.getItem("erSyntaxHighlight") === "1";
+    } catch {
+      return false;
+    }
+  }
+
   interface Props {
     viewModeOverride?: DiffViewMode | null;
   }
@@ -318,7 +327,9 @@
   let _visibleFilePaths = $state(new Set<string>());
 
   onMount(() => {
-    warmHighlightWorker(syntaxThemeById(app.currentSyntaxTheme));
+    if (syntaxHighlightingEnabled()) {
+      warmHighlightWorker(syntaxThemeById(app.currentSyntaxTheme));
+    }
   });
 
   function isFileInViewport(filePath: string): boolean {
@@ -417,6 +428,7 @@
     const rows = windowedRows;
     const visiblePaths = new Set(rows.map((r) => r.filePath));
     setVisibleFilePaths(visiblePaths);
+    if (!syntaxHighlightingEnabled()) return;
     let queued = 0;
     let skippedApply = 0;
     for (const filePath of visiblePaths) {
@@ -593,6 +605,7 @@
   let devRo: ResizeObserver | null = null;
   $effect(() => {
     if (!import.meta.env.DEV || !scrollEl) return;
+    if (globalThis.localStorage?.getItem("erDevHeightProbe") !== "1") return;
     void vw.start;
     void vw.end;
     devRo?.disconnect();

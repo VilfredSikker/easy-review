@@ -71,47 +71,10 @@ async function ensureHighlighter(): Promise<WorkerHighlighter> {
   if (!initPromise) {
     initPromise = createHighlighter({
       themes: [THEME_NAME],
-      langs: [
-        "typescript",
-        "tsx",
-        "javascript",
-        "jsx",
-        "rust",
-        "python",
-        "svelte",
-        "html",
-        "css",
-        "json",
-        "toml",
-        "yaml",
-        "markdown",
-        "bash",
-        "sql",
-        "go",
-      ],
+      langs: [],
     }).then((hl) => {
       highlighter = hl;
       loadedThemes.add(THEME_NAME);
-      for (const lang of [
-        "typescript",
-        "tsx",
-        "javascript",
-        "jsx",
-        "rust",
-        "python",
-        "svelte",
-        "html",
-        "css",
-        "json",
-        "toml",
-        "yaml",
-        "markdown",
-        "bash",
-        "sql",
-        "go",
-      ] as const) {
-        loadedLangs.add(lang);
-      }
       return hl;
     });
   }
