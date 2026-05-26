@@ -854,6 +854,48 @@ Target: complete in under 5 minutes. Each evidence read should map to a specific
     )
 }
 
+/// Validate and re-anchor GitHub PR comments when `{output_dir}/diff-tmp` is already on disk.
+pub fn build_validate_github_comments_prompt_prepared_diff(output_dir: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let annotate = annotate_diff_command(
+        &format!("{output_dir}/diff-tmp"),
+        &format!("{output_dir}/diff-annotated"),
+    );
+
+    format!(
+        r#"You are validating and re-anchoring existing GitHub PR review comments.
+Do not add new review comments in this action.
+
+## Instructions
+
+1. Read `{safe_output_dir}/github-comments.json`. If it does not exist, print "No comments to validate" and stop.
+2. Consider only **top-level** line comments where `resolved` is false and `outdated` is false (skip replies — `in_reply_to` set).
+3. Refresh the annotated diff from the prepared file on disk:
+   - `(sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
+   - `{annotate}`
+4. For each eligible comment, read the current code at the anchored location and decide:
+   - `PERSISTS`: still applies — keep the comment; update text only if needed.
+   - `RESOLVED`: addressed or no longer applies — set `resolved: true` (do not delete unless your workflow removes resolved threads).
+   - `SHIFTED`: still applies but the line moved — update `hunk_index`, `line_start`, `line_content`, `context_before`, `context_after`, `old_line_start`, `hunk_header`, set `anchor_status` to `relocated`, update `relocated_at_hash` to the current diff hash.
+   - `LOST`: cannot anchor — set `anchor_status` to `lost` (leave `resolved` false unless the concern is clearly obsolete).
+5. Do **not** set `outdated` — that flag reflects GitHub thread state from sync.
+6. Preserve `version`, `github` sync metadata, `github_id`, `source`, `synced`, and reply threads unless a parent is resolved.
+7. Write updated `{safe_output_dir}/github-comments.json`.
+8. If `{safe_output_dir}/summary.md` exists, append:
+   `Comment refresh: N resolved, M re-anchored, K lost.`
+
+## Budget
+
+- ~8 file reads per comment (no global session cap).
+
+## Speed
+
+Target: complete in under 5 minutes."#
+    )
+}
+
 pub fn build_validate_prompt(base_branch: &str, scope: &str) -> String {
     let safe_base_branch = sanitize_for_shell(base_branch);
     let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
@@ -1326,6 +1368,14 @@ mod tests {
     }
 
     // ── build_validate_prompt ──
+
+    #[test]
+    fn validate_github_comments_prompt_reads_github_comments_json() {
+        let prompt = build_validate_github_comments_prompt_prepared_diff("/tmp/out");
+        assert!(prompt.contains("github-comments.json"));
+        assert!(prompt.contains("outdated"));
+        assert!(prompt.contains("diff-tmp"));
+    }
 
     #[test]
     fn validate_prompt_reads_review_and_diff_annotated() {

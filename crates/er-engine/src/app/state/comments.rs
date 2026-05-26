@@ -692,6 +692,27 @@ impl App {
         }
     }
 
+    /// Whether the user may switch question ↔ GitHub comment while composing.
+    pub fn can_toggle_comment_type(&self) -> bool {
+        let tab = self.tab();
+        tab.comment_reply_to.is_none()
+            && tab.comment_edit_id.is_none()
+            && tab.comment_finding_ref.is_none()
+            && !tab.comment_file.is_empty()
+    }
+
+    /// Flip question ↔ GitHub comment for a new file-anchored draft.
+    pub fn toggle_comment_type(&mut self) {
+        if !self.can_toggle_comment_type() {
+            return;
+        }
+        let tab = self.tab_mut();
+        tab.comment_type = match tab.comment_type {
+            CommentType::Question => CommentType::GitHubComment,
+            CommentType::GitHubComment => CommentType::Question,
+        };
+    }
+
     /// Update an existing comment in-place: new text, re-anchored to current position
     fn update_comment(&mut self, comment_id: String, new_text: String) -> Result<()> {
         let tab = self.tab();

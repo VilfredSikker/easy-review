@@ -116,6 +116,10 @@ export interface AiSnapshot {
   unpushed: number;
   threads: ThreadSnapshot[];
   findings: FlatFinding[];
+  /** Whether `{er_dir}/review.json` exists (batch validate target). */
+  has_review_json: boolean;
+  /** Top-level GitHub comments eligible for batch validate (!resolved, !outdated). */
+  eligible_comment_count: number;
 }
 
 export interface PrSnapshot {

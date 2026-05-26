@@ -67,6 +67,9 @@
     if (e.key === "Escape") {
       e.preventDefault();
       diffSel.clear();
+    } else if (e.ctrlKey && (e.key === "t" || e.key === "T")) {
+      e.preventDefault();
+      diffSel.kind = diffSel.kind === "comment" ? "question" : "comment";
     } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       submit();
@@ -133,7 +136,10 @@
 
   <div class="px-3 py-2 border-t border-hairline flex items-center gap-2 text-[11px]">
     <span class="text-muted">Markdown supported</span>
-    <span class="ml-auto text-muted flex items-center gap-1"><span class="kbd">esc</span> cancel</span>
+    <span class="ml-auto text-muted flex items-center gap-1">
+      <span class="kbd">ctrl+t</span> toggle
+      <span class="kbd">esc</span> cancel
+    </span>
     <button
       onclick={submit}
       disabled={!canSubmit}

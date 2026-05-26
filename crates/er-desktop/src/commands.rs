@@ -2571,6 +2571,19 @@ fn spawn_scoped_reviewers(
     Ok((started, skipped))
 }
 
+fn eligible_github_comment_count(tab: &er_engine::app::TabState) -> usize {
+    if let Some(gc) = tab.ai.github_comments.as_ref() {
+        return er_engine::ai::count_eligible_github_comments(gc);
+    }
+    let path = std::path::Path::new(&tab.er_dir()).join("github-comments.json");
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(gc) = serde_json::from_str::<er_engine::ai::ErGitHubComments>(&content) {
+            return er_engine::ai::count_eligible_github_comments(&gc);
+        }
+    }
+    0
+}
+
 #[tauri::command]
 pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -2582,8 +2595,12 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
 
     let er_dir = app.tab().er_dir();
     let review_path = std::path::Path::new(&er_dir).join("review.json");
-    if !review_path.exists() {
-        return Err("No review to validate. Run AI review first.".to_string());
+    let has_review = review_path.exists();
+    let comment_count = eligible_github_comment_count(app.tab());
+    if !has_review && comment_count == 0 {
+        return Err(
+            "Nothing to validate. Run AI review or add GitHub comments first.".to_string(),
+        );
     }
 
     let raw = app
@@ -2596,10 +2613,27 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
     std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
         .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
 
-    let prompt = er_engine::ai::prompts::build_validate_prompt_prepared_diff(&scope, &er_dir);
-    app.spawn_agent_prompt("validate", &prompt)
-        .map_err(|e| e.to_string())?;
-    app.notify("AI review validation started");
+    app.tab_mut().relocate_all_comments();
+
+    if has_review {
+        let prompt =
+            er_engine::ai::prompts::build_validate_prompt_prepared_diff(&scope, &er_dir);
+        app.spawn_agent_prompt("validate", &prompt)
+            .map_err(|e| e.to_string())?;
+    }
+    if comment_count > 0 {
+        let prompt =
+            er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(&er_dir);
+        app.spawn_agent_prompt("validate-comments", &prompt)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let msg = match (has_review, comment_count) {
+        (true, n) if n > 0 => format!("Validation started (review + {n} comments)"),
+        (true, _) => "Validation started (review)".to_string(),
+        (false, n) => format!("Validation started ({n} comments)"),
+    };
+    app.notify(&msg);
 
     state
         .desktop_revision

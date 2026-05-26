@@ -833,7 +833,8 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 .split(area);
 
             // Header row
-            let header_spans = vec![
+            let dim = ratatui::style::Style::default().fg(styles::DIM());
+            let mut header_spans = vec![
                 Span::styled(
                     format!(" {} ", label),
                     ratatui::style::Style::default()
@@ -847,26 +848,18 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 ),
                 Span::styled("  ", ratatui::style::Style::default()),
                 Span::styled("Enter", styles::key_hint_style()),
-                Span::styled(
-                    " send  ",
-                    ratatui::style::Style::default().fg(styles::DIM()),
-                ),
+                Span::styled(" send  ", dim),
                 Span::styled("S+Enter", styles::key_hint_style()),
-                Span::styled(
-                    " newline  ",
-                    ratatui::style::Style::default().fg(styles::DIM()),
-                ),
+                Span::styled(" newline  ", dim),
                 Span::styled("Tab", styles::key_hint_style()),
-                Span::styled(
-                    " pause  ",
-                    ratatui::style::Style::default().fg(styles::DIM()),
-                ),
-                Span::styled("Esc", styles::key_hint_style()),
-                Span::styled(
-                    " cancel",
-                    ratatui::style::Style::default().fg(styles::DIM()),
-                ),
+                Span::styled(" pause  ", dim),
             ];
+            if app.can_toggle_comment_type() {
+                header_spans.push(Span::styled("Ctrl+t", styles::key_hint_style()));
+                header_spans.push(Span::styled(" toggle  ", dim));
+            }
+            header_spans.push(Span::styled("Esc", styles::key_hint_style()));
+            header_spans.push(Span::styled(" cancel", dim));
             let header = Paragraph::new(Line::from(header_spans)).style(panel_bg);
             f.render_widget(header, rows[0]);
 

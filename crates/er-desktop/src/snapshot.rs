@@ -458,6 +458,10 @@ pub struct AiSnapshot {
     pub unpushed: usize,
     pub threads: Vec<ThreadSnapshot>,
     pub findings: Vec<FlatFinding>,
+    /// Whether `{er_dir}/review.json` exists (batch validate target).
+    pub has_review_json: bool,
+    /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
+    pub eligible_comment_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1331,6 +1335,8 @@ fn empty_ai_snapshot() -> AiSnapshot {
         unpushed: 0,
         threads: Vec::new(),
         findings: Vec::new(),
+        has_review_json: false,
+        eligible_comment_count: 0,
     }
 }
 
@@ -2332,6 +2338,14 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         vec![]
     };
 
+    let er_dir = tab.er_dir();
+    let has_review_json = std::path::Path::new(&er_dir).join("review.json").exists();
+    let eligible_comment_count = ai
+        .github_comments
+        .as_ref()
+        .map(|gc| er_engine::ai::count_eligible_github_comments(gc))
+        .unwrap_or(0);
+
     AiSnapshot {
         fresh: !ai.is_stale,
         stale_reason,
@@ -2346,6 +2360,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         unpushed,
         threads,
         findings,
+        has_review_json,
+        eligible_comment_count,
     }
 }
 

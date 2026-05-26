@@ -2537,7 +2537,7 @@ impl TabState {
     }
 
     /// Relocate all comments to their new positions after a diff change.
-    fn relocate_all_comments(&mut self) {
+    pub fn relocate_all_comments(&mut self) {
         let current_hash = self.diff_hash.clone();
 
         // Build rename map: old path → new path
@@ -4380,14 +4380,39 @@ impl App {
             HubItem {
                 label: "Validate review".into(),
                 hint: "".into(),
-                description: if has_review {
-                    format!("Re-verify findings against the codebase via {selection_label}")
-                } else {
-                    "Run review first".into()
+                description: {
+                    let comment_count = self
+                        .tab()
+                        .ai
+                        .github_comments
+                        .as_ref()
+                        .map(|gc| crate::ai::count_eligible_github_comments(gc))
+                        .unwrap_or(0);
+                    if has_review && comment_count > 0 {
+                        format!(
+                            "Re-verify review findings and {comment_count} GitHub comment(s) via {selection_label}"
+                        )
+                    } else if has_review {
+                        format!("Re-verify findings against the codebase via {selection_label}")
+                    } else if comment_count > 0 {
+                        format!(
+                            "Re-anchor {comment_count} unresolved GitHub comment(s) via {selection_label}"
+                        )
+                    } else {
+                        "Run review or add GitHub comments first".into()
+                    }
                 },
                 action: HubAction::RunAiAction(AiActionKind::Validate),
                 is_header: false,
-                enabled: has_review,
+                enabled: has_review
+                    || self
+                        .tab()
+                        .ai
+                        .github_comments
+                        .as_ref()
+                        .map(|gc| crate::ai::count_eligible_github_comments(gc))
+                        .unwrap_or(0)
+                        > 0,
             },
             HubItem {
                 label: "Answer questions".into(),
@@ -8011,6 +8036,47 @@ mod tests {
         app.start_comment(CommentType::GitHubComment);
         assert!(matches!(app.input_mode, InputMode::Comment));
         assert_eq!(app.tab().comment_type, CommentType::GitHubComment);
+    }
+
+    #[test]
+    fn toggle_comment_type_flips_question_and_github() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::Question);
+        assert!(app.can_toggle_comment_type());
+        app.toggle_comment_type();
+        assert_eq!(app.tab().comment_type, CommentType::GitHubComment);
+        app.toggle_comment_type();
+        assert_eq!(app.tab().comment_type, CommentType::Question);
+    }
+
+    #[test]
+    fn toggle_comment_type_noop_for_reply_and_edit() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::Question);
+        app.tab_mut().comment_reply_to = Some("q-parent".to_string());
+        assert!(!app.can_toggle_comment_type());
+        app.toggle_comment_type();
+        assert_eq!(app.tab().comment_type, CommentType::Question);
+
+        app.tab_mut().comment_reply_to = None;
+        app.tab_mut().comment_edit_id = Some("q-edit".to_string());
+        assert!(!app.can_toggle_comment_type());
+        app.toggle_comment_type();
+        assert_eq!(app.tab().comment_type, CommentType::Question);
     }
 
     #[test]

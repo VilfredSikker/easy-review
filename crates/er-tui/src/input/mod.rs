@@ -284,10 +284,43 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
             }
         }
         HubAction::PromptValidate => {
-            if app.tab().ai.review.is_none() {
-                app.notify("No review to validate — run review first");
-            } else if let Some(prompt) = build_agent_validate_prompt(app) {
-                app.spawn_agent_prompt("validate", &prompt)?;
+            let has_review = app.tab().ai.review.is_some();
+            let comment_count = app
+                .tab()
+                .ai
+                .github_comments
+                .as_ref()
+                .map(|gc| er_engine::ai::count_eligible_github_comments(gc))
+                .unwrap_or(0);
+            if !has_review && comment_count == 0 {
+                app.notify("Nothing to validate — run review or add GitHub comments");
+            } else if app.tab().is_remote() {
+                app.notify("validate is local-only — checkout the PR first, then re-run review locally");
+            } else {
+                let scope = app.tab().mode.git_mode();
+                if comment_count > 0 {
+                    let er_dir = app.tab().er_dir();
+                    if let Ok(raw) = app.tab().raw_diff_for_review(scope) {
+                        if !raw.trim().is_empty() {
+                            let diff_tmp = std::path::Path::new(&er_dir).join("diff-tmp");
+                            let _ = std::fs::write(&diff_tmp, raw);
+                        }
+                    }
+                    app.tab_mut().relocate_all_comments();
+                }
+                if has_review {
+                    if let Some(prompt) = build_agent_validate_prompt(app) {
+                        app.spawn_agent_prompt("validate", &prompt)?;
+                    }
+                }
+                if comment_count > 0 {
+                    let er_dir = app.tab().er_dir();
+                    let comments_prompt =
+                        er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(
+                            &er_dir,
+                        );
+                    app.spawn_agent_prompt("validate-comments", &comments_prompt)?;
+                }
             }
         }
         HubAction::ApprovePR => {
@@ -491,6 +524,9 @@ pub fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Tab | KeyCode::BackTab => {
             app.pause_comment();
+        }
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.toggle_comment_type();
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.tab_mut().scroll_down(10);

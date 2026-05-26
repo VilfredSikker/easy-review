@@ -502,6 +502,22 @@ pub struct FeedbackComment {
     pub synced: bool,
 }
 
+/// Top-level GitHub comment eligible for batch validate / re-anchor.
+pub fn github_comment_eligible_for_batch_validate(c: &GitHubReviewComment) -> bool {
+    !c.resolved
+        && !c.outdated
+        && c.in_reply_to.is_none()
+        && c.line_start.is_some()
+}
+
+/// Count GitHub comments eligible for batch validate.
+pub fn count_eligible_github_comments(gc: &ErGitHubComments) -> usize {
+    gc.comments
+        .iter()
+        .filter(|c| github_comment_eligible_for_batch_validate(c))
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,6 +684,52 @@ mod tests {
         let back = load_ui_annotations(&dir);
         assert_eq!(back, anns);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn github_comment_eligible_for_batch_validate_includes_active_line_comment() {
+        assert!(github_comment_eligible_for_batch_validate(&sample_github_comment()));
+    }
+
+    #[test]
+    fn github_comment_eligible_excludes_resolved_outdated_reply_and_file_level() {
+        let mut c = sample_github_comment();
+        c.resolved = true;
+        assert!(!github_comment_eligible_for_batch_validate(&c));
+
+        c = sample_github_comment();
+        c.resolved = false;
+        c.outdated = true;
+        assert!(!github_comment_eligible_for_batch_validate(&c));
+
+        c = sample_github_comment();
+        c.outdated = false;
+        c.in_reply_to = Some("parent".into());
+        assert!(!github_comment_eligible_for_batch_validate(&c));
+
+        c = sample_github_comment();
+        c.in_reply_to = None;
+        c.line_start = None;
+        assert!(!github_comment_eligible_for_batch_validate(&c));
+    }
+
+    #[test]
+    fn count_eligible_github_comments_counts_roots_only() {
+        let gc = ErGitHubComments {
+            version: 1,
+            diff_hash: "h".into(),
+            github: None,
+            comments: vec![
+                sample_github_comment(),
+                {
+                    let mut reply = sample_github_comment();
+                    reply.id = "gh-2".into();
+                    reply.in_reply_to = Some("gh-1".into());
+                    reply
+                },
+            ],
+        };
+        assert_eq!(count_eligible_github_comments(&gc), 1);
     }
 
     #[test]

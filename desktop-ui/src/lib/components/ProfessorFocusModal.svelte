@@ -42,14 +42,19 @@
 
   async function run(skipFocus: boolean) {
     if (!scope || submitting) return;
+    const runScope = scope;
+    const runPaths = paths;
+    const runKinds = reviewerKinds;
+    const runFocus =
+      skipFocus || !focusText.trim() ? null : focusText.trim();
     submitting = true;
     try {
       close();
       await app.cmd("run_ai_scoped_review", {
-        scope,
-        paths,
-        reviewerKinds,
-        focusPrompt: skipFocus || !focusText.trim() ? null : focusText.trim(),
+        scope: runScope,
+        paths: runPaths,
+        reviewerKinds: runKinds,
+        focusPrompt: runFocus,
       });
     } finally {
       submitting = false;

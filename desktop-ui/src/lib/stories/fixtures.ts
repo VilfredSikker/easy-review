@@ -286,6 +286,8 @@ export const aiWithFindings: AiSnapshot = {
       agent_label: "General",
     },
   ],
+  has_review_json: true,
+  eligible_comment_count: 0,
 };
 
 export const aiEmpty: AiSnapshot = {
@@ -302,6 +304,8 @@ export const aiEmpty: AiSnapshot = {
   unpushed: 0,
   threads: [],
   findings: [],
+  has_review_json: false,
+  eligible_comment_count: 0,
 };
 
 // ─── PR snapshots ───────────────────────────────────────────────────────────

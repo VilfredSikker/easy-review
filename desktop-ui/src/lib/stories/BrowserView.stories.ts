@@ -61,6 +61,8 @@ function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
       unpushed: 0,
       threads: [],
       findings: [],
+      has_review_json: false,
+      eligible_comment_count: 0,
     },
     pr: null,
     panels: { left: true, tree: true, right: true },

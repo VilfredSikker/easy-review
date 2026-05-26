@@ -154,6 +154,22 @@
     (app.snapshot?.agent_commands ?? []).filter((c) => c.status === "running")
   );
 
+  const hasReviewJson = $derived(app.snapshot?.ai?.has_review_json ?? false);
+  const eligibleCommentCount = $derived(app.snapshot?.ai?.eligible_comment_count ?? 0);
+  const validateAvailable = $derived(hasReviewJson || eligibleCommentCount > 0);
+
+  const validateDescription = $derived.by(() => {
+    if (!reviewScope) return "Not available in this view";
+    if (!validateAvailable) return "Run General review or add GitHub comments first";
+    if (hasReviewJson && eligibleCommentCount > 0) {
+      return `Re-anchor review findings and ${eligibleCommentCount} GitHub comment${eligibleCommentCount === 1 ? "" : "s"}`;
+    }
+    if (eligibleCommentCount > 0) {
+      return `Re-anchor ${eligibleCommentCount} unresolved GitHub comment${eligibleCommentCount === 1 ? "" : "s"}`;
+    }
+    return `Re-anchor AI review findings (${scopeDescription.toLowerCase()})`;
+  });
+
   const actions = $derived<AiAction[]>([
     {
       id: "review-current",
@@ -190,10 +206,10 @@
     },
     {
       id: "validate-current",
-      label: "Validate / re-anchor review",
-      description: reviewScope ? scopeDescription : "Not available in this view",
+      label: "Validate / re-anchor",
+      description: validateDescription,
       run: () => {
-        if (!reviewScope) return;
+        if (!reviewScope || !validateAvailable) return;
         dismissAndRun(() => void app.cmd("run_ai_validate", { scope: reviewScope }));
       },
     },
@@ -250,7 +266,10 @@
     return actions.map((a) => ({
       label: a.label,
       description: a.description,
-      disabled: a.disabled ?? (!reviewScope && (a.id === "review-current" || a.id === "validate-current" || a.id === "review-select-files" || a.id === "review-reviewers" || a.id === "professor")),
+      disabled: a.disabled ?? (
+        (!reviewScope && (a.id === "review-current" || a.id === "validate-current" || a.id === "review-select-files" || a.id === "review-reviewers" || a.id === "professor"))
+        || (a.id === "validate-current" && !validateAvailable)
+      ),
       onSelect: a.run,
     }));
   });

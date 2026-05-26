@@ -48,6 +48,18 @@
           : mode === "staged"
             ? "Staged changes only"
             : "Switch to All changes, Unstaged, or Staged";
+    const hasReviewJson = snapshot?.ai?.has_review_json ?? false;
+    const eligibleCommentCount = snapshot?.ai?.eligible_comment_count ?? 0;
+    const validateAvailable = hasReviewJson || eligibleCommentCount > 0;
+    const validateDescription = !reviewScope
+      ? scopeDescription
+      : !validateAvailable
+        ? "Run General review or add GitHub comments first"
+        : hasReviewJson && eligibleCommentCount > 0
+          ? `Re-anchor review + ${eligibleCommentCount} comment(s)`
+          : eligibleCommentCount > 0
+            ? `Re-anchor ${eligibleCommentCount} GitHub comment(s)`
+            : "Re-anchor AI review findings";
 
     const items: CommandItem[] = [
       {
@@ -177,16 +189,20 @@
                 void app.cmd("run_ai_review", { scope: reviewScope });
               },
             },
-            {
-              id: "run-ai-validate-current",
-              label: "Validate / re-anchor review (current view)",
-              description: scopeDescription,
-              group: "Actions" as const,
-              run: () => {
-                close();
-                void app.cmd("run_ai_validate", { scope: reviewScope });
-              },
-            },
+            ...(validateAvailable
+              ? [
+                  {
+                    id: "run-ai-validate-current",
+                    label: "Validate / re-anchor (current view)",
+                    description: validateDescription,
+                    group: "Actions" as const,
+                    run: () => {
+                      close();
+                      void app.cmd("run_ai_validate", { scope: reviewScope });
+                    },
+                  },
+                ]
+              : []),
           ]
         : []),
       {
