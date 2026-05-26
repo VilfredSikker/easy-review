@@ -65,6 +65,8 @@ const SLOW_COMMANDS = new Set([
   "open_pr_branch",
 ]);
 
+const VOID_COMMANDS = new Set(["open_url_in_browser"]);
+
 function timingSegmentMs(start: number, end: number): number {
   return Math.max(0, Math.round(end - start));
 }
@@ -106,6 +108,7 @@ function nextAnimationFrame(): Promise<void> {
 class AppStore {
   snapshot = $state<AppSnapshot | null>(null);
   loading = $state(false);
+  initialLoadDone = $state(false);
   /** True while a slow tab-switch or branch-open command is in flight. */
   switching = $state(false);
   /** User-facing label for the active slow command. */
@@ -249,6 +252,7 @@ class AppStore {
       this.showToast("error", String(e));
     } finally {
       this.loading = false;
+      this.initialLoadDone = true;
     }
   }
 
@@ -393,7 +397,12 @@ class AppStore {
     }
     const tInvokeStart = performance.now();
     try {
+      if (VOID_COMMANDS.has(command)) {
+        await invoke<void>(command, args);
+        return;
+      }
       this.snapshot = await invoke<AppSnapshot>(command, args);
+      this.initialLoadDone = true;
       const tInvokeDone = performance.now();
       const hadBackendToast = this.syncSnapshotToast(this.snapshot);
       if (!hadBackendToast) {

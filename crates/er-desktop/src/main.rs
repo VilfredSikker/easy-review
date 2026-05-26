@@ -7,6 +7,7 @@ mod er_storage;
 mod export;
 mod frame_script;
 mod inbox;
+mod main_webview_policy;
 mod pr_cache;
 mod profile_log;
 mod projects;
@@ -1288,6 +1289,10 @@ fn main() {
             .visible(false)
             .transparent(true)
             .initialization_script_for_all_frames(FRAME_SCRIPT)
+            .on_navigation(|url| main_webview_policy::handle_main_webview_navigation(&url))
+            .on_new_window(|url, _features| {
+                main_webview_policy::handle_main_webview_new_window(&url)
+            })
             .build()?;
 
             use tauri_plugin_window_state::{StateFlags, WindowExt};

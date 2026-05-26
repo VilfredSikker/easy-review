@@ -24,15 +24,24 @@
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { browserHide } from "$lib/stores/browserHost";
+  import { installExternalLinkGuard } from "$lib/openExternalUrl";
+  import { startWindowDrag } from "$lib/windowDrag";
   const panels = $derived(app.snapshot?.panels);
-  /** No snapshot yet, explicit welcome, or no repo/diff and no saved projects. */
-  const isEmpty = $derived(
-    app.showEmptyState ||
-      app.snapshot === null ||
-      (app.snapshot.branch === "" &&
-        app.snapshot.files.length === 0 &&
-        (app.snapshot.projects?.length ?? 0) === 0),
+
+  /** True when a loaded snapshot confirms there is no repo/diff and no saved projects. */
+  const naturalEmpty = $derived(
+    app.snapshot !== null &&
+      app.snapshot.branch === "" &&
+      app.snapshot.files.length === 0 &&
+      (app.snapshot.projects?.length ?? 0) === 0,
   );
+  const hasOpenTabs = $derived((app.snapshot?.tabs?.length ?? 0) > 0);
+  const explicitFullWelcome = $derived(app.showEmptyState && app.snapshot !== null && !hasOpenTabs);
+  const showFullWelcome = $derived((naturalEmpty || explicitFullWelcome) && !app.loading);
+  const snapshotPending = $derived(app.snapshot === null && (!app.initialLoadDone || app.loading));
+  const snapshotUnavailable = $derived(app.snapshot === null && app.initialLoadDone && !app.loading);
+  /** "New review" while tabs are open — overlay on top of the review shell. */
+  const showWelcomeOverlay = $derived(app.showEmptyState && hasOpenTabs && !naturalEmpty);
 
   let drawerHeight = $state(280);
 
@@ -193,8 +202,10 @@
     }
     app.load().then(() => app.startPolling());
     const cleanupKeyboard = initKeyboard();
+    const cleanupLinkGuard = installExternalLinkGuard();
     return () => {
       cleanupKeyboard();
+      cleanupLinkGuard();
       app.stopPolling();
     };
   });
@@ -202,8 +213,35 @@
 
 <PrUrlModal />
 
-{#if isEmpty && !app.loading}
+{#if showFullWelcome}
   <EmptyState />
+{:else if snapshotPending || snapshotUnavailable}
+  <div class="h-screen flex flex-col bg-ink-900 text-ink-50 overflow-hidden">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="titlebar-drag h-11 px-4 border-b border-hairline bg-ink-870 flex items-center gap-2 shrink-0"
+      style="padding-left: env(titlebar-area-x, 80px)"
+      data-tauri-drag-region
+      onmousedown={startWindowDrag}
+    >
+      <div class="w-5 h-5 rounded bg-accent flex items-center justify-center text-black text-[10px] font-bold">er</div>
+      <span class="text-sm">Easy Review</span>
+    </div>
+    <main class="flex-1 flex items-center justify-center p-8">
+      <div class="max-w-md text-center">
+        <div class="mx-auto mb-4 h-8 w-8 rounded-full border-2 border-ink-600 border-t-accent {snapshotPending ? 'animate-spin' : ''}"></div>
+        <h1 class="text-base font-medium text-fg-1">
+          {snapshotPending ? "Loading review..." : "Could not load review state"}
+        </h1>
+        <p class="mt-2 text-sm text-fg-3">
+          {snapshotPending
+            ? "Waiting for the desktop backend to return the current snapshot."
+            : (app.error ?? "The desktop backend did not return a snapshot.")}
+        </p>
+      </div>
+    </main>
+    <Toast toasts={app.toasts} />
+  </div>
 {:else}
 
 <div class="h-screen flex flex-col bg-ink-900 text-ink-50 overflow-hidden">
@@ -331,5 +369,11 @@
   <AiActionPalette />
   <AiReviewFilesModal />
   <ProfessorFocusModal />
+
+  {#if showWelcomeOverlay}
+    <div class="fixed inset-0 z-[200]">
+      <EmptyState overlay />
+    </div>
+  {/if}
 </div>
 {/if}

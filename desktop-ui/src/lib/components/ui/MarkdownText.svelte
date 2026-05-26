@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onExternalLinkClick } from "$lib/openExternalUrl";
+
   interface Props {
     text: string;
     className?: string;
@@ -91,11 +93,16 @@
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>');
   }
 </script>
 
-<div class={`markdown-text min-w-0 max-w-full ${className}`}>
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class={`markdown-text min-w-0 max-w-full ${className}`}
+  onclick={onExternalLinkClick}
+>
   {#each nodes as n}
     {#if n.t === "h"}
       {#if n.l === 1}<h1>{@html inline(n.v)}</h1>

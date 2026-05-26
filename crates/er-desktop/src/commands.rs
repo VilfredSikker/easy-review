@@ -861,18 +861,23 @@ fn open_editor_at(repo_root: &str, file_path: &Path, line_num: usize) -> anyhow:
     Ok(())
 }
 
-#[tauri::command]
-pub fn open_url_in_browser(url: String) -> Result<(), String> {
+/// Open an http(s) URL in the system default browser (shared by Tauri command + nav policy).
+pub fn open_external_url(url: &str) -> Result<(), String> {
     let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(&url).spawn()
+        std::process::Command::new("open").arg(url).spawn()
     } else if cfg!(target_os = "linux") {
-        std::process::Command::new("xdg-open").arg(&url).spawn()
+        std::process::Command::new("xdg-open").arg(url).spawn()
     } else {
         std::process::Command::new("cmd")
-            .args(["/c", "start", &url])
+            .args(["/c", "start", url])
             .spawn()
     };
     result.map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn open_url_in_browser(url: String) -> Result<(), String> {
+    open_external_url(&url)
 }
 
 fn github_file_url_for_tab(

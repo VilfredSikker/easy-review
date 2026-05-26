@@ -2,6 +2,14 @@
   import { app } from "$lib/stores/app.svelte";
   import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
   import { startWindowDrag } from "$lib/windowDrag";
+  import { openExternalUrl } from "$lib/openExternalUrl";
+
+  interface Props {
+    /** When true, render as a dismissible layer over an active review. */
+    overlay?: boolean;
+  }
+
+  const { overlay = false }: Props = $props();
 
   let prUrl = $state("");
   let prUrlInput: HTMLInputElement | null = $state(null);
@@ -41,16 +49,36 @@
     app.showEmptyState = false;
   }
 
+  const hasActiveReview = $derived(
+    overlay ||
+      (app.snapshot?.tabs?.length ?? 0) > 0 ||
+      (app.snapshot?.files.length ?? 0) > 0,
+  );
+
+  function backToReview() {
+    app.showEmptyState = false;
+  }
+
+  function connectGitHub() {
+    void openExternalUrl("https://github.com/login");
+  }
+
   function dismiss(e: KeyboardEvent) {
-    if (e.key === "Escape" && app.snapshot && app.snapshot.branch !== "") {
+    if (e.key === "Escape" && hasActiveReview) {
       app.showEmptyState = false;
     }
   }
+
+  const rootClass = $derived(
+    overlay
+      ? "h-full flex flex-col bg-bg text-fg"
+      : "h-screen flex flex-col bg-bg text-fg",
+  );
 </script>
 
 <svelte:window onkeydown={dismiss} />
 
-<div class="h-screen flex flex-col bg-bg text-fg">
+<div class={rootClass}>
   <!-- Minimal top bar -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <header
@@ -61,6 +89,15 @@
   >
     <div class="w-5 h-5 rounded bg-accent flex items-center justify-center text-black text-[10px] font-bold">er</div>
     <span class="text-sm">Easy Review</span>
+    {#if hasActiveReview}
+      <button
+        type="button"
+        onclick={backToReview}
+        class="ml-auto text-xs text-fg-3 hover:text-fg-1 px-2 py-1 rounded-md hover:bg-hover"
+      >
+        Back to review
+      </button>
+    {/if}
   </header>
 
   <div class="flex flex-1 min-h-0">
@@ -82,7 +119,11 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>
         Open PR by URL
       </button>
-      <button class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-3 flex items-center gap-2">
+      <button
+        type="button"
+        onclick={connectGitHub}
+        class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-3 flex items-center gap-2"
+      >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         Connect GitHub
       </button>
@@ -109,7 +150,11 @@
             <div class="mt-3 text-[11px] text-muted mono">⌘O</div>
           </button>
 
-          <button class="group text-left p-5 rounded-xl border border-border hover:border-accent hover:bg-card transition">
+          <button
+            type="button"
+            onclick={() => void openPrUrlModal()}
+            class="group text-left p-5 rounded-xl border border-border hover:border-accent hover:bg-card transition"
+          >
             <div class="flex items-center gap-3 mb-2">
               <div class="w-9 h-9 rounded-lg bg-hover border border-border flex items-center justify-center group-hover:border-accent">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-fg-2"><path d="M12 0C5.4 0 0 5.4 0 12c0 5.3 3.4 9.8 8.2 11.4.6.1.8-.3.8-.6v-2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2 1-.3 2-.4 3-.4s2 .1 3 .4c2.3-1.6 3.3-1.2 3.3-1.2.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6C20.6 21.8 24 17.3 24 12c0-6.6-5.4-12-12-12z"/></svg>

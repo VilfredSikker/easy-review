@@ -4,6 +4,7 @@
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+  import { openExternalUrl } from "$lib/openExternalUrl";
 
   interface Props {
     branch: string;
@@ -379,12 +380,11 @@
                         c.conclusion !== "fail"}
                     ></span>
                     {#if c.url}
-                      <a
-                        href={c.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="text-fg-2 hover:text-fg-1 hover:underline truncate">{c.name}</a
-                      >
+                      <button
+                        type="button"
+                        class="text-fg-2 hover:text-fg-1 hover:underline truncate text-left"
+                        onclick={() => openExternalUrl(c.url!)}
+                      >{c.name}</button>
                     {:else}
                       <span class="text-fg-2 truncate">{c.name}</span>
                     {/if}
