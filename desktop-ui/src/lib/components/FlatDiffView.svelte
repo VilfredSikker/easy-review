@@ -72,12 +72,7 @@
   }
 
   function syntaxHighlightingEnabled(): boolean {
-    if (!import.meta.env.DEV) return true;
-    try {
-      return globalThis.localStorage?.getItem("erSyntaxHighlight") === "1";
-    } catch {
-      return false;
-    }
+    return true;
   }
 
   interface Props {
@@ -298,10 +293,7 @@
       oldFile.deletions = newFile.deletions;
       oldFile.cache_key = newFile.cache_key;
       evictSpanKeysForPath(oldFile.path);
-      // Wake the highlight $effect — its previous run early-exited on
-      // `is_lazy_stub`, so it didn't subscribe to the deep line-level
-      // properties that just changed. Bump the counter to force a re-run.
-      _highlightGeneration++;
+      scheduleHighlightDrain();
     } finally {
       _requestingFiles.delete(sourceIndex);
     }
@@ -319,10 +311,14 @@
 
   // ── Highlight effect (Shiki web worker) ───────────────────────────────────
   const syntaxTheme = $derived(syntaxThemeById(app.currentSyntaxTheme));
-  // Reactive counter — incrementing re-triggers the effect so newly-unblocked
-  // files get picked up when the 4-concurrent cap frees up.
-  let _highlightGeneration = $state(0);
+  // Reactive pulse used only to drain the bounded highlight queue after worker
+  // completions or lazy-file loads. Normal viewport/file changes remain direct deps.
+  let _highlightQueuePulse = $state(0);
+  let _highlightDrainScheduled = false;
+  const _highlightQueued = new Set<string>();
   const _highlightInFlight = new Set<string>();
+  const _highlightCompletedKeys = new Set<string>();
+  const _highlightFailedKeys = new Set<string>();
   let _lastSnapshotRef: AppSnapshot | null = null;
   let _visibleFilePaths = $state(new Set<string>());
 
@@ -337,6 +333,21 @@
   }
 
   const snapFileNeedsSpans = fileNeedsSyntaxSpans;
+
+  function scheduleHighlightDrain(): void {
+    if (_highlightDrainScheduled) return;
+    _highlightDrainScheduled = true;
+    const run = () => {
+      _highlightDrainScheduled = false;
+      _highlightQueuePulse++;
+    };
+    const requestIdle = globalThis.requestIdleCallback;
+    if (typeof requestIdle === "function") {
+      requestIdle(run, { timeout: 50 });
+    } else {
+      setTimeout(run, 0);
+    }
+  }
 
   function hunksHaveColor(hunks: HunkHighlight[]): boolean {
     for (const h of hunks) {
@@ -385,24 +396,35 @@
 
   // Evict highlight keys only when a file's cache_key changes (not on every poll chrome merge).
   let _lastFileCacheKeys = new Map<string, string>();
+  let _lastSyntaxThemeId = "";
   $effect(() => {
-    if (snapshot === _lastSnapshotRef) return;
+    const themeId = syntaxTheme.id;
+    if (snapshot === _lastSnapshotRef && themeId === _lastSyntaxThemeId) return;
     _lastSnapshotRef = snapshot;
     const list = snapshot?.files ?? [];
     let evicted = 0;
+    const previousThemeId = _lastSyntaxThemeId;
+    _lastSyntaxThemeId = themeId;
     const nextKeys = new Map<string, string>();
     for (const f of list) {
       nextKeys.set(f.path, f.cache_key);
       const prevKey = _lastFileCacheKeys.get(f.path);
       if (prevKey !== undefined && prevKey !== f.cache_key && fileNeedsSyntaxSpans(f)) {
-        const key = highlightCache.key(f.path, prevKey, syntaxTheme.id);
+        const key = highlightCache.key(f.path, prevKey, previousThemeId);
+        highlightCache.delete(key);
+        if (_spansAppliedKeys.delete(key)) evicted += 1;
+      }
+      if (previousThemeId !== themeId) {
+        const key = highlightCache.key(f.path, f.cache_key, previousThemeId);
+        highlightCache.delete(key);
         if (_spansAppliedKeys.delete(key)) evicted += 1;
       }
     }
     for (const path of _lastFileCacheKeys.keys()) {
       if (!nextKeys.has(path)) {
         const prevKey = _lastFileCacheKeys.get(path)!;
-        const key = highlightCache.key(path, prevKey, syntaxTheme.id);
+        const key = highlightCache.key(path, prevKey, previousThemeId);
+        highlightCache.delete(key);
         if (_spansAppliedKeys.delete(key)) evicted += 1;
       }
     }
@@ -412,7 +434,7 @@
     }
   });
 
-  // Drop applied-span keys when files leave the snapshot or cache_key changes.
+  // Drop per-key highlight state when files leave the snapshot, cache_key changes, or theme changes.
   $effect(() => {
     const list = snapshot?.files ?? [];
     const valid = new Set(
@@ -421,16 +443,30 @@
     for (const key of _spansAppliedKeys) {
       if (!valid.has(key)) _spansAppliedKeys.delete(key);
     }
+    for (const key of _highlightFailedKeys) {
+      if (!valid.has(key)) _highlightFailedKeys.delete(key);
+    }
+    for (const key of _highlightCompletedKeys) {
+      if (!valid.has(key)) _highlightCompletedKeys.delete(key);
+    }
+    for (const key of _highlightQueued) {
+      if (!valid.has(key)) _highlightQueued.delete(key);
+    }
   });
 
   $effect(() => {
-    _highlightGeneration; // reactive dep: re-runs when a request completes
+    _highlightQueuePulse; // reactive dep: scheduled queue drain
     const rows = windowedRows;
     const visiblePaths = new Set(rows.map((r) => r.filePath));
     setVisibleFilePaths(visiblePaths);
     if (!syntaxHighlightingEnabled()) return;
     let queued = 0;
     let skippedApply = 0;
+    let cacheApplied = 0;
+    let cacheApplySkipped = 0;
+    let failedSkipped = 0;
+    let dedupeSkipped = 0;
+    let concurrencySkipped = 0;
     for (const filePath of visiblePaths) {
       const file = files.find((f) => f.path === filePath);
       if (!file || file.is_lazy_stub || file.hunks.length === 0) continue;
@@ -447,27 +483,42 @@
         const cacheExhausted =
           _spansAppliedKeys.has(spanKey) && !cacheWouldImproveFile(snapFile, cachedHunks);
         if (!cacheExhausted) {
-          queueMicrotask(() => {
-            untrack(() => {
-              const live = app.snapshot?.files?.find((f) => f.path === file.path);
-              if (!live) return;
-              tryApplyHighlightSpans(live, cachedHunks, spanKey);
-            });
-          });
+          const changed = untrack(() => tryApplyHighlightSpans(snapFile, cachedHunks, spanKey));
+          if (changed) cacheApplied += 1;
+          else cacheApplySkipped += 1;
           continue;
         }
       }
 
-      if (_highlightInFlight.has(file.path)) continue;
-      if (_highlightInFlight.size >= 4) continue;
-      _highlightInFlight.add(file.path);
+      if (_highlightCompletedKeys.has(spanKey)) continue;
+      if (_highlightFailedKeys.has(spanKey)) {
+        failedSkipped += 1;
+        continue;
+      }
+      if (_highlightQueued.has(spanKey) || _highlightInFlight.has(spanKey)) {
+        dedupeSkipped += 1;
+        continue;
+      }
+      if (_highlightInFlight.size >= 4) {
+        concurrencySkipped += 1;
+        continue;
+      }
+      _highlightQueued.add(spanKey);
+      _highlightInFlight.add(spanKey);
       queued += 1;
       const requestCacheKey = file.cache_key;
       const tHighlight = performance.now();
+      profileLog("highlight_start", {
+        file: file.path,
+        key: spanKey,
+        visible_files: visiblePaths.size,
+        in_flight: _highlightInFlight.size,
+      });
       highlightFile(file, syntaxTheme)
         .then((hunks) => {
-          _highlightInFlight.delete(file.path);
-          _highlightGeneration++; // wake effect for remaining files
+          _highlightQueued.delete(spanKey);
+          _highlightInFlight.delete(spanKey);
+          scheduleHighlightDrain();
           profileLog("highlight_done", {
             file: file.path,
             highlight_ms: Math.round(performance.now() - tHighlight),
@@ -476,16 +527,52 @@
           if (!app.snapshot) return;
           const live = app.snapshot.files?.find((f) => f.path === file.path);
           if (!live || requestCacheKey !== live.cache_key) return;
-          if (!hunksHaveColor(hunks)) return;
+          if (!hunksHaveColor(hunks)) {
+            _highlightFailedKeys.add(spanKey);
+            profileLog("highlight_failed_key", {
+              file: file.path,
+              key: spanKey,
+              reason: "no_color",
+            });
+            return;
+          }
           highlightCache.set(spanKey, hunks);
+          _highlightCompletedKeys.add(spanKey);
           if (!isFileInViewport(file.path)) return;
-          untrack(() => tryApplyHighlightSpans(live, hunks, spanKey));
+          const changed = untrack(() => tryApplyHighlightSpans(live, hunks, spanKey));
+          profileLog("highlight_apply", {
+            file: file.path,
+            key: spanKey,
+            changed: changed ? 1 : 0,
+          });
         })
         .catch(() => {
-          _highlightInFlight.delete(file.path);
-          _highlightGeneration++;
+          _highlightQueued.delete(spanKey);
+          _highlightInFlight.delete(spanKey);
+          _highlightFailedKeys.add(spanKey);
+          profileLog("highlight_failed_key", {
+            file: file.path,
+            key: spanKey,
+            reason: "worker_error",
+          });
+          scheduleHighlightDrain();
         });
     }
+    profileLogRateLimited("highlight_effect", {
+      visible_files: visiblePaths.size,
+      queued,
+      in_flight: _highlightInFlight.size,
+      queued_keys: _highlightQueued.size,
+      failed_keys: _highlightFailedKeys.size,
+      completed_keys: _highlightCompletedKeys.size,
+      applied_keys: _spansAppliedKeys.size,
+      skipped_apply: skippedApply,
+      cache_applied: cacheApplied,
+      cache_apply_skipped: cacheApplySkipped,
+      failed_skipped: failedSkipped,
+      dedupe_skipped: dedupeSkipped,
+      concurrency_skipped: concurrencySkipped,
+    }, 5);
     if (queued > 0 || skippedApply > 0) {
       profileLog("highlight_queue", {
         visible_files: visiblePaths.size,

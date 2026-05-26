@@ -1,5 +1,5 @@
 import { createBundledHighlighter } from "shiki/core";
-import { createOnigurumaEngine } from "shiki/engine/oniguruma";
+import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import type { HighlighterGeneric, ThemeInput } from "shiki";
 import type { SpanSnapshot } from "./types";
 
@@ -36,7 +36,7 @@ type BundledLangId = keyof typeof bundledLangs;
 const createHighlighter = createBundledHighlighter({
   langs: bundledLangs,
   themes: bundledThemes,
-  engine: () => createOnigurumaEngine(import("shiki/wasm")),
+  engine: () => createJavaScriptRegexEngine(),
 });
 
 type WorkerHighlighter = HighlighterGeneric<BundledLangId, typeof THEME_NAME>;

@@ -1,4 +1,6 @@
-/** Dev idle profiler — enable: localStorage.setItem("erProfilePoll", "1"); location.reload() */
+import { info as logInfo } from "@tauri-apps/plugin-log";
+
+/** Dev idle profiler — disable: localStorage.setItem("erProfilePoll", "0"); location.reload() */
 
 const STORAGE_KEY = "erProfilePoll";
 
@@ -7,9 +9,9 @@ const lastByKind = new Map<string, number>();
 export function profileEnabled(): boolean {
   if (!import.meta.env.DEV) return false;
   try {
-    return localStorage.getItem(STORAGE_KEY) === "1";
+    return localStorage.getItem(STORAGE_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -23,12 +25,14 @@ function sinceLastMs(kind: string): number {
 export function profileLog(kind: string, fields: Record<string, string | number | boolean>): void {
   if (!profileEnabled()) return;
   const ts_ms = Math.round(performance.timeOrigin + performance.now());
-  console.info("[er-profile]", {
+  const payload = {
     kind,
     ts_ms,
     since_last_ms: sinceLastMs(kind),
     ...fields,
-  });
+  };
+  console.info("[er-profile]", payload);
+  logInfo(`[er-profile] ${JSON.stringify(payload)}`).catch(() => {});
 }
 
 /** Rate-limit noisy kinds (e.g. dev_height_fix). */

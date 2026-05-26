@@ -54,6 +54,10 @@ class HighlightCache {
   has(k: string): boolean {
     return this.map.has(k);
   }
+
+  delete(k: string): boolean {
+    return this.map.delete(k);
+  }
 }
 
 export const highlightCache = new HighlightCache(50);

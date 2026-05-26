@@ -34,7 +34,7 @@ export function mergeWordDiffWithSyntax(
     return wordSpans.map((w) => ({ text: w.text, changed: w.changed }));
   }
 
-  const coloredSpans = syntaxSpans;
+  const coloredSpans = syntaxSpans ?? [];
   const result: RenderSegment[] = [];
   let synIdx = 0;
   let synOffset = 0;
