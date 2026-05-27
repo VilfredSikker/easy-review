@@ -220,23 +220,6 @@ pub fn gh_pr_branch_names(pr_number: u64, repo_root: &str) -> Result<(String, St
     Ok((base, head))
 }
 
-/// Checkout a PR by number using `gh pr checkout`
-#[allow(dead_code)]
-pub fn gh_pr_checkout(pr_number: u64, repo_root: &str) -> Result<()> {
-    let output = Command::new("gh")
-        .args(["pr", "checkout", &pr_number.to_string()])
-        .current_dir(repo_root)
-        .output()
-        .context("Failed to checkout PR")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to checkout PR #{}: {}", pr_number, stderr.trim());
-    }
-
-    Ok(())
-}
-
 /// Fetch PR head to a local ref without checking out. Returns the local ref name.
 pub fn fetch_pr_head(number: u64, root: &str) -> Result<String> {
     let ref_name = format!("refs/er/pr/{}/head", number);
@@ -1417,12 +1400,6 @@ pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrO
     })
 }
 
-/// Get PR info (owner, repo, number) for a remote repo. Used for comment sync in remote mode.
-#[allow(dead_code)]
-pub fn get_pr_info_remote(owner: &str, repo: &str, number: u64) -> (String, String, u64) {
-    (owner.to_string(), repo.to_string(), number)
-}
-
 /// Fetch PR comments for a remote repo (no local clone needed).
 pub fn gh_pr_comments_remote(owner: &str, repo: &str, pr: u64) -> Result<Vec<GitHubComment>> {
     let output = Command::new("gh")
@@ -2589,14 +2566,6 @@ mod tests {
         assert_eq!(number, 1);
         assert_eq!(author, ""); // missing → empty string default
         assert!(reviews.is_empty()); // missing → empty vec
-    }
-
-    #[test]
-    fn get_pr_info_remote_returns_tuple() {
-        let (o, r, n) = super::get_pr_info_remote("owner", "repo", 42);
-        assert_eq!(o, "owner");
-        assert_eq!(r, "repo");
-        assert_eq!(n, 42);
     }
 
     // ── parse_pr_overview ──

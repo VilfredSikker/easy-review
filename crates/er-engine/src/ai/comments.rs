@@ -118,16 +118,6 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    /// Reference to an AI finding this comment responds to
-    #[allow(dead_code)]
-    pub fn finding_ref(&self) -> Option<&str> {
-        match self {
-            CommentRef::Question(_) => None,
-            CommentRef::GitHubComment(c) => c.finding_ref.as_deref(),
-            CommentRef::Legacy(_) => None,
-        }
-    }
-
     #[allow(dead_code)]
     pub fn file(&self) -> &str {
         match self {
@@ -201,23 +191,6 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn github_id(&self) -> Option<u64> {
-        match self {
-            CommentRef::Question(_) => None,
-            CommentRef::GitHubComment(c) => c.github_id,
-            CommentRef::Legacy(c) => c.github_id,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn source(&self) -> &str {
-        match self {
-            CommentRef::Question(_) => "local",
-            CommentRef::GitHubComment(c) => &c.source,
-            CommentRef::Legacy(c) => &c.source,
-        }
-    }
 }
 
 // ── .er-questions.json — personal review notes ──

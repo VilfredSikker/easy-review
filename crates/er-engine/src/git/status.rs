@@ -544,12 +544,6 @@ pub fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>> {
     Ok(worktrees)
 }
 
-/// Check if a path is a git repository
-#[allow(dead_code)]
-pub fn is_git_repo(path: &str) -> bool {
-    std::path::Path::new(path).join(".git").exists()
-}
-
 // ── Staging ──
 
 /// Stage a single file

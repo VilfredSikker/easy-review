@@ -160,11 +160,6 @@ pub fn surface_style() -> Style {
     Style::default().fg(TEXT()).bg(SURFACE())
 }
 
-#[allow(dead_code)]
-pub fn dim_style() -> Style {
-    Style::default().fg(DIM())
-}
-
 pub fn selected_style() -> Style {
     Style::default()
         .fg(PURPLE())
@@ -220,11 +215,6 @@ pub fn risk_low() -> Style {
     Style::default().fg(YELLOW())
 }
 
-#[allow(dead_code)]
-pub fn risk_info() -> Style {
-    Style::default().fg(BLUE())
-}
-
 /// Line cursor styles — brighter bg to show selected line
 pub fn line_cursor() -> Style {
     Style::default().fg(TEXT()).bg(LINE_CURSOR_BG())
@@ -236,24 +226,6 @@ pub fn line_cursor_add() -> Style {
 
 pub fn line_cursor_del() -> Style {
     Style::default().fg(DEL_TEXT()).bg(LINE_CURSOR_BG())
-}
-
-/// Human comment style
-#[allow(dead_code)]
-pub fn comment_style() -> Style {
-    Style::default().fg(CYAN()).bg(COMMENT_BG())
-}
-
-/// Inline line-comment style
-#[allow(dead_code)]
-pub fn inline_comment_style() -> Style {
-    Style::default().fg(CYAN()).bg(INLINE_COMMENT_BG())
-}
-
-/// Focused comment style
-#[allow(dead_code)]
-pub fn comment_focus_style() -> Style {
-    Style::default().fg(CYAN()).bg(COMMENT_FOCUS_BG())
 }
 
 /// Stale warning style
