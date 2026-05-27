@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   binarySearchLeft,
   rowIndexAtOffset,
+  rowOffsetFromContentTopY,
   rowOffsetFromViewportY,
   windowFromScroll,
   windowFromScrollVariable,
@@ -222,6 +223,38 @@ describe("rowOffsetFromViewportY", () => {
     );
     expect(withScrollTop).not.toBe(withRowScrollTop);
     expect(withScrollTop - withRowScrollTop).toBe(STICKY_HEADER_PX);
+  });
+});
+
+describe("rowOffsetFromContentTopY", () => {
+  it("maps the content surface top to document offset 0", () => {
+    expect(rowOffsetFromContentTopY(140, 140)).toBe(0);
+  });
+
+  it("uses the rendered surface top directly when scrolled", () => {
+    const rowHeight = 24;
+    const geom: EffectiveGeometry = {
+      cumulativeOffsets: [0, rowHeight, rowHeight * 2, rowHeight * 3],
+      totalHeight: rowHeight * 3,
+      rowCount: 3,
+    };
+    const hscrollTop = -88;
+    const rowTwoMidpoint = rowHeight * 2 + rowHeight / 2;
+    const clientY = hscrollTop + rowTwoMidpoint;
+    const offset = rowOffsetFromContentTopY(clientY, hscrollTop);
+    expect(offset).toBe(rowTwoMidpoint);
+    expect(rowIndexAtOffset(geom, offset)).toBe(2);
+  });
+
+  it("preserves exact boundary semantics through rowIndexAtOffset", () => {
+    const geom: EffectiveGeometry = {
+      cumulativeOffsets: [0, 30, 80, 100],
+      totalHeight: 100,
+      rowCount: 3,
+    };
+    const hscrollTop = 12;
+    const offset = rowOffsetFromContentTopY(hscrollTop + 80, hscrollTop);
+    expect(rowIndexAtOffset(geom, offset)).toBe(2);
   });
 });
 

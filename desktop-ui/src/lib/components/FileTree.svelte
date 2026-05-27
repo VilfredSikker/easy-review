@@ -3,7 +3,8 @@
   import { fileStatusDisplay } from "$lib/fileStatus";
   import FileStatusIcon from "$lib/components/FileStatusIcon.svelte";
   import TreeIcons from "$lib/components/icons/TreeIcons.svelte";
-  import { buildTree, filesByPathMap, resolveTreeFile, visibleTree } from "$lib/treeFromPaths";
+  import { buildTree, filesByPathMap, flattenForNav, resolveTreeFile, visibleTree } from "$lib/treeFromPaths";
+  import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import ScopeSelector from "./ScopeSelector.svelte";
   import { onDestroy } from "svelte";
   import { windowFromScroll } from "$lib/virtualWindow";
@@ -373,6 +374,19 @@
         {#if ai && ai.low > 0}
           <span class="flex items-center gap-1 text-risk-low"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>{ai.low}</span>
         {/if}
+      {/if}
+      {#if !pickerMode}
+        <span class="text-ink-400" aria-hidden="true">|</span>
+        <button
+          type="button"
+          class="hover:text-fg-2"
+          onclick={() => diffFileCollapse.collapseAll(flattenForNav(buildTree(files)))}
+        >Collapse all</button>
+        <button
+          type="button"
+          class="hover:text-fg-2"
+          onclick={() => diffFileCollapse.expandAll()}
+        >Expand all</button>
       {/if}
       {#if !pickerMode && hasAiMeta}
         <span class="text-ink-400" aria-hidden="true">|</span>

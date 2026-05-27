@@ -760,3 +760,73 @@ function insertLru(identity: string, model: CrossFileModel): void {
     _crossFileLru.delete(oldest);
   }
 }
+
+/** Hide diff body rows for collapsed files; keeps each file-header row. */
+export function applyCollapsedFiles(
+  model: CrossFileModel,
+  collapsedPaths: ReadonlySet<string>,
+): CrossFileModel {
+  if (collapsedPaths.size === 0) return model;
+
+  const filteredRows: CrossFileFlatRow[] = [];
+  const filteredRowFile: number[] = [];
+  let skipBody = false;
+  for (let i = 0; i < model.rows.length; i++) {
+    const row = model.rows[i];
+    if (row.type === "file-header") {
+      skipBody = collapsedPaths.has(row.filePath);
+      filteredRows.push(row);
+      filteredRowFile.push(model.rowFile[i]);
+    } else if (!skipBody) {
+      filteredRows.push(row);
+      filteredRowFile.push(model.rowFile[i]);
+    }
+  }
+
+  if (filteredRows.length === model.rows.length) return model;
+
+  const rowCount = filteredRows.length;
+  const cumulativeOffsets = new Array<number>(rowCount + 1);
+  cumulativeOffsets[0] = 0;
+  const fileStartRow = new Map<string, number>();
+  const hunkStartRow = new Map<string, number[]>();
+  const threadIdx = new Map<string, number>();
+  const findingIdx = new Map<string, number>();
+  const rowFile = new Uint32Array(rowCount);
+
+  for (let i = 0; i < rowCount; i++) {
+    const row = filteredRows[i];
+    rowFile[i] = filteredRowFile[i];
+    cumulativeOffsets[i + 1] = cumulativeOffsets[i] + row.height;
+    if (row.type === "file-header") {
+      fileStartRow.set(row.filePath, i);
+      hunkStartRow.set(row.filePath, []);
+    } else if (row.type === "hunk-header") {
+      hunkStartRow.get(row.filePath)!.push(i);
+    } else if (row.type === "inline-thread" || row.type === "fallback-thread") {
+      threadIdx.set(row.threadId, i);
+    } else if (row.type === "inline-finding" || row.type === "fallback-finding") {
+      findingIdx.set(row.findingId, i);
+    }
+  }
+
+  return {
+    identity: `${model.identity}|collapsed:${collapsedPaths.size}`,
+    rows: filteredRows,
+    cumulativeOffsets,
+    totalHeight: cumulativeOffsets[rowCount],
+    fileStartRow,
+    hunkStartRow,
+    rowFile,
+    threadRowIndex: (id) => {
+      const v = threadIdx.get(id);
+      return v === undefined ? null : v;
+    },
+    findingRowIndex: (id) => {
+      const v = findingIdx.get(id);
+      return v === undefined ? null : v;
+    },
+    unifiedPairsByFile: model.unifiedPairsByFile,
+    splitRowsByFile: model.splitRowsByFile,
+  };
+}

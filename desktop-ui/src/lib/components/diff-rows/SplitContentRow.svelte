@@ -9,8 +9,9 @@
     row: Extract<CrossFileFlatRow, { type: "content-split" }>;
     splitRow: SplitRow;
     filePath: string;
+    rowIdx: number;
   }
-  const { row, splitRow, filePath }: Props = $props();
+  const { row, splitRow, filePath, rowIdx }: Props = $props();
 
   function lineClass(kind: string) {
     if (kind === "add") return "diff-add";
@@ -53,6 +54,7 @@
   class="grid grid-cols-[40px_minmax(0,1fr)_40px_minmax(0,1fr)] diff-row"
   style="height:{row.height}px"
   data-row-identity={row.identity}
+  data-row-idx={rowIdx}
 >
   <!-- Left gutter -->
   <div
@@ -60,7 +62,7 @@
   >
     {left?.old_num ?? ""}
     {#if left && leftLn !== null && left.kind !== "fold"}
-      <button class="add-comment-btn" onmousedown={(e) => diffSel.begin(leftLn, e.shiftKey, e, filePath, "old")}>+</button>
+      <button class="add-comment-btn" onmousedown={(e) => diffSel.begin(leftLn, e.shiftKey, e, filePath, "old", rowIdx)}>+</button>
     {/if}
   </div>
   <!-- Left code -->
@@ -92,7 +94,7 @@
   >
     {right?.new_num ?? ""}
     {#if right && rightLn !== null && right.kind !== "fold"}
-      <button class="add-comment-btn" onmousedown={(e) => diffSel.begin(rightLn, e.shiftKey, e, filePath, "new")}>+</button>
+      <button class="add-comment-btn" onmousedown={(e) => diffSel.begin(rightLn, e.shiftKey, e, filePath, "new", rowIdx)}>+</button>
     {/if}
   </div>
   <!-- Right code -->

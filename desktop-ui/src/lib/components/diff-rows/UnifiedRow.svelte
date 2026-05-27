@@ -10,8 +10,9 @@
     line: LineSnapshot;
     partner: LineSnapshot | null;
     filePath: string;
+    rowIdx: number;
   }
-  const { row, line, partner, filePath }: Props = $props();
+  const { row, line, partner, filePath, rowIdx }: Props = $props();
 
   function lineClass(kind: string) {
     if (kind === "add") return "diff-add";
@@ -48,13 +49,14 @@
   class="grid grid-cols-[40px_minmax(0,1fr)] diff-row {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}"
   style="height:{row.height}px"
   data-row-identity={row.identity}
+  data-row-idx={rowIdx}
 >
   <div class="leading-6 text-right pr-2 gutter {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}">
     {line.kind === "del" ? (line.old_num ?? "") : (line.new_num ?? line.old_num ?? "")}
     {#if ln !== null && line.kind !== "fold"}
       <button
         class="add-comment-btn"
-        onmousedown={(e) => diffSel.begin(ln, e.shiftKey, e, filePath, side)}
+        onmousedown={(e) => diffSel.begin(ln, e.shiftKey, e, filePath, side, rowIdx)}
       >+</button>
     {/if}
   </div>

@@ -119,6 +119,18 @@ export function rowOffsetFromViewportY(
   return clientY - containerTop - contentTopPx + scrollTopPx;
 }
 
+/**
+ * Map a viewport pointer Y to a document row offset using the rendered content
+ * surface's top edge as the origin.
+ *
+ * For FlatDiffView this should be the `.hscroll` element. Its bounding rect
+ * already includes current scroll position, so callers must not add scrollTop
+ * or subtract sticky-header height again.
+ */
+export function rowOffsetFromContentTopY(clientY: number, contentTop: number): number {
+  return clientY - contentTop;
+}
+
 export function rowIndexAtOffset(geom: EffectiveGeometry, offsetPx: number): number {
   if (geom.rowCount === 0) return -1;
   if (offsetPx <= 0) return 0;

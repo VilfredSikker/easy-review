@@ -9,6 +9,7 @@ import {
   diffLineCount,
   filesRenderFingerprint,
   getFileBlock,
+  applyCollapsedFiles,
   getCrossFileModel,
   type CrossFileFlatRow,
   type RenderModelInputs,
@@ -644,6 +645,33 @@ describe("getCrossFileModel — thread/finding lookups", () => {
       expect(row.type === "inline-finding" || row.type === "fallback-finding").toBe(true);
     }
     expect(m.findingRowIndex("nope")).toBeNull();
+  });
+});
+
+describe("applyCollapsedFiles", () => {
+  it("keeps file headers and drops body rows for collapsed paths", () => {
+    const f0 = makeSimpleFile("a.ts", 2);
+    const f1 = makeSimpleFile("b.ts", 1);
+    const model = mkCross([f0, f1], emptyAi(), { snapshotKey: "collapse" });
+    const beforeRows = model.rows.length;
+    expect(beforeRows).toBeGreaterThan(4);
+
+    const collapsed = applyCollapsedFiles(model, new Set(["a.ts"]));
+    const aHeader = collapsed.rows.filter((r) => r.filePath === "a.ts");
+    expect(aHeader.every((r) => r.type === "file-header")).toBe(true);
+    expect(aHeader).toHaveLength(1);
+
+    const bRows = collapsed.rows.filter((r) => r.filePath === "b.ts");
+    expect(bRows.length).toBeGreaterThan(1);
+    expect(collapsed.totalHeight).toBeLessThan(model.totalHeight);
+    expect(collapsed.rows.length).toBeLessThan(beforeRows);
+  });
+
+  it("returns the same model reference when nothing is collapsed", () => {
+    const f0 = makeSimpleFile("a.ts", 1);
+    const model = mkCross([f0], emptyAi(), { snapshotKey: "no-collapse" });
+    expect(applyCollapsedFiles(model, new Set())).toBe(model);
+    expect(applyCollapsedFiles(model, new Set(["missing.ts"]))).toBe(model);
   });
 });
 

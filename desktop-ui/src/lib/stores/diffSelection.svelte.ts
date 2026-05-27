@@ -6,8 +6,12 @@
  * same start/end/dragging state and update it together on mouse events.
  */
 
+import { DRAG_SLOP_PX, exceededDragSlop as slopExceeded } from "$lib/dragSlop";
+
 export type SelectionKind = "comment" | "question";
 export type SelectionSide = "old" | "new" | null;
+
+export { DRAG_SLOP_PX };
 
 class DiffSelection {
   start = $state<number | null>(null);
@@ -26,13 +30,26 @@ class DiffSelection {
   startRowIdx = $state<number | null>(null);
   /** Source index of the file the drag started in. Used by FlatDiffView to clamp cross-file. */
   startFileIndex = $state<number | null>(null);
+  anchorClientX = $state(0);
+  anchorClientY = $state(0);
 
   /**
    * Start (or extend, when shift is held) a selection at the given line.
    * `e.preventDefault()` suppresses native text selection while dragging.
    */
-  begin(line: number, shift: boolean, e?: MouseEvent, file?: string | null, side: SelectionSide = null) {
-    if (e) e.preventDefault();
+  begin(
+    line: number,
+    shift: boolean,
+    e?: MouseEvent,
+    file?: string | null,
+    side: SelectionSide = null,
+    startRowIdx?: number | null,
+  ) {
+    if (e) {
+      e.preventDefault();
+      this.anchorClientX = e.clientX;
+      this.anchorClientY = e.clientY;
+    }
     if (shift && this.start !== null && this.file === file && this.side === side) {
       this.end = line;
     } else {
@@ -40,8 +57,14 @@ class DiffSelection {
       this.end = line;
       this.file = file ?? this.file;
       this.side = side;
+      this.startRowIdx = startRowIdx ?? null;
     }
     this.dragging = true;
+  }
+
+  /** True once the pointer has moved beyond {@link DRAG_SLOP_PX} from mousedown. */
+  exceededDragSlop(e: MouseEvent): boolean {
+    return slopExceeded(this.anchorClientX, this.anchorClientY, e.clientX, e.clientY);
   }
 
   extend(line: number, side: SelectionSide = this.side) {
@@ -70,6 +93,12 @@ class DiffSelection {
     return Math.max(this.start ?? 0, this.end ?? 0);
   }
 
+  /** Stable key for one-shot composer auto-scroll. */
+  selectionKey(): string | null {
+    if (this.start === null || this.end === null || this.file === null) return null;
+    return `${this.file}:${this.first()}-${this.last()}:${this.kind}:${this.side ?? ""}`;
+  }
+
   /** "Line 36" or "Lines 36–41" — matches mock copy. */
   rangeLabel(): string {
     if (this.start === null) return "";
@@ -89,9 +118,19 @@ class DiffSelection {
     this.startFileIndex = null;
   }
 
-  /** True when there is an active selection that should reveal the composer. */
-  get active(): boolean {
+  /** True when start/end are set (highlights during drag). */
+  get hasSelection(): boolean {
     return this.start !== null;
+  }
+
+  /** True when the composer should mount (after drag completes). */
+  get composerOpen(): boolean {
+    return this.hasSelection && !this.dragging;
+  }
+
+  /** @deprecated Use {@link hasSelection} or {@link composerOpen}. */
+  get active(): boolean {
+    return this.hasSelection;
   }
 }
 

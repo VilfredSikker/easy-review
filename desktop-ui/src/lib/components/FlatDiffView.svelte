@@ -6,6 +6,7 @@
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import DiffComposer from "./DiffComposer.svelte";
+  import ComposerScrollBack from "./ComposerScrollBack.svelte";
   import FileHeaderRow from "./diff-rows/FileHeaderRow.svelte";
   import HunkHeaderRow from "./diff-rows/HunkHeaderRow.svelte";
   import UnifiedRow from "./diff-rows/UnifiedRow.svelte";
@@ -18,16 +19,18 @@
   import FindingRow from "./diff-rows/FindingRow.svelte";
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
   import {
+    applyCollapsedFiles,
     computeUnifiedPairs,
     getCrossFileModel,
     type CrossFileModel,
     type CrossFileFlatRow,
   } from "$lib/diffRenderModel";
+  import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { splitRows } from "$lib/splitRows";
   import {
     windowFromScrollVariable,
     rowIndexAtOffset,
-    rowOffsetFromViewportY,
+    rowOffsetFromContentTopY,
     type EffectiveGeometry,
   } from "$lib/virtualWindow";
   import { buildAnnotationIndex } from "$lib/diffAnnotations";
@@ -47,6 +50,8 @@
 
   /** Prevents highlight $effect from re-applying spans in a reactive loop. */
   const _spansAppliedKeys = new Set<string>();
+
+  const COMPOSER_APPROX_HEIGHT_PX = 160;
 
   const FIXED_HEIGHT_ROW_TYPES = new Set<CrossFileFlatRow["type"]>([
     "file-header",
@@ -122,7 +127,7 @@
   const threadMap = $derived(annotationIndex.threadMap);
 
   // ── Cross-file model ───────────────────────────────────────────────────────
-  const crossFileModel = $derived(
+  const baseCrossFileModel = $derived(
     getCrossFileModel({
       files,
       viewMode,
@@ -132,6 +137,15 @@
       snapshotKey,
     }),
   );
+  const crossFileModel = $derived.by(() => {
+    diffFileCollapse.revision;
+    return applyCollapsedFiles(baseCrossFileModel, diffFileCollapse.collapsed);
+  });
+
+  $effect(() => {
+    snapshotKey;
+    diffFileCollapse.clear();
+  });
 
   // ── D10 measured-height overlay ───────────────────────────────────────────
   let overlayHeights = $state(new Map<string, number>());
@@ -150,6 +164,7 @@
   });
 
   function onHeightChange(identity: string, actualPx: number) {
+    if (diffSel.dragging) return;
     const current = overlayHeights.get(identity);
     if (current === actualPx) return;
     const next = new Map(overlayHeights);
@@ -187,7 +202,10 @@
 
   // ── Scroll + viewport ─────────────────────────────────────────────────────
   let scrollEl: HTMLDivElement | null = $state(null);
+  let hscrollEl: HTMLDivElement | null = $state(null);
   let scrollTopPx = $state(0);
+  /** Unthrottled scroll position for composer visibility / go-back pill. */
+  let scrollTopLivePx = $state(0);
   let viewportHeightPx = $state(0);
 
   const _updateScrollTop = makeScrollThrottle((top) => { scrollTopPx = top; });
@@ -199,6 +217,7 @@
   function onScroll() {
     if (!scrollEl) return;
     const top = scrollEl.scrollTop;
+    scrollTopLivePx = top;
     _updateScrollTop(top);
     if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
     const curKey = snapshotKey;
@@ -249,6 +268,14 @@
     return crossFileModel.rows[idx].filePath ?? null;
   });
 
+  const visibleFileHeaderRow = $derived.by((): Extract<CrossFileFlatRow, { type: "file-header" }> | null => {
+    if (!visibleFilePath) return null;
+    const startRow = crossFileModel.fileStartRow.get(visibleFilePath);
+    if (startRow === undefined) return null;
+    const row = crossFileModel.rows[startRow];
+    return row?.type === "file-header" ? row : null;
+  });
+
   // Hide sticky overlay when the real file-header row is in the top band of the row viewport.
   const stickyHeaderHidden = $derived.by(() => {
     if (!visibleFilePath) return false;
@@ -262,7 +289,7 @@
   let selectionContextKey: string | null = $state(null);
 
   $effect(() => {
-    if (!diffSel.active || diffSel.file === null) {
+    if (!diffSel.hasSelection || diffSel.file === null) {
       selectionContextKey = null;
       return;
     }
@@ -604,7 +631,7 @@
 
   // ── Composer position ─────────────────────────────────────────────────────
   const composerTopPx = $derived.by(() => {
-    if (!diffSel.active || diffSel.file === null || diffSel.end === null) return undefined;
+    if (!diffSel.hasSelection || diffSel.file === null || diffSel.end === null) return undefined;
     const fileStartRow = crossFileModel.fileStartRow.get(diffSel.file);
     if (fileStartRow === undefined) return undefined;
     // Place composer below the last selected line row
@@ -641,20 +668,44 @@
     return undefined;
   });
 
-  // ── Scroll to keep selection + composer both visible when composer opens ──
-  $effect(() => {
+  // ── Composer scroll: one-shot into view on open; free scroll afterward ───
+  let composerAutoScrolledKey = $state<string | null>(null);
+
+  const composerVisible = $derived.by(() => {
+    if (!diffSel.composerOpen || composerTopPx === undefined) return true;
+    const viewTop = scrollTopLivePx + STICKY_HEADER_PX;
+    const viewBottom = scrollTopLivePx + viewportHeightPx;
+    return viewTop <= composerTopPx + COMPOSER_APPROX_HEIGHT_PX && viewBottom >= composerTopPx;
+  });
+
+  const showGoBackToComment = $derived(
+    diffSel.composerOpen && composerTopPx !== undefined && !composerVisible,
+  );
+
+  function scrollComposerIntoView() {
     const top = composerTopPx;
     if (top === undefined || !scrollEl) return;
-    if (diffSel.dragging) return;
     const LINE_H = 20;
-    const viewBottom = scrollTopPx + viewportHeightPx;
-    // If the last selected line (just above `top`) is below the viewport midpoint
-    // or the composer is off-screen, scroll so the selected line sits at ~25% from
-    // the top and the composer is visible below it.
     const selectedLineTop = top - LINE_H;
-    if (selectedLineTop > scrollTopPx + viewportHeightPx * 0.5 || top > viewBottom) {
-      scrollEl.scrollTop = Math.max(0, selectedLineTop - Math.floor(viewportHeightPx * 0.25));
-    }
+    scrollEl.scrollTop = Math.max(0, selectedLineTop - Math.floor(viewportHeightPx * 0.25));
+  }
+
+  $effect(() => {
+    const top = composerTopPx;
+    const key = diffSel.selectionKey();
+    if (top === undefined || !scrollEl || !key || !diffSel.composerOpen) return;
+    if (composerAutoScrolledKey === key) return;
+    composerAutoScrolledKey = key;
+    const st = scrollEl.scrollTop;
+    const viewBottom = st + viewportHeightPx;
+    const LINE_H = 20;
+    const selectedLineTop = top - LINE_H;
+    const wouldScroll = selectedLineTop > st + viewportHeightPx * 0.5 || top > viewBottom;
+    if (wouldScroll) scrollComposerIntoView();
+  });
+
+  $effect(() => {
+    if (!diffSel.hasSelection) composerAutoScrolledKey = null;
   });
 
   // ── Register FlatNavigator with diffNav ───────────────────────────────────
@@ -680,40 +731,237 @@
     return () => diffNav.unregister();
   });
 
-  // ── Drag-select: container onmousemove ────────────────────────────────────
-  function onMouseMove(e: MouseEvent) {
-    if (!diffSel.dragging || !scrollEl) return;
-    const rect = scrollEl.getBoundingClientRect();
-    const rawY = rowOffsetFromViewportY(
-      e.clientY,
-      rect.top,
-      scrollTopPx,
-      STICKY_HEADER_PX,
-    );
-    const yPx = Math.max(0, Math.min(rawY, effectiveGeometry.totalHeight - 1));
-    const idx = rowIndexAtOffset(effectiveGeometry, yPx);
-    if (idx < 0 || idx >= crossFileModel.rows.length) return;
+  // ── Drag-select: frozen geometry + rAF-coalesced window tracking ─────────
+  let dragGeometry: EffectiveGeometry | null = $state(null);
+  let pendingDragEvent: MouseEvent | null = null;
+  let dragRafId: number | null = null;
+
+  function ensureDragGeometry() {
+    if (dragGeometry !== null) return;
+    dragGeometry = {
+      cumulativeOffsets: effectiveGeometry.cumulativeOffsets.slice(),
+      totalHeight: effectiveGeometry.totalHeight,
+      rowCount: effectiveGeometry.rowCount,
+    };
+  }
+
+  function anchorFileBounds(): { start: number; end: number } | null {
+    const file = diffSel.file;
+    if (file === null) return null;
+    const start = crossFileModel.fileStartRow.get(file);
+    if (start === undefined) return null;
+    let end = start;
+    while (end < crossFileModel.rows.length && crossFileModel.rows[end].filePath === file) {
+      end++;
+    }
+    return { start, end };
+  }
+
+  function dragTargetAtRow(idx: number): { line: number; side: "old" | "new" } | null {
+    if (idx < 0 || idx >= crossFileModel.rows.length) return null;
     const row = crossFileModel.rows[idx];
-    if (row.filePath !== diffSel.file) return;
+    if (row.filePath !== diffSel.file) return null;
+
     if (row.type === "content-unified") {
       const file = files.find((f) => f.path === row.filePath);
       const line = file?.hunks[row.hunkIdx]?.lines[row.lineIdx];
-      const ln = line ? (line.new_num ?? line.old_num) : null;
-      const side = line ? unifiedLineSide(line) : null;
-      if (ln !== null) diffSel.extend(ln, side);
-    } else if (row.type === "content-split") {
-      const xPct = (e.clientX - rect.left) / rect.width;
-      const side = xPct < 0.5 ? "old" : "new";
-      const model = crossFileModel;
-      const splitRows = model.splitRowsByFile.get(row.filePath);
-      const splitRow = splitRows?.[row.hunkIdx]?.[row.splitRowIdx];
-      if (!splitRow) return;
-      const ln = side === "old"
-        ? (splitRow.left ? (splitRow.left.new_num ?? splitRow.left.old_num) : null)
-        : (splitRow.right ? (splitRow.right.new_num ?? splitRow.right.old_num) : null);
-      if (ln !== null) diffSel.extend(ln, side);
+      if (!line) return null;
+      const side = unifiedLineSide(line);
+      if (side !== diffSel.side) return null;
+      const ln = line.new_num ?? line.old_num;
+      return ln !== null ? { line: ln, side } : null;
     }
+
+    if (row.type === "content-split") {
+      if (diffSel.side === null) return null;
+      const splitRowsByHunk = crossFileModel.splitRowsByFile.get(row.filePath);
+      const splitRow = splitRowsByHunk?.[row.hunkIdx]?.[row.splitRowIdx];
+      if (!splitRow) return null;
+      const activeSide = diffSel.side === "old" ? splitRow.left : splitRow.right;
+      const ln = activeSide ? (activeSide.new_num ?? activeSide.old_num ?? null) : null;
+      return ln !== null ? { line: ln, side: diffSel.side } : null;
+    }
+
+    return null;
   }
+
+  function lineInfoAtRow(idx: number) {
+    if (idx < 0 || idx >= crossFileModel.rows.length) return null;
+    const row = crossFileModel.rows[idx];
+    if (row.type === "content-unified") {
+      const file = files.find((f) => f.path === row.filePath);
+      const line = file?.hunks[row.hunkIdx]?.lines[row.lineIdx];
+      if (!line) return null;
+      return {
+        rowIdx: idx,
+        rowType: row.type,
+        filePath: row.filePath,
+        line: line.new_num ?? line.old_num ?? null,
+        side: unifiedLineSide(line),
+      };
+    }
+    if (row.type === "content-split") {
+      const splitRowsByHunk = crossFileModel.splitRowsByFile.get(row.filePath);
+      const splitRow = splitRowsByHunk?.[row.hunkIdx]?.[row.splitRowIdx];
+      const left = splitRow?.left ? (splitRow.left.new_num ?? splitRow.left.old_num ?? null) : null;
+      const right = splitRow?.right ? (splitRow.right.new_num ?? splitRow.right.old_num ?? null) : null;
+      return {
+        rowIdx: idx,
+        rowType: row.type,
+        filePath: row.filePath,
+        line: diffSel.side === "old" ? left : right,
+        side: diffSel.side,
+        left,
+        right,
+      };
+    }
+    return {
+      rowIdx: idx,
+      rowType: row.type,
+      filePath: row.filePath,
+      line: null,
+      side: null,
+    };
+  }
+
+  function logDragSelection(args: {
+    clientY: number;
+    contentTop: number;
+    rawY: number;
+    yPx: number;
+    idx: number;
+    mouseover: ReturnType<typeof lineInfoAtRow>;
+    target: { line: number; side: "old" | "new" } | null;
+    hitSource: "dom" | "geometry";
+  }) {
+    profileLog("drag_select", {
+      hit_source: args.hitSource,
+      client_y: Math.round(args.clientY),
+      content_top: Math.round(args.contentTop),
+      raw_y: Math.round(args.rawY),
+      y_px: Math.round(args.yPx),
+      pointer_row_idx: args.idx,
+      mouseover_row_idx: args.mouseover?.rowIdx ?? -1,
+      mouseover_row_type: args.mouseover?.rowType ?? "none",
+      mouseover_file: args.mouseover?.filePath ?? "none",
+      mouseover_line: args.mouseover?.line ?? -1,
+      mouseover_side: args.mouseover?.side ?? "none",
+      target_line: args.target?.line ?? -1,
+      target_side: args.target?.side ?? "none",
+      selected_file: diffSel.file ?? "none",
+      selected_side: diffSel.side ?? "none",
+      selected_start: diffSel.start ?? -1,
+      selected_end: diffSel.end ?? -1,
+      selected_first: diffSel.start === null || diffSel.end === null ? -1 : diffSel.first(),
+      selected_last: diffSel.start === null || diffSel.end === null ? -1 : diffSel.last(),
+    });
+  }
+
+  function firstSelectableInAnchorFile(bounds: { start: number; end: number }) {
+    for (let i = bounds.start; i < bounds.end; i++) {
+      const target = dragTargetAtRow(i);
+      if (target) return target;
+    }
+    return null;
+  }
+
+  function lastSelectableInAnchorFile(bounds: { start: number; end: number }) {
+    for (let i = bounds.end - 1; i >= bounds.start; i--) {
+      const target = dragTargetAtRow(i);
+      if (target) return target;
+    }
+    return null;
+  }
+
+  function dragTargetForIndex(idx: number) {
+    const bounds = anchorFileBounds();
+    const anchorIdx = diffSel.startRowIdx;
+    if (!bounds || anchorIdx === null) return null;
+    if (idx < bounds.start) return firstSelectableInAnchorFile(bounds);
+    if (idx >= bounds.end) return lastSelectableInAnchorFile(bounds);
+    const row = crossFileModel.rows[idx];
+    if (row?.filePath !== diffSel.file) {
+      return idx < anchorIdx ? firstSelectableInAnchorFile(bounds) : lastSelectableInAnchorFile(bounds);
+    }
+    return dragTargetAtRow(idx);
+  }
+
+  function rowIndexFromPoint(e: MouseEvent): number | null {
+    for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+      const rowEl = el instanceof HTMLElement ? el.closest<HTMLElement>("[data-row-idx]") : null;
+      const raw = rowEl?.dataset.rowIdx;
+      if (raw === undefined) continue;
+      const idx = Number(raw);
+      if (Number.isInteger(idx)) return idx;
+    }
+    return null;
+  }
+
+  function processDragMove(e: MouseEvent) {
+    if (!diffSel.dragging || !hscrollEl) return;
+    if (!diffSel.exceededDragSlop(e)) return;
+    ensureDragGeometry();
+    const geom = dragGeometry!;
+    const rect = hscrollEl.getBoundingClientRect();
+    const rawY = rowOffsetFromContentTopY(e.clientY, rect.top);
+    const yPx = Math.max(0, Math.min(rawY, geom.totalHeight - 1));
+    const domIdx = rowIndexFromPoint(e);
+    const idx = domIdx ?? rowIndexAtOffset(geom, yPx);
+    const mouseover = lineInfoAtRow(idx);
+    const target = dragTargetForIndex(idx);
+    if (target) diffSel.extend(target.line, target.side);
+    logDragSelection({
+      clientY: e.clientY,
+      contentTop: rect.top,
+      rawY,
+      yPx,
+      idx,
+      mouseover,
+      target,
+      hitSource: domIdx === null ? "geometry" : "dom",
+    });
+  }
+
+  function scheduleDragMove(e: MouseEvent) {
+    pendingDragEvent = e;
+    if (dragRafId !== null) return;
+    dragRafId = requestAnimationFrame(() => {
+      dragRafId = null;
+      const ev = pendingDragEvent;
+      pendingDragEvent = null;
+      if (ev) processDragMove(ev);
+    });
+  }
+
+  function clearDragSession() {
+    if (dragRafId !== null) {
+      cancelAnimationFrame(dragRafId);
+      dragRafId = null;
+    }
+    pendingDragEvent = null;
+    dragGeometry = null;
+  }
+
+  // ── Measured row heights → effectiveGeometry overlay ─────────────────────
+  let heightRo: ResizeObserver | null = null;
+  $effect(() => {
+    if (!scrollEl) return;
+    void vw.start;
+    void vw.end;
+    heightRo?.disconnect();
+    heightRo = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const el = entry.target as HTMLElement;
+        const identity = el.dataset.rowIdentity;
+        if (!identity) continue;
+        onHeightChange(identity, Math.round(entry.contentRect.height));
+      }
+    });
+    scrollEl.querySelectorAll<HTMLElement>("[data-row-identity]").forEach((el) => {
+      heightRo!.observe(el);
+    });
+    return () => heightRo?.disconnect();
+  });
 
   // ── DEV height validator (Step F) ────────────────────────────────────────
   let devRo: ResizeObserver | null = null;
@@ -750,7 +998,14 @@
   });
 
   onMount(() => {
-    const onUp = () => diffSel.finish();
+    const onMove = (e: MouseEvent) => {
+      if (diffSel.dragging) scheduleDragMove(e);
+    };
+    const onUp = () => {
+      if (diffSel.dragging) clearDragSession();
+      diffSel.finish();
+    };
+    window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
 
     const ro = new ResizeObserver((entries) => {
@@ -759,8 +1014,10 @@
     if (scrollEl) {
       ro.observe(scrollEl);
       viewportHeightPx = scrollEl.clientHeight;
+      scrollTopLivePx = scrollEl.scrollTop;
     }
     return () => {
+      window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       ro.disconnect();
     };
@@ -795,7 +1052,7 @@
   }
 </script>
 
-<div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+<div class="flex-1 flex flex-col min-w-0 overflow-hidden relative">
   <!-- Top bar -->
   {#if treeHidden || files.length > 0}
     <div class="h-10 px-4 border-b border-hairline bg-ink-870 flex items-center gap-3 shrink-0 text-muted">
@@ -873,8 +1130,6 @@
     bind:this={scrollEl}
     class="vscroll flex-1 mono text-[13px] leading-[1.55] relative {diffSel.dragging ? 'select-none' : ''}"
     onscroll={onScroll}
-    onmousemove={onMouseMove}
-    onmouseleave={() => diffSel.finish()}
   >
     {#if !snapshot}
       <div class="flex items-center justify-center h-full text-muted">Loading…</div>
@@ -882,10 +1137,11 @@
       <div class="flex items-center justify-center h-full text-muted text-sm">No changes</div>
     {:else}
       <!-- Sticky file path overlay: hides when real file-header is in viewport top band -->
-      <StickyFileHeader filePath={visibleFilePath} hidden={stickyHeaderHidden} />
+      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden} />
 
       <!-- X-scroll surface: full-height absolute-positioned band -->
       <div
+        bind:this={hscrollEl}
         class="hscroll"
         style="height:{effectiveGeometry.totalHeight}px;overflow-x:auto;overflow-y:visible;position:relative;width:100%"
       >
@@ -893,7 +1149,8 @@
           class="band"
           style="position:absolute;top:{vw.paddingTop}px;left:0;right:0;min-width:max-content"
         >
-          {#each windowedRows as row (row.identity)}
+          {#each windowedRows as row, localIdx (row.identity)}
+            {@const rowIdx = vw.start + localIdx}
             {#if row.type === "file-header"}
               <FileHeaderRow {row} />
             {:else if row.type === "hunk-header"}
@@ -904,12 +1161,12 @@
               {@const line = getUnifiedLine(row)}
               {@const partner = getUnifiedPartner(row)}
               {#if line}
-                <UnifiedRow {row} {line} {partner} filePath={row.filePath} />
+                <UnifiedRow {row} {line} {partner} filePath={row.filePath} {rowIdx} />
               {/if}
             {:else if row.type === "content-split"}
               {@const splitRow = getSplitRow(row)}
               {#if splitRow}
-                <SplitContentRow {row} {splitRow} filePath={row.filePath} />
+                <SplitContentRow {row} {splitRow} filePath={row.filePath} {rowIdx} />
               {/if}
             {:else if row.type === "compacted-stub"}
               <CompactedStubRow {row} />
@@ -933,11 +1190,17 @@
         </div>
       </div>
 
-      {#if diffSel.active}
-        <DiffComposer topPx={composerTopPx} />
+      {#if diffSel.composerOpen}
+        <DiffComposer topPx={composerTopPx} {viewMode} />
       {/if}
     {/if}
   </div>
+
+  {#if showGoBackToComment}
+    <div class="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center">
+      <ComposerScrollBack onGoBack={scrollComposerIntoView} />
+    </div>
+  {/if}
 </div>
 
 <style>

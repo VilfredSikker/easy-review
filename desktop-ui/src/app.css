@@ -137,6 +137,8 @@ body {
 
 /* Diff row hover + selection styles — required by drag-select (mock lines 33–43). */
 .diff-row { cursor: default; }
+/* Keep wrapped line paint inside the model row height so drag hit-testing stays aligned. */
+.diff-row > div:not(.gutter) { overflow: hidden; }
 .diff-row:hover > div:not(.gutter):not(.diff-add):not(.diff-del) {
   background: var(--color-ink-870);
 }
