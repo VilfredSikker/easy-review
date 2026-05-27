@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
-use er_engine::ai::{CommentType, ErReview};
+use er_engine::ai::CommentType;
 #[cfg(test)]
 use er_engine::app::CardAiInvocation;
 use er_engine::app::{
@@ -2968,15 +2968,6 @@ fn save_finding_promotions(
     let path = finding_promotions_path(er_dir);
     let tmp = format!("{path}.tmp");
     let json = serde_json::to_string_pretty(map).unwrap_or_else(|_| "{}".to_string());
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, &path)
-}
-
-fn save_review_json(er_dir: &str, review: &ErReview) -> std::io::Result<()> {
-    std::fs::create_dir_all(er_dir)?;
-    let path = format!("{er_dir}/review.json");
-    let tmp = format!("{path}.tmp");
-    let json = serde_json::to_string_pretty(review)?;
     std::fs::write(&tmp, json)?;
     std::fs::rename(&tmp, &path)
 }
