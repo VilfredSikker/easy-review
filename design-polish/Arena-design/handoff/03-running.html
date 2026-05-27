@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>03 · Running & pill — Handoff</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="handoff.css" />
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/bold/style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css" />
+  <style>
+    .handoff-stage { padding: 0; display: block; }
+    .faux-app {
+      width: 100%; height: 100%;
+      background:
+        linear-gradient(180deg, var(--bg-1), var(--bg-0));
+      position: relative; overflow: hidden;
+    }
+    .faux-app::before {
+      content: ''; position: absolute; inset: 0;
+      background-image:
+        linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px),
+        linear-gradient(0deg,  rgba(255,255,255,0.02) 1px, transparent 1px);
+      background-size: 240px 100%, 100% 28px;
+      opacity: 0.5;
+    }
+    .running-host { position: absolute; inset: 0; transform: translateZ(0); }
+  </style>
+</head>
+<body>
+  <div class="handoff-shell">
+    <header class="handoff-header">
+      <div class="crumb"><a href="index.html">← Handoff</a><span>·</span><span>03</span></div>
+      <div class="title">Running &amp; background pill</div>
+      <div class="spacer"></div>
+      <div class="meta">Modal 520 · Pill 240–320 floating</div>
+    </header>
+
+    <div class="state-bar" id="state-bar">
+      <span class="lbl">View</span>
+    </div>
+
+    <main class="handoff-stage">
+      <div class="faux-app">
+        <div class="running-host" id="root"></div>
+      </div>
+    </main>
+
+    <aside class="handoff-notes" id="notes"></aside>
+  </div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../data.jsx"></script>
+  <script type="text/babel" src="../data-agents.jsx"></script>
+  <script type="text/babel" src="../arena-launcher.jsx"></script>
+
+  <script type="text/babel">
+    const VIEWS = [
+      {
+        id: 'modal-arena', label: 'Arena modal',
+        title: 'Arena in progress (3 reviewers · 3 rounds)',
+        blurb: 'Full-screen modal. Each reviewer card lights up as it "thinks". Round progress bar at the bottom. Pulsing dot on the active reviewer.',
+        config: { mode: 'models', ids: ['opus-47', 'sonnet-45', 'gpt-55'], rounds: 3 },
+        minimized: false,
+        notes: [
+          { key: 'Component', val: '<ArenaRunningPanel>' },
+          { key: 'Tick',       val: '140 ms — drives reviewer cycle + round bar' },
+          { key: 'Round dur',  val: '2.4 s per round (arena) · 4.0 s (single)' },
+          { key: 'Headerbtn',  val: '"Run in background" → minimize' },
+          { key: 'Cancel',     val: 'Aborts; clears run' },
+          { key: 'Complete',   val: 'On final round → opens Arena overlay' },
+        ],
+      },
+      {
+        id: 'modal-single', label: 'Single modal',
+        title: 'Single review in progress',
+        blurb: 'Same component, one reviewer. Header copy adapts ("Review in progress · X is reading the diff"). No round bar — single pass.',
+        config: { mode: 'agents', ids: ['general'], rounds: 1 },
+        minimized: false,
+        notes: [
+          { key: 'Component', val: '<ArenaRunningPanel>' },
+          { key: 'Reviewers', val: '1 (auto switches to single-review styling)' },
+          { key: 'Round bar', val: 'Hidden — only one pass' },
+        ],
+      },
+      {
+        id: 'pill-arena', label: 'Arena pill',
+        title: 'Background pill (Arena minimized)',
+        blurb: 'After clicking "Run in background", the modal collapses to a small floating pill. Progress ring fills as rounds complete. Click pill body to restore; click X to cancel.',
+        config: { mode: 'models', ids: ['opus-47', 'sonnet-45', 'gpt-55'], rounds: 3 },
+        minimized: true,
+        notes: [
+          { key: 'Component', val: '<ArenaRunningPanel minimized={true}>' },
+          { key: 'Anchor',    val: 'fixed · bottom 80 right 20 · zIndex 150' },
+          { key: 'Click',     val: 'Restore (back to modal)' },
+          { key: 'X button',  val: 'Cancel (stops propagation)' },
+          { key: 'Hover',     val: 'Border → periwinkle' },
+        ],
+      },
+      {
+        id: 'pill-single', label: 'Single pill',
+        title: 'Background pill (single review)',
+        blurb: 'Magic-wand icon, "Review running" label. Same pill shape — just one reviewer in the active spot.',
+        config: { mode: 'agents', ids: ['professor'], rounds: 1 },
+        minimized: true,
+        notes: [
+          { key: 'Reviewers', val: '1' },
+          { key: 'Icon',      val: 'ph-fill ph-magic-wand (vs ph-trophy for arenas)' },
+        ],
+      },
+    ];
+
+    function Mount() {
+      const [viewId, setViewId] = React.useState('modal-arena');
+      const view = VIEWS.find((v) => v.id === viewId);
+
+      React.useEffect(() => {
+        renderStateBar(viewId, setViewId);
+        renderNotes(view);
+      }, [viewId]);
+
+      // Key the component on viewId so the timer resets when switching views
+      return (
+        <window.ArenaRunningPanel
+          key={viewId}
+          config={view.config}
+          minimized={view.minimized}
+          onCancel={() => {}}
+          onComplete={() => {}}
+          onMinimize={() => setViewId(viewId.replace('modal-', 'pill-'))}
+          onRestore={() => setViewId(viewId.replace('pill-', 'modal-'))}
+        />
+      );
+    }
+
+    function renderStateBar(active, setActive) {
+      const bar = document.getElementById('state-bar');
+      [...bar.querySelectorAll('.state-pill')].forEach((b) => b.remove());
+      VIEWS.forEach((s) => {
+        const btn = document.createElement('button');
+        btn.className = 'state-pill';
+        btn.setAttribute('aria-pressed', s.id === active ? 'true' : 'false');
+        btn.textContent = s.label;
+        btn.onclick = () => setActive(s.id);
+        bar.appendChild(btn);
+      });
+    }
+
+    function renderNotes(state) {
+      const el = document.getElementById('notes');
+      el.innerHTML = `
+        <div class="notes-section">
+          <h3>View · ${state.label}</h3>
+          <p style="font-size:13px;font-weight:600;color:var(--fg);">${state.title}</p>
+          <p>${state.blurb}</p>
+        </div>
+        <div class="notes-divider"></div>
+        <div class="notes-section">
+          <h3>Implementation</h3>
+          ${state.notes.map((n) => `
+            <div class="row"><span class="key">${n.key}</span><span class="val">${n.val}</span></div>
+          `).join('')}
+        </div>
+        <div class="notes-divider"></div>
+        <div class="notes-section">
+          <h3>State machine</h3>
+          <ul>
+            <li><code>runningOpen</code> + <code>runningMinimized</code> drive whether anything renders and in which form.</li>
+            <li><strong>Start</strong> sets <code>runningOpen: true</code>.</li>
+            <li><strong>Minimize</strong> sets <code>runningMinimized: true</code> — modal collapses to pill.</li>
+            <li><strong>Restore</strong> clears the minimize flag.</li>
+            <li><strong>Complete</strong> clears both and opens the Arena overlay.</li>
+            <li><strong>Cancel</strong> clears both with no follow-on.</li>
+          </ul>
+        </div>
+        <div class="notes-divider"></div>
+        <div class="notes-section">
+          <h3>Progress ring</h3>
+          <p>SVG circle, <code>stroke-dashoffset</code> tied to <code>(elapsed / totalDuration)</code>. 200 ms linear transition — feels smooth without jitter.</p>
+        </div>
+      `;
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<Mount />);
+  </script>
+</body>
+</html>

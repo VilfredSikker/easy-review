@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>04 · Arena — Handoff</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="handoff.css" />
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/bold/style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css" />
+  <style>
+    .handoff-stage { padding: 0; display: block; }
+    .arena-host { position: absolute; inset: 0; transform: translateZ(0); }
+  </style>
+</head>
+<body>
+  <div class="handoff-shell">
+    <header class="handoff-header">
+      <div class="crumb"><a href="index.html">← Handoff</a><span>·</span><span>04</span></div>
+      <div class="title">AI Review Arena</div>
+      <div class="spacer"></div>
+      <div class="meta">Full-screen overlay · 60/40 split</div>
+    </header>
+
+    <div class="state-bar" id="state-bar">
+      <span class="lbl">Process layout</span>
+    </div>
+
+    <main class="handoff-stage">
+      <div class="arena-host" id="root"></div>
+    </main>
+
+    <aside class="handoff-notes" id="notes"></aside>
+  </div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../data.jsx"></script>
+  <script type="text/babel" src="../data-agents.jsx"></script>
+  <script type="text/babel" src="../review-multi.jsx"></script>
+  <script type="text/babel" src="../arena.jsx"></script>
+
+  <script type="text/babel">
+    const LAYOUTS = [
+      {
+        id: 'bracket', label: 'Bracket',
+        title: 'Bracket — debate as rounds',
+        blurb: 'Each round is a column (Propose → Cross-check → Resolve). A finding shows up in each round it survived, with state chip + per-agent vote chips. Dropped findings strike-through and fade.',
+        notes: [
+          { key: 'Component', val: '<ArenaOverlay layoutMode="bracket">' },
+          { key: 'Best for', val: 'Reviewing how a finding evolved across rounds.' },
+          { key: 'Reads', val: 'Left → right. Top = highest severity.' },
+        ],
+      },
+      {
+        id: 'matrix', label: 'Matrix',
+        title: 'Matrix — votes per agent per finding',
+        blurb: 'One row per finding, one column per reviewer. Cells use vote glyphs (✓ ✕ ⊕ ↑ ↓ ⚑ ·) so you can scan agreement at a glance. Last column is verdict + confidence.',
+        notes: [
+          { key: 'Component', val: '<ArenaOverlay layoutMode="matrix">' },
+          { key: 'Best for', val: 'Auditing which reviewer agreed/disagreed.' },
+          { key: 'Glyphs', val: '✓ keep · ✕ drop · ⊕ merge · ↑ escalate · ↓ lower · ⚑ flag · · abstain' },
+        ],
+      },
+      {
+        id: 'funnel', label: 'Funnel',
+        title: 'Funnel — proposals narrowed to truth',
+        blurb: '4 stacked bands: Proposed → Cross-checked → Resolved → Final Truth. Findings move down; peeled-off (dropped/merged) findings appear inline to the side. Visualizes attrition.',
+        notes: [
+          { key: 'Component', val: '<ArenaOverlay layoutMode="funnel">' },
+          { key: 'Best for', val: 'Showing how N raw findings became M consensus findings.' },
+          { key: 'Width', val: 'Bands shrink (100% → 88% → 76% → 66%) for visual funnel.' },
+        ],
+      },
+    ];
+
+    function Mount() {
+      const [layoutId, setLayoutId] = React.useState('bracket');
+      const layout = LAYOUTS.find((l) => l.id === layoutId);
+
+      React.useEffect(() => {
+        renderStateBar(layoutId, setLayoutId);
+        renderNotes(layout);
+      }, [layoutId]);
+
+      return (
+        <window.ArenaOverlay
+          open={true}
+          onClose={() => {}}
+          onNewRun={() => {}}
+          layoutMode={layoutId}
+          onLayoutMode={setLayoutId}
+        />
+      );
+    }
+
+    function renderStateBar(active, setActive) {
+      const bar = document.getElementById('state-bar');
+      [...bar.querySelectorAll('.state-pill')].forEach((b) => b.remove());
+      LAYOUTS.forEach((s) => {
+        const btn = document.createElement('button');
+        btn.className = 'state-pill';
+        btn.setAttribute('aria-pressed', s.id === active ? 'true' : 'false');
+        btn.textContent = s.label;
+        btn.onclick = () => setActive(s.id);
+        bar.appendChild(btn);
+      });
+    }
+
+    function renderNotes(state) {
+      const el = document.getElementById('notes');
+      el.innerHTML = `
+        <div class="notes-section">
+          <h3>Layout · ${state.label}</h3>
+          <p style="font-size:13px;font-weight:600;color:var(--fg);">${state.title}</p>
+          <p>${state.blurb}</p>
+        </div>
+        <div class="notes-divider"></div>
+        <div class="notes-section">
+          <h3>Implementation</h3>
+          ${state.notes.map((n) => `
+            <div class="row"><span class="key">${n.key}</span><span class="val">${n.val}</span></div>
+          `).join('')}
+        </div>
+        <div class="notes-divider"></div>
+        <div class="notes-section">
+          <h3>Layout structure</h3>
+          <ul>
+            <li><strong>Header</strong> — agents involved · run id · duration · stat row (Proposed · Kept · Escalated · Merged · Dropped) · layout toggle · "+ New run" · X.</li>
+            <li><strong>Left 60%</strong> — the process (bracket/matrix/funnel).</li>
+            <li><strong>Right 40%</strong> — Final Truth, grouped by severity (HIGH/MED/LOW). Clicking a finding expands a rationale callout.</li>
+          </ul>
+        </div>
+        <div class="notes-divider"></div>
+        <div class="notes-section">
+          <h3>Verdicts</h3>
+          <ul>
+            <li><code>kept</code> — survived consensus (green pill)</li>
+            <li><code>escalated</code> — severity raised by review (red pill)</li>
+            <li><code>merged</code> — duplicated of another; merged into it (periwinkle)</li>
+            <li><code>dropped</code> — consensus dropped it (muted, strikethrough)</li>
+          </ul>
+        </div>
+        <div class="notes-divider"></div>
+        <div class="notes-section">
+          <h3>Data model</h3>
+          <p>Each <strong>arena finding</strong> carries <code>raisedBy[]</code>, <code>severityByRound{}</code>, <code>verdict</code>, <code>confidence</code>, <code>rationale</code>, and a <code>rounds[]</code> log of per-agent votes. See <code>DATA_ARENA_FINDINGS</code>.</p>
+        </div>
+        <div class="notes-divider"></div>
+        <div class="notes-section">
+          <h3>Cross-highlighting</h3>
+          <p>Selecting a finding on either side highlights it on the other. Same <code>selected</code> state drives the bracket card / matrix row / funnel chip border, plus the Final Truth left rail.</p>
+        </div>
+      `;
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<Mount />);
+  </script>
+</body>
+</html>
