@@ -26,9 +26,6 @@ export function jumpTo(id: string): void {
   setTimeout(() => el.classList.remove("flash"), 1300);
 }
 
-/** Alias used by callers that want to be explicit about the scroll+flash behavior. */
-export const scrollFlash = jumpTo;
-
 /**
  * Navigate to a thread, switching files first if needed. The Rust
  * `select_file` command takes a file index (not a path), so we look up the

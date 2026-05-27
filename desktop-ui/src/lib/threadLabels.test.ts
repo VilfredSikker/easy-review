@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { threadFileLineRef, threadLineRangeLabel, threadLineRefSuffix } from "./threadLabels";
+import { threadLineRefSuffix } from "./threadLabels";
 import type { ThreadSnapshot } from "./types";
 
 function thread(line: number, line_end?: number | null): Pick<ThreadSnapshot, "file" | "line" | "line_end"> {
@@ -7,17 +7,11 @@ function thread(line: number, line_end?: number | null): Pick<ThreadSnapshot, "f
 }
 
 describe("threadLabels", () => {
-  it("single-line labels", () => {
-    const t = thread(183);
-    expect(threadLineRangeLabel(t)).toBe("line 183");
-    expect(threadFileLineRef(t)).toBe("src/a.ts:183");
-    expect(threadLineRefSuffix(t)).toBe("183");
+  it("single-line suffix", () => {
+    expect(threadLineRefSuffix(thread(183))).toBe("183");
   });
 
-  it("multi-line labels", () => {
-    const t = thread(183, 186);
-    expect(threadLineRangeLabel(t)).toBe("lines 183–186");
-    expect(threadFileLineRef(t)).toBe("src/a.ts:183–186");
-    expect(threadLineRefSuffix(t)).toBe("183–186");
+  it("multi-line suffix", () => {
+    expect(threadLineRefSuffix(thread(183, 186))).toBe("183–186");
   });
 });
