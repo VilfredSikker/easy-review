@@ -22,4 +22,4 @@ Hot paths, allocations, blocking I/O, unnecessary work in the diff.
 
 ## Output
 
-Write **only** `.er/experts/performance.json` (same `Finding` schema as `/er-review`, including `confidence`, `evidence`, `outside_diff`).
+Write **only** `.er/experts/performance.json` (same `Finding` schema as `/er-review`, including `confidence`, `evidence`, `outside_diff`). Include top-level `summary`: 2–3 markdown paragraphs on performance impact (hot paths, allocations, blocking I/O) — not a general changelog.

@@ -47,17 +47,14 @@
 
   async function submit() {
     if (!canSubmit || diffSel.file === null || diffSel.start === null) return;
-    // Rust commands expect: { file, hunk_idx, line_num: Option<usize>, text }
-    // Range is collapsed to a single line for now — engine doesn't yet support
-    // line ranges. Tracked in task #15.
     const command = diffSel.kind === "comment" ? "add_comment" : "add_question";
-    // Tauri 2 auto-converts Rust snake_case to JS camelCase for command args.
-    // Rust `fn add_comment(file, hunk_idx, line_num, text)` ⇒ JS keys must be
-    // `file, hunkIdx, lineNum, text`.
+    const lineStart = diffSel.first();
+    const lineEnd = diffSel.last();
     const cmdArgs: Record<string, unknown> = {
       file: diffSel.file,
       hunkIdx: findHunkIdx(),
-      lineNum: diffSel.first(),
+      lineNum: lineStart,
+      lineNumEnd: lineStart !== lineEnd ? lineEnd : null,
       text: diffSel.text.trim(),
     };
     if (command === "add_comment" && diffSel.side !== null) {

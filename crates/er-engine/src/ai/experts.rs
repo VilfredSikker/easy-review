@@ -104,6 +104,37 @@ pub fn expert_by_id(id: &str) -> Option<&'static ExpertDef> {
     EXPERTS.iter().find(|e| e.id == id)
 }
 
+/// What the `summary` field in an expert sidecar should cover (prompt + skills).
+pub fn expert_summary_focus(expert_id: &str) -> &'static str {
+    match expert_id {
+        "security" => {
+            "security posture of this diff: trust boundaries touched, authZ/authN, secrets, injection, and whether findings are blocking"
+        }
+        "performance" => {
+            "performance impact: hot paths, allocations, blocking I/O, and whether the diff adds overhead or removes waste"
+        }
+        "reliability" => {
+            "reliability: error handling, retries, timeouts, resource cleanup, and failure modes introduced or fixed"
+        }
+        "testing" => {
+            "test coverage and quality: what is exercised, missing negative cases, and assertion strength"
+        }
+        "api" => {
+            "API and contract impact: breaking changes, public surface changes, and semver implications"
+        }
+        "patterns" => {
+            "consistency with existing patterns in the codebase — where the diff matches or diverges from established usage"
+        }
+        "simplifying" => {
+            "readability and complexity: what is hard to follow, what should be simplified or documented, and review friction"
+        }
+        "mentorship" => {
+            "exemplary patterns worth fostering (positive-only): what this diff does well and why it is worth emulating"
+        }
+        _ => "findings from this expert lens in 2–3 short paragraphs",
+    }
+}
+
 pub fn expert_label_for_category(category: &str) -> Option<&'static str> {
     expert_by_id(category).map(|e| e.label)
 }
@@ -187,7 +218,7 @@ pub fn list_expert_info() -> Vec<ExpertInfo> {
         .collect()
 }
 
-/// `.er/experts/{id}.json` — findings only (no order/checklist/summary).
+/// `.er/experts/{id}.json` — findings + lens-specific summary (no order/checklist/summary.md).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExpertReview {
     pub version: u32,
@@ -197,6 +228,9 @@ pub struct ExpertReview {
     pub diff_scope: String,
     #[serde(default)]
     pub created_at: String,
+    /// 2–3 short markdown paragraphs from this expert's lens (shown in AI Review when filtered).
+    #[serde(default)]
+    pub summary: String,
     #[serde(default)]
     pub files: HashMap<String, ExpertFileReview>,
 }
@@ -356,6 +390,7 @@ mod tests {
                 diff_hash: hash.to_string(),
                 diff_scope: "branch".to_string(),
                 created_at: String::new(),
+                summary: String::new(),
                 files: HashMap::from([(
                     "src/a.rs".to_string(),
                     ExpertFileReview {
@@ -369,6 +404,7 @@ mod tests {
                 diff_hash: "stale".to_string(),
                 diff_scope: String::new(),
                 created_at: String::new(),
+                summary: String::new(),
                 files: HashMap::from([(
                     "src/b.rs".to_string(),
                     ExpertFileReview {
@@ -383,6 +419,13 @@ mod tests {
         assert_eq!(f.findings.len(), 1);
         assert_eq!(f.findings[0].id, "sec-1");
         assert_eq!(f.findings[0].category, "security");
+    }
+
+    #[test]
+    fn expert_summary_focus_non_empty_for_all_experts() {
+        for e in EXPERTS {
+            assert!(!expert_summary_focus(e.id).is_empty());
+        }
     }
 
     #[test]
@@ -437,6 +480,7 @@ mod tests {
             diff_hash: hash.to_string(),
             diff_scope: String::new(),
             created_at: String::new(),
+            summary: String::new(),
             files: HashMap::from([(
                 "x.rs".to_string(),
                 ExpertFileReview {

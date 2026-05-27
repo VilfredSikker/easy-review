@@ -19,6 +19,9 @@ pub struct ProfessorReview {
     pub created_at: String,
     #[serde(default)]
     pub focus_prompt: String,
+    /// 2–3 short markdown paragraphs on what the diff implements (teaching tone).
+    #[serde(default)]
+    pub summary: String,
     #[serde(default)]
     pub files: HashMap<String, ProfessorFileReview>,
 }
@@ -81,6 +84,9 @@ pub fn professor_task_kind() -> String {
     PROFESSOR_ID.to_string()
 }
 
+/// What the `summary` field in professor.json should cover (prompt + skills).
+pub const PROFESSOR_SUMMARY_FOCUS: &str = "what this diff implements for a skilled developer: purpose, architecture, data flow, and 1–2 non-obvious mechanisms (teaching tone, not a bug list)";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +134,7 @@ mod tests {
             diff_scope: "branch".to_string(),
             created_at: String::new(),
             focus_prompt: String::new(),
+            summary: String::new(),
             files: HashMap::from([(
                 "src/lib.rs".to_string(),
                 ProfessorFileReview {

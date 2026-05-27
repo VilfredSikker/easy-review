@@ -9,6 +9,8 @@ import {
   findingsForLine,
   findingsForSplitRow,
   hunkLevelFindings,
+  lineHasAnchorRangeHighlight,
+  threadAnchorEnd,
   threadsForLine,
   type CommentVisibility,
 } from "./diffAnnotations";
@@ -137,6 +139,80 @@ describe("buildAnnotationIndex", () => {
 
     expect(idx.threadsByHunk.get(`${FILE}#0`)?.length).toBe(5);
   });
+
+  it("filters findings by agent while keeping finding-owned threads suppressed", () => {
+    const testingThread = mkThread({ id: "tTesting", file: FILE, line: 12 });
+    const generalOwnedThread = mkThread({ id: "tGeneralOwned", file: FILE, line: 13 });
+    const h = { ...hunk, threads: [testingThread, generalOwnedThread] };
+    const files = [mkFile(FILE, [h])];
+    const ai = {
+      threads: [testingThread, generalOwnedThread],
+      findings: [
+        mkFinding({
+          id: "f-testing",
+          file: FILE,
+          line: 12,
+          hunk_index: 0,
+          agent_label: "Testing",
+          thread_id: "tTesting",
+        }),
+        mkFinding({
+          id: "f-general",
+          file: FILE,
+          line: 13,
+          hunk_index: 0,
+          agent_label: "General",
+          thread_id: "tGeneralOwned",
+        }),
+      ],
+    };
+
+    const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF, "Testing");
+
+    expect(idx.findingsByFileLine.get(`${FILE}:12`)?.map((f) => f.id)).toEqual(["f-testing"]);
+    expect(idx.findingsByFileLine.get(`${FILE}:13`)).toBeUndefined();
+    expect(idx.findingMap.has("f-testing")).toBe(true);
+    expect(idx.findingMap.has("f-general")).toBe(false);
+    expect(idx.findingThreadIds.has("tTesting")).toBe(true);
+    expect(idx.findingThreadIds.has("tGeneralOwned")).toBe(true);
+    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF)).toEqual([]);
+  });
+
+  it("filters findings by severity while keeping hidden finding-owned threads suppressed", () => {
+    const highThread = mkThread({ id: "tHigh", file: FILE, line: 12 });
+    const lowOwnedThread = mkThread({ id: "tLowOwned", file: FILE, line: 13 });
+    const h = { ...hunk, threads: [highThread, lowOwnedThread] };
+    const files = [mkFile(FILE, [h])];
+    const ai = {
+      threads: [highThread, lowOwnedThread],
+      findings: [
+        mkFinding({
+          id: "f-high",
+          file: FILE,
+          line: 12,
+          hunk_index: 0,
+          severity: "high",
+          thread_id: "tHigh",
+        }),
+        mkFinding({
+          id: "f-low",
+          file: FILE,
+          line: 13,
+          hunk_index: 0,
+          severity: "low",
+          thread_id: "tLowOwned",
+        }),
+      ],
+    };
+
+    const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF, "all", "high");
+
+    expect(idx.findingsByFileLine.get(`${FILE}:12`)?.map((f) => f.id)).toEqual(["f-high"]);
+    expect(idx.findingsByFileLine.get(`${FILE}:13`)).toBeUndefined();
+    expect(idx.findingThreadIds.has("tHigh")).toBe(true);
+    expect(idx.findingThreadIds.has("tLowOwned")).toBe(true);
+    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF)).toEqual([]);
+  });
 });
 
 describe("findingsForLine", () => {
@@ -253,6 +329,36 @@ describe("threadsForLine", () => {
     const hideAll = threadsForLine(idx, FILE, 0, 13, hunkLines, { hideAll: true, hideResolved: false, hideOutdated: false });
     expect(hideAll.length).toBe(0);
   });
+
+  it("places multi-line threads at line_end, not line_start", () => {
+    const rangeThread = mkThread({ id: "t-range", file: FILE, line: 11, line_end: 13 });
+    const hunkWithRange: HunkSnapshot = {
+      ...hunk,
+      threads: [rangeThread],
+    };
+    const file: FileSnapshot = {
+      path: FILE,
+      status: "modified",
+      additions: 1,
+      deletions: 0,
+      reviewed: false,
+      compacted: false,
+      risk: null,
+      finding_count: 0,
+      comment_count: 1,
+      question_count: 0,
+      hunks: [hunkWithRange],
+      source_index: 0,
+      cache_key: `${FILE}#0`,
+    };
+    const ai = { threads: [rangeThread], findings: [] as FlatFinding[] };
+    const idx = buildAnnotationIndex(ai, [file], "branch", VIS_OFF);
+    expect(threadsForLine(idx, FILE, 0, 11, hunkLines, VIS_OFF).map((t) => t.id)).toEqual([]);
+    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF).map((t) => t.id)).toEqual(["t-range"]);
+    expect(threadAnchorEnd(rangeThread)).toBe(13);
+    expect(lineHasAnchorRangeHighlight(idx, FILE, 12, "new", VIS_OFF)).toBe(true);
+    expect(lineHasAnchorRangeHighlight(idx, FILE, 10, "new", VIS_OFF)).toBe(false);
+  });
 });
 
 describe("fallbackThreadsForHunk", () => {
@@ -321,6 +427,20 @@ describe("annotationVersion", () => {
     const a = fix();
     const v1 = annotationVersion(a.ai, a.files, "branch", VIS_OFF);
     const v2 = annotationVersion(a.ai, a.files, "unstaged", VIS_OFF);
+    expect(v1).not.toBe(v2);
+  });
+
+  it("changes when agent filter changes", () => {
+    const a = fix();
+    const v1 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, "General");
+    const v2 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, "Testing");
+    expect(v1).not.toBe(v2);
+  });
+
+  it("changes when severity filter changes", () => {
+    const a = fix();
+    const v1 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, "all", "all");
+    const v2 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, "all", "high");
     expect(v1).not.toBe(v2);
   });
 });

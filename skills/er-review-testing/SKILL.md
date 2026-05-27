@@ -22,4 +22,4 @@ Assertion quality, missing negative cases, shallow existence-only tests.
 
 ## Output
 
-Write **only** `.er/experts/testing.json`.
+Write **only** `.er/experts/testing.json` (include a lens-specific `summary` field — test coverage/quality, not a general changelog).

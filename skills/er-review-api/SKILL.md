@@ -22,4 +22,4 @@ Breaking changes, public surface, semver impact.
 
 ## Output
 
-Write **only** `.er/experts/api.json`.
+Write **only** `.er/experts/api.json` with top-level `summary`: 2–3 markdown paragraphs on API/contract impact (breaking changes, public surface, semver).

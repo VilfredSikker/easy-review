@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { lineHasAnchorRangeHighlight, type AnnotationIndex } from "$lib/diffAnnotations";
+  import type { CommentVisibility } from "$lib/diffAnnotations";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { wordDiff } from "$lib/wordDiff";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
@@ -11,8 +13,11 @@
     partner: LineSnapshot | null;
     filePath: string;
     rowIdx: number;
+    annotationIndex: AnnotationIndex;
+    commentVisibility: CommentVisibility;
   }
-  const { row, line, partner, filePath, rowIdx }: Props = $props();
+  const { row, line, partner, filePath, rowIdx, annotationIndex, commentVisibility }: Props =
+    $props();
 
   function lineClass(kind: string) {
     if (kind === "add") return "diff-add";
@@ -33,6 +38,10 @@
   const wdBg = $derived(line.kind === "del" ? "bg-del-fg/30" : "bg-add-fg/30");
 
   const isSelected = $derived(ln !== null && diffSel.file === filePath && diffSel.sel(ln, side));
+  const isAnchorRange = $derived(
+    ln !== null &&
+      lineHasAnchorRangeHighlight(annotationIndex, filePath, ln, side, commentVisibility),
+  );
 
   function leadingWS(): string {
     const t = line.text;
@@ -46,7 +55,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="grid grid-cols-[40px_minmax(0,1fr)] diff-row {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}"
+  class="grid grid-cols-[40px_minmax(0,1fr)] diff-row {lineClass(line.kind)} {isSelected ? 'is-selected' : ''} {isAnchorRange ? 'is-anchor-range' : ''}"
   style="height:{row.height}px"
   data-row-identity={row.identity}
   data-row-idx={rowIdx}

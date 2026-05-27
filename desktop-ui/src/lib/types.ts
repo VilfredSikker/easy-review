@@ -26,6 +26,10 @@ export interface ThreadSnapshot {
   kind: "comment" | "question";
   file: string;
   line: number;
+  /** Inclusive end line when the thread spans multiple diff lines. */
+  line_end?: number | null;
+  /** Review side for range matching: LEFT | RIGHT. */
+  side?: string;
   source: string;
   synced: boolean;
   stale: boolean;
@@ -106,6 +110,8 @@ export interface AiSnapshot {
   fresh: boolean;
   stale_reason: string | null;
   summary_markdown: string | null;
+  /** Per-agent markdown summaries from expert/professor sidecars (keyed by agent label). */
+  agent_summaries: Record<string, string>;
   high: number;
   med: number;
   low: number;
@@ -219,6 +225,7 @@ export interface TabSummary {
   pr_number: number | null;
   repo_root: string;
   is_active: boolean;
+  change_token: string;
 }
 
 export interface CheckSummary {

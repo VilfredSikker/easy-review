@@ -9,8 +9,12 @@ import type { AppSnapshot, PollResponse } from "../types";
 
 export interface ToastMessage {
   id: number;
-  kind: "success" | "error" | "info";
+  kind: "success" | "error" | "info" | "warn";
   message: string;
+  /** If true, the toast will not auto-dismiss (errors always persist). */
+  persist?: boolean;
+  /** Optional action button shown in the toast footer. */
+  action?: { label: string; onClick: () => void };
 }
 
 export interface LogEntry {
@@ -192,10 +196,40 @@ class AppStore {
       .join("\n");
   }
 
-  showToast(kind: ToastMessage["kind"], message: string, durationMs = kind === "error" ? 10_000 : 2_000) {
+  showToast(
+    kind: ToastMessage["kind"],
+    message: string,
+    durationMs = kind === "error" ? 10_000 : 3_200,
+    opts?: { persist?: boolean; action?: ToastMessage["action"] },
+  ) {
     const id = ++this.toastId;
-    this.toasts = [...this.toasts, { id, kind, message }];
+    // Errors always persist; warn persists if not explicitly overridden.
+    const persist = opts?.persist ?? (kind === "error");
+    this.toasts = [...this.toasts, { id, kind, message, persist, action: opts?.action }];
     if (this.toasts.length > 4) this.toasts = this.toasts.slice(-4);
+    if (!persist) {
+      const timer = setTimeout(() => {
+        this.toasts = this.toasts.filter((t) => t.id !== id);
+        this.toastTimers.delete(id);
+      }, durationMs);
+      this.toastTimers.set(id, timer);
+    }
+  }
+
+  /** Pause the auto-dismiss timer for a toast (called on mouseenter). */
+  pauseToast(id: number) {
+    const timer = this.toastTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.toastTimers.delete(id);
+    }
+  }
+
+  /** Restart the auto-dismiss timer for a toast (called on mouseleave). */
+  resumeToast(id: number, durationMs: number) {
+    if (this.toastTimers.has(id)) return; // already running
+    const toast = this.toasts.find((t) => t.id === id);
+    if (!toast || toast.persist) return;
     const timer = setTimeout(() => {
       this.toasts = this.toasts.filter((t) => t.id !== id);
       this.toastTimers.delete(id);

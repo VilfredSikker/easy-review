@@ -5,6 +5,8 @@
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
+  import { aiFindingFilter } from "$lib/stores/aiFindingFilter.svelte";
+  import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
   import DiffComposer from "./DiffComposer.svelte";
   import ComposerScrollBack from "./ComposerScrollBack.svelte";
   import FileHeaderRow from "./diff-rows/FileHeaderRow.svelte";
@@ -112,6 +114,16 @@
 
   let settingsOpen = $state(false);
 
+  async function collapseAllDiffFiles() {
+    diffFileCollapse.collapseAll(files.map((f) => f.path));
+    await tick();
+    if (!scrollEl) return;
+    const maxTop = Math.max(0, effectiveGeometry.totalHeight - viewportHeightPx);
+    if (scrollEl.scrollTop > maxTop) {
+      scrollEl.scrollTop = maxTop;
+    }
+  }
+
   const snapshotKey = $derived(
     snapshot ? `${snapshot.active_tab}:${snapshot.mode}:${snapshot.base}:${snapshot.branch}` : mode,
   );
@@ -122,6 +134,8 @@
       files,
       mode,
       app.commentVisibility,
+      aiReviewFilter.filter,
+      aiFindingFilter.severity,
     ),
   );
   const threadMap = $derived(annotationIndex.threadMap);
@@ -1068,6 +1082,28 @@
       {/if}
       <span class="mono text-xs text-fg-3">{files.length} {files.length === 1 ? "file" : "files"}</span>
       <div class="ml-auto flex items-center gap-1">
+        <button
+          type="button"
+          class="p-1 text-fg-3 hover:bg-hover rounded flex items-center"
+          onclick={collapseAllDiffFiles}
+          title="Collapse all files"
+          aria-label="Collapse all file diffs"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="m18 15-6-6-6 6"/>
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="p-1 text-fg-3 hover:bg-hover rounded flex items-center"
+          onclick={() => diffFileCollapse.expandAll()}
+          title="Expand all files"
+          aria-label="Expand all file diffs"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="m6 9 6 6 6-6"/>
+          </svg>
+        </button>
         <div class="relative">
           <button
             class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded flex items-center"
@@ -1137,7 +1173,7 @@
       <div class="flex items-center justify-center h-full text-muted text-sm">No changes</div>
     {:else}
       <!-- Sticky file path overlay: hides when real file-header is in viewport top band -->
-      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden} />
+      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden} scrollTopPx={scrollTopLivePx} />
 
       <!-- X-scroll surface: full-height absolute-positioned band -->
       <div
@@ -1152,7 +1188,7 @@
           {#each windowedRows as row, localIdx (row.identity)}
             {@const rowIdx = vw.start + localIdx}
             {#if row.type === "file-header"}
-              <FileHeaderRow {row} />
+              <FileHeaderRow {row} scrollTopPx={scrollTopLivePx} />
             {:else if row.type === "hunk-header"}
               <HunkHeaderRow {row} />
             {:else if row.type === "content-fold"}
@@ -1161,12 +1197,27 @@
               {@const line = getUnifiedLine(row)}
               {@const partner = getUnifiedPartner(row)}
               {#if line}
-                <UnifiedRow {row} {line} {partner} filePath={row.filePath} {rowIdx} />
+                <UnifiedRow
+                  {row}
+                  {line}
+                  {partner}
+                  filePath={row.filePath}
+                  {rowIdx}
+                  {annotationIndex}
+                  commentVisibility={app.commentVisibility}
+                />
               {/if}
             {:else if row.type === "content-split"}
               {@const splitRow = getSplitRow(row)}
               {#if splitRow}
-                <SplitContentRow {row} {splitRow} filePath={row.filePath} {rowIdx} />
+                <SplitContentRow
+                  {row}
+                  {splitRow}
+                  filePath={row.filePath}
+                  {rowIdx}
+                  {annotationIndex}
+                  commentVisibility={app.commentVisibility}
+                />
               {/if}
             {:else if row.type === "compacted-stub"}
               <CompactedStubRow {row} />

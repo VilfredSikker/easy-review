@@ -12,7 +12,8 @@ Up to **~10** file/range reads for **this** finding or thread only; **no global 
 /// via the configured agent command without requiring skill files.
 ///
 /// Shared rules live in `skills/REVIEW_RULES.md` and `review_rules_preamble()`.
-use super::experts::{expert_by_id, FindingCaps};
+use super::experts::{expert_by_id, expert_summary_focus, FindingCaps};
+use super::professor::PROFESSOR_SUMMARY_FOCUS;
 /// Returns true if the value contains only characters safe for shell interpolation.
 /// Allows alphanumeric, dots, underscores, hyphens, colons, slashes, and @.
 #[cfg(test)]
@@ -263,11 +264,16 @@ Focus only on **{id}** issues in this diff. Ignore problems outside this lens (o
 
 {description}
 
-Write **only** findings — do not write order.json, checklist.json, or summary.md."#,
+Write findings and a lens-specific `summary` in the expert JSON — do not write order.json, checklist.json, or summary.md."#,
         label = def.label,
         id = def.id,
         description = def.description,
     );
+    lens.push_str(&format!(
+        "\n\n**Summary (`summary` field):** 2–3 short markdown paragraphs on {}. No general change log — only what matters for the {label} lens.",
+        expert_summary_focus(expert_id),
+        label = def.label,
+    ));
     if expert_id == "patterns" {
         lens.push_str(
             r#"
@@ -322,6 +328,7 @@ fn expert_review_output_section(output_dir: &str, expert_id: &str) -> String {
   "diff_hash": "<sha256 from step 1>",
   "diff_scope": "<scope>",
   "created_at": "<ISO 8601>",
+  "summary": "2–3 short markdown paragraphs ({summary_focus})",
   "files": {{
     "path/to/file.rs": {{
       "findings": [
@@ -334,8 +341,10 @@ fn expert_review_output_section(output_dir: &str, expert_id: &str) -> String {
 
 - Finding `id` prefix: `{prefix}-` (e.g. `{prefix}-1`)
 - Finding `category`: `{expert_id}`
+- `summary`: lens-specific only — {summary_focus}
 - `mkdir -p {safe_output_dir}/experts` before writing"#,
         prefix = def.id_prefix,
+        summary_focus = expert_summary_focus(expert_id),
     )
 }
 
@@ -550,8 +559,11 @@ Explain what this diff implements so a skilled developer can understand it witho
 
 **Caps:** ~3 insights per file, ~12 total. Quality over quantity.
 
-Write **only** teaching insights — no order.json, checklist.json, or summary.md."#
+Write teaching insights and a `summary` in professor.json — no order.json, checklist.json, or summary.md."#
         .to_string();
+    lens.push_str(&format!(
+        "\n\n**Summary (`summary` field):** 2–3 short markdown paragraphs on {PROFESSOR_SUMMARY_FOCUS}."
+    ));
     if let Some(focus) = user_focus.filter(|s| !s.trim().is_empty()) {
         lens.push_str("\n\n## Learner focus (user-provided)\n");
         lens.push_str(focus.trim());
@@ -576,6 +588,7 @@ fn professor_output_section(output_dir: &str) -> String {
   "diff_scope": "<scope>",
   "created_at": "<ISO 8601>",
   "focus_prompt": "<user focus or empty string>",
+  "summary": "2–3 short markdown paragraphs ({professor_summary_focus})",
   "files": {{
     "path/to/file.rs": {{
       "findings": [
@@ -604,7 +617,9 @@ fn professor_output_section(output_dir: &str) -> String {
 }}
 ```
 
-- Finding `id` prefix: `prof-` (e.g. `prof-1`)"#
+- Finding `id` prefix: `prof-` (e.g. `prof-1`)
+- `summary`: {professor_summary_focus}"#,
+        professor_summary_focus = PROFESSOR_SUMMARY_FOCUS,
     )
 }
 
@@ -1473,7 +1488,16 @@ mod tests {
         assert!(prompt.contains("experts/security.json"));
         assert!(prompt.contains("Max 2 findings per file, max 10 total"));
         assert!(prompt.contains("Write **only**"));
+        assert!(prompt.contains("\"summary\""));
+        assert!(prompt.contains("security posture"));
         assert!(!prompt.contains("### '/tmp/out'/review.json"));
+    }
+
+    #[test]
+    fn testing_expert_prompt_asks_for_test_coverage_summary() {
+        let prompt = build_expert_review_prompt("main", "branch", "testing");
+        assert!(prompt.contains("test coverage"));
+        assert!(prompt.contains("\"summary\""));
     }
 
     #[test]
@@ -1504,6 +1528,8 @@ mod tests {
         assert!(prompt.contains("Professor lens"));
         assert!(prompt.contains("professor.json"));
         assert!(prompt.contains("category: \"professor\""));
+        assert!(prompt.contains("\"summary\""));
+        assert!(prompt.contains("teaching tone"));
         assert!(!prompt.contains("review.json"));
     }
 

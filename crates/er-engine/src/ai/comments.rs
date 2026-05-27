@@ -153,6 +153,14 @@ impl<'a> CommentRef<'a> {
         }
     }
 
+    pub fn line_end(&self) -> Option<usize> {
+        match self {
+            CommentRef::Question(q) => q.line_end,
+            CommentRef::GitHubComment(c) => c.line_end,
+            CommentRef::Legacy(c) => c.line_end,
+        }
+    }
+
     pub fn old_line_start(&self) -> Option<usize> {
         match self {
             CommentRef::Question(q) => q.old_line_start,
@@ -232,6 +240,10 @@ pub struct ReviewQuestion {
     pub file: String,
     pub hunk_index: Option<usize>,
     pub line_start: Option<usize>,
+    /// Inclusive end line when the question spans multiple diff lines (same side as `line_start`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub line_end: Option<usize>,
     #[serde(default)]
     pub line_content: String,
     pub text: String,
@@ -529,6 +541,7 @@ mod tests {
             file: "src/foo.rs".into(),
             hunk_index: Some(0),
             line_start: Some(10),
+            line_end: None,
             line_content: "fn foo() {}".into(),
             text: "Why this name?".into(),
             resolved: false,

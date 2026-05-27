@@ -1,22 +1,16 @@
 <script lang="ts">
   import type { ToastMessage } from "$lib/stores/app.svelte";
+  import ToastCard from "$lib/components/ToastCard.svelte";
 
-  interface Props { toasts: ToastMessage[]; }
+  interface Props {
+    toasts: ToastMessage[];
+  }
   const { toasts }: Props = $props();
-
-  const borderColor: Record<ToastMessage["kind"], string> = {
-    success: "border-l-4 border-l-add-fg",
-    error: "border-l-4 border-l-del-fg",
-    info: "border-l-4 border-l-accent",
-  };
 </script>
 
-<div class="fixed right-6 bottom-6 flex flex-col gap-2 z-50 pointer-events-none">
+<!-- Stacked bottom-right; newest on top (flex-col-reverse + DOM order = oldest first). -->
+<div class="fixed right-4 bottom-4 flex flex-col-reverse gap-2 z-50 pointer-events-none items-end">
   {#each toasts as toast (toast.id)}
-    <div
-      class="bg-ink-700 text-ink-100 text-xs font-mono w-80 px-4 py-3 rounded-none shadow-lg border border-ink-500/40 whitespace-pre-wrap break-words leading-relaxed {borderColor[toast.kind]}"
-    >
-      {toast.message}
-    </div>
+    <ToastCard {toast} />
   {/each}
 </div>

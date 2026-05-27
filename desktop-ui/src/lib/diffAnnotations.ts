@@ -6,6 +6,11 @@
  * All exports are pure functions of their inputs. No Svelte state is captured.
  */
 
+import {
+  ALL_REVIEWERS,
+  filterByAgent,
+  type AgentFilter,
+} from "$lib/aiReviewAgents";
 import type {
   AiSnapshot,
   FileSnapshot,
@@ -27,8 +32,38 @@ export interface AnnotationIndex {
   findingThreadIds: Set<string>;
   /** `${path}#${hunkIdx}` → ThreadSnapshot[] from `file.hunks[].threads`. */
   threadsByHunk: Map<string, ThreadSnapshot[]>;
+  /** Per-file thread anchor ranges for persistent multi-line highlights. */
+  threadRangesByFile: Map<string, ThreadAnchorRange[]>;
   /** Stable hash; see annotationVersion. */
   version: number;
+}
+
+export interface ThreadAnchorRange {
+  threadId: string;
+  start: number;
+  end: number;
+  side: "old" | "new";
+}
+
+export function threadAnchorEnd(t: ThreadSnapshot): number {
+  if (t.line_end != null && t.line_end > t.line) return t.line_end;
+  return t.line;
+}
+
+export function threadReviewSide(t: ThreadSnapshot): "old" | "new" {
+  return t.side === "LEFT" ? "old" : "new";
+}
+
+export function lineInThreadAnchorRange(
+  t: ThreadSnapshot,
+  line: number,
+  side: "old" | "new" | null,
+): boolean {
+  if (side !== null && side !== threadReviewSide(t)) return false;
+  const end = threadAnchorEnd(t);
+  const start = Math.min(t.line, end);
+  const hi = Math.max(t.line, end);
+  return line >= start && line <= hi;
 }
 
 export interface CommentVisibility {
@@ -39,6 +74,7 @@ export interface CommentVisibility {
 
 /** Minimal AiSnapshot subset used by the helpers. */
 type AiInput = Pick<AiSnapshot, "threads" | "findings">;
+export type FindingSeverityFilter = "all" | FlatFinding["severity"];
 
 function lineNum(line: LineSnapshot): number | null {
   return line.new_num ?? line.old_num;
@@ -58,6 +94,8 @@ export function annotationVersion(
   files: FileSnapshot[],
   mode: string,
   vis: CommentVisibility,
+  agentFilter: AgentFilter = ALL_REVIEWERS,
+  severityFilter: FindingSeverityFilter = "all",
 ): number {
   let h = 17;
   for (const t of ai.threads) h = (h * 31 + hashStr(t.id) + (t.resolved ? 1 : 0) + (t.stale ? 2 : 0)) | 0;
@@ -71,6 +109,8 @@ export function annotationVersion(
   }
   h = (h * 31 + (vis.hideAll ? 1 : 0) + (vis.hideResolved ? 2 : 0) + (vis.hideOutdated ? 4 : 0)) | 0;
   h = (h * 31 + hashStr(mode)) | 0;
+  h = (h * 31 + hashStr(agentFilter)) | 0;
+  h = (h * 31 + hashStr(severityFilter)) | 0;
   return h;
 }
 
@@ -79,10 +119,15 @@ export function buildAnnotationIndex(
   files: FileSnapshot[],
   mode: string,
   visibility: CommentVisibility,
+  agentFilter: AgentFilter = ALL_REVIEWERS,
+  severityFilter: FindingSeverityFilter = "all",
 ): AnnotationIndex {
+  const visibleFindings = filterByAgent(ai.findings, agentFilter).filter(
+    (f) => severityFilter === "all" || f.severity === severityFilter,
+  );
   const findingsByFileLine = new Map<string, FlatFinding[]>();
   const findingsByFile = new Map<string, FlatFinding[]>();
-  for (const f of ai.findings) {
+  for (const f of visibleFindings) {
     if (f.line === null) {
       const bucket = findingsByFile.get(f.file);
       if (bucket) bucket.push(f);
@@ -111,9 +156,25 @@ export function buildAnnotationIndex(
 
   const findingMap = new Map<string, FlatFinding>();
   const findingThreadIds = new Set<string>();
-  for (const f of ai.findings) {
+  for (const f of visibleFindings) {
     findingMap.set(f.id, f);
+  }
+  for (const f of ai.findings) {
     if (f.thread_id) findingThreadIds.add(f.thread_id);
+  }
+
+  const threadRangesByFile = new Map<string, ThreadAnchorRange[]>();
+  for (const t of threadMap.values()) {
+    const end = threadAnchorEnd(t);
+    if (end === 0 && t.line === 0) continue;
+    const bucket = threadRangesByFile.get(t.file) ?? [];
+    bucket.push({
+      threadId: t.id,
+      start: Math.min(t.line, end),
+      end: Math.max(t.line, end),
+      side: threadReviewSide(t),
+    });
+    threadRangesByFile.set(t.file, bucket);
   }
 
   return {
@@ -123,7 +184,8 @@ export function buildAnnotationIndex(
     threadMap,
     findingThreadIds,
     threadsByHunk,
-    version: annotationVersion(ai, files, mode, visibility),
+    threadRangesByFile,
+    version: annotationVersion(ai, files, mode, visibility, agentFilter, severityFilter),
   };
 }
 
@@ -263,7 +325,29 @@ export function threadsForLine(
   vis: CommentVisibility = { hideAll: false, hideResolved: false, hideOutdated: false },
 ): ThreadSnapshot[] {
   const threads = idx.threadsByHunk.get(`${filePath}#${hunkIndex}`) ?? [];
-  return visibleThreads(threads, idx.findingThreadIds, vis).filter((t) => t.line === line);
+  return visibleThreads(threads, idx.findingThreadIds, vis).filter(
+    (t) => threadAnchorEnd(t) === line,
+  );
+}
+
+export function lineHasAnchorRangeHighlight(
+  idx: AnnotationIndex,
+  filePath: string,
+  line: number,
+  side: "old" | "new" | null,
+  vis: CommentVisibility = { hideAll: false, hideResolved: false, hideOutdated: false },
+): boolean {
+  const ranges = idx.threadRangesByFile.get(filePath);
+  if (!ranges) return false;
+  for (const r of ranges) {
+    if (side !== null && side !== r.side) continue;
+    if (line < r.start || line > r.end) continue;
+    const t = idx.threadMap.get(r.threadId);
+    if (!t) continue;
+    if (visibleThreads([t], idx.findingThreadIds, vis).length === 0) continue;
+    return true;
+  }
+  return false;
 }
 
 export function fallbackThreadsForHunk(
@@ -275,9 +359,10 @@ export function fallbackThreadsForHunk(
   vis: CommentVisibility = { hideAll: false, hideResolved: false, hideOutdated: false },
 ): ThreadSnapshot[] {
   const threads = idx.threadsByHunk.get(`${filePath}#${hunkIndex}`) ?? [];
-  return visibleThreads(threads, idx.findingThreadIds, vis).filter(
-    (t) => !renderedLineNums.has(t.line),
-  );
+  return visibleThreads(threads, idx.findingThreadIds, vis).filter((t) => {
+    const end = threadAnchorEnd(t);
+    return !renderedLineNums.has(end) && !renderedLineNums.has(t.line);
+  });
 }
 
 /** Exposed for callers that need the visibility filter against a raw thread list

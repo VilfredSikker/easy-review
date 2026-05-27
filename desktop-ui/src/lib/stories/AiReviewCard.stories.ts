@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import AiReviewCard from "$lib/components/AiReviewCard.svelte";
-import { aiWithFindings, aiEmpty } from "./fixtures";
+import { aiWithFindings, aiEmpty, aiProfessorOnly, aiMultiAgent } from "./fixtures";
 
 const meta = {
   title: "RightPanel/AiReviewCard",
@@ -32,3 +32,7 @@ export const StaleWithReason: Story = {
     },
   },
 };
+
+export const ProfessorOnly: Story = { args: { ai: aiProfessorOnly } };
+
+export const MultiAgent: Story = { args: { ai: aiMultiAgent } };

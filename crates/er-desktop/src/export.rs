@@ -399,6 +399,7 @@ mod tests {
             file: file.into(),
             hunk_index: Some(0),
             line_start: Some(line),
+            line_end: None,
             line_content: String::new(),
             text: text.into(),
             resolved,

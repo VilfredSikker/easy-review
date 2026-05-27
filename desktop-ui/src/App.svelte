@@ -6,6 +6,7 @@
   import DiffView from "$lib/components/DiffView.svelte";
   import LeftSidebar from "$lib/components/LeftSidebar.svelte";
   import RightPanel from "$lib/components/RightPanel.svelte";
+  import CollapsedRightRail from "$lib/components/CollapsedRightRail.svelte";
   import Toast from "$lib/components/Toast.svelte";
   import BackgroundTasks from "$lib/components/BackgroundTasks.svelte";
   import BottomHints from "$lib/components/BottomHints.svelte";
@@ -19,6 +20,7 @@
   import BranchContextBar from "$lib/components/BranchContextBar.svelte";
   import Terminal from "$lib/components/Terminal.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
+  import { rightRail } from "$lib/stores/rightRail.svelte";
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
@@ -53,6 +55,13 @@
 
   let rightPanelWidth = $state(RIGHT_PANEL_DEFAULT);
   let resizingRightPanel = $state(false);
+
+  function expandRightPanelToTab(tab: "branch" | "review" | "notes") {
+    rightRail.expand();
+    try {
+      localStorage.setItem("rightPanelActiveTab", tab);
+    } catch { /* ignore */ }
+  }
 
   function clampRightPanelWidth(w: number): number {
     const max = Math.max(RIGHT_PANEL_MIN, window.innerWidth * RIGHT_PANEL_MAX_FRAC);
@@ -245,7 +254,7 @@
 {:else}
 
 <div class="h-screen flex flex-col bg-ink-900 text-ink-50 overflow-hidden">
-  <TabStrip />
+  <TabStrip onToggleRightCollapse={rightRail.toggle} rightCollapsed={rightRail.collapsed} />
   <BranchContextBar />
 
   <div class="flex-1 flex min-h-0 relative">
@@ -313,14 +322,22 @@
       </div>
     </main>
 
-    {#if panels?.right && showDiff && app.mainView === "diff"}
-      <RightPanel
-        ai={app.snapshot?.ai ?? null}
-        pr={app.snapshot?.pr ?? null}
-        width={rightPanelWidth}
-        dragging={resizingRightPanel}
-        onResizeStart={onRightPanelResizeStart}
-      />
+    {#if showDiff && app.mainView === "diff"}
+      {#if rightRail.collapsed}
+        <CollapsedRightRail
+          ai={app.snapshot?.ai ?? null}
+          onExpand={expandRightPanelToTab}
+        />
+      {:else}
+        <RightPanel
+          ai={app.snapshot?.ai ?? null}
+          pr={app.snapshot?.pr ?? null}
+          width={rightPanelWidth}
+          dragging={resizingRightPanel}
+          onResizeStart={onRightPanelResizeStart}
+          onCollapseToggle={rightRail.toggle}
+        />
+      {/if}
     {/if}
   </div>
 
@@ -336,7 +353,7 @@
         the pointer briefly leaves the handle.
       -->
       <div
-        class="absolute -top-[2px] left-0 right-0 h-1 cursor-ns-resize z-10 hover:bg-accent/40 {dragging ? 'bg-accent/60' : ''}"
+        class="absolute -top-[2px] left-0 right-0 h-1 cursor-row-resize z-10 hover:bg-accent/40 {dragging ? 'bg-accent/60' : ''}"
         onmousedown={onResizeStart}
         role="separator"
         aria-orientation="horizontal"
@@ -350,14 +367,14 @@
     </div>
   {/if}
 
-  {#if showDiff}
+  {#if showDiff && !terminal.open}
     <BottomHints />
   {/if}
 
   <BackgroundTasks
     tasks={app.snapshot?.background_tasks ?? []}
-    avoidRightPanel={!!panels?.right && showDiff}
-    rightPanelWidth={rightPanelWidth}
+    avoidRightPanel={showDiff && app.mainView === "diff"}
+    rightPanelWidth={rightRail.collapsed ? 44 : rightPanelWidth}
   />
   <Toast toasts={app.toasts} />
   {#if app.error}

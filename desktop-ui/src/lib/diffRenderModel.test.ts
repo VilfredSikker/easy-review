@@ -117,6 +117,7 @@ function emptyAi(threads: ThreadSnapshot[] = [], findings: FlatFinding[] = []): 
     fresh: true,
     stale_reason: null,
     summary_markdown: null,
+    agent_summaries: {},
     high: 0,
     med: 0,
     low: 0,
@@ -273,6 +274,31 @@ describe("getFileBlock — thread/finding injection", () => {
       expect(block.rows[4].threadId).toBe("t1");
     }
     expect(block.rows[5].type).toBe("content-unified");
+  });
+
+  it("inline-thread appears after line_end for multi-line anchor", () => {
+    const t = thread("t-range", "a.ts", 2, { line_end: 3 });
+    const h1 = hunk({
+      header: "@@ -1,3 +1,3 @@",
+      old_start: 1,
+      old_count: 3,
+      new_start: 1,
+      new_count: 3,
+      lines: [
+        line({ kind: "context", old_num: 1, new_num: 1 }),
+        line({ kind: "context", old_num: 2, new_num: 2 }),
+        line({ kind: "context", old_num: 3, new_num: 3 }),
+      ],
+      threads: [t],
+    });
+    const f = file({ path: "a.ts", hunks: [h1] });
+    const block = getFileBlock(mkInputs(f, [f], emptyAi([t])));
+    expect(block.rows[3].type).toBe("content-unified");
+    expect(block.rows[4].type).toBe("content-unified");
+    expect(block.rows[5].type).toBe("inline-thread");
+    if (block.rows[5].type === "inline-thread") {
+      expect(block.rows[5].threadId).toBe("t-range");
+    }
   });
 
   it("inline-finding appears immediately after content row for anchor line", () => {

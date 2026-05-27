@@ -223,6 +223,7 @@ export const aiWithFindings: AiSnapshot = {
   stale_reason: null,
   summary_markdown:
     "4 findings across 3 files. Two high-risk issues in variant-warning-copy.ts around fallback handling.",
+  agent_summaries: {},
   high: 2,
   med: 1,
   low: 1,
@@ -294,6 +295,7 @@ export const aiEmpty: AiSnapshot = {
   fresh: true,
   stale_reason: null,
   summary_markdown: null,
+  agent_summaries: {},
   high: 0,
   med: 0,
   low: 0,
@@ -306,6 +308,88 @@ export const aiEmpty: AiSnapshot = {
   findings: [],
   has_review_json: false,
   eligible_comment_count: 0,
+};
+
+function professorFinding(id: string, file: string, line: number, title: string): AiSnapshot["findings"][0] {
+  return {
+    id,
+    file,
+    line,
+    hunk_index: 0,
+    severity: "low",
+    title,
+    message_markdown: "",
+    promoted_to: null,
+    thread_id: null,
+    expert_label: null,
+    agent_label: "Professor",
+  };
+}
+
+/** Professor-only review (matches single-agent dropdown UX). */
+export const aiProfessorOnly: AiSnapshot = {
+  fresh: false,
+  stale_reason: "Review was generated for an older diff. Re-run or validate the review.",
+  summary_markdown: null,
+  agent_summaries: {
+    Professor:
+      "This branch adds replicate deviation APIs backed by a three-part hash and shared SQL CTEs.\n\nTests isolate pure helpers from DB/HTTP; the metric validation path still lacks 422 coverage.",
+  },
+  high: 0,
+  med: 1,
+  low: 14,
+  local_comment_count: 0,
+  github_comment_count: 0,
+  comments: 0,
+  questions: 0,
+  unpushed: 0,
+  threads: [],
+  findings: [
+    professorFinding("prof-1", "test_replicates.py", 1, "Pure-function unit tests isolated from DB and HTTP"),
+    professorFinding("prof-2", "queries_replicates.py", 3, "Three-part replicate hash design"),
+    professorFinding("prof-3", "queries_replicates.py", 46, "_PHYSICAL_WELL_KEY_CTE as a reusable, exported SQL fragment"),
+    professorFinding("prof-4", "test_experiments.py", 2895, "No test for 422 paths in metric validation logic"),
+    ...Array.from({ length: 10 }, (_, i) =>
+      professorFinding(`prof-extra-${i}`, `src/module_${i}.py`, i + 10, `Teaching insight ${i + 1}`),
+    ),
+    {
+      ...professorFinding("prof-med", "api_models.py", 3246, 'metric_name="" sentinel ambiguous vs str | None'),
+      severity: "med",
+    },
+  ],
+  has_review_json: true,
+  eligible_comment_count: 0,
+};
+
+/** General + Professor + Security for multi-agent dropdown. */
+export const aiMultiAgent: AiSnapshot = {
+  ...aiWithFindings,
+  agent_summaries: {
+    Security:
+      "Auth changes add JWT validation before handlers but skip audience checks — treat as blocking until `aud` is verified.",
+    Professor:
+      "JWT validation runs early in the request path, which is the right layering for this service.",
+  },
+  findings: [
+    ...aiWithFindings.findings,
+    professorFinding("prof-1", "src/auth.rs", 10, "JWT validation runs before handler body"),
+    {
+      id: "sec-1",
+      file: "src/auth.rs",
+      line: 22,
+      hunk_index: 0,
+      severity: "high",
+      title: "Token parsed without audience check — verify issuer and aud claims.",
+      message_markdown: "",
+      promoted_to: null,
+      thread_id: null,
+      expert_label: null,
+      agent_label: "Security",
+    },
+  ],
+  high: 3,
+  med: 1,
+  low: 2,
 };
 
 // ─── PR snapshots ───────────────────────────────────────────────────────────
@@ -345,6 +429,7 @@ export const tabsWorkingActive: TabSummary[] = [
     pr_number: 142,
     repo_root: "/Users/vilfred/Projects/discovery-platform",
     is_active: true,
+    change_token: "",
   },
 ];
 
@@ -445,6 +530,7 @@ export const remoteOnlyProjectSnapshot: AppSnapshot = {
       pr_number: 123,
       repo_root: "",
       is_active: true,
+      change_token: "",
     },
   ],
   active_tab: 0,

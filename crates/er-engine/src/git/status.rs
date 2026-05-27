@@ -775,6 +775,44 @@ pub fn git_log_branch(
 /// Get the most recent commits on HEAD, no range filter. Used when the user is
 /// sitting on the base branch itself (`base..HEAD` is empty) but we still want
 /// to show recent history in the file viewer's commit scroller.
+/// Log commits in the range `from..to` (e.g. `main..feature`). Used to list a
+/// branch's own commits even when that branch is NOT the checked-out HEAD of
+/// `repo_root` — pass the branch ref as `to`. On failure (ref missing), falls
+/// back to logging just `to` so the scroller still shows the branch history.
+pub fn git_log_range(
+    from: &str,
+    to: &str,
+    repo_root: &str,
+    limit: usize,
+    skip: usize,
+) -> Result<Vec<CommitInfo>> {
+    let range = format!("{}..{}", from, to);
+    let format_str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
+    let limit_str = format!("--max-count={}", limit);
+    let skip_str = format!("--skip={}", skip);
+
+    let output = Command::new("git")
+        .args(["log", &range, &limit_str, &skip_str, format_str, "--shortstat"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git log")?;
+
+    if !output.status.success() {
+        // `from` or `to` may not exist locally — fall back to logging `to` alone.
+        let output = Command::new("git")
+            .args(["log", to, &limit_str, &skip_str, format_str, "--shortstat"])
+            .current_dir(repo_root)
+            .output()
+            .context("Failed to run git log")?;
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+        return parse_git_log(&String::from_utf8_lossy(&output.stdout));
+    }
+
+    parse_git_log(&String::from_utf8_lossy(&output.stdout))
+}
+
 pub fn git_log_head(repo_root: &str, limit: usize) -> Result<Vec<CommitInfo>> {
     let format_str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
     let limit_str = format!("--max-count={}", limit);

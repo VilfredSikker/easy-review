@@ -22,4 +22,4 @@ Error handling, retries, timeouts, resource cleanup.
 
 ## Output
 
-Write **only** `.er/experts/reliability.json` with full `Finding` objects (`confidence`, `evidence`, etc.).
+Write **only** `.er/experts/reliability.json` with full `Finding` objects (`confidence`, `evidence`, etc.) and top-level `summary`: 2–3 markdown paragraphs on reliability (error handling, retries, timeouts, resource cleanup).

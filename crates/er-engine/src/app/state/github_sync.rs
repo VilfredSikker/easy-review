@@ -152,6 +152,10 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
     for gh in &gh_comments {
         let file_path = gh.path.clone().unwrap_or_default();
         let stable_line = gh.original_line.or(gh.line);
+        let line_end = match (gh.start_line, gh.line) {
+            (Some(start), Some(end)) if end > start => Some(end),
+            _ => None,
+        };
         let resolved_line: Option<usize> = if let (Some(diff_hunk), Some(f)) = (
             &gh.diff_hunk,
             ctx.files.iter().find(|f| f.path == file_path),
@@ -185,8 +189,8 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
             timestamp: gh.created_at.clone(),
             file: file_path,
             hunk_index,
-            line_start: resolved_line,
-            line_end: None,
+            line_start: gh.start_line.or(resolved_line),
+            line_end,
             line_content: anchor_line_content,
             comment: gh.body.clone(),
             in_reply_to,
@@ -743,15 +747,19 @@ impl App {
                 let path = &comment.file;
                 // TODO(risk:medium): a comment with no line_start (hunk-level comment) falls back
                 // to line 1, silently attributing the GitHub comment to the wrong location.
-                let line = comment.line_start.unwrap_or(1);
+                let start = comment.line_start.unwrap_or(1);
+                let end = comment.line_end.unwrap_or(start);
+                let side = comment.side.as_str();
                 match if is_remote {
                     github::gh_pr_push_comment_remote(
                         &owner,
                         &repo_name,
                         pr_number,
                         path,
-                        line,
+                        start,
+                        Some(end),
                         &comment.comment,
+                        side,
                     )
                 } else {
                     github::gh_pr_push_comment(
@@ -759,8 +767,10 @@ impl App {
                         &repo_name,
                         pr_number,
                         path,
-                        line,
+                        start,
+                        Some(end),
                         &comment.comment,
+                        side,
                         &repo_root,
                     )
                 } {
@@ -921,19 +931,23 @@ impl App {
                     )
                 }
             } else {
-                let line = comment.line_start.ok_or_else(|| {
+                let start = comment.line_start.ok_or_else(|| {
                     anyhow::anyhow!(
                         "Comment has no line anchor; add it on a diff line before pushing"
                     )
                 })?;
+                let end = comment.line_end.unwrap_or(start);
+                let side = comment.side.as_str();
                 if is_remote {
                     github::gh_pr_push_comment_remote(
                         &owner,
                         &repo_name,
                         pr_number,
                         &comment.file,
-                        line,
+                        start,
+                        Some(end),
                         &comment.comment,
+                        side,
                     )
                 } else {
                     github::gh_pr_push_comment(
@@ -941,8 +955,10 @@ impl App {
                         &repo_name,
                         pr_number,
                         &comment.file,
-                        line,
+                        start,
+                        Some(end),
                         &comment.comment,
+                        side,
                         &repo_root,
                     )
                 }

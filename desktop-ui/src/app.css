@@ -29,6 +29,9 @@
   --color-accent-soft:   rgba(255,106,61,0.12);
   --color-accent-border: rgba(255,106,61,0.30);
 
+  --color-periwinkle:      #7f87ff;
+  --color-periwinkle-soft: rgba(127,135,255,0.14);
+
   --color-add-bg: #182e24;
   --color-add-fg: #07c480;
   --color-del-bg: #2c1618;
@@ -151,6 +154,20 @@ body {
 .diff-row.is-selected > div.gutter:first-child {
   box-shadow: inset 3px 0 0 0 #3b82f6;
 }
+.diff-row.is-anchor-range > div {
+  background-color: rgba(59, 130, 246, 0.1) !important;
+}
+.diff-row.is-anchor-range > div.diff-add,
+.diff-row.is-anchor-range > div.diff-del {
+  background-color: rgba(59, 130, 246, 0.1) !important;
+}
+.diff-row.is-anchor-range > div.gutter:first-child,
+.diff-row.is-anchor-range > .gutter:nth-child(3) {
+  box-shadow: inset 2px 0 0 0 rgba(59, 130, 246, 0.55);
+}
+.diff-row.is-selected.is-anchor-range > div {
+  background-color: rgba(59, 130, 246, 0.22) !important;
+}
 .gutter { color: #737373; user-select: none; position: relative; }
 .diff-add { background-color: var(--color-add-bg); }
 .diff-del { background-color: var(--color-del-bg); }
@@ -164,7 +181,7 @@ body {
 .add-comment-btn {
   opacity: 0;
   position: absolute;
-  right: 2px;
+  left: 2px;
   top: 50%;
   transform: translateY(-50%);
   width: 16px;
@@ -198,4 +215,10 @@ body {
   0%   { box-shadow: 0 0 0 0 rgba(255, 106, 61, 0.55), 0 0 0 0 rgba(255, 106, 61, 0.35); }
   30%  { box-shadow: 0 0 0 3px rgba(255, 106, 61, 0.45), 0 0 22px 4px rgba(255, 106, 61, 0.35); }
   100% { box-shadow: 0 0 0 0 rgba(255, 106, 61, 0),    0 0 0 0 rgba(255, 106, 61, 0); }
+}
+
+/* Toast slide-in animation — kept global so Tailwind's animate-[toast-in_...] references work. */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }

@@ -72,6 +72,8 @@ pub struct GitHubComment {
     pub body: String,
     pub path: Option<String>,
     pub line: Option<usize>,
+    #[serde(default)]
+    pub start_line: Option<usize>,
     pub original_line: Option<usize>,
     pub side: Option<String>,
     pub in_reply_to_id: Option<u64>,
@@ -763,14 +765,42 @@ pub fn gh_pr_comments(
     Ok(all_comments)
 }
 
-/// Push a new review comment to a PR
+/// Build `gh api -f/-F` args for a line or multi-line review comment.
+fn review_comment_field_args(
+    path: &str,
+    line_start: usize,
+    line_end: usize,
+    side: &str,
+    body: &str,
+    commit_id: &str,
+) -> Vec<String> {
+    let end = line_end.max(line_start);
+    let mut args = vec![
+        format!("body={}", body),
+        format!("path={}", path),
+        format!("commit_id={}", commit_id),
+        format!("side={}", side),
+        format!("line={}", end),
+    ];
+    if end > line_start {
+        args.push(format!("start_line={}", line_start));
+        if side == "LEFT" {
+            args.push("start_side=LEFT".to_string());
+        }
+    }
+    args
+}
+
+/// Push a new review comment to a PR (`line_end` inclusive; omit or equal to start for single-line).
 pub fn gh_pr_push_comment(
     owner: &str,
     repo: &str,
     pr: u64,
     path: &str,
-    line: usize,
+    line_start: usize,
+    line_end: Option<usize>,
     body: &str,
+    side: &str,
     repo_root: &str,
 ) -> Result<u64> {
     // TODO(risk:medium): `body` is user-typed comment text passed directly to `gh api -f body=<body>`.
@@ -817,23 +847,23 @@ pub fn gh_pr_push_comment(
     // The comment would then be posted against a commit SHA that is no longer part of the PR,
     // causing the GitHub API to return a 422 Unprocessable Entity. The current error path
     // surfaces the stderr but doesn't give the user guidance on what went wrong.
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "POST",
-            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-            "-f",
-            &format!("body={}", body),
-            "-f",
-            &format!("path={}", path),
-            "-F",
-            &format!("line={}", line),
-            "-f",
-            "side=RIGHT",
-            "-f",
-            &format!("commit_id={}", commit_id),
-        ])
+    let end = line_end.unwrap_or(line_start);
+    let field_args = review_comment_field_args(path, line_start, end, side, body, &commit_id);
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "api",
+        "-X",
+        "POST",
+        &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
+    ]);
+    for arg in &field_args {
+        if arg.starts_with("line=") || arg.starts_with("start_line=") {
+            cmd.arg("-F").arg(arg);
+        } else {
+            cmd.arg("-f").arg(arg);
+        }
+    }
+    let output = cmd
         .current_dir(repo_root)
         .output()
         .context("Failed to push comment to GitHub")?;
@@ -1578,8 +1608,10 @@ pub fn gh_pr_push_comment_remote(
     repo: &str,
     pr: u64,
     path: &str,
-    line: usize,
+    line_start: usize,
+    line_end: Option<usize>,
     body: &str,
+    side: &str,
 ) -> Result<u64> {
     // Get the latest commit SHA for the PR
     let repo_slug = format!("{}/{}", owner, repo);
@@ -1610,25 +1642,23 @@ pub fn gh_pr_push_comment_remote(
         anyhow::bail!("Failed to get HEAD SHA: empty output");
     }
 
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "POST",
-            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-            "-f",
-            &format!("body={}", body),
-            "-f",
-            &format!("path={}", path),
-            "-F",
-            &format!("line={}", line),
-            "-f",
-            "side=RIGHT",
-            "-f",
-            &format!("commit_id={}", commit_id),
-        ])
-        .output()
-        .context("Failed to push comment to GitHub")?;
+    let end = line_end.unwrap_or(line_start);
+    let field_args = review_comment_field_args(path, line_start, end, side, body, &commit_id);
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "api",
+        "-X",
+        "POST",
+        &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
+    ]);
+    for arg in &field_args {
+        if arg.starts_with("line=") || arg.starts_with("start_line=") {
+            cmd.arg("-F").arg(arg);
+        } else {
+            cmd.arg("-f").arg(arg);
+        }
+    }
+    let output = cmd.output().context("Failed to push comment to GitHub")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1645,7 +1675,10 @@ pub fn gh_pr_push_comment_remote(
 /// A single comment entry for a batch PR review submission.
 pub struct ReviewBatchEntry {
     pub file: String,
+    /// End line of the anchor (GitHub `line` field).
     pub line: usize,
+    /// Start line when the comment spans multiple lines (GitHub `start_line`).
+    pub start_line: Option<usize>,
     pub body: String,
     pub side: String,
 }
@@ -1716,12 +1749,21 @@ fn pr_review_payload_json(
         let comment_values: Vec<serde_json::Value> = comments
             .iter()
             .map(|entry| {
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "path": entry.file,
                     "line": entry.line,
                     "side": entry.side,
                     "body": entry.body
-                })
+                });
+                if let Some(start) = entry.start_line {
+                    if start < entry.line {
+                        obj["start_line"] = serde_json::json!(start);
+                        if entry.side == "LEFT" {
+                            obj["start_side"] = serde_json::json!("LEFT");
+                        }
+                    }
+                }
+                obj
             })
             .collect();
         payload["comments"] = serde_json::Value::Array(comment_values);
@@ -2012,6 +2054,81 @@ pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
             }
         })
         .collect())
+}
+
+/// Fetch the list of commits on a remote PR (no local clone required).
+///
+/// Returns commits in reverse-chronological order (newest first), capped at `limit`.
+/// Uses `gh pr view --json commits` which returns the PR's commit history via the
+/// GitHub API. Each commit exposes `oid`, `messageHeadline`, `authors`, and
+/// `committedDate` (ISO 8601).
+///
+/// On any failure (gh unavailable, no auth, etc.) returns an empty list so the
+/// caller degrades gracefully.
+pub fn gh_pr_commits_remote(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    limit: usize,
+) -> Vec<crate::git::CommitInfo> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    // Ask gh for up to `limit` commits (gh returns at most 250 by default).
+    // The `commits` field is in chronological order; we reverse for newest-first.
+    let jq = format!(
+        r#"[.commits | reverse | .[:{limit}] | .[] | [
+            .oid,
+            (.oid | .[0:7]),
+            .messageHeadline,
+            (.authors | map(.login) | join(", ")),
+            (.committedDate // ""),
+            (.committedDate // "")
+        ] | @tsv] | .[]"#,
+        limit = limit
+    );
+    let output = match Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &repo_slug,
+            "--json",
+            "commits",
+            "--jq",
+            &jq,
+        ])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(6, '\t').collect();
+            if parts.len() < 4 {
+                return None;
+            }
+            Some(crate::git::CommitInfo {
+                hash: parts[0].to_string(),
+                short_hash: parts[1].to_string(),
+                subject: parts[2].to_string(),
+                author: parts[3].to_string(),
+                date: parts.get(4).unwrap_or(&"").to_string(),
+                relative_date: parts.get(5).unwrap_or(&"").to_string(),
+                file_count: 0,
+                adds: 0,
+                dels: 0,
+                is_merge: false,
+            })
+        })
+        .collect()
 }
 
 /// Fetch a rich PR overview (state, draft, review decision, mergeable, labels)

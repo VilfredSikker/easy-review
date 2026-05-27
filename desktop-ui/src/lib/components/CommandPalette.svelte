@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
-  import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
+  import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import { copyToClipboard } from "$lib/clipboard";
 
@@ -18,7 +19,6 @@
     file?: { path: string; additions: number; deletions: number };
   }
 
-  let open = $state(false);
   let query = $state("");
   let selectedIdx = $state(0);
   let inputEl = $state<HTMLInputElement | null>(null);
@@ -26,7 +26,7 @@
   const snapshot = $derived(app.snapshot);
 
   function close() {
-    open = false;
+    commandPalette.close();
     query = "";
     selectedIdx = 0;
   }
@@ -63,33 +63,17 @@
 
     const items: CommandItem[] = [
       {
-        id: "comment-current-hunk",
-        label: "Comment on current hunk",
-        description: "Add a personal review note",
+        id: "open-in-vscode",
+        label: "Open in VS Code",
+        description: "Open selected file at current hunk (local checkout only)",
         group: "Actions",
-        kbd: "c",
+        kbd: "e",
         run: () => {
           close();
-          const snap = app.snapshot;
-          if (!snap) return;
-          const file = snap.files[snap.selected_file];
-          if (!file) return;
-          const hunk = file.hunks[snap.current_hunk ?? 0];
-          if (!hunk) return;
-          const ln = hunk.lines.find((l) => l.new_num !== null)?.new_num ?? hunk.new_start;
-          diffSel.kind = "comment";
-          diffSel.file = file.path;
-          diffSel.start = ln;
-          diffSel.end = ln;
+          void invoke<{ kind: string; target: string }>("open_in_vscode").then((r) => {
+            if (r.kind === "needs_checkout") app.showToast("info", r.target);
+          }).catch((e) => app.showToast("error", `VS Code: ${e}`));
         },
-      },
-      {
-        id: "commit-staged",
-        label: "Commit staged changes",
-        description: "Open commit composer",
-        group: "Actions",
-        kbd: "⌘⏎",
-        run: () => { close(); app.cmd("open_commit_composer"); },
       },
       {
         id: "export-review-copy",
@@ -113,13 +97,6 @@
         group: "Actions",
         kbd: "⌘B",
         run: () => { close(); void (browser.open ? browser.cycleLayout() : browser.setLayout("split")); },
-      },
-      {
-        id: "next-unreviewed",
-        label: "Jump to next unreviewed file",
-        group: "Navigate",
-        kbd: "U",
-        run: () => { close(); app.cmd("jump_to_unreviewed"); },
       },
       {
         id: "refresh",
@@ -233,15 +210,6 @@
       },
     ];
 
-    for (const wt of (snapshot?.worktrees ?? []).filter((w) => !w.is_current)) {
-      items.push({
-        id: `switch-worktree-${wt.path}`,
-        label: `Switch worktree: ${wt.branch}`,
-        group: "Navigate",
-        run: () => { close(); app.cmd("switch_worktree", { path: wt.path }); },
-      });
-    }
-
     for (const file of snapshot?.files ?? []) {
       items.push({
         id: `file-${file.path}`,
@@ -301,11 +269,11 @@
   function openPalette() {
     selectedIdx = 0;
     query = "";
-    open = true;
+    commandPalette.show();
   }
 
   function onModalKeydown(e: KeyboardEvent) {
-    if (!open) return;
+    if (!commandPalette.open) return;
     if (e.key === "Escape") { e.preventDefault(); close(); }
     else if (e.key === "ArrowDown") { e.preventDefault(); selectedIdx = Math.min(selectedIdx + 1, flat.length - 1); }
     else if (e.key === "ArrowUp") { e.preventDefault(); selectedIdx = Math.max(selectedIdx - 1, 0); }
@@ -316,7 +284,7 @@
     function onGlobalKeydown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        if (open) close();
+        if (commandPalette.open) close();
         else openPalette();
       }
     }
@@ -331,7 +299,7 @@
 </script>
 
 <ModalShell
-  {open}
+  open={commandPalette.open}
   ariaLabel="Command palette"
   onClose={close}
   onKeydown={onModalKeydown}

@@ -8,6 +8,17 @@
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { navigateToFinding } from "$lib/dom";
   import { copyToClipboard } from "$lib/clipboard";
+  import {
+    ALL_REVIEWERS,
+    agentPillStyle,
+    countBySeverity,
+    filterByAgent,
+    findingAgentLabel,
+    resolveAgentSummary,
+    uniqueAgentLabels,
+    useAgentScopedSummary,
+  } from "$lib/aiReviewAgents";
+  import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
 
   interface Props {
     ai: AiSnapshot;
@@ -20,6 +31,13 @@
   let staleHelpOpen = $state(false);
   let filter = $state<"all" | "high" | "med" | "low">("all");
 
+  const agentLabels = $derived(uniqueAgentLabels(ai.findings));
+
+  $effect(() => {
+    ai.findings;
+    aiReviewFilter.syncFromFindings(ai.findings);
+  });
+
   function basename(p: string): string {
     const i = p.lastIndexOf("/");
     return i === -1 ? p : p.slice(i + 1);
@@ -29,20 +47,36 @@
     navigateToFinding(finding);
   }
 
+  const agentScopedFindings = $derived(
+    filterByAgent(ai.findings, aiReviewFilter.filter),
+  );
+  const scopedCounts = $derived(countBySeverity(agentScopedFindings));
+  const showAgentDropdown = $derived(ai.findings.length > 0);
+  const showAgentPills = $derived(
+    aiReviewFilter.filter === ALL_REVIEWERS && agentLabels.length > 1,
+  );
+  const agentSummaryOnly = $derived(useAgentScopedSummary(aiReviewFilter.filter));
+
   const isEmpty = $derived(
-    ai.findings.length === 0 && ai.high + ai.med + ai.low === 0
+    ai.findings.length === 0 &&
+      scopedCounts.high + scopedCounts.med + scopedCounts.low === 0
   );
 
-  const summary = $derived(
-    isEmpty
-      ? "No findings written. Inspect the `.er/` folder to see raw review output, or re-run the review skill."
-      : (ai.summary_markdown ??
-          `${ai.high + ai.med + ai.low} findings across ${new Set(ai.findings.map((f) => f.file)).size} files.`)
+  const resolvedSummary = $derived(
+    resolveAgentSummary(
+      ai,
+      aiReviewFilter.filter,
+      scopedCounts,
+      new Set(agentScopedFindings.map((f) => f.file)).size,
+      isEmpty,
+    ),
   );
+  const summary = $derived(resolvedSummary.text);
+  const summaryIsMarkdown = $derived(resolvedSummary.markdown);
   const staleReason = $derived(ai.stale_reason ?? "Review artifacts are stale.");
 
   const filtered = $derived(
-    ai.findings.filter((f) => filter === "all" || f.severity === filter)
+    agentScopedFindings.filter((f) => filter === "all" || f.severity === filter)
   );
 
   function revealErFolder() {
@@ -86,6 +120,21 @@
 </script>
 
 <Card>
+  {#if showAgentDropdown}
+    <select
+      bind:value={aiReviewFilter.filter}
+      class="w-full mb-2 bg-bg border border-border rounded px-2 py-1.5 text-xs text-fg outline-none"
+      aria-label="Review agent"
+    >
+      {#if agentLabels.length > 1}
+        <option value={ALL_REVIEWERS}>All reviewers</option>
+      {/if}
+      {#each agentLabels as label (label)}
+        <option value={label}>{label}</option>
+      {/each}
+    </select>
+  {/if}
+
   <div class="flex items-center justify-between mb-2">
     <SectionLabel>AI Review</SectionLabel>
     {#if ai.fresh}
@@ -109,17 +158,25 @@
       {staleReason}
     </div>
   {/if}
-  {#if summaryOpen || isEmpty}
+  {#if summaryOpen || isEmpty || agentSummaryOnly}
     <div class="summary-expanded mb-3">
-      <MarkdownText text={summary} className="text-sm text-fg-2 leading-relaxed" />
+      {#if summaryIsMarkdown}
+        <MarkdownText text={summary} className="text-sm text-fg-2 leading-relaxed" />
+      {:else}
+        <p class="text-sm text-fg-2 leading-relaxed">{summary}</p>
+      {/if}
     </div>
   {:else}
     <div class="summary-preview mb-3 text-sm text-fg-2 leading-relaxed">
-      <MarkdownText text={summary} />
+      {#if summaryIsMarkdown}
+        <MarkdownText text={summary} />
+      {:else}
+        <p>{summary}</p>
+      {/if}
     </div>
   {/if}
 
-  {#if !isEmpty}
+  {#if !isEmpty && !agentSummaryOnly}
     <Button
       variant="secondary"
       onclick={() => summaryOpen = !summaryOpen}
@@ -135,21 +192,21 @@
       class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-high {filter === 'high' && open ? 'border-risk-high' : 'border-border'}"
     >
       <div class="flex items-center gap-1.5 text-[10px] text-risk-high uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>High</div>
-      <div class="text-lg font-semibold mono">{ai.high}</div>
+      <div class="text-lg font-semibold mono">{scopedCounts.high}</div>
     </button>
     <button
       onclick={() => { open = true; filter = "med"; }}
       class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-med {filter === 'med' && open ? 'border-risk-med' : 'border-border'}"
     >
       <div class="flex items-center gap-1.5 text-[10px] text-risk-med uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>Med</div>
-      <div class="text-lg font-semibold mono">{ai.med}</div>
+      <div class="text-lg font-semibold mono">{scopedCounts.med}</div>
     </button>
     <button
       onclick={() => { open = true; filter = "low"; }}
       class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-low {filter === 'low' && open ? 'border-risk-low' : 'border-border'}"
     >
       <div class="flex items-center gap-1.5 text-[10px] text-risk-low uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>Low</div>
-      <div class="text-lg font-semibold mono">{ai.low}</div>
+      <div class="text-lg font-semibold mono">{scopedCounts.low}</div>
     </button>
   </div>
 
@@ -164,6 +221,7 @@
 
       {#each filtered as finding (finding.id)}
         {@const dotClass = finding.severity === "high" ? "bg-risk-high" : finding.severity === "med" ? "bg-risk-med" : "bg-risk-low"}
+        {@const label = findingAgentLabel(finding)}
         <div class="relative group">
           <button
             onclick={() => jumpTo(finding)}
@@ -172,7 +230,15 @@
             <div class="flex items-start gap-2">
               <span class="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 {dotClass}"></span>
               <div class="flex-1 min-w-0">
-                <div class="text-[11px] font-mono text-muted mb-0.5">{basename(finding.file)}{finding.line !== null ? `:${finding.line}` : ""}</div>
+                <div class="flex items-center gap-1.5 flex-wrap mb-0.5">
+                  <span class="text-[11px] font-mono text-muted">{basename(finding.file)}{finding.line !== null ? `:${finding.line}` : ""}</span>
+                  {#if showAgentPills}
+                    <span
+                      class="px-1 py-0 rounded-full text-[9px] font-medium border shrink-0"
+                      style={agentPillStyle(label)}
+                    >{label}</span>
+                  {/if}
+                </div>
                 <div class="text-[13px] text-fg-2 leading-snug">{finding.title}</div>
               </div>
             </div>

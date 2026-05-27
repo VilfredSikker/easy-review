@@ -233,6 +233,7 @@ mod tests {
                 file: "a.rs".into(),
                 hunk_index: Some(0),
                 line_start: Some(1),
+                line_end: None,
                 line_content: String::new(),
                 text: "stub".into(),
                 resolved: false,
@@ -324,6 +325,7 @@ mod tests {
             diff_hash: "h".into(),
             diff_scope: String::new(),
             created_at: String::new(),
+            summary: String::new(),
             files: [(
                 "a.rs".into(),
                 crate::ai::experts::ExpertFileReview {

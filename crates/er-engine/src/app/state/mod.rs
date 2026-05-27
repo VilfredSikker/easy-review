@@ -543,6 +543,9 @@ pub struct TabState {
     /// Optional specific line number the comment targets (new-side)
     pub comment_line_num: Option<usize>,
 
+    /// Inclusive end line when the comment targets a multi-line range.
+    pub comment_line_end: Option<usize>,
+
     /// Which type of comment is being created (Question vs GitHubComment)
     pub comment_type: CommentType,
 
@@ -1163,6 +1166,7 @@ impl TabState {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            comment_line_end: None,
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
@@ -1276,6 +1280,7 @@ impl TabState {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            comment_line_end: None,
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
@@ -1386,6 +1391,7 @@ impl TabState {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            comment_line_end: None,
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
@@ -1496,6 +1502,7 @@ impl TabState {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            comment_line_end: None,
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
@@ -3114,6 +3121,23 @@ impl TabState {
 
     // ── Mode ──
 
+    /// Root to run commit-log/diff git commands in: the branch's own worktree
+    /// when this tab views a checked-out local branch, else the tab's repo root.
+    pub fn commit_log_root(&self) -> &str {
+        self.local_branch_checkout_root
+            .as_deref()
+            .unwrap_or(self.repo_root.as_str())
+    }
+
+    /// Ref to log the branch's commits against base (`base..head`). Uses the
+    /// viewed branch ref so the commit list matches the diff even when that
+    /// branch is not the checked-out HEAD of `commit_log_root`.
+    pub fn commit_head_ref(&self) -> &str {
+        self.local_branch_view
+            .as_deref()
+            .unwrap_or(self.current_branch.as_str())
+    }
+
     pub fn set_mode(&mut self, mode: DiffMode) {
         if self.mode != mode {
             // Remember current position to restore after mode switch
@@ -3126,12 +3150,15 @@ impl TabState {
             if mode == DiffMode::History {
                 // Initialize history state if first time
                 if self.history.is_none() {
-                    let commits = git::git_log_branch(&self.base_branch, &self.repo_root, 50, 0)
-                        .unwrap_or_default();
+                    let log_root = self.commit_log_root().to_string();
+                    let head_ref = self.commit_head_ref().to_string();
+                    let commits =
+                        git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, 0)
+                            .unwrap_or_default();
 
                     let first_diff = if let Some(c) = commits.first() {
                         let raw =
-                            git::git_diff_commit(&c.hash, &self.repo_root).unwrap_or_default();
+                            git::git_diff_commit(&c.hash, &log_root).unwrap_or_default();
                         git::parse_diff(&raw)
                     } else {
                         vec![]
@@ -6383,6 +6410,7 @@ mod tests {
             comment_hunk: 0,
             comment_reply_to: None,
             comment_line_num: None,
+            comment_line_end: None,
             comment_type: CommentType::GitHubComment,
             comment_edit_id: None,
             comment_finding_ref: None,
@@ -8124,6 +8152,7 @@ mod tests {
                 file: "src/main.rs".to_string(),
                 hunk_index: Some(0),
                 line_start: Some(1),
+                line_end: None,
                 line_content: "line".to_string(),
                 text: "Why is this here?".to_string(),
                 resolved: false,

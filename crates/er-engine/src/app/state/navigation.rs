@@ -1131,8 +1131,10 @@ impl TabState {
         // TODO(risk:medium): git_log_branch is called synchronously on the event loop thread. Loading 50
         // commits on a slow filesystem or network-mounted repo blocks the UI for the full duration of the
         // git log call. This should be moved to a background thread like the PR hint check.
+        let log_root = self.commit_log_root().to_string();
+        let head_ref = self.commit_head_ref().to_string();
         let new_commits =
-            git::git_log_branch(&self.base_branch, &self.repo_root, 50, skip).unwrap_or_default();
+            git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, skip).unwrap_or_default();
 
         let history = match self.history.as_mut() {
             Some(h) => h,

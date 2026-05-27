@@ -51,6 +51,7 @@ function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
       fresh: true,
       stale_reason: null,
       summary_markdown: null,
+      agent_summaries: {},
       high: 0,
       med: 0,
       low: 0,

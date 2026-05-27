@@ -43,6 +43,7 @@ When the user provides focus text (trailing args or in a prior prompt), prioriti
   "diff_scope": "<scope>",
   "created_at": "<ISO8601>",
   "focus_prompt": "<user focus or empty>",
+  "summary": "2–3 short markdown paragraphs (what this diff implements — teaching tone, not a bug list)",
   "files": {
     "path/to/file.rs": {
       "findings": [

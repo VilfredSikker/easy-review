@@ -43,6 +43,7 @@ Do **not** flag naming, formatting, or style-only issues.
   "diff_hash": "<sha256>",
   "diff_scope": "<scope>",
   "created_at": "<ISO8601>",
+  "summary": "2–3 short markdown paragraphs (readability and complexity hotspots)",
   "files": {
     "path/to/file.rs": {
       "findings": [

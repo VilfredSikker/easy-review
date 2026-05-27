@@ -764,6 +764,45 @@ pub fn open_in_editor(state: State<AppState>) -> Result<OpenSourceResult, String
     open_source(state)
 }
 
+/// Open the selected file in VS Code (`code -g path:line`) when a local checkout exists.
+/// No GitHub/browser fallback — desktop `e` key uses this exclusively.
+#[tauri::command]
+pub fn open_in_vscode(state: State<AppState>) -> Result<OpenSourceResult, String> {
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let tab = app.tab();
+    let file = match tab.selected_diff_file() {
+        Some(f) => f,
+        None => {
+            return Ok(OpenSourceResult {
+                kind: "needs_checkout".to_string(),
+                target: "No selected file".to_string(),
+            });
+        }
+    };
+    let line_num = file
+        .hunks
+        .get(tab.current_hunk)
+        .map(|h| h.new_start)
+        .unwrap_or(1);
+
+    if let Some(local_root) = local_source_root(tab) {
+        let file_path = Path::new(local_root).join(&file.path);
+        if file_path.exists() {
+            open_vscode_at(local_root, &file_path, line_num).map_err(|e| e.to_string())?;
+            return Ok(OpenSourceResult {
+                kind: "opened_local".to_string(),
+                target: file_path.to_string_lossy().into_owned(),
+            });
+        }
+    }
+
+    Ok(OpenSourceResult {
+        kind: "needs_checkout".to_string(),
+        target: "No local checkout found for this file. Check out the branch in a worktree first."
+            .to_string(),
+    })
+}
+
 #[tauri::command]
 pub fn open_source(state: State<AppState>) -> Result<OpenSourceResult, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
@@ -858,6 +897,17 @@ fn open_editor_at(repo_root: &str, file_path: &Path, line_num: usize) -> anyhow:
         cmd.arg(format!("+{}", line_num)).arg(file_path);
     }
     cmd.spawn().context("Failed to open editor")?;
+    Ok(())
+}
+
+fn open_vscode_at(repo_root: &str, file_path: &Path, line_num: usize) -> anyhow::Result<()> {
+    use anyhow::Context;
+    std::process::Command::new("code")
+        .arg(repo_root)
+        .arg("-g")
+        .arg(format!("{}:{}", file_path.display(), line_num))
+        .spawn()
+        .context("Failed to open VS Code (is `code` on PATH?)")?;
     Ok(())
 }
 
@@ -1330,6 +1380,21 @@ pub fn reveal_er_folder(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    let target = std::path::Path::new(&path);
+    let result = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg("-R").arg(target).spawn()
+    } else if cfg!(target_os = "linux") {
+        let parent = target.parent().unwrap_or(target);
+        std::process::Command::new("xdg-open").arg(parent).spawn()
+    } else {
+        let arg = format!("/select,{}", target.display());
+        std::process::Command::new("explorer").arg(arg).spawn()
+    };
+    result.map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn list_review_revisions(state: State<AppState>) -> Result<Vec<ReviewRevisionSummary>, String> {
     // Branch-level managed storage no longer keeps multiple revisions per
     // branch — re-running review overwrites the same files in place. The
@@ -1394,6 +1459,7 @@ pub fn add_comment(
     file: String,
     hunk_idx: usize,
     line_num: Option<usize>,
+    line_num_end: Option<usize>,
     text: String,
     side: Option<String>,
     state: State<AppState>,
@@ -1407,6 +1473,7 @@ pub fn add_comment(
         file,
         hunk_idx,
         line_num,
+        line_num_end,
         text,
         CommentType::GitHubComment,
         None,
@@ -1421,6 +1488,7 @@ pub fn add_question(
     file: String,
     hunk_idx: usize,
     line_num: Option<usize>,
+    line_num_end: Option<usize>,
     text: String,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
@@ -1429,6 +1497,7 @@ pub fn add_question(
         file,
         hunk_idx,
         line_num,
+        line_num_end,
         text,
         CommentType::Question,
         None,
@@ -1483,6 +1552,7 @@ pub fn reply_to_thread(
         file,
         hunk_idx,
         line_num,
+        None,
         text,
         comment_type,
         Some(parent_id),
@@ -1625,6 +1695,16 @@ fn is_anchor_in_current_diff(
             .iter()
             .any(|(start, end)| line >= *start && line < *end)
     })
+}
+
+fn anchor_range_in_current_diff(
+    file_anchors: &std::collections::HashMap<String, Vec<(usize, usize)>>,
+    file: &str,
+    line_start: usize,
+    line_end: usize,
+) -> bool {
+    is_anchor_in_current_diff(file_anchors, file, line_start)
+        && is_anchor_in_current_diff(file_anchors, file, line_end)
 }
 
 // ── GitHub sync ───────────────────────────────────────────────────────────────
@@ -1872,7 +1952,8 @@ pub fn submit_github_review(
     struct BatchEntry {
         id: String,
         file: String,
-        line: usize,
+        line_start: usize,
+        line_end: Option<usize>,
         old_line: Option<usize>,
         body: String,
         side: String,
@@ -1891,13 +1972,17 @@ pub fn submit_github_review(
                 && !c.outdated
         })
         .filter_map(|c| {
-            c.line_start.map(|l| BatchEntry {
-                id: c.id.clone(),
-                file: c.file.clone(),
-                line: l,
-                old_line: c.old_line_start,
-                body: c.comment.clone(),
-                side: c.side.clone(),
+            c.line_start.map(|start| {
+                let end = c.line_end.filter(|e| *e > start).unwrap_or(start);
+                BatchEntry {
+                    id: c.id.clone(),
+                    file: c.file.clone(),
+                    line_start: start,
+                    line_end: if end > start { Some(end) } else { None },
+                    old_line: c.old_line_start,
+                    body: c.comment.clone(),
+                    side: c.side.clone(),
+                }
             })
         })
         .collect();
@@ -1908,30 +1993,56 @@ pub fn submit_github_review(
     let mut invalid_anchors: Vec<(String, usize, String)> = Vec::new();
     let mut batch_entries: Vec<BatchEntry> = Vec::new();
     for e in candidates {
+        let end = e.line_end.unwrap_or(e.line_start);
         let in_diff = if e.side == "LEFT" {
-            let anchor = e.old_line.unwrap_or(e.line);
-            is_anchor_in_current_diff(&old_file_anchors, &e.file, anchor)
+            let start = e.old_line.unwrap_or(e.line_start);
+            let old_end = e
+                .line_end
+                .and_then(|le| e.old_line.map(|ol| ol + (le - e.line_start)))
+                .unwrap_or(start);
+            anchor_range_in_current_diff(&old_file_anchors, &e.file, start, old_end)
         } else {
-            is_anchor_in_current_diff(&file_anchors, &e.file, e.line)
+            anchor_range_in_current_diff(&file_anchors, &e.file, e.line_start, end)
         };
         if in_diff {
             batch_entries.push(e);
         } else {
-            invalid_anchors.push((e.id, e.line, e.file));
+            invalid_anchors.push((e.id, e.line_start, e.file));
         }
     }
 
     let batch: Vec<er_engine::github::ReviewBatchEntry> = batch_entries
         .iter()
         .map(|e| {
-            let line = if e.side == "LEFT" {
-                e.old_line.unwrap_or(e.line)
+            let end = e.line_end.unwrap_or(e.line_start);
+            let (line, start_line) = if e.side == "LEFT" {
+                let start = e.old_line.unwrap_or(e.line_start);
+                let old_end = e
+                    .line_end
+                    .and_then(|le| e.old_line.map(|ol| ol + (le - e.line_start)))
+                    .unwrap_or(start);
+                (
+                    old_end,
+                    if old_end > start {
+                        Some(start)
+                    } else {
+                        None
+                    },
+                )
             } else {
-                e.line
+                (
+                    end,
+                    if end > e.line_start {
+                        Some(e.line_start)
+                    } else {
+                        None
+                    },
+                )
             };
             er_engine::github::ReviewBatchEntry {
                 file: e.file.clone(),
                 line,
+                start_line,
                 body: e.body.clone(),
                 side: e.side.clone(),
             }
@@ -2806,6 +2917,7 @@ pub fn promote_to_comment(
         file,
         hunk_idx,
         line_start,
+        None,
         text,
         CommentType::GitHubComment,
         None,
@@ -2941,6 +3053,7 @@ fn resolve_or_create_finding_validation_thread(
         file,
         hunk_idx,
         line_start,
+        None,
         stub,
         er_engine::ai::CommentType::Question,
         None,
@@ -3177,6 +3290,7 @@ pub fn ask_ai(
                 file,
                 hunk_idx,
                 line_num,
+                None,
                 body,
                 comment_type,
                 Some(thread_id_for_thread.clone()),
@@ -4456,6 +4570,84 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
     snap!(state)
 }
 
+/// Trigger a PR-list refresh scoped to a single project's remote. Returns the
+/// current snapshot immediately (the refresh runs in the background).
+/// Deduplicates: if a full PR refresh is already running, this is a no-op.
+/// If the project has no remote configured, returns the current snapshot without error.
+#[tauri::command]
+pub fn refresh_project_pr_list(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let file = crate::projects::load();
+    let remote = match file.projects.iter().find(|p| p.id == project_id) {
+        Some(p) => match p.remote.clone() {
+            Some(r) => r,
+            None => return snap!(state),
+        },
+        None => return snap!(state),
+    };
+
+    let already_running = {
+        let mut flags = state.loading.lock().map_err(|e| e.to_string())?;
+        if flags.pr_list {
+            true
+        } else {
+            flags.pr_list = true;
+            false
+        }
+    };
+
+    if !already_running {
+        let cache = Arc::clone(&state.pr_cache);
+        let fetched_at = Arc::clone(&state.pr_cache_fetched_at);
+        let loading = Arc::clone(&state.loading);
+        let desktop_rev = Arc::clone(&state.desktop_revision);
+        let pr_cache = Arc::clone(&state.pr_cache);
+        let gh_user = Arc::clone(&state.gh_user);
+        let inbox = Arc::clone(&state.inbox);
+        let app_handle_state = Arc::clone(&state.tauri_app_handle);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build tokio runtime");
+            let remote_clone = remote.clone();
+            let success = rt.block_on(async move {
+                crate::pr_cache::refresh_pr_cache_for_remote(&remote_clone, &cache, &fetched_at)
+                    .await
+            });
+            if !success {
+                process_inbox_after_pr_refresh(
+                    &pr_cache,
+                    &gh_user,
+                    &inbox,
+                    &desktop_rev,
+                    &app_handle_state,
+                    Some(remote),
+                );
+            }
+            process_inbox_after_pr_refresh(
+                &pr_cache,
+                &gh_user,
+                &inbox,
+                &desktop_rev,
+                &app_handle_state,
+                None,
+            );
+            if let Ok(mut f) = loading.lock() {
+                f.pr_list = false;
+            }
+            crate::profile_log::bump_desktop_revision(
+                &desktop_rev,
+                "pr_cache_refresh_project_manual",
+            );
+        });
+    }
+
+    snap!(state)
+}
+
 #[tauri::command]
 pub fn mark_inbox_item_read(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let now = now_ms();
@@ -4985,6 +5177,7 @@ pub fn promote_finding_to_comment(
         file,
         hunk_idx,
         line_start,
+        None,
         text,
         CommentType::GitHubComment,
         None,
@@ -5070,6 +5263,7 @@ pub fn reply_to_finding(
                 file.clone(),
                 hunk_idx,
                 line_start,
+                None,
                 "AI follow-up requested for this finding.".to_string(),
                 CommentType::GitHubComment,
                 None,
@@ -5101,6 +5295,7 @@ pub fn reply_to_finding(
             file,
             hunk_idx,
             line_start,
+            None,
             body,
             CommentType::GitHubComment,
             Some(root_id),
@@ -5112,6 +5307,7 @@ pub fn reply_to_finding(
             file.clone(),
             hunk_idx,
             line_start,
+            None,
             FINDING_THREAD_STUB.to_string(),
             CommentType::GitHubComment,
             None,
@@ -5137,6 +5333,7 @@ pub fn reply_to_finding(
             file,
             hunk_idx,
             line_start,
+            None,
             body,
             CommentType::GitHubComment,
             Some(root_id),
@@ -6339,6 +6536,7 @@ mod tests {
                 file: "a.rs".to_string(),
                 hunk_index: Some(0),
                 line_start: Some(1),
+                line_end: None,
                 line_content: String::new(),
                 text: "question".to_string(),
                 resolved: false,

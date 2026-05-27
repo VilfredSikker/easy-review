@@ -96,6 +96,46 @@ class DiffNavStore {
     this.nav?.scrollToEdge(to);
   }
 
+  /**
+   * Scroll to the previous or next hunk within a file relative to the current
+   * scroll position. `scrollTopPx` should be the raw scrollTop of the diff
+   * container (before subtracting the sticky header offset).
+   */
+  scrollToAdjacentHunk(path: string, direction: "prev" | "next", scrollTopPx: number): void {
+    if (!this.nav) return;
+    const model = this.nav.getModel();
+    if (!model) return;
+    const hunkRows = model.hunkStartRow.get(path);
+    if (!hunkRows || hunkRows.length === 0) return;
+    const STICKY_HEADER_PX = 40;
+    // Offset into the row coordinate space (same adjustment FlatDiffView uses).
+    const rowTop = Math.max(0, scrollTopPx - STICKY_HEADER_PX);
+    if (direction === "next") {
+      // Find first hunk whose top is strictly below the current view top.
+      for (const rowIdx of hunkRows) {
+        const top = model.cumulativeOffsets[rowIdx] ?? 0;
+        if (top > rowTop + 4) {
+          this.pendingScrollPx = top;
+          this.nav.scrollToRow(rowIdx, "start");
+          return;
+        }
+      }
+      // Already past last hunk — stay (or wrap to first).
+    } else {
+      // Find last hunk whose top is strictly above the current view top.
+      let targetRowIdx: number | null = null;
+      for (const rowIdx of hunkRows) {
+        const top = model.cumulativeOffsets[rowIdx] ?? 0;
+        if (top < rowTop - 4) targetRowIdx = rowIdx;
+      }
+      if (targetRowIdx !== null) {
+        const top = model.cumulativeOffsets[targetRowIdx] ?? 0;
+        this.pendingScrollPx = top;
+        this.nav.scrollToRow(targetRowIdx, "start");
+      }
+    }
+  }
+
   scrollToHunk(path: string, hunkIdx: number): void {
     if (!this.nav) return;
     const model = this.nav.getModel();

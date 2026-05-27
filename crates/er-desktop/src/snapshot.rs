@@ -242,6 +242,7 @@ pub struct TabSummary {
     pub pr_number: Option<u64>,
     pub repo_root: String,
     pub is_active: bool,
+    pub change_token: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -405,6 +406,12 @@ pub struct ThreadSnapshot {
     pub kind: String, // "comment" | "question"
     pub file: String,
     pub line: usize,
+    /// Inclusive end line when the thread spans multiple diff lines (`None` = single line).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_end: Option<usize>,
+    /// Review side for range matching: "LEFT" | "RIGHT".
+    #[serde(default = "default_thread_side")]
+    pub side: String,
     pub source: String, // "local" | "github"
     pub synced: bool,
     pub stale: bool,
@@ -448,6 +455,8 @@ pub struct AiSnapshot {
     pub fresh: bool,
     pub stale_reason: Option<String>,
     pub summary_markdown: Option<String>,
+    /// Per-agent markdown summaries (Security, Testing, Professor, …) from expert/professor sidecars.
+    pub agent_summaries: std::collections::HashMap<String, String>,
     pub high: usize,
     pub med: usize,
     pub low: usize,
@@ -537,6 +546,10 @@ pub struct WorktreeSnapshot {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+fn default_thread_side() -> String {
+    "RIGHT".to_string()
+}
+
 fn severity_str(r: &RiskLevel) -> &'static str {
     match r {
         RiskLevel::High => "high",
@@ -565,12 +578,19 @@ fn comment_ref_to_thread(
         CommentRef::GitHubComment(gc) => gc.line_start.unwrap_or(0),
         CommentRef::Legacy(lc) => lc.line_start.unwrap_or(0),
     };
+    let line_end = c.line_end();
+    let side = match c {
+        CommentRef::GitHubComment(gc) => gc.side.clone(),
+        _ => default_thread_side(),
+    };
     let author_kind = if c.author() == "You" { "you" } else { "human" };
     ThreadSnapshot {
         id: c.id().to_string(),
         kind: kind.to_string(),
         file: file.to_string(),
         line,
+        line_end,
+        side,
         source,
         synced: c.is_synced(),
         stale: match c {
@@ -1089,6 +1109,7 @@ fn build_snapshot_inner(
                 pr_number: t.pr_number,
                 repo_root: t.repo_root.clone(),
                 is_active: i == active_tab,
+                change_token: t.branch_diff_hash.clone(),
             }
         })
         .collect();
@@ -1325,6 +1346,7 @@ fn empty_ai_snapshot() -> AiSnapshot {
         fresh: true,
         stale_reason: None,
         summary_markdown: None,
+        agent_summaries: std::collections::HashMap::new(),
         high: 0,
         med: 0,
         low: 0,
@@ -1341,23 +1363,35 @@ fn empty_ai_snapshot() -> AiSnapshot {
 }
 
 /// Load the most recent 10 commits on the current branch for the file viewer's
-/// commit history scroller. Reuses history-mode commits if already loaded;
-/// otherwise shells out to `git log`. Returns an empty list for remote-only
-/// tabs (no local repo to query).
+/// commit history scroller. Reuses history-mode commits if already loaded.
+/// For local tabs shells out to `git log`. For remote PR tabs (no local repo),
+/// fetches commits via `gh pr view --json commits`.
 fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
     const LIMIT: usize = 10;
 
-    let log_root = tab
-        .local_branch_checkout_root
-        .as_deref()
-        .unwrap_or(tab.repo_root.as_str());
+    let log_root = tab.commit_log_root();
 
     let raw: Vec<er_engine::git::CommitInfo> = if let Some(history) = tab.history.as_ref() {
         history.commits.iter().take(LIMIT).cloned().collect()
-    } else if tab.remote_repo.is_some() {
-        Vec::new()
+    } else if let Some(ref repo_slug) = tab.remote_repo {
+        // Remote PR tab: no local git repo. Fetch commits via `gh pr view --json commits`.
+        // Parse the "owner/repo" slug back into owner + repo.
+        if let Some(pr_number) = tab.pr_number {
+            if let Some((owner, repo)) = repo_slug.split_once('/') {
+                er_engine::github::gh_pr_commits_remote(owner, repo, pr_number, LIMIT)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
     } else {
-        let ranged = er_engine::git::git_log_branch(&tab.base_branch, log_root, LIMIT, 0)
+        // Log the VIEWED branch's commits (base..branch), not base..HEAD — when
+        // the branch isn't the checked-out HEAD of log_root, base..HEAD logs the
+        // wrong branch (e.g. main). The branch ref resolves in the main clone too.
+        // Matches the source History mode uses so clicking a commit resolves it.
+        let head_ref = tab.commit_head_ref();
+        let ranged = er_engine::git::git_log_range(&tab.base_branch, head_ref, log_root, LIMIT, 0)
             .unwrap_or_default();
         if ranged.is_empty() {
             // On the base branch itself `base..HEAD` is empty — fall back to
@@ -1941,12 +1975,22 @@ fn build_projects_from_file(
                         .cloned()
                         .collect();
 
+                    // "To review" = open PRs not authored by me that I haven't
+                    // already reviewed. Excluding PRs I've already approved or
+                    // requested changes on keeps the list to what still needs my
+                    // attention (GitHub clears the review request once I review,
+                    // but the PR stays open).
                     let to_review: Vec<PrInfo> = all
                         .iter()
                         .filter(|pr| {
                             pr.state == "OPEN"
                                 && me.as_deref().is_none_or(|login| pr.author != login)
                                 && !pr.approved_by_me
+                                && me.as_deref().is_none_or(|login| {
+                                    !pr.latest_reviewer_states.iter().any(|(l, s)| {
+                                        l == login && (s == "APPROVED" || s == "CHANGES_REQUESTED")
+                                    })
+                                })
                         })
                         .cloned()
                         .collect();
@@ -2222,6 +2266,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         kind: "question".to_string(),
                         file: q.file.clone(),
                         line: q.line_start.unwrap_or(0),
+                        line_end: q.line_end,
+                        side: default_thread_side(),
                         source: "local".to_string(),
                         synced: false,
                         stale: q.stale,
@@ -2257,6 +2303,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         kind: "comment".to_string(),
                         file: c.file.clone(),
                         line: c.line_start.unwrap_or(0),
+                        line_end: c.line_end,
+                        side: c.side.clone(),
                         source: c.source.clone(),
                         synced: c.synced,
                         stale: c.stale || c.outdated,
@@ -2350,6 +2398,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         fresh: !ai.is_stale,
         stale_reason,
         summary_markdown: ai.summary.clone(),
+        agent_summaries: ai.agent_summaries.clone(),
         high,
         med,
         low,

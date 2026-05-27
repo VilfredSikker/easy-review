@@ -302,6 +302,8 @@ pub struct AiState {
     pub review: Option<ErReview>,
     pub order: Option<ErOrder>,
     pub summary: Option<String>,
+    /// Per-agent markdown summaries keyed by display label (Security, Testing, Professor, …).
+    pub agent_summaries: HashMap<String, String>,
     pub checklist: Option<ErChecklist>,
     /// Personal review questions (.er-questions.json)
     pub questions: Option<ErQuestions>,
@@ -324,6 +326,7 @@ impl Default for AiState {
             review: None,
             order: None,
             summary: None,
+            agent_summaries: HashMap::new(),
             checklist: None,
             questions: None,
             github_comments: None,
@@ -1944,6 +1947,7 @@ mod tests {
             file: file.to_string(),
             hunk_index,
             line_start: None,
+            line_end: None,
             line_content: String::new(),
             text: "question text".to_string(),
             resolved: false,

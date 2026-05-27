@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import type { InboxItemSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
@@ -51,6 +52,7 @@
 
   let settingsOpen = $state(false);
   let inboxPopoverOpen = $state(false);
+  let inboxFilter = $state<"all" | "unread" | "read">("all");
   let selectedInboxMessage = $state<InboxItemSnapshot | null>(null);
   let expandedProject = $state<string | null>(null);
   let pendingBranchKey = $state<string | null>(null);
@@ -59,6 +61,13 @@
   let prSavedRevealCountByProject = $state<Record<string, number>>({});
   let prRecentRevealCountByProject = $state<Record<string, number>>({});
   let sidebarSearch = $state("");
+  // Per-project 3-dot menu open state
+  let projectMenuOpen = $state<string | null>(null);
+  // Per-project sync loading state
+  let syncingProject = $state<string | null>(null);
+  // Per-project pending delete state
+  let pendingDeleteProjectId = $state<string | null>(null);
+  let pendingDeleteTimer: ReturnType<typeof setTimeout> | null = null;
 
   const sidebarSearchNeedle = $derived(sidebarSearch.trim().toLowerCase());
   const searchActive = $derived(sidebarSearchNeedle.length > 0);
@@ -78,13 +87,12 @@
         }),
   );
 
-  // Branch-picker state for the project header "+" button.
+  // Branch-picker state for the project 3-dot menu "New" item.
   let addingTo = $state<string | null>(null);
   let availableBranches = $state<string[]>([]);
   let pickerLoading = $state(false);
 
-  async function openBranchPicker(projectId: string, e: MouseEvent) {
-    e.stopPropagation();
+  async function openBranchPicker(projectId: string) {
     if (addingTo === projectId) {
       addingTo = null;
       return;
@@ -113,6 +121,7 @@
   function onSettingsKey(e: KeyboardEvent) {
     if (e.key !== "Escape") return;
     inboxPopoverOpen = false;
+    projectMenuOpen = null;
     closeBranchPicker();
   }
 
@@ -158,11 +167,64 @@
 
   function prIconColor(pr: PrInfo): string {
     if (pr.state === "MERGED") return "text-purple-400";
+    if (pr.state === "CLOSED") return "text-del-fg";
     if (pr.review_decision === "CHANGES_REQUESTED") return "text-del-fg";
     if (pr.review_decision === "APPROVED") return "text-add-fg";
     if (pr.is_draft) return "text-muted";
+    // Ready for review (open, not draft, no decision yet)
     return "text-fg-3";
   }
+
+  /** Map inbox item kind/severity to an SVG path + color class for the icon. */
+  interface InboxKindMeta { color: string; path: string; viewBox?: string }
+  function inboxKindMeta(item: InboxItemSnapshot): InboxKindMeta {
+    // Try kind-based mapping first
+    switch (item.kind) {
+      case "pr_merged":
+      case "merged":
+        return { color: "text-periwinkle", path: "M18 6 6 18M6 6l12 12M6 3v6h6" }; // git-merge simplified
+      case "ci_failed":
+      case "ci-fail":
+      case "check_failed":
+        return { color: "text-del-fg", path: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM15 9l-6 6M9 9l6 6" };
+      case "review_requested":
+      case "review":
+        return { color: "text-accent", path: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" };
+      case "new_comment":
+      case "comment":
+        return { color: "text-comment", path: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" };
+      case "mention":
+        return { color: "text-amber-300", path: "M16 8a6 6 0 0 1-12 0 6 6 0 0 1 12 0zM16 8c0 3.3 1.7 6 4 6M20 8v4M20 8a8 8 0 1 0-8 8" };
+    }
+    // Fall back to severity
+    switch (item.severity) {
+      case "error":   return { color: "text-del-fg",    path: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM15 9l-6 6M9 9l6 6" };
+      case "warning": return { color: "text-amber-300", path: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" };
+      default:        return { color: "text-muted",     path: "M18 8h1a4 4 0 0 1 0 8h-1M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8zM6 1v3M10 1v3M14 1v3" };
+    }
+  }
+
+  /** Top 2 unread items for the in-rail teaser. */
+  const inboxTeaser = $derived(
+    [...inboxItems]
+      .sort((a, b) => {
+        const aUnread = a.read_at_ms == null ? 0 : 1;
+        const bUnread = b.read_at_ms == null ? 0 : 1;
+        if (aUnread !== bUnread) return aUnread - bUnread;
+        return b.created_at_ms - a.created_at_ms;
+      })
+      .slice(0, 2),
+  );
+
+  /** Inbox items filtered by the popover tab selection. */
+  const inboxFiltered = $derived(
+    inboxVisible.filter((i) => {
+      if (inboxFilter === "unread") return i.read_at_ms == null;
+      if (inboxFilter === "read") return i.read_at_ms != null;
+      return true;
+    }),
+  );
+  const inboxUnreadCountAll = $derived(inboxVisible.filter((i) => i.read_at_ms == null).length);
 
   function isProjectOpen(p: ProjectSnapshot): boolean {
     if (sidebarSearchNeedle) return true;
@@ -193,10 +255,12 @@
       : project.my_prs;
   }
 
+  // item 6: exclude CLOSED PRs from To Review
   function visibleToReviewPrs(project: ProjectSnapshot) {
+    const base = project.prs_to_review.filter((pr) => pr.state === "OPEN");
     return searchActive
-      ? project.prs_to_review.filter((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))
-      : project.prs_to_review;
+      ? base.filter((pr) => matchesSearch(pr.title) || String(pr.number).includes(sidebarSearchNeedle))
+      : base;
   }
 
   function visibleRecentlyMergedPrs(project: ProjectSnapshot) {
@@ -209,11 +273,7 @@
     expandedProject = expandedProject === p.id ? null : p.id;
   }
 
-  let pendingDeleteProjectId = $state<string | null>(null);
-  let pendingDeleteTimer: ReturnType<typeof setTimeout> | null = null;
-
-  async function deleteProject(project: ProjectSnapshot, e: MouseEvent) {
-    e.stopPropagation();
+  async function deleteProject(project: ProjectSnapshot) {
     if (pendingDeleteProjectId !== project.id) {
       pendingDeleteProjectId = project.id;
       if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
@@ -228,8 +288,28 @@
       pendingDeleteTimer = null;
     }
     pendingDeleteProjectId = null;
+    projectMenuOpen = null;
     addingTo = null;
     await app.cmd("delete_project", { projectId: project.id });
+  }
+
+  async function syncProject(project: ProjectSnapshot) {
+    projectMenuOpen = null;
+    syncingProject = project.id;
+    try {
+      await app.cmd("refresh_project_pr_list", { projectId: project.id });
+    } finally {
+      syncingProject = null;
+    }
+  }
+
+  function openProjectMenu(projectId: string, e: MouseEvent) {
+    e.stopPropagation();
+    projectMenuOpen = projectMenuOpen === projectId ? null : projectId;
+  }
+
+  function closeProjectMenu() {
+    projectMenuOpen = null;
   }
 
   function branchRowAction(projectId: string, name: string, e: MouseEvent) {
@@ -431,12 +511,12 @@
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
     </button>
-    <button title="Search" aria-label="Search" class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-fg-3">
+    <button title="Search (⌘K)" aria-label="Search" onclick={() => commandPalette.show()} class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-fg-3">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
     </button>
     <div class="h-px w-5 bg-hairline my-1"></div>
     <button title={fallbackProjectName} aria-label={fallbackProjectName} class="w-7 h-7 rounded bg-hover flex items-center justify-center text-accent">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-5 9 5v10l-9 5-9-5V7z"/></svg>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
     </button>
     <div class="mt-auto">
       <button title="Settings" aria-label="Settings" class="w-7 h-7 rounded bg-accent flex items-center justify-center text-black text-[10px] font-bold">er</button>
@@ -451,14 +531,14 @@
   <div class="px-2 pt-2 pb-2 space-y-0.5">
     <button
       onclick={() => (app.showEmptyState = true)}
-      class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-2"
+      class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-fg-2"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
       <span>New review</span>
     </button>
     <button
       onclick={() => { document.querySelector<HTMLInputElement>('[data-left-sidebar-search-input]')?.focus(); }}
-      class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-3"
+      class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-fg-3"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <span>Search</span>
@@ -469,7 +549,7 @@
         data-left-sidebar-search-input
         value={sidebarSearch}
         oninput={(e) => (sidebarSearch = (e.currentTarget as HTMLInputElement).value)}
-        class="w-full bg-surface border border-hairline rounded-md px-2 py-1.5 text-sm text-fg-2 placeholder:text-muted outline-none"
+        class="w-full bg-surface border border-hairline rounded-md px-2 py-1.5 text-[12px] text-fg-2 placeholder:text-muted outline-none"
         placeholder="Search projects, branches, PRs…"
       />
     </div>
@@ -477,10 +557,10 @@
 
   {#if pinned.length > 0}
     <div class="px-2 pt-2 pb-2">
-      <div class="text-[10px] uppercase tracking-wider text-muted mb-1 px-2">Pinned</div>
+      <div class="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted mb-1 px-2">Pinned</div>
       <div class="space-y-0.5">
         {#each pinned as item (item.id)}
-          <div class="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-2">
+          <div class="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-fg-2">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent"><path d="M12 17v5M9 10.76V19l3 2 3-2v-8.24"/><path d="M3 7l9-5 9 5"/></svg>
             <span class="truncate">{item.title}</span>
             <span class="font-mono text-[10px] text-muted ml-auto">{item.age}</span>
@@ -491,78 +571,175 @@
   {/if}
 
   <!-- Inbox -->
-  <div class="px-2 pt-2 pb-2">
-    <div class="flex items-center px-2 mb-1">
+  <div class="px-2 pt-3 pb-1">
+    <!-- Section eyebrow — 10px uppercase 0.06em font-semibold text-muted -->
+    <div class="flex items-center px-2 mb-1.5">
       <button
         type="button"
         onclick={openInboxPopover}
-        class="text-[10px] uppercase tracking-wider text-muted hover:text-fg"
+        class="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted hover:text-fg-2 transition-colors"
       >
         Inbox
       </button>
       {#if inboxUnreadCount > 0}
-        <span class="ml-1 text-[10px] font-mono text-amber-300">{inboxUnreadCount}</span>
+        <span class="ml-1.5 text-[9px] font-mono bg-ink-700 text-accent px-1 rounded-full">{inboxUnreadCount}</span>
       {/if}
       <button
         type="button"
         onclick={() => app.cmd("refresh_notifications")}
-        class="ml-auto text-[10px] text-muted hover:text-fg"
+        class="ml-auto text-[10px] text-muted hover:text-fg transition-colors"
+        title="Refresh notifications"
+        aria-label="Refresh notifications"
       >↻</button>
     </div>
-    <button
-      type="button"
-      onclick={openInboxPopover}
-      class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-xs"
-    >
-      {#if latestInboxMessage}
-        <div class="flex items-center gap-1.5">
-          <span class={latestInboxMessage.severity === "error" ? "text-del-fg" : latestInboxMessage.severity === "warning" ? "text-amber-300" : "text-muted"}>●</span>
-          <span class="truncate {latestInboxMessage.read_at_ms == null ? 'text-fg-2' : 'text-fg-3'}">{latestInboxMessage.title}</span>
-        </div>
-        {#if latestInboxMessage.body}
-          <div class="truncate text-[10px] text-muted ml-3">{latestInboxMessage.body}</div>
-        {/if}
+
+    <!-- Top 2 unread items inline teaser -->
+    <div class="space-y-0.5">
+      {#if inboxTeaser.length === 0}
+        <div class="px-2 py-1 text-[12px] text-muted">No notifications</div>
       {:else}
-        <div class="text-xs text-muted">No notifications</div>
+        {#each inboxTeaser as item (item.id)}
+          {@const meta = inboxKindMeta(item)}
+          {@const isUnread = item.read_at_ms == null}
+          <button
+            type="button"
+            onclick={openInboxPopover}
+            class="w-full text-left flex items-start gap-2 px-2 py-1.5 rounded-md hover:bg-hover relative group"
+          >
+            <!-- Unread orange tick on left edge -->
+            {#if isUnread}
+              <span class="absolute left-0 top-2 bottom-2 w-0.5 bg-accent rounded-r-sm"></span>
+            {/if}
+            <!-- Kind icon -->
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 mt-0.5 {meta.color}">
+              <path d={meta.path} />
+            </svg>
+            <div class="min-w-0 flex-1">
+              <div class="text-[12px] {isUnread ? 'font-medium text-fg-2' : 'text-fg-3'} truncate leading-tight">{item.title}</div>
+              {#if item.body}
+                <div class="text-[11px] text-muted truncate mt-0.5">{item.body}</div>
+              {/if}
+            </div>
+            <!-- Age derived from created_at_ms -->
+            <span class="text-[10px] text-muted shrink-0 mt-0.5">
+              {#if Date.now() - item.created_at_ms < 60_000}now{:else if Date.now() - item.created_at_ms < 3_600_000}{Math.floor((Date.now() - item.created_at_ms) / 60_000)}m{:else}{Math.floor((Date.now() - item.created_at_ms) / 3_600_000)}h{/if}
+            </span>
+          </button>
+        {/each}
+        {#if inboxUnreadCount > 2}
+          <button
+            type="button"
+            onclick={openInboxPopover}
+            class="w-full text-left flex items-center gap-1.5 px-2 py-1 text-[11px] text-muted hover:text-fg-2 transition-colors"
+          >
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+            See {inboxUnreadCount - 2} more
+          </button>
+        {/if}
       {/if}
-    </button>
+    </div>
   </div>
 
   {#if inboxPopoverOpen}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="fixed inset-0 z-[200]" onclick={closeInboxPopover}></div>
-    <div class="absolute left-2 top-28 z-[201] w-64 h-[300px] rounded-md border border-border bg-card shadow-xl">
-      <div class="px-3 py-2 text-xs text-muted border-b border-hairline flex items-center">
-        <span>Inbox · Updated {formatInboxUpdated(inboxLastRefreshMs)}</span>
-        <button
-          type="button"
-          onclick={() => app.cmd("mark_all_inbox_read")}
-          class="ml-auto text-[10px] text-muted hover:text-fg"
-        >Read all</button>
-        <button
-          type="button"
-          onclick={() => app.cmd("clear_read_inbox_items")}
-          class="ml-2 text-[10px] text-muted hover:text-fg"
-        >Clear read</button>
+    <!-- Inbox popover — roomier layout with segmented filter tabs -->
+    <div
+      class="absolute left-2 top-28 z-[201] w-80 rounded-lg border border-border bg-ink-800 shadow-xl flex flex-col overflow-hidden"
+      style="max-height: calc(100vh - 120px);"
+    >
+      <!-- Header: tray icon + Inbox + updated + close -->
+      <div class="px-3 pt-2.5 pb-2 border-b border-hairline flex flex-col gap-2">
+        <div class="flex items-center gap-1.5">
+          <!-- Tray icon (orange) -->
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent shrink-0">
+            <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
+            <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+          </svg>
+          <span class="text-[12px] font-semibold text-fg">Inbox</span>
+          <span class="text-[11px] text-muted">· Updated {formatInboxUpdated(inboxLastRefreshMs)}</span>
+          <div class="flex-1"></div>
+          <button
+            type="button"
+            onclick={closeInboxPopover}
+            title="Close"
+            aria-label="Close inbox"
+            class="w-5 h-5 rounded flex items-center justify-center text-muted hover:text-fg hover:bg-hover"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <!-- Segmented filter row -->
+        <div class="flex items-center gap-2">
+          <div class="inline-flex bg-surface border border-hairline rounded p-0.5">
+            <button
+              type="button"
+              onclick={() => (inboxFilter = "all")}
+              class="h-[22px] px-2 rounded-sm text-[11px] font-medium flex items-center gap-1 {inboxFilter === 'all' ? 'bg-hover text-fg' : 'text-muted hover:text-fg-3'}"
+            >All <span class="{inboxFilter === 'all' ? 'text-muted' : 'text-muted'} ml-0.5">{inboxVisible.length}</span></button>
+            <button
+              type="button"
+              onclick={() => (inboxFilter = "unread")}
+              class="h-[22px] px-2 rounded-sm text-[11px] font-medium flex items-center gap-1 {inboxFilter === 'unread' ? 'bg-hover text-fg' : 'text-muted hover:text-fg-3'}"
+            >Unread <span class="{inboxFilter === 'unread' ? 'text-accent' : 'text-muted'} ml-0.5">{inboxUnreadCountAll}</span></button>
+            <button
+              type="button"
+              onclick={() => (inboxFilter = "read")}
+              class="h-[22px] px-2 rounded-sm text-[11px] font-medium {inboxFilter === 'read' ? 'bg-hover text-fg' : 'text-muted hover:text-fg-3'}"
+            >Read</button>
+          </div>
+          <div class="flex-1"></div>
+          <button
+            type="button"
+            onclick={() => { app.cmd("mark_all_inbox_read"); }}
+            title="Mark all read"
+            aria-label="Mark all read"
+            class="w-6 h-6 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 7 17l-3-3"/><path d="m22 10-7.5 7.5L13 16"/></svg>
+          </button>
+          <button
+            type="button"
+            onclick={() => { app.cmd("clear_read_inbox_items"); }}
+            title="Clear read"
+            aria-label="Clear read"
+            class="w-6 h-6 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6l-1 14H6L5 6M10 11v6M14 11v6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
+        </div>
       </div>
-      <div class="h-[255px] overflow-y-auto p-1 space-y-0.5">
-        {#if inboxVisible.length === 0}
-          <div class="px-2 py-2 text-xs text-muted">No notifications</div>
+      <!-- Item list -->
+      <div class="flex-1 overflow-y-auto p-1">
+        {#if inboxFiltered.length === 0}
+          <div class="px-3 py-6 text-center text-[12px] text-muted">No items</div>
         {:else}
-          {#each inboxVisible as item (item.id)}
+          {#each inboxFiltered as item (item.id)}
+            {@const meta = inboxKindMeta(item)}
+            {@const isUnread = item.read_at_ms == null}
             <button
               type="button"
               onclick={() => openInboxMessageModal(item)}
-              class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-xs {item.read_at_ms == null ? 'text-fg-2' : 'text-fg-3'}"
+              class="w-full text-left flex items-start gap-[10px] px-[10px] py-2 rounded-md hover:bg-hover relative"
             >
-              <div class="flex items-center gap-1.5">
-                <span class={item.severity === "error" ? "text-del-fg" : item.severity === "warning" ? "text-amber-300" : "text-muted"}>●</span>
-                <span class="truncate block min-w-0 flex-1">{item.title}</span>
-              </div>
-              {#if item.body}
-                <div class="truncate block min-w-0 text-[10px] text-muted ml-3">{item.body}</div>
+              <!-- Unread orange left tick -->
+              {#if isUnread}
+                <span class="absolute left-0 top-3 bottom-3 w-0.5 bg-accent rounded-r-sm"></span>
               {/if}
+              <!-- Kind icon -->
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 mt-0.5 {meta.color}">
+                <path d={meta.path} />
+              </svg>
+              <div class="flex-1 min-w-0">
+                <div class="text-[12px] {isUnread ? 'font-medium text-fg-2' : 'text-fg-3'} truncate leading-snug">{item.title}</div>
+                {#if item.body}
+                  <div class="text-[11px] text-muted truncate mt-0.5">{item.body}</div>
+                {/if}
+              </div>
+              <span class="text-[10px] text-muted shrink-0 mt-0.5 whitespace-nowrap">
+                {#if Date.now() - item.created_at_ms < 60_000}now{:else if Date.now() - item.created_at_ms < 3_600_000}{Math.floor((Date.now() - item.created_at_ms) / 60_000)}m{:else}{Math.floor((Date.now() - item.created_at_ms) / 3_600_000)}h{/if}
+              </span>
             </button>
           {/each}
         {/if}
@@ -603,9 +780,10 @@
   {/if}
 
   <!-- Projects -->
-  <div class="px-2 pt-2 pb-2">
-    <div class="flex items-center px-2 mb-1">
-      <span class="text-[10px] uppercase tracking-wider text-muted">Projects</span>
+  <div class="px-2 pt-3 pb-2">
+    <!-- Section eyebrow — 10px uppercase 0.06em font-semibold text-muted -->
+    <div class="flex items-center px-2 mb-1.5">
+      <span class="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Projects</span>
       <button
         type="button"
         onclick={() => app.cmd("refresh_pr_list")}
@@ -633,34 +811,86 @@
         {#each filteredProjects as project (project.id)}
           {@const badge = projectBadge(project)}
           {@const open = isProjectOpen(project)}
-          <div class="group relative flex items-center">
-            <button
-              type="button"
-              onclick={() => toggleProject(project)}
-              class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-sm text-left {project.is_active ? 'text-fg-2' : 'text-fg-3'}"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-5 9 5v10l-9 5-9-5V7z"/><path d="m3 7 9 5 9-5M12 22V12"/></svg>
-              <span class="truncate">{project.name}</span>
-              {#if badge > 0}
-                <span class="font-mono text-[10px] text-muted ml-auto {project.remote_only ? 'pr-5' : 'pr-8'}">{badge}</span>
-              {/if}
-            </button>
-            {#if !project.remote_only}
+          <!-- Project header row: chevron + folder + name + badge + 3-dot menu -->
+          <div class="group relative">
+            <div class="flex items-center">
               <button
                 type="button"
-                onclick={(e) => openBranchPicker(project.id, e)}
-                title="Track another branch"
-                aria-label="Track another branch in {project.name}"
-                class="absolute right-5 opacity-0 group-hover:opacity-100 px-1 text-muted hover:text-fg"
-              >+</button>
+                onclick={() => toggleProject(project)}
+                class="flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-left {project.is_active ? 'text-fg-2' : 'text-fg-3'} min-w-0"
+              >
+                <!-- Chevron caret: down when expanded, right when collapsed — 10px fg-muted -->
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 text-muted transition-transform {open ? '' : '-rotate-90'}">
+                  <path d="M6 9l6 6 6-6"/>
+                </svg>
+                <!-- Folder icon — 12px text-fg-3 -->
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-fg-3">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span class="truncate font-medium">{project.name}</span>
+                {#if badge > 0}
+                  <span class="font-mono text-[10px] text-muted ml-auto shrink-0">{badge}</span>
+                {/if}
+              </button>
+              <!-- 3-dot more menu button — revealed on row hover -->
+              <button
+                type="button"
+                onclick={(e) => openProjectMenu(project.id, e)}
+                title="More options"
+                aria-label="More options for {project.name}"
+                class="w-6 h-6 rounded flex items-center justify-center text-muted hover:text-fg hover:bg-hover opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mr-1"
+              >
+                <!-- 3-dot icon -->
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" class="shrink-0">
+                  <circle cx="12" cy="5" r="1.5"/>
+                  <circle cx="12" cy="12" r="1.5"/>
+                  <circle cx="12" cy="19" r="1.5"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- 3-dot dropdown menu — matches new-tab menu pattern -->
+            {#if projectMenuOpen === project.id}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="fixed inset-0 z-40" onclick={closeProjectMenu}></div>
+              <div class="absolute right-0 top-full mt-1 z-50 bg-ink-800 border border-hairline rounded shadow-xl w-36 py-1">
+                {#if !project.remote_only}
+                  <button
+                    type="button"
+                    onclick={() => { closeProjectMenu(); openBranchPicker(project.id); }}
+                    class="w-full text-left px-3 py-1.5 text-[12px] text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-muted"><path d="M12 5v14M5 12h14"/></svg>
+                    New
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  onclick={() => syncProject(project)}
+                  disabled={syncingProject === project.id}
+                  class="w-full text-left px-3 py-1.5 text-[12px] text-ink-100 hover:bg-ink-700 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {#if syncingProject === project.id}
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 text-muted animate-spin"><path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 7.8 4.5"/><polyline points="21 3 21 8 16 8"/></svg>
+                  {:else}
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-muted"><path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 7.8 4.5"/><polyline points="21 3 21 8 16 8"/></svg>
+                  {/if}
+                  Sync
+                </button>
+                <div class="h-px bg-hairline my-1"></div>
+                <button
+                  type="button"
+                  onclick={() => deleteProject(project)}
+                  class="w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 {pendingDeleteProjectId === project.id ? 'text-del-fg font-semibold hover:bg-ink-700' : 'text-ink-100 hover:bg-ink-700'}"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 {pendingDeleteProjectId === project.id ? 'text-del-fg' : 'text-muted'}"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  {pendingDeleteProjectId === project.id ? "Click again to confirm" : "Delete"}
+                </button>
+              </div>
             {/if}
-            <button
-              type="button"
-              onclick={(e) => deleteProject(project, e)}
-              title={pendingDeleteProjectId === project.id ? "Click again to confirm" : "Remove project"}
-              aria-label="Remove project {project.name}"
-              class="absolute right-1 px-1 {pendingDeleteProjectId === project.id ? 'opacity-100 text-del-fg text-[10px] font-semibold' : 'opacity-0 group-hover:opacity-100 text-muted hover:text-del-fg'}"
-            >{pendingDeleteProjectId === project.id ? "Confirm?" : "×"}</button>
+
+            <!-- Branch picker (opened from 3-dot menu → New) -->
             {#if addingTo === project.id}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -675,7 +905,7 @@
                     <button
                       type="button"
                       onclick={() => pickBranch(project.id, name)}
-                      class="w-full text-left px-3 py-1.5 text-sm text-fg-2 hover:bg-hover truncate"
+                      class="w-full text-left px-3 py-1.5 text-[12px] text-fg-2 hover:bg-hover truncate"
                       title={name}
                     >{name}</button>
                   {/each}
@@ -683,6 +913,7 @@
               </div>
             {/if}
           </div>
+
           {#if open}
             <div class="ml-4 pl-3 border-l border-hairline space-y-0.5">
               {#if project.pr_cache_stale}
@@ -697,17 +928,22 @@
                 </div>
               {/if}
               {#if visibleBranches(project).length > 0}
-                <div class="text-[9px] uppercase tracking-wider text-muted px-2 py-1">Tracked</div>
+                <!-- Sub-head: 9px uppercase 0.07em font-semibold text-muted/70 (dimmer than eyebrow) -->
+                <div class="text-[9px] font-semibold uppercase tracking-[0.07em] text-muted/70 px-2 pt-3 pb-1">Tracked</div>
                 {#each visibleBranches(project) as br (br.name)}
                   {@const isActiveView = activeTab?.branch === br.name && activeTab?.repo_root === project.root_path}
                   {@const branchPending = pendingBranchKey === `${project.id}:${br.name}`}
                   <div class="group relative flex items-center">
+                    <!-- Orange left tick for active branch row -->
+                    {#if isActiveView}
+                      <span class="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-accent rounded-r-sm z-10 pointer-events-none"></span>
+                    {/if}
                     <button
                       type="button"
                       title={br.name}
                       onclick={(e) => openBranch(project.id, br.name, e)}
                       onauxclick={(e) => { if (e.button === 1) openBranch(project.id, br.name, e); }}
-                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-sm text-left {(isActiveView || branchPending) ? 'bg-accent/15 text-fg font-medium' : 'text-fg-3 hover:bg-hover'} {!br.is_current ? 'pr-6' : ''}"
+                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left {(isActiveView || branchPending) ? 'bg-hover text-fg font-medium' : 'text-fg-3 hover:bg-hover'} {!br.is_current && !isActiveView ? 'pr-6' : ''}"
                     >
                       {#if isActiveView}
                         <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-purple-400' : 'bg-accent'} shrink-0"></span>
@@ -727,14 +963,21 @@
                         </svg>
                       {/if}
                     </button>
-                    {#if !br.is_current}
-                      <button
-                        type="button"
-                        onclick={(e) => branchRowAction(project.id, br.name, e)}
-                        title="Remove from view"
-                        aria-label="Remove branch {br.name} from view"
-                        class="absolute right-1 opacity-0 group-hover:opacity-100 px-1 text-muted hover:text-del-fg"
-                      >×</button>
+                    <!-- Hover-reveal row actions — only on hover, not active rows -->
+                    {#if !isActiveView}
+                      <span class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {#if !br.is_current}
+                          <button
+                            type="button"
+                            onclick={(e) => branchRowAction(project.id, br.name, e)}
+                            title="Remove from view"
+                            aria-label="Remove branch {br.name} from view"
+                            class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-del-fg hover:bg-ink-600"
+                          >
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                          </button>
+                        {/if}
+                      </span>
                     {/if}
                   </div>
                 {/each}
@@ -759,7 +1002,7 @@
                     <circle cx="6" cy="18" r="3"/>
                     <path d="M18 9a9 9 0 0 1-9 9"/>
                   </svg>
-                  <span class="truncate text-sm">{pr.title}</span>
+                  <span class="truncate text-[12px]">{pr.title}</span>
                   {#if prPending}
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0">
                       <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
@@ -771,8 +1014,9 @@
               {/snippet}
 
               {#snippet prSectionLabel(text: string)}
-                <div class="flex items-center gap-1.5 px-2 py-1 mt-1">
-                  <span class="text-[9px] uppercase tracking-wider text-muted">{text}</span>
+                <!-- Sub-heads: 9px uppercase 0.07em font-semibold text-muted/70 (dimmer than eyebrow) -->
+                <div class="flex items-center gap-1.5 px-2 pt-3 pb-1">
+                  <span class="text-[9px] font-semibold uppercase tracking-[0.07em] text-muted/70">{text}</span>
                   {#if loadingPrList}
                     <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
                   {/if}
@@ -789,7 +1033,7 @@
                   <button
                     type="button"
                     onclick={() => revealMoreSaved(project.id)}
-                    class="w-full text-left px-2 py-1 rounded-md text-xs text-fg-3 hover:bg-hover"
+                    class="w-full text-left px-2 py-1 rounded-md text-[12px] text-fg-3 hover:bg-hover"
                   >
                     Show more
                   </button>
@@ -813,7 +1057,7 @@
                   <button
                     type="button"
                     onclick={() => revealMoreToReview(project.id)}
-                    class="w-full text-left px-2 py-1 rounded-md text-xs text-fg-3 hover:bg-hover"
+                    class="w-full text-left px-2 py-1 rounded-md text-[12px] text-fg-3 hover:bg-hover"
                   >
                     Show more
                   </button>
@@ -830,7 +1074,7 @@
                   <button
                     type="button"
                     onclick={() => revealMoreRecent(project.id)}
-                    class="w-full text-left px-2 py-1 rounded-md text-xs text-fg-3 hover:bg-hover"
+                    class="w-full text-left px-2 py-1 rounded-md text-[12px] text-fg-3 hover:bg-hover"
                   >
                     Show more
                   </button>
@@ -847,11 +1091,11 @@
           {/if}
         {/each}
       {:else if projects.length > 0 && sidebarSearchNeedle}
-        <div class="px-2 py-2 text-xs text-muted">No matching projects, branches, or PRs.</div>
+        <div class="px-2 py-2 text-[12px] text-muted">No matching projects, branches, or PRs.</div>
       {:else}
         <!-- Fallback: legacy single project derived from worktrees -->
-        <div class="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-2">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-5 9 5v10l-9 5-9-5V7z"/><path d="m3 7 9 5 9-5M12 22V12"/></svg>
+        <div class="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-fg-2">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           <span class="truncate">{fallbackProjectName}</span>
           {#if worktrees.length > 1}
             <span class="font-mono text-[10px] text-muted ml-auto">{worktrees.length}</span>
@@ -865,7 +1109,7 @@
   <!-- Footer: er + Settings — fixed at bottom by being a sibling of the flex-1 scroll area. -->
   <button
     onclick={() => (settingsOpen = true)}
-    class="border-t border-hairline p-3 flex items-center gap-2 text-sm text-fg-3 shrink-0 hover:bg-hover text-left"
+    class="border-t border-hairline p-3 flex items-center gap-2 text-[12px] text-fg-3 shrink-0 hover:bg-hover text-left"
   >
     <div class="w-6 h-6 rounded-md bg-accent flex items-center justify-center text-black text-xs font-bold">er</div>
     <span>Settings</span>

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { lineHasAnchorRangeHighlight, type AnnotationIndex } from "$lib/diffAnnotations";
+  import type { CommentVisibility } from "$lib/diffAnnotations";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { wordDiff } from "$lib/wordDiff";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
@@ -10,8 +12,11 @@
     splitRow: SplitRow;
     filePath: string;
     rowIdx: number;
+    annotationIndex: AnnotationIndex;
+    commentVisibility: CommentVisibility;
   }
-  const { row, splitRow, filePath, rowIdx }: Props = $props();
+  const { row, splitRow, filePath, rowIdx, annotationIndex, commentVisibility }: Props =
+    $props();
 
   function lineClass(kind: string) {
     if (kind === "add") return "diff-add";
@@ -46,12 +51,26 @@
     if (diffSel.side !== null && diffSel.side !== "new") return false;
     return true;
   }
+
+  function anchorLeft(ln: number | null): boolean {
+    if (ln === null) return false;
+    return lineHasAnchorRangeHighlight(annotationIndex, filePath, ln, "old", commentVisibility);
+  }
+  function anchorRight(ln: number | null): boolean {
+    if (ln === null) return false;
+    return lineHasAnchorRangeHighlight(annotationIndex, filePath, ln, "new", commentVisibility);
+  }
+
+  const rowAnchorClass = $derived(
+    anchorLeft(leftLn) || anchorRight(rightLn) ? "is-anchor-range" : "",
+  );
+  const rowSelClass = $derived(selLeft(leftLn) || selRight(rightLn) ? "is-selected" : "");
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="grid grid-cols-[40px_minmax(0,1fr)_40px_minmax(0,1fr)] diff-row"
+  class="grid grid-cols-[40px_minmax(0,1fr)_40px_minmax(0,1fr)] diff-row {rowSelClass} {rowAnchorClass}"
   style="height:{row.height}px"
   data-row-identity={row.identity}
   data-row-idx={rowIdx}

@@ -561,6 +561,7 @@ mod tests {
                 file: "test.rs".to_string(),
                 hunk_index: Some(0),
                 line_start: None,
+                line_end: None,
                 line_content: String::new(),
                 text: "test".to_string(),
                 resolved: false,

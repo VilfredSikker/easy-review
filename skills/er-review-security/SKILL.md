@@ -36,6 +36,7 @@ Focus: AuthZ/authN, injection, secrets in diff, unsafe defaults, trust boundarie
   "diff_hash": "<sha256>",
   "diff_scope": "<scope>",
   "created_at": "<ISO8601>",
+  "summary": "2–3 short markdown paragraphs (security posture: trust boundaries, authZ/authN, secrets, injection, blocking risk)",
   "files": {
     "path/to/file.rs": {
       "findings": [
@@ -64,4 +65,4 @@ Focus: AuthZ/authN, injection, secrets in diff, unsafe defaults, trust boundarie
 }
 ```
 
-Do **not** write `review.json`, `order.json`, `checklist.json`, or `summary.md`.
+Do **not** write `review.json`, `order.json`, `checklist.json`, or `summary.md` (lens summary lives in the JSON `summary` field only).

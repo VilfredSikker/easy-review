@@ -1,6 +1,6 @@
 use super::comments::{ErFeedback, ErGitHubComments, ErQuestions};
 use super::experts::{
-    load_expert_reviews, merge_experts_into_review, synthesize_review_from_experts,
+    expert_by_id, load_expert_reviews, merge_experts_into_review, synthesize_review_from_experts,
 };
 use super::professor::{load_professor_review, merge_professor_into_review};
 use super::review::*;
@@ -163,6 +163,20 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str) -> AiState {
 
     // Merge specialized expert sidecars into review (load-time only).
     let experts = load_expert_reviews(er_dir);
+    for expert in &experts {
+        if expert.diff_hash != current_diff_hash {
+            continue;
+        }
+        let summary = expert.summary.trim();
+        if summary.is_empty() {
+            continue;
+        }
+        if let Some(def) = expert_by_id(&expert.expert_id) {
+            state
+                .agent_summaries
+                .insert(def.label.to_string(), summary.to_string());
+        }
+    }
     if let Some(review) = state.review.as_mut() {
         merge_experts_into_review(review, &experts, current_diff_hash);
     } else if let Some(synthetic) = synthesize_review_from_experts(&experts, current_diff_hash) {
@@ -170,6 +184,13 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str) -> AiState {
     }
 
     if let Some(prof) = load_professor_review(er_dir) {
+        let summary = prof.summary.trim();
+        if prof.diff_hash == current_diff_hash && !summary.is_empty() {
+            state.agent_summaries.insert(
+                super::professor::PROFESSOR_LABEL.to_string(),
+                summary.to_string(),
+            );
+        }
         if let Some(review) = state.review.as_mut() {
             merge_professor_into_review(review, &prof, current_diff_hash);
         } else {

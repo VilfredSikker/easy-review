@@ -33,6 +33,7 @@ impl App {
         tab.comment_file = String::new();
         tab.comment_hunk = 0;
         tab.comment_line_num = None;
+        tab.comment_line_end = None;
         tab.comment_reply_to = None;
         tab.comment_finding_ref = None;
         tab.comment_type = CommentType::GitHubComment;
@@ -209,6 +210,7 @@ impl App {
         let file_path = tab.comment_file.clone();
         let hunk_index = tab.comment_hunk;
         let comment_line_num = tab.comment_line_num;
+        let comment_line_end = tab.comment_line_end;
         let reply_to = tab.comment_reply_to.clone();
         let pr_head_ref_owned = tab.pr_head_ref.clone();
 
@@ -279,6 +281,7 @@ impl App {
             file: file_path,
             hunk_index: Some(hunk_index),
             line_start: anchor.line_start,
+            line_end: Self::normalize_line_end(anchor.line_start, comment_line_end),
             line_content: anchor.line_content,
             text: text.clone(),
             resolved: false,
@@ -319,6 +322,7 @@ impl App {
         let reply_to = tab.comment_reply_to.clone();
         let finding_ref = tab.comment_finding_ref.clone();
         let comment_line_num = tab.comment_line_num;
+        let comment_line_end = tab.comment_line_end;
 
         let anchor = self.get_line_anchor(hunk_index, comment_line_num);
 
@@ -380,7 +384,7 @@ impl App {
             file: file_path,
             hunk_index: Some(hunk_index),
             line_start: anchor.line_start,
-            line_end: None,
+            line_end: Self::normalize_line_end(anchor.line_start, comment_line_end),
             line_content: anchor.line_content,
             comment: text.clone(),
             in_reply_to: reply_to,
@@ -520,6 +524,17 @@ impl App {
         }
     }
 
+    /// Inclusive end line for a multi-line anchor; `None` when single-line or invalid.
+    pub(crate) fn normalize_line_end(
+        line_start: Option<usize>,
+        line_end: Option<usize>,
+    ) -> Option<usize> {
+        match (line_start, line_end) {
+            (Some(start), Some(end)) if end > start => Some(end),
+            _ => None,
+        }
+    }
+
     /// Submit a comment or question without going through InputMode flow.
     /// Used by the desktop app where there is no TextArea widget.
     #[allow(clippy::too_many_arguments)]
@@ -528,6 +543,7 @@ impl App {
         file: String,
         hunk_idx: usize,
         line_num: Option<usize>,
+        line_num_end: Option<usize>,
         text: String,
         comment_type: CommentType,
         reply_to: Option<String>,
@@ -537,6 +553,7 @@ impl App {
             file,
             hunk_idx,
             line_num,
+            line_num_end,
             text,
             comment_type,
             reply_to,
@@ -555,6 +572,7 @@ impl App {
         file: String,
         hunk_idx: usize,
         line_num: Option<usize>,
+        line_num_end: Option<usize>,
         text: String,
         comment_type: CommentType,
         reply_to: Option<String>,
@@ -565,6 +583,7 @@ impl App {
             file,
             hunk_idx,
             line_num,
+            line_num_end,
             text,
             comment_type,
             reply_to,
@@ -579,6 +598,7 @@ impl App {
         file: String,
         hunk_idx: usize,
         line_num: Option<usize>,
+        line_num_end: Option<usize>,
         text: String,
         comment_type: CommentType,
         reply_to: Option<String>,
@@ -590,6 +610,7 @@ impl App {
             tab.comment_file = file;
             tab.comment_hunk = hunk_idx;
             tab.comment_line_num = line_num;
+            tab.comment_line_end = Self::normalize_line_end(line_num, line_num_end);
             tab.comment_reply_to = reply_to;
             tab.comment_finding_ref = finding_ref;
             tab.comment_type = comment_type;

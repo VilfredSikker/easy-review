@@ -1,5 +1,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { tabSeen } from "$lib/stores/tabSeen.svelte";
+  import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import type { TabSummary } from "$lib/types";
   import { startWindowDrag } from "$lib/windowDrag";
 
@@ -11,6 +13,10 @@
     onNew?: () => void;
     /** When false, render tabs only (Storybook). Default true in the desktop shell. */
     showToolbar?: boolean;
+    /** Callback to toggle right panel collapsed/expanded (44px rail vs full). */
+    onToggleRightCollapse?: () => void;
+    /** Whether the right panel is currently collapsed to 44px rail. */
+    rightCollapsed?: boolean;
   }
 
   let {
@@ -20,6 +26,8 @@
     onClose,
     onNew,
     showToolbar = true,
+    onToggleRightCollapse,
+    rightCollapsed = false,
   }: Props = $props();
 
   // Default to the live snapshot; props win when supplied (Storybook).
@@ -99,6 +107,14 @@
     dragFrom = null;
     dropAt = null;
   }
+
+  // Mark the active tab as seen whenever it or its change_token changes.
+  $effect(() => {
+    const activeTab = tabs.find((t) => t.is_active);
+    if (activeTab) {
+      tabSeen.markSeen(activeTab.idx, activeTab.change_token);
+    }
+  });
 
   let newTabMenuOpen = $state(false);
 
@@ -182,6 +198,13 @@
         </svg>
       {/if}
       <span class="truncate min-w-0">{tab.label}</span>
+      {#if !tab.is_active && tabSeen.hasUnseen(tab.idx, tab.change_token)}
+        <span
+          class="w-1.5 h-1.5 rounded-full bg-periwinkle shrink-0"
+          title="New changes since last viewed"
+          aria-label="New changes"
+        ></span>
+      {/if}
       {#if canClose}
         <button
           class="opacity-0 group-hover:opacity-100 text-ink-300 hover:text-ink-100 transition-opacity shrink-0 w-4 h-4 flex items-center justify-center"
@@ -245,14 +268,18 @@
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
       </button>
-      <button class="text-xs text-ink-200 hover:bg-ink-700 px-2.5 py-1 rounded-md font-mono transition-colors">⌘K</button>
-      <button
-        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {panels?.right ? 'text-accent bg-ink-700' : ''}"
-        onclick={() => app.togglePanel("right")}
-        title="Toggle right panel []]"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
-      </button>
+      <button class="text-xs text-ink-200 hover:bg-ink-700 px-2.5 py-1 rounded-md font-mono transition-colors" onclick={() => commandPalette.show()} title="Open command palette (⌘K)">⌘K</button>
+      {#if onToggleRightCollapse}
+        <button
+          class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {rightCollapsed ? '' : 'text-accent bg-ink-700'}"
+          onclick={onToggleRightCollapse}
+          title={rightCollapsed ? "Expand right panel" : "Collapse right panel to rail"}
+          aria-pressed={!rightCollapsed}
+        >
+          <!-- Mirrored sidebar icon to indicate collapse direction -->
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: scaleX(-1)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 8l4 4-4 4"/></svg>
+        </button>
+      {/if}
     </div>
   {:else}
     <div class="flex-1 min-w-4" data-tauri-drag-region aria-hidden="true"></div>

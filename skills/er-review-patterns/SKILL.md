@@ -25,4 +25,4 @@ Follow [`../REVIEW_RULES.md`](../REVIEW_RULES.md) in full before this lens.
 
 ## Output
 
-Write **only** `.er/experts/patterns.json` with full `Finding` schema.
+Write **only** `.er/experts/patterns.json` with full `Finding` schema and top-level `summary`: 2–3 markdown paragraphs on consistency with existing patterns in the codebase.

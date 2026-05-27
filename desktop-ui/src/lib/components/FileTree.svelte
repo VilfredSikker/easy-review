@@ -1,10 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
-  import { fileStatusDisplay } from "$lib/fileStatus";
-  import FileStatusIcon from "$lib/components/FileStatusIcon.svelte";
-  import TreeIcons from "$lib/components/icons/TreeIcons.svelte";
-  import { buildTree, filesByPathMap, flattenForNav, resolveTreeFile, visibleTree } from "$lib/treeFromPaths";
-  import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
+  import { buildTree, filesByPathMap, resolveTreeFile, visibleTree } from "$lib/treeFromPaths";
   import ScopeSelector from "./ScopeSelector.svelte";
   import { onDestroy } from "svelte";
   import { windowFromScroll } from "$lib/virtualWindow";
@@ -58,13 +54,11 @@
     pickerMode ? localFilterFiles(sourceFiles, filterDraft) : sourceFiles,
   );
   const filesByPath = $derived(filesByPathMap(files));
-  const ai = $derived(snapshot?.ai);
   const tree = $derived(buildTree(files));
   const displayTree = $derived(visibleTree(tree, fileTreeCollapse.collapsed));
   const selectedFile = $derived(
     pickerMode ? null : snapshot ? sourceFiles[snapshot.selected_file] : null,
   );
-  const totalFindings = $derived(files.reduce((s, f) => s + f.finding_count, 0));
   let pickerFocusIdx = $state(0);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let inputEl: HTMLInputElement | null = $state(null);
@@ -262,19 +256,50 @@
   }
 
   function indentPx(depth: number): string {
-    return `${12 + depth * 16}px`;
+    return `${6 + depth * 12}px`;
   }
 
   function filenameClass(file: { reviewed: boolean; status: string }, selected: boolean): string {
-    if (file.status === "deleted" || file.reviewed) return "text-muted line-through";
+    if (file.status === "deleted") return "text-muted line-through";
+    if (file.reviewed) return "text-muted line-through";
     if (selected) return "font-semibold text-fg";
     return "text-fg-2";
   }
 
-  const hasRiskCounts = $derived(ai && (ai.high > 0 || ai.med > 0 || ai.low > 0));
-  const hasAiMeta = $derived(
-    ai && (ai.comments > 0 || ai.questions > 0 || totalFindings > 0),
-  );
+  // ── File-type chip helpers ────────────────────────────────────────────────
+  function fileExtension(path: string): string {
+    const name = path.split("/").pop() ?? path;
+    // Handle compound extensions like .test.ts → take last segment
+    const parts = name.split(".");
+    if (parts.length < 2) return "";
+    return parts[parts.length - 1].toLowerCase();
+  }
+
+  interface ExtChip { label: string; color: string }
+
+  function extChip(ext: string): ExtChip {
+    switch (ext) {
+      case "ts":
+      case "tsx":   return { label: ext === "tsx" ? "TSX" : "TS",  color: "#5db4ff" };
+      case "js":
+      case "jsx":   return { label: ext === "jsx" ? "JSX" : "JS",  color: "#ffce5b" };
+      case "svelte": return { label: "SV",  color: "#ff7a2b" };
+      case "css":
+      case "scss":  return { label: ext.toUpperCase().slice(0, 3), color: "#7f87ff" };
+      case "rs":    return { label: "RS",   color: "#f46623" };
+      case "md":    return { label: "MD",   color: "#aab0bd" };
+      case "json":  return { label: "JSON", color: "#aab0bd" };
+      case "toml":  return { label: "TOML", color: "#aab0bd" };
+      case "yaml":
+      case "yml":   return { label: "YML",  color: "#aab0bd" };
+      case "html":  return { label: "HTML", color: "#e67e22" };
+      case "py":    return { label: "PY",   color: "#4caf50" };
+      case "go":    return { label: "GO",   color: "#00acd7" };
+      case "sh":
+      case "bash":  return { label: "SH",   color: "#aab0bd" };
+      default:      return { label: ext ? ext.toUpperCase().slice(0, 3) : "·", color: "#6b6b6b" };
+    }
+  }
 
   const showTreeContent = $derived(
     pickerMode
@@ -357,58 +382,27 @@
   </div>
 
   {#if snapshot || pickerMode}
-    <div class="flex items-center flex-wrap gap-x-2 gap-y-0.5 px-3 py-1.5 border-b border-hairline text-[10px] mono text-muted shrink-0">
+    <div class="flex items-center justify-between px-3 py-1.5 border-b border-hairline text-[11px] mono text-muted shrink-0">
       <span>{files.length} files</span>
       {#if pickerMode && selectedPaths}
-        <span class="text-ink-400" aria-hidden="true">|</span>
         <span>{selectedPaths.size} selected</span>
+      {:else if !pickerMode && snapshot}
+        <span>{snapshot.reviewed_count}/{snapshot.total_count} reviewed</span>
       {/if}
-      {#if !pickerMode && hasRiskCounts}
-        <span class="text-ink-400" aria-hidden="true">|</span>
-        {#if ai && ai.high > 0}
-          <span class="flex items-center gap-1 text-risk-high"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>{ai.high}</span>
-        {/if}
-        {#if ai && ai.med > 0}
-          <span class="flex items-center gap-1 text-risk-med"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>{ai.med}</span>
-        {/if}
-        {#if ai && ai.low > 0}
-          <span class="flex items-center gap-1 text-risk-low"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>{ai.low}</span>
-        {/if}
-      {/if}
-      {#if !pickerMode}
-        <span class="text-ink-400" aria-hidden="true">|</span>
-        <button
-          type="button"
-          class="hover:text-fg-2"
-          onclick={() => diffFileCollapse.collapseAll(flattenForNav(buildTree(files)))}
-        >Collapse all</button>
-        <button
-          type="button"
-          class="hover:text-fg-2"
-          onclick={() => diffFileCollapse.expandAll()}
-        >Expand all</button>
-      {/if}
-      {#if !pickerMode && hasAiMeta}
-        <span class="text-ink-400" aria-hidden="true">|</span>
-        {#if ai && ai.comments > 0}
-          <span class="flex items-center gap-1 text-comment">
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            {ai.comments}
-          </span>
-        {/if}
-        {#if ai && ai.questions > 0}
-          <span class="flex items-center gap-1 text-question">
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
-            {ai.questions}
-          </span>
-        {/if}
-        {#if totalFindings > 0}
-          <span class="flex items-center gap-1 text-finding">
-            <TreeIcons name="sparkle" size={9} />
-            {totalFindings}
-          </span>
-        {/if}
-      {/if}
+    </div>
+  {/if}
+
+  {#if !pickerMode && snapshot && snapshot.total_count > 0}
+    <!-- Review progress meter: segmented bar -->
+    <div class="px-3 pb-1.5 shrink-0">
+      <div class="flex gap-[2px]">
+        {#each { length: snapshot.total_count } as _, i}
+          <span
+            class="flex-1 h-[3px] rounded-[2px] transition-colors duration-150"
+            style="background: {i < snapshot.reviewed_count ? 'var(--color-periwinkle)' : 'rgba(255,255,255,0.06)'}"
+          ></span>
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -433,8 +427,8 @@
               aria-expanded={!folderCollapsed}
               aria-selected={false}
               tabindex="-1"
-              class="flex items-center gap-1 pr-3 h-[28px] text-fg-3 cursor-pointer hover:bg-card"
-              style="padding-left: {indentPx(node.depth)};"
+              class="flex items-center gap-1.5 pr-2 text-[11px] text-fg-3 cursor-pointer hover:bg-card"
+              style="padding-top: 4px; padding-bottom: 4px; padding-left: {indentPx(node.depth)};"
               onclick={(e) => {
                 if (pickerMode && (e.target as HTMLElement).closest("input[type=checkbox]")) return;
                 toggleFolder(node.fullPath);
@@ -453,8 +447,8 @@
                 />
               {/if}
               <svg
-                width="10"
-                height="10"
+                width="9"
+                height="9"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -463,23 +457,23 @@
               >
                 <polyline points="9 18 15 12 9 6" />
               </svg>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="shrink-0 opacity-80"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="shrink-0 opacity-80"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
               <span class="truncate">{node.name}</span>
             </div>
           {:else if node.file}
             {@const file = resolveTreeFile(filesByPath, node)!}
-            {@const status = fileStatusDisplay(file.status)}
             {@const selected = !pickerMode && selectedFile?.path === file.path}
             {@const inViewport = !pickerMode && !selected && viewportPath === file.path}
             {@const pickerFocused = pickerMode && visibleFilePaths[pickerFocusIdx] === file.path}
             {@const checked = pickerMode && isPathSelected(file.path)}
+            {@const chip = extChip(fileExtension(file.path))}
             <div
               role="treeitem"
               aria-level={node.depth + 1}
               aria-selected={pickerMode ? checked : selected}
               tabindex={selected ? 0 : -1}
-              class="flex items-center gap-1.5 pr-3 h-[28px] cursor-pointer border-l-2 {pickerFocused ? 'bg-ink-700 border-accent/60' : selected ? 'bg-tree-selected border-accent' : inViewport ? 'border-accent/40 bg-card/60' : checked ? 'bg-card/40 border-transparent' : 'border-transparent hover:bg-card'}"
-              style="padding-left: {indentPx(node.depth)};"
+              class="flex items-center gap-1.5 pr-2 cursor-pointer border-l-2 {pickerFocused ? 'bg-ink-700 border-accent/60' : selected ? 'bg-tree-selected border-accent' : inViewport ? 'border-accent/40 bg-card/60' : checked ? 'bg-card/40 border-transparent' : 'border-transparent hover:bg-card'}"
+              style="padding-top: 4px; padding-bottom: 4px; padding-left: {indentPx(node.depth)};"
               onclick={() =>
                 pickerMode
                   ? toggleSelection(file.path)
@@ -500,51 +494,37 @@
                   aria-label="Include {node.name} in review"
                 />
               {/if}
-              <FileStatusIcon kind={status.icon} class={status.className} title={status.title} />
+              <!-- File-type chip -->
+              <span
+                class="shrink-0 inline-flex items-center justify-center w-[14px] h-[14px] rounded-[3px] text-[7px] font-bold leading-none"
+                style="background: {chip.color}22; color: {chip.color}"
+                aria-hidden="true"
+              >{chip.label}</span>
 
-              <span class="truncate flex-1 min-w-0 flex items-center gap-1">
-                <span class="truncate {filenameClass(file, selected)}">{node.name}</span>
-                {#if !file.reviewed && file.risk}
-                  <span
-                    class="w-1.5 h-1.5 rounded-full shrink-0 {file.risk === 'high' ? 'bg-risk-high' : file.risk === 'med' ? 'bg-risk-med' : 'bg-risk-low'}"
-                  ></span>
-                {/if}
-              </span>
+              <span class="truncate flex-1 min-w-0 text-[12px] {filenameClass(file, selected)}">{node.name}</span>
 
-              <span class="ml-auto flex items-center gap-1.5 shrink-0">
-                {#if file.reviewed}
-                  <span class="text-[10px] text-muted shrink-0">✓ reviewed</span>
-                {:else}
-                  {#if file.finding_count > 0}
-                    <span class="flex items-center gap-0.5 text-[10px] mono text-finding shrink-0">
-                      <TreeIcons name="sparkle" size={9} />
-                      {file.finding_count}
-                    </span>
+              <!-- Comment/question badge -->
+              {#if !file.reviewed && (file.comment_count > 0 || file.question_count > 0)}
+                <span
+                  title="{(file.comment_count + file.question_count)} comment{(file.comment_count + file.question_count) !== 1 ? 's' : ''}"
+                  class="w-[13px] h-[13px] rounded-full shrink-0 flex items-center justify-center text-[9px] font-bold"
+                  style="background: rgba(34,211,238,0.15); color: var(--color-comment); border: 1px solid rgba(34,211,238,0.25);"
+                >?</span>
+              {/if}
+
+              <!-- +N −N counts -->
+              {#if file.is_lazy_stub}
+                <span class="text-[10px] mono text-muted shrink-0 opacity-40">···</span>
+              {:else}
+                <span class="flex items-center gap-1 shrink-0">
+                  {#if file.additions > 0}
+                    <span class="text-[10px] mono text-add-fg">+{file.additions}</span>
                   {/if}
-                  {#if file.comment_count > 0}
-                    <span class="flex items-center gap-0.5 text-[10px] mono text-comment shrink-0">
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                      {file.comment_count}
-                    </span>
+                  {#if file.deletions > 0}
+                    <span class="text-[10px] mono text-del-fg">−{file.deletions}</span>
                   {/if}
-                  {#if file.question_count > 0}
-                    <span class="flex items-center gap-0.5 text-[10px] mono text-question shrink-0">
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
-                      {file.question_count}
-                    </span>
-                  {/if}
-                  {#if file.is_lazy_stub}
-                    <span class="text-[11px] mono text-muted shrink-0 opacity-40">···</span>
-                  {:else}
-                    {#if file.additions > 0}
-                      <span class="text-[11px] mono text-add-fg shrink-0">+{file.additions}</span>
-                    {/if}
-                    {#if file.deletions > 0}
-                      <span class="text-[11px] mono text-del-fg shrink-0">−{file.deletions}</span>
-                    {/if}
-                  {/if}
-                {/if}
-              </span>
+                </span>
+              {/if}
             </div>
           {/if}
         {/each}

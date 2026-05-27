@@ -1372,14 +1372,19 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
             // TODO(risk:minor): push errors are counted but the error message is discarded.
             // The user sees "N failed" with no indication of which comments failed or why
             // (e.g. outdated commit SHA, deleted file, rate limit). Retain errors for display.
+            let start = comment.line_start.unwrap_or(line);
+            let end = comment.line_end.unwrap_or(start);
+            let side = comment.side.as_str();
             match if is_remote {
                 github::gh_pr_push_comment_remote(
                     &owner,
                     &repo_name,
                     pr_number,
                     path,
-                    line,
+                    start,
+                    Some(end),
                     &comment.comment,
+                    side,
                 )
             } else {
                 github::gh_pr_push_comment(
@@ -1387,8 +1392,10 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
                     &repo_name,
                     pr_number,
                     path,
-                    line,
+                    start,
+                    Some(end),
                     &comment.comment,
+                    side,
                     &repo_root,
                 )
             } {
@@ -1549,11 +1556,16 @@ fn push_comments_as_review(app: &mut App) -> Result<()> {
         let batch: Vec<github::ReviewBatchEntry> = line_comment_ids
             .iter()
             .filter_map(|cid| gc.comments.iter().find(|c| c.id == *cid))
-            .map(|c| github::ReviewBatchEntry {
-                file: c.file.clone(),
-                line: c.line_start.unwrap_or(1),
-                body: c.comment.clone(),
-                side: c.side.clone(),
+            .map(|c| {
+                let start = c.line_start.unwrap_or(1);
+                let end = c.line_end.unwrap_or(start);
+                github::ReviewBatchEntry {
+                    file: c.file.clone(),
+                    line: end,
+                    start_line: if end > start { Some(start) } else { None },
+                    body: c.comment.clone(),
+                    side: c.side.clone(),
+                }
             })
             .collect();
 
