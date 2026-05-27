@@ -226,11 +226,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     let mut header_spans = vec![
         Span::styled(
             format!("  {} ", file.status.symbol()),
-            match &file.status {
-                er_engine::git::FileStatus::Added => styles::status_added(),
-                er_engine::git::FileStatus::Deleted => styles::status_deleted(),
-                _ => styles::status_modified(),
-            },
+            styles::status_style(&file.status),
         ),
         Span::styled(
             &file.path,
@@ -809,11 +805,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         let mut sticky_spans: Vec<Span> = vec![
             Span::styled(
                 format!("  {} ", file.status.symbol()),
-                match &file.status {
-                    er_engine::git::FileStatus::Added => styles::status_added(),
-                    er_engine::git::FileStatus::Deleted => styles::status_deleted(),
-                    _ => styles::status_modified(),
-                },
+                styles::status_style(&file.status),
             ),
             Span::styled(
                 file.path.clone(),
@@ -973,11 +965,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             let header_spans = vec![
                 Span::styled(
                     format!("  {} ", file.status.symbol()),
-                    match &file.status {
-                        er_engine::git::FileStatus::Added => styles::status_added(),
-                        er_engine::git::FileStatus::Deleted => styles::status_deleted(),
-                        _ => styles::status_modified(),
-                    },
+                    styles::status_style(&file.status),
                 ),
                 Span::styled(
                     &file.path,
@@ -1603,11 +1591,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         let mut sticky_spans: Vec<Span> = vec![
             Span::styled(
                 format!("  {} ", file.status.symbol()),
-                match &file.status {
-                    er_engine::git::FileStatus::Added => styles::status_added(),
-                    er_engine::git::FileStatus::Deleted => styles::status_deleted(),
-                    _ => styles::status_modified(),
-                },
+                styles::status_style(&file.status),
             ),
             Span::styled(
                 file.path.clone(),

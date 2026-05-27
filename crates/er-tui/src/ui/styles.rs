@@ -194,6 +194,15 @@ pub fn status_modified() -> Style {
     Style::default().fg(YELLOW()).add_modifier(Modifier::BOLD)
 }
 
+pub fn status_style(status: &er_engine::git::FileStatus) -> Style {
+    use er_engine::git::FileStatus;
+    match status {
+        FileStatus::Added => status_added(),
+        FileStatus::Deleted => status_deleted(),
+        _ => status_modified(),
+    }
+}
+
 pub fn status_unmerged() -> Style {
     Style::default().fg(UNMERGED()).add_modifier(Modifier::BOLD)
 }
