@@ -1,7 +1,6 @@
 <script lang="ts">
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { app } from "$lib/stores/app.svelte";
-  import { diffNav } from "$lib/stores/diffNav.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
 
@@ -9,9 +8,8 @@
     row: Extract<CrossFileFlatRow, { type: "file-header" }> | null;
     /** When true, hide the overlay (real file-header row is in viewport top band). */
     hidden?: boolean;
-    scrollTopPx?: number;
   }
-  const { row, hidden = false, scrollTopPx = 0 }: Props = $props();
+  const { row, hidden = false }: Props = $props();
 
   const collapsed = $derived.by(() => {
     diffFileCollapse.revision;
@@ -61,17 +59,6 @@
     }
   }
 
-  function scrollPrevHunk(e: MouseEvent) {
-    if (!row) return;
-    e.stopPropagation();
-    diffNav.scrollToAdjacentHunk(row.filePath, "prev", scrollTopPx);
-  }
-
-  function scrollNextHunk(e: MouseEvent) {
-    if (!row) return;
-    e.stopPropagation();
-    diffNav.scrollToAdjacentHunk(row.filePath, "next", scrollTopPx);
-  }
 </script>
 
 <!-- Always in DOM so it doesn't shift .hscroll layout when toggling visibility. -->
@@ -81,35 +68,18 @@
     : 'pointer-events-auto'}"
 >
   {#if row}
-    <!-- Reviewed checkbox (primary action, leftmost) -->
+    <!-- Collapse chevron (primary action, leftmost) -->
     <button
       type="button"
-      onclick={toggleReviewed}
-      title={row.reviewed ? "Marked reviewed — click to unmark" : "Mark file reviewed"}
-      aria-label={row.reviewed ? "Unmark as reviewed" : "Mark as reviewed"}
-      aria-pressed={row.reviewed}
-      class="shrink-0 w-4 h-4 rounded flex items-center justify-center border transition
-        {row.reviewed
-        ? 'bg-periwinkle border-periwinkle text-white'
-        : 'border-ink-500 bg-transparent text-transparent hover:border-periwinkle'}"
-    >
-      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-        <polyline points="20 6 9 17 4 12" />
-      </svg>
-    </button>
-
-    <!-- Collapse caret -->
-    <button
-      type="button"
-      class="shrink-0 p-0.5 text-fg-3 hover:bg-hover rounded flex items-center justify-center"
+      class="shrink-0 w-5 h-5 text-fg-2 hover:bg-hover hover:text-fg rounded flex items-center justify-center transition"
       title={collapsed ? "Expand file" : "Collapse file"}
       aria-label={collapsed ? "Expand file diff" : "Collapse file diff"}
       aria-expanded={!collapsed}
       onclick={toggleCollapse}
     >
       <svg
-        width="10"
-        height="10"
+        width="12"
+        height="12"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -132,31 +102,26 @@
     <span class="mono text-xs text-add-fg shrink-0">+{row.additions}</span>
     <span class="mono text-xs text-del-fg shrink-0">−{row.deletions}</span>
 
-    <!-- Hunk nav arrows -->
-    <div class="flex items-center gap-0.5 ml-1 shrink-0">
-      <button
-        type="button"
-        title="Previous hunk (k)"
-        aria-label="Previous hunk"
-        onclick={scrollPrevHunk}
-        class="w-5 h-5 rounded flex items-center justify-center text-fg-3 hover:bg-hover hover:text-fg transition"
+    <!-- Reviewed toggle (labeled, separate from collapse) -->
+    <button
+      type="button"
+      onclick={toggleReviewed}
+      title={row.reviewed ? "Marked reviewed — click to unmark" : "Mark file reviewed"}
+      aria-label={row.reviewed ? "Unmark as reviewed" : "Mark as reviewed"}
+      aria-pressed={row.reviewed}
+      class="shrink-0 flex items-center gap-1.5 px-2 h-6 rounded text-xs transition hover:bg-hover
+        {row.reviewed ? 'text-periwinkle' : 'text-fg-3 hover:text-fg'}"
+    >
+      <span
+        class="w-3.5 h-3.5 rounded-[3px] flex items-center justify-center border
+          {row.reviewed ? 'bg-periwinkle border-periwinkle text-white' : 'border-ink-500 text-transparent'}"
       >
-        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <polyline points="18 15 12 9 6 15" />
+        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+          <polyline points="20 6 9 17 4 12" />
         </svg>
-      </button>
-      <button
-        type="button"
-        title="Next hunk (j)"
-        aria-label="Next hunk"
-        onclick={scrollNextHunk}
-        class="w-5 h-5 rounded flex items-center justify-center text-fg-3 hover:bg-hover hover:text-fg transition"
-      >
-        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-    </div>
+      </span>
+      Reviewed
+    </button>
 
     <!-- Open source button -->
     <button

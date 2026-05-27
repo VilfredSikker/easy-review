@@ -156,9 +156,12 @@
     return applyCollapsedFiles(baseCrossFileModel, diffFileCollapse.collapsed);
   });
 
+  // Reset collapse state only when the diff context changes (tab/branch/mode).
+  // clear() reads collapsed.size, so run it untracked — otherwise this effect
+  // takes a dependency on `collapsed` and wipes every collapse the user makes.
   $effect(() => {
     snapshotKey;
-    diffFileCollapse.clear();
+    untrack(() => diffFileCollapse.clear());
   });
 
   // ── D10 measured-height overlay ───────────────────────────────────────────
@@ -1173,7 +1176,7 @@
       <div class="flex items-center justify-center h-full text-muted text-sm">No changes</div>
     {:else}
       <!-- Sticky file path overlay: hides when real file-header is in viewport top band -->
-      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden} scrollTopPx={scrollTopLivePx} />
+      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden} />
 
       <!-- X-scroll surface: full-height absolute-positioned band -->
       <div
@@ -1188,7 +1191,7 @@
           {#each windowedRows as row, localIdx (row.identity)}
             {@const rowIdx = vw.start + localIdx}
             {#if row.type === "file-header"}
-              <FileHeaderRow {row} scrollTopPx={scrollTopLivePx} />
+              <FileHeaderRow {row} />
             {:else if row.type === "hunk-header"}
               <HunkHeaderRow {row} />
             {:else if row.type === "content-fold"}
