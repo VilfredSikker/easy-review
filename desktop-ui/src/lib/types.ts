@@ -331,6 +331,9 @@ export interface AppSnapshot {
   inbox_items?: InboxItemSnapshot[];
   inbox_unread_count?: number;
   inbox_last_refresh_ms?: number;
+  arena_enabled?: boolean;
+  active_arena_run?: string | null;
+  arena_runs?: import("./types/arena").ArenaRunSummary[];
 }
 
 export interface InboxTargetSnapshot {
@@ -415,6 +418,9 @@ export interface AiModelInfo {
   id: string;
   label: string;
   is_selected: boolean;
+  cost_per_1k_in?: number | null;
+  cost_per_1k_out?: number | null;
+  avg_latency_ms?: number | null;
 }
 
 export interface AiProviderInfo {
