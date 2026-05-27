@@ -19,6 +19,7 @@
     useAgentScopedSummary,
   } from "$lib/aiReviewAgents";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
+  import { arena } from "$lib/stores/arena.svelte";
 
   interface Props {
     ai: AiSnapshot;
@@ -75,6 +76,13 @@
   const summaryIsMarkdown = $derived(resolvedSummary.markdown);
   const staleReason = $derived(ai.stale_reason ?? "Review artifacts are stale.");
 
+  const latestArena = $derived(arena.summaries[0] ?? null);
+  const arenaRunning = $derived(
+    latestArena != null &&
+      typeof latestArena.status === "object" &&
+      "running" in latestArena.status,
+  );
+
   const filtered = $derived(
     agentScopedFindings.filter((f) => filter === "all" || f.severity === filter)
   );
@@ -120,6 +128,53 @@
 </script>
 
 <Card>
+  {#if arena.enabled}
+    <div
+      class="mb-4 rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)] p-3"
+    >
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <p class="text-[10px] font-semibold uppercase tracking-wider text-[var(--arena-periwinkle)]">
+            AI Review Arena
+          </p>
+          {#if latestArena}
+            <p class="mt-1 text-[12px] font-medium text-[var(--arena-fg)]">
+              {latestArena.title ?? latestArena.id}
+            </p>
+            <p class="text-[10px] text-[var(--arena-fg-subtle)]">
+              {latestArena.finding_count} findings · {latestArena.reviewer_count} reviewers
+            </p>
+          {:else}
+            <p class="mt-1 text-[12px] text-[var(--arena-fg-muted)]">
+              Multi-reviewer consensus on this diff
+            </p>
+          {/if}
+        </div>
+        <button
+          type="button"
+          class="shrink-0 text-[10px] font-semibold text-[var(--arena-periwinkle)] hover:underline"
+          onclick={() => arena.openLauncher()}
+        >
+          + New run
+        </button>
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2">
+        {#if latestArena}
+          <Button variant="secondary" onclick={() => arena.openOverlay(latestArena.id)}>
+            {arenaRunning ? "View progress" : "Open arena"}
+          </Button>
+        {/if}
+        <button
+          type="button"
+          onclick={() => arena.openLauncher()}
+          class="rounded-md border border-[var(--arena-border)] px-3 py-1.5 text-[11px] text-[var(--arena-fg-muted)] hover:bg-[var(--arena-bg-2)]"
+        >
+          {isEmpty ? "Run as Arena" : "Promote to Arena"}
+        </button>
+      </div>
+    </div>
+  {/if}
+
   {#if showAgentDropdown}
     <select
       bind:value={aiReviewFilter.filter}
