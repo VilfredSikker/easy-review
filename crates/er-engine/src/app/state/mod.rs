@@ -1,3 +1,4 @@
+pub mod arena;
 pub mod background;
 pub(super) mod comments;
 pub mod github_sync;
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 #[allow(unused_imports)]
 use std::time::Instant;
 use tui_textarea::TextArea;
@@ -3689,9 +3691,19 @@ pub struct App {
     /// once `finished_at_ms` exits the 8s display window. We keep them here
     /// in finished form (no channels) so snapshot building stays cheap.
     pub(crate) recent_background_tasks: Vec<background::BackgroundTask>,
+
+    /// Multi-round AI review arena runs (desktop orchestration).
+    pub arena_registry: std::sync::Arc<crate::arena::ArenaRegistry>,
+
+    /// Last started arena run for the active tab session.
+    pub active_arena_run: Option<String>,
 }
 
 impl App {
+    fn default_arena_registry() -> Arc<crate::arena::ArenaRegistry> {
+        App::init_arena_registry(Arc::new(|| {}))
+    }
+
     fn initial_ai_selection(config: &ErConfig) -> (Option<String>, Option<String>) {
         let provider = config.ai_hub.resolve_provider_id(None);
         let model = provider
@@ -3757,8 +3769,9 @@ impl App {
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
+        let arena_registry = App::init_arena_registry(Arc::new(|| {}));
 
-        Ok(App {
+        let mut app = App {
             tabs,
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -3778,7 +3791,11 @@ impl App {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
-        })
+            arena_registry: arena_registry.clone(),
+            active_arena_run: None,
+        };
+        app.reconcile_arena_runs();
+        Ok(app)
     }
 
     /// Create an App with a single unloaded tab for `repo_root` — skips the
@@ -3812,6 +3829,8 @@ impl App {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            arena_registry: Self::default_arena_registry(),
+            active_arena_run: None,
         })
     }
 
@@ -3842,6 +3861,8 @@ impl App {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            arena_registry: Self::default_arena_registry(),
+            active_arena_run: None,
         }
     }
 
@@ -3868,6 +3889,8 @@ impl App {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            arena_registry: Self::default_arena_registry(),
+            active_arena_run: None,
         }
     }
 
@@ -7702,6 +7725,8 @@ mod tests {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            arena_registry: App::default_arena_registry(),
+            active_arena_run: None,
         }
     }
 

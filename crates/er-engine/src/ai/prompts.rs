@@ -1138,6 +1138,66 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
     )
 }
 
+// ── AI Review Arena (JSON-only stdout) ──
+
+pub fn build_arena_round1_prompt(diff_patch_path: &str, reviewer_label: &str) -> String {
+    format!(
+        r#"You are reviewer "{reviewer_label}" in a multi-agent code review arena.
+
+Read the pinned diff at `{diff_patch_path}` (do not run git diff).
+
+Respond with ONLY a single JSON object on stdout (no markdown fences), matching:
+{{"findings":[{{"file":"path","line":12,"title":"short","body":"detail","severity":"high|med|low","confidence":0.0,"tags":[]}}]}}
+
+Rules:
+- Propose real issues grounded in the diff.
+- severity: high | med | low
+- If no issues: {{"findings":[]}}
+"#,
+        diff_patch_path = diff_patch_path.replace('\\', "/"),
+    )
+}
+
+pub fn build_arena_round2_prompt(
+    diff_patch_path: &str,
+    reviewer_id: &str,
+    findings_json: &str,
+) -> String {
+    format!(
+        r#"You are reviewer "{reviewer_id}" in round 2 (cross-check).
+
+Diff: `{diff_patch_path}`
+
+Findings to vote on (JSON array):
+{findings_json}
+
+For EACH finding return exactly one vote: keep | drop | merge | escalate | lower | abstain | flag
+Plus a one-sentence note that references the finding's content (required except abstain).
+
+Self-review: for findings you proposed in round 1, you may lower/drop/withdraw.
+
+Respond ONLY with JSON:
+{{"ballots":[{{"finding_id":"...","vote":"keep","note":"...","merge_target":null}}]}}
+"#,
+        diff_patch_path = diff_patch_path.replace('\\', "/"),
+    )
+}
+
+pub fn build_arena_round3_prompt(findings_summary_json: &str) -> String {
+    format!(
+        r#"You are the arena arbiter. Consolidate final verdicts.
+
+Input (findings + round-2 votes):
+{findings_summary_json}
+
+For each finding_id return: verdict (kept|escalated|merged|dropped), confidence 0..1, rationale (1-3 sentences citing reviewers), merged_into when verdict is merged.
+
+Respond ONLY with JSON:
+{{"verdicts":[{{"finding_id":"...","verdict":"kept","confidence":0.82,"rationale":"...","merged_into":null}}]}}
+"#
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

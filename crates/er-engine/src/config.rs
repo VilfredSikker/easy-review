@@ -154,6 +154,13 @@ pub struct AiModelConfig {
     pub label: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+    /// USD per 1k input tokens (arena cost estimate).
+    #[serde(default)]
+    pub cost_per_1k_in: Option<f32>,
+    #[serde(default)]
+    pub cost_per_1k_out: Option<f32>,
+    #[serde(default)]
+    pub avg_latency_ms: Option<u32>,
 }
 
 /// [summary] section — configuration for diff summary / changelog generation
@@ -1102,11 +1109,17 @@ args = ["--model", "gpt-5.4"]
                         id: "gpt-5.4".into(),
                         label: Some("GPT-5.4".into()),
                         args: vec!["--model".into(), "gpt-5.4".into()],
+                        cost_per_1k_in: None,
+                        cost_per_1k_out: None,
+                        avg_latency_ms: None,
                     },
                     AiModelConfig {
                         id: "gpt-5.3-codex".into(),
                         label: None,
                         args: vec!["--model".into(), "gpt-5.3-codex".into()],
+                        cost_per_1k_in: None,
+                        cost_per_1k_out: None,
+                        avg_latency_ms: None,
                     },
                 ],
             },
