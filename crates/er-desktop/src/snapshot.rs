@@ -614,6 +614,26 @@ fn comment_ref_to_thread(
     }
 }
 
+/// Author label for a thread message — an empty raw author means the local user.
+fn display_author(raw: &str) -> String {
+    if raw.is_empty() {
+        "You".to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+/// Reply kind from a resolved display author (shared by question + GitHub replies).
+fn reply_kind(author: &str) -> &'static str {
+    if author == "You" {
+        "you"
+    } else if author == "ai" {
+        "ai"
+    } else {
+        "human"
+    }
+}
+
 fn build_replies(
     root: &CommentRef<'_>,
     tab: &TabState,
@@ -625,18 +645,8 @@ fn build_replies(
     if let Some(qs) = &tab.ai.questions {
         for q in &qs.questions {
             if q.in_reply_to.as_deref() == Some(root_id) {
-                let author = if q.author.is_empty() {
-                    "You".to_string()
-                } else {
-                    q.author.clone()
-                };
-                let kind = if author == "You" {
-                    "you"
-                } else if author == "ai" {
-                    "ai"
-                } else {
-                    "human"
-                };
+                let author = display_author(&q.author);
+                let kind = reply_kind(&author);
                 replies.push(ThreadMessage {
                     id: q.id.clone(),
                     author,
@@ -650,18 +660,8 @@ fn build_replies(
     if let Some(gc) = &tab.ai.github_comments {
         for c in &gc.comments {
             if c.in_reply_to.as_deref() == Some(root_id) {
-                let author = if c.author.is_empty() {
-                    "You".to_string()
-                } else {
-                    c.author.clone()
-                };
-                let kind = if author == "You" {
-                    "you"
-                } else if author == "ai" {
-                    "ai"
-                } else {
-                    "human"
-                };
+                let author = display_author(&c.author);
+                let kind = reply_kind(&author);
                 replies.push(ThreadMessage {
                     id: c.id.clone(),
                     author,
@@ -2274,11 +2274,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         resolved: q.resolved,
                         root: ThreadMessage {
                             id: q.id.clone(),
-                            author: if q.author.is_empty() {
-                                "You".to_string()
-                            } else {
-                                q.author.clone()
-                            },
+                            author: display_author(&q.author),
                             kind: "you".to_string(),
                             timestamp: q.timestamp.clone(),
                             body_markdown: q.text.clone(),
@@ -2311,11 +2307,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         resolved: c.resolved,
                         root: ThreadMessage {
                             id: c.id.clone(),
-                            author: if c.author.is_empty() {
-                                "You".to_string()
-                            } else {
-                                c.author.clone()
-                            },
+                            author: display_author(&c.author),
                             kind: author_kind.to_string(),
                             timestamp: c.timestamp.clone(),
                             body_markdown: c.comment.clone(),
