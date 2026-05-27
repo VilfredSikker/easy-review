@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod arena_commands;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
@@ -623,6 +624,9 @@ fn main() {
     let terminals_for_exit = Arc::clone(&terminals);
     let desktop_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(0));
+    if let Ok(mut app) = app_arc.lock() {
+        arena_commands::attach_arena_notify(&mut app, Arc::clone(&desktop_revision));
+    }
     let last_sent_content_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let last_sent_chrome_revision: Arc<std::sync::atomic::AtomicU64> =
@@ -1362,6 +1366,11 @@ fn main() {
             commands::list_diff_paths,
             commands::set_ai_model,
             commands::list_ai_providers,
+            arena_commands::arena_start,
+            arena_commands::arena_get,
+            arena_commands::arena_list,
+            arena_commands::arena_cancel,
+            arena_commands::arena_override,
             commands::set_ai_selection,
             commands::promote_to_comment,
             commands::ask_ai,

@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
+use er_engine::arena::{ArenaRunSnapshot, ArenaRunSummary};
 use er_engine::git::{DiffFile, FileStatus, LineType};
 use serde::Serialize;
 
@@ -10,6 +11,12 @@ use crate::inbox::InboxHandle;
 use crate::projects;
 
 // ── Wire types ──────────────────────────────────────────────────────────────
+
+/// Full arena run + projections (`arena_get` / `arena_override`).
+pub type ArenaRunSnapshotWire = ArenaRunSnapshot;
+
+/// Arena run list entry for the review tab (`arena_list` / poll snapshot).
+pub type ArenaRunSummaryWire = ArenaRunSummary;
 
 /// Which background fetches are currently in-flight. Included in every snapshot
 /// so the frontend can show loading indicators without adding its own timers.
@@ -138,6 +145,15 @@ pub struct AppSnapshot {
     pub inbox_unread_count: usize,
     #[serde(default)]
     pub inbox_last_refresh_ms: u64,
+    /// `features.arena` — when false, arena commands are rejected.
+    #[serde(default)]
+    pub arena_enabled: bool,
+    /// Active arena run id for this tab, if any.
+    #[serde(default)]
+    pub active_arena_run: Option<String>,
+    /// Recent arena runs for the active tab (newest first).
+    #[serde(default)]
+    pub arena_runs: Vec<ArenaRunSummaryWire>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1300,6 +1316,17 @@ fn build_snapshot_inner(
         inbox_last_refresh_ms: inbox
             .and_then(|h| h.lock().ok().map(|g| g.last_refresh_ms))
             .unwrap_or(0),
+        arena_enabled: app.config.features.arena,
+        active_arena_run: if app.config.features.arena {
+            app.active_arena_run.clone()
+        } else {
+            None
+        },
+        arena_runs: if app.config.features.arena {
+            app.arena_list_summaries().unwrap_or_default()
+        } else {
+            Vec::new()
+        },
     };
     if crate::profile_log::profile_enabled() {
         let total_lines: usize = out

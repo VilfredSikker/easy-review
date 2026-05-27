@@ -125,4 +125,9 @@ commands.allow = [
   "browser_host_message",
   "browser_send_to_page",
   "browser_set_annotate_mode",
+  "arena_start",
+  "arena_get",
+  "arena_list",
+  "arena_cancel",
+  "arena_override",
 ]
