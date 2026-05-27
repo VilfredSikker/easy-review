@@ -110,6 +110,9 @@ pub struct FeatureFlags {
     pub view_conflicts: bool,
     #[serde(default = "default_true")]
     pub view_hidden: bool,
+    /// Multi-round AI Review Arena (orchestrated debate + consensus UI).
+    #[serde(default)]
+    pub arena: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,6 +251,7 @@ impl Default for FeatureFlags {
             view_history: true,
             view_conflicts: true,
             view_hidden: true,
+            arena: false,
         }
     }
 }
@@ -1124,6 +1128,7 @@ args = ["--model", "gpt-5.4"]
                 view_history: true,
                 view_conflicts: false,
                 view_hidden: true,
+                arena: false,
             },
             display: DisplayConfig {
                 tab_width: 8,

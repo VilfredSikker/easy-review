@@ -1,3 +1,4 @@
+pub mod arena;
 pub mod ai;
 pub mod app;
 pub mod cache;

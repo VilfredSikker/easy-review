@@ -473,6 +473,23 @@ export interface UiDomContext {
   outer_html?: string | null;
 }
 
+export type {
+  ArenaConfig,
+  ArenaFinding,
+  ArenaRun,
+  ArenaRunSnapshot,
+  ArenaRunSummary,
+  ArenaScope,
+  ArenaSeverity,
+  Ballot,
+  FunnelStages,
+  MatrixRow,
+  Reviewer,
+  RunStatus,
+  Verdict,
+  Vote,
+} from "./types/arena";
+
 export interface UiDomNodeContext {
   tag?: string | null;
   id?: string | null;

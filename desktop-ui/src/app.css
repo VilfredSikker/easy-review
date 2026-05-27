@@ -76,6 +76,97 @@
   --color-syntax-string:  #86efac;
   --color-syntax-punct:   #6b6b6b;
   --color-syntax-comment: #5e5e5e;
+
+  /* Arena overlay (design-polish/Arena-design/tokens.css — DM Sans / JetBrains Mono) */
+  --color-arena-bg-app: #0c121f;
+  --color-arena-bg-0: #0e1420;
+  --color-arena-bg-1: #131927;
+  --color-arena-bg-2: #181f2e;
+  --color-arena-bg-3: #1e2536;
+  --color-arena-bg-4: #252c3e;
+  --color-arena-fg: #e6e8ed;
+  --color-arena-fg-muted: #aab0bd;
+  --color-arena-fg-subtle: #6d7384;
+  --color-arena-fg-faint: #4a5163;
+  --color-arena-orange: #ff7a2b;
+  --color-arena-periwinkle: #7f87ff;
+  --color-arena-ok: #4ec9a4;
+  --color-arena-warn: #ffc457;
+  --color-arena-err: #ff6b6b;
+  --color-arena-info: #5fb7ff;
+}
+
+:root {
+  --arena-bg-app: var(--color-arena-bg-app);
+  --arena-bg-0: var(--color-arena-bg-0);
+  --arena-bg-1: var(--color-arena-bg-1);
+  --arena-bg-2: var(--color-arena-bg-2);
+  --arena-bg-3: var(--color-arena-bg-3);
+  --arena-bg-4: var(--color-arena-bg-4);
+  --arena-fg: var(--color-arena-fg);
+  --arena-fg-muted: var(--color-arena-fg-muted);
+  --arena-fg-subtle: var(--color-arena-fg-subtle);
+  --arena-fg-faint: var(--color-arena-fg-faint);
+  --arena-orange: var(--color-arena-orange);
+  --arena-periwinkle: var(--color-arena-periwinkle);
+  --arena-ok: var(--color-arena-ok);
+  --arena-warn: var(--color-arena-warn);
+  --arena-err: var(--color-arena-err);
+  --arena-info: var(--color-arena-info);
+  --arena-border: rgba(255, 255, 255, 0.06);
+  --arena-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --arena-d-fast: 120ms;
+  --arena-d-base: 200ms;
+}
+
+.arena-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.arena-pill--kept {
+  background: rgba(78, 201, 164, 0.12);
+  color: var(--arena-ok);
+  border: 1px solid rgba(78, 201, 164, 0.3);
+}
+.arena-pill--merged {
+  background: rgba(127, 135, 255, 0.14);
+  color: var(--arena-periwinkle);
+  border: 1px solid rgba(127, 135, 255, 0.3);
+}
+.arena-pill--err {
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--arena-err);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+}
+.arena-pill--muted {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--arena-fg-subtle);
+  border: 1px solid var(--arena-border);
+}
+.arena-pill--pending {
+  background: rgba(255, 196, 87, 0.1);
+  color: var(--arena-warn);
+  border: 1px solid rgba(255, 196, 87, 0.3);
+}
+.arena-link-row {
+  transition: background var(--arena-d-fast) var(--arena-ease);
+}
+.arena-link-row:hover {
+  background: var(--arena-bg-3);
+}
+.arena-selected {
+  background: var(--arena-bg-4) !important;
+  outline: 1px solid var(--arena-periwinkle);
+  outline-offset: -1px;
 }
 
 @layer base {
