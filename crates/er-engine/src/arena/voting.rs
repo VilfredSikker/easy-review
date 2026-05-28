@@ -116,6 +116,40 @@ pub fn apply_round3_verdicts(
     }
 }
 
+/// Record arbiter ballots on each finding for the consensus matrix.
+pub fn record_round3_ballots(
+    findings: &mut [ArenaFinding],
+    output: &super::schema::Round3Output,
+    arbiter_id: &str,
+) {
+    for v in &output.verdicts {
+        let Some(f) = findings.iter_mut().find(|x| x.id == v.finding_id) else {
+            continue;
+        };
+        if f.rounds.iter().all(|r| r.n != 3) {
+            f.rounds.push(super::model::RoundLog { n: 3, log: vec![] });
+        }
+        if let Some(r) = f.rounds.iter_mut().find(|r| r.n == 3) {
+            r.log.push(Ballot {
+                reviewer: arbiter_id.to_string(),
+                vote: verdict_to_vote(&v.verdict),
+                note: v.rationale.clone(),
+                merge_target: v.merged_into.clone(),
+            });
+        }
+    }
+}
+
+fn verdict_to_vote(verdict: &str) -> Vote {
+    match verdict.to_ascii_lowercase().as_str() {
+        "kept" => Vote::Keep,
+        "escalated" => Vote::Escalate,
+        "dropped" => Vote::Drop,
+        "merged" => Vote::Merge,
+        _ => Vote::Abstain,
+    }
+}
+
 fn parse_verdict(s: &str, merged_into: Option<&str>) -> Verdict {
     match s.to_ascii_lowercase().as_str() {
         "kept" => Verdict::Kept,
@@ -153,6 +187,43 @@ mod tests {
         assert_eq!(majority_severity(&votes), RiskLevel::Medium);
         let votes2 = vec![RiskLevel::High, RiskLevel::High, RiskLevel::Medium];
         assert_eq!(majority_severity(&votes2), RiskLevel::High);
+    }
+
+    #[test]
+    fn round3_ballots_recorded_for_matrix() {
+        use super::super::model::ArenaFinding;
+        use super::super::schema::Round3Output;
+        use crate::ai::RiskLevel;
+        let mut findings = vec![ArenaFinding {
+            id: "fid".into(),
+            file: "f.rs".into(),
+            line: None,
+            title: "t".into(),
+            body: "b".into(),
+            severity_by_round: BTreeMap::from([(1, RiskLevel::High)]),
+            raised_by: vec![],
+            verdict: Verdict::Pending,
+            confidence: 0.0,
+            rationale: String::new(),
+            rounds: vec![],
+            merge_candidates: vec![],
+            merged_children: vec![],
+            evidence: vec![],
+            override_: None,
+        }];
+        let out = Round3Output {
+            verdicts: vec![super::super::schema::Round3Verdict {
+                finding_id: "fid".into(),
+                verdict: "kept".into(),
+                confidence: 0.9,
+                rationale: "ok".into(),
+                merged_into: None,
+            }],
+        };
+        record_round3_ballots(&mut findings, &out, "arbiter-1");
+        assert_eq!(findings[0].rounds.len(), 1);
+        assert_eq!(findings[0].rounds[0].n, 3);
+        assert_eq!(findings[0].rounds[0].log[0].reviewer, "arbiter-1");
     }
 
     #[test]

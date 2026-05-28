@@ -812,6 +812,12 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             get: |c| c.agent.args.join(" "),
             set: |c, v| c.agent.args = split_shell_args(&v),
         },
+        ConfigItem::BoolToggle {
+            label: "AI Review Arena".into(),
+            description: "Multi-round AI reviewer debate (desktop)".into(),
+            get: |c| c.features.arena,
+            set: |c, v| c.features.arena = v,
+        },
         // ── AI ──
         ConfigItem::SectionHeader("AI".into()),
         ConfigItem::Action {

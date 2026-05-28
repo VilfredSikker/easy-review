@@ -61,6 +61,7 @@ class ArenaStore {
           reviewers: config.reviewers,
           scope: config.scope,
           files: config.files,
+          rounds: config.rounds,
           confirm: config.confirm ?? false,
         },
       });
@@ -133,9 +134,14 @@ class ArenaStore {
   }
 
   syncFromSnapshot() {
-    const active = app.snapshot?.active_arena_run;
-    if (active && !this.activeRunId) {
-      this.activeRunId = active;
+    const active = app.snapshot?.active_arena_run ?? null;
+    if (active === this.activeRunId) return;
+    this.activeRunId = active;
+    if (active && (this.runningOpen || this.overlayOpen)) {
+      void this.refreshRun();
+    } else if (!active) {
+      this.runningOpen = false;
+      this.runningMinimized = false;
     }
   }
 }

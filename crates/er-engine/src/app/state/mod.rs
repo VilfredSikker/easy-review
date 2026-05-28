@@ -3695,8 +3695,8 @@ pub struct App {
     /// Multi-round AI review arena runs (desktop orchestration).
     pub arena_registry: std::sync::Arc<crate::arena::ArenaRegistry>,
 
-    /// Last started arena run for the active tab session.
-    pub active_arena_run: Option<String>,
+    /// Last started arena run id per tab `.er` directory.
+    pub active_arena_runs: std::collections::HashMap<String, String>,
 }
 
 impl App {
@@ -3792,7 +3792,7 @@ impl App {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             arena_registry: arena_registry.clone(),
-            active_arena_run: None,
+            active_arena_runs: std::collections::HashMap::new(),
         };
         app.reconcile_arena_runs();
         Ok(app)
@@ -3830,7 +3830,7 @@ impl App {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             arena_registry: Self::default_arena_registry(),
-            active_arena_run: None,
+            active_arena_runs: std::collections::HashMap::new(),
         })
     }
 
@@ -3862,7 +3862,7 @@ impl App {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             arena_registry: Self::default_arena_registry(),
-            active_arena_run: None,
+            active_arena_runs: std::collections::HashMap::new(),
         }
     }
 
@@ -3890,7 +3890,7 @@ impl App {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             arena_registry: Self::default_arena_registry(),
-            active_arena_run: None,
+            active_arena_runs: std::collections::HashMap::new(),
         }
     }
 
@@ -7726,7 +7726,7 @@ mod tests {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             arena_registry: App::default_arena_registry(),
-            active_arena_run: None,
+            active_arena_runs: std::collections::HashMap::new(),
         }
     }
 

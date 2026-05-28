@@ -48,11 +48,10 @@ pub fn build_funnel(findings: &[ArenaFinding]) -> FunnelStages {
 
     for f in findings {
         let has_round2 = f.rounds.iter().any(|r| r.n >= 2 && !r.log.is_empty());
-        let has_round3 = f.rounds.iter().any(|r| r.n >= 3 && !r.log.is_empty());
         if has_round2 {
             cross_checked += 1;
         }
-        if has_round3 || !matches!(f.verdict, Verdict::Pending) {
+        if !matches!(f.verdict, Verdict::Pending) {
             resolved += 1;
         }
         match &f.verdict {
@@ -105,6 +104,15 @@ mod tests {
             evidence: vec![],
             override_: None,
         }
+    }
+
+    #[test]
+    fn funnel_resolved_counts_verdict_not_round3_logs() {
+        let f = finding_with_votes("x", vec![]);
+        let funnel = build_funnel(&[f]);
+        assert_eq!(funnel.counts.proposed, 1);
+        assert_eq!(funnel.counts.resolved, 1);
+        assert_eq!(funnel.counts.cross_checked, 0);
     }
 
     #[test]

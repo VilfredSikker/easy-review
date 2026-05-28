@@ -1,10 +1,11 @@
 use crate::config::AiHubConfig;
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 const MAX_RETRIES: u32 = 2;
 
@@ -41,11 +42,6 @@ pub fn resolve_provider_command(
     })
 }
 
-pub struct SpawnResult {
-    pub stdout: String,
-    pub stderr: String,
-}
-
 /// Run provider CLI with `{prompt}` substitution; returns parsed JSON value from stdout.
 pub fn run_provider_json(
     cmd: &ProviderCommand,
@@ -54,6 +50,10 @@ pub fn run_provider_json(
     cancel: &AtomicBool,
     children: &Arc<Mutex<Vec<Child>>>,
 ) -> Result<Value> {
+    if let Ok(dir) = std::env::var("ER_FAKE_ARENA_DIR") {
+        return fake_arena_json_from_dir(&dir);
+    }
+
     let mut last_err = None;
     for attempt in 0..=MAX_RETRIES {
         if cancel.load(Ordering::SeqCst) {
@@ -67,11 +67,21 @@ pub fn run_provider_json(
                 if class == ErrorClass::Fatal || attempt == MAX_RETRIES {
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
             }
         }
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("provider failed")))
+}
+
+/// Test hook: read `round1.json`, `round2.json`, or `round3.json` from a directory (in order).
+pub fn fake_arena_json_from_dir(dir: &str) -> Result<Value> {
+    static ROUND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+    let n = ROUND.fetch_add(1, Ordering::SeqCst).min(3);
+    let path = std::path::Path::new(dir).join(format!("round{n}.json"));
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("read fake arena fixture {}", path.display()))?;
+    serde_json::from_str(&text).context("parse fake arena json")
 }
 
 fn run_once(
@@ -102,8 +112,7 @@ fn run_once(
         kids.push(child);
     }
 
-    let stdout_text = read_stdout(stdout);
-    let stderr_text = read_stderr(stderr);
+    let (stdout_text, stderr_text) = read_pipes_concurrent(stdout, stderr);
 
     let status = {
         let mut kids = children
@@ -137,15 +146,26 @@ fn run_once(
     extract_json_from_stdout(&stdout_text, cmd.stream_json)
 }
 
-fn read_stdout(pipe: Option<std::process::ChildStdout>) -> String {
-    pipe.map(read_lines).unwrap_or_default()
+fn read_pipes_concurrent(
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
+) -> (String, String) {
+    let out_handle = stdout.map(|pipe| {
+        thread::spawn(move || read_lines(pipe))
+    });
+    let err_handle = stderr.map(|pipe| {
+        thread::spawn(move || read_lines(pipe))
+    });
+    let stdout_text = out_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr_text = err_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    (stdout_text, stderr_text)
 }
 
-fn read_stderr(pipe: Option<std::process::ChildStderr>) -> String {
-    pipe.map(read_lines).unwrap_or_default()
-}
-
-fn read_lines<R: std::io::Read>(pipe: R) -> String {
+fn read_lines<R: Read>(pipe: R) -> String {
     let reader = BufReader::new(pipe);
     reader
         .lines()
@@ -213,10 +233,39 @@ pub fn classify_error(err: &anyhow::Error) -> ErrorClass {
     }
 }
 
+pub fn is_cancelled_error(err: &anyhow::Error) -> bool {
+    err.to_string().to_lowercase().contains("cancelled")
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
         format!("{}…", &s[..max])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fake_arena_dir_round_robin() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/arena/fake");
+        std::env::set_var("ER_FAKE_ARENA_DIR", dir);
+        let v1 = run_provider_json(
+            &ProviderCommand {
+                command: "true".into(),
+                args: vec![],
+                stream_json: false,
+            },
+            "",
+            ".",
+            &AtomicBool::new(false),
+            &Arc::new(Mutex::new(Vec::new())),
+        )
+        .unwrap();
+        assert!(v1.get("findings").is_some());
+        std::env::remove_var("ER_FAKE_ARENA_DIR");
     }
 }

@@ -19,6 +19,7 @@
   let providers = $state<AiProviderInfo[]>([]);
   let selected = $state<Set<string>>(new Set());
   let rounds = $state(3);
+  let costConfirmed = $state(false);
   let scope = $state<"branch" | "unstaged" | "staged">("branch");
   let title = $state("");
   let loadingProviders = $state(false);
@@ -41,7 +42,7 @@
 
   const picked = $derived([...selected].map(parseKey));
   const isArena = $derived(picked.length >= 2);
-  const canStart = $derived(picked.length >= 1 && picked.length <= 6 && !arena.loading);
+  const canStart = $derived(picked.length >= 2 && picked.length <= 6 && !arena.loading);
 
   const suggestedTitle = $derived.by(() => {
     if (picked.length === 0) return "New review run";
@@ -98,13 +99,23 @@
   });
 
   function start() {
+    const costNum = parseFloat(estimate.costUsd.replace(/[^0-9.]/g, "")) || 0;
+    if (costNum > 25 && !costConfirmed) {
+      costConfirmed = true;
+      app.showToast(
+        "info",
+        `Estimated cost ${estimate.costUsd} exceeds $25 — click Start again to confirm`,
+      );
+      return;
+    }
     const config: ArenaStartConfig = {
       title: title.trim() || suggestedTitle,
       reviewers: picked,
       scope,
-      rounds: isArena ? rounds : 1,
-      confirm: false,
+      rounds: isArena ? Math.min(3, Math.max(1, rounds)) : 1,
+      confirm: costNum > 25 || costConfirmed,
     };
+    costConfirmed = false;
     void arena.startRun(config);
   }
 </script>
@@ -186,8 +197,8 @@
             Rounds
             <input
               type="range"
-              min="2"
-              max="5"
+              min="1"
+              max="3"
               bind:value={rounds}
               class="mt-2 block w-32"
             />

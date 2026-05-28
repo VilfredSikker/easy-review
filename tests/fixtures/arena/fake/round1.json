@@ -1,0 +1,22 @@
+{
+  "findings": [
+    {
+      "file": "src/lib.rs",
+      "line": 10,
+      "title": "Unchecked parse",
+      "body": "Input is not validated before use.",
+      "severity": "high",
+      "confidence": 0.9,
+      "tags": []
+    },
+    {
+      "file": "src/lib.rs",
+      "line": 12,
+      "title": "Unchecked parse duplicate",
+      "body": "Same issue phrased differently.",
+      "severity": "med",
+      "confidence": 0.85,
+      "tags": []
+    }
+  ]
+}

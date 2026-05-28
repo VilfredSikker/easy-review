@@ -25,6 +25,7 @@ impl App {
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();
         let er_dir = tab.er_dir();
+        let er_key = er_dir.clone();
         let branch_ref = tab.current_branch.clone();
         let base_branch = tab.base_branch.clone();
         let config = self.config.clone();
@@ -38,23 +39,39 @@ impl App {
             base_branch,
             params,
         )?;
-        self.active_arena_run = Some(run_id.clone());
+        self.active_arena_runs.insert(er_key, run_id.clone());
         self.notify(&format!("Arena run started ({run_id})"));
         Ok(run_id)
     }
 
-    pub fn arena_cancel(&mut self, run_id: &str) -> bool {
-        let cancelled = self.arena_registry.cancel(run_id);
-        if cancelled {
-            self.notify("Arena run cancelled");
+    pub fn arena_cancel(&mut self, run_id: &str) -> Result<()> {
+        if !self.arena_registry.cancel(run_id) {
+            anyhow::bail!("no active arena run {run_id}");
         }
-        cancelled
+        let er_path = self.tab().er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_path), run_id);
+        if let Ok(mut run) = load_run(&paths) {
+            run.status = crate::arena::RunStatus::Cancelled;
+            run.completed_at = Some(super::chrono_now());
+            let _ = crate::arena::save_run(&paths, &run);
+        }
+        self.arena_registry.notify_progress();
+        self.notify("Arena run cancelled");
+        Ok(())
+    }
+
+    pub fn active_arena_run(&self) -> Option<String> {
+        let er = self.tab().er_dir();
+        self.active_arena_runs.get(&er).cloned()
     }
 
     pub fn arena_get_snapshot(&self, run_id: &str) -> Result<ArenaRunSnapshot> {
         let er_path = self.tab().er_dir();
         let paths = ArenaPaths::for_run(Path::new(&er_path), run_id);
-        let run = load_run(&paths)?;
+        let mut run = load_run(&paths)?;
+        if let Some(live) = self.arena_registry.get_status(run_id) {
+            run.status = live;
+        }
         Ok(build_snapshot(run))
     }
 

@@ -1318,7 +1318,7 @@ fn build_snapshot_inner(
             .unwrap_or(0),
         arena_enabled: app.config.features.arena,
         active_arena_run: if app.config.features.arena {
-            app.active_arena_run.clone()
+            app.active_arena_run()
         } else {
             None
         },

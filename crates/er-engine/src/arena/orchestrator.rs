@@ -1,17 +1,18 @@
-use super::adapter::{resolve_provider_command, run_provider_json};
+use super::adapter::{is_cancelled_error, resolve_provider_command, run_provider_json};
 use super::merge::findings_from_round1;
 use super::model::*;
-use super::registry::{ArenaNotify, ArenaRegistry, ArenaRunHandle, new_run_id};
+use super::registry::{ArenaRegistry, ArenaRunHandle, new_run_id};
 use super::storage::{
     append_progress_event, load_run, save_diff_patch, save_round_output, save_run, ArenaPaths,
     ProgressEvent,
 };
-use super::voting::{apply_round3_verdicts, severity_from_round2};
+use super::voting::{apply_round3_verdicts, record_round3_ballots, severity_from_round2};
 use crate::ai::compute_diff_hash;
 use crate::ai::prompts::{
     build_arena_round1_prompt, build_arena_round2_prompt, build_arena_round3_prompt,
 };
 use crate::config::ErConfig;
+use crate::git::filter_raw_diff_by_paths;
 use crate::git::git_diff_raw;
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -22,6 +23,13 @@ use std::thread;
 
 pub const DEFAULT_COST_LIMIT_USD: f32 = 25.0;
 pub const MIN_QUORUM: usize = 2;
+
+/// Effective round count for v1 (1–3).
+pub fn effective_arena_rounds(requested: Option<u8>) -> u8 {
+    requested
+        .unwrap_or(ARENA_ROUNDS_V1)
+        .clamp(1, ARENA_ROUNDS_V1)
+}
 pub const ARENA_ROUNDS_V1: u8 = 3;
 
 #[derive(Debug, Clone)]
@@ -30,6 +38,8 @@ pub struct ArenaStartParams {
     pub reviewers: Vec<ReviewerRef>,
     pub scope: ArenaScope,
     pub files: Option<Vec<String>>,
+    /// Requested round count (1–3); defaults to [`ARENA_ROUNDS_V1`].
+    pub rounds: Option<u8>,
     pub confirm: bool,
 }
 
@@ -41,14 +51,30 @@ pub fn scope_git_mode(scope: ArenaScope) -> &'static str {
     }
 }
 
-pub fn estimate_cost_usd(diff_bytes: usize, reviewer_count: usize, hub: &crate::config::AiHubConfig) -> f32 {
-    let tokens_in = (diff_bytes as f64 * reviewer_count as f64 * ARENA_ROUNDS_V1 as f64 * 1.2) as f32;
-    let mut rate = 0.02f32;
-    if let Some(p) = hub.providers.values().next() {
-        if let Some(m) = p.models.first() {
-            rate = m.cost_per_1k_in.unwrap_or(0.015) + m.cost_per_1k_out.unwrap_or(0.075);
+pub fn estimate_cost_usd(
+    diff_bytes: usize,
+    reviewers: &[ReviewerRef],
+    rounds: Option<u8>,
+    hub: &crate::config::AiHubConfig,
+) -> f32 {
+    let rounds = effective_arena_rounds(rounds) as f64;
+    let reviewer_count = reviewers.len().max(1) as f64;
+    let tokens_in = (diff_bytes as f64 * reviewer_count * rounds * 1.2) as f32;
+    let mut rate_sum = 0.0f32;
+    let mut n = 0u32;
+    for rf in reviewers {
+        if let Some(p) = hub.providers.get(&rf.provider_id) {
+            if let Some(m) = p.models.iter().find(|m| m.id == rf.model_id) {
+                rate_sum += m.cost_per_1k_in.unwrap_or(0.015) + m.cost_per_1k_out.unwrap_or(0.075);
+                n += 1;
+            }
         }
     }
+    let rate = if n > 0 {
+        rate_sum / n as f32
+    } else {
+        0.02
+    };
     (tokens_in / 1000.0) * rate
 }
 
@@ -81,8 +107,19 @@ pub fn start_arena_run(
     }
 
     let scope_mode = scope_git_mode(params.scope);
-    let raw_diff = git_diff_raw(scope_mode, &base_branch, &repo_root, None)?;
-    let est = estimate_cost_usd(raw_diff.len(), params.reviewers.len(), &config.ai_hub);
+    let mut raw_diff = git_diff_raw(scope_mode, &base_branch, &repo_root, None)?;
+    if let Some(ref paths) = params.files {
+        if !paths.is_empty() {
+            raw_diff = filter_raw_diff_by_paths(&raw_diff, paths);
+        }
+    }
+    let rounds = effective_arena_rounds(params.rounds);
+    let est = estimate_cost_usd(
+        raw_diff.len(),
+        &params.reviewers,
+        Some(rounds),
+        &config.ai_hub,
+    );
     if est > DEFAULT_COST_LIMIT_USD && !params.confirm {
         anyhow::bail!(
             "estimated cost ${est:.2} exceeds limit ${DEFAULT_COST_LIMIT_USD:.2}; pass confirm=true"
@@ -110,7 +147,7 @@ pub fn start_arena_run(
         status: RunStatus::Queued,
         config: ArenaConfig {
             reviewers: params.reviewers,
-            rounds: ARENA_ROUNDS_V1,
+            rounds,
             arbiter: arbiter_ref,
             auto_accept_threshold: 0.75,
             scope: params.scope,
@@ -151,14 +188,25 @@ pub fn start_arena_run(
             status.clone(),
         );
         if let Err(e) = result {
-            eprintln!("[arena] run {} failed: {e:#}", run_id_thread);
-            if let Ok(mut st) = status.lock() {
-                *st = RunStatus::Failed;
-            }
-            if let Ok(run) = load_run(&paths_clone) {
-                let mut run = run;
-                run.status = RunStatus::Failed;
-                let _ = save_run(&paths_clone, &run);
+            if is_cancelled_error(&e) {
+                if let Ok(mut st) = status.lock() {
+                    *st = RunStatus::Cancelled;
+                }
+                if let Ok(mut run) = load_run(&paths_clone) {
+                    run.status = RunStatus::Cancelled;
+                    run.completed_at = Some(crate::app::chrono_now());
+                    let _ = save_run(&paths_clone, &run);
+                }
+            } else {
+                eprintln!("[arena] run {} failed: {e:#}", run_id_thread);
+                if let Ok(mut st) = status.lock() {
+                    *st = RunStatus::Failed;
+                }
+                if let Ok(mut run) = load_run(&paths_clone) {
+                    run.status = RunStatus::Failed;
+                    run.completed_at = Some(crate::app::chrono_now());
+                    let _ = save_run(&paths_clone, &run);
+                }
             }
         }
         registry_thread.take(&run_id_thread);
@@ -194,15 +242,23 @@ fn run_supervisor(
     status: Arc<Mutex<RunStatus>>,
 ) -> Result<()> {
     let mut run = load_run(paths)?;
-    let total_rounds = ARENA_ROUNDS_V1;
+    let total_rounds = run.config.rounds;
+
+    macro_rules! bail_cancelled {
+        () => {
+            run.status = RunStatus::Cancelled;
+            run.completed_at = Some(crate::app::chrono_now());
+            save_run(paths, &run)?;
+            *status.lock().unwrap() = RunStatus::Cancelled;
+            emit(registry, paths, &ProgressEvent::RunComplete { run_id: run_id.clone() });
+            return Ok(());
+        };
+    }
 
     macro_rules! cancelled {
         () => {
             if cancel.load(Ordering::SeqCst) || registry.is_cancelled(&run_id) {
-                run.status = RunStatus::Cancelled;
-                save_run(paths, &run)?;
-                emit(registry, paths, &ProgressEvent::RunComplete { run_id: run_id.clone() });
-                return Ok(());
+                bail_cancelled!();
             }
         };
     }
@@ -254,6 +310,9 @@ fn run_supervisor(
                 }
             },
             Err(e) => {
+                if is_cancelled_error(&e) {
+                    bail_cancelled!();
+                }
                 mark_reviewer_failed(&mut run, &reviewer.id, &e.to_string());
             }
         }
@@ -265,6 +324,19 @@ fn run_supervisor(
     }
 
     run.findings = findings_from_round1(&round1_ok);
+
+    if total_rounds < 2 {
+        run.status = RunStatus::Complete;
+        run.completed_at = Some(crate::app::chrono_now());
+        *status.lock().unwrap() = RunStatus::Complete;
+        save_run(paths, &run)?;
+        emit(
+            registry,
+            paths,
+            &ProgressEvent::RunComplete { run_id: run_id.clone() },
+        );
+        return Ok(());
+    }
 
     // Round 2
     cancelled!();
@@ -316,11 +388,29 @@ fn run_supervisor(
                 }
                 Err(e) => mark_reviewer_failed(&mut run, &reviewer.id, &e.to_string()),
             },
-            Err(e) => mark_reviewer_failed(&mut run, &reviewer.id, &e.to_string()),
+            Err(e) => {
+                if is_cancelled_error(&e) {
+                    bail_cancelled!();
+                }
+                mark_reviewer_failed(&mut run, &reviewer.id, &e.to_string())
+            }
         }
     }
     severity_from_round2(&mut run.findings, &round2);
     save_run(paths, &run)?;
+
+    if total_rounds < 3 {
+        run.status = RunStatus::Complete;
+        run.completed_at = Some(crate::app::chrono_now());
+        *status.lock().unwrap() = RunStatus::Complete;
+        save_run(paths, &run)?;
+        emit(
+            registry,
+            paths,
+            &ProgressEvent::RunComplete { run_id: run_id.clone() },
+        );
+        return Ok(());
+    }
 
     // Round 3
     cancelled!();
@@ -337,18 +427,27 @@ fn run_supervisor(
     );
 
     let arbiter = pick_arbiter_reviewer(&run, &reviewers);
+    let arbiter_id = arbiter.id.clone();
+    let arbiter_provider = arbiter.provider_id.clone();
+    let arbiter_model = arbiter.model_id.clone();
     let summary = json!({ "findings": run.findings });
     let prompt = build_arena_round3_prompt(&summary.to_string());
-    let cmd = resolve_provider_command(&config.ai_hub, &arbiter.provider_id, &arbiter.model_id)?;
+    let cmd = resolve_provider_command(&config.ai_hub, &arbiter_provider, &arbiter_model)?;
     emit(
         registry,
         paths,
         &ProgressEvent::ReviewerThinking {
-            reviewer_id: arbiter.id.clone(),
+            reviewer_id: arbiter_id.clone(),
             round: 3,
         },
     );
-    let v = run_provider_json(&cmd, &prompt, repo_root, &cancel, &children)?;
+    let v = match run_provider_json(&cmd, &prompt, repo_root, &cancel, &children) {
+        Ok(v) => v,
+        Err(e) if is_cancelled_error(&e) => {
+            bail_cancelled!();
+        }
+        Err(e) => return Err(e),
+    };
     let r3 = super::schema::validate_round3_output(&v)?;
     let _ = save_round_output(paths, 3, "arbiter", &v);
     apply_round3_verdicts(
@@ -356,6 +455,7 @@ fn run_supervisor(
         &r3,
         run.config.auto_accept_threshold,
     );
+    record_round3_ballots(&mut run.findings, &r3, &arbiter_id);
 
     for f in &run.findings {
         let verdict_str = match &f.verdict {
@@ -416,8 +516,10 @@ fn active_reviewers<'a>(run: &'a ArenaRun, all: &'a [Reviewer]) -> Vec<&'a Revie
 }
 
 fn pick_arbiter_reviewer<'a>(run: &'a ArenaRun, all: &'a [Reviewer]) -> &'a Reviewer {
+    let active = active_reviewers(run, all);
     let arb = &run.config.arbiter;
-    all.iter()
+    active
+        .into_iter()
         .find(|r| r.provider_id == arb.provider_id && r.model_id == arb.model_id)
         .or_else(|| active_reviewers(run, all).into_iter().next())
         .unwrap_or(&all[0])
@@ -469,4 +571,144 @@ fn pick_arbiter(refs: &[ReviewerRef], _resolved: &[Reviewer]) -> ReviewerRef {
 fn reviewer_color(i: usize) -> String {
     const COLORS: &[&str] = &["#ff7a2b", "#ff6b6b", "#7f87ff", "#4ec9a4", "#ffc457", "#5fd970"];
     COLORS[i % COLORS.len()].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arena::ReviewerRef;
+    use crate::config::{AiHubConfig, AiModelConfig, AiProviderConfig};
+
+    #[test]
+    fn effective_arena_rounds_clamps() {
+        assert_eq!(effective_arena_rounds(None), 3);
+        assert_eq!(effective_arena_rounds(Some(0)), 1);
+        assert_eq!(effective_arena_rounds(Some(2)), 2);
+        assert_eq!(effective_arena_rounds(Some(9)), 3);
+    }
+
+    #[test]
+    fn estimate_cost_uses_selected_models() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "cheap".into(),
+            AiProviderConfig {
+                command: "true".into(),
+                args: vec![],
+                models: vec![AiModelConfig {
+                    id: "m1".into(),
+                    label: None,
+                    args: vec![],
+                    cost_per_1k_in: Some(0.001),
+                    cost_per_1k_out: Some(0.001),
+                    avg_latency_ms: None,
+                }],
+                ..Default::default()
+            },
+        );
+        hub.providers.insert(
+            "dear".into(),
+            AiProviderConfig {
+                command: "true".into(),
+                args: vec![],
+                models: vec![AiModelConfig {
+                    id: "m2".into(),
+                    label: None,
+                    args: vec![],
+                    cost_per_1k_in: Some(0.1),
+                    cost_per_1k_out: Some(0.1),
+                    avg_latency_ms: None,
+                }],
+                ..Default::default()
+            },
+        );
+        let cheap = vec![ReviewerRef {
+            provider_id: "cheap".into(),
+            model_id: "m1".into(),
+        }];
+        let dear = vec![ReviewerRef {
+            provider_id: "dear".into(),
+            model_id: "m2".into(),
+        }];
+        let low = estimate_cost_usd(10_000, &cheap, Some(3), &hub);
+        let high = estimate_cost_usd(10_000, &dear, Some(3), &hub);
+        assert!(high > low * 5.0);
+    }
+
+    #[test]
+    fn pick_arbiter_skips_failed_reviewer() {
+        use crate::arena::model::{ArenaConfig, ArenaRun, ArenaScope, ReviewerRunStatus};
+        let refs = vec![
+            ReviewerRef {
+                provider_id: "a".into(),
+                model_id: "m1".into(),
+            },
+            ReviewerRef {
+                provider_id: "b".into(),
+                model_id: "m2".into(),
+            },
+        ];
+        let reviewers = vec![
+            Reviewer {
+                id: "a-m1".into(),
+                name: "A".into(),
+                kind: ReviewerKind::Model,
+                provider_id: "a".into(),
+                model_id: "m1".into(),
+                system_prompt: String::new(),
+                color: String::new(),
+                icon: String::new(),
+                tagline: String::new(),
+                cost_per_1k_in: 0.0,
+                cost_per_1k_out: 0.0,
+                avg_latency_ms: 0,
+                status: ReviewerRunStatus::Failed {
+                    reason: "x".into(),
+                },
+            },
+            Reviewer {
+                id: "b-m2".into(),
+                name: "B".into(),
+                kind: ReviewerKind::Model,
+                provider_id: "b".into(),
+                model_id: "m2".into(),
+                system_prompt: String::new(),
+                color: String::new(),
+                icon: String::new(),
+                tagline: String::new(),
+                cost_per_1k_in: 0.0,
+                cost_per_1k_out: 0.0,
+                avg_latency_ms: 0,
+                status: ReviewerRunStatus::Ok,
+            },
+        ];
+        let run = ArenaRun {
+            id: "t".into(),
+            title: None,
+            branch_ref: "main".into(),
+            base_branch: "main".into(),
+            scope: ArenaScope::Branch,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            completed_at: None,
+            status: RunStatus::Running { round: 3 },
+            config: ArenaConfig {
+                reviewers: refs.clone(),
+                rounds: 3,
+                arbiter: refs[0].clone(),
+                auto_accept_threshold: 0.75,
+                scope: ArenaScope::Branch,
+                files: None,
+            },
+            reviewers: reviewers.clone(),
+            findings: vec![],
+            cost_estimate: CostEstimate {
+                tokens_in: 0,
+                tokens_out: 0,
+                usd: 0.0,
+            },
+        };
+        let picked = pick_arbiter_reviewer(&run, &reviewers);
+        assert_eq!(picked.id, "b-m2");
+    }
 }

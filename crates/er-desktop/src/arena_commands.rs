@@ -17,6 +17,7 @@ pub struct ArenaStartRequest {
     pub reviewers: Vec<ReviewerRefWire>,
     pub scope: String,
     pub files: Option<Vec<String>>,
+    pub rounds: Option<u8>,
     pub confirm: Option<bool>,
 }
 
@@ -42,6 +43,14 @@ fn parse_scope(s: &str) -> ArenaScope {
     }
 }
 
+fn require_arena(app: &App) -> Result<(), String> {
+    if app.config.features.arena {
+        Ok(())
+    } else {
+        Err("features.arena is disabled".into())
+    }
+}
+
 fn parse_verdict(s: &str) -> Verdict {
     match s.to_ascii_lowercase().as_str() {
         "kept" => Verdict::Kept,
@@ -58,8 +67,9 @@ pub fn wire_snapshot(snap: er_engine::arena::ArenaRunSnapshot) -> ArenaRunSnapsh
 
 #[tauri::command]
 pub fn arena_start(req: ArenaStartRequest, state: State<AppState>) -> Result<String, String> {
-    if !state.app.lock().map_err(|e| e.to_string())?.config.features.arena {
-        return Err("features.arena is disabled".into());
+    {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        require_arena(&app)?;
     }
     let reviewers: Vec<ReviewerRef> = req
         .reviewers
@@ -75,6 +85,7 @@ pub fn arena_start(req: ArenaStartRequest, state: State<AppState>) -> Result<Str
         reviewers,
         scope,
         files: req.files,
+        rounds: req.rounds,
         confirm: req.confirm.unwrap_or(false),
     };
     let run_id = {
@@ -89,6 +100,7 @@ pub fn arena_start(req: ArenaStartRequest, state: State<AppState>) -> Result<Str
 pub fn arena_get(run_id: String, state: State<AppState>) -> Result<ArenaRunSnapshotWire, String> {
     let snap = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
+        require_arena(&app)?;
         app.arena_get_snapshot(&run_id).map_err(|e| e.to_string())?
     };
     Ok(wire_snapshot(snap))
@@ -98,6 +110,7 @@ pub fn arena_get(run_id: String, state: State<AppState>) -> Result<ArenaRunSnaps
 pub fn arena_list(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, String> {
     let summaries = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
+        require_arena(&app)?;
         app.arena_list_summaries().map_err(|e| e.to_string())?
     };
     Ok(summaries)
@@ -105,13 +118,12 @@ pub fn arena_list(state: State<AppState>) -> Result<Vec<ArenaRunSummaryWire>, St
 
 #[tauri::command]
 pub fn arena_cancel(run_id: String, state: State<AppState>) -> Result<(), String> {
-    let ok = {
+    {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.arena_cancel(&run_id)
-    };
-    if ok {
-        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        require_arena(&app)?;
+        app.arena_cancel(&run_id).map_err(|e| e.to_string())?;
     }
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
@@ -119,6 +131,7 @@ pub fn arena_cancel(run_id: String, state: State<AppState>) -> Result<(), String
 pub fn arena_override(req: ArenaOverrideRequest, state: State<AppState>) -> Result<ArenaRunSnapshotWire, String> {
     let snap = {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        require_arena(&app)?;
         let _finding = app
             .arena_override_finding(
                 &req.run_id,
