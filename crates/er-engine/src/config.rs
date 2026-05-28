@@ -22,6 +22,98 @@ pub struct ErConfig {
     pub ai_hub: AiHubConfig,
     #[serde(default)]
     pub packages: PackagesConfig,
+    #[serde(default)]
+    pub automation: AutomationConfig,
+}
+
+/// [automation] — background automation (preemptive PR triage, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AutomationConfig {
+    #[serde(default)]
+    pub preemptive: PreemptiveConfig,
+}
+
+/// [automation.preemptive] — cheap-model triage for new To Review PRs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreemptiveConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default = "default_preemptive_max_concurrent")]
+    pub max_concurrent: u32,
+    #[serde(default = "default_true")]
+    pub rescan_on_head_change: bool,
+    #[serde(default = "default_true")]
+    pub skip_if_review_exists: bool,
+}
+
+fn default_preemptive_max_concurrent() -> u32 {
+    2
+}
+
+impl Default for PreemptiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: None,
+            model: Some("haiku-4.5".to_string()),
+            max_concurrent: default_preemptive_max_concurrent(),
+            rescan_on_head_change: true,
+            skip_if_review_exists: true,
+        }
+    }
+}
+
+impl PreemptiveConfig {
+    /// Resolve provider/model for triage subprocess spawn.
+    pub fn resolve_agent(
+        &self,
+        ai_hub: &AiHubConfig,
+        agent: &AgentConfig,
+    ) -> (String, Vec<String>, bool, bool) {
+        let provider_id = self
+            .provider
+            .clone()
+            .filter(|id| ai_hub.providers.contains_key(id))
+            .or_else(|| ai_hub.resolve_provider_id(None));
+
+        if let Some(pid) = provider_id {
+            if let Some(provider) = ai_hub.providers.get(&pid) {
+                let mut args = provider.args.clone();
+                let model_id = self
+                    .model
+                    .clone()
+                    .filter(|id| provider.models.iter().any(|m| m.id == *id))
+                    .or_else(|| ai_hub.resolve_model_id(&pid, None));
+                if let Some(model_id) = model_id {
+                    if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
+                        args.extend(model.args.clone());
+                    }
+                }
+                let is_claude =
+                    provider.command.ends_with("claude") || provider.command == "claude";
+                return (
+                    provider.command.clone(),
+                    args,
+                    is_claude,
+                    provider.uses_stream_json_log(),
+                );
+            }
+        }
+
+        let cmd = agent.command.clone();
+        let is_claude = cmd.ends_with("claude") || cmd == "claude";
+        let stream_json = agent_command_uses_stream_json(&cmd);
+        (
+            cmd,
+            agent.args.clone(),
+            is_claude,
+            stream_json,
+        )
+    }
 }
 
 /// [commands] section — configurable shell commands for hub actions.

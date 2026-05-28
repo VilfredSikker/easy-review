@@ -96,6 +96,14 @@ pub fn branch_dir(repo_slug: &str, branch_slug: &str) -> PathBuf {
         .join(branch_slug)
 }
 
+/// Directory for preemptive / background PR review artifacts.
+pub fn pr_review_er_dir(remote: &str, pr_number: u64) -> String {
+    let repo_slug = slug_branch(remote);
+    branch_dir(&repo_slug, &format!("pr-{pr_number}"))
+        .to_string_lossy()
+        .into_owned()
+}
+
 // ── ErRoot construction ───────────────────────────────────────────────────────
 
 /// Resolve managed storage from already-slugged components. Used by

@@ -8,6 +8,7 @@ mod export;
 mod frame_script;
 mod inbox;
 mod main_webview_policy;
+mod preemptive;
 mod pr_cache;
 mod profile_log;
 mod projects;

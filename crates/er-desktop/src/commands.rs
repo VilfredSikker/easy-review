@@ -50,6 +50,8 @@ const REQUESTED_KINDS: &[&str] = &[
     "pr_closed",
     "github_refresh_failed",
     "pr_cache_stale",
+    "preemptive_scan_done",
+    "preemptive_scan_failed",
 ];
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -387,36 +389,111 @@ fn is_own_pr_approval_error(raw: &str) -> bool {
 fn process_ai_task_inbox(app: &App, state: &AppState) {
     let now = now_ms();
     let tasks = app.background_task_snapshots();
-    let tab = app.tab();
-    let repo_root = tab.repo_root.clone();
-    let remote = tab.remote_repo.clone();
-    let pr_number = tab.pr_number;
-    let branch = tab
-        .local_branch_view
-        .clone()
-        .unwrap_or_else(|| tab.current_branch.clone());
+    let projects = crate::projects::load();
+    let mut project_by_remote: HashMap<String, (String, String)> = HashMap::new();
+    for p in projects.projects {
+        if let Some(remote) = p.remote {
+            project_by_remote.insert(remote, (p.id, p.root_path));
+        }
+    }
 
     let mut emitted_any = false;
     let mut just_added: Vec<InboxItem> = Vec::new();
     if let Ok(mut inbox) = state.inbox.lock() {
         for task in tasks {
-            let (kind, severity, title, body) = match task.status.as_str() {
-                "done" => (
-                    "ai_review_done".to_string(),
-                    "success".to_string(),
-                    format!("AI review completed ({})", task.target_label),
-                    task.label.clone(),
-                ),
-                "failed" => (
-                    "ai_review_failed".to_string(),
-                    "error".to_string(),
-                    format!("AI review failed ({})", task.target_label),
-                    task.error
-                        .clone()
-                        .unwrap_or_else(|| "Review failed".to_string()),
-                ),
-                _ => continue,
+            if task.status != "done" && task.status != "failed" {
+                continue;
+            }
+
+            let project_id = task
+                .remote_repo
+                .as_ref()
+                .and_then(|r| project_by_remote.get(r).map(|(id, _)| id.clone()));
+
+            let (kind, severity, title, body, dedupe_key) = if task.kind == "triage" {
+                match task.status.as_str() {
+                    "done" => {
+                        let triage = er_engine::ai::load_triage(&task.er_dir);
+                        let pr_label = task
+                            .pr_number
+                            .map(|n| format!("PR #{n}"))
+                            .unwrap_or_else(|| task.target_label.clone());
+                        let (severity, title, body) = if let Some(ref tr) = triage {
+                            let sev = if tr.verdict
+                                == er_engine::ai::TriageVerdict::DeepReview
+                            {
+                                "warning".to_string()
+                            } else {
+                                "info".to_string()
+                            };
+                            (
+                                sev,
+                                format!(
+                                    "Preemptive scan: {} — {}",
+                                    pr_label,
+                                    tr.verdict.display_label()
+                                ),
+                                er_engine::ai::format_triage_inbox_body(tr, ""),
+                            )
+                        } else {
+                            (
+                                "info".to_string(),
+                                format!("Preemptive scan completed ({})", task.target_label),
+                                task.target_label.clone(),
+                            )
+                        };
+                        let head = triage
+                            .as_ref()
+                            .map(|t| t.head_oid.clone())
+                            .filter(|h| !h.is_empty())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let remote = task.remote_repo.clone().unwrap_or_default();
+                        let pr_num = task.pr_number.unwrap_or(0);
+                        (
+                            "preemptive_scan_done".to_string(),
+                            severity,
+                            title,
+                            body,
+                            format!("ai:{remote}:{pr_num}:triage:{head}:done"),
+                        )
+                    }
+                    "failed" => {
+                        let remote = task.remote_repo.clone().unwrap_or_default();
+                        let pr_num = task.pr_number.unwrap_or(0);
+                        (
+                            "preemptive_scan_failed".to_string(),
+                            "error".to_string(),
+                            format!("Preemptive scan failed ({})", task.target_label),
+                            task.error
+                                .clone()
+                                .unwrap_or_else(|| "Triage scan failed".to_string()),
+                            format!("ai:{remote}:{pr_num}:triage:failed:{}", task.id),
+                        )
+                    }
+                    _ => continue,
+                }
+            } else {
+                match task.status.as_str() {
+                    "done" => (
+                        "ai_review_done".to_string(),
+                        "success".to_string(),
+                        format!("AI review completed ({})", task.target_label),
+                        task.target_label.clone(),
+                        format!("ai:{}:{}", task.id, task.status),
+                    ),
+                    "failed" => (
+                        "ai_review_failed".to_string(),
+                        "error".to_string(),
+                        format!("AI review failed ({})", task.target_label),
+                        task.error
+                            .clone()
+                            .unwrap_or_else(|| "Review failed".to_string()),
+                        format!("ai:{}:{}", task.id, task.status),
+                    ),
+                    _ => continue,
+                }
             };
+
             let item = InboxItem {
                 id: format!("inbox-ai-{}-{}", task.id, task.status),
                 kind,
@@ -425,16 +502,16 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
                 body,
                 source: "ai".to_string(),
                 target: InboxTarget {
-                    project_id: None,
-                    repo_root: Some(repo_root.clone()),
-                    remote: remote.clone(),
-                    pr_number,
-                    branch: Some(branch.clone()),
+                    project_id,
+                    repo_root: Some(task.repo_root.clone()),
+                    remote: task.remote_repo.clone(),
+                    pr_number: task.pr_number,
+                    branch: Some(task.branch_label.clone()),
                     url: None,
                 },
                 created_at_ms: now,
                 read_at_ms: None,
-                dedupe_key: format!("ai:{}:{}", task.id, task.status),
+                dedupe_key,
             };
             if inbox.add_item(item.clone()) {
                 emitted_any = true;
@@ -1281,6 +1358,9 @@ pub fn process_inbox_after_pr_refresh(
                         .as_ref()
                         .map(|p| p.failing_checks.clone())
                         .unwrap_or_default(),
+                    in_to_review: crate::snapshot::pr_is_to_review(&pr, Some(&gh_user))
+                        && !pr.is_draft,
+                    triage_head_oid: prev.as_ref().and_then(|p| p.triage_head_oid.clone()),
                 },
             );
         }
@@ -5909,7 +5989,10 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
         eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
     }
+    crate::preemptive::revert_failed_triage_heads(&app, &state.inbox);
+    crate::preemptive::sync_successful_triage_heads(&app, &state.inbox);
     process_ai_task_inbox(&app, &state);
+    crate::preemptive::maybe_schedule_preemptive_scans(&mut app, &state);
     // Drain again so completion/failure log entries are visible in this poll.
     app.drain_agent_log();
     // Check if .er/ AI files changed — cheap mtime check, reloads AI state if yes

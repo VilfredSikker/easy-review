@@ -6,6 +6,7 @@ pub mod professor;
 pub mod prompts;
 mod relocate;
 mod review;
+pub mod triage;
 
 pub use comments::*;
 pub use finding_cleanup::*;
@@ -14,3 +15,4 @@ pub use loader::*;
 pub use professor::*;
 pub use relocate::*;
 pub use review::*;
+pub use triage::*;

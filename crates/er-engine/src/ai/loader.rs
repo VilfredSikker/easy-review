@@ -12,7 +12,7 @@ use std::path::Path;
 const MAX_SIDECAR_BYTES: u64 = 10_000_000;
 
 /// Read a sidecar file with a size limit to prevent memory spikes from large/adversarial files.
-fn read_sidecar(path: &Path) -> std::io::Result<String> {
+pub(crate) fn read_sidecar(path: &Path) -> std::io::Result<String> {
     let metadata = std::fs::metadata(path)?;
     if metadata.len() > MAX_SIDECAR_BYTES {
         return Err(std::io::Error::new(

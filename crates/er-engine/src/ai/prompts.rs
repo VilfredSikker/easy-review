@@ -1067,6 +1067,130 @@ pub fn build_summary_prompt_remote(
     )
 }
 
+fn triage_expert_ids_section() -> String {
+    use super::experts::EXPERTS;
+    let ids: Vec<&str> = EXPERTS.iter().map(|e| e.id).collect();
+    format!(
+        "Valid `recommended_experts` ids (use only when warranted): {}",
+        ids.join(", ")
+    )
+}
+
+fn triage_output_schema(output_dir: &str) -> String {
+    let expert_ids = triage_expert_ids_section();
+    format!(
+        r#"Write **only** `{output_dir}/triage.json` with this JSON shape:
+
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256 of diff-tmp>",
+  "head_oid": "<optional git head sha if known>",
+  "created_at": "<ISO8601 UTC>",
+  "verdict": "skip | review | deep_review",
+  "confidence": "high | medium | low",
+  "summary": "2-3 sentences on what changed and overall risk",
+  "smells": [
+    {{ "severity": "high|medium|low", "category": "security|logic|...", "text": "..." }}
+  ],
+  "recommended_experts": ["security"],
+  "recommended_review": "none | general | expert"
+}}
+```
+
+Verdict guide:
+- `skip` — trivial/safe; optional human glance
+- `review` — normal human review warranted; no strong expert signal
+- `deep_review` — significant correctness/security/reliability smells; recommend full AI review
+
+`recommended_review`: `none` for skip, `general` for review, `expert` when specific expert lenses apply.
+
+{expert_ids}"#,
+    )
+}
+
+/// Fast preemptive triage when `{output_dir}/diff-tmp` is already prepared.
+pub fn build_triage_prompt_prepared_diff(output_dir: &str, head_oid: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_head = sanitize_for_shell(head_oid)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let schema = triage_output_schema(output_dir);
+    format!(
+        r#"You are a fast code-review triage agent. Scan the prepared PR diff and write a **single** triage sidecar.
+
+Target: complete in under 60 seconds. Read the diff only — do **not** open source files.
+
+## Steps
+
+1. Ensure `{safe_output_dir}` exists: `mkdir -p {safe_output_dir}`
+2. Hash the prepared diff: `(sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
+3. Read `{safe_output_dir}/diff-tmp` (skim hunks — you do not need line-perfect anchors)
+4. Write `{safe_output_dir}/triage.json`
+
+Set `head_oid` to `{safe_head}` when non-empty.
+
+## Triage rules
+
+- Report at most **5** smells — only correctness, security, reliability, or testing gaps
+- Bias toward **false positives** on security/reliability; when uncertain prefer `deep_review`
+- Do **not** flag style, naming, formatting, or import order
+- Do **not** write `review.json`, `order.json`, or any other files
+
+{schema}"#
+    )
+}
+
+/// Fast preemptive triage for remote PRs (fetches diff via gh).
+pub fn build_triage_prompt_remote(
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    output_dir: &str,
+    head_oid: &str,
+) -> String {
+    let safe_owner = sanitize_for_shell(owner)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_repo = sanitize_for_shell(repo)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_head = sanitize_for_shell(head_oid)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let capture = format!(
+        "mkdir -p {safe_output_dir} && gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
+    );
+    let schema = triage_output_schema(output_dir);
+    format!(
+        r#"You are a fast code-review triage agent. Scan this GitHub PR diff and write a **single** triage sidecar to `{safe_output_dir}/`.
+
+Target: complete in under 60 seconds.
+
+## Steps
+
+1. Fetch diff and hash: `{capture}`
+2. Read `{safe_output_dir}/diff-tmp`
+3. Write `{safe_output_dir}/triage.json`
+
+Set `head_oid` to `{safe_head}` when non-empty.
+
+## Triage rules
+
+- Report at most **5** smells — only correctness, security, reliability, or testing gaps
+- Bias toward **false positives** on security/reliability; when uncertain prefer `deep_review`
+- Do **not** flag style, naming, formatting, or import order
+- Do **not** write any files besides `triage.json`
+
+{schema}"#
+    )
+}
+
 /// Build questions-answering prompt for remote mode (uses gh pr diff instead of git diff).
 ///
 /// The prompt instructs the agent to:
@@ -1257,6 +1381,23 @@ mod tests {
     fn questions_prompt_staged_scope() {
         let prompt = build_questions_prompt("main", "staged");
         assert!(prompt.contains("--staged"));
+    }
+
+    // ── build_triage_prompt ──
+
+    #[test]
+    fn triage_prompt_prepared_diff_writes_triage_json() {
+        let prompt = build_triage_prompt_prepared_diff("/tmp/er-cache", "deadbeef");
+        assert!(prompt.contains("triage.json"));
+        assert!(prompt.contains("skip | review | deep_review"));
+        assert!(prompt.contains("deadbeef"));
+    }
+
+    #[test]
+    fn triage_prompt_remote_uses_gh_pr_diff() {
+        let prompt = build_triage_prompt_remote("owner", "repo", 7, "/tmp/cache", "abc");
+        assert!(prompt.contains("gh pr diff 7"));
+        assert!(prompt.contains("triage.json"));
     }
 
     // ── build_review_prompt_remote ──

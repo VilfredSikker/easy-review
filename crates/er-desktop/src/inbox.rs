@@ -43,6 +43,10 @@ pub struct ObservedPrState {
     pub is_my_pr: bool,
     pub check_state: Option<String>,
     pub failing_checks: Vec<String>,
+    #[serde(default)]
+    pub in_to_review: bool,
+    #[serde(default)]
+    pub triage_head_oid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

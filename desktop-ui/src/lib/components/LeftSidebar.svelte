@@ -190,6 +190,10 @@
       case "review_requested":
       case "review":
         return { color: "text-accent", path: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" };
+      case "preemptive_scan_done":
+        return { color: "text-accent", path: "M12 2l1.8 5.5L19 9l-5.2 1.7L12 16l-1.8-5.3L5 9l5.2-1.5L12 2z" };
+      case "preemptive_scan_failed":
+        return { color: "text-del-fg", path: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM15 9l-6 6M9 9l6 6" };
       case "new_comment":
       case "comment":
         return { color: "text-comment", path: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" };

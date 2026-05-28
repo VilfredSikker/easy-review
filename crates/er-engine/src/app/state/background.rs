@@ -125,6 +125,12 @@ pub struct BackgroundTaskSnapshot {
     pub finished_at_ms: Option<u128>,
     /// Last 40 log entries from the handle's ring buffer. Empty for retired tasks.
     pub recent_log: Vec<AgentLogEntry>,
+    pub repo_root: String,
+    pub er_dir: String,
+    pub remote_repo: Option<String>,
+    pub pr_number: Option<u64>,
+    pub branch_label: String,
+    pub base_branch: String,
 }
 
 impl BackgroundTaskSnapshot {
@@ -145,6 +151,12 @@ impl BackgroundTaskSnapshot {
             started_at_ms: task.started_at_ms,
             finished_at_ms: task.finished_at_ms,
             recent_log: Vec::new(),
+            repo_root: task.target.repo_root.clone(),
+            er_dir: task.target.er_dir.clone(),
+            remote_repo: task.target.remote_repo.clone(),
+            pr_number: task.target.pr_number,
+            branch_label: task.target.branch_label.clone(),
+            base_branch: task.target.base_branch.clone(),
         }
     }
 }

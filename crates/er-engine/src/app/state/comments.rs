@@ -2257,6 +2257,29 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
+        )
+    }
+
+    /// Spawn a cheap preemptive triage scan (`kind` = `triage`).
+    pub fn spawn_background_triage(
+        &mut self,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+    ) -> Result<()> {
+        let agent_override = self
+            .config
+            .automation
+            .preemptive
+            .resolve_agent(&self.config.ai_hub, &self.config.agent);
+        self.spawn_background_agent_task(
+            "triage".to_string(),
+            "triage",
+            target,
+            prompt,
+            prepared_diff,
+            Some(agent_override),
         )
     }
 
@@ -2277,6 +2300,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
@@ -2293,10 +2317,11 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
-    /// App-level background agent task (review or expert).
+    /// App-level background agent task (review, expert, or triage).
     fn spawn_background_agent_task(
         &mut self,
         kind: String,
@@ -2304,6 +2329,7 @@ impl App {
         target: super::background::BackgroundTaskTarget,
         prompt: String,
         prepared_diff: bool,
+        agent_override: Option<(String, Vec<String>, bool, bool)>,
     ) -> Result<()> {
         use super::background::{BackgroundTask, BackgroundTaskHandle};
 
@@ -2322,7 +2348,9 @@ impl App {
         self.sync_ai_selection();
 
         let (agent_cmd, config_args, is_claude_compatible, is_stream_json) =
-            if let Some(provider_id) = self
+            if let Some((cmd, args, is_claude, stream_json)) = agent_override {
+                (cmd, args, is_claude, stream_json)
+            } else if let Some(provider_id) = self
                 .config
                 .ai_hub
                 .resolve_provider_id(self.current_ai_provider.as_deref())

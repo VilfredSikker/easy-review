@@ -328,6 +328,19 @@ pub struct PrInfo {
     pub latest_reviewer_states: Vec<(String, String)>,
 }
 
+/// Shared filter for the sidebar "To Review" bucket.
+pub fn pr_is_to_review(pr: &PrInfo, gh_user: Option<&str>) -> bool {
+    pr.state == "OPEN"
+        && gh_user.is_none_or(|login| pr.author != login)
+        && !pr.approved_by_me
+        && gh_user.is_none_or(|login| {
+            !pr
+                .latest_reviewer_states
+                .iter()
+                .any(|(l, s)| l == login && (s == "APPROVED" || s == "CHANGES_REQUESTED"))
+        })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Panels {
     pub left: bool,
@@ -1982,16 +1995,7 @@ fn build_projects_from_file(
                     // but the PR stays open).
                     let to_review: Vec<PrInfo> = all
                         .iter()
-                        .filter(|pr| {
-                            pr.state == "OPEN"
-                                && me.as_deref().is_none_or(|login| pr.author != login)
-                                && !pr.approved_by_me
-                                && me.as_deref().is_none_or(|login| {
-                                    !pr.latest_reviewer_states.iter().any(|(l, s)| {
-                                        l == login && (s == "APPROVED" || s == "CHANGES_REQUESTED")
-                                    })
-                                })
-                        })
+                        .filter(|pr| pr_is_to_review(pr, me.as_deref()))
                         .cloned()
                         .collect();
 
@@ -2777,5 +2781,30 @@ mod tests {
         assert!(projects[0].recently_merged.is_empty());
         assert_eq!(projects[0].recent_prs.len(), 1);
         assert_eq!(projects[0].recent_prs[0].title, "Remote PR title");
+    }
+
+    #[test]
+    fn pr_is_to_review_matches_sidebar_filter() {
+        let mut pr = PrInfo {
+            number: 1,
+            title: "t".into(),
+            head_ref: "feat".into(),
+            state: "OPEN".into(),
+            is_draft: false,
+            author: "other".into(),
+            assignees: vec![],
+            reviewers: vec![],
+            checks_state: None,
+            review_decision: None,
+            merged_at: None,
+            approved_by_me: false,
+            base_ref: "main".into(),
+            head_oid: "abc".into(),
+            updated_at: String::new(),
+            latest_reviewer_states: vec![],
+        };
+        assert!(pr_is_to_review(&pr, Some("me")));
+        pr.is_draft = true;
+        assert!(!pr_is_to_review(&pr, Some("me")));
     }
 }
