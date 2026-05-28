@@ -111,7 +111,7 @@ pub struct FeatureFlags {
     #[serde(default = "default_true")]
     pub view_hidden: bool,
     /// Multi-round AI Review Arena (orchestrated debate + consensus UI).
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub arena: bool,
 }
 
@@ -258,7 +258,7 @@ impl Default for FeatureFlags {
             view_history: true,
             view_conflicts: true,
             view_hidden: true,
-            arena: false,
+            arena: true,
         }
     }
 }

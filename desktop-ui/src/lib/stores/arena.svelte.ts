@@ -24,7 +24,7 @@ class ArenaStore {
   loading = $state(false);
 
   get enabled(): boolean {
-    return app.snapshot?.arena_enabled ?? false;
+    return app.snapshot?.arena_enabled ?? true;
   }
 
   get summaries(): ArenaRunSummary[] {
@@ -32,10 +32,7 @@ class ArenaStore {
   }
 
   openLauncher(preset?: ReviewerRef[]) {
-    if (!this.enabled) {
-      app.showToast("info", "Enable features.arena in .er-config.toml to use AI Review Arena");
-      return;
-    }
+    if (!this.enabled) return;
     if (preset?.length) {
       this.lastConfig = {
         reviewers: preset,

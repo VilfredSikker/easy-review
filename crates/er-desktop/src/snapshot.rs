@@ -145,7 +145,7 @@ pub struct AppSnapshot {
     pub inbox_unread_count: usize,
     #[serde(default)]
     pub inbox_last_refresh_ms: u64,
-    /// `features.arena` — when false, arena commands are rejected.
+    /// AI Review Arena UI (`features.arena`, on by default).
     #[serde(default)]
     pub arena_enabled: bool,
     /// Active arena run id for this tab, if any.
@@ -1317,11 +1317,12 @@ fn build_snapshot_inner(
             .and_then(|h| h.lock().ok().map(|g| g.last_refresh_ms))
             .unwrap_or(0),
         arena_enabled: app.config.features.arena,
-        active_arena_run: if app.config.features.arena {
-            app.active_arena_run()
-        } else {
-            None
-        },
+        active_arena_run: app
+            .config
+            .features
+            .arena
+            .then(|| app.active_arena_run())
+            .flatten(),
         arena_runs: if app.config.features.arena {
             app.arena_list_summaries().unwrap_or_default()
         } else {
