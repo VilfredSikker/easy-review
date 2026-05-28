@@ -3771,7 +3771,7 @@ impl App {
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let arena_registry = App::init_arena_registry(Arc::new(|| {}));
 
-        let mut app = App {
+        let app = App {
             tabs,
             active_tab: 0,
             input_mode: InputMode::Normal,

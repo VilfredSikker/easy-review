@@ -162,24 +162,24 @@ fn parse_verdict(s: &str, merged_into: Option<&str>) -> Verdict {
     }
 }
 
-pub fn confidence_score(
-    agreement_votes: usize,
-    total_voters: usize,
-    severity_stable: bool,
-) -> f32 {
-    let agree = if total_voters == 0 {
-        0.5
-    } else {
-        agreement_votes as f32 / total_voters as f32
-    };
-    let stability = if severity_stable { 1.0 } else { 0.85 };
-    let bonus = 1.0 + (total_voters as f32 * 0.02).min(0.1);
-    (agree * stability * bonus).clamp(0.0, 1.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn confidence_score(
+        agreement_votes: usize,
+        total_voters: usize,
+        severity_stable: bool,
+    ) -> f32 {
+        let agree = if total_voters == 0 {
+            0.5
+        } else {
+            agreement_votes as f32 / total_voters as f32
+        };
+        let stability = if severity_stable { 1.0 } else { 0.85 };
+        let bonus = 1.0 + (total_voters as f32 * 0.02).min(0.1);
+        (agree * stability * bonus).clamp(0.0, 1.0)
+    }
 
     #[test]
     fn tie_breaks_toward_higher_severity() {

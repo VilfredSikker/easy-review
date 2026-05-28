@@ -1,5 +1,5 @@
 use super::model::{
-    ArenaFinding, ArenaRun, FunnelCounts, FunnelStage, FunnelStages, MatrixRow, Verdict, Vote,
+    ArenaFinding, ArenaRun, FunnelCounts, FunnelStage, FunnelStages, MatrixRow, Verdict,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -84,7 +84,7 @@ pub fn build_funnel(findings: &[ArenaFinding]) -> FunnelStages {
 mod tests {
     use super::*;
     use crate::ai::RiskLevel;
-    use crate::arena::model::{Ballot, RoundLog};
+    use crate::arena::model::{Ballot, RoundLog, Vote};
 
     fn finding_with_votes(id: &str, ballots: Vec<Ballot>) -> ArenaFinding {
         ArenaFinding {

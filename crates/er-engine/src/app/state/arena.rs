@@ -22,6 +22,12 @@ impl App {
     }
 
     pub fn arena_start(&mut self, params: ArenaStartParams) -> Result<String> {
+        eprintln!(
+            "[er-arena] App::arena_start reviewers={} scope={:?} rounds={:?}",
+            params.reviewers.len(),
+            params.scope,
+            params.rounds
+        );
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();
         let er_dir = tab.er_dir();
@@ -39,7 +45,8 @@ impl App {
             base_branch,
             params,
         )?;
-        self.active_arena_runs.insert(er_key, run_id.clone());
+        self.active_arena_runs.insert(er_key.clone(), run_id.clone());
+        eprintln!("[er-arena] App::arena_start ok run_id={run_id} er_dir={er_key}");
         self.notify(&format!("Arena run started ({run_id})"));
         Ok(run_id)
     }

@@ -19,6 +19,7 @@
     useAgentScopedSummary,
   } from "$lib/aiReviewAgents";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
+  import { arenaLog } from "$lib/arena/log";
   import { arena } from "$lib/stores/arena.svelte";
 
   interface Props {
@@ -166,7 +167,10 @@
         {/if}
         <button
           type="button"
-          onclick={() => arena.openLauncher()}
+          onclick={() => {
+            arenaLog("AiReviewCard: Run as Arena clicked");
+            arena.openLauncher();
+          }}
           class="rounded-md border border-[var(--arena-border)] px-3 py-1.5 text-[11px] text-[var(--arena-fg-muted)] hover:bg-[var(--arena-bg-2)]"
         >
           {isEmpty ? "Run as Arena" : "Promote to Arena"}

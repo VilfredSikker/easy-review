@@ -418,6 +418,7 @@ export interface AiModelInfo {
   id: string;
   label: string;
   is_selected: boolean;
+  description?: string | null;
   cost_per_1k_in?: number | null;
   cost_per_1k_out?: number | null;
   avg_latency_ms?: number | null;

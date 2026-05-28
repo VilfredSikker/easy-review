@@ -153,6 +153,8 @@ pub struct AiModelConfig {
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub args: Vec<String>,
     /// USD per 1k input tokens (arena cost estimate).
     #[serde(default)]
@@ -1114,6 +1116,7 @@ args = ["--model", "gpt-5.4"]
                     AiModelConfig {
                         id: "gpt-5.4".into(),
                         label: Some("GPT-5.4".into()),
+                        description: None,
                         args: vec!["--model".into(), "gpt-5.4".into()],
                         cost_per_1k_in: None,
                         cost_per_1k_out: None,
@@ -1122,6 +1125,7 @@ args = ["--model", "gpt-5.4"]
                     AiModelConfig {
                         id: "gpt-5.3-codex".into(),
                         label: None,
+                        description: None,
                         args: vec!["--model".into(), "gpt-5.3-codex".into()],
                         cost_per_1k_in: None,
                         cost_per_1k_out: None,

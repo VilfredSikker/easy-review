@@ -2780,6 +2780,8 @@ pub struct AiModelInfo {
     pub label: String,
     pub is_selected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_per_1k_in: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_per_1k_out: Option<f32>,
@@ -2811,6 +2813,7 @@ pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, 
                         id: m.id.clone(),
                         label: m.display_name(),
                         is_selected: resolved_model.as_deref() == Some(m.id.as_str()),
+                        description: m.description.clone(),
                         cost_per_1k_in: m.cost_per_1k_in,
                         cost_per_1k_out: m.cost_per_1k_out,
                         avg_latency_ms: m.avg_latency_ms,

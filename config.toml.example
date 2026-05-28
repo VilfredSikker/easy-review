@@ -55,12 +55,38 @@ args = ["--print", "-p", "{prompt}"]
 [[ai_hub.providers.claude.models]]
 id = "sonnet-4.6"
 label = "Sonnet 4.6"
+description = "Balanced quality + speed"
 args = ["--model", "claude-sonnet-4-6"]
+cost_per_1k_in = 0.003
+cost_per_1k_out = 0.015
+avg_latency_ms = 12000
 
 [[ai_hub.providers.claude.models]]
 id = "opus-4.6"
 label = "Opus 4.6"
+description = "Frontier reasoning · 1M context"
 args = ["--model", "claude-opus-4-6"]
+cost_per_1k_in = 0.005
+cost_per_1k_out = 0.025
+avg_latency_ms = 24000
+
+[[ai_hub.providers.claude.models]]
+id = "opus-4.7"
+label = "Opus 4.7"
+description = "Deepest reasoning · slowest"
+args = ["--model", "claude-opus-4-7"]
+cost_per_1k_in = 0.005
+cost_per_1k_out = 0.025
+avg_latency_ms = 24000
+
+[[ai_hub.providers.claude.models]]
+id = "haiku-4.5"
+label = "Haiku 4.5"
+description = "Fast & cheap · good for noise"
+args = ["--model", "claude-haiku-4-5-20251001"]
+cost_per_1k_in = 0.001
+cost_per_1k_out = 0.005
+avg_latency_ms = 5000
 
 [ai_hub.providers.codex]
 label = "Codex"
@@ -70,12 +96,29 @@ args = ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "{promp
 [[ai_hub.providers.codex.models]]
 id = "gpt-5.4"
 label = "GPT-5.4"
+description = "Strong general · lower cost"
 args = ["--model", "gpt-5.4"]
+cost_per_1k_in = 0.0025
+cost_per_1k_out = 0.015
+avg_latency_ms = 14000
 
 [[ai_hub.providers.codex.models]]
 id = "gpt-5.3-codex"
 label = "GPT-5.3 Codex"
+description = "Agentic coding specialist"
 args = ["--model", "gpt-5.3-codex"]
+cost_per_1k_in = 0.00175
+cost_per_1k_out = 0.014
+avg_latency_ms = 14000
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.5"
+label = "GPT-5.5"
+description = "Best-in-class general"
+args = ["--model", "gpt-5.5"]
+cost_per_1k_in = 0.005
+cost_per_1k_out = 0.030
+avg_latency_ms = 18000
 
 [ai_hub.providers.cursor]
 label = "Cursor"
@@ -93,7 +136,11 @@ args = [
 [[ai_hub.providers.cursor.models]]
 id = "composer-2.5"
 label = "Composer 2.5"
+description = "Agentic coding · frontier quality at low cost"
 args = ["--model", "composer-2.5"]
+cost_per_1k_in = 0.0005
+cost_per_1k_out = 0.0025
+avg_latency_ms = 12000
 
 # ── Summary ────────────────────────────────────────────────────────────
 # Diff summary / changelog generation (AI hub).

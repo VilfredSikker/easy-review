@@ -102,6 +102,9 @@ pub fn start_arena_run(
     base_branch: String,
     params: ArenaStartParams,
 ) -> Result<String> {
+    eprintln!(
+        "[er-arena] start_arena_run repo={repo_root} branch={branch_ref} base={base_branch}"
+    );
     if params.reviewers.len() < MIN_QUORUM {
         anyhow::bail!("arena requires at least {MIN_QUORUM} reviewers");
     }
@@ -120,13 +123,19 @@ pub fn start_arena_run(
         Some(rounds),
         &config.ai_hub,
     );
+    eprintln!(
+        "[er-arena] diff_bytes={} rounds={rounds} est_usd={est:.2}",
+        raw_diff.len()
+    );
     if est > DEFAULT_COST_LIMIT_USD && !params.confirm {
+        eprintln!("[er-arena] start blocked: cost ${est:.2} > limit (confirm=false)");
         anyhow::bail!(
             "estimated cost ${est:.2} exceeds limit ${DEFAULT_COST_LIMIT_USD:.2}; pass confirm=true"
         );
     }
 
     let run_id = new_run_id();
+    eprintln!("[er-arena] run_id={run_id} spawning supervisor thread");
     let paths = ArenaPaths::for_run(Path::new(&er_dir), &run_id);
     paths.ensure_dirs()?;
     save_diff_patch(&paths, &raw_diff)?;
@@ -198,7 +207,7 @@ pub fn start_arena_run(
                     let _ = save_run(&paths_clone, &run);
                 }
             } else {
-                eprintln!("[arena] run {} failed: {e:#}", run_id_thread);
+                eprintln!("[er-arena] run {} failed: {e:#}", run_id_thread);
                 if let Ok(mut st) = status.lock() {
                     *st = RunStatus::Failed;
                 }
@@ -598,6 +607,7 @@ mod tests {
                 models: vec![AiModelConfig {
                     id: "m1".into(),
                     label: None,
+                    description: None,
                     args: vec![],
                     cost_per_1k_in: Some(0.001),
                     cost_per_1k_out: Some(0.001),
@@ -614,6 +624,7 @@ mod tests {
                 models: vec![AiModelConfig {
                     id: "m2".into(),
                     label: None,
+                    description: None,
                     args: vec![],
                     cost_per_1k_in: Some(0.1),
                     cost_per_1k_out: Some(0.1),

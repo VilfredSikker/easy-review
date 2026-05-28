@@ -1,5 +1,11 @@
-import type { AiProviderInfo } from "$lib/types";
+import type { AiModelInfo, AiProviderInfo } from "$lib/types";
 import type { ReviewerRef } from "$lib/types/arena";
+
+export function formatModelPricePer1k(m: AiModelInfo): string {
+  const cin = m.cost_per_1k_in ?? 0.003;
+  const cout = m.cost_per_1k_out ?? 0.015;
+  return `$${(cin + cout).toFixed(3)}/1k`;
+}
 
 export function estimateArenaCost(
   providers: AiProviderInfo[],

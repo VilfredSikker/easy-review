@@ -1,7 +1,7 @@
 //! Tauri commands for AI Review Arena (S8).
 
 use crate::snapshot::{ArenaRunSnapshotWire, ArenaRunSummaryWire};
-use crate::AppState;
+use crate::commands::AppState;
 use er_engine::arena::{
     ArenaScope, ArenaStartParams, ReviewerRef, Verdict,
 };
@@ -59,6 +59,13 @@ pub fn wire_snapshot(snap: er_engine::arena::ArenaRunSnapshot) -> ArenaRunSnapsh
 
 #[tauri::command]
 pub fn arena_start(req: ArenaStartRequest, state: State<AppState>) -> Result<String, String> {
+    eprintln!(
+        "[er-arena] arena_start: reviewers={} scope={} rounds={:?} confirm={}",
+        req.reviewers.len(),
+        req.scope,
+        req.rounds,
+        req.confirm.unwrap_or(false)
+    );
     let reviewers: Vec<ReviewerRef> = req
         .reviewers
         .into_iter()
@@ -77,9 +84,18 @@ pub fn arena_start(req: ArenaStartRequest, state: State<AppState>) -> Result<Str
         confirm: req.confirm.unwrap_or(false),
     };
     let run_id = {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.arena_start(params).map_err(|e| e.to_string())?
+        let mut app = state.app.lock().map_err(|e| {
+            let msg = e.to_string();
+            eprintln!("[er-arena] arena_start: lock app failed: {msg}");
+            msg
+        })?;
+        app.arena_start(params).map_err(|e| {
+            let msg = e.to_string();
+            eprintln!("[er-arena] arena_start: engine failed: {msg}");
+            msg
+        })?
     };
+    eprintln!("[er-arena] arena_start: ok run_id={run_id}");
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(run_id)
 }
