@@ -27,7 +27,7 @@ pub struct ErConfig {
 /// [commands] section — configurable shell commands for hub actions.
 /// Each command is a shell string run via `sh -c`. Placeholders:
 /// `{base}` (base branch), `{branch}` (current branch), `{repo}` (repo root),
-/// `{output}` (default output path, e.g. `{repo}/.er/summary.md`).
+/// `{output}` (default output path, e.g. managed `{er_dir}/summary.md`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CommandsConfig {
     /// Generate diff summary (AI hub)

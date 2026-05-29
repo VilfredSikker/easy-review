@@ -11,7 +11,7 @@
 - `src/projects.rs`: persisted project list, tracked branches, tracked/dismissed PRs.
 - `src/pr_cache.rs`: GitHub PR list fetching/caching helpers.
 - `src/export.rs`: pure Markdown renderer for comments, questions, findings, and UI annotations.
-- `src/er_storage.rs`: desktop-managed review revision storage under app data.
+- `src/er_storage.rs`: re-exports `er_engine::storage` (managed review storage under app data).
 - `src/terminal.rs`: PTY session wrapper for the in-app terminal drawer.
 
 ## Ownership Rules
@@ -89,7 +89,7 @@ The Browser tab’s primary surface is a **native child webview** (`review-brows
 | OAuth loops | Single server hop only; never follow redirect chains in ureq |
 
 Do not add provider-specific URL checks. Use `localhost` consistently (`127.0.0.1` is a different cookie origin).
-- `er_storage` redirects Desktop review artifacts away from the repo `.er` directory. Bootstrap existing `.er` data, then write active Desktop output to the managed revision path.
+- Review artifacts use `TabState::apply_managed_root()` / `er_dir()` from the engine (`~/.local/share/easy-review/...`). TUI uses the same paths. Repo `.er/` is migrated once when managed storage is empty.
 - Terminal sessions are OS resources. Dropping the stored `PtySession` kills the child shell; be careful with session id reuse and tab close behavior.
 
 ## Common Failure Modes

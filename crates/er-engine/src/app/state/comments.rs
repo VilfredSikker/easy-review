@@ -1801,7 +1801,8 @@ impl App {
         let repo_root = tab.repo_root.clone();
         let base = tab.base_branch.clone();
         let branch = tab.current_branch.clone();
-        let output_path = format!("{}/.er/summary.md", repo_root);
+        let er_dir = tab.er_dir();
+        let output_path = format!("{}/summary.md", er_dir);
 
         // Substitute placeholders — sanitize values for safe shell interpolation
         let cmd = shell_cmd
@@ -1816,8 +1817,6 @@ impl App {
                 &crate::ai::prompts::sanitize_for_shell(&output_path),
             );
 
-        // Ensure .er/ directory exists
-        let er_dir = std::path::Path::new(&repo_root).join(".er");
         std::fs::create_dir_all(&er_dir)?;
 
         let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
@@ -1896,7 +1895,7 @@ impl App {
 
                 // Summary-specific: optionally push to PR body
                 if push_to_pr {
-                    let summary_path = std::path::Path::new(&repo_root).join(".er/summary.md");
+                    let summary_path = std::path::Path::new(&er_dir).join("summary.md");
                     if let Ok(summary) = std::fs::read_to_string(&summary_path) {
                         if !summary.trim().is_empty() {
                             crate::github::gh_pr_edit_body(&repo_root, &summary)?;

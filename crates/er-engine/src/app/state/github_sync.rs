@@ -218,9 +218,7 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
     gc.comments.extend(github_entries);
 
     // Write to disk (atomic rename, outside app lock)
-    if !ctx.is_remote {
-        std::fs::create_dir_all(format!("{}/.er", ctx.repo_root))?;
-    } else if let Some(dir) = std::path::Path::new(&ctx.comments_path).parent() {
+    if let Some(dir) = std::path::Path::new(&ctx.comments_path).parent() {
         std::fs::create_dir_all(dir)?;
     }
     let json = serde_json::to_string_pretty(&gc)?;
@@ -622,8 +620,8 @@ impl App {
         gc.comments = local_unpushed;
         gc.comments.extend(github_entries);
 
-        if !is_remote {
-            std::fs::create_dir_all(format!("{}/.er", repo_root))?;
+        if let Some(dir) = std::path::Path::new(&comments_path).parent() {
+            std::fs::create_dir_all(dir)?;
         }
         let json = serde_json::to_string_pretty(&gc)?;
         let tmp_path = format!("{}.tmp", comments_path);
