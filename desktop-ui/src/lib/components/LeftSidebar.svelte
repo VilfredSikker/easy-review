@@ -50,7 +50,6 @@
   );
   const latestInboxMessage = $derived(inboxVisible[0] ?? null);
 
-  let settingsOpen = $state(false);
   let inboxPopoverOpen = $state(false);
   let inboxFilter = $state<"all" | "unread" | "read">("all");
   let selectedInboxMessage = $state<InboxItemSnapshot | null>(null);
@@ -118,12 +117,6 @@
     addingTo = null;
   }
 
-  function onSettingsKey(e: KeyboardEvent) {
-    if (e.key !== "Escape") return;
-    inboxPopoverOpen = false;
-    projectMenuOpen = null;
-    closeBranchPicker();
-  }
 
   function openInboxPopover() {
     inboxPopoverOpen = true;
@@ -519,7 +512,7 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
     </button>
     <div class="mt-auto">
-      <button title="Settings" aria-label="Settings" class="w-7 h-7 rounded bg-accent flex items-center justify-center text-black text-[10px] font-bold">er</button>
+      <button title="Settings" aria-label="Settings" onclick={() => app.setMainView("settings")} class="w-7 h-7 rounded bg-accent flex items-center justify-center text-black text-[10px] font-bold">er</button>
     </div>
   </aside>
 {:else}
@@ -1108,7 +1101,7 @@
 
   <!-- Footer: er + Settings — fixed at bottom by being a sibling of the flex-1 scroll area. -->
   <button
-    onclick={() => (settingsOpen = true)}
+    onclick={() => app.setMainView("settings")}
     class="border-t border-hairline p-3 flex items-center gap-2 text-[12px] text-fg-3 shrink-0 hover:bg-hover text-left"
   >
     <div class="w-6 h-6 rounded-md bg-accent flex items-center justify-center text-black text-xs font-bold">er</div>
@@ -1117,27 +1110,3 @@
 </aside>
 {/if}
 
-<svelte:window onkeydown={onSettingsKey} />
-
-{#if settingsOpen}
-  <ModalShell
-    open={true}
-    ariaLabel="Settings"
-    onClose={() => (settingsOpen = false)}
-    backdropClass="fixed inset-0 z-[200] bg-black/50"
-    panelClass="fixed left-1/2 top-1/2 z-[201] w-[420px] -translate-x-1/2 -translate-y-1/2 rounded-xl bg-card border border-border shadow-2xl p-5 outline-none"
-  >
-    <div class="text-base font-semibold text-fg mb-4">Settings</div>
-    <label class="block text-xs uppercase tracking-wider text-muted mb-1">
-      AI model
-      <select
-        onchange={(e) => app.cmd("set_ai_model", { model: e.currentTarget.value })}
-        class="mt-1 w-full bg-surface border border-hairline rounded-md px-2 py-1.5 text-sm text-fg outline-none"
-      >
-        <option value="opus">Opus</option>
-        <option value="sonnet">Sonnet</option>
-        <option value="haiku">Haiku</option>
-      </select>
-    </label>
-  </ModalShell>
-{/if}

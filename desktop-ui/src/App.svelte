@@ -24,6 +24,7 @@
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
+  import SettingsPage from "$lib/components/settings/SettingsPage.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { browserHide } from "$lib/stores/browserHost";
   import { installExternalLinkGuard } from "$lib/openExternalUrl";
@@ -297,6 +298,8 @@
               <DiffView />
             {:else if app.mainView === "agent-output"}
               <AgentOutputView />
+            {:else if app.mainView === "settings"}
+              <SettingsPage onBack={() => app.setMainView("diff")} />
             {:else}
               <ExportReviewView />
             {/if}

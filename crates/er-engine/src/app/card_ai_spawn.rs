@@ -1,6 +1,6 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::config::{agent_command_uses_stream_json, ErConfig};
+use crate::config::{agent_command_uses_stream_json, ErConfig, AGENT_EFFORT_OPTIONS};
 use std::process::Command;
 
 /// Resolved agent command + args for a card AI subprocess.
@@ -42,6 +42,7 @@ pub fn plan_card_ai_invocation(
 
     if is_claude {
         inject_read_only_tools(&mut args);
+        inject_effort(&mut args, &config.agent.effort);
     }
 
     CardAiInvocation {
@@ -57,6 +58,18 @@ fn fallback_agent(config: &ErConfig) -> (String, Vec<String>, bool) {
     let cmd = config.agent.command.clone();
     let is_claude = cmd.ends_with("claude") || cmd == "claude";
     (cmd, config.agent.args.clone(), is_claude)
+}
+
+fn inject_effort(args: &mut Vec<String>, effort: &str) {
+    let effort = effort.trim();
+    if effort.is_empty() || !AGENT_EFFORT_OPTIONS.contains(&effort) {
+        return;
+    }
+    if args.iter().any(|a| a == "--effort") {
+        return;
+    }
+    args.push("--effort".to_string());
+    args.push(effort.to_string());
 }
 
 fn inject_read_only_tools(args: &mut Vec<String>) {

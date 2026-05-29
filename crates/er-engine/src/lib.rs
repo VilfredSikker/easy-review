@@ -2,6 +2,11 @@ pub mod ai;
 pub mod app;
 pub mod cache;
 pub mod config;
+#[allow(unused_imports)]
+pub use config::{
+    apply_config_field, desktop_settings_snapshot, ConfigFieldValue, ConfigHubFieldDto,
+    DesktopSettingsSnapshot,
+};
 pub mod git;
 pub mod github;
 pub mod highlight;

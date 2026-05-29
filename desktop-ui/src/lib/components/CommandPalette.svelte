@@ -114,6 +114,13 @@
         run: () => { close(); app.cmd("force_refresh_diff"); },
       },
       {
+        id: "open-settings",
+        label: "Open settings",
+        section: "App",
+        keywords: ["config", "preferences"],
+        run: () => { close(); app.setMainView("settings"); },
+      },
+      {
         id: "toggle-diff-view-mode",
         label: "Toggle diff view (unified/split)",
         description: `Currently: ${app.diffViewMode}`,

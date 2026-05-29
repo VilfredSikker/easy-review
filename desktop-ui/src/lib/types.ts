@@ -482,3 +482,47 @@ export interface UiDomNodeContext {
   text?: string | null;
   attrs?: Record<string, string | null>;
 }
+
+/** Patch value for `apply_config_patch` (matches Rust `ConfigFieldValue`). */
+export type ConfigFieldValue = boolean | string | number;
+
+export type ConfigHubField =
+  | { kind: "section"; title: string }
+  | {
+      kind: "bool";
+      key: string;
+      label: string;
+      description: string;
+      value: boolean;
+    }
+  | {
+      kind: "cycle";
+      key: string;
+      label: string;
+      description: string;
+      options: string[];
+      value: string;
+    }
+  | {
+      kind: "text";
+      key: string;
+      label: string;
+      description: string;
+      placeholder: string;
+      value: string;
+      strict: boolean;
+    }
+  | { kind: "listEntry"; key: string; label: string; index: number }
+  | { kind: "listAdd"; key: string; label: string };
+
+export interface DesktopSettingsSnapshot {
+  fields: ConfigHubField[];
+  agentEffort: string;
+  hasLocalConfig: boolean;
+  repoRoot: string;
+}
+
+export interface GetConfigHubResponse {
+  settings: DesktopSettingsSnapshot;
+  providers: AiProviderInfo[];
+}

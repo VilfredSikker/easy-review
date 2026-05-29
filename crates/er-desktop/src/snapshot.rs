@@ -1214,7 +1214,7 @@ fn build_snapshot_inner(
             tree: app.panels_visible.tree,
             right: app.panels_visible.right,
         },
-        theme: "dark".to_string(),
+        theme: app.config.display.theme.clone(),
         watch_active: {
             let ws = watch_status
                 .and_then(|w| w.lock().ok().map(|g| g.clone()))

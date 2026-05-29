@@ -7,6 +7,7 @@ use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
 use er_engine::ai::CommentType;
+use er_engine::config::ErConfig;
 #[cfg(test)]
 use er_engine::app::CardAiInvocation;
 use er_engine::app::{
@@ -82,6 +83,7 @@ pub struct OpenSourceResult {
 
 pub struct AppState {
     pub app: Arc<Mutex<App>>,
+    pub config_edit_baseline: Arc<Mutex<Option<ErConfig>>>,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     pub pr_cache_fetched_at: PrCacheFetchedAtMap,
     pub pr_open_cache: Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
@@ -196,7 +198,7 @@ macro_rules! snap {
 }
 
 /// Build a snapshot using the lock guards directly (when callers already hold them).
-fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
+pub(crate) pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     build_snapshot(
         app,
         Some(&state.pr_cache),

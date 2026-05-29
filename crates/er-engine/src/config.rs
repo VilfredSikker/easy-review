@@ -1,4 +1,12 @@
+#[path = "config_desktop_settings.rs"]
+mod config_desktop_settings;
+
 use anyhow::Result;
+
+pub use config_desktop_settings::{
+    apply_config_field, desktop_settings_fields, desktop_settings_snapshot,
+    validate_config_text_field, ConfigFieldValue, ConfigHubFieldDto, DesktopSettingsSnapshot,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -112,6 +120,9 @@ pub struct FeatureFlags {
     pub view_hidden: bool,
 }
 
+/// Claude-compatible effort levels passed as `--effort` when spawning agents.
+pub const AGENT_EFFORT_OPTIONS: &[&str] = &["low", "medium", "high"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     #[serde(default = "default_agent_cmd")]
@@ -120,6 +131,12 @@ pub struct AgentConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub model: String,
+    #[serde(default = "default_agent_effort")]
+    pub effort: String,
+}
+
+fn default_agent_effort() -> String {
+    "medium".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -258,6 +275,7 @@ impl Default for AgentConfig {
             command: default_agent_cmd(),
             args: default_agent_args(),
             model: String::new(),
+            effort: default_agent_effort(),
         }
     }
 }
@@ -801,6 +819,13 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             get: |c| c.agent.args.join(" "),
             set: |c, v| c.agent.args = split_shell_args(&v),
         },
+        ConfigItem::StringCycle {
+            label: "Effort".into(),
+            description: "Claude effort level (--effort)".into(),
+            options: AGENT_EFFORT_OPTIONS,
+            get: |c| c.agent.effort.clone(),
+            set: |c, v| c.agent.effort = v,
+        },
         // ── AI ──
         ConfigItem::SectionHeader("AI".into()),
         ConfigItem::Action {
@@ -1137,6 +1162,7 @@ args = ["--model", "gpt-5.4"]
                 command: "my-agent".into(),
                 args: vec!["--flag".into()],
                 model: String::new(),
+                effort: default_agent_effort(),
             },
             ..Default::default()
         };
@@ -1399,6 +1425,7 @@ args = ["--model", "gpt-5.4"]
             command: "claude".into(),
             args: vec![],
             model: String::new(),
+            effort: default_agent_effort(),
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -1409,6 +1436,7 @@ args = ["--model", "gpt-5.4"]
             command: "/usr/local/bin/claude".into(),
             args: vec![],
             model: String::new(),
+            effort: default_agent_effort(),
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -1419,6 +1447,7 @@ args = ["--model", "gpt-5.4"]
             command: "".into(),
             args: vec![],
             model: String::new(),
+            effort: default_agent_effort(),
         };
         assert_eq!(agent.display_name(), "AI");
     }

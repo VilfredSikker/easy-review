@@ -1,4 +1,5 @@
 pub mod browser_webview;
+pub mod config_commands;
 pub mod commands;
 pub mod er_storage;
 pub mod export;
