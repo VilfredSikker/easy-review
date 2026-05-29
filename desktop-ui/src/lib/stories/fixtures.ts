@@ -289,6 +289,8 @@ export const aiWithFindings: AiSnapshot = {
   ],
   has_review_json: true,
   eligible_comment_count: 0,
+  triage: null,
+  has_triage_json: false,
 };
 
 export const aiEmpty: AiSnapshot = {
@@ -308,6 +310,8 @@ export const aiEmpty: AiSnapshot = {
   findings: [],
   has_review_json: false,
   eligible_comment_count: 0,
+  triage: null,
+  has_triage_json: false,
 };
 
 function professorFinding(id: string, file: string, line: number, title: string): AiSnapshot["findings"][0] {
@@ -359,6 +363,8 @@ export const aiProfessorOnly: AiSnapshot = {
   ],
   has_review_json: true,
   eligible_comment_count: 0,
+  triage: null,
+  has_triage_json: false,
 };
 
 /** General + Professor + Security for multi-agent dropdown. */

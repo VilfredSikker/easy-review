@@ -69,7 +69,6 @@ enabled = true
 # provider = "claude"       # optional; defaults to ai_hub default
 model = "haiku-4.5"         # cheap model for fast To Review triage
 max_concurrent = 2
-rescan_on_head_change = true
 skip_if_review_exists = true
 
 [ai_hub.providers.codex]

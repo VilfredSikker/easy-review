@@ -419,9 +419,7 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
                             .map(|n| format!("PR #{n}"))
                             .unwrap_or_else(|| task.target_label.clone());
                         let (severity, title, body) = if let Some(ref tr) = triage {
-                            let sev = if tr.verdict
-                                == er_engine::ai::TriageVerdict::DeepReview
-                            {
+                            let sev = if tr.verdict == er_engine::ai::TriageVerdict::DeepReview {
                                 "warning".to_string()
                             } else {
                                 "info".to_string()
@@ -442,11 +440,6 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
                                 task.target_label.clone(),
                             )
                         };
-                        let head = triage
-                            .as_ref()
-                            .map(|t| t.head_oid.clone())
-                            .filter(|h| !h.is_empty())
-                            .unwrap_or_else(|| "unknown".to_string());
                         let remote = task.remote_repo.clone().unwrap_or_default();
                         let pr_num = task.pr_number.unwrap_or(0);
                         (
@@ -454,7 +447,7 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
                             severity,
                             title,
                             body,
-                            format!("ai:{remote}:{pr_num}:triage:{head}:done"),
+                            format!("ai:{remote}:{pr_num}:triage:done"),
                         )
                     }
                     "failed" => {
@@ -1360,7 +1353,18 @@ pub fn process_inbox_after_pr_refresh(
                         .unwrap_or_default(),
                     in_to_review: crate::snapshot::pr_is_to_review(&pr, Some(&gh_user))
                         && !pr.is_draft,
-                    triage_head_oid: prev.as_ref().and_then(|p| p.triage_head_oid.clone()),
+                    triage_done: prev
+                        .as_ref()
+                        .map(|p| {
+                            p.triage_done
+                                || er_engine::ai::load_triage(&er_storage::pr_review_er_dir(
+                                    remote, pr.number,
+                                ))
+                                .is_some()
+                        })
+                        .unwrap_or(false),
+                    triage_failed: prev.as_ref().map(|p| p.triage_failed).unwrap_or(false),
+                    ..Default::default()
                 },
             );
         }
@@ -1463,7 +1467,10 @@ pub fn reveal_er_folder(state: State<AppState>) -> Result<(), String> {
 pub fn reveal_path(path: String) -> Result<(), String> {
     let target = std::path::Path::new(&path);
     let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg("-R").arg(target).spawn()
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(target)
+            .spawn()
     } else if cfg!(target_os = "linux") {
         let parent = target.parent().unwrap_or(target);
         std::process::Command::new("xdg-open").arg(parent).spawn()
@@ -2101,14 +2108,7 @@ pub fn submit_github_review(
                     .line_end
                     .and_then(|le| e.old_line.map(|ol| ol + (le - e.line_start)))
                     .unwrap_or(start);
-                (
-                    old_end,
-                    if old_end > start {
-                        Some(start)
-                    } else {
-                        None
-                    },
-                )
+                (old_end, if old_end > start { Some(start) } else { None })
             } else {
                 (
                     end,
@@ -2789,9 +2789,7 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
     let has_review = review_path.exists();
     let comment_count = eligible_github_comment_count(app.tab());
     if !has_review && comment_count == 0 {
-        return Err(
-            "Nothing to validate. Run AI review or add GitHub comments first.".to_string(),
-        );
+        return Err("Nothing to validate. Run AI review or add GitHub comments first.".to_string());
     }
 
     let raw = app
@@ -2807,8 +2805,7 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
     app.tab_mut().relocate_all_comments();
 
     if has_review {
-        let prompt =
-            er_engine::ai::prompts::build_validate_prompt_prepared_diff(&scope, &er_dir);
+        let prompt = er_engine::ai::prompts::build_validate_prompt_prepared_diff(&scope, &er_dir);
         app.spawn_agent_prompt("validate", &prompt)
             .map_err(|e| e.to_string())?;
     }

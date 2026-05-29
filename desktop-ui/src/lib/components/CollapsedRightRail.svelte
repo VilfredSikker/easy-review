@@ -10,6 +10,9 @@
   const { ai, onExpand }: Props = $props();
 
   const totalFindings = $derived(ai?.findings.length ?? 0);
+  const showDeepReviewDot = $derived(
+    totalFindings === 0 && ai?.triage?.verdict === "deep_review",
+  );
   const worstSeverity = $derived.by((): "high" | "med" | "low" | null => {
     if (!ai || ai.findings.length === 0) return null;
     if (ai.findings.some((f) => f.severity === "high")) return "high";
@@ -96,6 +99,8 @@
     </svg>
     {#if totalFindings > 0}
       <span class="absolute -top-0.5 -right-0.5 min-w-3.5 h-3.5 px-0.5 flex items-center justify-center text-[8px] font-bold rounded-full border-2 border-surface {findingBadgeClass}">{totalFindings}</span>
+    {:else if showDeepReviewDot}
+      <span class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-ai border-2 border-surface" title="Deep review recommended"></span>
     {/if}
   </button>
 

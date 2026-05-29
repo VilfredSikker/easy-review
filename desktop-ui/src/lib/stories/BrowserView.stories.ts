@@ -64,6 +64,8 @@ function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
       findings: [],
       has_review_json: false,
       eligible_comment_count: 0,
+      triage: null,
+      has_triage_json: false,
     },
     pr: null,
     panels: { left: true, tree: true, right: true },

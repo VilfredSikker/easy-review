@@ -106,6 +106,22 @@ export interface FlatFinding {
   thread_id: string | null;
 }
 
+export interface TriageSmellSnapshot {
+  severity: string;
+  category: string;
+  text: string;
+}
+
+export interface TriageSnapshot {
+  verdict: string;
+  confidence: string;
+  summary: string;
+  smells: TriageSmellSnapshot[];
+  recommended_experts: string[];
+  recommended_review: string;
+  outdated: boolean;
+}
+
 export interface AiSnapshot {
   fresh: boolean;
   stale_reason: string | null;
@@ -126,6 +142,8 @@ export interface AiSnapshot {
   has_review_json: boolean;
   /** Top-level GitHub comments eligible for batch validate (!resolved, !outdated). */
   eligible_comment_count: number;
+  triage: TriageSnapshot | null;
+  has_triage_json: boolean;
 }
 
 export interface PrSnapshot {

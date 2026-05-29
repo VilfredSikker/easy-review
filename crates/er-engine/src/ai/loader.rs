@@ -245,6 +245,7 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
         "feedback.json",
         "questions.json",
         "github-comments.json",
+        "triage.json",
     ];
 
     let mut latest = files

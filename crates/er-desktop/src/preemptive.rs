@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use er_engine::ai::prompts::build_triage_prompt_prepared_diff;
-use er_engine::ai::{compute_diff_hash, load_triage};
 use er_engine::ai::review::ErReview;
+use er_engine::ai::{compute_diff_hash, load_triage};
 use er_engine::app::App;
 use er_engine::app::BackgroundTaskTarget;
 
@@ -19,7 +19,8 @@ fn triage_running_count(app: &App) -> u32 {
     app.background_tasks
         .values()
         .filter(|h| {
-            h.task.kind == "triage" && matches!(h.task.status, er_engine::app::CommandStatus::Running)
+            h.task.kind == "triage"
+                && matches!(h.task.status, er_engine::app::CommandStatus::Running)
         })
         .count() as u32
 }
@@ -48,23 +49,27 @@ fn needs_triage_scan(
     pr: &PrInfo,
     prev: Option<&ObservedPrState>,
     gh_user: &str,
-    rescan_on_head_change: bool,
+    er_dir: &str,
 ) -> bool {
     if !pr_is_to_review(pr, Some(gh_user)) || pr.is_draft {
         return false;
     }
-    let head = pr.head_oid.as_str();
-    if head.is_empty() {
+    if pr.head_oid.is_empty() {
         return false;
     }
-    if prev.and_then(|p| p.triage_head_oid.as_deref()) == Some(head) {
+    if load_triage(er_dir).is_some() {
         return false;
     }
-    if rescan_on_head_change {
-        return true;
+    if prev.map(|p| p.triage_done).unwrap_or(false) {
+        return false;
     }
-    // First time entering To Review only.
-    prev.map(|p| !p.in_to_review).unwrap_or(true)
+    let in_to_review = prev.map(|p| p.in_to_review).unwrap_or(false);
+    let triage_failed = prev.map(|p| p.triage_failed).unwrap_or(false);
+    // One-time per PR: only on first entry into To Review, or retry after failure.
+    if in_to_review && !triage_failed {
+        return false;
+    }
+    true
 }
 
 /// Schedule preemptive triage scans for eligible To Review PRs. Called from `poll()`.
@@ -98,7 +103,8 @@ pub fn maybe_schedule_preemptive_scans(app: &mut App, state: &AppState) {
         return;
     }
 
-    let mut inbox_updates: Vec<(String, String)> = Vec::new();
+    let mut mark_done: Vec<String> = Vec::new();
+    let mut clear_failed: Vec<String> = Vec::new();
 
     'outer: for (remote, prs) in &pr_cache {
         let Some((project_id, repo_root)) = project_by_remote.get(remote) else {
@@ -115,14 +121,15 @@ pub fn maybe_schedule_preemptive_scans(app: &mut App, state: &AppState) {
                 .ok()
                 .and_then(|inbox| inbox.observed_pr.get(&key).cloned());
 
-            if !needs_triage_scan(pr, prev.as_ref(), &gh_user, cfg.rescan_on_head_change) {
+            let er_dir = er_storage::pr_review_er_dir(remote, pr.number);
+
+            if !needs_triage_scan(pr, prev.as_ref(), &gh_user, &er_dir) {
                 continue;
             }
             if triage_running_for_pr(app, remote, pr.number) {
                 continue;
             }
 
-            let er_dir = er_storage::pr_review_er_dir(remote, pr.number);
             let _ = std::fs::create_dir_all(&er_dir);
 
             let raw_diff = match er_engine::github::gh_pr_diff_remote(
@@ -136,7 +143,7 @@ pub fn maybe_schedule_preemptive_scans(app: &mut App, state: &AppState) {
 
             let diff_hash = compute_diff_hash(&raw_diff);
             if cfg.skip_if_review_exists && fresh_review_exists(&er_dir, &diff_hash) {
-                inbox_updates.push((key.clone(), pr.head_oid.clone()));
+                mark_done.push(key);
                 continue;
             }
 
@@ -157,15 +164,12 @@ pub fn maybe_schedule_preemptive_scans(app: &mut App, state: &AppState) {
                 managed_local: !repo_root.is_empty(),
             };
 
-            if app
-                .spawn_background_triage(target, prompt, true)
-                .is_err()
-            {
+            if app.spawn_background_triage(target, prompt, true).is_err() {
                 continue;
             }
 
             running += 1;
-            inbox_updates.push((key, pr.head_oid.clone()));
+            clear_failed.push(key);
             log::info!(
                 "preemptive triage scheduled project={project_id} {remote}#{} head={}",
                 pr.number,
@@ -174,11 +178,17 @@ pub fn maybe_schedule_preemptive_scans(app: &mut App, state: &AppState) {
         }
     }
 
-    if !inbox_updates.is_empty() {
+    if !mark_done.is_empty() || !clear_failed.is_empty() {
         if let Ok(mut inbox) = state.inbox.lock() {
-            for (key, head) in inbox_updates {
+            for key in mark_done {
                 if let Some(obs) = inbox.observed_pr.get_mut(&key) {
-                    obs.triage_head_oid = Some(head);
+                    obs.triage_done = true;
+                    obs.triage_failed = false;
+                }
+            }
+            for key in clear_failed {
+                if let Some(obs) = inbox.observed_pr.get_mut(&key) {
+                    obs.triage_failed = false;
                 }
             }
             crate::inbox::save_inbox_state(&state.inbox);
@@ -187,7 +197,7 @@ pub fn maybe_schedule_preemptive_scans(app: &mut App, state: &AppState) {
     }
 }
 
-/// Revert optimistic triage head tracking when a triage task fails.
+/// Revert triage tracking when a triage task fails so one retry is allowed.
 pub fn revert_failed_triage_heads(app: &App, inbox_handle: &InboxHandle) {
     let failed: Vec<(Option<String>, u64)> = app
         .background_task_snapshots()
@@ -208,7 +218,8 @@ pub fn revert_failed_triage_heads(app: &App, inbox_handle: &InboxHandle) {
             };
             let key = format!("{remote}#{pr_number}");
             if let Some(obs) = inbox.observed_pr.get_mut(&key) {
-                obs.triage_head_oid = None;
+                obs.triage_done = false;
+                obs.triage_failed = true;
                 changed = true;
             }
         }
@@ -218,20 +229,16 @@ pub fn revert_failed_triage_heads(app: &App, inbox_handle: &InboxHandle) {
     }
 }
 
-/// On successful triage, persist head_oid from triage.json when available.
+/// On successful triage, mark the PR as permanently triaged.
 pub fn sync_successful_triage_heads(app: &App, inbox_handle: &InboxHandle) {
-    let done: Vec<(String, u64, String)> = app
+    let done: Vec<(String, u64)> = app
         .background_task_snapshots()
         .into_iter()
         .filter(|t| t.kind == "triage" && t.status == "done")
         .filter_map(|t| {
             let remote = t.remote_repo.clone()?;
             let pr_number = t.pr_number?;
-            let head = load_triage(&t.er_dir)
-                .map(|tr| tr.head_oid)
-                .filter(|h| !h.is_empty())
-                .unwrap_or_default();
-            Some((remote, pr_number, head))
+            Some((remote, pr_number))
         })
         .collect();
 
@@ -241,13 +248,11 @@ pub fn sync_successful_triage_heads(app: &App, inbox_handle: &InboxHandle) {
 
     if let Ok(mut inbox) = inbox_handle.lock() {
         let mut changed = false;
-        for (remote, pr_number, head) in done {
-            if head.is_empty() {
-                continue;
-            }
+        for (remote, pr_number) in done {
             let key = format!("{remote}#{pr_number}");
             if let Some(obs) = inbox.observed_pr.get_mut(&key) {
-                obs.triage_head_oid = Some(head);
+                obs.triage_done = true;
+                obs.triage_failed = false;
                 changed = true;
             }
         }
@@ -261,6 +266,7 @@ pub fn sync_successful_triage_heads(app: &App, inbox_handle: &InboxHandle) {
 mod tests {
     use super::*;
     use crate::snapshot::pr_is_to_review;
+    use std::fs;
 
     fn sample_pr() -> PrInfo {
         PrInfo {
@@ -280,6 +286,15 @@ mod tests {
             head_oid: "abc".into(),
             updated_at: String::new(),
             latest_reviewer_states: vec![],
+        }
+    }
+
+    fn sample_prev(in_to_review: bool, triage_done: bool, triage_failed: bool) -> ObservedPrState {
+        ObservedPrState {
+            in_to_review,
+            triage_done,
+            triage_failed,
+            ..Default::default()
         }
     }
 
@@ -303,18 +318,68 @@ mod tests {
     }
 
     #[test]
-    fn needs_triage_respects_head_oid_cache() {
+    fn needs_triage_skips_when_triage_done() {
         let pr = sample_pr();
-        let prev = ObservedPrState {
-            review_decision: None,
-            requested_reviewers: vec![],
-            pr_state: "OPEN".into(),
-            is_my_pr: false,
-            check_state: None,
-            failing_checks: vec![],
-            in_to_review: true,
-            triage_head_oid: Some("abc".into()),
-        };
-        assert!(!needs_triage_scan(&pr, Some(&prev), "me", true));
+        let prev = sample_prev(true, true, false);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!needs_triage_scan(
+            &pr,
+            Some(&prev),
+            "me",
+            dir.path().to_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn needs_triage_skips_when_triage_json_exists() {
+        let pr = sample_pr();
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        fs::write(
+            format!("{er_dir}/triage.json"),
+            r#"{"version":1,"diff_hash":"x","verdict":"skip"}"#,
+        )
+        .unwrap();
+        assert!(!needs_triage_scan(&pr, None, "me", er_dir));
+    }
+
+    #[test]
+    fn needs_triage_first_entry_only_when_already_in_bucket() {
+        let pr = sample_pr();
+        let prev = sample_prev(true, false, false);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!needs_triage_scan(
+            &pr,
+            Some(&prev),
+            "me",
+            dir.path().to_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn needs_triage_allows_retry_after_failure() {
+        let pr = sample_pr();
+        let prev = sample_prev(true, false, true);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(needs_triage_scan(
+            &pr,
+            Some(&prev),
+            "me",
+            dir.path().to_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn needs_triage_head_change_does_not_retrigger_after_done() {
+        let mut pr = sample_pr();
+        pr.head_oid = "def".into();
+        let prev = sample_prev(true, true, false);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!needs_triage_scan(
+            &pr,
+            Some(&prev),
+            "me",
+            dir.path().to_str().unwrap()
+        ));
     }
 }

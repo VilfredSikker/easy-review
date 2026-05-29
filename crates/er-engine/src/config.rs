@@ -45,8 +45,6 @@ pub struct PreemptiveConfig {
     #[serde(default = "default_preemptive_max_concurrent")]
     pub max_concurrent: u32,
     #[serde(default = "default_true")]
-    pub rescan_on_head_change: bool,
-    #[serde(default = "default_true")]
     pub skip_if_review_exists: bool,
 }
 
@@ -61,7 +59,6 @@ impl Default for PreemptiveConfig {
             provider: None,
             model: Some("haiku-4.5".to_string()),
             max_concurrent: default_preemptive_max_concurrent(),
-            rescan_on_head_change: true,
             skip_if_review_exists: true,
         }
     }
@@ -107,12 +104,7 @@ impl PreemptiveConfig {
         let cmd = agent.command.clone();
         let is_claude = cmd.ends_with("claude") || cmd == "claude";
         let stream_json = agent_command_uses_stream_json(&cmd);
-        (
-            cmd,
-            agent.args.clone(),
-            is_claude,
-            stream_json,
-        )
+        (cmd, agent.args.clone(), is_claude, stream_json)
     }
 }
 

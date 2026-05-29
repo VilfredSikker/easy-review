@@ -334,8 +334,7 @@ pub fn pr_is_to_review(pr: &PrInfo, gh_user: Option<&str>) -> bool {
         && gh_user.is_none_or(|login| pr.author != login)
         && !pr.approved_by_me
         && gh_user.is_none_or(|login| {
-            !pr
-                .latest_reviewer_states
+            !pr.latest_reviewer_states
                 .iter()
                 .any(|(l, s)| l == login && (s == "APPROVED" || s == "CHANGES_REQUESTED"))
         })
@@ -464,6 +463,24 @@ pub struct FlatFinding {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TriageSmellSnapshot {
+    pub severity: String,
+    pub category: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriageSnapshot {
+    pub verdict: String,
+    pub confidence: String,
+    pub summary: String,
+    pub smells: Vec<TriageSmellSnapshot>,
+    pub recommended_experts: Vec<String>,
+    pub recommended_review: String,
+    pub outdated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AiSnapshot {
     pub fresh: bool,
     pub stale_reason: Option<String>,
@@ -484,6 +501,8 @@ pub struct AiSnapshot {
     pub has_review_json: bool,
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
     pub eligible_comment_count: usize,
+    pub triage: Option<TriageSnapshot>,
+    pub has_triage_json: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1372,6 +1391,8 @@ fn empty_ai_snapshot() -> AiSnapshot {
         findings: Vec::new(),
         has_review_json: false,
         eligible_comment_count: 0,
+        triage: None,
+        has_triage_json: false,
     }
 }
 
@@ -2166,6 +2187,37 @@ fn build_hunks(
         .collect()
 }
 
+fn recommended_review_str(review: &er_engine::ai::RecommendedReview) -> &'static str {
+    match review {
+        er_engine::ai::RecommendedReview::None => "none",
+        er_engine::ai::RecommendedReview::General => "general",
+        er_engine::ai::RecommendedReview::Expert => "expert",
+    }
+}
+
+fn build_triage_snapshot(tab: &TabState) -> (Option<TriageSnapshot>, bool) {
+    let er_dir = tab.er_dir();
+    let has_triage_json = std::path::Path::new(&er_dir).join("triage.json").exists();
+    let triage = er_engine::ai::load_triage(&er_dir).map(|t| TriageSnapshot {
+        verdict: t.verdict.as_str().to_string(),
+        confidence: t.confidence,
+        summary: t.summary,
+        smells: t
+            .smells
+            .into_iter()
+            .map(|s| TriageSmellSnapshot {
+                severity: s.severity,
+                category: s.category,
+                text: s.text,
+            })
+            .collect(),
+        recommended_experts: t.recommended_experts,
+        recommended_review: recommended_review_str(&t.recommended_review).to_string(),
+        outdated: !tab.branch_diff_hash.is_empty() && t.diff_hash != tab.branch_diff_hash,
+    });
+    (triage, has_triage_json)
+}
+
 fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSnapshot {
     let ai = &tab.ai;
     let stale_reason = if !ai.is_stale {
@@ -2384,6 +2436,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
 
     let er_dir = tab.er_dir();
     let has_review_json = std::path::Path::new(&er_dir).join("review.json").exists();
+    let (triage, has_triage_json) = build_triage_snapshot(tab);
     let eligible_comment_count = ai
         .github_comments
         .as_ref()
@@ -2407,6 +2460,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         findings,
         has_review_json,
         eligible_comment_count,
+        triage,
+        has_triage_json,
     }
 }
 

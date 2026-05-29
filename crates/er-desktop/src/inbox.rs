@@ -45,8 +45,23 @@ pub struct ObservedPrState {
     pub failing_checks: Vec<String>,
     #[serde(default)]
     pub in_to_review: bool,
+    /// Permanent once preemptive triage succeeds or is skipped (review already exists).
     #[serde(default)]
-    pub triage_head_oid: Option<String>,
+    pub triage_done: bool,
+    /// Set when a triage attempt failed so one retry is allowed while still in To Review.
+    #[serde(default)]
+    pub triage_failed: bool,
+    #[serde(default, rename = "triage_head_oid", skip_serializing)]
+    triage_head_oid: Option<String>,
+}
+
+impl ObservedPrState {
+    pub fn migrate_legacy_fields(&mut self) {
+        if !self.triage_done && self.triage_head_oid.is_some() {
+            self.triage_done = true;
+        }
+        self.triage_head_oid = None;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,9 +163,13 @@ pub fn load_inbox_state() -> InboxState {
     if file.version != INBOX_SCHEMA_VERSION {
         return InboxState::default();
     }
+    let mut observed_pr = file.observed_pr;
+    for obs in observed_pr.values_mut() {
+        obs.migrate_legacy_fields();
+    }
     InboxState {
         items: file.items,
-        observed_pr: file.observed_pr,
+        observed_pr,
         ci_state: file.ci_state,
         notified_item_ids: file.notified_item_ids.into_iter().collect(),
         refresh_error_at_ms: file.refresh_error_at_ms,

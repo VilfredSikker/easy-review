@@ -63,13 +63,18 @@
   );
 
   const resolvedSummary = $derived(
-    resolveAgentSummary(
-      ai,
-      aiReviewFilter.filter,
-      scopedCounts,
-      new Set(agentScopedFindings.map((f) => f.file)).size,
-      isEmpty,
-    ),
+    ai.has_triage_json && !ai.has_review_json && isEmpty
+      ? {
+          text: "No full review yet — see preemptive scan above, or run the review skill.",
+          markdown: false,
+        }
+      : resolveAgentSummary(
+          ai,
+          aiReviewFilter.filter,
+          scopedCounts,
+          new Set(agentScopedFindings.map((f) => f.file)).size,
+          isEmpty,
+        ),
   );
   const summary = $derived(resolvedSummary.text);
   const summaryIsMarkdown = $derived(resolvedSummary.markdown);
