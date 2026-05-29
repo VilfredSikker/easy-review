@@ -474,15 +474,13 @@ impl App {
                 return Ok(());
             }
         } else {
-            let pr_info = local_pr_target(&repo_root, explicit_pr_number);
-            let pr_info = match pr_info {
+            match local_pr_target(&repo_root, explicit_pr_number) {
                 Ok(info) => info,
                 Err(_) => {
                     self.notify("No PR found for current branch");
                     return Ok(());
                 }
-            };
-            pr_info
+            }
         };
 
         let gh_comments = if is_remote {
@@ -677,14 +675,13 @@ impl App {
                 return Ok(());
             }
         } else {
-            let pr_info = match local_pr_target(&repo_root, explicit_pr_number) {
+            match local_pr_target(&repo_root, explicit_pr_number) {
                 Ok(info) => info,
                 Err(_) => {
                     self.notify("No PR found for current branch");
                     return Ok(());
                 }
-            };
-            pr_info
+            }
         };
 
         let comments_path = self.tab().github_comments_path();

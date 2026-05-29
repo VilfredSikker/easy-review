@@ -290,12 +290,14 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 .ai
                 .github_comments
                 .as_ref()
-                .map(|gc| er_engine::ai::count_eligible_github_comments(gc))
+                .map(er_engine::ai::count_eligible_github_comments)
                 .unwrap_or(0);
             if !has_review && comment_count == 0 {
                 app.notify("Nothing to validate — run review or add GitHub comments");
             } else if app.tab().is_remote() {
-                app.notify("validate is local-only — checkout the PR first, then re-run review locally");
+                app.notify(
+                    "validate is local-only — checkout the PR first, then re-run review locally",
+                );
             } else {
                 let scope = app.tab().mode.git_mode();
                 if comment_count > 0 {

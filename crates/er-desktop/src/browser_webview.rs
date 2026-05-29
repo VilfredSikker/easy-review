@@ -27,13 +27,19 @@ pub struct BrowserWebviewState {
     annotate_by_tab: Mutex<HashMap<usize, bool>>,
 }
 
-impl BrowserWebviewState {
-    pub fn new() -> Self {
+impl Default for BrowserWebviewState {
+    fn default() -> Self {
         Self {
             created: Mutex::new(HashMap::new()),
             active_tab: Mutex::new(0),
             annotate_by_tab: Mutex::new(HashMap::new()),
         }
+    }
+}
+
+impl BrowserWebviewState {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn set_tab_annotate_mode(&self, tab_idx: usize, active: bool) {

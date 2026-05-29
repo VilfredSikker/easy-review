@@ -218,7 +218,11 @@ mod tests {
     #[test]
     fn resolve_managed_root_creates_branch_dir() {
         let root = resolve_managed_root_from_slugs("test-repo", "feature-branch");
-        let crate::ErRoot::Managed { agent_dir, session_dir } = root else {
+        let crate::ErRoot::Managed {
+            agent_dir,
+            session_dir,
+        } = root
+        else {
             panic!("expected Managed root");
         };
         assert_eq!(agent_dir, session_dir);

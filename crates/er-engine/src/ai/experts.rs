@@ -293,12 +293,15 @@ pub fn merge_experts_into_review(
             continue;
         };
         for (path, efr) in &expert.files {
-            let entry = review.files.entry(path.clone()).or_insert_with(|| ErFileReview {
-                risk: RiskLevel::Info,
-                risk_reason: String::new(),
-                summary: String::new(),
-                findings: Vec::new(),
-            });
+            let entry = review
+                .files
+                .entry(path.clone())
+                .or_insert_with(|| ErFileReview {
+                    risk: RiskLevel::Info,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings: Vec::new(),
+                });
             for mut finding in efr.findings.clone() {
                 finding.id = prefix_finding_id(def.id_prefix, &finding.id);
                 finding.category = def.id.to_string();
@@ -442,7 +445,10 @@ mod tests {
             parse_reviewer_kind("expert:api"),
             Some(ReviewerKind::Expert("api".to_string()))
         );
-        assert_eq!(parse_reviewer_kind("professor"), Some(ReviewerKind::Professor));
+        assert_eq!(
+            parse_reviewer_kind("professor"),
+            Some(ReviewerKind::Professor)
+        );
         assert!(parse_reviewer_kind("expert:unknown").is_none());
     }
 
@@ -490,6 +496,9 @@ mod tests {
         }];
         merge_experts_into_review(&mut review, &experts, hash);
         assert_eq!(review.files["x.rs"].findings.len(), 2);
-        assert!(review.files["x.rs"].findings.iter().any(|f| f.id == "api-2"));
+        assert!(review.files["x.rs"]
+            .findings
+            .iter()
+            .any(|f| f.id == "api-2"));
     }
 }

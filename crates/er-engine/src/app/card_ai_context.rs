@@ -1,7 +1,7 @@
 //! System context for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::git::{filter_raw_diff_by_paths, DiffFile, DiffHunk};
 use crate::ai::prompts::CARD_AI_READ_BUDGET_LINE;
+use crate::git::{filter_raw_diff_by_paths, DiffFile, DiffHunk};
 
 const MAX_CONTEXT_BYTES: usize = 16 * 1024;
 const MAX_DIFF_EXCERPT_BYTES: usize = 12 * 1024;

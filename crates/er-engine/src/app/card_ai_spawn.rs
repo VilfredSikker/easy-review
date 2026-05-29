@@ -19,7 +19,9 @@ pub fn plan_card_ai_invocation(
     model_id: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
-    let (command, mut args, is_claude) = if let Some(pid) = config.ai_hub.resolve_provider_id(provider_id) {
+    let (command, mut args, is_claude) = if let Some(pid) =
+        config.ai_hub.resolve_provider_id(provider_id)
+    {
         if let Some(provider) = config.ai_hub.providers.get(&pid) {
             let mut args = provider.args.clone();
             if let Some(mid) = config.ai_hub.resolve_model_id(&pid, model_id) {
@@ -27,8 +29,7 @@ pub fn plan_card_ai_invocation(
                     args.extend(model.args.clone());
                 }
             }
-            let is_claude =
-                provider.command.ends_with("claude") || provider.command == "claude";
+            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
             (provider.command.clone(), args, is_claude)
         } else {
             fallback_agent(config)
@@ -37,8 +38,8 @@ pub fn plan_card_ai_invocation(
         fallback_agent(config)
     };
 
-    let uses_stream_json = agent_command_uses_stream_json(&command)
-        && args.iter().any(|a| a == "stream-json");
+    let uses_stream_json =
+        agent_command_uses_stream_json(&command) && args.iter().any(|a| a == "stream-json");
 
     if is_claude {
         inject_read_only_tools(&mut args);

@@ -717,18 +717,13 @@ pub struct TabState {
 }
 
 /// Per-tab browser layout (desktop only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserLayout {
+    #[default]
     Hidden,
     Split,
     Fullscreen,
-}
-
-impl Default for BrowserLayout {
-    fn default() -> Self {
-        Self::Hidden
-    }
 }
 
 impl BrowserLayout {
@@ -740,7 +735,7 @@ impl BrowserLayout {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_label(s: &str) -> Self {
         match s {
             "split" => Self::Split,
             "fullscreen" => Self::Fullscreen,
@@ -1705,8 +1700,7 @@ impl TabState {
             )
         };
 
-        self.er_root =
-            crate::storage::resolve_managed_root_from_slugs(&repo_slug, &branch_slug);
+        self.er_root = crate::storage::resolve_managed_root_from_slugs(&repo_slug, &branch_slug);
 
         if let ErRoot::Managed { agent_dir, .. } = &self.er_root {
             let managed = std::path::Path::new(agent_dir);
@@ -1717,9 +1711,7 @@ impl TabState {
                 self.pr_number,
                 self.local_branch_view.as_deref(),
             ) {
-                self.storage_notice = Some(format!(
-                    "Migrated review data to {agent_dir}"
-                ));
+                self.storage_notice = Some(format!("Migrated review data to {agent_dir}"));
             }
         }
     }
@@ -1727,8 +1719,7 @@ impl TabState {
     /// Apply managed storage, migrate legacy paths, and load reviewed markers.
     pub fn finish_storage_setup(&mut self) {
         self.apply_managed_root();
-        self.reviewed =
-            Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+        self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
     }
 
     /// Path to github-comments.json. Uses cache dir in remote mode.
@@ -2054,8 +2045,8 @@ impl TabState {
         if let Some(ref branch) = self.local_branch_view {
             let base = self.base_branch.clone();
             return if let Some(head_ref) = self.pr_head_ref.clone() {
-                if self.pr_number.is_some() {
-                    crate::github::gh_pr_diff(self.pr_number.unwrap(), &self.repo_root)
+                if let Some(pr_number) = self.pr_number {
+                    crate::github::gh_pr_diff(pr_number, &self.repo_root)
                 } else {
                     crate::git::git_diff_against_branch(&self.repo_root, &base, &head_ref)
                 }
@@ -2114,11 +2105,10 @@ impl TabState {
 
     /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.
     pub fn raw_diff_for_review(&self, scope: &str) -> Result<String> {
-        if self.raw_diff.is_some()
-            && !self.branch_diff_hash.is_empty()
-            && self.review_scope_matches_cached_diff(scope)
-        {
-            return Ok(self.raw_diff.as_ref().unwrap().clone());
+        if let Some(raw) = &self.raw_diff {
+            if !self.branch_diff_hash.is_empty() && self.review_scope_matches_cached_diff(scope) {
+                return Ok(raw.clone());
+            }
         }
         self.fetch_tab_raw_diff(scope)
     }
@@ -3185,8 +3175,7 @@ impl TabState {
                             .unwrap_or_default();
 
                     let first_diff = if let Some(c) = commits.first() {
-                        let raw =
-                            git::git_diff_commit(&c.hash, &log_root).unwrap_or_default();
+                        let raw = git::git_diff_commit(&c.hash, &log_root).unwrap_or_default();
                         git::parse_diff(&raw)
                     } else {
                         vec![]
@@ -4466,7 +4455,7 @@ impl App {
                         .ai
                         .github_comments
                         .as_ref()
-                        .map(|gc| crate::ai::count_eligible_github_comments(gc))
+                        .map(crate::ai::count_eligible_github_comments)
                         .unwrap_or(0);
                     if has_review && comment_count > 0 {
                         format!(
@@ -4490,7 +4479,7 @@ impl App {
                         .ai
                         .github_comments
                         .as_ref()
-                        .map(|gc| crate::ai::count_eligible_github_comments(gc))
+                        .map(crate::ai::count_eligible_github_comments)
                         .unwrap_or(0)
                         > 0,
             },
@@ -5593,10 +5582,8 @@ impl App {
             Some(config::ConfigItem::StringEdit { set, .. }) => {
                 set(&mut self.config, buffer);
             }
-            Some(config::ConfigItem::ListAdd { .. }) => {
-                if !buffer.trim().is_empty() {
-                    self.config.watched.paths.push(buffer.trim().to_string());
-                }
+            Some(config::ConfigItem::ListAdd { .. }) if !buffer.trim().is_empty() => {
+                self.config.watched.paths.push(buffer.trim().to_string());
             }
             _ => {}
         }
@@ -5698,6 +5685,7 @@ impl App {
 
     // ── Overlay: Navigation ──
 
+    #[allow(clippy::collapsible_match)]
     pub fn overlay_next(&mut self) {
         match &mut self.overlay {
             Some(OverlayData::WorktreePicker {
@@ -5766,6 +5754,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::collapsible_match)]
     pub fn overlay_prev(&mut self) {
         match &mut self.overlay {
             Some(OverlayData::WorktreePicker { selected, .. })
@@ -8304,10 +8293,8 @@ mod tests {
         tab.remote_repo = Some("owner/repo".to_string());
         tab.pr_number = Some(42);
         tab.apply_managed_root();
-        let expected = crate::storage::branch_dir(
-            &crate::storage::slug_branch("owner/repo"),
-            "pr-42",
-        );
+        let expected =
+            crate::storage::branch_dir(&crate::storage::slug_branch("owner/repo"), "pr-42");
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
     }
 
@@ -8339,10 +8326,7 @@ mod tests {
         tab.remote_repo = Some("owner/repo".to_string());
         tab.pr_number = Some(7);
         tab.apply_managed_root();
-        let dir = crate::storage::branch_dir(
-            &crate::storage::slug_branch("owner/repo"),
-            "pr-7",
-        );
+        let dir = crate::storage::branch_dir(&crate::storage::slug_branch("owner/repo"), "pr-7");
         assert_eq!(
             tab.github_comments_path(),
             format!("{}/github-comments.json", dir.to_string_lossy())
@@ -8355,10 +8339,8 @@ mod tests {
         tab.remote_repo = Some("my-org/my-repo".to_string());
         tab.pr_number = Some(1);
         tab.apply_managed_root();
-        let expected = crate::storage::branch_dir(
-            &crate::storage::slug_branch("my-org/my-repo"),
-            "pr-1",
-        );
+        let expected =
+            crate::storage::branch_dir(&crate::storage::slug_branch("my-org/my-repo"), "pr-1");
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
     }
 

@@ -786,7 +786,14 @@ pub fn git_log_range(
     let skip_str = format!("--skip={}", skip);
 
     let output = Command::new("git")
-        .args(["log", &range, &limit_str, &skip_str, format_str, "--shortstat"])
+        .args([
+            "log",
+            &range,
+            &limit_str,
+            &skip_str,
+            format_str,
+            "--shortstat",
+        ])
         .current_dir(repo_root)
         .output()
         .context("Failed to run git log")?;
@@ -1011,7 +1018,7 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
         }
     }
     // Sort by modification time (most recent first)
-    files.sort_by(|a, b| b.modified.cmp(&a.modified));
+    files.sort_by_key(|f| std::cmp::Reverse(f.modified));
     Ok(files)
 }
 
@@ -1355,6 +1362,11 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "t@t.com")
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["branch", "-M", "main"])
             .current_dir(root)
             .output()
             .unwrap();

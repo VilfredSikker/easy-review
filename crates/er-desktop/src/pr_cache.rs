@@ -122,12 +122,12 @@ pub fn startup_full_refresh_due(fetched_at: &PrCacheFetchedAtMap) -> bool {
     }
     let now = now_epoch_ms();
     let guard = fetched_at.lock().ok();
-    remotes.iter().any(|remote| {
-        match guard.as_ref().and_then(|g| g.get(remote)) {
+    remotes
+        .iter()
+        .any(|remote| match guard.as_ref().and_then(|g| g.get(remote)) {
             None => true,
             Some(ts) => now.saturating_sub(*ts) > PR_CACHE_STARTUP_MAX_AGE_MS,
-        }
-    })
+        })
 }
 
 /// Return the remote slug for the currently-active project, if any.
@@ -153,7 +153,12 @@ pub async fn refresh_pr_cache_for_remote(
     let ms = t.elapsed().as_millis();
     let success = result.is_some();
     if let Some(ref prs) = result {
-        log::info!("pr_list fetch {} PRs from {} in {}ms", prs.len(), remote, ms);
+        log::info!(
+            "pr_list fetch {} PRs from {} in {}ms",
+            prs.len(),
+            remote,
+            ms
+        );
     } else {
         log::warn!("pr_list fetch failed for {} after {}ms", remote, ms);
     }
