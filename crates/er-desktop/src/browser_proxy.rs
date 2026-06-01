@@ -45,8 +45,8 @@ pub fn rewrite_proxy_location(location: &str, upstream_scheme: &str) -> String {
     } else {
         ("http://", "erp://")
     };
-    if location.starts_with(upstream_prefix) {
-        format!("{proxy_prefix}{}", &location[upstream_prefix.len()..])
+    if let Some(rest) = location.strip_prefix(upstream_prefix) {
+        format!("{proxy_prefix}{rest}")
     } else {
         location.to_string()
     }
@@ -195,7 +195,7 @@ pub struct UpstreamFetch {
 }
 
 pub enum UpstreamFetchError {
-    Transport(ureq::Error),
+    Transport(Box<ureq::Error>),
     /// Same-origin redirect — pass through as HTTP `Location` on `erp(s)://`.
     BrowserRedirect {
         status: u16,
@@ -235,7 +235,7 @@ pub fn fetch_upstream_get(
     let resp = match req.call() {
         Ok(resp) => resp,
         Err(ureq::Error::Status(_, resp)) => resp,
-        Err(e) => return Err(UpstreamFetchError::Transport(e)),
+        Err(e) => return Err(UpstreamFetchError::Transport(Box::new(e))),
     };
     let status = resp.status();
     let headers = collect_ureq_headers(&resp);
@@ -309,5 +309,4 @@ mod tests {
             .unwrap();
         assert_eq!(loc, "erps://auth.example.com/oauth?state=1");
     }
-
 }

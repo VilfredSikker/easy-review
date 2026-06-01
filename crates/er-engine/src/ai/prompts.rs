@@ -366,8 +366,7 @@ pub fn build_review_prompt(base_branch: &str, scope: &str) -> String {
     let capture = format!(
         "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
     );
-    let preamble =
-        review_rules_preamble(".er", false, FindingCaps::general(), Some(&capture));
+    let preamble = review_rules_preamble(".er", false, FindingCaps::general(), Some(&capture));
     let outputs = general_review_outputs_section(".er", scope, &base_branch, "<current branch>");
 
     format!(
@@ -409,14 +408,9 @@ pub fn build_review_prompt_local_managed(
     let capture = format!(
         "mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
     );
-    let preamble =
-        review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
-    let outputs = general_review_outputs_section(
-        output_dir,
-        scope,
-        &base_branch_escaped,
-        "<current branch>",
-    );
+    let preamble = review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
+    let outputs =
+        general_review_outputs_section(output_dir, scope, &base_branch_escaped, "<current branch>");
     format!(
         r#"You are a code reviewer. Perform a thorough review of the current git diff and write results to `{safe_output_dir}/`.
 
@@ -469,8 +463,7 @@ pub fn build_expert_review_prompt(base_branch: &str, scope: &str, expert_id: &st
     let capture = format!(
         "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
     );
-    let preamble =
-        review_rules_preamble(".er", false, FindingCaps::expert(), Some(&capture));
+    let preamble = review_rules_preamble(".er", false, FindingCaps::expert(), Some(&capture));
     let lens = expert_lens_instructions(expert_id);
     let output = expert_review_output_section(".er", expert_id);
     format!(
@@ -529,7 +522,11 @@ Read `{safe_output_dir}/review-files.txt` — analyze **only** those paths. Igno
     )
 }
 
-fn professor_rules_preamble(output_dir: &str, prepared_diff: bool, git_diff_capture: Option<&str>) -> String {
+fn professor_rules_preamble(
+    output_dir: &str,
+    prepared_diff: bool,
+    git_diff_capture: Option<&str>,
+) -> String {
     let caps = FindingCaps {
         per_file: 3,
         total: 12,
@@ -1010,8 +1007,7 @@ pub fn build_review_prompt_remote(
     let capture = format!(
         "mkdir -p {safe_output_dir} && gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
     );
-    let preamble =
-        review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
+    let preamble = review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
     let outputs = general_review_outputs_section(output_dir, "branch", "", "");
     format!(
         r#"You are a code reviewer. Perform a thorough review of the GitHub PR diff and write results to `{safe_output_dir}/`.
@@ -1455,9 +1451,10 @@ mod tests {
 
     #[test]
     fn review_rules_preamble_no_style_category() {
-        let preamble =
-            review_rules_preamble(".er", false, FindingCaps::general(), None);
-        assert!(!preamble.contains("Categories: security, logic, performance, correctness, error-handling, style, testing"));
+        let preamble = review_rules_preamble(".er", false, FindingCaps::general(), None);
+        assert!(!preamble.contains(
+            "Categories: security, logic, performance, correctness, error-handling, style, testing"
+        ));
         assert!(preamble.contains("**no `style`**"));
         assert!(preamble.contains("P0"));
         assert!(preamble.contains("two-dot"));

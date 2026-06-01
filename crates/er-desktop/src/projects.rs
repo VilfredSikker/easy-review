@@ -468,6 +468,14 @@ pub fn remove_tracked_branch(project_id: &str, name: &str) -> anyhow::Result<()>
     Ok(())
 }
 
+pub fn set_active(id: &str) {
+    let mut file = load();
+    if file.projects.iter().any(|p| p.id == id) {
+        file.active_id = Some(id.to_string());
+        let _ = save(&file);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,16 +554,11 @@ mod tests {
     #[test]
     fn add_tracked_branch_clears_prior_dismiss() {
         let mut project = local_project("bun", Some("oven-sh/bun"));
-        project
-            .dismissed_branches
-            .push("feature-a".to_string());
+        project.dismissed_branches.push("feature-a".to_string());
 
         assert!(add_tracked_branch_on_project(&mut project, "feature-a"));
 
-        assert!(project
-            .dismissed_branches
-            .iter()
-            .all(|n| n != "feature-a"));
+        assert!(project.dismissed_branches.iter().all(|n| n != "feature-a"));
         assert!(project.tracked_branches.iter().any(|n| n == "feature-a"));
     }
 
@@ -574,13 +577,5 @@ mod tests {
         assert_eq!(file.projects.len(), 1);
         assert_eq!(file.projects[0].id, "second");
         assert_eq!(file.active_id.as_deref(), Some("second"));
-    }
-}
-
-pub fn set_active(id: &str) {
-    let mut file = load();
-    if file.projects.iter().any(|p| p.id == id) {
-        file.active_id = Some(id.to_string());
-        let _ = save(&file);
     }
 }

@@ -1383,7 +1383,10 @@ pub fn reveal_er_folder(state: State<AppState>) -> Result<(), String> {
 pub fn reveal_path(path: String) -> Result<(), String> {
     let target = std::path::Path::new(&path);
     let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg("-R").arg(target).spawn()
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(target)
+            .spawn()
     } else if cfg!(target_os = "linux") {
         let parent = target.parent().unwrap_or(target);
         std::process::Command::new("xdg-open").arg(parent).spawn()
@@ -2021,14 +2024,7 @@ pub fn submit_github_review(
                     .line_end
                     .and_then(|le| e.old_line.map(|ol| ol + (le - e.line_start)))
                     .unwrap_or(start);
-                (
-                    old_end,
-                    if old_end > start {
-                        Some(start)
-                    } else {
-                        None
-                    },
-                )
+                (old_end, if old_end > start { Some(start) } else { None })
             } else {
                 (
                     end,
@@ -2330,6 +2326,7 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
     Ok(snap_from(&app, &state))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_ai_review_with_diff(
     app: &mut er_engine::app::App,
     state: &AppState,
@@ -2709,9 +2706,7 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
     let has_review = review_path.exists();
     let comment_count = eligible_github_comment_count(app.tab());
     if !has_review && comment_count == 0 {
-        return Err(
-            "Nothing to validate. Run AI review or add GitHub comments first.".to_string(),
-        );
+        return Err("Nothing to validate. Run AI review or add GitHub comments first.".to_string());
     }
 
     let raw = app
@@ -2727,8 +2722,7 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
     app.tab_mut().relocate_all_comments();
 
     if has_review {
-        let prompt =
-            er_engine::ai::prompts::build_validate_prompt_prepared_diff(&scope, &er_dir);
+        let prompt = er_engine::ai::prompts::build_validate_prompt_prepared_diff(&scope, &er_dir);
         app.spawn_agent_prompt("validate", &prompt)
             .map_err(|e| e.to_string())?;
     }
@@ -5536,6 +5530,7 @@ pub(crate) fn ensure_active_tab_loaded(app: &mut App) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn update_tab_browser(
     layout: Option<String>,
@@ -5551,7 +5546,7 @@ pub fn update_tab_browser(
     let tab_idx = app.active_tab;
     let tab = app.tab_mut();
     if let Some(l) = layout.as_deref() {
-        tab.browser_layout = BrowserLayout::from_str(l);
+        tab.browser_layout = BrowserLayout::parse_layout(l);
     }
     if let Some(u) = url {
         tab.browser_url = u;

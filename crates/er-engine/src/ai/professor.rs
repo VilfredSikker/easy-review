@@ -65,12 +65,15 @@ pub fn merge_professor_into_review(
         return;
     }
     for (path, pfr) in &professor.files {
-        let entry = review.files.entry(path.clone()).or_insert_with(|| ErFileReview {
-            risk: RiskLevel::Info,
-            risk_reason: String::new(),
-            summary: String::new(),
-            findings: Vec::new(),
-        });
+        let entry = review
+            .files
+            .entry(path.clone())
+            .or_insert_with(|| ErFileReview {
+                risk: RiskLevel::Info,
+                risk_reason: String::new(),
+                summary: String::new(),
+                findings: Vec::new(),
+            });
         for mut finding in pfr.findings.clone() {
             finding.id = prefix_finding_id(&finding.id);
             finding.category = PROFESSOR_ID.to_string();

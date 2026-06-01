@@ -2383,7 +2383,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     let eligible_comment_count = ai
         .github_comments
         .as_ref()
-        .map(|gc| er_engine::ai::count_eligible_github_comments(gc))
+        .map(er_engine::ai::count_eligible_github_comments)
         .unwrap_or(0);
 
     AiSnapshot {

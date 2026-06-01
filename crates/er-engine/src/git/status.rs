@@ -786,7 +786,14 @@ pub fn git_log_range(
     let skip_str = format!("--skip={}", skip);
 
     let output = Command::new("git")
-        .args(["log", &range, &limit_str, &skip_str, format_str, "--shortstat"])
+        .args([
+            "log",
+            &range,
+            &limit_str,
+            &skip_str,
+            format_str,
+            "--shortstat",
+        ])
         .current_dir(repo_root)
         .output()
         .context("Failed to run git log")?;

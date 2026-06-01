@@ -88,11 +88,7 @@ pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
 
 /// Serialize the live tab list and active index to disk.
 pub fn save_app_tabs(app: &er_engine::app::App) -> Result<()> {
-    let descriptors: Vec<TabDescriptor> = app
-        .tabs
-        .iter()
-        .map(descriptor_from_tab)
-        .collect();
+    let descriptors: Vec<TabDescriptor> = app.tabs.iter().map(descriptor_from_tab).collect();
     let active = app.active_tab.min(app.tabs.len().saturating_sub(1));
     save_tabs(&descriptors, active)
 }
@@ -132,7 +128,7 @@ pub fn apply_descriptor_browser(tab: &mut er_engine::app::TabState, d: &TabDescr
         tab.browser_url = url;
     }
     if let Some(layout) = d.browser_layout.as_deref() {
-        tab.browser_layout = er_engine::app::BrowserLayout::from_str(layout);
+        tab.browser_layout = er_engine::app::BrowserLayout::parse_layout(layout);
     }
 }
 
@@ -249,9 +245,10 @@ fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
         .branch
         .clone()
         .context("local_branch descriptor missing branch")?;
-    let resolved_ref = d.local_branch_diff_ref.clone().or_else(|| {
-        er_engine::github::refreshed_branch_ref_if_exists(&d.repo_root, &branch)
-    });
+    let resolved_ref = d
+        .local_branch_diff_ref
+        .clone()
+        .or_else(|| er_engine::github::refreshed_branch_ref_if_exists(&d.repo_root, &branch));
     let base = er_engine::git::detect_base_branch_in(&d.repo_root)?;
     let mut tab = er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
     tab.local_branch_view = Some(branch);
@@ -469,8 +466,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         init_git_repo(tmp.path());
         let root = tmp.path().to_string_lossy().to_string();
-        let mut tab =
-            er_engine::app::TabState::new_with_base_unloaded(root, "main".to_string()).expect("tab");
+        let mut tab = er_engine::app::TabState::new_with_base_unloaded(root, "main".to_string())
+            .expect("tab");
         tab.pr_number = Some(42);
         tab.local_branch_view = Some("dependabot/cargo-abc".to_string());
         let d = descriptor_from_tab(&tab);
@@ -485,8 +482,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         init_git_repo(tmp.path());
         let root = tmp.path().to_string_lossy().to_string();
-        let mut tab =
-            er_engine::app::TabState::new_with_base_unloaded(root, "main".to_string()).expect("tab");
+        let mut tab = er_engine::app::TabState::new_with_base_unloaded(root, "main".to_string())
+            .expect("tab");
         tab.local_branch_view = Some("feat/x".to_string());
         tab.local_branch_diff_ref = Some("refs/er/branches/feat/x/head".to_string());
         let d = descriptor_from_tab(&tab);
