@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { app } from "$lib/stores/app.svelte";
+  import { arena } from "$lib/stores/arena.svelte";
   import { initKeyboard } from "$lib/stores/keyboard";
   import FileTree from "$lib/components/FileTree.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
@@ -14,6 +16,9 @@
   import AiActionPalette from "$lib/components/AiActionPalette.svelte";
   import AiReviewFilesModal from "$lib/components/AiReviewFilesModal.svelte";
   import ProfessorFocusModal from "$lib/components/ProfessorFocusModal.svelte";
+  import ArenaLauncher from "$lib/components/arena/ArenaLauncher.svelte";
+  import ArenaRunningPanel from "$lib/components/arena/ArenaRunningPanel.svelte";
+  import ArenaOverlay from "$lib/components/arena/ArenaOverlay.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import PrUrlModal from "$lib/components/PrUrlModal.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
@@ -194,6 +199,11 @@
       "",
   );
 
+  $effect(() => {
+    app.snapshot;
+    arena.syncFromSnapshot();
+  });
+
   onMount(() => {
     // Restore persisted drawer height before the drawer can render.
     try {
@@ -210,13 +220,18 @@
     } catch {
       /* ignore */
     }
+    void import("$lib/dev/log").then(({ initDevLog }) => initDevLog());
     app.load().then(() => app.startPolling());
     const cleanupKeyboard = initKeyboard();
     const cleanupLinkGuard = installExternalLinkGuard();
+    const unlistenArena = listen<number>("er://revision", () => {
+      arena.onRevision();
+    });
     return () => {
       cleanupKeyboard();
       cleanupLinkGuard();
       app.stopPolling();
+      void unlistenArena.then((fn) => fn());
     };
   });
 </script>
@@ -389,6 +404,40 @@
   <AiActionPalette />
   <AiReviewFilesModal />
   <ProfessorFocusModal />
+
+  <ArenaLauncher
+    open={arena.launcherOpen}
+    onClose={() => arena.closeLauncher()}
+    preset={arena.lastConfig?.reviewers}
+  />
+  <ArenaRunningPanel
+    open={arena.runningOpen}
+    minimized={arena.runningMinimized}
+    config={arena.lastConfig}
+    liveRuns={arena.liveRuns}
+    liveRunStates={arena.liveRunStates}
+    snapshot={arena.liveSnapshot}
+    progress={arena.progress}
+    startedAt={arena.runStartedAt}
+    onMinimize={() => arena.minimizeRunning()}
+    onRestore={() => arena.restoreRunning()}
+    onCancel={() => void arena.cancelRun()}
+    onComplete={() => {
+      /* Terminal handling (Review tab vs Arena overlay) lives in arena.svelte refreshLiveRun. */
+    }}
+  />
+  {#if arena.overlayOpen && arena.overlaySnapshot}
+    <ArenaOverlay
+      open={true}
+      snapshot={arena.overlaySnapshot}
+      bind:layoutMode={arena.layoutMode}
+      onClose={() => arena.closeOverlay()}
+      onNewRun={() => {
+        arena.closeOverlay();
+        arena.openLauncher();
+      }}
+    />
+  {/if}
 
   {#if showWelcomeOverlay}
     <div class="fixed inset-0 z-[200]">

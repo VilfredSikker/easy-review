@@ -1361,8 +1361,7 @@ index aaa..bbb 100644
     #[test]
     fn filter_raw_diff_by_paths_subset() {
         let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n x\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n y\ndiff --git a/c.rs b/c.rs\n--- a/c.rs\n+++ b/c.rs\n@@ -1 +1 @@\n z\n";
-        let filtered =
-            filter_raw_diff_by_paths(raw, &["a.rs".to_string(), "c.rs".to_string()]);
+        let filtered = filter_raw_diff_by_paths(raw, &["a.rs".to_string(), "c.rs".to_string()]);
         assert!(filtered.contains("a.rs"));
         assert!(filtered.contains("c.rs"));
         assert!(!filtered.contains("b.rs"));

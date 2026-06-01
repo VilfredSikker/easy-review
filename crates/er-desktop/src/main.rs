@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod arena_commands;
 mod browser_proxy;
 mod browser_webview;
 mod config_commands;
 mod commands;
+mod dev_log;
 mod er_storage;
 mod export;
 mod frame_script;
@@ -239,6 +241,7 @@ fn proxy_transport_error_response(e: &ureq::Error) -> tauri::http::Response<Vec<
         .unwrap()
 }
 
+#[allow(clippy::result_large_err)]
 fn upstream_request(
     agent: &ureq::Agent,
     request: &tauri::http::Request<Vec<u8>>,
@@ -285,7 +288,7 @@ fn proxied_response(
                 return browser_proxy::webview_navigation_handoff(&location);
             }
             Err(UpstreamFetchError::Transport(e)) => {
-                return proxy_transport_error_response(&e);
+                return proxy_transport_error_response(e.as_ref());
             }
         };
         (fetched.response, fetched.headers)
@@ -463,6 +466,8 @@ fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 fn main() {
+    dev_log::init();
+
     // When a persisted tabs.json exists we're going to replace `app.tabs`
     // entirely below, so the engine init only needs a placeholder tab —
     // running the initial `refresh_diff()` here would be wasted work
@@ -624,6 +629,9 @@ fn main() {
     let terminals_for_exit = Arc::clone(&terminals);
     let desktop_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(0));
+    if let Ok(mut app) = app_arc.lock() {
+        arena_commands::attach_arena_notify(&mut app, Arc::clone(&desktop_revision));
+    }
     let last_sent_content_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let last_sent_chrome_revision: Arc<std::sync::atomic::AtomicU64> =
@@ -735,9 +743,9 @@ fn main() {
                         g.apply_remote_diff_result(r);
                     }
                     profile_log::bump_desktop_revision(&remote_desktop_rev, "remote_pr_diff_cache");
-                    log::info!(
-                        "remote PR diff refresh done in {}ms",
-                        t.elapsed().as_millis()
+                    profile_log::profile_log(
+                        "remote_pr_diff_refresh",
+                        &[("ms", t.elapsed().as_millis().to_string())],
                     );
                 }
                 Ok(None) => {
@@ -1147,7 +1155,6 @@ fn main() {
     if !deferred_tab_indices.is_empty() {
         let warmer_app = Arc::clone(&app_arc);
         let warmer_rev = Arc::clone(&desktop_revision);
-        let warmer_scope_root = warmer_scope_root;
         std::thread::spawn(move || {
             // Brief grace period so the active tab's diff + the first frame land
             // before we start consuming CPU on background tabs.
@@ -1182,10 +1189,12 @@ fn main() {
                 drop(g);
                 match res {
                     Ok(()) => {
-                        log::info!(
-                            "background tab warmup {}/?? done in {}ms",
-                            idx,
-                            t.elapsed().as_millis()
+                        profile_log::profile_log(
+                            "background_tab_warmup",
+                            &[
+                                ("tab_idx", idx.to_string()),
+                                ("ms", t.elapsed().as_millis().to_string()),
+                            ],
                         );
                         profile_log::bump_desktop_revision(&warmer_rev, "background_tab_warmup");
                     }
@@ -1203,6 +1212,7 @@ fn main() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
+                .filter(|metadata| dev_log::enabled_for_log_target(metadata.target()))
                 .build(),
         )
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -1220,7 +1230,7 @@ fn main() {
                 .build(),
         )
         .manage(state)
-        .manage(BrowserWebviewState::new())
+        .manage(BrowserWebviewState::default())
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
         // proxies `https://host/path`. HTML responses get the annotation script.
         .register_uri_scheme_protocol("erp", |_app, request| proxied_response(&request, "http"))
@@ -1278,24 +1288,27 @@ fn main() {
 
             install_app_menu(app.handle())?;
 
-            let window = tauri::WebviewWindowBuilder::new(
+            let window_builder = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
             .title("Easy Review")
             .inner_size(1400.0, 900.0)
-            .min_inner_size(900.0, 600.0)
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .visible(false)
-            .transparent(true)
-            .initialization_script_for_all_frames(FRAME_SCRIPT)
-            .on_navigation(|url| main_webview_policy::handle_main_webview_navigation(&url))
-            .on_new_window(|url, _features| {
-                main_webview_policy::handle_main_webview_new_window(&url)
-            })
-            .build()?;
+            .min_inner_size(900.0, 600.0);
+            #[cfg(target_os = "macos")]
+            let window_builder = window_builder
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true);
+            let window = window_builder
+                .visible(false)
+                .transparent(true)
+                .initialization_script_for_all_frames(FRAME_SCRIPT)
+                .on_navigation(main_webview_policy::handle_main_webview_navigation)
+                .on_new_window(|url, _features| {
+                    main_webview_policy::handle_main_webview_new_window(&url)
+                })
+                .build()?;
 
             use tauri_plugin_window_state::{StateFlags, WindowExt};
             // Restore size+position+maximized only — NOT visibility. The
@@ -1364,6 +1377,18 @@ fn main() {
             commands::list_diff_paths,
             commands::set_ai_model,
             commands::list_ai_providers,
+            arena_commands::arena_estimate,
+            arena_commands::arena_start,
+            arena_commands::arena_start_batch,
+            arena_commands::arena_estimate_batch,
+            arena_commands::arena_accept_findings,
+            arena_commands::arena_progress,
+            arena_commands::arena_get,
+            arena_commands::arena_list,
+            arena_commands::arena_delete,
+            arena_commands::arena_cancel,
+            arena_commands::arena_override,
+            arena_commands::dev_log_filter,
             commands::set_ai_selection,
             config_commands::get_config_hub,
             config_commands::apply_config_patch,
@@ -1371,7 +1396,7 @@ fn main() {
             config_commands::save_config_local_cmd,
             config_commands::save_config_global_cmd,
             config_commands::set_ai_hub_defaults,
-
+            commands::set_ai_effort,
             commands::promote_to_comment,
             commands::ask_ai,
             commands::validate_with_ai,
@@ -1441,6 +1466,7 @@ fn main() {
             browser_webview::browser_host_message,
             browser_webview::browser_send_to_page,
             browser_webview::browser_set_annotate_mode,
+            browser_webview::browser_reload,
         ])
         .build(tauri::generate_context!())
         .expect("error building tauri application");

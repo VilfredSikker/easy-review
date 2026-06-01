@@ -55,6 +55,14 @@ pub struct DesktopSettingsSnapshot {
     pub repo_root: String,
 }
 
+fn agent_effort_label(effort: &Option<String>) -> String {
+    effort
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("medium")
+        .to_string()
+}
+
 const THEME_OPTIONS: &[&str] = &[
     "ocean-depth",
     "moonlight",
@@ -217,7 +225,7 @@ pub fn desktop_settings_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
             label: "Effort".into(),
             description: "Claude effort level".into(),
             options: AGENT_EFFORT_OPTIONS.iter().map(|s| s.to_string()).collect(),
-            value: config.agent.effort.clone(),
+            value: agent_effort_label(&config.agent.effort),
         },
         ConfigHubFieldDto::Section {
             title: "Watched Paths".into(),
@@ -252,7 +260,7 @@ pub fn desktop_settings_snapshot(config: &ErConfig, repo_root: &str) -> DesktopS
     let has_local_config = std::path::Path::new(&local_path).exists();
     DesktopSettingsSnapshot {
         fields: desktop_settings_fields(config),
-        agent_effort: config.agent.effort.clone(),
+        agent_effort: agent_effort_label(&config.agent.effort),
         has_local_config,
         repo_root: repo_root.to_string(),
     }
@@ -371,7 +379,7 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
         "agent.effort" => {
             if let ConfigFieldValue::String(v) = value {
                 if AGENT_EFFORT_OPTIONS.contains(&v.as_str()) {
-                    config.agent.effort = v;
+                    config.agent.effort = Some(v);
                 }
             }
         }
@@ -436,7 +444,7 @@ mod tests {
             "agent.effort",
             ConfigFieldValue::String("high".into()),
         );
-        assert_eq!(config.agent.effort, "high");
+        assert_eq!(config.agent.effort.as_deref(), Some("high"));
     }
 
     #[test]

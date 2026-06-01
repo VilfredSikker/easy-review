@@ -326,6 +326,8 @@ export interface AppSnapshot {
   agent_log?: AgentLogEntry[];
   /** Human-readable label for the currently selected AI provider/model. */
   active_ai_label?: string;
+  /** Claude Code effort level (`low` … `max`). */
+  active_ai_effort?: string | null;
   /** Filter presets + recent filter history for the active tab. */
   filter_suggestions?: FilterSuggestionSnapshot[];
   /** Session-scoped background review tasks across all tabs. */
@@ -335,6 +337,9 @@ export interface AppSnapshot {
   inbox_items?: InboxItemSnapshot[];
   inbox_unread_count?: number;
   inbox_last_refresh_ms?: number;
+  arena_enabled?: boolean;
+  active_arena_run?: string | null;
+  arena_runs?: import("./types/arena").ArenaRunSummary[];
 }
 
 export interface InboxTargetSnapshot {
@@ -419,6 +424,10 @@ export interface AiModelInfo {
   id: string;
   label: string;
   is_selected: boolean;
+  description?: string | null;
+  cost_per_1k_in?: number | null;
+  cost_per_1k_out?: number | null;
+  avg_latency_ms?: number | null;
 }
 
 export interface AiProviderInfo {
@@ -476,6 +485,23 @@ export interface UiDomContext {
   nearby_text?: string | null;
   outer_html?: string | null;
 }
+
+export type {
+  ArenaConfig,
+  ArenaFinding,
+  ArenaRun,
+  ArenaRunSnapshot,
+  ArenaRunSummary,
+  ArenaScope,
+  ArenaSeverity,
+  Ballot,
+  FunnelStages,
+  MatrixRow,
+  Reviewer,
+  RunStatus,
+  Verdict,
+  Vote,
+} from "./types/arena";
 
 export interface UiDomNodeContext {
   tag?: string | null;

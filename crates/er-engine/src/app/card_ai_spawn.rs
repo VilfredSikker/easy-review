@@ -1,6 +1,8 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::config::{agent_command_uses_stream_json, ErConfig, AGENT_EFFORT_OPTIONS};
+use crate::config::{
+    agent_command_uses_stream_json, inject_claude_effort, resolve_effort, ErConfig,
+};
 use std::process::Command;
 
 /// Resolved agent command + args for a card AI subprocess.
@@ -17,9 +19,12 @@ pub fn plan_card_ai_invocation(
     config: &ErConfig,
     provider_id: Option<&str>,
     model_id: Option<&str>,
+    runtime_effort: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
-    let (command, mut args, is_claude) = if let Some(pid) = config.ai_hub.resolve_provider_id(provider_id) {
+    let (command, mut args, is_claude) = if let Some(pid) =
+        config.ai_hub.resolve_provider_id(provider_id)
+    {
         if let Some(provider) = config.ai_hub.providers.get(&pid) {
             let mut args = provider.args.clone();
             if let Some(mid) = config.ai_hub.resolve_model_id(&pid, model_id) {
@@ -27,8 +32,7 @@ pub fn plan_card_ai_invocation(
                     args.extend(model.args.clone());
                 }
             }
-            let is_claude =
-                provider.command.ends_with("claude") || provider.command == "claude";
+            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
             (provider.command.clone(), args, is_claude)
         } else {
             fallback_agent(config)
@@ -37,12 +41,13 @@ pub fn plan_card_ai_invocation(
         fallback_agent(config)
     };
 
-    let uses_stream_json = agent_command_uses_stream_json(&command)
-        && args.iter().any(|a| a == "stream-json");
+    let uses_stream_json =
+        agent_command_uses_stream_json(&command) && args.iter().any(|a| a == "stream-json");
 
     if is_claude {
         inject_read_only_tools(&mut args);
-        inject_effort(&mut args, &config.agent.effort);
+        let effort = resolve_effort(&config.ai_hub, &config.agent, runtime_effort, None);
+        inject_claude_effort(&mut args, effort.as_deref());
     }
 
     CardAiInvocation {
@@ -58,18 +63,6 @@ fn fallback_agent(config: &ErConfig) -> (String, Vec<String>, bool) {
     let cmd = config.agent.command.clone();
     let is_claude = cmd.ends_with("claude") || cmd == "claude";
     (cmd, config.agent.args.clone(), is_claude)
-}
-
-fn inject_effort(args: &mut Vec<String>, effort: &str) {
-    let effort = effort.trim();
-    if effort.is_empty() || !AGENT_EFFORT_OPTIONS.contains(&effort) {
-        return;
-    }
-    if args.iter().any(|a| a == "--effort") {
-        return;
-    }
-    args.push("--effort".to_string());
-    args.push(effort.to_string());
 }
 
 fn inject_read_only_tools(args: &mut Vec<String>) {
@@ -257,7 +250,7 @@ mod tests {
         let mut config = ErConfig::default();
         config.agent.command = "claude".into();
         config.agent.args = vec!["--print".into(), "-p".into(), "{prompt}".into()];
-        let inv = plan_card_ai_invocation(&config, None, None, "/repo".into());
+        let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
         assert!(inv.args.iter().any(|a| a == "Read"));
         assert!(inv.args.iter().any(|a| a.contains("grep")));
     }

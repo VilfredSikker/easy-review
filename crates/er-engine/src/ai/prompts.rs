@@ -366,8 +366,7 @@ pub fn build_review_prompt(base_branch: &str, scope: &str) -> String {
     let capture = format!(
         "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
     );
-    let preamble =
-        review_rules_preamble(".er", false, FindingCaps::general(), Some(&capture));
+    let preamble = review_rules_preamble(".er", false, FindingCaps::general(), Some(&capture));
     let outputs = general_review_outputs_section(".er", scope, &base_branch, "<current branch>");
 
     format!(
@@ -409,14 +408,9 @@ pub fn build_review_prompt_local_managed(
     let capture = format!(
         "mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
     );
-    let preamble =
-        review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
-    let outputs = general_review_outputs_section(
-        output_dir,
-        scope,
-        &base_branch_escaped,
-        "<current branch>",
-    );
+    let preamble = review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
+    let outputs =
+        general_review_outputs_section(output_dir, scope, &base_branch_escaped, "<current branch>");
     format!(
         r#"You are a code reviewer. Perform a thorough review of the current git diff and write results to `{safe_output_dir}/`.
 
@@ -469,8 +463,7 @@ pub fn build_expert_review_prompt(base_branch: &str, scope: &str, expert_id: &st
     let capture = format!(
         "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
     );
-    let preamble =
-        review_rules_preamble(".er", false, FindingCaps::expert(), Some(&capture));
+    let preamble = review_rules_preamble(".er", false, FindingCaps::expert(), Some(&capture));
     let lens = expert_lens_instructions(expert_id);
     let output = expert_review_output_section(".er", expert_id);
     format!(
@@ -529,7 +522,11 @@ Read `{safe_output_dir}/review-files.txt` — analyze **only** those paths. Igno
     )
 }
 
-fn professor_rules_preamble(output_dir: &str, prepared_diff: bool, git_diff_capture: Option<&str>) -> String {
+fn professor_rules_preamble(
+    output_dir: &str,
+    prepared_diff: bool,
+    git_diff_capture: Option<&str>,
+) -> String {
     let caps = FindingCaps {
         per_file: 3,
         total: 12,
@@ -1010,8 +1007,7 @@ pub fn build_review_prompt_remote(
     let capture = format!(
         "mkdir -p {safe_output_dir} && gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
     );
-    let preamble =
-        review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
+    let preamble = review_rules_preamble(output_dir, false, FindingCaps::general(), Some(&capture));
     let outputs = general_review_outputs_section(output_dir, "branch", "", "");
     format!(
         r#"You are a code reviewer. Perform a thorough review of the GitHub PR diff and write results to `{safe_output_dir}/`.
@@ -1135,6 +1131,94 @@ pub fn build_questions_prompt_remote(
 ## Speed
 
 Target: complete in under 60 seconds. Read the diff once, answer all questions in-context."#
+    )
+}
+
+// ── AI Review Arena (JSON-only stdout) ──
+
+pub fn build_arena_round1_prompt(diff_patch_path: &str, reviewer_label: &str) -> String {
+    build_arena_round1_prompt_agent(diff_patch_path, reviewer_label, None)
+}
+
+/// Round-1 arena prompt; optional `agent_kind` applies specialized lens (general / expert / professor).
+pub fn build_arena_round1_prompt_agent(
+    diff_patch_path: &str,
+    reviewer_label: &str,
+    agent_kind: Option<&str>,
+) -> String {
+    let path = diff_patch_path.replace('\\', "/");
+    let lens = agent_kind.map(agent_lens_block).unwrap_or_default();
+    format!(
+        r#"You are reviewer "{reviewer_label}" in a multi-agent code review arena.
+{lens}
+Read the pinned diff at `{path}` (do not run git diff).
+
+Respond with ONLY a single JSON object on stdout (no markdown fences), matching:
+{{"findings":[{{"file":"path","line":12,"title":"short","body":"detail","severity":"high|med|low","confidence":0.0,"tags":[]}}]}}
+
+Rules:
+- Propose real issues grounded in the diff.
+- severity: high | med | low
+- If no issues: {{"findings":[]}}
+"#,
+    )
+}
+
+fn agent_lens_block(agent_kind: &str) -> String {
+    if agent_kind == "general" {
+        return "\nLens: broad correctness, logic, and risk — same scope as a general code review.\n"
+            .to_string();
+    }
+    if agent_kind == "professor" {
+        return "\nLens: Professor mode — teach what this diff implements; informational insights only.\n"
+            .to_string();
+    }
+    if let Some(id) = agent_kind.strip_prefix("expert:") {
+        if expert_by_id(id).is_some() {
+            return format!("\n{}\n", expert_lens_instructions(id));
+        }
+    }
+    String::new()
+}
+
+pub fn build_arena_round2_prompt(
+    diff_patch_path: &str,
+    reviewer_id: &str,
+    round: u8,
+    findings_json: &str,
+) -> String {
+    format!(
+        r#"You are reviewer "{reviewer_id}" in round {round} (cross-check).
+
+Diff: `{diff_patch_path}`
+
+Findings to vote on (JSON array):
+{findings_json}
+
+For EACH finding return exactly one vote: keep | drop | merge | escalate | lower | abstain | flag
+Plus a one-sentence note that references the finding's content (required except abstain).
+
+Self-review: for findings you proposed in round 1, you may lower/drop/withdraw.
+
+Respond ONLY with JSON:
+{{"ballots":[{{"finding_id":"...","vote":"keep","note":"...","merge_target":null}}]}}
+"#,
+        diff_patch_path = diff_patch_path.replace('\\', "/"),
+    )
+}
+
+pub fn build_arena_round3_prompt(findings_summary_json: &str) -> String {
+    format!(
+        r#"You are the arena arbiter. Consolidate final verdicts.
+
+Input (findings + round-2 votes):
+{findings_summary_json}
+
+For each finding_id return: verdict (kept|escalated|merged|dropped), confidence 0..1, rationale (1-3 sentences citing reviewers), merged_into when verdict is merged.
+
+Respond ONLY with JSON:
+{{"verdicts":[{{"finding_id":"...","verdict":"kept","confidence":0.82,"rationale":"...","merged_into":null}}]}}
+"#
     )
 }
 
@@ -1455,9 +1539,10 @@ mod tests {
 
     #[test]
     fn review_rules_preamble_no_style_category() {
-        let preamble =
-            review_rules_preamble(".er", false, FindingCaps::general(), None);
-        assert!(!preamble.contains("Categories: security, logic, performance, correctness, error-handling, style, testing"));
+        let preamble = review_rules_preamble(".er", false, FindingCaps::general(), None);
+        assert!(!preamble.contains(
+            "Categories: security, logic, performance, correctness, error-handling, style, testing"
+        ));
         assert!(preamble.contains("**no `style`**"));
         assert!(preamble.contains("P0"));
         assert!(preamble.contains("two-dot"));

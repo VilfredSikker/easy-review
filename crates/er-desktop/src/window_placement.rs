@@ -111,8 +111,18 @@ mod tests {
 
     #[test]
     fn clamp_pushes_window_left_when_right_edge_off_screen() {
-        let monitor = RectI32 { x: 0, y: 0, w: 1920, h: 1080 };
-        let window = RectI32 { x: 1500, y: 100, w: 1400, h: 900 };
+        let monitor = RectI32 {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let window = RectI32 {
+            x: 1500,
+            y: 100,
+            w: 1400,
+            h: 900,
+        };
         let clamped = clamp_to_monitor(window, monitor);
         assert_eq!(clamped.x, 1920 - 1400);
         assert_eq!(clamped.y, 100);
@@ -122,8 +132,18 @@ mod tests {
 
     #[test]
     fn clamp_pulls_window_into_negative_origin_monitor() {
-        let monitor = RectI32 { x: -1920, y: 0, w: 1920, h: 1080 };
-        let window = RectI32 { x: 100, y: 100, w: 800, h: 600 };
+        let monitor = RectI32 {
+            x: -1920,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let window = RectI32 {
+            x: 100,
+            y: 100,
+            w: 800,
+            h: 600,
+        };
         let clamped = clamp_to_monitor(window, monitor);
         assert_eq!(clamped.x, -1920 + 1920 - 800);
         assert!(clamped.x + clamped.w <= monitor.x + monitor.w);
@@ -131,8 +151,18 @@ mod tests {
 
     #[test]
     fn clamp_noop_when_fully_inside() {
-        let monitor = RectI32 { x: 0, y: 0, w: 1920, h: 1080 };
-        let window = RectI32 { x: 100, y: 100, w: 800, h: 600 };
+        let monitor = RectI32 {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let window = RectI32 {
+            x: 100,
+            y: 100,
+            w: 800,
+            h: 600,
+        };
         let clamped = clamp_to_monitor(window, monitor);
         assert_eq!(clamped, window);
     }

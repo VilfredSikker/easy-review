@@ -1,3 +1,4 @@
+pub mod arena;
 pub mod background;
 pub(super) mod comments;
 pub mod github_sync;
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 #[allow(unused_imports)]
 use std::time::Instant;
 use tui_textarea::TextArea;
@@ -714,18 +716,13 @@ pub struct TabState {
 }
 
 /// Per-tab browser layout (desktop only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserLayout {
+    #[default]
     Hidden,
     Split,
     Fullscreen,
-}
-
-impl Default for BrowserLayout {
-    fn default() -> Self {
-        Self::Hidden
-    }
 }
 
 impl BrowserLayout {
@@ -737,7 +734,7 @@ impl BrowserLayout {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_layout(s: &str) -> Self {
         match s {
             "split" => Self::Split,
             "fullscreen" => Self::Fullscreen,
@@ -2026,8 +2023,8 @@ impl TabState {
         if let Some(ref branch) = self.local_branch_view {
             let base = self.base_branch.clone();
             return if let Some(head_ref) = self.pr_head_ref.clone() {
-                if self.pr_number.is_some() {
-                    crate::github::gh_pr_diff(self.pr_number.unwrap(), &self.repo_root)
+                if let Some(pr_number) = self.pr_number {
+                    crate::github::gh_pr_diff(pr_number, &self.repo_root)
                 } else {
                     crate::git::git_diff_against_branch(&self.repo_root, &base, &head_ref)
                 }
@@ -2086,11 +2083,10 @@ impl TabState {
 
     /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.
     pub fn raw_diff_for_review(&self, scope: &str) -> Result<String> {
-        if self.raw_diff.is_some()
-            && !self.branch_diff_hash.is_empty()
-            && self.review_scope_matches_cached_diff(scope)
-        {
-            return Ok(self.raw_diff.as_ref().unwrap().clone());
+        if let Some(raw) = self.raw_diff.as_ref() {
+            if !self.branch_diff_hash.is_empty() && self.review_scope_matches_cached_diff(scope) {
+                return Ok(raw.clone());
+            }
         }
         self.fetch_tab_raw_diff(scope)
     }
@@ -3157,8 +3153,7 @@ impl TabState {
                             .unwrap_or_default();
 
                     let first_diff = if let Some(c) = commits.first() {
-                        let raw =
-                            git::git_diff_commit(&c.hash, &log_root).unwrap_or_default();
+                        let raw = git::git_diff_commit(&c.hash, &log_root).unwrap_or_default();
                         git::parse_diff(&raw)
                     } else {
                         vec![]
@@ -3670,6 +3665,9 @@ pub struct App {
     /// Session-local AI Hub model selection
     pub current_ai_model: Option<String>,
 
+    /// Session-local Claude Code effort level (`low` … `max`).
+    pub current_ai_effort: Option<String>,
+
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
 
@@ -3689,15 +3687,29 @@ pub struct App {
     /// once `finished_at_ms` exits the 8s display window. We keep them here
     /// in finished form (no channels) so snapshot building stays cheap.
     pub(crate) recent_background_tasks: Vec<background::BackgroundTask>,
+
+    /// Multi-round AI review arena runs (desktop orchestration).
+    pub arena_registry: std::sync::Arc<crate::arena::ArenaRegistry>,
+
+    /// Last started arena run id per tab `.er` directory.
+    pub active_arena_runs: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl App {
+    fn default_arena_registry() -> Arc<crate::arena::ArenaRegistry> {
+        App::init_arena_registry(Arc::new(|| {}))
+    }
+
     fn initial_ai_selection(config: &ErConfig) -> (Option<String>, Option<String>) {
         let provider = config.ai_hub.resolve_provider_id(None);
         let model = provider
             .as_deref()
             .and_then(|provider_id| config.ai_hub.resolve_model_id(provider_id, None));
         (provider, model)
+    }
+
+    fn initial_ai_effort(config: &ErConfig) -> Option<String> {
+        crate::config::resolve_effort(&config.ai_hub, &config.agent, None, None)
     }
 
     /// Create the app from CLI path arguments.
@@ -3757,8 +3769,10 @@ impl App {
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
+        let current_ai_effort = Self::initial_ai_effort(&er_config);
+        let arena_registry = App::init_arena_registry(Arc::new(|| {}));
 
-        Ok(App {
+        let app = App {
             tabs,
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -3773,12 +3787,17 @@ impl App {
             config: er_config,
             current_ai_provider,
             current_ai_model,
+            current_ai_effort,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
-        })
+            arena_registry: arena_registry.clone(),
+            active_arena_runs: std::collections::HashMap::new(),
+        };
+        app.reconcile_arena_runs();
+        Ok(app)
     }
 
     /// Create an App with a single unloaded tab for `repo_root` — skips the
@@ -3792,6 +3811,7 @@ impl App {
         let tab = TabState::new_with_base_unloaded(repo_root, base)?;
         let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
+        let current_ai_effort = Self::initial_ai_effort(&er_config);
         Ok(App {
             tabs: vec![tab],
             active_tab: 0,
@@ -3807,11 +3827,14 @@ impl App {
             config: er_config,
             current_ai_provider,
             current_ai_model,
+            current_ai_effort,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            arena_registry: Self::default_arena_registry(),
+            active_arena_runs: std::collections::HashMap::new(),
         })
     }
 
@@ -3822,6 +3845,7 @@ impl App {
         }
         let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
+        let current_ai_effort = Self::initial_ai_effort(&er_config);
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -3837,11 +3861,14 @@ impl App {
             config: er_config,
             current_ai_provider,
             current_ai_model,
+            current_ai_effort,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            arena_registry: Self::default_arena_registry(),
+            active_arena_runs: std::collections::HashMap::new(),
         }
     }
 
@@ -3863,11 +3890,14 @@ impl App {
             config: ErConfig::default(),
             current_ai_provider: None,
             current_ai_model: None,
+            current_ai_effort: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            arena_registry: Self::default_arena_registry(),
+            active_arena_runs: std::collections::HashMap::new(),
         }
     }
 
@@ -3904,10 +3934,15 @@ impl App {
                             .find(|m| m.id == model_id)
                             .map(|m| m.display_name())
                     });
-                return match model_label {
+                let mut label = match model_label {
                     Some(model) => format!("{provider_label} / {model}"),
                     None => provider_label,
                 };
+                if let Some(effort) = self.current_ai_effort.as_deref() {
+                    label.push_str(" · ");
+                    label.push_str(effort);
+                }
+                return label;
             }
         }
 
@@ -4413,7 +4448,7 @@ impl App {
                         .ai
                         .github_comments
                         .as_ref()
-                        .map(|gc| crate::ai::count_eligible_github_comments(gc))
+                        .map(crate::ai::count_eligible_github_comments)
                         .unwrap_or(0);
                     if has_review && comment_count > 0 {
                         format!(
@@ -4437,7 +4472,7 @@ impl App {
                         .ai
                         .github_comments
                         .as_ref()
-                        .map(|gc| crate::ai::count_eligible_github_comments(gc))
+                        .map(crate::ai::count_eligible_github_comments)
                         .unwrap_or(0)
                         > 0,
             },
@@ -5536,16 +5571,12 @@ impl App {
         }
 
         let items = config::config_hub_items(&self.config);
-        match items.get(item_idx) {
-            Some(config::ConfigItem::StringEdit { set, .. }) => {
-                set(&mut self.config, buffer);
+        if let Some(config::ConfigItem::StringEdit { set, .. }) = items.get(item_idx) {
+            set(&mut self.config, buffer);
+        } else if let Some(config::ConfigItem::ListAdd { .. }) = items.get(item_idx) {
+            if !buffer.trim().is_empty() {
+                self.config.watched.paths.push(buffer.trim().to_string());
             }
-            Some(config::ConfigItem::ListAdd { .. }) => {
-                if !buffer.trim().is_empty() {
-                    self.config.watched.paths.push(buffer.trim().to_string());
-                }
-            }
-            _ => {}
         }
 
         self.config_hub_rebuild_items();
@@ -7697,11 +7728,14 @@ mod tests {
             config: ErConfig::default(),
             current_ai_provider: None,
             current_ai_model: None,
+            current_ai_effort: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            arena_registry: App::default_arena_registry(),
+            active_arena_runs: std::collections::HashMap::new(),
         }
     }
 
@@ -8710,5 +8744,71 @@ mod tests {
         assert!(!app.reorder_tabs(5, 0));
         assert!(!app.reorder_tabs(0, 5));
         assert_eq!(tab_roots(&app), vec!["tab0", "tab1", "tab2"]);
+    }
+
+    // ── reviewed by path (History mode) ──
+
+    fn test_diff_file(path: &str) -> crate::git::DiffFile {
+        use crate::git::{DiffFile, FileStatus};
+        DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![],
+            adds: 0,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+        }
+    }
+
+    /// `mark_reviewed` / `unmark_reviewed` must resolve paths via
+    /// [`TabState::active_diff_files`], not `tab.files[source_index]`.
+    #[test]
+    fn history_mark_reviewed_uses_commit_path_not_tab_files_index() {
+        use crate::git::CommitInfo;
+
+        let mut tab = TabState::new_for_test(vec![test_diff_file("branch-only.rs")]);
+        tab.mode = DiffMode::History;
+        tab.history = Some(HistoryState {
+            commits: vec![CommitInfo {
+                hash: "abc123".into(),
+                short_hash: "abc123".into(),
+                subject: "test".into(),
+                author: "author".into(),
+                date: "2026-01-01".into(),
+                relative_date: "1d".into(),
+                file_count: 2,
+                adds: 1,
+                dels: 0,
+                is_merge: false,
+            }],
+            selected_commit: 0,
+            commit_files: vec![test_diff_file("commit-a.rs"), test_diff_file("commit-b.rs")],
+            selected_file: 1,
+            current_hunk: 0,
+            current_line: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+            all_loaded: true,
+            diff_cache: DiffCache::new(5),
+        });
+
+        assert_eq!(tab.files.len(), 1);
+        assert_eq!(tab.files[0].path, "branch-only.rs");
+        assert_eq!(tab.active_diff_files().len(), 2);
+        assert_eq!(tab.active_diff_files()[1].path, "commit-b.rs");
+
+        // Old index-based lookup would use tab.files[1] (missing / wrong path).
+        assert!(tab.files.get(1).is_none());
+
+        let path = "commit-b.rs";
+        assert!(
+            tab.active_diff_files().iter().any(|f| f.path == path),
+            "path must exist in active diff before mark"
+        );
+        tab.reviewed.insert(path.to_string(), String::new());
+
+        assert!(tab.reviewed.contains_key("commit-b.rs"));
+        assert!(!tab.reviewed.contains_key("branch-only.rs"));
     }
 }

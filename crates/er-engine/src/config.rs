@@ -118,6 +118,9 @@ pub struct FeatureFlags {
     pub view_conflicts: bool,
     #[serde(default = "default_true")]
     pub view_hidden: bool,
+    /// Multi-round AI Review Arena (orchestrated debate + consensus UI).
+    #[serde(default = "default_true")]
+    pub arena: bool,
 }
 
 /// Claude-compatible effort levels passed as `--effort` when spawning agents.
@@ -131,12 +134,9 @@ pub struct AgentConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub model: String,
-    #[serde(default = "default_agent_effort")]
-    pub effort: String,
-}
-
-fn default_agent_effort() -> String {
-    "medium".to_string()
+    /// Claude Code `--effort` when ai_hub is empty (legacy fallback).
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -145,6 +145,9 @@ pub struct AiHubConfig {
     pub default_provider: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    /// Default Claude Code `--effort` for spawns (overridden per arena run).
+    #[serde(default)]
+    pub default_effort: Option<String>,
     #[serde(default)]
     pub providers: BTreeMap<String, AiProviderConfig>,
 }
@@ -167,7 +170,16 @@ pub struct AiModelConfig {
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub args: Vec<String>,
+    /// USD per 1k input tokens (arena cost estimate).
+    #[serde(default)]
+    pub cost_per_1k_in: Option<f32>,
+    #[serde(default)]
+    pub cost_per_1k_out: Option<f32>,
+    #[serde(default)]
+    pub avg_latency_ms: Option<u32>,
 }
 
 /// [summary] section — configuration for diff summary / changelog generation
@@ -265,6 +277,7 @@ impl Default for FeatureFlags {
             view_history: true,
             view_conflicts: true,
             view_hidden: true,
+            arena: true,
         }
     }
 }
@@ -275,7 +288,7 @@ impl Default for AgentConfig {
             command: default_agent_cmd(),
             args: default_agent_args(),
             model: String::new(),
-            effort: default_agent_effort(),
+            effort: None,
         }
     }
 }
@@ -362,6 +375,63 @@ pub fn agent_command_uses_stream_json(command: &str) -> bool {
     matches!(command, "claude" | "agent")
         || command.ends_with("/claude")
         || command.ends_with("/agent")
+}
+
+/// True when the provider command is the Claude CLI (supports `--effort`).
+pub fn agent_command_is_claude(command: &str) -> bool {
+    command == "claude" || command.ends_with("/claude")
+}
+
+pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+const EFFORT_LEVELS_OPUS_46_SONNET: &[&str] = &["low", "medium", "high", "max"];
+
+/// Effort levels supported for an ai_hub model id (empty when effort does not apply).
+pub fn effort_levels_for_hub_model(model_id: &str) -> &'static [&'static str] {
+    if model_id.starts_with("opus-4.7")
+        || model_id.starts_with("opus-4.8")
+        || model_id.contains("opus-4-7")
+        || model_id.contains("opus-4-8")
+    {
+        return EFFORT_LEVELS;
+    }
+    if model_id.starts_with("opus-4.6")
+        || model_id.starts_with("sonnet-4.6")
+        || model_id.contains("opus-4-6")
+        || model_id.contains("sonnet-4-6")
+    {
+        return EFFORT_LEVELS_OPUS_46_SONNET;
+    }
+    &[]
+}
+
+/// Precedence: run override → runtime → hub default → agent fallback.
+pub fn resolve_effort(
+    hub: &AiHubConfig,
+    agent: &AgentConfig,
+    runtime: Option<&str>,
+    run_override: Option<&str>,
+) -> Option<String> {
+    let pick = |s: Option<&str>| {
+        s.filter(|v| !v.trim().is_empty())
+            .map(|v| v.trim().to_string())
+    };
+    pick(run_override)
+        .or_else(|| pick(runtime))
+        .or_else(|| pick(hub.default_effort.as_deref()))
+        .or_else(|| pick(agent.effort.as_deref()))
+}
+
+/// Append `--effort <level>` when not already present.
+pub fn inject_claude_effort(args: &mut Vec<String>, effort: Option<&str>) {
+    let Some(level) = effort.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if args.iter().any(|a| a == "--effort") {
+        return;
+    }
+    args.push("--effort".into());
+    args.push(level.to_string());
 }
 
 impl AiModelConfig {
@@ -823,8 +893,25 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             label: "Effort".into(),
             description: "Claude effort level (--effort)".into(),
             options: AGENT_EFFORT_OPTIONS,
-            get: |c| c.agent.effort.clone(),
-            set: |c, v| c.agent.effort = v,
+            get: |c| {
+                c.agent
+                    .effort
+                    .clone()
+                    .unwrap_or_else(|| "medium".to_string())
+            },
+            set: |c, v| {
+                c.agent.effort = if v.is_empty() {
+                    None
+                } else {
+                    Some(v)
+                };
+            },
+        },
+        ConfigItem::BoolToggle {
+            label: "AI Review Arena".into(),
+            description: "Multi-round AI reviewer debate (desktop)".into(),
+            get: |c| c.features.arena,
+            set: |c, v| c.features.arena = v,
         },
         // ── AI ──
         ConfigItem::SectionHeader("AI".into()),
@@ -1122,12 +1209,20 @@ args = ["--model", "gpt-5.4"]
                     AiModelConfig {
                         id: "gpt-5.4".into(),
                         label: Some("GPT-5.4".into()),
+                        description: None,
                         args: vec!["--model".into(), "gpt-5.4".into()],
+                        cost_per_1k_in: None,
+                        cost_per_1k_out: None,
+                        avg_latency_ms: None,
                     },
                     AiModelConfig {
                         id: "gpt-5.3-codex".into(),
                         label: None,
+                        description: None,
                         args: vec!["--model".into(), "gpt-5.3-codex".into()],
+                        cost_per_1k_in: None,
+                        cost_per_1k_out: None,
+                        avg_latency_ms: None,
                     },
                 ],
             },
@@ -1149,6 +1244,7 @@ args = ["--model", "gpt-5.4"]
                 view_history: true,
                 view_conflicts: false,
                 view_hidden: true,
+                arena: false,
             },
             display: DisplayConfig {
                 tab_width: 8,
@@ -1162,7 +1258,7 @@ args = ["--model", "gpt-5.4"]
                 command: "my-agent".into(),
                 args: vec!["--flag".into()],
                 model: String::new(),
-                effort: default_agent_effort(),
+                effort: None,
             },
             ..Default::default()
         };
@@ -1425,7 +1521,7 @@ args = ["--model", "gpt-5.4"]
             command: "claude".into(),
             args: vec![],
             model: String::new(),
-            effort: default_agent_effort(),
+            effort: None,
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -1436,7 +1532,7 @@ args = ["--model", "gpt-5.4"]
             command: "/usr/local/bin/claude".into(),
             args: vec![],
             model: String::new(),
-            effort: default_agent_effort(),
+            effort: None,
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -1447,8 +1543,56 @@ args = ["--model", "gpt-5.4"]
             command: "".into(),
             args: vec![],
             model: String::new(),
-            effort: default_agent_effort(),
+            effort: None,
         };
         assert_eq!(agent.display_name(), "AI");
+    }
+
+    #[test]
+    fn hub_model_effort_levels() {
+        assert!(effort_levels_for_hub_model("opus-4.8").contains(&"xhigh"));
+        assert!(!effort_levels_for_hub_model("opus-4.6").contains(&"xhigh"));
+        assert!(effort_levels_for_hub_model("sonnet-4.6").contains(&"max"));
+        assert!(effort_levels_for_hub_model("haiku-4.5").is_empty());
+    }
+
+    #[test]
+    fn inject_claude_effort_idempotent() {
+        let mut args = vec!["--print".into()];
+        inject_claude_effort(&mut args, Some("high"));
+        assert!(args.contains(&"--effort".to_string()));
+        assert!(args.contains(&"high".to_string()));
+        let len = args.len();
+        inject_claude_effort(&mut args, Some("low"));
+        assert_eq!(args.len(), len);
+    }
+
+    #[test]
+    fn resolve_effort_precedence() {
+        let hub = AiHubConfig {
+            default_effort: Some("medium".into()),
+            ..Default::default()
+        };
+        let agent = AgentConfig {
+            effort: Some("low".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_effort(&hub, &agent, Some("high"), None).as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            resolve_effort(&hub, &agent, Some("high"), Some("max")).as_deref(),
+            Some("max")
+        );
+        assert_eq!(
+            resolve_effort(&hub, &agent, None, None).as_deref(),
+            Some("medium")
+        );
+        let hub_empty = AiHubConfig::default();
+        assert_eq!(
+            resolve_effort(&hub_empty, &agent, None, None).as_deref(),
+            Some("low")
+        );
     }
 }
