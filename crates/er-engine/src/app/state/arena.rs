@@ -299,7 +299,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         Command::new("git")
-            .args(["init"])
+            .args(["init", "-b", "main"])
             .current_dir(root)
             .output()
             .unwrap();

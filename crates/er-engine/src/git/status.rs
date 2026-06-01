@@ -1347,7 +1347,7 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("tracked.txt"), "v1\n").unwrap();
         std::process::Command::new("git")
-            .args(["init"])
+            .args(["init", "-b", "main"])
             .current_dir(root)
             .output()
             .unwrap();

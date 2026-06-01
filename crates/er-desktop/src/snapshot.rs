@@ -1731,7 +1731,7 @@ fn resolve_saved_prs(
 ) -> Vec<PrInfo> {
     let mut out = Vec::new();
     let mut sorted: Vec<&projects::SavedPrEntry> = entries.iter().collect();
-    sorted.sort_by(|a, b| b.saved_at_ms.cmp(&a.saved_at_ms));
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.saved_at_ms));
     for entry in sorted {
         if let Some(cache) = cache_prs {
             if let Some(pr) = cache.iter().find(|p| p.number == entry.number) {
