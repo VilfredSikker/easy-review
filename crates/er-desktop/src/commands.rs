@@ -7,13 +7,13 @@ use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
 use er_engine::ai::CommentType;
-use er_engine::config::ErConfig;
 #[cfg(test)]
 use er_engine::app::CardAiInvocation;
 use er_engine::app::{
     build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
     BrowserLayout, CardAiContextParams, DiffMode, InputMode,
 };
+use er_engine::config::ErConfig;
 
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
@@ -6111,10 +6111,7 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
         inbox.unread_count().hash(&mut h);
         inbox.last_refresh_ms.hash(&mut h);
     }
-    state
-        .desktop_revision
-        .load(Ordering::Relaxed)
-        .hash(&mut h);
+    state.desktop_revision.load(Ordering::Relaxed).hash(&mut h);
     crate::profile_log::finish_hash(h)
 }
 

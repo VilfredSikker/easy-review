@@ -1,7 +1,7 @@
 //! Settings field catalog split by scope (General / App / Terminal).
 
 use super::config_desktop_settings::ConfigHubFieldDto;
-use super::{AGENT_EFFORT_OPTIONS, ErConfig};
+use super::{ErConfig, AGENT_EFFORT_OPTIONS};
 
 pub const THEME_OPTIONS: &[&str] = &[
     "ocean-depth",
@@ -94,9 +94,10 @@ pub fn desktop_settings_fields_flat(config: &ErConfig) -> Vec<ConfigHubFieldDto>
 }
 
 fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
-    let mut fields: Vec<ConfigHubFieldDto> = vec![ConfigHubFieldDto::Section {
-        title: "Commands".into(),
-    },
+    let mut fields: Vec<ConfigHubFieldDto> = vec![
+        ConfigHubFieldDto::Section {
+            title: "Commands".into(),
+        },
         ConfigHubFieldDto::Text {
             key: "commands.summary".into(),
             label: "Summary".into(),

@@ -1,7 +1,7 @@
 //! Serializable settings schema for the desktop app (excludes diff-view fields).
 
 use super::config_settings::{agent_effort_label, settings_fields_grouped};
-use super::{split_shell_args, AGENT_EFFORT_OPTIONS, ErConfig};
+use super::{split_shell_args, ErConfig, AGENT_EFFORT_OPTIONS};
 use serde::{Deserialize, Serialize};
 
 /// Wire value for a single config field patch from the desktop settings UI.
@@ -17,7 +17,9 @@ pub enum ConfigFieldValue {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ConfigHubFieldDto {
-    Section { title: String },
+    Section {
+        title: String,
+    },
     Bool {
         key: String,
         label: String,
@@ -44,7 +46,10 @@ pub enum ConfigHubFieldDto {
         label: String,
         index: usize,
     },
-    ListAdd { key: String, label: String },
+    ListAdd {
+        key: String,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -143,21 +148,19 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
                 config.display.auto_context_threshold = if v { 1 } else { 0 };
             }
         }
-        "display.tab_width" => {
-            match value {
-                ConfigFieldValue::Number(n) if (1..=16).contains(&(n as u8)) => {
-                    config.display.tab_width = n as u8;
-                }
-                ConfigFieldValue::String(v) => {
-                    if let Ok(n) = v.parse::<u8>() {
-                        if (1..=16).contains(&n) {
-                            config.display.tab_width = n;
-                        }
+        "display.tab_width" => match value {
+            ConfigFieldValue::Number(n) if (1..=16).contains(&(n as u8)) => {
+                config.display.tab_width = n as u8;
+            }
+            ConfigFieldValue::String(v) => {
+                if let Ok(n) = v.parse::<u8>() {
+                    if (1..=16).contains(&n) {
+                        config.display.tab_width = n;
                     }
                 }
-                _ => {}
             }
-        }
+            _ => {}
+        },
         "hints.navigation" => {
             if let ConfigFieldValue::Bool(v) = value {
                 config.hints.navigation = v;

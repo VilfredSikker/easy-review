@@ -745,7 +745,8 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
 }
 
 fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
-    let mut items: Vec<ConfigItem> = vec![ConfigItem::SectionHeader("Commands".into()),
+    let mut items: Vec<ConfigItem> = vec![
+        ConfigItem::SectionHeader("Commands".into()),
         ConfigItem::StringEdit {
             label: "Summary".into(),
             description: "Generate diff summary".into(),
@@ -817,11 +818,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
                     .unwrap_or_else(|| "medium".to_string())
             },
             set: |c, v| {
-                c.agent.effort = if v.is_empty() {
-                    None
-                } else {
-                    Some(v)
-                };
+                c.agent.effort = if v.is_empty() { None } else { Some(v) };
             },
         },
         ConfigItem::SectionHeader("Watched Paths".into()),

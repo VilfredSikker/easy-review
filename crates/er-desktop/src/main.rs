@@ -3,8 +3,8 @@
 mod arena_commands;
 mod browser_proxy;
 mod browser_webview;
-mod config_commands;
 mod commands;
+mod config_commands;
 mod dev_log;
 mod er_storage;
 mod export;

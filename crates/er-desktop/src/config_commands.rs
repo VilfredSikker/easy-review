@@ -2,8 +2,8 @@
 
 use er_engine::app::DiffMode;
 use er_engine::config::{
-    apply_config_field, desktop_settings_snapshot, save_config, save_config_local, ConfigFieldValue,
-    DesktopSettingsSnapshot, ErConfig, FeatureFlags,
+    apply_config_field, desktop_settings_snapshot, save_config, save_config_local,
+    ConfigFieldValue, DesktopSettingsSnapshot, ErConfig, FeatureFlags,
 };
 use tauri::State;
 

@@ -19,7 +19,6 @@ pub fn render_config_hub(
     selected: usize,
     editing: &Option<ConfigEditState>,
 ) {
-
     // Calculate popup dimensions — taller and wider than old settings overlay
     let max_height = area.height.saturating_sub(4);
     let popup_height = (items.len() as u16 + 4).min(max_height).max(12);
