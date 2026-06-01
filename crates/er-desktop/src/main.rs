@@ -1286,7 +1286,7 @@ fn main() {
 
             install_app_menu(app.handle())?;
 
-            let mut window_builder = tauri::WebviewWindowBuilder::new(
+            let window_builder = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
@@ -1295,11 +1295,9 @@ fn main() {
             .inner_size(1400.0, 900.0)
             .min_inner_size(900.0, 600.0);
             #[cfg(target_os = "macos")]
-            {
-                window_builder = window_builder
-                    .title_bar_style(tauri::TitleBarStyle::Overlay)
-                    .hidden_title(true);
-            }
+            let window_builder = window_builder
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true);
             let window = window_builder
                 .visible(false)
                 .transparent(true)
