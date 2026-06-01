@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
+  import { diffNav } from "$lib/stores/diffNav.svelte";
   import { app } from "$lib/stores/app.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
@@ -14,10 +16,17 @@
     return diffFileCollapse.collapsed.has(row.filePath);
   });
 
+  async function afterCollapse(collapsedPath: string) {
+    await tick();
+    await diffNav.scrollAfterCollapse(collapsedPath);
+  }
+
   function toggleCollapse(e: MouseEvent) {
     e.stopPropagation();
     e.preventDefault();
+    const wasCollapsed = diffFileCollapse.isCollapsed(row.filePath);
     diffFileCollapse.toggle(row.filePath);
+    if (!wasCollapsed) void afterCollapse(row.filePath);
   }
 
   async function toggleReviewed(e: MouseEvent) {
@@ -25,9 +34,11 @@
     e.preventDefault();
     try {
       if (row.reviewed) {
-        await app.cmd("unmark_reviewed", { fileIdx: row.fileIndex });
+        await app.cmd("unmark_reviewed", { path: row.filePath });
       } else {
-        await app.cmd("mark_reviewed", { fileIdx: row.fileIndex });
+        diffFileCollapse.collapse(row.filePath);
+        await app.cmd("mark_reviewed", { path: row.filePath });
+        await afterCollapse(row.filePath);
       }
     } catch (err) {
       app.showToast("error", String(err));

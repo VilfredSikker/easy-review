@@ -122,12 +122,12 @@ pub fn startup_full_refresh_due(fetched_at: &PrCacheFetchedAtMap) -> bool {
     }
     let now = now_epoch_ms();
     let guard = fetched_at.lock().ok();
-    remotes.iter().any(|remote| {
-        match guard.as_ref().and_then(|g| g.get(remote)) {
+    remotes
+        .iter()
+        .any(|remote| match guard.as_ref().and_then(|g| g.get(remote)) {
             None => true,
             Some(ts) => now.saturating_sub(*ts) > PR_CACHE_STARTUP_MAX_AGE_MS,
-        }
-    })
+        })
 }
 
 /// Return the remote slug for the currently-active project, if any.
@@ -153,7 +153,14 @@ pub async fn refresh_pr_cache_for_remote(
     let ms = t.elapsed().as_millis();
     let success = result.is_some();
     if let Some(ref prs) = result {
-        log::info!("pr_list fetch {} PRs from {} in {}ms", prs.len(), remote, ms);
+        crate::profile_log::profile_log(
+            "pr_list_fetch",
+            &[
+                ("count", prs.len().to_string()),
+                ("remote", remote.to_string()),
+                ("ms", ms.to_string()),
+            ],
+        );
     } else {
         log::warn!("pr_list fetch failed for {} after {}ms", remote, ms);
     }
@@ -210,11 +217,13 @@ pub(crate) async fn refresh_pr_cache(
     for handle in handles {
         if let Ok((remote, result, ms)) = handle.await {
             if let Some(ref prs) = result {
-                log::info!(
-                    "pr_list fetch {} PRs from {} in {}ms",
-                    prs.len(),
-                    remote,
-                    ms
+                crate::profile_log::profile_log(
+                    "pr_list_fetch",
+                    &[
+                        ("count", prs.len().to_string()),
+                        ("remote", remote.clone()),
+                        ("ms", ms.to_string()),
+                    ],
                 );
                 refreshed_remotes.push(remote.clone());
             } else {
@@ -235,10 +244,12 @@ pub(crate) async fn refresh_pr_cache(
         }
     }
     save_persisted_pr_cache(cache, fetched_at);
-    log::info!(
-        "pr_list refresh done ({} remotes) in {}ms",
-        remotes.len(),
-        t.elapsed().as_millis()
+    crate::profile_log::profile_log(
+        "pr_list_refresh_done",
+        &[
+            ("remotes", remotes.len().to_string()),
+            ("ms", t.elapsed().as_millis().to_string()),
+        ],
     );
     failed_remotes
 }

@@ -384,6 +384,8 @@
   const _highlightFailedKeys = new Set<string>();
   let _lastSnapshotRef: AppSnapshot | null = null;
   let _visibleFilePaths = $state(new Set<string>());
+  /** Bumped when client-side syntax spans land on live hunks (invalidates virtual row lookups). */
+  let _syntaxRevision = $state(0);
 
   onMount(() => {
     if (syntaxHighlightingEnabled()) {
@@ -440,6 +442,7 @@
     const changed = applyHunkSpansIfChanged(snapFile, hunks);
     if (changed) {
       _spansAppliedKeys.add(spanKey);
+      _syntaxRevision += 1;
       return true;
     }
 
@@ -600,9 +603,11 @@
             return;
           }
           highlightCache.set(spanKey, hunks);
-          _highlightCompletedKeys.add(spanKey);
           if (!isFileInViewport(file.path)) return;
           const changed = untrack(() => tryApplyHighlightSpans(live, hunks, spanKey));
+          if (changed || !snapFileNeedsSpans(live)) {
+            _highlightCompletedKeys.add(spanKey);
+          }
           profileLog("highlight_apply", {
             file: file.path,
             key: spanKey,
@@ -725,6 +730,38 @@
     if (!diffSel.hasSelection) composerAutoScrolledKey = null;
   });
 
+  function applyScrollTop(top: number) {
+    if (!scrollEl) return;
+    const nextTop = Math.max(0, top);
+    scrollEl.scrollTop = nextTop;
+    scrollTopLivePx = nextTop;
+    scrollTopPx = nextTop;
+    diffScroll.setScrollTop(snapshotKey, nextTop);
+    diffNav.pendingScrollPx = nextTop;
+  }
+
+  function scrollToFileHeader(path: string): boolean {
+    const rowIdx = crossFileModel.fileStartRow.get(path);
+    if (rowIdx === undefined) return false;
+    const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
+    applyScrollTop(top);
+    return true;
+  }
+
+  async function scrollAfterCollapse(collapsedPath: string): Promise<void> {
+    if (!scrollEl) return;
+    await tick();
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    const i = files.findIndex((f) => f.path === collapsedPath);
+    if (i === -1) return;
+    const target = files[i + 1] ?? files[i];
+    if (!scrollToFileHeader(target.path)) return;
+    const file = files.find((f) => f.path === target.path);
+    if (file?.is_lazy_stub) await requestLazyFile(file.source_index);
+  }
+
   // ── Register FlatNavigator with diffNav ───────────────────────────────────
   $effect(() => {
     diffNav.register({
@@ -732,15 +769,16 @@
         if (!scrollEl) return;
         const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
         if (align === "center") {
-          scrollEl.scrollTop = Math.max(0, top - viewportHeightPx / 2);
+          applyScrollTop(top - viewportHeightPx / 2);
         } else {
-          scrollEl.scrollTop = top;
+          applyScrollTop(top);
         }
       },
       scrollToEdge: (to) => {
         if (!scrollEl) return;
-        scrollEl.scrollTop = to === "top" ? 0 : scrollEl.scrollHeight;
+        applyScrollTop(to === "top" ? 0 : scrollEl.scrollHeight);
       },
+      scrollAfterCollapse,
       requestFileContent: (src) => requestLazyFile(src),
       getModel: () => crossFileModel,
       getFiles: () => files,
@@ -1042,11 +1080,13 @@
 
   // ── Row data helpers ──────────────────────────────────────────────────────
   function getUnifiedLine(row: Extract<CrossFileFlatRow, { type: "content-unified" }>) {
+    _syntaxRevision;
     const file = files.find((f) => f.path === row.filePath);
     return file?.hunks[row.hunkIdx]?.lines[row.lineIdx] ?? null;
   }
 
   function getUnifiedPartner(row: Extract<CrossFileFlatRow, { type: "content-unified" }>) {
+    _syntaxRevision;
     const file = files.find((f) => f.path === row.filePath);
     const hunk = file?.hunks[row.hunkIdx];
     if (!hunk) return null;
@@ -1054,6 +1094,7 @@
   }
 
   function getSplitRow(row: Extract<CrossFileFlatRow, { type: "content-split" }>) {
+    _syntaxRevision;
     const file = files.find((f) => f.path === row.filePath);
     const hunk = file?.hunks[row.hunkIdx];
     if (!hunk) return null;

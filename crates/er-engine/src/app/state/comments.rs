@@ -669,7 +669,7 @@ impl App {
             if author == "ai" {
                 anyhow::bail!("Cannot edit AI-generated text");
             }
-            if let (Some(gh_id), Some(ref gh)) = (github_id, gh_meta.as_ref()) {
+            if let (Some(gh_id), Some(gh)) = (github_id, gh_meta.as_ref()) {
                 crate::github::gh_pr_update_review_comment(
                     &gh.owner, &gh.repo, gh_id, new_text, &repo_root,
                 )?;
@@ -2027,7 +2027,7 @@ impl App {
         let is_remote = self.tab().is_remote();
         self.sync_ai_selection();
 
-        let (agent_cmd, config_args, is_claude_compatible, is_stream_json) =
+        let (agent_cmd, mut config_args, is_claude_compatible, is_stream_json) =
             if let Some(provider_id) = self
                 .config
                 .ai_hub
@@ -2067,6 +2067,15 @@ impl App {
                     crate::config::agent_command_uses_stream_json(&cmd),
                 )
             };
+        if is_claude_compatible {
+            let effort = crate::config::resolve_effort(
+                &self.config.ai_hub,
+                &self.config.agent,
+                self.current_ai_effort.as_deref(),
+                None,
+            );
+            crate::config::inject_claude_effort(&mut config_args, effort.as_deref());
+        }
 
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
@@ -2347,7 +2356,7 @@ impl App {
 
         self.sync_ai_selection();
 
-        let (agent_cmd, config_args, is_claude_compatible, is_stream_json) =
+        let (agent_cmd, mut config_args, is_claude_compatible, is_stream_json) =
             if let Some((cmd, args, is_claude, stream_json)) = agent_override {
                 (cmd, args, is_claude, stream_json)
             } else if let Some(provider_id) = self
@@ -2389,6 +2398,15 @@ impl App {
                     crate::config::agent_command_uses_stream_json(&cmd),
                 )
             };
+        if is_claude_compatible {
+            let effort = crate::config::resolve_effort(
+                &self.config.ai_hub,
+                &self.config.agent,
+                self.current_ai_effort.as_deref(),
+                None,
+            );
+            crate::config::inject_claude_effort(&mut config_args, effort.as_deref());
+        }
 
         std::fs::create_dir_all(&target.er_dir)?;
 

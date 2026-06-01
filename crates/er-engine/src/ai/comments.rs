@@ -190,7 +190,6 @@ impl<'a> CommentRef<'a> {
             CommentRef::Legacy(c) => c.source != "github" || c.author == "You",
         }
     }
-
 }
 
 // ── .er-questions.json — personal review notes ──
@@ -489,10 +488,7 @@ pub struct FeedbackComment {
 
 /// Top-level GitHub comment eligible for batch validate / re-anchor.
 pub fn github_comment_eligible_for_batch_validate(c: &GitHubReviewComment) -> bool {
-    !c.resolved
-        && !c.outdated
-        && c.in_reply_to.is_none()
-        && c.line_start.is_some()
+    !c.resolved && !c.outdated && c.in_reply_to.is_none() && c.line_start.is_some()
 }
 
 /// Count GitHub comments eligible for batch validate.
@@ -674,7 +670,9 @@ mod tests {
 
     #[test]
     fn github_comment_eligible_for_batch_validate_includes_active_line_comment() {
-        assert!(github_comment_eligible_for_batch_validate(&sample_github_comment()));
+        assert!(github_comment_eligible_for_batch_validate(
+            &sample_github_comment()
+        ));
     }
 
     #[test]
@@ -705,15 +703,12 @@ mod tests {
             version: 1,
             diff_hash: "h".into(),
             github: None,
-            comments: vec![
-                sample_github_comment(),
-                {
-                    let mut reply = sample_github_comment();
-                    reply.id = "gh-2".into();
-                    reply.in_reply_to = Some("gh-1".into());
-                    reply
-                },
-            ],
+            comments: vec![sample_github_comment(), {
+                let mut reply = sample_github_comment();
+                reply.id = "gh-2".into();
+                reply.in_reply_to = Some("gh-1".into());
+                reply
+            }],
         };
         assert_eq!(count_eligible_github_comments(&gc), 1);
     }

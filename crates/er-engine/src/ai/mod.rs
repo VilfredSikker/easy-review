@@ -1,6 +1,6 @@
 pub mod comments;
-pub mod finding_cleanup;
 pub mod experts;
+pub mod finding_cleanup;
 mod loader;
 pub mod professor;
 pub mod prompts;
@@ -9,8 +9,8 @@ mod review;
 pub mod triage;
 
 pub use comments::*;
-pub use finding_cleanup::*;
 pub use experts::*;
+pub use finding_cleanup::*;
 pub use loader::*;
 pub use professor::*;
 pub use relocate::*;

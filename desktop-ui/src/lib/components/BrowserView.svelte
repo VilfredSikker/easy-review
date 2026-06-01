@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import { browser, pageKey } from "$lib/stores/browser.svelte";
   import {
@@ -13,6 +12,7 @@
   import {
     browserEnsure,
     browserHide,
+    browserReload,
     browserSendToPage,
     browserSetAnnotateMode,
     browserSetBounds,
@@ -49,6 +49,8 @@
 
   let paneLoading = $state(false);
   let prefillDone = $state(false);
+  /** While set, ignore stale `__er_location` from the page we are leaving. */
+  let pendingNavigationUrl = $state<string | null>(null);
 
   async function syncPaneBounds() {
     if (!browserPaneEl || !nativeWebviewVisible || useProxyFallback) return;
@@ -101,16 +103,11 @@
     if (!showBrowserPane || !prefillDone) return;
     const next = browser.url;
     if (!next.trim() || next === BLANK_BROWSER_URL) return;
-    if (useProxyFallback) {
-      const proxied = toProxyUrl(next);
-      if (!sameBrowserUrl(fromProxyUrl(iframeSrc), fromProxyUrl(proxied))) {
-        paneLoading = true;
-        iframeSrc = proxied;
-      }
-      return;
-    }
-    if (!sameBrowserUrl(next, urlInput)) {
-      void navigateBrowser(next);
+    if (!useProxyFallback) return;
+    const proxied = toProxyUrl(next);
+    if (!sameBrowserUrl(fromProxyUrl(iframeSrc), fromProxyUrl(proxied))) {
+      paneLoading = true;
+      iframeSrc = proxied;
     }
   });
 
@@ -324,33 +321,67 @@
     await sendToPage({ __er_set_annotate_mode: active });
   }
 
-  function go() {
+  async function go() {
+    const target = urlInput.trim();
+    if (!target || target === BLANK_BROWSER_URL) return;
     paneLoading = true;
     markWaitingForReadiness();
-    browser.setUrl(urlInput);
-    void navigateBrowser(urlInput);
+    pendingNavigationUrl = target;
+    try {
+      await navigateBrowser(target);
+      await browser.setUrl(target);
+    } catch {
+      pendingNavigationUrl = null;
+    }
+  }
+
+  async function refresh() {
+    const url = browser.url.trim() || urlInput.trim();
+    if (!url || url === BLANK_BROWSER_URL) return;
+    paneLoading = true;
+    markWaitingForReadiness();
+    if (useProxyFallback) {
+      try {
+        iframeEl?.contentWindow?.location.reload();
+      } catch {
+        iframeSrc = toProxyUrl(url);
+      }
+      return;
+    }
+    try {
+      await browserReload(activeTabIdx);
+    } catch (err) {
+      console.warn("[er] browser reload failed, re-navigating", err);
+      await navigateBrowser(url);
+    }
+  }
+
+  function applyPageLocation(href: string) {
+    const real = fromProxyUrl(href);
+    if (real === "about:blank") return;
+    const pending = pendingNavigationUrl;
+    if (pending && !sameBrowserUrl(real, pending)) {
+      return;
+    }
+    if (pending && sameBrowserUrl(real, pending)) {
+      pendingNavigationUrl = null;
+    }
+    urlInput = real;
+    if (real !== browser.url) {
+      void browser.setUrl(real);
+    }
   }
 
   function onUrlKeydown(e: KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
-      go();
+      void go();
     }
   }
 
   function close() {
     void browser.setLayout("hidden");
     void browser.setAnnotateMode(false);
-  }
-
-  async function openSignInHelper() {
-    const url = browser.url.trim() || urlInput.trim();
-    if (!url) return;
-    try {
-      await invoke("open_url_in_browser", { url });
-    } catch {
-      window.open(url, "_blank", "noopener,noreferrer");
-    }
   }
 
   async function clearAnnotationsPage() {
@@ -499,6 +530,10 @@
     }
 
     if ((data as { __er_ready?: boolean }).__er_ready) {
+      const readyHref = typeof (data as { href?: unknown }).href === "string"
+        ? (data as { href: string }).href
+        : null;
+      if (readyHref) applyPageLocation(readyHref);
       void syncAnnotateModeToPage();
       return;
     }
@@ -507,14 +542,7 @@
       const href = typeof (data as { href?: unknown }).href === "string"
         ? (data as { href: string }).href
         : null;
-      if (href) {
-        const real = fromProxyUrl(href);
-        if (real === "about:blank") return;
-        urlInput = real;
-        if (!sameBrowserUrl(real, browser.url)) {
-          void browser.setUrl(real);
-        }
-      }
+      if (href) applyPageLocation(href);
       return;
     }
 
@@ -791,17 +819,17 @@
     <button
       type="button"
       class="text-xs px-2 py-1 rounded bg-hover hover:opacity-80"
-      onclick={go}
+      onclick={() => void go()}
     >
       Go
     </button>
     <button
       type="button"
-      class="text-xs px-2 py-1 rounded hover:bg-hover text-muted"
-      onclick={openSignInHelper}
-      title="Open this URL in your system browser to sign in, then return here"
+      class="text-xs px-2 py-1 rounded bg-hover hover:opacity-80"
+      onclick={() => void refresh()}
+      title="Reload page"
     >
-      Sign in
+      Refresh
     </button>
     {#if browser.annotateMode}
       <span

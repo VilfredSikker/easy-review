@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
+use er_engine::arena::{ArenaRunSnapshot, ArenaRunSummary};
 use er_engine::git::{DiffFile, FileStatus, LineType};
 use serde::Serialize;
 
@@ -10,6 +11,12 @@ use crate::inbox::InboxHandle;
 use crate::projects;
 
 // ── Wire types ──────────────────────────────────────────────────────────────
+
+/// Full arena run + projections (`arena_get` / `arena_override`).
+pub type ArenaRunSnapshotWire = ArenaRunSnapshot;
+
+/// Arena run list entry for the review tab (`arena_list` / poll snapshot).
+pub type ArenaRunSummaryWire = ArenaRunSummary;
 
 /// Which background fetches are currently in-flight. Included in every snapshot
 /// so the frontend can show loading indicators without adding its own timers.
@@ -115,6 +122,9 @@ pub struct AppSnapshot {
     /// Human-readable label for the currently selected AI provider/model.
     #[serde(default)]
     pub active_ai_label: String,
+    /// Claude Code effort level for the current session (`low` … `max`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_ai_effort: Option<String>,
     /// Filter presets + recent filter history for the active tab. Presets
     /// come first to mirror the TUI's filter overlay ordering.
     #[serde(default)]
@@ -138,6 +148,15 @@ pub struct AppSnapshot {
     pub inbox_unread_count: usize,
     #[serde(default)]
     pub inbox_last_refresh_ms: u64,
+    /// AI Review Arena UI (`features.arena`, on by default).
+    #[serde(default)]
+    pub arena_enabled: bool,
+    /// Active arena run id for this tab, if any.
+    #[serde(default)]
+    pub active_arena_run: Option<String>,
+    /// Recent arena runs for the active tab (newest first).
+    #[serde(default)]
+    pub arena_runs: Vec<ArenaRunSummaryWire>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1277,6 +1296,7 @@ fn build_snapshot_inner(
         agent_commands: build_agent_commands(app, tab),
         agent_log: build_agent_log(tab),
         active_ai_label: app.active_ai_selection_label(),
+        active_ai_effort: app.current_ai_effort.clone(),
         filter_suggestions,
         commits,
         selected_commit_sha,
@@ -1332,6 +1352,19 @@ fn build_snapshot_inner(
         inbox_last_refresh_ms: inbox
             .and_then(|h| h.lock().ok().map(|g| g.last_refresh_ms))
             .unwrap_or(0),
+        arena_enabled: app.config.features.arena,
+        active_arena_run: app
+            .config
+            .features
+            .arena
+            .then(|| app.active_arena_run())
+            .flatten(),
+        arena_runs: if app.config.features.arena {
+            let branch = app.arena_branch_ref();
+            app.arena_list_summaries(Some(&branch)).unwrap_or_default()
+        } else {
+            Vec::new()
+        },
     };
     if crate::profile_log::profile_enabled() {
         let total_lines: usize = out
@@ -1732,7 +1765,7 @@ fn resolve_saved_prs(
 ) -> Vec<PrInfo> {
     let mut out = Vec::new();
     let mut sorted: Vec<&projects::SavedPrEntry> = entries.iter().collect();
-    sorted.sort_by(|a, b| b.saved_at_ms.cmp(&a.saved_at_ms));
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.saved_at_ms));
     for entry in sorted {
         if let Some(cache) = cache_prs {
             if let Some(pr) = cache.iter().find(|p| p.number == entry.number) {
@@ -1753,7 +1786,7 @@ fn resolve_recent_prs(
 ) -> Vec<PrInfo> {
     let mut out = Vec::new();
     let mut sorted: Vec<&projects::RecentPrEntry> = entries.iter().collect();
-    sorted.sort_by(|a, b| b.viewed_at_ms.cmp(&a.viewed_at_ms));
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.viewed_at_ms));
     for entry in sorted {
         if let Some(cache) = cache_prs {
             if let Some(pr) = cache.iter().find(|p| p.number == entry.number) {
@@ -2021,7 +2054,7 @@ fn build_projects_from_file(
                         .collect();
 
                     all.retain(|pr| pr.state == "MERGED");
-                    all.sort_by(|a, b| b.merged_at.cmp(&a.merged_at));
+                    all.sort_by_key(|run| std::cmp::Reverse(run.merged_at.clone()));
                     all.truncate(5);
 
                     let now_ms = std::time::SystemTime::now()
@@ -2440,7 +2473,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     let eligible_comment_count = ai
         .github_comments
         .as_ref()
-        .map(|gc| er_engine::ai::count_eligible_github_comments(gc))
+        .map(er_engine::ai::count_eligible_github_comments)
         .unwrap_or(0);
 
     AiSnapshot {

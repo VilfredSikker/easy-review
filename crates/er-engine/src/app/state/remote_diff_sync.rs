@@ -95,7 +95,10 @@ impl App {
 /// Returns `Ok(None)` when the expected head_oid matches the last fetched
 /// one (no work needed).
 pub fn fetch_remote_diff_data(ctx: &RemoteDiffContext) -> Result<Option<RemoteDiffResult>> {
-    if let (Some(expected), Some(last)) = (ctx.expected_head_oid.as_deref(), ctx.last_head_oid.as_deref()) {
+    if let (Some(expected), Some(last)) = (
+        ctx.expected_head_oid.as_deref(),
+        ctx.last_head_oid.as_deref(),
+    ) {
         if expected == last {
             return Ok(None);
         }

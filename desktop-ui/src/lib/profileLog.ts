@@ -1,18 +1,47 @@
-import { info as logInfo } from "@tauri-apps/plugin-log";
+import { devLogEnabled, GROUP_PROFILE, isDevLogInitialized } from "$lib/dev/log";
 
-/** Dev idle profiler — disable: localStorage.setItem("erProfilePoll", "0"); location.reload() */
+/**
+ * Dev idle profiler — opt-in only.
+ * Enable: `ER_DESKTOP_PROFILE_POLL=1 ER_LOG=profile ./scripts/tauri-dev.sh`
+ * Or: `localStorage.setItem("erProfilePoll", "1"); location.reload()`
+ * Disable override: `localStorage.setItem("erProfilePoll", "0"); location.reload()`
+ */
 
 const STORAGE_KEY = "erProfilePoll";
 
 const lastByKind = new Map<string, number>();
 
+function profileExplicitlyEnabled(): boolean {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === "0") return false;
+    if (stored === "1") return true;
+  } catch {
+    // ignore
+  }
+  return import.meta.env.VITE_ER_DESKTOP_PROFILE_POLL === "1";
+}
+
+function profileGroupEnabled(): boolean {
+  const fromEnv = import.meta.env.VITE_ER_LOG as string | undefined;
+  if (fromEnv?.trim()) {
+    const parts = fromEnv
+      .split(",")
+      .map((p) => p.trim().toLowerCase())
+      .filter(Boolean);
+    if (parts.length === 0 || parts.some((p) => p === "all" || p === "*")) {
+      return true;
+    }
+    return parts.includes(GROUP_PROFILE);
+  }
+  if (!isDevLogInitialized()) return false;
+  return devLogEnabled(GROUP_PROFILE);
+}
+
 export function profileEnabled(): boolean {
   if (!import.meta.env.DEV) return false;
-  try {
-    return localStorage.getItem(STORAGE_KEY) !== "0";
-  } catch {
-    return true;
-  }
+  if (!profileExplicitlyEnabled()) return false;
+  return profileGroupEnabled();
 }
 
 function sinceLastMs(kind: string): number {
@@ -32,7 +61,6 @@ export function profileLog(kind: string, fields: Record<string, string | number 
     ...fields,
   };
   console.info("[er-profile]", payload);
-  logInfo(`[er-profile] ${JSON.stringify(payload)}`).catch(() => {});
 }
 
 /** Rate-limit noisy kinds (e.g. dev_height_fix). */

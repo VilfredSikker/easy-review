@@ -8,7 +8,7 @@
   const { row }: Props = $props();
 
   function expand() {
-    app.cmd("select_file", { idx: row.fileIndex });
+    app.cmd("select_file", { idx: row.sourceIndex });
     app.cmd("toggle_compacted");
   }
 </script>

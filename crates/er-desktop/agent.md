@@ -41,17 +41,57 @@ On launch, `main.rs` restores from `tabs.json` when present (eager diff for the 
 
 `poll` drains per-tab commands and app-level background tasks, computes a revision, and returns `snapshot: null` when unchanged. The revision currently combines engine state with `desktop_revision`.
 
-### Idle CPU profiling (`ER_DESKTOP_PROFILE_POLL=1`)
+### Dev log groups (`ER_LOG` / `--logs`)
 
-Opt-in stderr profiler in `src/profile_log.rs`. Each line includes `kind`, `ts_ms`, `since_last_ms` (cadence vs last same kind), plus kind-specific fields.
+Filter stderr and webview console noise by **group** (default: all groups).
+
+| Group | Rust | Frontend |
+|-------|------|----------|
+| `arena` | `[er-arena]` via `er_engine::dev_log` | `[er-arena]` in `desktop-ui/src/lib/arena/log.ts` |
+| `profile` | `er-desktop kind=…` when `ER_DESKTOP_PROFILE_POLL=1` | `[er-profile]` in `desktop-ui/src/lib/profileLog.ts` (devtools console only; same opt-in) |
+| `erp` | `log` targets under `browser_proxy` | — |
+| `app` | other `log::info!` / `log::warn!` | — |
 
 ```bash
+# Arena only (recommended wrapper — sets ER_LOG for Vite + Rust):
+./scripts/tauri-dev.sh --logs arena
+
+# Same via cargo alias from repo root:
+cargo er-dev -- --logs arena
+
+# Or env (works with plain cargo tauri dev):
+ER_LOG=arena cargo tauri dev
+
+# App binary also accepts (after --):
+cargo tauri dev -- --logs arena
+```
+
+Comma-separated: `ER_LOG=arena,profile`. `all` / `*` / empty → show everything.
+
+### Idle CPU profiling (`ER_DESKTOP_PROFILE_POLL=1`)
+
+**Off by default.** Opt-in on both Rust (stderr) and webview (devtools console). Requires `ER_DESKTOP_PROFILE_POLL=1` plus the `profile` log group when `ER_LOG` is set (or no `ER_LOG` filter).
+
+```bash
+# Full stack (Rust stderr + webview devtools console)
+ER_DESKTOP_PROFILE_POLL=1 ER_LOG=profile ./scripts/tauri-dev.sh 2>&1 | tee /tmp/er_profile.log
+
+# Rust only
 ER_DESKTOP_PROFILE_POLL=1 cargo tauri dev 2>&1 | tee /tmp/er_profile.log
 ```
 
-Kinds: `meta_refresh`, `rev_bump`, `revision_emit`, `poll` / `poll_skip` / `poll_revision_change`, `build_snapshot`, `get_snapshot`, `bg_loop`.
+Rust kinds: `meta_refresh`, `rev_bump`, `revision_emit`, `poll` / `poll_skip` / `poll_revision_change`, `build_snapshot`, `get_snapshot`, `bg_loop`, `gh_status_fetch`, `branch_open`, `pr_list_fetch`, `lazy_tab_refresh`, `remote_pr_diff_refresh`, `background_tab_warmup`.
 
-Frontend (devtools): `localStorage.setItem("erProfilePoll","1"); location.reload()` — logs `[er-profile]` for `revision_event`, `poll_invoke_*`, `snapshot_replace`, `highlight_*`, `span_keys_evicted`, `dev_height_fix`.
+Frontend kinds (devtools only, not Tauri terminal): `revision_event`, `poll_invoke_*`, `snapshot_replace`, `highlight_*`, `span_keys_evicted`, `dev_height_fix`.
+
+Enable in a running webview without restart:
+
+```js
+localStorage.setItem("erProfilePoll", "1");
+location.reload();
+```
+
+Disable override: `localStorage.setItem("erProfilePoll", "0"); location.reload()`.
 
 Bump `desktop_revision` when changing:
 

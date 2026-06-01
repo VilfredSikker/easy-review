@@ -1133,8 +1133,8 @@ impl TabState {
         // git log call. This should be moved to a background thread like the PR hint check.
         let log_root = self.commit_log_root().to_string();
         let head_ref = self.commit_head_ref().to_string();
-        let new_commits =
-            git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, skip).unwrap_or_default();
+        let new_commits = git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, skip)
+            .unwrap_or_default();
 
         let history = match self.history.as_mut() {
             Some(h) => h,

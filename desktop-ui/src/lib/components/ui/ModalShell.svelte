@@ -105,8 +105,9 @@
     role="dialog"
     aria-modal="true"
     aria-label={props.ariaLabel}
-    class={props.panelClass ??
-      "fixed left-1/2 -translate-x-1/2 top-[15vh] z-[251] bg-card border border-border rounded-lg shadow-2xl overflow-hidden outline-none"}
+    class={props.panelClass
+      ? `fixed z-[251] outline-none ${props.panelClass}`
+      : "fixed left-1/2 -translate-x-1/2 top-[15vh] z-[251] bg-card border border-border rounded-lg shadow-2xl overflow-hidden outline-none"}
     style={props.panelStyle ?? ""}
     onpointerdown={(e) => e.stopPropagation()}
     onmousedown={(e) => e.stopPropagation()}
