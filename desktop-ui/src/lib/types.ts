@@ -298,6 +298,10 @@ export interface AppSnapshot {
   pr: PrSnapshot | null;
   panels: Panels;
   theme: string;
+  /** Feature flags from ErConfig — controls which diff scopes appear in the UI. */
+  features?: FeatureFlagsSnapshot;
+  /** Display options from ErConfig (diff gear menu still uses localStorage for split/unified). */
+  display?: DisplayConfigSnapshot;
   watch_active: boolean;
   watch_status: WatchStatusSnapshot;
   worktrees: WorktreeSnapshot[];
@@ -525,4 +529,20 @@ export interface DesktopSettingsSnapshot {
 export interface GetConfigHubResponse {
   settings: DesktopSettingsSnapshot;
   providers: AiProviderInfo[];
+}
+
+export interface FeatureFlagsSnapshot {
+  viewBranch: boolean;
+  viewUnstaged: boolean;
+  viewStaged: boolean;
+  viewHistory: boolean;
+  viewConflicts: boolean;
+  viewHidden: boolean;
+}
+
+export interface DisplayConfigSnapshot {
+  lineNumbers: boolean;
+  wrapLines: boolean;
+  splitDiff: boolean;
+  tabWidth: number;
 }

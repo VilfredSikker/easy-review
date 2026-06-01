@@ -438,4 +438,10 @@ mod tests {
         );
         assert_eq!(config.agent.effort, "high");
     }
+
+    #[test]
+    fn validate_agent_args_requires_prompt_placeholder() {
+        assert!(validate_config_text_field("agent.args", "--print").is_some());
+        assert!(validate_config_text_field("agent.args", "-p {prompt}").is_none());
+    }
 }

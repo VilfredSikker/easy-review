@@ -64,6 +64,50 @@ pub struct DiffSourceSnapshot {
     pub suggestion: String,
 }
 
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureFlagsSnapshot {
+    pub view_branch: bool,
+    pub view_unstaged: bool,
+    pub view_staged: bool,
+    pub view_history: bool,
+    pub view_conflicts: bool,
+    pub view_hidden: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayConfigSnapshot {
+    pub line_numbers: bool,
+    pub wrap_lines: bool,
+    pub split_diff: bool,
+    pub tab_width: u8,
+}
+
+impl From<&er_engine::config::FeatureFlags> for FeatureFlagsSnapshot {
+    fn from(f: &er_engine::config::FeatureFlags) -> Self {
+        Self {
+            view_branch: f.view_branch,
+            view_unstaged: f.view_unstaged,
+            view_staged: f.view_staged,
+            view_history: f.view_history,
+            view_conflicts: f.view_conflicts,
+            view_hidden: f.view_hidden,
+        }
+    }
+}
+
+impl From<&er_engine::config::DisplayConfig> for DisplayConfigSnapshot {
+    fn from(d: &er_engine::config::DisplayConfig) -> Self {
+        Self {
+            line_numbers: d.line_numbers,
+            wrap_lines: d.wrap_lines,
+            split_diff: d.split_diff,
+            tab_width: d.tab_width,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
     pub mode: String,
@@ -80,6 +124,10 @@ pub struct AppSnapshot {
     pub pr: Option<PrSnapshot>,
     pub panels: Panels,
     pub theme: String,
+    #[serde(default)]
+    pub features: FeatureFlagsSnapshot,
+    #[serde(default)]
+    pub display: DisplayConfigSnapshot,
     pub watch_active: bool,
     pub watch_status: WatchStatusSnapshot,
     pub worktrees: Vec<WorktreeSnapshot>,
@@ -1215,6 +1263,8 @@ fn build_snapshot_inner(
             right: app.panels_visible.right,
         },
         theme: app.config.display.theme.clone(),
+        features: FeatureFlagsSnapshot::from(&app.config.features),
+        display: DisplayConfigSnapshot::from(&app.config.display),
         watch_active: {
             let ws = watch_status
                 .and_then(|w| w.lock().ok().map(|g| g.clone()))

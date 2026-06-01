@@ -198,7 +198,7 @@ macro_rules! snap {
 }
 
 /// Build a snapshot using the lock guards directly (when callers already hold them).
-pub(crate) pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
+pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     build_snapshot(
         app,
         Some(&state.pr_cache),
@@ -704,13 +704,29 @@ pub fn toggle_compacted(state: State<AppState>) -> Result<AppSnapshot, String> {
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
 
+fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &str) -> bool {
+    match mode {
+        "unstaged" => features.view_unstaged,
+        "staged" => features.view_staged,
+        "history" => features.view_history,
+        "conflicts" => features.view_conflicts,
+        "hidden" => features.view_hidden,
+        _ => features.view_branch,
+    }
+}
+
 #[tauri::command]
 pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
+        return Err(format!("'{mode}' view is disabled in settings"));
+    }
     let diff_mode = match mode.as_str() {
         "unstaged" => DiffMode::Unstaged,
         "staged" => DiffMode::Staged,
         "history" => DiffMode::History,
+        "conflicts" => DiffMode::Conflicts,
+        "hidden" => DiffMode::Hidden,
         _ => DiffMode::Branch,
     };
     app.tab_mut().set_mode(diff_mode);

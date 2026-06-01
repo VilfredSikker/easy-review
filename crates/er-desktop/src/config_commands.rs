@@ -1,8 +1,9 @@
 //! Desktop settings page — load/apply/save `ErConfig` (excludes diff-view fields).
 
+use er_engine::app::DiffMode;
 use er_engine::config::{
     apply_config_field, desktop_settings_snapshot, save_config, save_config_local, ConfigFieldValue,
-    DesktopSettingsSnapshot, ErConfig,
+    DesktopSettingsSnapshot, ErConfig, FeatureFlags,
 };
 use tauri::State;
 
@@ -28,11 +29,43 @@ fn capture_baseline(state: &AppState, config: &ErConfig) {
     }
 }
 
+fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
+    match mode {
+        DiffMode::Branch => features.view_branch,
+        DiffMode::Unstaged => features.view_unstaged,
+        DiffMode::Staged => features.view_staged,
+        DiffMode::History => features.view_history,
+        DiffMode::Conflicts => features.view_conflicts,
+        DiffMode::Hidden => features.view_hidden,
+    }
+}
+
+fn clamp_tab_mode_to_features(app: &mut er_engine::app::App) {
+    let current = app.tab().mode;
+    if feature_allows_mode(&app.config.features, current) {
+        return;
+    }
+    for candidate in [
+        DiffMode::Branch,
+        DiffMode::Unstaged,
+        DiffMode::Staged,
+        DiffMode::History,
+        DiffMode::Conflicts,
+        DiffMode::Hidden,
+    ] {
+        if feature_allows_mode(&app.config.features, candidate) {
+            app.tab_mut().set_mode(candidate);
+            return;
+        }
+    }
+}
+
 fn apply_config_side_effects(app: &mut er_engine::app::App, watched_changed: bool) {
     if watched_changed {
         app.tab_mut().watched_config = app.config.watched.clone();
         app.tab_mut().refresh_watched_files();
     }
+    clamp_tab_mode_to_features(app);
 }
 
 fn list_providers_inner(app: &er_engine::app::App) -> Vec<AiProviderInfo> {

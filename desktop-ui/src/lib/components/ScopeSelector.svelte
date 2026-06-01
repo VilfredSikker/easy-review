@@ -19,6 +19,16 @@
   );
 
   const snapshot = $derived(app.snapshot);
+  const features = $derived(
+    snapshot?.features ?? {
+      viewBranch: true,
+      viewUnstaged: true,
+      viewStaged: true,
+      viewHistory: true,
+      viewConflicts: true,
+      viewHidden: true,
+    },
+  );
   const commitsToShow = $derived(commits.length > 0 ? commits : (snapshot?.commits ?? []));
   const selectedCommitSha = $derived(snapshot?.selected_commit_sha ?? null);
   const activeTab = $derived(snapshot?.tabs?.find((t) => t.is_active) ?? null);
@@ -49,6 +59,7 @@
 <div class="border-t border-hairline bg-bg shrink-0">
   <!-- Current scope -->
   <div class="px-3 pt-2 pb-1.5">
+    {#if features.viewBranch}
     <button
       class="w-full text-left px-2 py-[5px] rounded-md flex items-center gap-2 relative {allChangesActive ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
       onclick={() => app.cmd("set_mode", { mode: "branch" })}
@@ -67,11 +78,13 @@
         {/if}
       </span>
     </button>
+    {/if}
   </div>
 
   <!-- Quick scopes -->
-  {#if !isReadOnly}
+  {#if !isReadOnly && (features.viewUnstaged || features.viewStaged)}
   <div class="px-3 pb-1.5 grid grid-cols-2 gap-1">
+    {#if features.viewUnstaged}
     <button
       class="px-2 py-1 rounded text-xs text-left flex items-center gap-1.5 {mode === 'unstaged' ? 'bg-ink-650 text-fg-2' : 'text-fg-2 hover:bg-card'}"
       onclick={() => app.cmd("set_mode", { mode: "unstaged" })}
@@ -79,6 +92,8 @@
       <span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>
       <span>Unstaged</span>
     </button>
+    {/if}
+    {#if features.viewStaged}
     <button
       class="px-2 py-1 rounded text-xs text-left flex items-center gap-1.5 {mode === 'staged' ? 'bg-ink-650 text-fg-2' : 'text-fg-2 hover:bg-card'}"
       onclick={() => app.cmd("set_mode", { mode: "staged" })}
@@ -86,6 +101,7 @@
       <span class="w-1.5 h-1.5 rounded-full bg-add-fg"></span>
       <span>Staged</span>
     </button>
+    {/if}
   </div>
   {/if}
 
