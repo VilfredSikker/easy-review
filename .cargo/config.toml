@@ -1,0 +1,3 @@
+[alias]
+# Desktop dev with log groups: cargo er-dev -- --logs arena
+er-dev = "run -p er-desktop --bin er-tauri-dev --"

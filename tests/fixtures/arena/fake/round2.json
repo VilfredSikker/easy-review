@@ -1,0 +1,15 @@
+{
+  "ballots": [
+    {
+      "finding_id": "f1",
+      "vote": "keep",
+      "note": "Valid concern on line 10."
+    },
+    {
+      "finding_id": "f2",
+      "vote": "merge",
+      "note": "Duplicate of finding on line 10.",
+      "merge_target": "f1"
+    }
+  ]
+}

@@ -23,6 +23,8 @@
 
   const isPersist = $derived(toast.persist ?? toast.kind === "error");
   const isMultiline = $derived(toast.kind === "error" || toast.kind === "warn");
+  /** Success/info wrap inside the card instead of nowrap (avoids horizontal scrollbar). */
+  const wrapsText = $derived(toast.kind === "success" || toast.kind === "info");
 
   interface KindStyle {
     ruleClass: string;
@@ -116,14 +118,14 @@
     <div
       bind:this={msgEl}
       style:overflow-wrap="anywhere"
-      style:white-space={isMultiline ? "normal" : "nowrap"}
-      style:overflow={isMultiline ? "hidden" : "visible"}
+      style:white-space={isMultiline || wrapsText ? "normal" : "nowrap"}
+      style:overflow-x="hidden"
+      style:overflow-y={isMultiline ? (expanded ? "auto" : "hidden") : "hidden"}
       style:max-height={isMultiline
         ? expanded
           ? "280px"
           : "calc(3 * 1.45em)"
         : undefined}
-      style:overflow-y={expanded ? "auto" : "hidden"}
       style:-webkit-line-clamp={!isMultiline ? undefined : expanded ? "unset" : "3"}
       style:-webkit-box-orient={!isMultiline ? undefined : "vertical"}
       style:display={!isMultiline ? undefined : "-webkit-box"}

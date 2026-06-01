@@ -81,6 +81,8 @@ describe("diffNav store", () => {
     const doc = installDocStub();
     const nav: DiffNavigator = {
       scrollToRow: mock(() => {}),
+      scrollToEdge: () => {},
+      scrollAfterCollapse: async () => {},
       requestFileContent: mock(async () => {}),
       getModel: () => null,
       getFiles: () => [makeFile("foo.ts")],
@@ -100,6 +102,8 @@ describe("diffNav store", () => {
     });
     diffNav.register({
       scrollToRow,
+      scrollToEdge: () => {},
+      scrollAfterCollapse: async () => {},
       requestFileContent: async () => {},
       getModel: () => model,
       getFiles: () => [makeFile("foo.ts")],
@@ -116,6 +120,8 @@ describe("diffNav store", () => {
     const model = makeModel({ fileStartRow: new Map([["lazy.ts", 0]]) });
     diffNav.register({
       scrollToRow: () => {},
+      scrollToEdge: () => {},
+      scrollAfterCollapse: async () => {},
       requestFileContent,
       getModel: () => model,
       getFiles: () => [makeFile("lazy.ts", { is_lazy_stub: true, source_index: 7 })],
@@ -133,6 +139,8 @@ describe("diffNav store", () => {
     });
     diffNav.register({
       scrollToRow,
+      scrollToEdge: () => {},
+      scrollAfterCollapse: async () => {},
       requestFileContent: async () => {},
       getModel: () => model,
       getFiles: () => [],
@@ -149,6 +157,8 @@ describe("diffNav store", () => {
     const model = makeModel({ threadRowIndex: () => null });
     diffNav.register({
       scrollToRow,
+      scrollToEdge: () => {},
+      scrollAfterCollapse: async () => {},
       requestFileContent: async () => {},
       getModel: () => model,
       getFiles: () => [],
@@ -160,10 +170,28 @@ describe("diffNav store", () => {
     expect(doc.getElementById.mock.calls[0][0]).toBe("missing");
   });
 
+  it("scrollAfterCollapse delegates to the registered navigator", async () => {
+    installDocStub();
+    const scrollAfterCollapse = mock(async () => {});
+    diffNav.register({
+      scrollToRow: () => {},
+      scrollToEdge: () => {},
+      scrollAfterCollapse,
+      requestFileContent: async () => {},
+      getModel: () => null,
+      getFiles: () => [],
+    });
+    await diffNav.scrollAfterCollapse("src/a.ts");
+    expect(scrollAfterCollapse).toHaveBeenCalledTimes(1);
+    expect(scrollAfterCollapse.mock.calls[0][0]).toBe("src/a.ts");
+  });
+
   it("unregister returns the store to the silent no-op state", async () => {
     const doc = installDocStub();
     diffNav.register({
       scrollToRow: () => {},
+      scrollToEdge: () => {},
+      scrollAfterCollapse: async () => {},
       requestFileContent: async () => {},
       getModel: () => null,
       getFiles: () => [],

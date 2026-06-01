@@ -1,0 +1,10 @@
+{
+  "verdicts": [
+    {
+      "finding_id": "f1",
+      "verdict": "kept",
+      "confidence": 0.92,
+      "rationale": "Real bug; keep for fix."
+    }
+  ]
+}

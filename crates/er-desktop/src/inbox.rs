@@ -84,7 +84,7 @@ impl InboxState {
         }
         self.items.push(item);
         self.items
-            .sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+            .sort_by_key(|item| std::cmp::Reverse(item.created_at_ms));
         if self.items.len() > MAX_ITEMS {
             self.items.truncate(MAX_ITEMS);
         }

@@ -1018,7 +1018,7 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
         }
     }
     // Sort by modification time (most recent first)
-    files.sort_by(|a, b| b.modified.cmp(&a.modified));
+    files.sort_by_key(|f| std::cmp::Reverse(f.modified));
     Ok(files)
 }
 
@@ -1347,7 +1347,7 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("tracked.txt"), "v1\n").unwrap();
         std::process::Command::new("git")
-            .args(["init"])
+            .args(["init", "-b", "main"])
             .current_dir(root)
             .output()
             .unwrap();

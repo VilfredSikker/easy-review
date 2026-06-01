@@ -66,6 +66,54 @@ fn parse_nav_url(url: &str) -> Result<Url, String> {
     Url::parse(&with_scheme).map_err(|e| e.to_string())
 }
 
+/// Strip `erp://` / `erps://` proxy schemes (matches desktop `fromProxyUrl`).
+fn from_proxy_url(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("erps://") {
+        return format!("https://{rest}");
+    }
+    if let Some(rest) = url.strip_prefix("erp://") {
+        return format!("http://{rest}");
+    }
+    url.to_string()
+}
+
+/// Same page identity as desktop `canonicalizeBrowserUrl` (hash excluded).
+pub fn browser_urls_equivalent(a: &str, b: &str) -> bool {
+    fn canon(raw: &str) -> Option<String> {
+        let real = from_proxy_url(raw.trim());
+        if real.is_empty() || real == "about:blank" {
+            return Some(real);
+        }
+        let with_scheme = if real.contains("://") {
+            real
+        } else {
+            format!("http://{real}")
+        };
+        let u = Url::parse(&with_scheme).ok()?;
+        let pathname = if u.path().is_empty() {
+            "/".to_string()
+        } else {
+            u.path().to_string()
+        };
+        let host = u.host_str().unwrap_or("").to_lowercase();
+        Some(format!(
+            "{}://{}{}{}",
+            u.scheme().to_lowercase(),
+            host,
+            pathname,
+            u.query().map(|q| format!("?{q}")).unwrap_or_default()
+        ))
+    }
+    match (canon(a), canon(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.trim() == b.trim(),
+    }
+}
+
+fn webview_current_url(wv: &tauri::Webview) -> Option<String> {
+    wv.url().ok().map(|u| u.to_string())
+}
+
 /// Push a host payload into a review page (direct API with MessageEvent fallback).
 pub fn post_message_to_webview(
     wv: &tauri::Webview,
@@ -160,12 +208,47 @@ fn finish_browser_navigate(
     newly_created: bool,
 ) -> Result<(), String> {
     if !newly_created {
-        let parsed = parse_nav_url(url)?;
-        wv.navigate(parsed).map_err(|e| e.to_string())?;
+        let should_navigate = webview_current_url(wv)
+            .map(|current| !browser_urls_equivalent(&current, url))
+            .unwrap_or(true);
+        if should_navigate {
+            let parsed = parse_nav_url(url)?;
+            wv.navigate(parsed).map_err(|e| e.to_string())?;
+        }
     }
     show_tab_webview(app, browser_state, tab_idx)?;
     let active = browser_state.tab_annotate_mode(tab_idx);
     sync_annotate_mode_to_page(wv, active)?;
+    Ok(())
+}
+
+/// Annotate / tooltips / split-ratio updates — never reload the page.
+pub fn sync_tab_browser_chrome(
+    app: &AppHandle,
+    browser_state: &BrowserWebviewState,
+    engine: &App,
+    tab_idx: usize,
+    sync_annotate: bool,
+) -> Result<(), String> {
+    *browser_state.active_tab.lock().map_err(|e| e.to_string())? = tab_idx;
+    let tab = engine
+        .tabs
+        .get(tab_idx)
+        .ok_or_else(|| format!("tab index {tab_idx} out of range"))?;
+    if tab.browser_layout == BrowserLayout::Hidden {
+        return Ok(());
+    }
+    browser_state.set_tab_annotate_mode(tab_idx, tab.browser_annotate_mode);
+    let url = tab.browser_url.trim();
+    if url.is_empty() || url == "about:blank" {
+        return Ok(());
+    }
+    show_tab_webview(app, browser_state, tab_idx)?;
+    if sync_annotate {
+        if let Some(wv) = tab_webview(app, tab_idx) {
+            sync_annotate_mode_to_page(&wv, tab.browser_annotate_mode)?;
+        }
+    }
     Ok(())
 }
 
@@ -371,6 +454,21 @@ pub fn browser_host_message(app: AppHandle, payload: serde_json::Value) -> Resul
         .map_err(|e| e.to_string())
 }
 
+/// Reload the current page in a tab's review browser.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub fn browser_reload(
+    app: AppHandle,
+    tabIdx: Option<usize>,
+    browser_state: State<'_, BrowserWebviewState>,
+) -> Result<(), String> {
+    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
+    let Some(wv) = tab_webview(&app, idx) else {
+        return Ok(());
+    };
+    wv.reload().map_err(|e| e.to_string())
+}
+
 /// Deliver a host message to a tab's review browser page.
 #[tauri::command]
 #[allow(non_snake_case)]
@@ -402,5 +500,21 @@ mod tests {
     #[test]
     fn webview_label_includes_tab_index() {
         assert_eq!(webview_label(3), "review-browser-3");
+    }
+
+    #[test]
+    fn browser_urls_equivalent_normalizes_host_and_path() {
+        assert!(browser_urls_equivalent(
+            "http://localhost:5173",
+            "http://localhost:5173/"
+        ));
+        assert!(!browser_urls_equivalent(
+            "http://localhost:5173/foo",
+            "http://localhost:5173/foo?x=1"
+        ));
+        assert!(browser_urls_equivalent(
+            "http://localhost:5173/foo#bar",
+            "http://localhost:5173/foo#baz"
+        ));
     }
 }

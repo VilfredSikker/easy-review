@@ -387,6 +387,21 @@ describe("getFileBlock — geometry & invariants", () => {
     expect(block.rows[0].type).toBe("file-header");
   });
 
+  it("file-header sourceIndex matches FileSnapshot.source_index, not display fileIndex", () => {
+    // Tree order: nested file first; backend path sort would put baz first.
+    const nested = file({ path: "src/foo/bar.ts", hunks: [], source_index: 1 });
+    const flat = file({ path: "src/baz.ts", hunks: [], source_index: 0 });
+    const treeOrdered = [nested, flat];
+    const blockNested = getFileBlock(mkInputs(nested, treeOrdered, emptyAi(), "unified", VIS_DEFAULT, "branch", 0));
+    const header = blockNested.rows[0];
+    expect(header.type).toBe("file-header");
+    if (header.type === "file-header") {
+      expect(header.fileIndex).toBe(0);
+      expect(header.sourceIndex).toBe(1);
+      expect(header.sourceIndex).not.toBe(header.fileIndex);
+    }
+  });
+
   it("identities are unique within the block", () => {
     const t = thread("t1", "a.ts", 1);
     const fnd = finding("f1", "a.ts", 2);

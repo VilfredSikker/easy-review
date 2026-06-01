@@ -141,6 +141,7 @@ export type CrossFileFlatRow =
       type: "file-header";
       filePath: string;
       fileIndex: number;
+      sourceIndex: number;
       height: number;
       identity: string;
       additions: number;
@@ -184,6 +185,7 @@ export type CrossFileFlatRow =
       type: "compacted-stub";
       filePath: string;
       fileIndex: number;
+      sourceIndex: number;
       height: number;
       identity: string;
     }
@@ -199,6 +201,7 @@ export type CrossFileFlatRow =
       type: "no-changes";
       filePath: string;
       fileIndex: number;
+      sourceIndex: number;
       height: number;
       identity: string;
     }
@@ -350,6 +353,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
     type: "file-header",
     filePath: file.path,
     fileIndex,
+    sourceIndex: file.source_index,
     height: FILE_HEADER_HEIGHT,
     identity: `fh:${file.path}`,
     additions: file.additions,
@@ -371,6 +375,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
       type: "compacted-stub",
       filePath: file.path,
       fileIndex,
+      sourceIndex: file.source_index,
       height: COMPACTED_STUB_HEIGHT,
       identity: `compact:${file.path}`,
     });
@@ -379,6 +384,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
       type: "no-changes",
       filePath: file.path,
       fileIndex,
+      sourceIndex: file.source_index,
       height: NO_CHANGES_HEIGHT,
       identity: `nochanges:${file.path}`,
     });

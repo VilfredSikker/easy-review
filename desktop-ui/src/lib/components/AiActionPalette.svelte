@@ -17,6 +17,7 @@
   import ReviewerPickerList from "$lib/components/ReviewerPickerList.svelte";
   import { openAiReviewFilesModal } from "$lib/components/AiReviewFilesModal.svelte";
   import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
+  import { effortLabel, effortLevelsForModel, modelSupportsEffort } from "$lib/arena/effort";
   import type { AiProviderInfo } from "$lib/types";
 
   type SubView = "main" | "providers" | "models" | "reviewers";
@@ -130,10 +131,28 @@
   function selectModel(modelId: string) {
     if (!selectedProvider) return;
     app.cmd("set_ai_selection", { providerId: selectedProvider.id, modelId: modelId });
-    close();
+    if (selectedProvider.id !== "claude" || !modelSupportsEffort(modelId)) {
+      close();
+    }
+  }
+
+  function setEffort(level: string) {
+    void app.cmd("set_ai_effort", { effort: level });
   }
 
   const activeAiLabel = $derived(app.snapshot?.active_ai_label ?? "");
+  const activeEffort = $derived(app.snapshot?.active_ai_effort ?? null);
+  const selectedModelId = $derived(
+    selectedProvider?.models.find((m) => m.is_selected)?.id ??
+      selectedProvider?.models[0]?.id ??
+      "",
+  );
+  const effortLevels = $derived(
+    selectedProvider?.id === "claude" && selectedModelId
+      ? effortLevelsForModel(selectedModelId)
+      : [],
+  );
+  const showEffortPicker = $derived(subView === "models" && effortLevels.length > 0);
   const reviewerCount = $derived(selectedReviewers.size);
 
   const mode = $derived(app.snapshot?.mode);
@@ -404,6 +423,26 @@
       </Button>
     </div>
   {:else}
+    {#if showEffortPicker}
+      <div class="px-4 py-2 border-b border-ink-600 shrink-0">
+        <p class="text-[10px] uppercase tracking-wider text-ink-400 mb-1.5">Reasoning effort</p>
+        <div class="flex flex-wrap gap-1">
+          {#each effortLevels as level (level)}
+            <button
+              type="button"
+              onclick={() => setEffort(level)}
+              class="rounded px-2 py-1 text-[11px] font-medium transition-colors
+                {activeEffort === level
+                ? 'bg-accent text-black'
+                : 'bg-ink-700 text-ink-200 hover:bg-ink-650'}"
+            >
+              {effortLabel(level)}
+            </button>
+          {/each}
+        </div>
+        <p class="mt-1.5 text-[10px] text-ink-400">Applies to Claude reviews and arena runs.</p>
+      </div>
+    {/if}
     <div class="py-1">
       {#each currentItems as item, i}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
