@@ -1,5 +1,6 @@
 pub mod arena;
 pub mod ai;
+pub mod dev_log;
 pub mod app;
 pub mod cache;
 pub mod config;

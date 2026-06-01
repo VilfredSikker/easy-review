@@ -1,4 +1,4 @@
-use crate::config::AiHubConfig;
+use crate::config::{agent_command_is_claude, inject_claude_effort, AiHubConfig};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
@@ -26,6 +26,7 @@ pub fn resolve_provider_command(
     hub: &AiHubConfig,
     provider_id: &str,
     model_id: &str,
+    effort: Option<&str>,
 ) -> Result<ProviderCommand> {
     let provider = hub
         .providers
@@ -34,6 +35,9 @@ pub fn resolve_provider_command(
     let mut args = provider.args.clone();
     if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
         args.extend(model.args.clone());
+    }
+    if agent_command_is_claude(&provider.command) {
+        inject_claude_effort(&mut args, effort);
     }
     Ok(ProviderCommand {
         command: provider.command.clone(),
@@ -174,19 +178,71 @@ fn read_lines<R: Read>(pipe: R) -> String {
         .join("\n")
 }
 
-fn extract_json_from_stdout(stdout: &str, stream_json: bool) -> Result<Value> {
-    if stream_json {
-        if let Some(v) = last_json_object_from_stream(stdout) {
-            return Ok(v);
+/// Pull the model's final text from Claude/Cursor `stream-json` NDJSON logs.
+fn extract_agent_stdout_text(stdout: &str) -> String {
+    let mut last_result: Option<String> = None;
+    let mut assistant_text: Vec<String> = Vec::new();
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("result") {
+            if let Some(r) = v.get("result").and_then(|r| r.as_str()) {
+                last_result = Some(r.to_string());
+            }
+        }
+        if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+            if let Some(content) = v
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            {
+                for item in content {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                            let t = text.trim();
+                            if !t.is_empty() {
+                                assistant_text.push(t.to_string());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
-    if let Ok(v) = serde_json::from_str(stdout.trim()) {
+
+    if let Some(r) = last_result.filter(|s| !s.trim().is_empty()) {
+        return r;
+    }
+    if !assistant_text.is_empty() {
+        return assistant_text.join("\n\n");
+    }
+    stdout.to_string()
+}
+
+fn extract_json_from_stdout(stdout: &str, stream_json: bool) -> Result<Value> {
+    let text = if stream_json {
+        extract_agent_stdout_text(stdout)
+    } else {
+        stdout.to_string()
+    };
+    extract_json_from_text(&text)
+}
+
+fn extract_json_from_text(text: &str) -> Result<Value> {
+    let trimmed = text.trim();
+    if let Ok(v) = serde_json::from_str(trimmed) {
         return Ok(v);
     }
-    if let Some(block) = extract_fenced_json(stdout) {
+    if let Some(block) = extract_fenced_json(trimmed) {
         return serde_json::from_str(&block).context("parse fenced json");
     }
-    for line in stdout.lines().rev() {
+    for line in trimmed.lines().rev() {
         let t = line.trim();
         if t.starts_with('{') {
             if let Ok(v) = serde_json::from_str(t) {
@@ -195,22 +251,6 @@ fn extract_json_from_stdout(stdout: &str, stream_json: bool) -> Result<Value> {
         }
     }
     anyhow::bail!("no JSON object in provider output");
-}
-
-fn last_json_object_from_stream(stdout: &str) -> Option<Value> {
-    let mut last: Option<Value> = None;
-    for line in stdout.lines() {
-        let t = line.trim();
-        if !t.starts_with('{') {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(t) {
-            if v.is_object() {
-                last = Some(v);
-            }
-        }
-    }
-    last
 }
 
 fn extract_fenced_json(s: &str) -> Option<String> {
@@ -248,6 +288,25 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_json_from_stream_json_result_event() {
+        let stdout = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","result":"{\"findings\":[{\"file\":\"a.rs\",\"title\":\"t\",\"body\":\"b\",\"severity\":\"low\"}]}"}"#,
+        );
+        let v = extract_json_from_stdout(stdout, true).unwrap();
+        let findings = v.get("findings").and_then(|f| f.as_array()).unwrap();
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn extract_json_from_plain_stdout() {
+        let stdout = r#"{"findings":[]}"#;
+        let v = extract_json_from_stdout(stdout, false).unwrap();
+        assert!(v.get("findings").is_some());
+    }
 
     #[test]
     fn fake_arena_dir_round_robin() {

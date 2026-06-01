@@ -17,6 +17,12 @@ const forceReload = {
 };
 
 export default defineConfig({
+  define: {
+    "import.meta.env.VITE_ER_LOG": JSON.stringify(process.env.ER_LOG ?? ""),
+    "import.meta.env.VITE_ER_DESKTOP_PROFILE_POLL": JSON.stringify(
+      process.env.ER_DESKTOP_PROFILE_POLL ?? "",
+    ),
+  },
   plugins: [svelte(), tailwindcss(), forceReload],
   worker: {
     format: "es",

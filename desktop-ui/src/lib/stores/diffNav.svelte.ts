@@ -14,6 +14,7 @@ import type { FileSnapshot } from "$lib/types";
 export interface DiffNavigator {
   scrollToRow(rowIdx: number, align?: "start" | "center"): void;
   scrollToEdge(to: "top" | "bottom"): void;
+  scrollAfterCollapse(collapsedPath: string): Promise<void>;
   requestFileContent(sourceIndex: number): Promise<void>;
   getModel(): CrossFileModel | null;
   getFiles(): FileSnapshot[];
@@ -41,6 +42,11 @@ class DiffNavStore {
 
   unregister(): void {
     this.nav = null;
+  }
+
+  /** After collapsing a file, scroll to the next file's header (or own header if last). */
+  async scrollAfterCollapse(collapsedPath: string): Promise<void> {
+    await this.nav?.scrollAfterCollapse(collapsedPath);
   }
 
   async scrollToFile(path: string): Promise<void> {

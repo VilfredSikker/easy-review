@@ -2,8 +2,12 @@ use super::model::{ArenaFinding, Ballot, Verdict, Vote};
 use crate::ai::RiskLevel;
 use std::collections::BTreeMap;
 
-/// Majority severity from round-2 votes; ties break toward higher severity.
-pub fn severity_from_round2(findings: &mut [ArenaFinding], ballots: &[(String, super::schema::Round2Output)]) {
+/// Majority severity from cross-check votes in round `round`; ties break toward higher severity.
+pub fn severity_from_cross_check(
+    findings: &mut [ArenaFinding],
+    ballots: &[(String, super::schema::Round2Output)],
+    round: u8,
+) {
     for f in findings.iter_mut() {
         let mut votes: Vec<RiskLevel> = Vec::new();
         for (reviewer_id, out) in ballots {
@@ -12,13 +16,13 @@ pub fn severity_from_round2(findings: &mut [ArenaFinding], ballots: &[(String, s
                     continue;
                 }
                 if super::schema::parse_vote(&b.vote).is_ok() {
-                    if f.rounds.iter().all(|r| r.n != 2) {
+                    if f.rounds.iter().all(|r| r.n != round) {
                         f.rounds.push(super::model::RoundLog {
-                            n: 2,
+                            n: round,
                             log: vec![],
                         });
                     }
-                    if let Some(r) = f.rounds.iter_mut().find(|r| r.n == 2) {
+                    if let Some(r) = f.rounds.iter_mut().find(|r| r.n == round) {
                         r.log.push(Ballot {
                             reviewer: reviewer_id.clone(),
                             vote: parse_vote_enum(&b.vote),
@@ -40,9 +44,15 @@ pub fn severity_from_round2(findings: &mut [ArenaFinding], ballots: &[(String, s
         }
         if !votes.is_empty() {
             let sev = majority_severity(&votes);
-            f.severity_by_round.insert(2, sev);
+            f.severity_by_round.insert(round, sev);
         }
     }
+}
+
+/// Back-compat alias for round-2 cross-check.
+#[allow(dead_code)]
+pub fn severity_from_round2(findings: &mut [ArenaFinding], ballots: &[(String, super::schema::Round2Output)]) {
+    severity_from_cross_check(findings, ballots, 2);
 }
 
 fn parse_vote_enum(s: &str) -> Vote {
@@ -117,19 +127,20 @@ pub fn apply_round3_verdicts(
 }
 
 /// Record arbiter ballots on each finding for the consensus matrix.
-pub fn record_round3_ballots(
+pub fn record_arbiter_ballots(
     findings: &mut [ArenaFinding],
     output: &super::schema::Round3Output,
     arbiter_id: &str,
 ) {
+    let round = super::model::ARENA_ARBITER_ROUND;
     for v in &output.verdicts {
         let Some(f) = findings.iter_mut().find(|x| x.id == v.finding_id) else {
             continue;
         };
-        if f.rounds.iter().all(|r| r.n != 3) {
-            f.rounds.push(super::model::RoundLog { n: 3, log: vec![] });
+        if f.rounds.iter().all(|r| r.n != round) {
+            f.rounds.push(super::model::RoundLog { n: round, log: vec![] });
         }
-        if let Some(r) = f.rounds.iter_mut().find(|r| r.n == 3) {
+        if let Some(r) = f.rounds.iter_mut().find(|r| r.n == round) {
             r.log.push(Ballot {
                 reviewer: arbiter_id.to_string(),
                 vote: verdict_to_vote(&v.verdict),
@@ -210,6 +221,7 @@ mod tests {
             merged_children: vec![],
             evidence: vec![],
             override_: None,
+            accepted_at: None,
         }];
         let out = Round3Output {
             verdicts: vec![super::super::schema::Round3Verdict {
@@ -220,9 +232,9 @@ mod tests {
                 merged_into: None,
             }],
         };
-        record_round3_ballots(&mut findings, &out, "arbiter-1");
+        record_arbiter_ballots(&mut findings, &out, "arbiter-1");
         assert_eq!(findings[0].rounds.len(), 1);
-        assert_eq!(findings[0].rounds[0].n, 3);
+        assert_eq!(findings[0].rounds[0].n, crate::arena::ARENA_ARBITER_ROUND);
         assert_eq!(findings[0].rounds[0].log[0].reviewer, "arbiter-1");
     }
 

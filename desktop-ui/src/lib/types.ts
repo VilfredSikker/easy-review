@@ -322,6 +322,8 @@ export interface AppSnapshot {
   agent_log?: AgentLogEntry[];
   /** Human-readable label for the currently selected AI provider/model. */
   active_ai_label?: string;
+  /** Claude Code effort level (`low` … `max`). */
+  active_ai_effort?: string | null;
   /** Filter presets + recent filter history for the active tab. */
   filter_suggestions?: FilterSuggestionSnapshot[];
   /** Session-scoped background review tasks across all tabs. */

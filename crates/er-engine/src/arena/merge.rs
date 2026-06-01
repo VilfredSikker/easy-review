@@ -114,6 +114,7 @@ pub fn findings_from_round1(
                     merged_children: vec![],
                     evidence: vec![],
                     override_: None,
+                    accepted_at: None,
                 });
             }
         }
@@ -154,6 +155,7 @@ mod tests {
                 merged_children: vec![],
                 evidence: vec![],
                 override_: None,
+                accepted_at: None,
             },
             ArenaFinding {
                 id: "b".into(),
@@ -171,6 +173,7 @@ mod tests {
                 merged_children: vec![],
                 evidence: vec![],
                 override_: None,
+                accepted_at: None,
             },
         ];
         propose_merge_candidates(&mut findings);

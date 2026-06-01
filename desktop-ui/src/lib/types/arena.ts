@@ -2,6 +2,25 @@
 
 export type ArenaScope = "branch" | "unstaged" | "staged";
 
+/** Launcher UI scope — `selected` maps to git scope + `files` at start time. */
+export type ArenaLauncherScope = ArenaScope | "selected";
+
+export interface ArenaEstimate {
+  diff_bytes: number;
+  cost_usd: number;
+  latency_sec: number;
+  cost_limit_usd: number;
+}
+
+export interface ArenaProgressState {
+  round: number;
+  total_rounds: number;
+  /** `"arbiter"` during final arbiter phase; empty during reviewer rounds. */
+  phase?: string;
+  thinking: string[];
+  done: string[];
+}
+
 export type RunStatus =
   | "queued"
   | { running: { round: number } }
@@ -35,7 +54,10 @@ export type Vote =
 export interface ReviewerRef {
   provider_id: string;
   model_id: string;
+  agent_kind?: string;
 }
+
+export type ArenaRunKind = "models" | "agent";
 
 export interface ArenaConfig {
   reviewers: ReviewerRef[];
@@ -44,6 +66,9 @@ export interface ArenaConfig {
   auto_accept_threshold: number;
   scope: ArenaScope;
   files?: string[];
+  run_kind?: ArenaRunKind;
+  agent_kind?: string;
+  effort?: string;
 }
 
 export interface Reviewer {
@@ -60,6 +85,7 @@ export interface Reviewer {
   cost_per_1k_out: number;
   avg_latency_ms: number;
   status: ReviewerRunStatus;
+  agent_kind?: string;
 }
 
 export interface HumanOverride {
@@ -103,6 +129,7 @@ export interface ArenaFinding {
   merged_children?: ArenaFinding[];
   evidence?: EvidenceItem[];
   override?: HumanOverride;
+  accepted_at?: string;
 }
 
 export interface CostEstimate {
@@ -125,6 +152,7 @@ export interface ArenaRun {
   reviewers: Reviewer[];
   findings: ArenaFinding[];
   cost_estimate: CostEstimate;
+  accepted_finding_ids?: string[];
 }
 
 export interface ArenaRunSummary {
@@ -143,6 +171,14 @@ export interface MatrixRow {
   latest_vote: Record<string, Vote>;
   verdict: Verdict;
   confidence: number;
+  arbiter_vote?: Vote;
+  arbiter_note?: string;
+}
+
+export interface ArbiterView {
+  label: string;
+  provider_id: string;
+  model_id: string;
 }
 
 export type FunnelStage = "proposed" | "cross_checked" | "resolved" | "final";
@@ -163,4 +199,5 @@ export interface ArenaRunSnapshot {
   run: ArenaRun;
   matrix: MatrixRow[];
   funnel: FunnelStages;
+  arbiter?: ArbiterView;
 }

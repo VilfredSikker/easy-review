@@ -64,6 +64,23 @@ impl ArenaRegistry {
         self.runs.lock().ok()?.remove(run_id)
     }
 
+    /// Remove an active run from the registry without joining its supervisor thread.
+    ///
+    /// Must be called from the supervisor thread when the run finishes. Joining the
+    /// stored `JoinHandle` from that same thread would deadlock on macOS (EDEADLK).
+    pub fn release_run(&self, run_id: &str) {
+        let Ok(mut map) = self.runs.lock() else {
+            return;
+        };
+        let Some(mut handle) = map.remove(run_id) else {
+            return;
+        };
+        handle.kill_children();
+        if let Some(join) = handle.join.take() {
+            std::mem::forget(join);
+        }
+    }
+
     pub fn get_status(&self, run_id: &str) -> Option<RunStatus> {
         let map = self.runs.lock().ok()?;
         map.get(run_id)
@@ -128,6 +145,13 @@ impl ArenaRegistry {
             .lock()
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default()
+    }
+
+    pub fn is_active(&self, run_id: &str) -> bool {
+        self.runs
+            .lock()
+            .ok()
+            .is_some_and(|m| m.contains_key(run_id))
     }
 }
 

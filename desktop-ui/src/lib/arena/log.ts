@@ -1,24 +1,32 @@
-/** Arena flow diagnostics — always prefixed with `[er-arena]`. */
+import { devLogEnabled, devLogPrefix, GROUP_ARENA } from "$lib/dev/log";
+
+/** Arena flow diagnostics — prefixed with `[er-arena]` when enabled. */
 export function arenaLog(message: string, detail?: unknown): void {
+  if (!devLogEnabled(GROUP_ARENA)) return;
+  const prefix = devLogPrefix(GROUP_ARENA);
   if (detail !== undefined) {
-    console.log(`[er-arena] ${message}`, detail);
+    console.log(`${prefix} ${message}`, detail);
   } else {
-    console.log(`[er-arena] ${message}`);
+    console.log(`${prefix} ${message}`);
   }
 }
 
 export function arenaWarn(message: string, detail?: unknown): void {
+  if (!devLogEnabled(GROUP_ARENA)) return;
+  const prefix = devLogPrefix(GROUP_ARENA);
   if (detail !== undefined) {
-    console.warn(`[er-arena] ${message}`, detail);
+    console.warn(`${prefix} ${message}`, detail);
   } else {
-    console.warn(`[er-arena] ${message}`);
+    console.warn(`${prefix} ${message}`);
   }
 }
 
 export function arenaError(message: string, detail?: unknown): void {
+  if (!devLogEnabled(GROUP_ARENA)) return;
+  const prefix = devLogPrefix(GROUP_ARENA);
   if (detail !== undefined) {
-    console.error(`[er-arena] ${message}`, detail);
+    console.error(`${prefix} ${message}`, detail);
   } else {
-    console.error(`[er-arena] ${message}`);
+    console.error(`${prefix} ${message}`);
   }
 }

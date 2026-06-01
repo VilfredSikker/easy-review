@@ -219,6 +219,7 @@
     } catch {
       /* ignore */
     }
+    void import("$lib/dev/log").then(({ initDevLog }) => initDevLog());
     app.load().then(() => app.startPolling());
     const cleanupKeyboard = initKeyboard();
     const cleanupLinkGuard = installExternalLinkGuard();
@@ -410,23 +411,22 @@
     open={arena.runningOpen}
     minimized={arena.runningMinimized}
     config={arena.lastConfig}
-    snapshot={arena.snapshot}
-    onMinimize={() => {
-      arena.runningMinimized = true;
-    }}
-    onRestore={() => {
-      arena.runningMinimized = false;
-    }}
+    liveRuns={arena.liveRuns}
+    liveRunStates={arena.liveRunStates}
+    snapshot={arena.liveSnapshot}
+    progress={arena.progress}
+    startedAt={arena.runStartedAt}
+    onMinimize={() => arena.minimizeRunning()}
+    onRestore={() => arena.restoreRunning()}
     onCancel={() => void arena.cancelRun()}
     onComplete={() => {
-      arena.runningOpen = false;
-      arena.overlayOpen = true;
+      /* Terminal handling (Review tab vs Arena overlay) lives in arena.svelte refreshLiveRun. */
     }}
   />
-  {#if arena.overlayOpen && arena.snapshot}
+  {#if arena.overlayOpen && arena.overlaySnapshot}
     <ArenaOverlay
       open={true}
-      snapshot={arena.snapshot}
+      snapshot={arena.overlaySnapshot}
       bind:layoutMode={arena.layoutMode}
       onClose={() => arena.closeOverlay()}
       onNewRun={() => {

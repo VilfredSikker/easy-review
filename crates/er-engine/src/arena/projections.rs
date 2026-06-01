@@ -1,6 +1,9 @@
 use super::model::{
-    ArenaFinding, ArenaRun, FunnelCounts, FunnelStage, FunnelStages, MatrixRow, Verdict,
+    ArenaFinding, ArenaRun, ArbiterView, FunnelCounts, FunnelStage, FunnelStages, MatrixRow,
+    Verdict, ARENA_ARBITER_ROUND,
 };
+use super::orchestrator::{arbiter_display_label, ARBITER_REVIEWER_ID};
+use crate::config::ErConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -9,13 +12,58 @@ pub struct ArenaRunSnapshot {
     pub run: ArenaRun,
     pub matrix: Vec<MatrixRow>,
     pub funnel: FunnelStages,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arbiter: Option<ArbiterView>,
+}
+
+pub fn build_arbiter_view(config: &ErConfig, run: &ArenaRun) -> Option<ArbiterView> {
+    if run.config.rounds < 2 || run.reviewers.len() < 2 {
+        return None;
+    }
+    let label = arbiter_display_label(&config.ai_hub, &run.config.arbiter);
+    Some(ArbiterView {
+        label,
+        provider_id: run.config.arbiter.provider_id.clone(),
+        model_id: run.config.arbiter.model_id.clone(),
+    })
+}
+
+pub fn build_snapshot_with_config(config: &ErConfig, run: ArenaRun) -> ArenaRunSnapshot {
+    let arbiter = build_arbiter_view(config, &run);
+    let matrix = build_matrix(&run.findings);
+    let funnel = build_funnel(&run.findings);
+    ArenaRunSnapshot {
+        run,
+        matrix,
+        funnel,
+        arbiter,
+    }
 }
 
 #[allow(dead_code)]
 pub fn build_snapshot(run: ArenaRun) -> ArenaRunSnapshot {
     let matrix = build_matrix(&run.findings);
     let funnel = build_funnel(&run.findings);
-    ArenaRunSnapshot { run, matrix, funnel }
+    ArenaRunSnapshot {
+        run,
+        matrix,
+        funnel,
+        arbiter: None,
+    }
+}
+
+fn arbiter_ballot(f: &ArenaFinding) -> (Option<super::model::Vote>, String) {
+    for round in &f.rounds {
+        if round.n == ARENA_ARBITER_ROUND {
+            if let Some(b) = round.log.iter().find(|x| x.reviewer == ARBITER_REVIEWER_ID) {
+                return (Some(b.vote.clone()), b.note.clone());
+            }
+        }
+    }
+    if !f.rationale.is_empty() {
+        return (None, f.rationale.clone());
+    }
+    (None, String::new())
 }
 
 /// Collapse round logs → latest vote per reviewer (matrix layout).
@@ -26,14 +74,20 @@ pub fn build_matrix(findings: &[ArenaFinding]) -> Vec<MatrixRow> {
             let mut latest_vote = BTreeMap::new();
             for round in &f.rounds {
                 for ballot in &round.log {
+                    if ballot.reviewer == ARBITER_REVIEWER_ID {
+                        continue;
+                    }
                     latest_vote.insert(ballot.reviewer.clone(), ballot.vote.clone());
                 }
             }
+            let (arbiter_vote, arbiter_note) = arbiter_ballot(f);
             MatrixRow {
                 finding_id: f.id.clone(),
                 latest_vote,
                 verdict: f.verdict.clone(),
                 confidence: f.confidence,
+                arbiter_vote,
+                arbiter_note,
             }
         })
         .collect()
@@ -103,6 +157,7 @@ mod tests {
             merged_children: vec![],
             evidence: vec![],
             override_: None,
+            accepted_at: None,
         }
     }
 

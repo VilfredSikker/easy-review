@@ -1,6 +1,6 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::config::{agent_command_uses_stream_json, ErConfig};
+use crate::config::{agent_command_uses_stream_json, inject_claude_effort, resolve_effort, ErConfig};
 use std::process::Command;
 
 /// Resolved agent command + args for a card AI subprocess.
@@ -17,6 +17,7 @@ pub fn plan_card_ai_invocation(
     config: &ErConfig,
     provider_id: Option<&str>,
     model_id: Option<&str>,
+    runtime_effort: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
     let (command, mut args, is_claude) = if let Some(pid) = config.ai_hub.resolve_provider_id(provider_id) {
@@ -42,6 +43,8 @@ pub fn plan_card_ai_invocation(
 
     if is_claude {
         inject_read_only_tools(&mut args);
+        let effort = resolve_effort(&config.ai_hub, &config.agent, runtime_effort, None);
+        inject_claude_effort(&mut args, effort.as_deref());
     }
 
     CardAiInvocation {
@@ -244,7 +247,7 @@ mod tests {
         let mut config = ErConfig::default();
         config.agent.command = "claude".into();
         config.agent.args = vec!["--print".into(), "-p".into(), "{prompt}".into()];
-        let inv = plan_card_ai_invocation(&config, None, None, "/repo".into());
+        let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
         assert!(inv.args.iter().any(|a| a == "Read"));
         assert!(inv.args.iter().any(|a| a.contains("grep")));
     }

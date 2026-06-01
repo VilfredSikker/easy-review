@@ -11,6 +11,9 @@ pub enum ArenaScope {
     Staged,
 }
 
+/// Round index for arbiter ballots in finding logs (not a reviewer cross-check round).
+pub const ARENA_ARBITER_ROUND: u8 = 255;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunStatus {
@@ -64,10 +67,25 @@ pub enum Vote {
     Flag,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArenaRunKind {
+    Models,
+    Agent,
+}
+
+impl Default for ArenaRunKind {
+    fn default() -> Self {
+        Self::Models
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewerRef {
     pub provider_id: String,
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +97,13 @@ pub struct ArenaConfig {
     pub scope: ArenaScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<String>>,
+    #[serde(default)]
+    pub run_kind: ArenaRunKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<String>,
+    /// Resolved Claude `--effort` for this run (`None` = CLI default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +121,8 @@ pub struct Reviewer {
     pub cost_per_1k_out: f32,
     pub avg_latency_ms: u32,
     pub status: ReviewerRunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +170,8 @@ pub struct ArenaFinding {
     pub evidence: Vec<EvidenceItem>,
     #[serde(default, rename = "override", skip_serializing_if = "Option::is_none")]
     pub override_: Option<HumanOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +198,8 @@ pub struct ArenaRun {
     pub reviewers: Vec<Reviewer>,
     pub findings: Vec<ArenaFinding>,
     pub cost_estimate: CostEstimate,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepted_finding_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +237,17 @@ pub struct MatrixRow {
     pub latest_vote: BTreeMap<String, Vote>,
     pub verdict: Verdict,
     pub confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arbiter_vote: Option<Vote>,
+    #[serde(default)]
+    pub arbiter_note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArbiterView {
+    pub label: String,
+    pub provider_id: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

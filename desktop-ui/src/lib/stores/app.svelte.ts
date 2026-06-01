@@ -199,7 +199,7 @@ class AppStore {
   showToast(
     kind: ToastMessage["kind"],
     message: string,
-    durationMs = kind === "error" ? 10_000 : 3_200,
+    durationMs = kind === "error" ? 10_000 : kind === "success" ? 4_200 : 3_200,
     opts?: { persist?: boolean; action?: ToastMessage["action"] },
   ) {
     const id = ++this.toastId;

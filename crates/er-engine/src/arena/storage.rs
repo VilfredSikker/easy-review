@@ -1,8 +1,9 @@
 use super::model::ArenaRun;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
@@ -37,11 +38,20 @@ impl ArenaPaths {
         self.round_dir(round).join(format!("{reviewer_id}.json"))
     }
 
+    pub fn arbiter_dir(&self) -> PathBuf {
+        self.root.join("arbiter")
+    }
+
+    pub fn arbiter_output_json(&self) -> PathBuf {
+        self.arbiter_dir().join("output.json")
+    }
+
     pub fn ensure_dirs(&self) -> Result<()> {
         fs::create_dir_all(&self.root)?;
-        for round in 1..=3 {
+        for round in 1..=5 {
             fs::create_dir_all(self.round_dir(round))?;
         }
+        fs::create_dir_all(self.arbiter_dir())?;
         Ok(())
     }
 }
@@ -80,6 +90,12 @@ pub fn save_round_output(paths: &ArenaPaths, round: u8, reviewer_id: &str, value
     write_atomic(&path, json.as_bytes())
 }
 
+pub fn save_arbiter_output(paths: &ArenaPaths, value: &serde_json::Value) -> Result<()> {
+    paths.ensure_dirs()?;
+    let json = serde_json::to_string_pretty(value)?;
+    write_atomic(&paths.arbiter_output_json(), json.as_bytes())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProgressEvent {
@@ -101,9 +117,85 @@ pub enum ProgressEvent {
         verdict: String,
         confidence: f32,
     },
+    ArbiterStarted {
+        arbiter_label: String,
+    },
     RunComplete {
         run_id: String,
     },
+}
+
+/// Latest reviewer activity derived from `progress.jsonl` (for running UI).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ArenaProgressState {
+    pub round: u8,
+    pub total_rounds: u8,
+    /// Empty during reviewer rounds; `"arbiter"` during final arbiter phase.
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub thinking: Vec<String>,
+    #[serde(default)]
+    pub done: Vec<String>,
+}
+
+pub fn parse_progress_state(paths: &ArenaPaths) -> ArenaProgressState {
+    let path = paths.progress_jsonl();
+    let Ok(file) = fs::File::open(&path) else {
+        return ArenaProgressState::default();
+    };
+    let mut state = ArenaProgressState::default();
+    let mut thinking: HashSet<String> = HashSet::new();
+    let mut done: HashSet<String> = HashSet::new();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<ProgressEvent>(line) else {
+            continue;
+        };
+        match event {
+            ProgressEvent::RoundStarted {
+                round,
+                total_rounds,
+            } => {
+                thinking.clear();
+                done.clear();
+                state.round = round;
+                state.total_rounds = total_rounds;
+                state.phase.clear();
+            }
+            ProgressEvent::ArbiterStarted { .. } => {
+                thinking.clear();
+                done.clear();
+                state.phase = "arbiter".into();
+            }
+            ProgressEvent::ReviewerThinking {
+                reviewer_id,
+                round,
+            } => {
+                state.round = round;
+                thinking.insert(reviewer_id);
+            }
+            ProgressEvent::ReviewerDone {
+                reviewer_id,
+                round,
+                ..
+            } => {
+                state.round = round;
+                thinking.remove(&reviewer_id);
+                done.insert(reviewer_id);
+            }
+            ProgressEvent::RunComplete { .. } => {
+                thinking.clear();
+            }
+            ProgressEvent::FindingVerdict { .. } => {}
+        }
+    }
+    state.thinking = thinking.into_iter().collect();
+    state.done = done.into_iter().collect();
+    state
 }
 
 pub fn append_progress_event(paths: &ArenaPaths, event: &ProgressEvent) -> Result<()> {
@@ -114,6 +206,15 @@ pub fn append_progress_event(paths: &ArenaPaths, event: &ProgressEvent) -> Resul
         .append(true)
         .open(paths.progress_jsonl())?;
     writeln!(file, "{line}")?;
+    Ok(())
+}
+
+pub fn delete_run_dir(er_dir: &Path, run_id: &str) -> Result<()> {
+    let paths = ArenaPaths::for_run(er_dir, run_id);
+    if paths.root.is_dir() {
+        fs::remove_dir_all(&paths.root)
+            .with_context(|| format!("delete arena run {}", paths.root.display()))?;
+    }
     Ok(())
 }
 
@@ -193,17 +294,23 @@ mod tests {
                 reviewers: vec![ReviewerRef {
                     provider_id: "anthropic".into(),
                     model_id: "sonnet".into(),
+                    agent_kind: None,
                 }],
                 rounds: 3,
                 arbiter: ReviewerRef {
                     provider_id: "anthropic".into(),
                     model_id: "opus".into(),
+                    agent_kind: None,
                 },
                 auto_accept_threshold: 0.75,
                 scope: ArenaScope::Branch,
                 files: None,
+                run_kind: ArenaRunKind::Models,
+                agent_kind: None,
+                effort: None,
             },
             reviewers: vec![],
+            accepted_finding_ids: vec![],
             findings: vec![ArenaFinding {
                 id: "deadbeef".into(),
                 file: "src/a.rs".into(),
@@ -220,6 +327,7 @@ mod tests {
                 merged_children: vec![],
                 evidence: vec![],
                 override_: None,
+                accepted_at: None,
             }],
             cost_estimate: CostEstimate {
                 tokens_in: 0,

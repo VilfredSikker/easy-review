@@ -122,6 +122,9 @@ pub struct AppSnapshot {
     /// Human-readable label for the currently selected AI provider/model.
     #[serde(default)]
     pub active_ai_label: String,
+    /// Claude Code effort level for the current session (`low` … `max`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_ai_effort: Option<String>,
     /// Filter presets + recent filter history for the active tab. Presets
     /// come first to mirror the TUI's filter overlay ordering.
     #[serde(default)]
@@ -1261,6 +1264,7 @@ fn build_snapshot_inner(
         agent_commands: build_agent_commands(app, tab),
         agent_log: build_agent_log(tab),
         active_ai_label: app.active_ai_selection_label(),
+        active_ai_effort: app.current_ai_effort.clone(),
         filter_suggestions,
         commits,
         selected_commit_sha,
@@ -1324,7 +1328,9 @@ fn build_snapshot_inner(
             .then(|| app.active_arena_run())
             .flatten(),
         arena_runs: if app.config.features.arena {
-            app.arena_list_summaries().unwrap_or_default()
+            let branch = app.arena_branch_ref();
+            app.arena_list_summaries(Some(&branch))
+                .unwrap_or_default()
         } else {
             Vec::new()
         },

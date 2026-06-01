@@ -1,8 +1,18 @@
 <script lang="ts" module>
   let openModal: (() => void) | null = null;
+  let openPickOnlyModal: ((opts: DiffFilePickerOptions) => void) | null = null;
+
+  export interface DiffFilePickerOptions {
+    onConfirm: (paths: string[]) => void;
+    initialSelected?: string[];
+  }
 
   export function openAiReviewFilesModal(): void {
     openModal?.();
+  }
+
+  export function openDiffFilePicker(opts: DiffFilePickerOptions): void {
+    openPickOnlyModal?.(opts);
   }
 </script>
 
@@ -22,8 +32,11 @@
 
   type ReviewScope = "branch" | "unstaged" | "staged";
   type SubView = "files" | "reviewers";
+  type PickerMode = "review" | "pick-only";
 
   let open = $state(false);
+  let pickerMode = $state<PickerMode>("review");
+  let pickOnlyOnConfirm = $state<((paths: string[]) => void) | null>(null);
   let subView = $state<SubView>("files");
   let loading = $state(false);
   let loadError = $state<string | null>(null);
@@ -76,8 +89,12 @@
     });
   }
 
+  const isPickOnly = $derived(pickerMode === "pick-only");
+
   function close() {
     open = false;
+    pickerMode = "review";
+    pickOnlyOnConfirm = null;
     subView = "files";
     loading = false;
     loadError = null;
@@ -88,13 +105,17 @@
     submitting = false;
   }
 
-  async function loadFiles() {
+  async function loadFiles(initialSelected?: string[]) {
     loading = true;
     loadError = null;
     try {
       const paths = await invoke<string[]>("list_diff_paths");
       pickerFiles = pathsToFileSnapshots(paths);
-      selected = new Set(paths);
+      const preselect =
+        initialSelected && initialSelected.length > 0
+          ? initialSelected.filter((p) => paths.includes(p))
+          : paths;
+      selected = new Set(preselect);
       for (const f of pickerFiles) {
         fileTreeCollapse.expandAncestorsOf(f.path);
       }
@@ -115,9 +136,31 @@
       return;
     }
     closeAiActionPalette();
+    pickerMode = "review";
+    pickOnlyOnConfirm = null;
     subView = "files";
     open = true;
     void loadFiles();
+  }
+
+  function openPickOnlyFromOutside(opts: DiffFilePickerOptions) {
+    if (!reviewScope) {
+      app.showToast("error", "Switch to All changes, Unstaged, or Staged to pick files");
+      return;
+    }
+    pickerMode = "pick-only";
+    pickOnlyOnConfirm = opts.onConfirm;
+    subView = "files";
+    open = true;
+    void loadFiles(opts.initialSelected);
+  }
+
+  function confirmPickOnly() {
+    if (selectedCount === 0 || !pickOnlyOnConfirm) return;
+    const paths = [...selected];
+    const cb = pickOnlyOnConfirm;
+    close();
+    cb(paths);
   }
 
   function markAll() {
@@ -134,6 +177,10 @@
 
   function goToReviewers() {
     if (selectedCount === 0) return;
+    if (isPickOnly) {
+      confirmPickOnly();
+      return;
+    }
     subView = "reviewers";
     reviewerHighlight = 0;
   }
@@ -194,15 +241,17 @@
 
   onMount(() => {
     openModal = openFromOutside;
+    openPickOnlyModal = openPickOnlyFromOutside;
     return () => {
       openModal = null;
+      openPickOnlyModal = null;
     };
   });
 </script>
 
 <ModalShell
   {open}
-  ariaLabel="Review selected files"
+  ariaLabel={isPickOnly ? "Select files for arena" : "Review selected files"}
   onClose={close}
   onKeydown={handleKeydown}
   closeOnEscape={false}
@@ -210,7 +259,11 @@
 >
   <div class="px-4 pt-3 pb-2 border-b border-ink-600 flex items-center gap-2 shrink-0">
     <span class="text-xs text-ink-300 font-mono">
-      {subView === "files" ? "Review selected files" : "Choose reviewers"}
+      {isPickOnly
+        ? "Select files"
+        : subView === "files"
+          ? "Review selected files"
+          : "Choose reviewers"}
     </span>
     <span class="text-[10px] text-ink-400 font-mono ml-1">
       {scopeLabel}{#if subView === "files" && pickerFiles.length > 0} · {pickerFiles.length} files{/if}
@@ -266,7 +319,7 @@
         disabled={loading || !!loadError || selectedCount === 0}
         onclick={goToReviewers}
       >
-        Choose reviewers…
+        {isPickOnly ? "Confirm selection" : "Choose reviewers…"}
       </Button>
     </div>
   {:else}

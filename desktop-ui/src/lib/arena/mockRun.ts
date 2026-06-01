@@ -261,7 +261,7 @@ export const MOCK_ARENA_RUN: ArenaRun = {
       model_id: r.model_id,
     })),
     rounds: 3,
-    arbiter: { provider_id: "anthropic", model_id: "opus-4.7" },
+    arbiter: { provider_id: "anthropic", model_id: "opus-4.8" },
     auto_accept_threshold: 0.75,
     scope: "branch",
   },
@@ -271,6 +271,88 @@ export const MOCK_ARENA_RUN: ArenaRun = {
 };
 
 export const MOCK_ARENA_SNAPSHOT: ArenaRunSnapshot = buildSnapshot(MOCK_ARENA_RUN);
+
+const MODEL_REVIEWERS: Reviewer[] = [
+  {
+    id: "claude-sonnet",
+    name: "Sonnet 4.6",
+    kind: "model",
+    provider_id: "claude",
+    model_id: "claude-sonnet-4.6",
+    system_prompt: "",
+    color: "#ff7a2b",
+    icon: "cube",
+    tagline: "Anthropic",
+    cost_per_1k_in: 0.015,
+    cost_per_1k_out: 0.075,
+    avg_latency_ms: 12_000,
+    status: "ok",
+  },
+  {
+    id: "openai-gpt",
+    name: "GPT-5.4",
+    kind: "model",
+    provider_id: "codex",
+    model_id: "gpt-5.4",
+    system_prompt: "",
+    color: "#4ec9a4",
+    icon: "cube",
+    tagline: "OpenAI",
+    cost_per_1k_in: 0.012,
+    cost_per_1k_out: 0.06,
+    avg_latency_ms: 10_000,
+    status: "ok",
+  },
+  {
+    id: "cursor-composer",
+    name: "Composer 2.5",
+    kind: "model",
+    provider_id: "cursor",
+    model_id: "cursor-composer-2.5",
+    system_prompt: "",
+    color: "#7f87ff",
+    icon: "cube",
+    tagline: "Cursor",
+    cost_per_1k_in: 0.01,
+    cost_per_1k_out: 0.05,
+    avg_latency_ms: 8_000,
+    status: "ok",
+  },
+];
+
+/** Snapshot matching a 3-model arena run (matrix/funnel UI). */
+export const MOCK_MODEL_ARENA_SNAPSHOT: ArenaRunSnapshot = buildSnapshot({
+  ...MOCK_ARENA_RUN,
+  id: "arena-mock-models-001",
+  title: "Standard · Sonnet × GPT × Composer",
+  reviewers: MODEL_REVIEWERS,
+  config: {
+    ...MOCK_ARENA_RUN.config,
+    reviewers: MODEL_REVIEWERS.map((r) => ({
+      provider_id: r.provider_id,
+      model_id: r.model_id,
+    })),
+    arbiter: { provider_id: "claude", model_id: "claude-opus-4" },
+  },
+  findings: FINDINGS.slice(0, 5).map((f, i) =>
+    i === 0
+      ? {
+          ...f,
+          rationale:
+            f.rationale +
+            " Round-2 majority (claude-sonnet-4.6, cursor-composer-2.5) kept this: swap walks a pre-resolve snapshot while resolve/dedupe can remove rows. Security framing was strengthened; style and perf abstained. This paragraph is intentionally long so Storybook can exercise expanded rationale UI.",
+        }
+      : f,
+  ),
+});
+
+export function makeRunningSnapshot(round: number): ArenaRunSnapshot {
+  return buildSnapshot({
+    ...MOCK_MODEL_ARENA_SNAPSHOT.run,
+    status: { running: { round } },
+    completed_at: undefined,
+  });
+}
 
 export function reviewerById(id: string): Reviewer | undefined {
   return REVIEWERS.find((r) => r.id === id);

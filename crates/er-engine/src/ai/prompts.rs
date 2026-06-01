@@ -1141,10 +1141,23 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
 // ── AI Review Arena (JSON-only stdout) ──
 
 pub fn build_arena_round1_prompt(diff_patch_path: &str, reviewer_label: &str) -> String {
+    build_arena_round1_prompt_agent(diff_patch_path, reviewer_label, None)
+}
+
+/// Round-1 arena prompt; optional `agent_kind` applies specialized lens (general / expert / professor).
+pub fn build_arena_round1_prompt_agent(
+    diff_patch_path: &str,
+    reviewer_label: &str,
+    agent_kind: Option<&str>,
+) -> String {
+    let path = diff_patch_path.replace('\\', "/");
+    let lens = agent_kind
+        .map(|k| agent_lens_block(k))
+        .unwrap_or_default();
     format!(
         r#"You are reviewer "{reviewer_label}" in a multi-agent code review arena.
-
-Read the pinned diff at `{diff_patch_path}` (do not run git diff).
+{lens}
+Read the pinned diff at `{path}` (do not run git diff).
 
 Respond with ONLY a single JSON object on stdout (no markdown fences), matching:
 {{"findings":[{{"file":"path","line":12,"title":"short","body":"detail","severity":"high|med|low","confidence":0.0,"tags":[]}}]}}
@@ -1154,17 +1167,37 @@ Rules:
 - severity: high | med | low
 - If no issues: {{"findings":[]}}
 "#,
-        diff_patch_path = diff_patch_path.replace('\\', "/"),
     )
+}
+
+fn agent_lens_block(agent_kind: &str) -> String {
+    if agent_kind == "general" {
+        return "\nLens: broad correctness, logic, and risk — same scope as a general code review.\n"
+            .to_string();
+    }
+    if agent_kind == "professor" {
+        return "\nLens: Professor mode — teach what this diff implements; informational insights only.\n"
+            .to_string();
+    }
+    if let Some(id) = agent_kind.strip_prefix("expert:") {
+        if expert_by_id(id).is_some() {
+            return format!(
+                "\n{}\n",
+                expert_lens_instructions(id).replace('\n', "\n")
+            );
+        }
+    }
+    String::new()
 }
 
 pub fn build_arena_round2_prompt(
     diff_patch_path: &str,
     reviewer_id: &str,
+    round: u8,
     findings_json: &str,
 ) -> String {
     format!(
-        r#"You are reviewer "{reviewer_id}" in round 2 (cross-check).
+        r#"You are reviewer "{reviewer_id}" in round {round} (cross-check).
 
 Diff: `{diff_patch_path}`
 
