@@ -4,6 +4,7 @@ mod arena_commands;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
+mod config_commands;
 mod dev_log;
 mod er_storage;
 mod export;
@@ -636,6 +637,7 @@ fn main() {
     let last_sent_chrome_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let state = AppState {
+        config_edit_baseline: Arc::new(Mutex::new(None)),
         app: Arc::clone(&app_arc),
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
@@ -1388,6 +1390,12 @@ fn main() {
             arena_commands::arena_override,
             arena_commands::dev_log_filter,
             commands::set_ai_selection,
+            config_commands::get_config_hub,
+            config_commands::apply_config_patch,
+            config_commands::reset_config_draft,
+            config_commands::save_config_local_cmd,
+            config_commands::save_config_global_cmd,
+            config_commands::set_ai_hub_defaults,
             commands::set_ai_effort,
             commands::promote_to_comment,
             commands::ask_ai,

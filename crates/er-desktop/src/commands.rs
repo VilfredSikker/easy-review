@@ -13,6 +13,7 @@ use er_engine::app::{
     build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
     BrowserLayout, CardAiContextParams, DiffMode, InputMode,
 };
+use er_engine::config::ErConfig;
 
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
@@ -82,6 +83,7 @@ pub struct OpenSourceResult {
 
 pub struct AppState {
     pub app: Arc<Mutex<App>>,
+    pub config_edit_baseline: Arc<Mutex<Option<ErConfig>>>,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     pub pr_cache_fetched_at: PrCacheFetchedAtMap,
     pub pr_open_cache: Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
@@ -196,7 +198,7 @@ macro_rules! snap {
 }
 
 /// Build a snapshot using the lock guards directly (when callers already hold them).
-fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
+pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     build_snapshot(
         app,
         Some(&state.pr_cache),
@@ -709,13 +711,29 @@ pub fn toggle_compacted(state: State<AppState>) -> Result<AppSnapshot, String> {
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
 
+fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &str) -> bool {
+    match mode {
+        "unstaged" => features.view_unstaged,
+        "staged" => features.view_staged,
+        "history" => features.view_history,
+        "conflicts" => features.view_conflicts,
+        "hidden" => features.view_hidden,
+        _ => features.view_branch,
+    }
+}
+
 #[tauri::command]
 pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
+        return Err(format!("'{mode}' view is disabled in settings"));
+    }
     let diff_mode = match mode.as_str() {
         "unstaged" => DiffMode::Unstaged,
         "staged" => DiffMode::Staged,
         "history" => DiffMode::History,
+        "conflicts" => DiffMode::Conflicts,
+        "hidden" => DiffMode::Hidden,
         _ => DiffMode::Branch,
     };
     app.tab_mut().set_mode(diff_mode);
@@ -6093,6 +6111,7 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
         inbox.unread_count().hash(&mut h);
         inbox.last_refresh_ms.hash(&mut h);
     }
+    state.desktop_revision.load(Ordering::Relaxed).hash(&mut h);
     crate::profile_log::finish_hash(h)
 }
 

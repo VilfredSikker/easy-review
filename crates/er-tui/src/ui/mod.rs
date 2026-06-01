@@ -85,9 +85,13 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
     if let Some(ref overlay_data) = app.overlay {
         match overlay_data {
             OverlayData::ConfigHub {
-                selected, editing, ..
+                tab,
+                items,
+                selected,
+                editing,
+                ..
             } => {
-                settings::render_config_hub(f, f.area(), app, *selected, editing);
+                settings::render_config_hub(f, f.area(), app, *tab, items, *selected, editing);
             }
             _ => {
                 overlay::render_overlay(f, f.area(), overlay_data);

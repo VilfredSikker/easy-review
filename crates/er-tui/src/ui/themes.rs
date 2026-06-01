@@ -73,6 +73,9 @@ pub fn set_theme(theme: Theme) {
 pub fn set_theme_by_name(name: &str) {
     if let Some(theme) = theme_by_name(name) {
         set_theme(theme);
+    } else {
+        eprintln!("er: unknown theme {name:?}, using ocean-depth");
+        set_theme(ocean_depth());
     }
 }
 

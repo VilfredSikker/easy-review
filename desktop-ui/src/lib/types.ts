@@ -298,6 +298,10 @@ export interface AppSnapshot {
   pr: PrSnapshot | null;
   panels: Panels;
   theme: string;
+  /** Feature flags from ErConfig — controls which diff scopes appear in the UI. */
+  features?: FeatureFlagsSnapshot;
+  /** Display options from ErConfig (diff gear menu still uses localStorage for split/unified). */
+  display?: DisplayConfigSnapshot;
   watch_active: boolean;
   watch_status: WatchStatusSnapshot;
   worktrees: WorktreeSnapshot[];
@@ -507,4 +511,70 @@ export interface UiDomNodeContext {
   aria_label?: string | null;
   text?: string | null;
   attrs?: Record<string, string | null>;
+}
+
+/** Patch value for `apply_config_patch` (matches Rust `ConfigFieldValue`). */
+export type ConfigFieldValue = boolean | string | number;
+
+export type ConfigHubField =
+  | { kind: "section"; title: string }
+  | {
+      kind: "bool";
+      key: string;
+      label: string;
+      description: string;
+      value: boolean;
+    }
+  | {
+      kind: "cycle";
+      key: string;
+      label: string;
+      description: string;
+      options: string[];
+      value: string;
+    }
+  | {
+      kind: "text";
+      key: string;
+      label: string;
+      description: string;
+      placeholder: string;
+      value: string;
+      strict: boolean;
+    }
+  | { kind: "listEntry"; key: string; label: string; index: number }
+  | { kind: "listAdd"; key: string; label: string };
+
+export type SettingsTab = "general" | "terminal";
+
+export interface DesktopSettingsSnapshot {
+  general: ConfigHubField[];
+  app: ConfigHubField[];
+  terminal: ConfigHubField[];
+  agentEffort: string;
+  hasLocalConfig: boolean;
+  /** Repo `.er-config.toml` `[display].theme` — overrides global for the TUI. */
+  localThemeOverride?: string | null;
+  repoRoot: string;
+}
+
+export interface GetConfigHubResponse {
+  settings: DesktopSettingsSnapshot;
+  providers: AiProviderInfo[];
+}
+
+export interface FeatureFlagsSnapshot {
+  viewBranch: boolean;
+  viewUnstaged: boolean;
+  viewStaged: boolean;
+  viewHistory: boolean;
+  viewConflicts: boolean;
+  viewHidden: boolean;
+}
+
+export interface DisplayConfigSnapshot {
+  lineNumbers: boolean;
+  wrapLines: boolean;
+  splitDiff: boolean;
+  tabWidth: number;
 }

@@ -114,6 +114,13 @@
         run: () => { close(); app.cmd("force_refresh_diff"); },
       },
       {
+        id: "open-settings",
+        label: "Open settings",
+        section: "App",
+        keywords: ["config", "preferences"],
+        run: () => { close(); app.setMainView("settings"); },
+      },
+      {
         id: "toggle-diff-view-mode",
         label: "Toggle diff view (unified/split)",
         description: `Currently: ${app.diffViewMode}`,
@@ -182,24 +189,6 @@
               : []),
           ]
         : []),
-      {
-        id: "set-ai-model-opus",
-        label: "Change AI model: Opus",
-        group: "Actions",
-        run: () => { close(); app.cmd("set_ai_model", { model: "opus" }); },
-      },
-      {
-        id: "set-ai-model-sonnet",
-        label: "Change AI model: Sonnet",
-        group: "Actions",
-        run: () => { close(); app.cmd("set_ai_model", { model: "sonnet" }); },
-      },
-      {
-        id: "set-ai-model-haiku",
-        label: "Change AI model: Haiku",
-        group: "Actions",
-        run: () => { close(); app.cmd("set_ai_model", { model: "haiku" }); },
-      },
       {
         id: "toggle-terminal",
         label: terminal.open ? "Close terminal" : "Toggle terminal",
