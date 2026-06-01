@@ -64,6 +64,7 @@ args = ["--model", "claude-opus-4-6"]
 
 # ── Automation ─────────────────────────────────────────────────────────
 # Background automation for the desktop app.
+# Preemptive triage runs at most once per PR when it first enters To Review.
 [automation.preemptive]
 enabled = true
 # provider = "claude"       # optional; defaults to ai_hub default

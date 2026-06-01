@@ -33,7 +33,7 @@ pub struct AutomationConfig {
     pub preemptive: PreemptiveConfig,
 }
 
-/// [automation.preemptive] — cheap-model triage for new To Review PRs.
+/// [automation.preemptive] — cheap-model triage for new To Review PRs (one-time per PR).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreemptiveConfig {
     #[serde(default = "default_true")]
