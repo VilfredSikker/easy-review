@@ -154,12 +154,8 @@ fn read_pipes_concurrent(
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
 ) -> (String, String) {
-    let out_handle = stdout.map(|pipe| {
-        thread::spawn(move || read_lines(pipe))
-    });
-    let err_handle = stderr.map(|pipe| {
-        thread::spawn(move || read_lines(pipe))
-    });
+    let out_handle = stdout.map(|pipe| thread::spawn(move || read_lines(pipe)));
+    let err_handle = stderr.map(|pipe| thread::spawn(move || read_lines(pipe)));
     let stdout_text = out_handle
         .map(|h| h.join().unwrap_or_default())
         .unwrap_or_default();
@@ -310,7 +306,10 @@ mod tests {
 
     #[test]
     fn fake_arena_dir_round_robin() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/arena/fake");
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/arena/fake"
+        );
         std::env::set_var("ER_FAKE_ARENA_DIR", dir);
         let v1 = run_provider_json(
             &ProviderCommand {

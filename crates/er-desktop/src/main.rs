@@ -2,9 +2,9 @@
 
 mod arena_commands;
 mod browser_proxy;
-mod dev_log;
 mod browser_webview;
 mod commands;
+mod dev_log;
 mod er_storage;
 mod export;
 mod frame_script;
@@ -240,6 +240,7 @@ fn proxy_transport_error_response(e: &ureq::Error) -> tauri::http::Response<Vec<
         .unwrap()
 }
 
+#[allow(clippy::result_large_err)]
 fn upstream_request(
     agent: &ureq::Agent,
     request: &tauri::http::Request<Vec<u8>>,
@@ -286,7 +287,7 @@ fn proxied_response(
                 return browser_proxy::webview_navigation_handoff(&location);
             }
             Err(UpstreamFetchError::Transport(e)) => {
-                return proxy_transport_error_response(&e);
+                return proxy_transport_error_response(e.as_ref());
             }
         };
         (fetched.response, fetched.headers)
@@ -1152,7 +1153,6 @@ fn main() {
     if !deferred_tab_indices.is_empty() {
         let warmer_app = Arc::clone(&app_arc);
         let warmer_rev = Arc::clone(&desktop_revision);
-        let warmer_scope_root = warmer_scope_root;
         std::thread::spawn(move || {
             // Brief grace period so the active tab's diff + the first frame land
             // before we start consuming CPU on background tabs.
@@ -1228,7 +1228,7 @@ fn main() {
                 .build(),
         )
         .manage(state)
-        .manage(BrowserWebviewState::new())
+        .manage(BrowserWebviewState::default())
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
         // proxies `https://host/path`. HTML responses get the annotation script.
         .register_uri_scheme_protocol("erp", |_app, request| proxied_response(&request, "http"))
@@ -1299,7 +1299,7 @@ fn main() {
             .visible(false)
             .transparent(true)
             .initialization_script_for_all_frames(FRAME_SCRIPT)
-            .on_navigation(|url| main_webview_policy::handle_main_webview_navigation(&url))
+            .on_navigation(main_webview_policy::handle_main_webview_navigation)
             .on_new_window(|url, _features| {
                 main_webview_policy::handle_main_webview_new_window(&url)
             })

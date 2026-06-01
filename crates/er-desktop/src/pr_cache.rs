@@ -122,12 +122,12 @@ pub fn startup_full_refresh_due(fetched_at: &PrCacheFetchedAtMap) -> bool {
     }
     let now = now_epoch_ms();
     let guard = fetched_at.lock().ok();
-    remotes.iter().any(|remote| {
-        match guard.as_ref().and_then(|g| g.get(remote)) {
+    remotes
+        .iter()
+        .any(|remote| match guard.as_ref().and_then(|g| g.get(remote)) {
             None => true,
             Some(ts) => now.saturating_sub(*ts) > PR_CACHE_STARTUP_MAX_AGE_MS,
-        }
-    })
+        })
 }
 
 /// Return the remote slug for the currently-active project, if any.

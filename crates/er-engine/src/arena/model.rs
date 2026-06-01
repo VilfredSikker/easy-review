@@ -18,9 +18,7 @@ pub const ARENA_ARBITER_ROUND: u8 = 255;
 #[serde(rename_all = "lowercase")]
 pub enum RunStatus {
     Queued,
-    Running {
-        round: u8,
-    },
+    Running { round: u8 },
     Complete,
     Cancelled,
     Failed,
@@ -37,9 +35,7 @@ pub enum ReviewerKind {
 #[serde(rename_all = "lowercase")]
 pub enum ReviewerRunStatus {
     Ok,
-    Failed {
-        reason: String,
-    },
+    Failed { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,9 +43,7 @@ pub enum ReviewerRunStatus {
 pub enum Verdict {
     Kept,
     Escalated,
-    Merged {
-        into: String,
-    },
+    Merged { into: String },
     Dropped,
     Pending,
 }
@@ -67,17 +61,12 @@ pub enum Vote {
     Flag,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ArenaRunKind {
+    #[default]
     Models,
     Agent,
-}
-
-impl Default for ArenaRunKind {
-    fn default() -> Self {
-        Self::Models
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

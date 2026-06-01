@@ -34,7 +34,10 @@ pub fn severity_from_cross_check(
                         "escalate" => votes.push(RiskLevel::High),
                         "lower" => votes.push(RiskLevel::Low),
                         "keep" => votes.push(
-                            f.severity_by_round.get(&1).copied().unwrap_or(RiskLevel::Medium),
+                            f.severity_by_round
+                                .get(&1)
+                                .copied()
+                                .unwrap_or(RiskLevel::Medium),
                         ),
                         "abstain" | "flag" | "merge" | "drop" => {}
                         _ => {}
@@ -51,7 +54,10 @@ pub fn severity_from_cross_check(
 
 /// Back-compat alias for round-2 cross-check.
 #[allow(dead_code)]
-pub fn severity_from_round2(findings: &mut [ArenaFinding], ballots: &[(String, super::schema::Round2Output)]) {
+pub fn severity_from_round2(
+    findings: &mut [ArenaFinding],
+    ballots: &[(String, super::schema::Round2Output)],
+) {
     severity_from_cross_check(findings, ballots, 2);
 }
 
@@ -138,7 +144,10 @@ pub fn record_arbiter_ballots(
             continue;
         };
         if f.rounds.iter().all(|r| r.n != round) {
-            f.rounds.push(super::model::RoundLog { n: round, log: vec![] });
+            f.rounds.push(super::model::RoundLog {
+                n: round,
+                log: vec![],
+            });
         }
         if let Some(r) = f.rounds.iter_mut().find(|r| r.n == round) {
             r.log.push(Ballot {
@@ -177,11 +186,7 @@ fn parse_verdict(s: &str, merged_into: Option<&str>) -> Verdict {
 mod tests {
     use super::*;
 
-    fn confidence_score(
-        agreement_votes: usize,
-        total_voters: usize,
-        severity_stable: bool,
-    ) -> f32 {
+    fn confidence_score(agreement_votes: usize, total_voters: usize, severity_stable: bool) -> f32 {
         let agree = if total_voters == 0 {
             0.5
         } else {

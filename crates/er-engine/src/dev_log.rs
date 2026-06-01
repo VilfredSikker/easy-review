@@ -114,5 +114,4 @@ mod tests {
             Some(vec!["arena".into()])
         );
     }
-
 }

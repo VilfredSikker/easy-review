@@ -716,18 +716,13 @@ pub struct TabState {
 }
 
 /// Per-tab browser layout (desktop only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserLayout {
+    #[default]
     Hidden,
     Split,
     Fullscreen,
-}
-
-impl Default for BrowserLayout {
-    fn default() -> Self {
-        Self::Hidden
-    }
 }
 
 impl BrowserLayout {
@@ -739,7 +734,7 @@ impl BrowserLayout {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_layout(s: &str) -> Self {
         match s {
             "split" => Self::Split,
             "fullscreen" => Self::Fullscreen,
@@ -2028,8 +2023,8 @@ impl TabState {
         if let Some(ref branch) = self.local_branch_view {
             let base = self.base_branch.clone();
             return if let Some(head_ref) = self.pr_head_ref.clone() {
-                if self.pr_number.is_some() {
-                    crate::github::gh_pr_diff(self.pr_number.unwrap(), &self.repo_root)
+                if let Some(pr_number) = self.pr_number {
+                    crate::github::gh_pr_diff(pr_number, &self.repo_root)
                 } else {
                     crate::git::git_diff_against_branch(&self.repo_root, &base, &head_ref)
                 }
@@ -2088,11 +2083,10 @@ impl TabState {
 
     /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.
     pub fn raw_diff_for_review(&self, scope: &str) -> Result<String> {
-        if self.raw_diff.is_some()
-            && !self.branch_diff_hash.is_empty()
-            && self.review_scope_matches_cached_diff(scope)
-        {
-            return Ok(self.raw_diff.as_ref().unwrap().clone());
+        if let Some(raw) = self.raw_diff.as_ref() {
+            if !self.branch_diff_hash.is_empty() && self.review_scope_matches_cached_diff(scope) {
+                return Ok(raw.clone());
+            }
         }
         self.fetch_tab_raw_diff(scope)
     }
@@ -3159,8 +3153,7 @@ impl TabState {
                             .unwrap_or_default();
 
                     let first_diff = if let Some(c) = commits.first() {
-                        let raw =
-                            git::git_diff_commit(&c.hash, &log_root).unwrap_or_default();
+                        let raw = git::git_diff_commit(&c.hash, &log_root).unwrap_or_default();
                         git::parse_diff(&raw)
                     } else {
                         vec![]
@@ -4455,7 +4448,7 @@ impl App {
                         .ai
                         .github_comments
                         .as_ref()
-                        .map(|gc| crate::ai::count_eligible_github_comments(gc))
+                        .map(crate::ai::count_eligible_github_comments)
                         .unwrap_or(0);
                     if has_review && comment_count > 0 {
                         format!(
@@ -4479,7 +4472,7 @@ impl App {
                         .ai
                         .github_comments
                         .as_ref()
-                        .map(|gc| crate::ai::count_eligible_github_comments(gc))
+                        .map(crate::ai::count_eligible_github_comments)
                         .unwrap_or(0)
                         > 0,
             },
@@ -8794,10 +8787,7 @@ mod tests {
                 is_merge: false,
             }],
             selected_commit: 0,
-            commit_files: vec![
-                test_diff_file("commit-a.rs"),
-                test_diff_file("commit-b.rs"),
-            ],
+            commit_files: vec![test_diff_file("commit-a.rs"), test_diff_file("commit-b.rs")],
             selected_file: 1,
             current_hunk: 0,
             current_line: None,

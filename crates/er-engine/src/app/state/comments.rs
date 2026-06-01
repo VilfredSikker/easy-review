@@ -669,7 +669,7 @@ impl App {
             if author == "ai" {
                 anyhow::bail!("Cannot edit AI-generated text");
             }
-            if let (Some(gh_id), Some(ref gh)) = (github_id, gh_meta.as_ref()) {
+            if let (Some(gh_id), Some(gh)) = (github_id, gh_meta.as_ref()) {
                 crate::github::gh_pr_update_review_comment(
                     &gh.owner, &gh.repo, gh_id, new_text, &repo_root,
                 )?;

@@ -50,8 +50,7 @@ impl Highlighter {
         // into_builder() decompiles the frozen SyntaxSet back into a builder so
         // we can add definitions before re-compiling with build().
         let mut builder = two_face::syntax::extra_newlines().into_builder();
-        const SVELTE_SYNTAX: &str =
-            include_str!("syntaxes/Svelte.sublime-syntax");
+        const SVELTE_SYNTAX: &str = include_str!("syntaxes/Svelte.sublime-syntax");
         if let Ok(def) = SyntaxDefinition::load_from_str(SVELTE_SYNTAX, true, None) {
             builder.add(def);
         }
@@ -91,10 +90,7 @@ impl Highlighter {
         // highlight the whole file as TypeScript — sacrifices template markup
         // coloring for proper script highlighting, which is what code reviewers
         // actually look at.
-        let ext_lower = filename
-            .rsplit('.')
-            .next()
-            .map(|s| s.to_ascii_lowercase());
+        let ext_lower = filename.rsplit('.').next().map(|s| s.to_ascii_lowercase());
         // Force TypeScript for:
         // - All .ts/.tsx/.cts/.mts files (Path::extension() returns just the
         //   last segment, so foo.unit.ts → "ts", but be explicit here in case
@@ -103,8 +99,13 @@ impl Highlighter {
         //   TS scopes from two_face's HTML syntax, so use TS for the whole file.
         let force_ts = matches!(
             ext_lower.as_deref(),
-            Some("ts") | Some("tsx") | Some("cts") | Some("mts")
-                | Some("svelte") | Some("vue") | Some("astro")
+            Some("ts")
+                | Some("tsx")
+                | Some("cts")
+                | Some("mts")
+                | Some("svelte")
+                | Some("vue")
+                | Some("astro")
         );
         let syntax = if force_ts {
             self.syntax_set
@@ -218,7 +219,8 @@ mod tests {
             println!("  {:?} => {}", t, c);
         }
         // Look for distinct colors — `import`, `from` must NOT be default.
-        let distinct: std::collections::HashSet<_> = colors.iter().map(|(_, c)| c.as_str()).collect();
+        let distinct: std::collections::HashSet<_> =
+            colors.iter().map(|(_, c)| c.as_str()).collect();
         assert!(
             distinct.len() > 2,
             "expected multiple distinct colors, got: {:?}",

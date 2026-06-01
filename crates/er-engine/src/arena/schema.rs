@@ -73,8 +73,7 @@ pub fn validate_round1_output(value: &Value) -> Result<Round1Output> {
         if f.title.trim().is_empty() || f.body.trim().is_empty() {
             bail!("finding[{i}]: title and body are required");
         }
-        parse_severity(&f.severity)
-            .with_context(|| format!("finding[{i}]: invalid severity"))?;
+        parse_severity(&f.severity).with_context(|| format!("finding[{i}]: invalid severity"))?;
     }
     Ok(out)
 }

@@ -1,6 +1,8 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::config::{agent_command_uses_stream_json, inject_claude_effort, resolve_effort, ErConfig};
+use crate::config::{
+    agent_command_uses_stream_json, inject_claude_effort, resolve_effort, ErConfig,
+};
 use std::process::Command;
 
 /// Resolved agent command + args for a card AI subprocess.
@@ -20,7 +22,9 @@ pub fn plan_card_ai_invocation(
     runtime_effort: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
-    let (command, mut args, is_claude) = if let Some(pid) = config.ai_hub.resolve_provider_id(provider_id) {
+    let (command, mut args, is_claude) = if let Some(pid) =
+        config.ai_hub.resolve_provider_id(provider_id)
+    {
         if let Some(provider) = config.ai_hub.providers.get(&pid) {
             let mut args = provider.args.clone();
             if let Some(mid) = config.ai_hub.resolve_model_id(&pid, model_id) {
@@ -28,8 +32,7 @@ pub fn plan_card_ai_invocation(
                     args.extend(model.args.clone());
                 }
             }
-            let is_claude =
-                provider.command.ends_with("claude") || provider.command == "claude";
+            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
             (provider.command.clone(), args, is_claude)
         } else {
             fallback_agent(config)
@@ -38,8 +41,8 @@ pub fn plan_card_ai_invocation(
         fallback_agent(config)
     };
 
-    let uses_stream_json = agent_command_uses_stream_json(&command)
-        && args.iter().any(|a| a == "stream-json");
+    let uses_stream_json =
+        agent_command_uses_stream_json(&command) && args.iter().any(|a| a == "stream-json");
 
     if is_claude {
         inject_read_only_tools(&mut args);

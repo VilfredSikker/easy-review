@@ -62,7 +62,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path).with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
+    fs::rename(&tmp, path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
 }
 
 pub fn save_run(paths: &ArenaPaths, run: &ArenaRun) -> Result<()> {
@@ -83,7 +84,12 @@ pub fn save_diff_patch(paths: &ArenaPaths, patch: &str) -> Result<()> {
 }
 
 #[allow(dead_code)]
-pub fn save_round_output(paths: &ArenaPaths, round: u8, reviewer_id: &str, value: &serde_json::Value) -> Result<()> {
+pub fn save_round_output(
+    paths: &ArenaPaths,
+    round: u8,
+    reviewer_id: &str,
+    value: &serde_json::Value,
+) -> Result<()> {
     paths.ensure_dirs()?;
     let path = paths.round_reviewer_json(round, reviewer_id);
     let json = serde_json::to_string_pretty(value)?;
@@ -171,17 +177,12 @@ pub fn parse_progress_state(paths: &ArenaPaths) -> ArenaProgressState {
                 done.clear();
                 state.phase = "arbiter".into();
             }
-            ProgressEvent::ReviewerThinking {
-                reviewer_id,
-                round,
-            } => {
+            ProgressEvent::ReviewerThinking { reviewer_id, round } => {
                 state.round = round;
                 thinking.insert(reviewer_id);
             }
             ProgressEvent::ReviewerDone {
-                reviewer_id,
-                round,
-                ..
+                reviewer_id, round, ..
             } => {
                 state.round = round;
                 thinking.remove(&reviewer_id);
@@ -274,8 +275,8 @@ fn walk_mtime(mut dirs: Vec<PathBuf>, latest: &mut Option<std::time::SystemTime>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::model::*;
     use crate::ai::RiskLevel;
+    use crate::arena::model::*;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
@@ -360,6 +361,9 @@ mod tests {
         assert_eq!(loaded.findings.len(), 1);
         assert!(paths.diff_patch().is_file());
         assert!(paths.progress_jsonl().is_file());
-        assert_eq!(list_run_ids(&er).unwrap(), vec!["run-fixture-001".to_string()]);
+        assert_eq!(
+            list_run_ids(&er).unwrap(),
+            vec!["run-fixture-001".to_string()]
+        );
     }
 }

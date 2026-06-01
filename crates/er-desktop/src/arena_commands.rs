@@ -1,12 +1,12 @@
 //! Tauri commands for AI Review Arena (S8).
 
-use crate::snapshot::{ArenaRunSnapshotWire, ArenaRunSummaryWire};
 use crate::commands::AppState;
+use crate::snapshot::{ArenaRunSnapshotWire, ArenaRunSummaryWire};
+use er_engine::app::App;
 use er_engine::arena::{
     estimate_batch_cost_usd, AgentGroupStart, ArenaBatchStartParams, ArenaDiffPreview,
     ArenaProgressState, ArenaScope, ArenaStartParams, ReviewerRef, Verdict,
 };
-use er_engine::app::App;
 use serde::Deserialize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -141,8 +141,14 @@ pub fn arena_estimate(
         model_id: a.model_id.clone(),
         agent_kind: a.agent_kind.clone(),
     });
-    app.arena_preview(scope, req.files.as_deref(), &reviewers, req.rounds, arbiter.as_ref())
-        .map_err(|e| e.to_string())
+    app.arena_preview(
+        scope,
+        req.files.as_deref(),
+        &reviewers,
+        req.rounds,
+        arbiter.as_ref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -272,7 +278,10 @@ pub fn arena_accept_findings(
 }
 
 #[tauri::command]
-pub fn arena_progress(run_id: String, state: State<AppState>) -> Result<ArenaProgressState, String> {
+pub fn arena_progress(
+    run_id: String,
+    state: State<AppState>,
+) -> Result<ArenaProgressState, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     app.arena_progress(&run_id).map_err(|e| e.to_string())
 }
@@ -318,7 +327,10 @@ pub fn arena_cancel(run_id: String, state: State<AppState>) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn arena_override(req: ArenaOverrideRequest, state: State<AppState>) -> Result<ArenaRunSnapshotWire, String> {
+pub fn arena_override(
+    req: ArenaOverrideRequest,
+    state: State<AppState>,
+) -> Result<ArenaRunSnapshotWire, String> {
     let snap = {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         let _finding = app
@@ -329,7 +341,8 @@ pub fn arena_override(req: ArenaOverrideRequest, state: State<AppState>) -> Resu
                 req.note,
             )
             .map_err(|e| e.to_string())?;
-        app.arena_get_snapshot(&req.run_id).map_err(|e| e.to_string())?
+        app.arena_get_snapshot(&req.run_id)
+            .map_err(|e| e.to_string())?
     };
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(wire_snapshot(snap))

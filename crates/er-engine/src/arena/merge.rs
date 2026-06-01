@@ -84,7 +84,10 @@ pub fn findings_from_round1(
                     existing.raised_by.push(reviewer_id.clone());
                 }
                 let cur = existing.severity_by_round.get(&1).copied();
-                if cur.map(|c| severity_rank(c) < severity_rank(sev)).unwrap_or(true) {
+                if cur
+                    .map(|c| severity_rank(c) < severity_rank(sev))
+                    .unwrap_or(true)
+                {
                     existing.severity_by_round.insert(1, sev);
                 }
             } else {

@@ -19,6 +19,7 @@ pub fn webview_label(tab_idx: usize) -> String {
     format!("{REVIEW_BROWSER_LABEL_PREFIX}-{tab_idx}")
 }
 
+#[derive(Default)]
 pub struct BrowserWebviewState {
     /// tab_idx → child webview has been created
     created: Mutex<HashMap<usize, bool>>,
@@ -28,14 +29,6 @@ pub struct BrowserWebviewState {
 }
 
 impl BrowserWebviewState {
-    pub fn new() -> Self {
-        Self {
-            created: Mutex::new(HashMap::new()),
-            active_tab: Mutex::new(0),
-            annotate_by_tab: Mutex::new(HashMap::new()),
-        }
-    }
-
     pub fn set_tab_annotate_mode(&self, tab_idx: usize, active: bool) {
         if let Ok(mut m) = self.annotate_by_tab.lock() {
             m.insert(tab_idx, active);

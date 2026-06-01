@@ -1,10 +1,9 @@
 use crate::arena::{
     build_arena_diff_preview, build_snapshot_with_config, delete_run_dir,
     import_arena_findings_to_review, load_run, parse_progress_state, reconcile_stale_runs,
-    save_run,
-    scope_git_mode, start_arena_batch, start_arena_run, ArenaBatchStartParams, ArenaDiffPreview,
-    ArenaPaths, ArenaProgressState, ArenaRegistry, ArenaRunSnapshot, ArenaScope, ArenaStartParams,
-    HumanOverride, ReviewerRef, Verdict,
+    save_run, scope_git_mode, start_arena_batch, start_arena_run, ArenaBatchStartParams,
+    ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRegistry, ArenaRunSnapshot, ArenaScope,
+    ArenaStartParams, HumanOverride, ReviewerRef, Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
@@ -366,6 +365,9 @@ mod tests {
         let arena = tab.raw_diff_for_arena(ArenaScope::Branch, None).unwrap();
         let review = tab.raw_diff_for_review("branch").unwrap();
         assert_eq!(arena, review);
-        assert!(arena.contains("feature"), "arena should use branch-view diff");
+        assert!(
+            arena.contains("feature"),
+            "arena should use branch-view diff"
+        );
     }
 }

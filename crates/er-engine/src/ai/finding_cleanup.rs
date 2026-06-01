@@ -1,25 +1,29 @@
 //! Persisted removal of findings and linked validation threads.
 
 use super::comments::{ErGitHubComments, ErQuestions};
-use super::review::AiState;
 use super::experts::{expert_by_id, load_expert_reviews, ExpertReview};
 use super::professor::{load_professor_review, PROFESSOR_ID_PREFIX};
+use super::review::AiState;
 use super::review::ErReview;
 use std::path::Path;
 
 /// Root thread id (question or github comment) linked to a finding via `finding_ref`.
 pub fn find_finding_thread_root(ai: &AiState, finding_id: &str) -> Option<String> {
     if let Some(qs) = ai.questions.as_ref() {
-        if let Some(q) = qs.questions.iter().find(|q| {
-            q.finding_ref.as_deref() == Some(finding_id) && q.in_reply_to.is_none()
-        }) {
+        if let Some(q) = qs
+            .questions
+            .iter()
+            .find(|q| q.finding_ref.as_deref() == Some(finding_id) && q.in_reply_to.is_none())
+        {
             return Some(q.id.clone());
         }
     }
     if let Some(gc) = ai.github_comments.as_ref() {
-        if let Some(c) = gc.comments.iter().find(|c| {
-            c.finding_ref.as_deref() == Some(finding_id) && c.in_reply_to.is_none()
-        }) {
+        if let Some(c) = gc
+            .comments
+            .iter()
+            .find(|c| c.finding_ref.as_deref() == Some(finding_id) && c.in_reply_to.is_none())
+        {
             return Some(c.id.clone());
         }
     }
@@ -34,10 +38,15 @@ fn matches_finding_id(stored_id: &str, target_id: &str, id_prefix: Option<&str>)
         return false;
     };
     let prefixed = format!("{prefix}-{stored_id}");
-    prefixed == target_id || stored_id == target_id.strip_prefix(&format!("{prefix}-")).unwrap_or("")
+    prefixed == target_id
+        || stored_id == target_id.strip_prefix(&format!("{prefix}-")).unwrap_or("")
 }
 
-fn retain_findings(findings: &mut Vec<super::review::Finding>, target_id: &str, id_prefix: Option<&str>) -> bool {
+fn retain_findings(
+    findings: &mut Vec<super::review::Finding>,
+    target_id: &str,
+    id_prefix: Option<&str>,
+) -> bool {
     let before = findings.len();
     findings.retain(|f| !matches_finding_id(&f.id, target_id, id_prefix));
     findings.len() < before
@@ -91,7 +100,9 @@ pub fn remove_finding_from_sidecars(er_dir: &str, finding_id: &str) -> std::io::
 
     for expert in load_expert_reviews(er_dir) {
         let prefix = expert_by_id(&expert.expert_id).map(|d| d.id_prefix);
-        let path = er.join("experts").join(format!("{}.json", expert.expert_id));
+        let path = er
+            .join("experts")
+            .join(format!("{}.json", expert.expert_id));
         if !path.is_file() {
             continue;
         }
@@ -143,7 +154,7 @@ pub fn delete_threads_linked_to_finding(er_dir: &str, finding_id: &str) -> std::
                                 return false;
                             }
                         }
-                        !(q.finding_ref.as_deref() == Some(finding_id))
+                        q.finding_ref.as_deref() != Some(finding_id)
                     });
                     write_json_atomic(&q_path, &qs)?;
                     changed = true;
@@ -176,7 +187,7 @@ pub fn delete_threads_linked_to_finding(er_dir: &str, finding_id: &str) -> std::
                                 return false;
                             }
                         }
-                        !(c.finding_ref.as_deref() == Some(finding_id))
+                        c.finding_ref.as_deref() != Some(finding_id)
                     });
                     write_json_atomic(&gc_path, &gc)?;
                     changed = true;
@@ -220,7 +231,9 @@ mod tests {
 
     #[test]
     fn find_finding_thread_root_prefers_question_over_github() {
-        use super::super::comments::{ErGitHubComments, ErQuestions, GitHubReviewComment, ReviewQuestion};
+        use super::super::comments::{
+            ErGitHubComments, ErQuestions, GitHubReviewComment, ReviewQuestion,
+        };
         use super::super::review::AiState;
 
         let mut ai = AiState::default();
@@ -335,11 +348,7 @@ mod tests {
             .into_iter()
             .collect(),
         };
-        write_json_atomic(
-            &Path::new(er).join("experts/security.json"),
-            &expert,
-        )
-        .unwrap();
+        write_json_atomic(&Path::new(er).join("experts/security.json"), &expert).unwrap();
 
         assert!(remove_finding_from_sidecars(er, "sec-f-1").unwrap());
 

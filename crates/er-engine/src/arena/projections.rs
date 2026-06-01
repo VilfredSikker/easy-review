@@ -1,5 +1,5 @@
 use super::model::{
-    ArenaFinding, ArenaRun, ArbiterView, FunnelCounts, FunnelStage, FunnelStages, MatrixRow,
+    ArbiterView, ArenaFinding, ArenaRun, FunnelCounts, FunnelStage, FunnelStages, MatrixRow,
     Verdict, ARENA_ARBITER_ROUND,
 };
 use super::orchestrator::{arbiter_display_label, ARBITER_REVIEWER_ID};

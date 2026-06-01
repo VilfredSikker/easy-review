@@ -122,12 +122,15 @@ pub fn import_arena_findings_to_review(
         let finding = arena_finding_to_review(&af, run);
         let file = af.file.clone();
         let risk = latest_severity(&af);
-        let entry = review.files.entry(file.clone()).or_insert_with(|| ErFileReview {
-            risk,
-            risk_reason: String::new(),
-            summary: String::new(),
-            findings: vec![],
-        });
+        let entry = review
+            .files
+            .entry(file.clone())
+            .or_insert_with(|| ErFileReview {
+                risk,
+                risk_reason: String::new(),
+                summary: String::new(),
+                findings: vec![],
+            });
         if let Some(pos) = entry.findings.iter().position(|x| x.id == finding.id) {
             entry.findings[pos] = finding;
         } else {

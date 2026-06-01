@@ -1,7 +1,10 @@
+#![allow(clippy::too_many_arguments)]
+
 use super::adapter::{is_cancelled_error, resolve_provider_command, run_provider_json};
+use super::agents::agent_meta;
 use super::merge::findings_from_round1;
 use super::model::*;
-use super::registry::{ArenaRegistry, ArenaRunHandle, new_run_id};
+use super::registry::{new_run_id, ArenaRegistry, ArenaRunHandle};
 use super::storage::{
     append_progress_event, load_run, save_arbiter_output, save_diff_patch, save_round_output,
     save_run, ArenaPaths, ProgressEvent,
@@ -11,7 +14,6 @@ use crate::ai::compute_diff_hash;
 use crate::ai::prompts::{
     build_arena_round1_prompt_agent, build_arena_round2_prompt, build_arena_round3_prompt,
 };
-use super::agents::agent_meta;
 use crate::config::ErConfig;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -27,7 +29,7 @@ pub const MIN_QUORUM: usize = 2;
 
 /// Minimum successful reviewers required after round 1 (1 for solo runs, 2 for arena).
 pub fn min_survivors_required(reviewer_count: usize) -> usize {
-    reviewer_count.min(MIN_QUORUM).max(1)
+    reviewer_count.clamp(1, MIN_QUORUM)
 }
 
 /// Effective round count for v1 (1–3).
@@ -79,7 +81,8 @@ pub fn default_arbiter_from_hub(hub: &crate::config::AiHubConfig) -> Option<Revi
     let mut best: Option<(f32, ReviewerRef)> = None;
     for (provider_id, provider) in &hub.providers {
         for model in &provider.models {
-            let cost = model.cost_per_1k_in.unwrap_or(0.015) + model.cost_per_1k_out.unwrap_or(0.075);
+            let cost =
+                model.cost_per_1k_in.unwrap_or(0.015) + model.cost_per_1k_out.unwrap_or(0.075);
             let rf = ReviewerRef {
                 provider_id: provider_id.clone(),
                 model_id: model.id.clone(),
@@ -101,7 +104,10 @@ fn model_cost_rate(hub: &crate::config::AiHubConfig, rf: &ReviewerRef) -> f32 {
         .unwrap_or(0.09)
 }
 
-pub fn resolve_arbiter(params: &ArenaStartParams, hub: &crate::config::AiHubConfig) -> Result<ReviewerRef> {
+pub fn resolve_arbiter(
+    params: &ArenaStartParams,
+    hub: &crate::config::AiHubConfig,
+) -> Result<ReviewerRef> {
     if let Some(ref a) = params.arbiter {
         return Ok(a.clone());
     }
@@ -143,16 +149,10 @@ pub fn estimate_cost_usd(
         rate_sum += model_cost_rate(hub, rf);
         n += 1;
     }
-    let rate = if n > 0 {
-        rate_sum / n as f32
-    } else {
-        0.02
-    };
+    let rate = if n > 0 { rate_sum / n as f32 } else { 0.02 };
     let mut cost = (tokens_in / 1000.0) * rate;
     if rounds_n >= 2 {
-        let arb = arbiter
-            .cloned()
-            .or_else(|| default_arbiter_from_hub(hub));
+        let arb = arbiter.cloned().or_else(|| default_arbiter_from_hub(hub));
         if let Some(arb) = arb {
             let arb_rate = model_cost_rate(hub, &arb);
             let arb_tokens = (diff_bytes as f64 * 0.45 * 1.2) as f32;
@@ -255,9 +255,7 @@ pub fn start_arena_run(
     } else if params.reviewers.len() < MIN_QUORUM {
         anyhow::bail!("arena requires at least {MIN_QUORUM} reviewers");
     } else if rounds > 1 && params.reviewers.len() < MIN_QUORUM {
-        anyhow::bail!(
-            "arena requires at least {MIN_QUORUM} reviewers for {rounds} rounds"
-        );
+        anyhow::bail!("arena requires at least {MIN_QUORUM} reviewers for {rounds} rounds");
     }
 
     if raw_diff.trim().is_empty() {
@@ -447,9 +445,10 @@ pub fn start_arena_batch(
                 "estimated batch cost ${total_est:.2} exceeds limit ${DEFAULT_COST_LIMIT_USD:.2}; pass confirm=true"
             );
         }
-        let title = group.title.clone().or_else(|| {
-            agent_meta(&group.agent_kind).map(|a| format!("{} review", a.label))
-        });
+        let title = group
+            .title
+            .clone()
+            .or_else(|| agent_meta(&group.agent_kind).map(|a| format!("{} review", a.label)));
         let params = ArenaStartParams {
             title,
             reviewers,
@@ -549,7 +548,8 @@ fn run_round1_parallel(
     let patch_path = patch_path.to_string();
     let cancel = Arc::clone(cancel);
     let children = Arc::clone(children);
-    let ok: Arc<Mutex<Vec<(String, super::schema::Round1Output)>>> = Arc::new(Mutex::new(Vec::new()));
+    let ok: Arc<Mutex<Vec<(String, super::schema::Round1Output)>>> =
+        Arc::new(Mutex::new(Vec::new()));
     let failed: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let cancelled: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
@@ -580,7 +580,10 @@ fn run_round1_parallel(
             ) {
                 Ok(c) => c,
                 Err(e) => {
-                    failed.lock().unwrap().push((reviewer.id.clone(), e.to_string()));
+                    failed
+                        .lock()
+                        .unwrap()
+                        .push((reviewer.id.clone(), e.to_string()));
                     return;
                 }
             };
@@ -623,7 +626,10 @@ fn run_round1_parallel(
     }
 
     Ok(Round1ParallelOutcome {
-        ok: Arc::try_unwrap(ok).map_err(|_| anyhow::anyhow!("round1 ok lock"))?.into_inner().unwrap(),
+        ok: Arc::try_unwrap(ok)
+            .map_err(|_| anyhow::anyhow!("round1 ok lock"))?
+            .into_inner()
+            .unwrap(),
         failed: Arc::try_unwrap(failed)
             .map_err(|_| anyhow::anyhow!("round1 failed lock"))?
             .into_inner()
@@ -669,7 +675,8 @@ fn run_round2_parallel(
     let findings_json = findings_json.to_string();
     let cancel = Arc::clone(cancel);
     let children = Arc::clone(children);
-    let ok: Arc<Mutex<Vec<(String, super::schema::Round2Output)>>> = Arc::new(Mutex::new(Vec::new()));
+    let ok: Arc<Mutex<Vec<(String, super::schema::Round2Output)>>> =
+        Arc::new(Mutex::new(Vec::new()));
     let failed: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let cancelled: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
@@ -701,7 +708,10 @@ fn run_round2_parallel(
             ) {
                 Ok(c) => c,
                 Err(e) => {
-                    failed.lock().unwrap().push((reviewer.id.clone(), e.to_string()));
+                    failed
+                        .lock()
+                        .unwrap()
+                        .push((reviewer.id.clone(), e.to_string()));
                     return;
                 }
             };
@@ -741,7 +751,10 @@ fn run_round2_parallel(
     }
 
     Ok(Round2ParallelOutcome {
-        ok: Arc::try_unwrap(ok).map_err(|_| anyhow::anyhow!("round2 ok lock"))?.into_inner().unwrap(),
+        ok: Arc::try_unwrap(ok)
+            .map_err(|_| anyhow::anyhow!("round2 ok lock"))?
+            .into_inner()
+            .unwrap(),
         failed: Arc::try_unwrap(failed)
             .map_err(|_| anyhow::anyhow!("round2 failed lock"))?
             .into_inner()
@@ -772,7 +785,13 @@ fn run_supervisor(
             run.completed_at = Some(crate::app::chrono_now());
             save_run(paths, &run)?;
             *status.lock().unwrap() = RunStatus::Cancelled;
-            emit(registry, paths, &ProgressEvent::RunComplete { run_id: run_id.clone() });
+            emit(
+                registry,
+                paths,
+                &ProgressEvent::RunComplete {
+                    run_id: run_id.clone(),
+                },
+            );
             return Ok(());
         };
     }
@@ -867,7 +886,9 @@ fn run_supervisor(
         emit(
             registry,
             paths,
-            &ProgressEvent::RunComplete { run_id: run_id.clone() },
+            &ProgressEvent::RunComplete {
+                run_id: run_id.clone(),
+            },
         );
         return Ok(());
     }
@@ -971,11 +992,7 @@ fn run_supervisor(
     };
     let r3 = super::schema::validate_round3_output(&v)?;
     let _ = save_arbiter_output(paths, &v);
-    apply_round3_verdicts(
-        &mut run.findings,
-        &r3,
-        run.config.auto_accept_threshold,
-    );
+    apply_round3_verdicts(&mut run.findings, &r3, run.config.auto_accept_threshold);
     record_arbiter_ballots(&mut run.findings, &r3, ARBITER_REVIEWER_ID);
 
     for f in &run.findings {
@@ -1004,7 +1021,9 @@ fn run_supervisor(
     emit(
         registry,
         paths,
-        &ProgressEvent::RunComplete { run_id: run_id.clone() },
+        &ProgressEvent::RunComplete {
+            run_id: run_id.clone(),
+        },
     );
     Ok(())
 }
@@ -1063,8 +1082,7 @@ fn resolve_reviewers(config: &ErConfig, refs: &[ReviewerRef]) -> Result<Vec<Revi
             .with_context(|| format!("unknown model {}", rf.model_id))?;
         let agent_kind = rf.agent_kind.clone();
         let (kind, name, color, icon, tagline) = if let Some(ref ak) = agent_kind {
-            let meta = agent_meta(ak)
-                .with_context(|| format!("unknown agent_kind {ak}"))?;
+            let meta = agent_meta(ak).with_context(|| format!("unknown agent_kind {ak}"))?;
             let display = format!(
                 "{} · {}",
                 meta.label,
@@ -1080,10 +1098,7 @@ fn resolve_reviewers(config: &ErConfig, refs: &[ReviewerRef]) -> Result<Vec<Revi
         } else {
             (
                 ReviewerKind::Model,
-                model
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| model.id.clone()),
+                model.label.clone().unwrap_or_else(|| model.id.clone()),
                 reviewer_color(i),
                 "cube".to_string(),
                 provider.display_name(&rf.provider_id),
@@ -1115,7 +1130,9 @@ fn resolve_reviewers(config: &ErConfig, refs: &[ReviewerRef]) -> Result<Vec<Revi
 }
 
 fn reviewer_color(i: usize) -> String {
-    const COLORS: &[&str] = &["#ff7a2b", "#ff6b6b", "#7f87ff", "#4ec9a4", "#ffc457", "#5fd970"];
+    const COLORS: &[&str] = &[
+        "#ff7a2b", "#ff6b6b", "#7f87ff", "#4ec9a4", "#ffc457", "#5fd970",
+    ];
     COLORS[i % COLORS.len()].to_string()
 }
 

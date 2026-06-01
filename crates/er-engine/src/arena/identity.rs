@@ -2,10 +2,7 @@ use sha1::{Digest, Sha1};
 
 /// Normalize finding text for stable cross-run IDs.
 pub fn canonical_finding_text(text: &str) -> String {
-    let collapsed: String = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.to_lowercase()
 }
 

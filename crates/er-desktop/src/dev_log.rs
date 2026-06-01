@@ -2,7 +2,9 @@
 
 use er_engine::dev_log as engine;
 
-pub use engine::{arena_line, enabled, shows_all, GROUP_APP, GROUP_ARENA, GROUP_ERP, GROUP_PROFILE};
+pub use engine::{
+    arena_line, enabled, shows_all, GROUP_APP, GROUP_ARENA, GROUP_ERP, GROUP_PROFILE,
+};
 
 /// Call once at process start (before `tauri::Builder`).
 pub fn init() {

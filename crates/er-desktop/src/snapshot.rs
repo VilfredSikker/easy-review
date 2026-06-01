@@ -1329,8 +1329,7 @@ fn build_snapshot_inner(
             .flatten(),
         arena_runs: if app.config.features.arena {
             let branch = app.arena_branch_ref();
-            app.arena_list_summaries(Some(&branch))
-                .unwrap_or_default()
+            app.arena_list_summaries(Some(&branch)).unwrap_or_default()
         } else {
             Vec::new()
         },
@@ -2417,7 +2416,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     let eligible_comment_count = ai
         .github_comments
         .as_ref()
-        .map(|gc| er_engine::ai::count_eligible_github_comments(gc))
+        .map(er_engine::ai::count_eligible_github_comments)
         .unwrap_or(0);
 
     AiSnapshot {
