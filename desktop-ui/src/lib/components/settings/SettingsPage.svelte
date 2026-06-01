@@ -6,6 +6,7 @@
     ConfigFieldValue,
     ConfigHubField,
     GetConfigHubResponse,
+    SettingsTab,
   } from "$lib/types";
   import Toggle from "./Toggle.svelte";
   import OptionGroup from "./OptionGroup.svelte";
@@ -18,16 +19,44 @@
 
   const { onBack }: Props = $props();
 
+  const TABS: { id: SettingsTab; label: string; blurb: string }[] = [
+    { id: "general", label: "General", blurb: "Shared config for both app and terminal." },
+    { id: "app", label: "App", blurb: "Desktop app only." },
+    { id: "terminal", label: "Terminal", blurb: "TUI (`er`) only." },
+  ];
+
   let loading = $state(true);
-  let fields = $state<ConfigHubField[]>([]);
+  let activeTab = $state<SettingsTab>("general");
+  let generalFields = $state<ConfigHubField[]>([]);
+  let appFields = $state<ConfigHubField[]>([]);
+  let terminalFields = $state<ConfigHubField[]>([]);
   let providers = $state<AiProviderInfo[]>([]);
   let hasLocalConfig = $state(false);
   let repoRoot = $state("");
   let addPattern = $state("");
   let textWarnings = $state<Record<string, string | null>>({});
 
+  const fields = $derived(
+    activeTab === "general"
+      ? generalFields
+      : activeTab === "app"
+        ? appFields
+        : terminalFields,
+  );
+
+  const tabBlurb = $derived(TABS.find((t) => t.id === activeTab)?.blurb ?? "");
+
   const selectedProvider = $derived(providers.find((p) => p.is_selected) ?? null);
   const selectedModels = $derived(selectedProvider?.models ?? []);
+
+  function applySettings(res: GetConfigHubResponse) {
+    generalFields = res.settings.general;
+    appFields = res.settings.app;
+    terminalFields = res.settings.terminal;
+    providers = res.providers;
+    hasLocalConfig = res.settings.hasLocalConfig;
+    repoRoot = res.settings.repoRoot;
+  }
 
   async function reload(resetBaseline = false) {
     loading = true;
@@ -35,10 +64,7 @@
       const res = await invoke<GetConfigHubResponse>("get_config_hub", {
         resetBaseline,
       });
-      fields = res.settings.fields;
-      providers = res.providers;
-      hasLocalConfig = res.settings.hasLocalConfig;
-      repoRoot = res.settings.repoRoot;
+      applySettings(res);
     } catch (e) {
       app.showToast("error", `get_config_hub: ${e}`);
     } finally {
@@ -51,8 +77,7 @@
       const res = await invoke<GetConfigHubResponse>("apply_config_patch", {
         patch: { key, value },
       });
-      fields = res.settings.fields;
-      providers = res.providers;
+      applySettings(res);
     } catch (e) {
       app.showToast("error", `apply_config_patch: ${e}`);
     }
@@ -87,8 +112,7 @@
         providerId: p.id,
         modelId: model?.id ?? null,
       });
-      fields = res.settings.fields;
-      providers = res.providers;
+      applySettings(res);
       app.showToast("success", "Saved AI defaults to config");
     } catch (e) {
       app.showToast("error", `set_ai_hub_defaults: ${e}`);
@@ -98,8 +122,7 @@
   async function revert() {
     try {
       const res = await invoke<GetConfigHubResponse>("reset_config_draft");
-      fields = res.settings.fields;
-      providers = res.providers;
+      applySettings(res);
       app.showToast("info", "Reverted unsaved changes");
     } catch (e) {
       app.showToast("error", `reset_config_draft: ${e}`);
@@ -140,7 +163,7 @@
   });
 </script>
 
-<div class="flex flex-col h-full min-h-0 bg-bg text-fg">
+<div class="flex flex-col flex-1 w-full min-w-0 h-full min-h-0 bg-bg text-fg">
   <header class="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-hairline">
     <button
       type="button"
@@ -158,10 +181,28 @@
   {#if loading}
     <div class="flex-1 flex items-center justify-center text-sm text-muted">Loading…</div>
   {:else}
-    <div class="flex-1 overflow-y-auto px-4 py-4 max-w-2xl">
-      <p class="text-xs text-muted mb-6">
-        App-wide rules and integrations. Diff layout (unified/split) stays in the diff view gear menu.
-      </p>
+    <div
+      class="shrink-0 flex gap-1 px-4 pt-3 border-b border-hairline"
+      role="tablist"
+      aria-label="Settings sections"
+    >
+      {#each TABS as tab (tab.id)}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === tab.id}
+          class="px-3 py-1.5 text-sm rounded-t-md border-b-2 transition-colors {activeTab === tab.id
+            ? 'border-accent text-fg font-medium'
+            : 'border-transparent text-fg-3 hover:text-fg hover:bg-hover'}"
+          onclick={() => (activeTab = tab.id)}
+        >
+          {tab.label}
+        </button>
+      {/each}
+    </div>
+
+    <div class="flex-1 overflow-y-auto w-full px-6 py-4">
+      <p class="text-xs text-muted mb-6">{tabBlurb}</p>
 
       {#each fields as field, i (field.kind === "section" ? field.title : "field-" + i + (field.kind === "bool" || field.kind === "cycle" || field.kind === "text" ? field.key : field.kind === "listEntry" ? field.key : field.label))}
         {#if field.kind === "section"}
@@ -231,51 +272,59 @@
         {/if}
       {/each}
 
-      {#if providers.length > 0}
-        <h2 class="text-xs uppercase tracking-wider text-muted font-semibold mt-8 mb-2">AI Hub</h2>
-        <p class="text-xs text-muted mb-3">Session selection. Save defaults writes to config TOML.</p>
-        <div class="py-2">
-          <div class="text-sm text-fg mb-1.5">Provider</div>
-          <div class="flex flex-wrap gap-1">
-            {#each providers as p (p.id)}
-              <button
-                type="button"
-                class="px-2.5 py-1 text-xs rounded-md border transition-colors {p.is_selected
-                  ? 'bg-accent text-black border-accent'
-                  : 'bg-surface text-fg-2 border-hairline hover:bg-hover'}"
-                onclick={() => void selectProvider(p.id)}
-              >
-                {p.label}
-              </button>
-            {/each}
-          </div>
-        </div>
-        {#if selectedModels.length > 0}
+      {#if activeTab === "general"}
+        {#if providers.length > 0}
+          <h2 class="text-xs uppercase tracking-wider text-muted font-semibold mt-8 mb-2">AI Hub</h2>
+          <p class="text-xs text-muted mb-3">Session selection. Save defaults writes to config TOML.</p>
           <div class="py-2">
-            <div class="text-sm text-fg mb-1.5">Model</div>
+            <div class="text-sm text-fg mb-1.5">Provider</div>
             <div class="flex flex-wrap gap-1">
-              {#each selectedModels as m (m.id)}
+              {#each providers as p (p.id)}
                 <button
                   type="button"
-                  class="px-2.5 py-1 text-xs rounded-md border transition-colors {m.is_selected
+                  class="px-2.5 py-1 text-xs rounded-md border transition-colors {p.is_selected
                     ? 'bg-accent text-black border-accent'
                     : 'bg-surface text-fg-2 border-hairline hover:bg-hover'}"
-                  onclick={() => void selectModel(m.id)}
+                  onclick={() => void selectProvider(p.id)}
                 >
-                  {m.label}
+                  {p.label}
                 </button>
               {/each}
             </div>
           </div>
+          {#if selectedModels.length > 0}
+            <div class="py-2">
+              <div class="text-sm text-fg mb-1.5">Model</div>
+              <div class="flex flex-wrap gap-1">
+                {#each selectedModels as m (m.id)}
+                  <button
+                    type="button"
+                    class="px-2.5 py-1 text-xs rounded-md border transition-colors {m.is_selected
+                      ? 'bg-accent text-black border-accent'
+                      : 'bg-surface text-fg-2 border-hairline hover:bg-hover'}"
+                    onclick={() => void selectModel(m.id)}
+                  >
+                    {m.label}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
+          <div class="mt-2">
+            <Button onclick={() => void saveDefaults()}>Save as default</Button>
+          </div>
+        {:else}
+          <h2 class="text-xs uppercase tracking-wider text-muted font-semibold mt-8 mb-2">AI Hub</h2>
+          <p class="text-xs text-muted">
+            No <code class="font-mono">[ai_hub]</code> providers in config. Add providers in
+            <code class="font-mono">.er-config.toml</code>.
+          </p>
         {/if}
-        <div class="mt-2">
-          <Button onclick={() => void saveDefaults()}>Save as default</Button>
-        </div>
-      {:else}
-        <h2 class="text-xs uppercase tracking-wider text-muted font-semibold mt-8 mb-2">AI Hub</h2>
-        <p class="text-xs text-muted">
-          No <code class="font-mono">[ai_hub]</code> providers in config. Add providers in
-          <code class="font-mono">.er-config.toml</code>.
+      {/if}
+
+      {#if activeTab === "app"}
+        <p class="text-xs text-muted mt-6">
+          Diff layout (unified/split) is in the diff view gear menu.
         </p>
       {/if}
     </div>

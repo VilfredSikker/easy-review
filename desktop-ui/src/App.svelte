@@ -137,8 +137,11 @@
   }
 
   const browserLayout = $derived(browser.layout);
-  const showDiff = $derived(browserLayout !== "fullscreen");
-  const showBrowser = $derived(browserLayout === "split" || browserLayout === "fullscreen");
+  const isSettingsView = $derived(app.mainView === "settings");
+  const showDiff = $derived(!isSettingsView && browserLayout !== "fullscreen");
+  const showBrowser = $derived(
+    !isSettingsView && (browserLayout === "split" || browserLayout === "fullscreen"),
+  );
 
   // Belt-and-suspenders: when the browser pane is closed in the UI, park every
   // native child webview. BrowserView's onDestroy also hides, but unmount can
@@ -302,6 +305,9 @@
     {/if}
 
     <main class="flex-1 flex min-w-0 min-h-0">
+      {#if isSettingsView}
+        <SettingsPage onBack={() => app.setMainView("diff")} />
+      {:else}
       <div class="flex flex-1 min-w-0 min-h-0 flex-row">
         {#if showDiff}
           <div
@@ -313,8 +319,6 @@
               <DiffView />
             {:else if app.mainView === "agent-output"}
               <AgentOutputView />
-            {:else if app.mainView === "settings"}
-              <SettingsPage onBack={() => app.setMainView("diff")} />
             {:else}
               <ExportReviewView />
             {/if}
@@ -338,6 +342,7 @@
           </div>
         {/if}
       </div>
+      {/if}
     </main>
 
     {#if showDiff && app.mainView === "diff"}

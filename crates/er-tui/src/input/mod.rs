@@ -98,6 +98,37 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => app.config_hub_activate(),
                 KeyCode::Left => app.config_hub_activate_prev(),
                 KeyCode::Char('d') => app.config_hub_delete_selected(),
+                KeyCode::Char('1') => {
+                    app.config_hub_switch_tab(er_engine::config::SettingsScope::General);
+                }
+                KeyCode::Char('2') => {
+                    app.config_hub_switch_tab(er_engine::config::SettingsScope::App);
+                }
+                KeyCode::Char('3') => {
+                    app.config_hub_switch_tab(er_engine::config::SettingsScope::Terminal);
+                }
+                KeyCode::Char('[') => {
+                    let tab = match &app.overlay {
+                        Some(er_engine::app::OverlayData::ConfigHub { tab, .. }) => *tab,
+                        _ => return Ok(()),
+                    };
+                    let prev = match tab.tab_index() {
+                        0 => er_engine::config::SettingsScope::Terminal,
+                        n => er_engine::config::SettingsScope::from_tab_index(n - 1),
+                    };
+                    app.config_hub_switch_tab(prev);
+                }
+                KeyCode::Char(']') => {
+                    let tab = match &app.overlay {
+                        Some(er_engine::app::OverlayData::ConfigHub { tab, .. }) => *tab,
+                        _ => return Ok(()),
+                    };
+                    let next = match tab.tab_index() {
+                        2 => er_engine::config::SettingsScope::General,
+                        n => er_engine::config::SettingsScope::from_tab_index(n + 1),
+                    };
+                    app.config_hub_switch_tab(next);
+                }
                 KeyCode::Char('s') => app.config_hub_save_local(),
                 KeyCode::Char('S') => app.config_hub_save_global(),
                 KeyCode::Esc | KeyCode::Char('q') => app.config_hub_cancel(),

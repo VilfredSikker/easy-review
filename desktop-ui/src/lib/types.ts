@@ -545,8 +545,12 @@ export type ConfigHubField =
   | { kind: "listEntry"; key: string; label: string; index: number }
   | { kind: "listAdd"; key: string; label: string };
 
+export type SettingsTab = "general" | "app" | "terminal";
+
 export interface DesktopSettingsSnapshot {
-  fields: ConfigHubField[];
+  general: ConfigHubField[];
+  app: ConfigHubField[];
+  terminal: ConfigHubField[];
   agentEffort: string;
   hasLocalConfig: boolean;
   repoRoot: string;

@@ -5,8 +5,8 @@ pub mod cache;
 pub mod config;
 #[allow(unused_imports)]
 pub use config::{
-    apply_config_field, desktop_settings_snapshot, ConfigFieldValue, ConfigHubFieldDto,
-    DesktopSettingsSnapshot,
+    apply_config_field, config_hub_items_for_scope, desktop_settings_snapshot, ConfigFieldValue,
+    ConfigHubFieldDto, DesktopSettingsSnapshot, SettingsScope,
 };
 pub mod dev_log;
 pub mod git;

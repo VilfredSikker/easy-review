@@ -89,6 +89,10 @@ fn list_providers_inner(app: &er_engine::app::App) -> Vec<AiProviderInfo> {
                         id: m.id.clone(),
                         label: m.display_name(),
                         is_selected: resolved_model.as_deref() == Some(m.id.as_str()),
+                        description: m.description.clone(),
+                        cost_per_1k_in: m.cost_per_1k_in,
+                        cost_per_1k_out: m.cost_per_1k_out,
+                        avg_latency_ms: m.avg_latency_ms,
                     })
                     .collect(),
             }

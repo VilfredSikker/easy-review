@@ -257,6 +257,7 @@ pub enum OverlayData {
         selected: usize,
     },
     ConfigHub {
+        tab: config::SettingsScope,
         items: Vec<config::ConfigItem>,
         selected: usize,
         saved_config: Box<ErConfig>,
@@ -5407,17 +5408,42 @@ impl App {
     }
 
     pub fn open_config_hub(&mut self) {
-        let items = config::config_hub_items(&self.config);
-        let first_selectable = items
-            .iter()
-            .position(|item| !matches!(item, config::ConfigItem::SectionHeader(_)))
-            .unwrap_or(0);
+        let tab = config::SettingsScope::General;
+        let items = config::config_hub_items_for_scope(&self.config, tab);
+        let selected = Self::config_hub_first_selectable(&items);
         self.overlay = Some(OverlayData::ConfigHub {
+            tab,
             items,
-            selected: first_selectable,
+            selected,
             saved_config: Box::new(self.config.clone()),
             editing: None,
         });
+    }
+
+    fn config_hub_first_selectable(items: &[config::ConfigItem]) -> usize {
+        items
+            .iter()
+            .position(|item| !matches!(item, config::ConfigItem::SectionHeader(_)))
+            .unwrap_or(0)
+    }
+
+    pub fn config_hub_switch_tab(&mut self, tab: config::SettingsScope) {
+        if let Some(OverlayData::ConfigHub {
+            tab: current,
+            items,
+            selected,
+            editing,
+            ..
+        }) = &mut self.overlay
+        {
+            if *current == tab {
+                return;
+            }
+            *current = tab;
+            *items = config::config_hub_items_for_scope(&self.config, tab);
+            *selected = Self::config_hub_first_selectable(items);
+            *editing = None;
+        }
     }
 
     /// Toggle/cycle/activate the currently selected config hub item
@@ -5430,8 +5456,11 @@ impl App {
             }) => *selected,
             _ => return,
         };
-        let items = config::config_hub_items(&self.config);
-        let Some(item) = items.into_iter().nth(idx) else {
+        let item = match &self.overlay {
+            Some(OverlayData::ConfigHub { items, .. }) => items.get(idx).cloned(),
+            _ => None,
+        };
+        let Some(item) = item else {
             return;
         };
         match item {
@@ -5519,8 +5548,11 @@ impl App {
             }) => *selected,
             _ => return,
         };
-        let items = config::config_hub_items(&self.config);
-        let Some(item) = items.into_iter().nth(idx) else {
+        let item = match &self.overlay {
+            Some(OverlayData::ConfigHub { items, .. }) => items.get(idx).cloned(),
+            _ => None,
+        };
+        let Some(item) = item else {
             return;
         };
         match item {
@@ -5557,11 +5589,12 @@ impl App {
 
     /// Apply the editing buffer to the config and close the inline edit
     pub fn config_hub_confirm_edit(&mut self) {
-        let (item_idx, buffer) = match &self.overlay {
+        let (item_idx, buffer, tab) = match &self.overlay {
             Some(OverlayData::ConfigHub {
                 editing: Some(edit),
+                tab,
                 ..
-            }) => (edit.item_index, edit.buffer.clone()),
+            }) => (edit.item_index, edit.buffer.clone(), *tab),
             _ => return,
         };
 
@@ -5570,7 +5603,7 @@ impl App {
             *editing = None;
         }
 
-        let items = config::config_hub_items(&self.config);
+        let items = config::config_hub_items_for_scope(&self.config, tab);
         if let Some(config::ConfigItem::StringEdit { set, .. }) = items.get(item_idx) {
             set(&mut self.config, buffer);
         } else if let Some(config::ConfigItem::ListAdd { .. }) = items.get(item_idx) {
@@ -5591,12 +5624,12 @@ impl App {
 
     /// Delete the currently selected ListEntry from watched paths
     pub fn config_hub_delete_selected(&mut self) {
-        let idx = match &self.overlay {
-            Some(OverlayData::ConfigHub { selected, .. }) => *selected,
+        let (idx, tab) = match &self.overlay {
+            Some(OverlayData::ConfigHub { selected, tab, .. }) => (*selected, *tab),
             _ => return,
         };
 
-        let items = config::config_hub_items(&self.config);
+        let items = config::config_hub_items_for_scope(&self.config, tab);
         if let Some(config::ConfigItem::ListEntry { index, .. }) = items.get(idx) {
             let path_idx = *index;
             if path_idx < self.config.watched.paths.len() {
@@ -5643,13 +5676,14 @@ impl App {
     /// Rebuild the config hub items list (e.g. after watched paths change) and clamp selection
     pub fn config_hub_rebuild_items(&mut self) {
         if let Some(OverlayData::ConfigHub {
+            tab,
             items,
             selected,
             editing,
             ..
         }) = &mut self.overlay
         {
-            *items = config::config_hub_items(&self.config);
+            *items = config::config_hub_items_for_scope(&self.config, *tab);
             // Clamp selected to valid range, skip headers
             let len = items.len();
             if *selected >= len {

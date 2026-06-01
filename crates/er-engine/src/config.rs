@@ -1,11 +1,18 @@
 #[path = "config_desktop_settings.rs"]
 mod config_desktop_settings;
 
+#[path = "config_settings.rs"]
+mod config_settings;
+
 use anyhow::Result;
 
 pub use config_desktop_settings::{
-    apply_config_field, desktop_settings_fields, desktop_settings_snapshot,
-    validate_config_text_field, ConfigFieldValue, ConfigHubFieldDto, DesktopSettingsSnapshot,
+    apply_config_field, desktop_settings_snapshot, validate_config_text_field, ConfigFieldValue,
+    ConfigHubFieldDto, DesktopSettingsSnapshot,
+};
+pub use config_settings::{
+    agent_effort_label, desktop_settings_fields_flat, desktop_settings_fields_for_scope,
+    settings_fields_grouped, SettingsFieldsGrouped, SettingsScope, THEME_OPTIONS,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -709,125 +716,25 @@ impl std::fmt::Debug for ConfigItem {
     }
 }
 
-/// Build the list of config hub items for the config hub overlay.
+/// Build config hub items for one settings tab.
+pub fn config_hub_items_for_scope(config: &ErConfig, scope: SettingsScope) -> Vec<ConfigItem> {
+    match scope {
+        SettingsScope::General => general_config_hub_items(config),
+        SettingsScope::App => app_config_hub_items(config),
+        SettingsScope::Terminal => terminal_config_hub_items(config),
+    }
+}
+
+/// Flat list (all tabs) for tests.
 pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
-    let mut items: Vec<ConfigItem> = vec![
-        // ── Views ──
-        ConfigItem::SectionHeader("Views".into()),
-        ConfigItem::BoolToggle {
-            label: "Branch diff (1)".into(),
-            description: "Show branch diff mode".into(),
-            get: |c| c.features.view_branch,
-            set: |c, v| c.features.view_branch = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Unstaged changes (2)".into(),
-            description: "Show unstaged changes mode".into(),
-            get: |c| c.features.view_unstaged,
-            set: |c, v| c.features.view_unstaged = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Staged changes (3)".into(),
-            description: "Show staged changes mode".into(),
-            get: |c| c.features.view_staged,
-            set: |c, v| c.features.view_staged = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "History (4)".into(),
-            description: "Show commit history mode".into(),
-            get: |c| c.features.view_history,
-            set: |c, v| c.features.view_history = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Conflicts (5)".into(),
-            description: "Show merge conflicts mode".into(),
-            get: |c| c.features.view_conflicts,
-            set: |c, v| c.features.view_conflicts = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Hidden files (6)".into(),
-            description: "Show hidden files mode".into(),
-            get: |c| c.features.view_hidden,
-            set: |c, v| c.features.view_hidden = v,
-        },
-        // ── Display ──
-        ConfigItem::SectionHeader("Display".into()),
-        ConfigItem::StringCycle {
-            label: "Theme".into(),
-            description: "Color theme".into(),
-            options: &[
-                "ocean-depth",
-                "moonlight",
-                "daybreak",
-                "high-contrast",
-                "tokyo-night",
-                "tokyo-night-storm",
-                "tokyo-night-moon",
-                "tokyo-night-day",
-            ],
-            get: |c| c.display.theme.clone(),
-            set: |c, v| c.display.theme = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Line numbers".into(),
-            description: "Show line numbers in diff".into(),
-            get: |c| c.display.line_numbers,
-            set: |c, v| c.display.line_numbers = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Wrap lines".into(),
-            description: "Wrap long lines".into(),
-            get: |c| c.display.wrap_lines,
-            set: |c, v| c.display.wrap_lines = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Split diff".into(),
-            description: "Side-by-side diff view".into(),
-            get: |c| c.display.split_diff,
-            set: |c, v| c.display.split_diff = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Auto-expand context".into(),
-            description: "Pick unified context per file (small → more, big → less)".into(),
-            get: |c| c.display.auto_context_threshold > 0,
-            set: |c, v| c.display.auto_context_threshold = if v { 1 } else { 0 },
-        },
-        ConfigItem::NumberEdit {
-            label: "Tab width".into(),
-            description: "Spaces per tab stop".into(),
-            min: 1,
-            max: 16,
-            get: |c| c.display.tab_width,
-            set: |c, v| c.display.tab_width = v,
-        },
-        // ── Key Hints ──
-        ConfigItem::SectionHeader("Key Hints".into()),
-        ConfigItem::BoolToggle {
-            label: "Navigation hints".into(),
-            description: "Show j/k, n/N, ␣, / hints".into(),
-            get: |c| c.hints.navigation,
-            set: |c, v| c.hints.navigation = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Staging hints".into(),
-            description: "Show s, c commit hints".into(),
-            get: |c| c.hints.staging,
-            set: |c, v| c.hints.staging = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Comment hints".into(),
-            description: "Show r, d comment action hints".into(),
-            get: |c| c.hints.comments,
-            set: |c, v| c.hints.comments = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Verbose hints".into(),
-            description: "Show all key hints (resize, filters, etc)".into(),
-            get: |c| c.hints.verbose,
-            set: |c, v| c.hints.verbose = v,
-        },
-        // ── Commands ──
-        ConfigItem::SectionHeader("Commands".into()),
+    let mut items = config_hub_items_for_scope(config, SettingsScope::General);
+    items.extend(config_hub_items_for_scope(config, SettingsScope::App));
+    items.extend(config_hub_items_for_scope(config, SettingsScope::Terminal));
+    items
+}
+
+fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
+    let mut items: Vec<ConfigItem> = vec![ConfigItem::SectionHeader("Commands".into()),
         ConfigItem::StringEdit {
             label: "Summary".into(),
             description: "Generate diff summary".into(),
@@ -869,7 +776,6 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             get: |c| c.summary.push_to_pr,
             set: |c, v| c.summary.push_to_pr = v,
         },
-        // ── Agent ──
         ConfigItem::SectionHeader("Agent".into()),
         ConfigItem::StringEdit {
             label: "Command".into(),
@@ -907,25 +813,6 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
                 };
             },
         },
-        ConfigItem::BoolToggle {
-            label: "AI Review Arena".into(),
-            description: "Multi-round AI reviewer debate (desktop)".into(),
-            get: |c| c.features.arena,
-            set: |c, v| c.features.arena = v,
-        },
-        // ── AI ──
-        ConfigItem::SectionHeader("AI".into()),
-        ConfigItem::Action {
-            label: "Copy review.json".into(),
-            description: "Copy .er/review.json to clipboard".into(),
-            action_id: "copy_review_json",
-        },
-        ConfigItem::Action {
-            label: "Copy questions.json".into(),
-            description: "Copy .er/questions.json to clipboard".into(),
-            action_id: "copy_questions_json",
-        },
-        // ── Watched Paths ──
         ConfigItem::SectionHeader("Watched Paths".into()),
         ConfigItem::StringCycle {
             label: "Diff mode".into(),
@@ -936,7 +823,6 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
     ];
 
-    // One ListEntry per watched path
     for (i, path) in config.watched.paths.iter().enumerate() {
         items.push(ConfigItem::ListEntry {
             label: path.clone(),
@@ -950,6 +836,136 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
     });
 
     items
+}
+
+fn app_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
+    vec![
+        ConfigItem::SectionHeader("Desktop".into()),
+        ConfigItem::BoolToggle {
+            label: "AI Review Arena".into(),
+            description: "Multi-round AI reviewer debate (desktop)".into(),
+            get: |c| c.features.arena,
+            set: |c, v| c.features.arena = v,
+        },
+    ]
+}
+
+fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
+    vec![
+        ConfigItem::SectionHeader("Views".into()),
+        ConfigItem::BoolToggle {
+            label: "Branch diff (1)".into(),
+            description: "Show branch diff mode".into(),
+            get: |c| c.features.view_branch,
+            set: |c, v| c.features.view_branch = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Unstaged changes (2)".into(),
+            description: "Show unstaged changes mode".into(),
+            get: |c| c.features.view_unstaged,
+            set: |c, v| c.features.view_unstaged = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Staged changes (3)".into(),
+            description: "Show staged changes mode".into(),
+            get: |c| c.features.view_staged,
+            set: |c, v| c.features.view_staged = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "History (4)".into(),
+            description: "Show commit history mode".into(),
+            get: |c| c.features.view_history,
+            set: |c, v| c.features.view_history = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Conflicts (5)".into(),
+            description: "Show merge conflicts mode".into(),
+            get: |c| c.features.view_conflicts,
+            set: |c, v| c.features.view_conflicts = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Hidden files (6)".into(),
+            description: "Show hidden files mode".into(),
+            get: |c| c.features.view_hidden,
+            set: |c, v| c.features.view_hidden = v,
+        },
+        ConfigItem::SectionHeader("Display".into()),
+        ConfigItem::StringCycle {
+            label: "Theme".into(),
+            description: "Color theme".into(),
+            options: THEME_OPTIONS,
+            get: |c| c.display.theme.clone(),
+            set: |c, v| c.display.theme = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Line numbers".into(),
+            description: "Show line numbers in diff".into(),
+            get: |c| c.display.line_numbers,
+            set: |c, v| c.display.line_numbers = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Wrap lines".into(),
+            description: "Wrap long lines".into(),
+            get: |c| c.display.wrap_lines,
+            set: |c, v| c.display.wrap_lines = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Split diff".into(),
+            description: "Side-by-side diff view".into(),
+            get: |c| c.display.split_diff,
+            set: |c, v| c.display.split_diff = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Auto-expand context".into(),
+            description: "Pick unified context per file (small → more, big → less)".into(),
+            get: |c| c.display.auto_context_threshold > 0,
+            set: |c, v| c.display.auto_context_threshold = if v { 1 } else { 0 },
+        },
+        ConfigItem::NumberEdit {
+            label: "Tab width".into(),
+            description: "Spaces per tab stop".into(),
+            min: 1,
+            max: 16,
+            get: |c| c.display.tab_width,
+            set: |c, v| c.display.tab_width = v,
+        },
+        ConfigItem::SectionHeader("Key Hints".into()),
+        ConfigItem::BoolToggle {
+            label: "Navigation hints".into(),
+            description: "Show j/k, n/N, ␣, / hints".into(),
+            get: |c| c.hints.navigation,
+            set: |c, v| c.hints.navigation = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Staging hints".into(),
+            description: "Show s, c commit hints".into(),
+            get: |c| c.hints.staging,
+            set: |c, v| c.hints.staging = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Comment hints".into(),
+            description: "Show r, d comment action hints".into(),
+            get: |c| c.hints.comments,
+            set: |c, v| c.hints.comments = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Verbose hints".into(),
+            description: "Show all key hints (resize, filters, etc)".into(),
+            get: |c| c.hints.verbose,
+            set: |c, v| c.hints.verbose = v,
+        },
+        ConfigItem::SectionHeader("AI".into()),
+        ConfigItem::Action {
+            label: "Copy review.json".into(),
+            description: "Copy .er/review.json to clipboard".into(),
+            action_id: "copy_review_json",
+        },
+        ConfigItem::Action {
+            label: "Copy questions.json".into(),
+            description: "Copy .er/questions.json to clipboard".into(),
+            action_id: "copy_questions_json",
+        },
+    ]
 }
 
 /// Save config to the repo-local `.er-config.toml` (atomic tmp+rename).
@@ -1403,7 +1419,7 @@ args = ["--model", "gpt-5.4"]
     #[test]
     fn config_hub_items_bool_toggle_get_set_round_trip() {
         let mut config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::Terminal);
 
         // Find the "Branch diff" toggle
         let branch_toggle = items.iter().find(|i| match i {
@@ -1421,9 +1437,35 @@ args = ["--model", "gpt-5.4"]
     }
 
     #[test]
+    fn config_hub_items_per_scope_partition() {
+        let config = ErConfig::default();
+        let general = config_hub_items_for_scope(&config, SettingsScope::General);
+        let app = config_hub_items_for_scope(&config, SettingsScope::App);
+        let terminal = config_hub_items_for_scope(&config, SettingsScope::Terminal);
+
+        assert!(!general.iter().any(|i| matches!(
+            i,
+            ConfigItem::BoolToggle { label, .. } if label.contains("Branch")
+        )));
+        assert!(terminal.iter().any(|i| matches!(
+            i,
+            ConfigItem::BoolToggle { label, .. } if label.contains("Branch")
+        )));
+        assert!(!terminal.is_empty());
+        assert!(app.iter().any(|i| matches!(
+            i,
+            ConfigItem::BoolToggle { label, .. } if label.contains("Arena")
+        )));
+        assert!(terminal.iter().any(|i| matches!(
+            i,
+            ConfigItem::StringCycle { label, .. } if label == "Theme"
+        )));
+    }
+
+    #[test]
     fn config_hub_items_string_cycle_get_set_round_trip() {
         let mut config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::Terminal);
 
         let theme_cycle = items.iter().find(|i| match i {
             ConfigItem::StringCycle { label, .. } => label == "Theme",
@@ -1444,7 +1486,7 @@ args = ["--model", "gpt-5.4"]
     #[test]
     fn config_hub_items_string_edit_get_set_round_trip() {
         let mut config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::General);
 
         let cmd_edit = items.iter().find(|i| match i {
             ConfigItem::StringEdit { label, .. } => label == "Command",
@@ -1462,7 +1504,7 @@ args = ["--model", "gpt-5.4"]
     #[test]
     fn config_hub_items_number_edit_get_set_round_trip() {
         let mut config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::Terminal);
 
         let tab_width = items.iter().find(|i| match i {
             ConfigItem::NumberEdit { label, .. } => label == "Tab width",
@@ -1486,7 +1528,7 @@ args = ["--model", "gpt-5.4"]
     fn config_hub_items_watched_paths_generate_list_entries() {
         let mut config = ErConfig::default();
         config.watched.paths = vec![".work/**".to_string(), "logs/*.log".to_string()];
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::General);
 
         let list_entries: Vec<_> = items
             .iter()
@@ -1506,7 +1548,7 @@ args = ["--model", "gpt-5.4"]
     #[test]
     fn config_hub_items_includes_list_add_for_watched() {
         let config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::General);
         let has_add = items
             .iter()
             .any(|i| matches!(i, ConfigItem::ListAdd { .. }));
