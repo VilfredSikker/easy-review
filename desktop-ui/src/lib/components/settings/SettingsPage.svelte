@@ -3,6 +3,7 @@
   import { app } from "$lib/stores/app.svelte";
   import type {
     AiProviderInfo,
+    AppSnapshot,
     ConfigFieldValue,
     ConfigHubField,
     GetConfigHubResponse,
@@ -21,28 +22,21 @@
 
   const TABS: { id: SettingsTab; label: string; blurb: string }[] = [
     { id: "general", label: "General", blurb: "Shared config for both app and terminal." },
-    { id: "app", label: "App", blurb: "Desktop app only." },
-    { id: "terminal", label: "Terminal", blurb: "TUI (`er`) only." },
+    { id: "terminal", label: "Terminal", blurb: "TUI (`er`) only — view modes, display, and key hints." },
   ];
 
   let loading = $state(true);
   let activeTab = $state<SettingsTab>("general");
   let generalFields = $state<ConfigHubField[]>([]);
-  let appFields = $state<ConfigHubField[]>([]);
   let terminalFields = $state<ConfigHubField[]>([]);
   let providers = $state<AiProviderInfo[]>([]);
   let hasLocalConfig = $state(false);
+  let localThemeOverride = $state<string | null>(null);
   let repoRoot = $state("");
   let addPattern = $state("");
   let textWarnings = $state<Record<string, string | null>>({});
 
-  const fields = $derived(
-    activeTab === "general"
-      ? generalFields
-      : activeTab === "app"
-        ? appFields
-        : terminalFields,
-  );
+  const fields = $derived(activeTab === "general" ? generalFields : terminalFields);
 
   const tabBlurb = $derived(TABS.find((t) => t.id === activeTab)?.blurb ?? "");
 
@@ -51,10 +45,10 @@
 
   function applySettings(res: GetConfigHubResponse) {
     generalFields = res.settings.general;
-    appFields = res.settings.app;
     terminalFields = res.settings.terminal;
     providers = res.providers;
     hasLocalConfig = res.settings.hasLocalConfig;
+    localThemeOverride = res.settings.localThemeOverride ?? null;
     repoRoot = res.settings.repoRoot;
   }
 
@@ -131,9 +125,10 @@
 
   async function saveLocal() {
     try {
-      await invoke("save_config_local_cmd");
+      const snap = await invoke<AppSnapshot>("save_config_local_cmd");
+      app.ingestCommandSnapshot(snap);
       hasLocalConfig = true;
-      app.showToast("success", "Saved to .er-config.toml");
+      await reload(false);
     } catch (e) {
       app.showToast("error", `save_config_local_cmd: ${e}`);
     }
@@ -141,8 +136,8 @@
 
   async function saveGlobal() {
     try {
-      await invoke("save_config_global_cmd");
-      app.showToast("success", "Saved to global config");
+      const snap = await invoke<AppSnapshot>("save_config_global_cmd");
+      app.ingestCommandSnapshot(snap);
     } catch (e) {
       app.showToast("error", `save_config_global_cmd: ${e}`);
     }
@@ -202,7 +197,15 @@
     </div>
 
     <div class="flex-1 overflow-y-auto w-full px-6 py-4">
-      <p class="text-xs text-muted mb-6">{tabBlurb}</p>
+      <p class="text-xs text-muted mb-4">{tabBlurb}</p>
+      {#if activeTab === "terminal" && localThemeOverride}
+        <p class="text-xs text-yellow-400/90 mb-4 border border-yellow-400/30 rounded-md px-3 py-2 bg-yellow-400/5">
+          This repo’s <code class="font-mono">.er-config.toml</code> sets theme to
+          <code class="font-mono">{localThemeOverride}</code>, which overrides your global config when you run
+          <code class="font-mono">er</code> here. Use “Save to repo” after changing theme, or remove
+          <code class="font-mono">[display].theme</code> from the repo file to follow global only.
+        </p>
+      {/if}
 
       {#each fields as field, i (field.kind === "section" ? field.title : "field-" + i + (field.kind === "bool" || field.kind === "cycle" || field.kind === "text" ? field.key : field.kind === "listEntry" ? field.key : field.label))}
         {#if field.kind === "section"}
@@ -322,11 +325,6 @@
         {/if}
       {/if}
 
-      {#if activeTab === "app"}
-        <p class="text-xs text-muted mt-6">
-          Diff layout (unified/split) is in the diff view gear menu.
-        </p>
-      {/if}
     </div>
 
     <footer class="shrink-0 flex flex-wrap gap-2 px-4 py-3 border-t border-hairline bg-surface">

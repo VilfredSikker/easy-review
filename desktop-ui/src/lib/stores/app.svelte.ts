@@ -404,6 +404,16 @@ class AppStore {
     this.mainView = mode;
   }
 
+  /** Apply snapshot from a Tauri command and show `notification` once (deduped). */
+  ingestCommandSnapshot(snapshot: AppSnapshot) {
+    this.snapshot = snapshot;
+    this.initialLoadDone = true;
+    this.syncSnapshotToast(snapshot);
+    this.lastPollRevision = null;
+    this.lastPollContentRevision = null;
+    this.lastPollChromeRevision = null;
+  }
+
   async cmd(command: string, args?: Record<string, unknown>) {
     if (
       command === "run_ai_review"
@@ -435,17 +445,14 @@ class AppStore {
         await invoke<void>(command, args);
         return;
       }
-      this.snapshot = await invoke<AppSnapshot>(command, args);
-      this.initialLoadDone = true;
+      const snapshot = await invoke<AppSnapshot>(command, args);
       const tInvokeDone = performance.now();
-      const hadBackendToast = this.syncSnapshotToast(this.snapshot);
+      this.ingestCommandSnapshot(snapshot);
+      const hadBackendToast = snapshot.notification != null;
       if (!hadBackendToast) {
         const message = successToastForCommand(command);
         if (message) this.showToast("success", message);
       }
-      this.lastPollRevision = null;
-      this.lastPollContentRevision = null;
-      this.lastPollChromeRevision = null;
       const tSnapshotApplied = performance.now();
       const totalMs = timingSegmentMs(tStart, tSnapshotApplied);
       if (totalMs > 500) {

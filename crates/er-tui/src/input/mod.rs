@@ -102,9 +102,6 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.config_hub_switch_tab(er_engine::config::SettingsScope::General);
                 }
                 KeyCode::Char('2') => {
-                    app.config_hub_switch_tab(er_engine::config::SettingsScope::App);
-                }
-                KeyCode::Char('3') => {
                     app.config_hub_switch_tab(er_engine::config::SettingsScope::Terminal);
                 }
                 KeyCode::Char('[') => {
@@ -114,7 +111,7 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     };
                     let prev = match tab.tab_index() {
                         0 => er_engine::config::SettingsScope::Terminal,
-                        n => er_engine::config::SettingsScope::from_tab_index(n - 1),
+                        _ => er_engine::config::SettingsScope::General,
                     };
                     app.config_hub_switch_tab(prev);
                 }
@@ -124,8 +121,8 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                         _ => return Ok(()),
                     };
                     let next = match tab.tab_index() {
-                        2 => er_engine::config::SettingsScope::General,
-                        n => er_engine::config::SettingsScope::from_tab_index(n + 1),
+                        0 => er_engine::config::SettingsScope::Terminal,
+                        _ => er_engine::config::SettingsScope::General,
                     };
                     app.config_hub_switch_tab(next);
                 }

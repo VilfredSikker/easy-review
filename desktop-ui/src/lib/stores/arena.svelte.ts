@@ -94,7 +94,7 @@ class ArenaStore {
   }
 
   get enabled(): boolean {
-    return app.snapshot?.arena_enabled ?? true;
+    return true;
   }
 
   get summaries(): ArenaRunSummary[] {

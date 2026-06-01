@@ -24,11 +24,7 @@ pub enum SettingsScope {
 }
 
 impl SettingsScope {
-    pub const ALL: [SettingsScope; 3] = [
-        SettingsScope::General,
-        SettingsScope::App,
-        SettingsScope::Terminal,
-    ];
+    pub const ALL: [SettingsScope; 2] = [SettingsScope::General, SettingsScope::Terminal];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -40,8 +36,7 @@ impl SettingsScope {
 
     pub fn from_tab_index(index: usize) -> Self {
         match index {
-            1 => SettingsScope::App,
-            2 => SettingsScope::Terminal,
+            1 => SettingsScope::Terminal,
             _ => SettingsScope::General,
         }
     }
@@ -49,8 +44,8 @@ impl SettingsScope {
     pub fn tab_index(self) -> usize {
         match self {
             SettingsScope::General => 0,
+            SettingsScope::Terminal => 1,
             SettingsScope::App => 1,
-            SettingsScope::Terminal => 2,
         }
     }
 }
@@ -73,7 +68,7 @@ pub fn agent_effort_label(effort: &Option<String>) -> String {
 pub fn settings_fields_grouped(config: &ErConfig) -> SettingsFieldsGrouped {
     SettingsFieldsGrouped {
         general: general_desktop_fields(config),
-        app: app_desktop_fields(config),
+        app: Vec::new(),
         terminal: terminal_desktop_fields(config),
     }
 }
@@ -84,7 +79,7 @@ pub fn desktop_settings_fields_for_scope(
 ) -> Vec<ConfigHubFieldDto> {
     match scope {
         SettingsScope::General => general_desktop_fields(config),
-        SettingsScope::App => app_desktop_fields(config),
+        SettingsScope::App => Vec::new(),
         SettingsScope::Terminal => terminal_desktop_fields(config),
     }
 }
@@ -200,20 +195,6 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
     });
 
     fields
-}
-
-fn app_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
-    vec![
-        ConfigHubFieldDto::Section {
-            title: "Desktop".into(),
-        },
-        ConfigHubFieldDto::Bool {
-            key: "features.arena".into(),
-            label: "AI Review Arena".into(),
-            description: "Multi-round AI reviewer debate in the desktop app".into(),
-            value: config.features.arena,
-        },
-    ]
 }
 
 fn terminal_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {

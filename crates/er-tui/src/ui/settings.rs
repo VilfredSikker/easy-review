@@ -402,7 +402,7 @@ pub fn render_config_hub(
                 ratatui::style::Style::default().fg(styles::DIM()),
             ),
             Span::styled(
-                "1/2/3",
+                "1/2",
                 ratatui::style::Style::default()
                     .fg(styles::TEXT())
                     .add_modifier(ratatui::style::Modifier::BOLD),

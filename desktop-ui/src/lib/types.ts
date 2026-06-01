@@ -545,7 +545,7 @@ export type ConfigHubField =
   | { kind: "listEntry"; key: string; label: string; index: number }
   | { kind: "listAdd"; key: string; label: string };
 
-export type SettingsTab = "general" | "app" | "terminal";
+export type SettingsTab = "general" | "terminal";
 
 export interface DesktopSettingsSnapshot {
   general: ConfigHubField[];
@@ -553,6 +553,8 @@ export interface DesktopSettingsSnapshot {
   terminal: ConfigHubField[];
   agentEffort: string;
   hasLocalConfig: boolean;
+  /** Repo `.er-config.toml` `[display].theme` — overrides global for the TUI. */
+  localThemeOverride?: string | null;
   repoRoot: string;
 }
 

@@ -1370,18 +1370,11 @@ fn build_snapshot_inner(
         inbox_last_refresh_ms: inbox
             .and_then(|h| h.lock().ok().map(|g| g.last_refresh_ms))
             .unwrap_or(0),
-        arena_enabled: app.config.features.arena,
-        active_arena_run: app
-            .config
-            .features
-            .arena
-            .then(|| app.active_arena_run())
-            .flatten(),
-        arena_runs: if app.config.features.arena {
+        arena_enabled: true,
+        active_arena_run: app.active_arena_run(),
+        arena_runs: {
             let branch = app.arena_branch_ref();
             app.arena_list_summaries(Some(&branch)).unwrap_or_default()
-        } else {
-            Vec::new()
         },
     };
     if crate::profile_log::profile_enabled() {

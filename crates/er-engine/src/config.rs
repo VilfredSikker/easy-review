@@ -500,6 +500,18 @@ impl ErConfig {
     }
 }
 
+/// Theme set in repo-local `.er-config.toml` (overrides global for `load_config`).
+pub fn local_display_theme_override(repo_root: &str) -> Option<String> {
+    let local_path = format!("{repo_root}/.er-config.toml");
+    let content = std::fs::read_to_string(&local_path).ok()?;
+    let table: toml::Table = content.parse().ok()?;
+    table
+        .get("display")?
+        .get("theme")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
 /// Load config by merging global defaults with per-repo overrides.
 /// Priority: per-repo `.er-config.toml` > global `~/.config/er/config.toml` > built-in defaults.
 /// Merging is deep: individual fields within sections (e.g. `[features]`) override independently.
@@ -720,7 +732,7 @@ impl std::fmt::Debug for ConfigItem {
 pub fn config_hub_items_for_scope(config: &ErConfig, scope: SettingsScope) -> Vec<ConfigItem> {
     match scope {
         SettingsScope::General => general_config_hub_items(config),
-        SettingsScope::App => app_config_hub_items(config),
+        SettingsScope::App => Vec::new(),
         SettingsScope::Terminal => terminal_config_hub_items(config),
     }
 }
@@ -728,7 +740,6 @@ pub fn config_hub_items_for_scope(config: &ErConfig, scope: SettingsScope) -> Ve
 /// Flat list (all tabs) for tests.
 pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
     let mut items = config_hub_items_for_scope(config, SettingsScope::General);
-    items.extend(config_hub_items_for_scope(config, SettingsScope::App));
     items.extend(config_hub_items_for_scope(config, SettingsScope::Terminal));
     items
 }
@@ -836,18 +847,6 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
     });
 
     items
-}
-
-fn app_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
-    vec![
-        ConfigItem::SectionHeader("Desktop".into()),
-        ConfigItem::BoolToggle {
-            label: "AI Review Arena".into(),
-            description: "Multi-round AI reviewer debate (desktop)".into(),
-            get: |c| c.features.arena,
-            set: |c, v| c.features.arena = v,
-        },
-    ]
 }
 
 fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
@@ -1452,10 +1451,7 @@ args = ["--model", "gpt-5.4"]
             ConfigItem::BoolToggle { label, .. } if label.contains("Branch")
         )));
         assert!(!terminal.is_empty());
-        assert!(app.iter().any(|i| matches!(
-            i,
-            ConfigItem::BoolToggle { label, .. } if label.contains("Arena")
-        )));
+        assert!(app.is_empty());
         assert!(terminal.iter().any(|i| matches!(
             i,
             ConfigItem::StringCycle { label, .. } if label == "Theme"

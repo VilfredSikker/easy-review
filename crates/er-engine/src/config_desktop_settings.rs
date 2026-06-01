@@ -55,6 +55,8 @@ pub struct DesktopSettingsSnapshot {
     pub terminal: Vec<ConfigHubFieldDto>,
     pub agent_effort: String,
     pub has_local_config: bool,
+    /// When set, repo `.er-config.toml` `[display].theme` overrides global (what `er` uses).
+    pub local_theme_override: Option<String>,
     pub repo_root: String,
 }
 
@@ -68,6 +70,7 @@ pub fn desktop_settings_snapshot(config: &ErConfig, repo_root: &str) -> DesktopS
         terminal: grouped.terminal,
         agent_effort: agent_effort_label(&config.agent.effort),
         has_local_config,
+        local_theme_override: super::local_display_theme_override(repo_root),
         repo_root: repo_root.to_string(),
     }
 }
@@ -113,11 +116,6 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
         "features.view_hidden" => {
             if let ConfigFieldValue::Bool(v) = value {
                 config.features.view_hidden = v;
-            }
-        }
-        "features.arena" => {
-            if let ConfigFieldValue::Bool(v) = value {
-                config.features.arena = v;
             }
         }
         "display.theme" => {
@@ -290,30 +288,16 @@ mod tests {
         assert!(!general.iter().any(|k| k == "features.view_branch"));
         assert!(!general.iter().any(|k| k == "display.line_numbers"));
         assert!(!general.iter().any(|k| k == "features.arena"));
-
-        assert!(app.iter().any(|k| k == "features.arena"));
-        assert_eq!(app.len(), 1);
+        assert!(app.is_empty());
 
         assert!(terminal.iter().any(|k| k == "features.view_branch"));
         assert!(terminal.iter().any(|k| k == "display.theme"));
         assert!(terminal.iter().any(|k| k == "display.line_numbers"));
-        assert!(!terminal.iter().any(|k| k == "features.arena"));
 
         assert_eq!(
             crate::config::desktop_settings_fields_for_scope(&config, SettingsScope::General).len(),
             grouped.general.len()
         );
-    }
-
-    #[test]
-    fn apply_config_field_arena_round_trip() {
-        let mut config = ErConfig::default();
-        apply_config_field(
-            &mut config,
-            "features.arena",
-            ConfigFieldValue::Bool(false),
-        );
-        assert!(!config.features.arena);
     }
 
     #[test]

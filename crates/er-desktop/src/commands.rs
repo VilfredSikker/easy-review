@@ -6111,6 +6111,10 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
         inbox.unread_count().hash(&mut h);
         inbox.last_refresh_ms.hash(&mut h);
     }
+    state
+        .desktop_revision
+        .load(Ordering::Relaxed)
+        .hash(&mut h);
     crate::profile_log::finish_hash(h)
 }
 
