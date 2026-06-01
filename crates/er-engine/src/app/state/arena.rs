@@ -230,7 +230,7 @@ impl App {
                 out.push(run.summary());
             }
         }
-        out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        out.sort_by_key(|run| std::cmp::Reverse(run.created_at.clone()));
         Ok(out)
     }
 
