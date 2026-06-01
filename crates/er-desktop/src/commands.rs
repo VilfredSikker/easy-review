@@ -232,12 +232,14 @@ fn log_branch_open_phase(
     phase: &str,
     started_at: std::time::Instant,
 ) {
-    log::info!(
-        "branch_open project={} branch={} phase={} ms={}",
-        project_id,
-        branch,
-        phase,
-        started_at.elapsed().as_millis()
+    crate::profile_log::profile_log(
+        "branch_open",
+        &[
+            ("project_id", project_id.to_string()),
+            ("branch", branch.to_string()),
+            ("phase", phase.to_string()),
+            ("ms", started_at.elapsed().as_millis().to_string()),
+        ],
     );
 }
 
@@ -475,9 +477,14 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         )
     });
     let overview = overview_res?.ok()?;
-    log::info!(
-        "gh_status fetch {owner}/{repo}#{number} in {}ms",
-        t.elapsed().as_millis()
+    crate::profile_log::profile_log(
+        "gh_status_fetch",
+        &[
+            ("owner", owner.to_string()),
+            ("repo", repo.to_string()),
+            ("number", number.to_string()),
+            ("ms", t.elapsed().as_millis().to_string()),
+        ],
     );
 
     // Most recent 5, newest last in the source — keep the trailing 5.
@@ -725,18 +732,21 @@ pub fn toggle_reviewed(state: State<AppState>) -> Result<AppSnapshot, String> {
 }
 
 #[tauri::command]
-pub fn mark_reviewed(file_idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
+pub fn mark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     {
         let tab = app.tab_mut();
-        if let Some(file) = tab.files.get(file_idx) {
-            let path = file.path.clone();
+        if tab
+            .active_diff_files()
+            .iter()
+            .any(|f| f.path == path)
+        {
             let hash = tab
                 .current_per_file_hashes
                 .get(&path)
                 .cloned()
                 .unwrap_or_default();
-            tab.reviewed.insert(path.clone(), hash);
+            tab.reviewed.insert(path, hash);
             let _ = tab.save_reviewed_files();
         }
     }
@@ -744,12 +754,15 @@ pub fn mark_reviewed(file_idx: usize, state: State<AppState>) -> Result<AppSnaps
 }
 
 #[tauri::command]
-pub fn unmark_reviewed(file_idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
+pub fn unmark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     {
         let tab = app.tab_mut();
-        if let Some(file) = tab.files.get(file_idx) {
-            let path = file.path.clone();
+        if tab
+            .active_diff_files()
+            .iter()
+            .any(|f| f.path == path)
+        {
             tab.reviewed.remove(&path);
             let _ = tab.save_reviewed_files();
         }
@@ -2856,6 +2869,26 @@ pub fn set_ai_selection(
     Ok(snap_from(&app, &state))
 }
 
+#[tauri::command]
+pub fn set_ai_effort(effort: Option<String>, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let normalized = effort
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty());
+    app.current_ai_effort = normalized.clone();
+
+    let repo_root = app.tab().repo_root.clone();
+    let mut cfg = er_engine::config::load_config(&repo_root);
+    cfg.ai_hub.default_effort = normalized;
+    er_engine::config::save_config_local(&cfg, &repo_root).map_err(|e| e.to_string())?;
+    app.config.ai_hub.default_effort = app.current_ai_effort.clone();
+
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(snap_from(&app, &state))
+}
+
 // ── Promote question to GitHub comment ──────────────────────────────────────
 
 /// Compose a markdown body that includes the question's text plus any replies
@@ -3239,7 +3272,13 @@ pub fn ask_ai(
 
     let cfg = er_engine::config::load_config(&repo_root);
     let invocation =
-        plan_card_ai_invocation(&cfg, provider_id.as_deref(), model_id.as_deref(), work_dir);
+        plan_card_ai_invocation(
+            &cfg,
+            provider_id.as_deref(),
+            model_id.as_deref(),
+            app.current_ai_effort.as_deref(),
+            work_dir,
+        );
     let model_for_subprocess: Option<String> = model_id.or_else(|| {
         if agent_model_fallback.trim().is_empty() {
             None
@@ -5544,7 +5583,10 @@ pub(crate) fn ensure_active_tab_loaded(app: &mut App) {
     if let Err(e) = result {
         log::error!("er-desktop: lazy tab refresh failed: {e}");
     } else {
-        log::info!("lazy tab refresh done in {}ms", t.elapsed().as_millis());
+        crate::profile_log::profile_log(
+            "lazy_tab_refresh",
+            &[("ms", t.elapsed().as_millis().to_string())],
+        );
     }
 }
 
@@ -5552,6 +5594,8 @@ pub(crate) fn ensure_active_tab_loaded(app: &mut App) {
 pub fn update_tab_browser(
     layout: Option<String>,
     url: Option<String>,
+    // When true with `url`, drive the child webview to that URL. Default: persist only.
+    navigate: Option<bool>,
     annotate: Option<bool>,
     tooltips: Option<bool>,
     split_ratio: Option<f32>,
@@ -5565,9 +5609,11 @@ pub fn update_tab_browser(
     if let Some(l) = layout.as_deref() {
         tab.browser_layout = BrowserLayout::from_str(l);
     }
+    let had_url = url.is_some();
     if let Some(u) = url {
         tab.browser_url = u;
     }
+    let url_nav_needed = layout.is_some() || navigate.unwrap_or(false);
     if let Some(a) = annotate {
         tab.browser_annotate_mode = a;
     }
@@ -5577,7 +5623,17 @@ pub fn update_tab_browser(
     if let Some(r) = split_ratio {
         tab.browser_split_ratio = r.clamp(0.35, 0.65);
     }
-    crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, tab_idx)?;
+    if url_nav_needed {
+        crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, tab_idx)?;
+    } else if layout.is_none() && !had_url {
+        crate::browser_webview::sync_tab_browser_chrome(
+            &app_handle,
+            &browser_state,
+            &app,
+            tab_idx,
+            annotate.is_some(),
+        )?;
+    }
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &state))
 }

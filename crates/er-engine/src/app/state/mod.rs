@@ -3672,6 +3672,9 @@ pub struct App {
     /// Session-local AI Hub model selection
     pub current_ai_model: Option<String>,
 
+    /// Session-local Claude Code effort level (`low` … `max`).
+    pub current_ai_effort: Option<String>,
+
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
 
@@ -3696,7 +3699,7 @@ pub struct App {
     pub arena_registry: std::sync::Arc<crate::arena::ArenaRegistry>,
 
     /// Last started arena run id per tab `.er` directory.
-    pub active_arena_runs: std::collections::HashMap<String, String>,
+    pub active_arena_runs: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl App {
@@ -3710,6 +3713,10 @@ impl App {
             .as_deref()
             .and_then(|provider_id| config.ai_hub.resolve_model_id(provider_id, None));
         (provider, model)
+    }
+
+    fn initial_ai_effort(config: &ErConfig) -> Option<String> {
+        crate::config::resolve_effort(&config.ai_hub, &config.agent, None, None)
     }
 
     /// Create the app from CLI path arguments.
@@ -3769,6 +3776,7 @@ impl App {
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
+        let current_ai_effort = Self::initial_ai_effort(&er_config);
         let arena_registry = App::init_arena_registry(Arc::new(|| {}));
 
         let app = App {
@@ -3786,6 +3794,7 @@ impl App {
             config: er_config,
             current_ai_provider,
             current_ai_model,
+            current_ai_effort,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
@@ -3809,6 +3818,7 @@ impl App {
         let tab = TabState::new_with_base_unloaded(repo_root, base)?;
         let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
+        let current_ai_effort = Self::initial_ai_effort(&er_config);
         Ok(App {
             tabs: vec![tab],
             active_tab: 0,
@@ -3824,6 +3834,7 @@ impl App {
             config: er_config,
             current_ai_provider,
             current_ai_model,
+            current_ai_effort,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
@@ -3841,6 +3852,7 @@ impl App {
         }
         let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
+        let current_ai_effort = Self::initial_ai_effort(&er_config);
         App {
             tabs: vec![tab],
             active_tab: 0,
@@ -3856,6 +3868,7 @@ impl App {
             config: er_config,
             current_ai_provider,
             current_ai_model,
+            current_ai_effort,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
@@ -3884,6 +3897,7 @@ impl App {
             config: ErConfig::default(),
             current_ai_provider: None,
             current_ai_model: None,
+            current_ai_effort: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
@@ -3927,10 +3941,15 @@ impl App {
                             .find(|m| m.id == model_id)
                             .map(|m| m.display_name())
                     });
-                return match model_label {
+                let mut label = match model_label {
                     Some(model) => format!("{provider_label} / {model}"),
                     None => provider_label,
                 };
+                if let Some(effort) = self.current_ai_effort.as_deref() {
+                    label.push_str(" · ");
+                    label.push_str(effort);
+                }
+                return label;
             }
         }
 
@@ -7720,6 +7739,7 @@ mod tests {
             config: ErConfig::default(),
             current_ai_provider: None,
             current_ai_model: None,
+            current_ai_effort: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
@@ -8735,5 +8755,74 @@ mod tests {
         assert!(!app.reorder_tabs(5, 0));
         assert!(!app.reorder_tabs(0, 5));
         assert_eq!(tab_roots(&app), vec!["tab0", "tab1", "tab2"]);
+    }
+
+    // ── reviewed by path (History mode) ──
+
+    fn test_diff_file(path: &str) -> crate::git::DiffFile {
+        use crate::git::{DiffFile, FileStatus};
+        DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![],
+            adds: 0,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+        }
+    }
+
+    /// `mark_reviewed` / `unmark_reviewed` must resolve paths via
+    /// [`TabState::active_diff_files`], not `tab.files[source_index]`.
+    #[test]
+    fn history_mark_reviewed_uses_commit_path_not_tab_files_index() {
+        use crate::git::CommitInfo;
+
+        let mut tab = TabState::new_for_test(vec![test_diff_file("branch-only.rs")]);
+        tab.mode = DiffMode::History;
+        tab.history = Some(HistoryState {
+            commits: vec![CommitInfo {
+                hash: "abc123".into(),
+                short_hash: "abc123".into(),
+                subject: "test".into(),
+                author: "author".into(),
+                date: "2026-01-01".into(),
+                relative_date: "1d".into(),
+                file_count: 2,
+                adds: 1,
+                dels: 0,
+                is_merge: false,
+            }],
+            selected_commit: 0,
+            commit_files: vec![
+                test_diff_file("commit-a.rs"),
+                test_diff_file("commit-b.rs"),
+            ],
+            selected_file: 1,
+            current_hunk: 0,
+            current_line: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+            all_loaded: true,
+            diff_cache: DiffCache::new(5),
+        });
+
+        assert_eq!(tab.files.len(), 1);
+        assert_eq!(tab.files[0].path, "branch-only.rs");
+        assert_eq!(tab.active_diff_files().len(), 2);
+        assert_eq!(tab.active_diff_files()[1].path, "commit-b.rs");
+
+        // Old index-based lookup would use tab.files[1] (missing / wrong path).
+        assert!(tab.files.get(1).is_none());
+
+        let path = "commit-b.rs";
+        assert!(
+            tab.active_diff_files().iter().any(|f| f.path == path),
+            "path must exist in active diff before mark"
+        );
+        tab.reviewed.insert(path.to_string(), String::new());
+
+        assert!(tab.reviewed.contains_key("commit-b.rs"));
+        assert!(!tab.reviewed.contains_key("branch-only.rs"));
     }
 }
