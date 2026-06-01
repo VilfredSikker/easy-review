@@ -1286,24 +1286,29 @@ fn main() {
 
             install_app_menu(app.handle())?;
 
-            let window = tauri::WebviewWindowBuilder::new(
+            let mut window_builder = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
             .title("Easy Review")
             .inner_size(1400.0, 900.0)
-            .min_inner_size(900.0, 600.0)
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .visible(false)
-            .transparent(true)
-            .initialization_script_for_all_frames(FRAME_SCRIPT)
-            .on_navigation(main_webview_policy::handle_main_webview_navigation)
-            .on_new_window(|url, _features| {
-                main_webview_policy::handle_main_webview_new_window(&url)
-            })
-            .build()?;
+            .min_inner_size(900.0, 600.0);
+            #[cfg(target_os = "macos")]
+            {
+                window_builder = window_builder
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .hidden_title(true);
+            }
+            let window = window_builder
+                .visible(false)
+                .transparent(true)
+                .initialization_script_for_all_frames(FRAME_SCRIPT)
+                .on_navigation(main_webview_policy::handle_main_webview_navigation)
+                .on_new_window(|url, _features| {
+                    main_webview_policy::handle_main_webview_new_window(&url)
+                })
+                .build()?;
 
             use tauri_plugin_window_state::{StateFlags, WindowExt};
             // Restore size+position+maximized only — NOT visibility. The

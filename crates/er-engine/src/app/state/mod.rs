@@ -5571,16 +5571,12 @@ impl App {
         }
 
         let items = config::config_hub_items(&self.config);
-        match items.get(item_idx) {
-            Some(config::ConfigItem::StringEdit { set, .. }) => {
-                set(&mut self.config, buffer);
+        if let Some(config::ConfigItem::StringEdit { set, .. }) = items.get(item_idx) {
+            set(&mut self.config, buffer);
+        } else if let Some(config::ConfigItem::ListAdd { .. }) = items.get(item_idx) {
+            if !buffer.trim().is_empty() {
+                self.config.watched.paths.push(buffer.trim().to_string());
             }
-            Some(config::ConfigItem::ListAdd { .. }) => {
-                if !buffer.trim().is_empty() {
-                    self.config.watched.paths.push(buffer.trim().to_string());
-                }
-            }
-            _ => {}
         }
 
         self.config_hub_rebuild_items();

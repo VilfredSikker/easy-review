@@ -1018,7 +1018,7 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
         }
     }
     // Sort by modification time (most recent first)
-    files.sort_by(|a, b| b.modified.cmp(&a.modified));
+    files.sort_by_key(|f| std::cmp::Reverse(f.modified));
     Ok(files)
 }
 
