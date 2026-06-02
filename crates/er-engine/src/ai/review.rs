@@ -341,7 +341,6 @@ impl Default for AiState {
 impl AiState {
     /// Invalidate the comment index (forces rebuild on next query).
     /// Call this after mutating `questions` or `github_comments` in-place.
-    #[allow(dead_code)]
     pub fn rebuild_comment_index(&self) {
         *self.comment_index.borrow_mut() = None;
     }
@@ -605,6 +604,7 @@ impl AiState {
             ($c:expr, $hunk_idx:expr) => {
                 $c.hunk_index() == Some($hunk_idx)
                     || $c.line_start().is_some_and(|ls| in_new_range(ls))
+                    || $c.line_start().is_some_and(|ls| in_old_range(ls))
                     || $c.old_line_start().is_some_and(|ls| in_old_range(ls))
             };
         }
@@ -1711,6 +1711,69 @@ mod tests {
         });
         let results = state.comments_for_line("a.rs", 0, 10);
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn rebuild_comment_index_refreshes_line_lookup_after_anchor_mutation() {
+        let mut state = AiState::default();
+        let mut q = make_question("q1", "a.rs", Some(0));
+        q.line_start = Some(42);
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q],
+        });
+
+        assert_eq!(state.comments_for_line("a.rs", 0, 42).len(), 1);
+
+        if let Some(qs) = state.questions.as_mut() {
+            qs.questions[0].line_start = Some(50);
+        }
+        assert!(
+            state.comments_for_line("a.rs", 0, 50).is_empty(),
+            "stale index should miss relocated line number"
+        );
+
+        state.rebuild_comment_index();
+        assert_eq!(
+            state.comments_for_line("a.rs", 0, 50).len(),
+            1,
+            "rebuilt index should match updated line_start"
+        );
+    }
+
+    #[test]
+    fn comments_for_hunk_or_line_range_matches_by_line_when_hunk_index_stale() {
+        let mut state = AiState::default();
+        let mut q = make_question("q1", "a.rs", Some(99));
+        q.line_start = Some(15);
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q],
+        });
+
+        let results = state.comments_for_hunk_or_line_range("a.rs", 0, 10, 10, 10, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].line_start(), Some(15));
+    }
+
+    #[test]
+    fn comments_for_hunk_or_line_range_matches_line_start_in_old_range() {
+        let mut state = AiState::default();
+        let mut q = make_question("q1", ".airlock/config.sh", Some(0));
+        q.line_start = Some(1);
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q],
+        });
+
+        // Full-file delete: @@ -1,28 +0,0 @@ — new side empty, old side 1..28
+        let results =
+            state.comments_for_hunk_or_line_range(".airlock/config.sh", 0, 0, 0, 1, 28);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].line_start(), Some(1));
     }
 
     // ── AiState::comments_for_hunk_only ──

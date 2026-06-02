@@ -320,13 +320,15 @@ impl TabState {
             .unwrap_or(0)
     }
 
-    /// Get the new-side line number for the currently selected line
+    /// Get the line number for the currently selected diff line.
+    /// Prefers `new_num`; falls back to `old_num` for delete-only lines so comments
+    /// anchor inline on removed code (e.g. full-file deletes).
     pub fn current_line_number(&self) -> Option<usize> {
         let file = self.selected_diff_file()?;
         let hunk = file.hunks.get(self.current_hunk)?;
         let line_idx = self.current_line?;
         let diff_line = hunk.lines.get(line_idx)?;
-        diff_line.new_num
+        diff_line.new_num.or(diff_line.old_num)
     }
 
     /// Get the line number for the focused side in split diff view
@@ -336,8 +338,8 @@ impl TabState {
         let line_idx = self.current_line?;
         let diff_line = hunk.lines.get(line_idx)?;
         match side {
-            SplitSide::Old => diff_line.old_num,
-            SplitSide::New => diff_line.new_num,
+            SplitSide::Old => diff_line.old_num.or(diff_line.new_num),
+            SplitSide::New => diff_line.new_num.or(diff_line.old_num),
         }
     }
 

@@ -2740,6 +2740,13 @@ impl TabState {
                 }
             }
         }
+
+        // Relocation mutates hunk_index / line_start in memory; rebuild the lazy
+        // comment index so inline lookups stay in sync (file-level counts alone
+        // would still look correct with a stale index).
+        if questions_changed || comments_changed {
+            self.ai.rebuild_comment_index();
+        }
     }
 
     /// Compute which files have changed since the review, populating stale_files
@@ -6973,12 +6980,17 @@ mod tests {
     }
 
     #[test]
-    fn current_line_number_delete_line_with_no_new_num_returns_none() {
-        let lines = vec![make_line(LineType::Delete, "deleted", None)];
+    fn current_line_number_delete_line_falls_back_to_old_num() {
+        let lines = vec![DiffLine {
+            line_type: LineType::Delete,
+            content: "deleted".to_string(),
+            old_num: Some(1),
+            new_num: None,
+        }];
         let files = vec![make_file("a.rs", vec![make_hunk(lines)], 0, 1)];
         let mut tab = make_test_tab(files);
         tab.current_line = Some(0);
-        assert_eq!(tab.current_line_number(), None);
+        assert_eq!(tab.current_line_number(), Some(1));
     }
 
     // ── snap_to_visible ──
