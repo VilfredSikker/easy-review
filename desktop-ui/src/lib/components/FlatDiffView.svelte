@@ -224,6 +224,7 @@
   /** Unthrottled scroll position for composer visibility / go-back pill. */
   let scrollTopLivePx = $state(0);
   let viewportHeightPx = $state(0);
+  let viewportWidthPx = $state(0);
 
   const _updateScrollTop = makeScrollThrottle((top) => { scrollTopPx = top; });
 
@@ -1064,11 +1065,15 @@
     window.addEventListener("mouseup", onUp);
 
     const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) viewportHeightPx = entry.contentRect.height;
+      for (const entry of entries) {
+        viewportHeightPx = entry.contentRect.height;
+        viewportWidthPx = entry.contentRect.width;
+      }
     });
     if (scrollEl) {
       ro.observe(scrollEl);
       viewportHeightPx = scrollEl.clientHeight;
+      viewportWidthPx = scrollEl.clientWidth;
       scrollTopLivePx = scrollEl.scrollTop;
     }
     return () => {
@@ -1232,7 +1237,7 @@
           {#each windowedRows as row, localIdx (row.identity)}
             {@const rowIdx = vw.start + localIdx}
             {#if row.type === "file-header"}
-              <FileHeaderRow {row} />
+              <FileHeaderRow {row} viewportWidthPx={viewportWidthPx} />
             {:else if row.type === "hunk-header"}
               <HunkHeaderRow {row} />
             {:else if row.type === "content-fold"}
