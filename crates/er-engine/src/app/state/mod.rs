@@ -413,8 +413,11 @@ pub struct TabState {
     pub current_branch: String,
     pub repo_root: String,
 
-    /// Where `.er/`-equivalent files live for this tab.
+    /// Where review-artifact files live for this tab (managed app data by default).
     pub er_root: ErRoot,
+
+    /// One-shot notice after migrating repo `.er/` into managed storage (shown by App).
+    pub storage_notice: Option<String>,
 
     /// All diff files for the current mode
     pub files: Vec<DiffFile>,
@@ -735,7 +738,7 @@ impl BrowserLayout {
         }
     }
 
-    pub fn parse_layout(s: &str) -> Self {
+    pub fn from_label(s: &str) -> Self {
         match s {
             "split" => Self::Split,
             "fullscreen" => Self::Fullscreen,
@@ -1210,8 +1213,11 @@ impl TabState {
             browser_annotate_mode: false,
             browser_show_tooltips: false,
             needs_initial_refresh: false,
+            storage_notice: None,
             last_diff_head_oid: None,
         };
+
+        tab.finish_storage_setup();
 
         // Build hunk offsets for initial selection
         tab.rebuild_hunk_offsets();
@@ -1231,7 +1237,7 @@ impl TabState {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
-        Ok(TabState {
+        let mut tab = TabState {
             mode: DiffMode::Branch,
             base_branch: String::new(),
             current_branch: String::new(),
@@ -1324,8 +1330,11 @@ impl TabState {
             browser_annotate_mode: false,
             browser_show_tooltips: false,
             needs_initial_refresh: true,
+            storage_notice: None,
             last_diff_head_oid: None,
-        })
+        };
+        tab.finish_storage_setup();
+        Ok(tab)
     }
 
     fn new_inner(
@@ -1335,7 +1344,6 @@ impl TabState {
         refresh_initial_diff: bool,
     ) -> Result<Self> {
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
-        let reviewed = Self::load_reviewed_files(&repo_root);
         let er_config = config::load_config(&repo_root);
         let watched_config = er_config.watched.clone();
         let has_watched = !watched_config.paths.is_empty();
@@ -1374,7 +1382,7 @@ impl TabState {
             filter_rules: Vec::new(),
             filter_input: String::new(),
             filter_history: Vec::new(),
-            reviewed,
+            reviewed: HashMap::new(),
             current_per_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
@@ -1435,8 +1443,11 @@ impl TabState {
             browser_annotate_mode: false,
             browser_show_tooltips: false,
             needs_initial_refresh: false,
+            storage_notice: None,
             last_diff_head_oid: None,
         };
+
+        tab.finish_storage_setup();
 
         if refresh_initial_diff {
             tab.refresh_diff()?;
@@ -1546,6 +1557,7 @@ impl TabState {
             browser_annotate_mode: false,
             browser_show_tooltips: false,
             needs_initial_refresh: false,
+            storage_notice: None,
             last_diff_head_oid: None,
         }
     }
@@ -1651,54 +1663,66 @@ impl TabState {
     /// Return the directory path for AI files (review.json, questions.json,
     /// github-comments.json, etc.).
     ///
-    /// On desktop (after `apply_managed_root`) every tab — local, LocalPr,
-    /// remote — has `er_root = Managed { agent_dir }`, and that dir is the
-    /// single source of truth. We honour it first regardless of tab kind.
-    ///
-    /// The remaining fallbacks are for tab states where managed resolution
-    /// wasn't applied (TUI, tests):
-    /// - Remote or local-branch-view → legacy cache path
-    /// - Plain working-tree tab → `repo/.er/`
+    /// Defaults to managed app-data storage (`~/.local/share/easy-review/...`).
+    /// With `ER_REPO_LOCAL=1`, uses `repo/.er/`.
     pub fn er_dir(&self) -> String {
-        if let crate::paths::ErRoot::Managed { agent_dir, .. } = &self.er_root {
-            return agent_dir.clone();
-        }
-        if self.is_remote() || self.is_local_branch_view() {
-            return self.comments_dir_legacy();
-        }
         self.er_root.er_dir()
     }
 
     /// Directory for storing comment files (github-comments.json, questions.json).
-    ///
-    /// Always resolves to the same dir as `er_dir()` — comments and review
-    /// artifacts live together under the flat managed branch dir
-    /// `~/Library/Application Support/easy-review/repos/<r>/branches/<b>/`.
     pub fn comments_dir(&self) -> String {
         self.er_dir()
     }
 
-    fn comments_dir_legacy(&self) -> String {
-        if let (Some(ref slug), Some(n)) = (&self.remote_repo, self.pr_number) {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            let safe_slug = slug.replace('/', "-");
-            return format!("{}/.cache/er/remote/{}-{}", home, safe_slug, n);
+    /// Point this tab at managed storage (shared by TUI and Desktop).
+    pub fn apply_managed_root(&mut self) {
+        if crate::storage::use_repo_local_storage() {
+            self.er_root = ErRoot::RepoLocal(self.repo_root.clone());
+            return;
         }
-        if let Some(ref branch) = self.local_branch_view {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            let repo_slug = std::path::Path::new(&self.repo_root)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("repo");
-            // Local PR reviews get a PR-scoped cache dir, not a branch-named one,
-            // so comments survive branch renames and don't collide with branch views.
-            if let Some(pr_num) = self.pr_number {
-                return format!("{}/.cache/er/local/{}/pr-{}", home, repo_slug, pr_num);
+
+        let (repo_slug, branch_slug) = if let Some(remote_repo) = self.remote_repo.clone() {
+            let Some(pr_num) = self.pr_number else {
+                return;
+            };
+            (
+                crate::storage::slug_branch(&remote_repo),
+                format!("pr-{pr_num}"),
+            )
+        } else {
+            let branch = self
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| self.current_branch.clone());
+            if branch.is_empty() || self.repo_root.is_empty() {
+                return;
             }
-            let safe_branch = branch.replace('/', "-");
-            return format!("{}/.cache/er/local/{}/{}", home, repo_slug, safe_branch);
+            (
+                crate::storage::slug_repo(&self.repo_root),
+                crate::storage::slug_branch(&branch),
+            )
+        };
+
+        self.er_root = crate::storage::resolve_managed_root_from_slugs(&repo_slug, &branch_slug);
+
+        if let ErRoot::Managed { agent_dir, .. } = &self.er_root {
+            let managed = std::path::Path::new(agent_dir);
+            if let Ok(true) = crate::storage::migrate_into_managed(
+                managed,
+                &self.repo_root,
+                self.remote_repo.as_deref(),
+                self.pr_number,
+                self.local_branch_view.as_deref(),
+            ) {
+                self.storage_notice = Some(format!("Migrated review data to {agent_dir}"));
+            }
         }
-        self.er_root.er_dir()
+    }
+
+    /// Apply managed storage, migrate legacy paths, and load reviewed markers.
+    pub fn finish_storage_setup(&mut self) {
+        self.apply_managed_root();
+        self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
     }
 
     /// Path to github-comments.json. Uses cache dir in remote mode.
@@ -2719,6 +2743,13 @@ impl TabState {
                 }
             }
         }
+
+        // Relocation mutates hunk_index / line_start in memory; rebuild the lazy
+        // comment index so inline lookups stay in sync (file-level counts alone
+        // would still look correct with a stale index).
+        if questions_changed || comments_changed {
+            self.ai.rebuild_comment_index();
+        }
     }
 
     /// Compute which files have changed since the review, populating stale_files
@@ -3391,9 +3422,8 @@ impl TabState {
         Some((reviewed, total))
     }
 
-    fn load_reviewed_files(repo_root: &str) -> HashMap<String, String> {
-        let path = ErRoot::RepoLocal(repo_root.to_string()).reviewed_path();
-        match std::fs::read_to_string(&path) {
+    fn load_reviewed_files_from_path(path: &str) -> HashMap<String, String> {
+        match std::fs::read_to_string(path) {
             Ok(content) => content
                 .lines()
                 .map(|l| l.trim())
@@ -3773,7 +3803,7 @@ impl App {
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         let arena_registry = App::init_arena_registry(Arc::new(|| {}));
 
-        let app = App {
+        let mut app = App {
             tabs,
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -3797,6 +3827,7 @@ impl App {
             arena_registry: arena_registry.clone(),
             active_arena_runs: std::collections::HashMap::new(),
         };
+        app.drain_storage_notices();
         app.reconcile_arena_runs();
         Ok(app)
     }
@@ -3809,8 +3840,8 @@ impl App {
     /// last-active project's root.
     pub fn new_unloaded(repo_root: String) -> Result<Self> {
         let base = git::detect_base_branch_in(&repo_root)?;
-        let tab = TabState::new_with_base_unloaded(repo_root, base)?;
-        let er_config = crate::config::load_global_config();
+        let tab = TabState::new_with_base_unloaded(repo_root.clone(), base)?;
+        let er_config = crate::config::load_config(&repo_root);
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         Ok(App {
@@ -4181,13 +4212,37 @@ impl App {
     }
 
     /// Push a new tab and focus it. Returns the new tab's index.
-    pub fn open_tab(&mut self, tab: TabState) -> usize {
+    pub fn open_tab(&mut self, mut tab: TabState) -> usize {
+        tab.apply_managed_root();
+        if let Some(msg) = tab.storage_notice.take() {
+            self.notify(&msg);
+        }
         let name = tab.tab_name();
         self.tabs.push(tab);
         let idx = self.tabs.len() - 1;
         self.active_tab = idx;
+        self.sync_config_from_active_tab();
         self.notify(&format!("Opened: {}", name));
         idx
+    }
+
+    /// Reload shared `App.config` from the active tab's repo (global + `.er-config.toml`).
+    pub fn sync_config_from_active_tab(&mut self) {
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            self.config = config::load_config(&tab.repo_root);
+        }
+    }
+
+    /// Show any pending storage migration notices for all tabs.
+    pub fn drain_storage_notices(&mut self) {
+        let notices: Vec<String> = self
+            .tabs
+            .iter_mut()
+            .filter_map(|tab| tab.storage_notice.take())
+            .collect();
+        for msg in notices {
+            self.notify(&msg);
+        }
     }
 
     /// Close the tab at `idx`. Refuses if it's the last tab. If the closed
@@ -5710,6 +5765,7 @@ impl App {
 
     // ── Overlay: Navigation ──
 
+    #[allow(clippy::collapsible_match)]
     pub fn overlay_next(&mut self) {
         match &mut self.overlay {
             Some(OverlayData::WorktreePicker {
@@ -5778,6 +5834,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::collapsible_match)]
     pub fn overlay_prev(&mut self) {
         match &mut self.overlay {
             Some(OverlayData::WorktreePicker { selected, .. })
@@ -6521,6 +6578,7 @@ mod tests {
             browser_annotate_mode: false,
             browser_show_tooltips: false,
             needs_initial_refresh: false,
+            storage_notice: None,
             last_diff_head_oid: None,
         }
     }
@@ -6995,12 +7053,17 @@ mod tests {
     }
 
     #[test]
-    fn current_line_number_delete_line_with_no_new_num_returns_none() {
-        let lines = vec![make_line(LineType::Delete, "deleted", None)];
+    fn current_line_number_delete_line_falls_back_to_old_num() {
+        let lines = vec![DiffLine {
+            line_type: LineType::Delete,
+            content: "deleted".to_string(),
+            old_num: Some(1),
+            new_num: None,
+        }];
         let files = vec![make_file("a.rs", vec![make_hunk(lines)], 0, 1)];
         let mut tab = make_test_tab(files);
         tab.current_line = Some(0);
-        assert_eq!(tab.current_line_number(), None);
+        assert_eq!(tab.current_line_number(), Some(1));
     }
 
     // ── snap_to_visible ──
@@ -8313,15 +8376,14 @@ mod tests {
     }
 
     #[test]
-    fn comments_dir_returns_cache_path_in_remote_mode() {
+    fn comments_dir_returns_managed_path_in_remote_mode() {
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("owner/repo".to_string());
         tab.pr_number = Some(42);
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        assert_eq!(
-            tab.comments_dir(),
-            format!("{}/.cache/er/remote/owner-repo-42", home)
-        );
+        tab.apply_managed_root();
+        let expected =
+            crate::storage::branch_dir(&crate::storage::slug_branch("owner/repo"), "pr-42");
+        assert_eq!(tab.comments_dir(), expected.to_string_lossy());
     }
 
     #[test]
@@ -8347,17 +8409,15 @@ mod tests {
     }
 
     #[test]
-    fn github_comments_path_uses_cache_dir_in_remote_mode() {
+    fn github_comments_path_uses_managed_dir_in_remote_mode() {
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("owner/repo".to_string());
         tab.pr_number = Some(7);
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        tab.apply_managed_root();
+        let dir = crate::storage::branch_dir(&crate::storage::slug_branch("owner/repo"), "pr-7");
         assert_eq!(
             tab.github_comments_path(),
-            format!(
-                "{}/.cache/er/remote/owner-repo-7/github-comments.json",
-                home
-            )
+            format!("{}/github-comments.json", dir.to_string_lossy())
         );
     }
 
@@ -8366,11 +8426,10 @@ mod tests {
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("my-org/my-repo".to_string());
         tab.pr_number = Some(1);
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        assert_eq!(
-            tab.comments_dir(),
-            format!("{}/.cache/er/remote/my-org-my-repo-1", home)
-        );
+        tab.apply_managed_root();
+        let expected =
+            crate::storage::branch_dir(&crate::storage::slug_branch("my-org/my-repo"), "pr-1");
+        assert_eq!(tab.comments_dir(), expected.to_string_lossy());
     }
 
     #[test]
@@ -8436,11 +8495,11 @@ mod tests {
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("owner/repo".to_string());
         tab.pr_number = Some(99);
+        tab.apply_managed_root();
 
-        // Path should include the sanitized slug and PR number
         let dir = tab.comments_dir();
-        assert!(dir.contains("owner-repo-99"), "dir = {}", dir);
-        assert!(dir.contains(".cache/er/remote"), "dir = {}", dir);
+        assert!(dir.contains("easy-review"), "dir = {}", dir);
+        assert!(dir.contains("pr-99"), "dir = {}", dir);
 
         let path = tab.github_comments_path();
         assert!(path.ends_with("/github-comments.json"), "path = {}", path);

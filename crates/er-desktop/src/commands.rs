@@ -3382,17 +3382,16 @@ fn finding_fields_for_ref(
 /// (Cmd-click / middle-click semantics), otherwise push a new tab.
 pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: bool) {
     let mut tab = tab;
-    // Point the tab at managed storage so reads (loader, reveal) and writes
-    // (run_ai_review) resolve to the same agent_dir. Without this, fresh
-    // LocalPr/LocalBranch tabs default to `er_root = RepoLocal` and `er_dir()`
-    // falls back to the legacy `~/.cache/er/...` path, which never matches
-    // where the agent actually writes review.json.
-    crate::tabs::apply_managed_root(&mut tab);
+    tab.apply_managed_root();
+    if let Some(msg) = tab.storage_notice.take() {
+        app.notify(&msg);
+    }
     if replace && !app.tabs.is_empty() {
         let idx = app.active_tab.min(app.tabs.len() - 1);
         let name = tab.tab_name();
         app.tabs[idx] = tab;
         app.active_tab = idx;
+        app.sync_config_from_active_tab();
         app.notify(&format!("Opened: {}", name));
     } else {
         app.open_tab(tab);
@@ -5614,7 +5613,7 @@ pub fn update_tab_browser(
     let tab_idx = app.active_tab;
     let tab = app.tab_mut();
     if let Some(l) = layout.as_deref() {
-        tab.browser_layout = BrowserLayout::parse_layout(l);
+        tab.browser_layout = BrowserLayout::from_label(l);
     }
     let had_url = url.is_some();
     if let Some(u) = url {

@@ -9,9 +9,9 @@ use super::highlight::Highlighter;
 use super::styles;
 use super::utils::word_wrap;
 use er_engine::ai::{CommentRef, CommentType, Finding, RiskLevel};
-use er_engine::app::{App, DiffMode, SplitSide};
+use er_engine::app::{App, DiffMode, SplitSide, TabState};
 use er_engine::config::ErConfig;
-use er_engine::git::LineType;
+use er_engine::git::{DiffHunk, LineType};
 
 /// Expand tab characters to spaces based on configured tab width.
 /// Uses column-aware expansion (tabs align to tab stops, not fixed width).
@@ -110,6 +110,60 @@ fn build_split_rows(hunk: &er_engine::git::DiffHunk) -> Vec<TuiSplitRow<'_>> {
         }
     }
     rows
+}
+
+/// Whether a comment should render given layer visibility toggles.
+fn comment_layer_visible(tab: &TabState, comment: &CommentRef<'_>) -> bool {
+    let visible = match comment {
+        CommentRef::Question(_) => tab.layers.show_questions,
+        CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
+    };
+    visible && !(tab.layers.hide_resolved && comment.is_resolved())
+}
+
+fn hunk_new_line_count(hunk: &DiffHunk) -> usize {
+    hunk.lines
+        .iter()
+        .filter(|l| matches!(l.line_type, LineType::Context | LineType::Add))
+        .count()
+}
+
+fn hunk_old_line_count(hunk: &DiffHunk) -> usize {
+    hunk.lines
+        .iter()
+        .filter(|l| matches!(l.line_type, LineType::Context | LineType::Delete))
+        .count()
+}
+
+/// Resolve comments for a hunk using line-range fallback (matches desktop).
+fn comments_for_hunk_resolved<'a>(
+    tab: &'a TabState,
+    path: &str,
+    hunk_idx: usize,
+    hunk: &DiffHunk,
+) -> Vec<CommentRef<'a>> {
+    tab.ai.comments_for_hunk_or_line_range(
+        path,
+        hunk_idx,
+        hunk.new_start,
+        hunk_new_line_count(hunk),
+        hunk.old_start,
+        hunk_old_line_count(hunk),
+    )
+}
+
+fn hunk_level_comments<'a>(anchors: &'a [CommentRef<'a>]) -> Vec<&'a CommentRef<'a>> {
+    anchors
+        .iter()
+        .filter(|c| c.in_reply_to().is_none() && c.line_start().is_none())
+        .collect()
+}
+
+fn line_comments_at<'a>(anchors: &'a [CommentRef<'a>], line_num: usize) -> Vec<&'a CommentRef<'a>> {
+    anchors
+        .iter()
+        .filter(|c| c.in_reply_to().is_none() && c.line_start() == Some(line_num))
+        .collect()
 }
 
 /// Number of terminal rows this cell will occupy given wrapping settings.
@@ -349,6 +403,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     // Render hunks
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
         let is_current = hunk_idx == tab.active_current_hunk();
+        let hunk_anchors = comments_for_hunk_resolved(tab, &file.path, hunk_idx, hunk);
 
         // Early exit — past viewport, no need to process remaining hunks
         if use_viewport && logical_line > render_end + buffer_lines {
@@ -381,18 +436,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
         // ── Hunk-level comments right after the @@ header ──
         {
-            let hunk_comments = tab.ai.comments_for_hunk_only(&file.path, hunk_idx);
-            for comment in &hunk_comments {
-                let visible = match comment {
-                    CommentRef::Question(_) => tab.layers.show_questions,
-                    CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
-                        tab.layers.show_github_comments
-                    }
-                };
-                if !visible {
-                    continue;
-                }
-                if tab.layers.hide_resolved && comment.is_resolved() {
+            for comment in hunk_level_comments(&hunk_anchors) {
+                if !comment_layer_visible(tab, comment) {
                     continue;
                 }
                 let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
@@ -538,19 +583,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             }
 
             // ── Inline line comments (rendered directly after the target line) ──
-            if let Some(new_line_num) = diff_line.new_num {
-                let line_comments = tab.ai.comments_for_line(&file.path, hunk_idx, new_line_num);
-                for comment in &line_comments {
-                    let visible = match comment {
-                        CommentRef::Question(_) => tab.layers.show_questions,
-                        CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
-                            tab.layers.show_github_comments
-                        }
-                    };
-                    if !visible {
-                        continue;
-                    }
-                    if tab.layers.hide_resolved && comment.is_resolved() {
+            if let Some(line_num) = diff_line.new_num.or(diff_line.old_num) {
+                for comment in line_comments_at(&hunk_anchors, line_num) {
+                    if !comment_layer_visible(tab, comment) {
                         continue;
                     }
                     let is_focused = tab.focused_comment_id.as_deref() == Some(comment.id());
@@ -1067,6 +1102,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     // Render hunks
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
         let is_current = hunk_idx == tab.active_current_hunk();
+        let hunk_anchors = comments_for_hunk_resolved(tab, &file.path, hunk_idx, hunk);
 
         // Early exit past viewport
         if use_viewport && logical_line > render_end + buffer_lines {
@@ -1099,18 +1135,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
 
         // Hunk-level comments — New side renders, Old side pads with blanks.
         {
-            let hunk_comments = tab.ai.comments_for_hunk_only(&file.path, hunk_idx);
-            for comment in &hunk_comments {
-                let visible = match comment {
-                    CommentRef::Question(_) => tab.layers.show_questions,
-                    CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
-                        tab.layers.show_github_comments
-                    }
-                };
-                if !visible {
-                    continue;
-                }
-                if tab.layers.hide_resolved && comment.is_resolved() {
+            for comment in hunk_level_comments(&hunk_anchors) {
+                if !comment_layer_visible(tab, comment) {
                     continue;
                 }
 
@@ -1355,22 +1381,23 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             }
             logical_line += row_height;
 
-            // ── Inline line comments — anchored to new_num (right/New cell) ───────
+            // ── Inline line comments — anchored to the focused side's line number ──
             // New side renders; Old side emits matching blank padding.
-            let comment_new_num = row.right.as_ref().and_then(|c| c.line.new_num);
-            if let Some(new_line_num) = comment_new_num {
-                let line_comments = tab.ai.comments_for_line(&file.path, hunk_idx, new_line_num);
-                for comment in &line_comments {
-                    let visible = match comment {
-                        CommentRef::Question(_) => tab.layers.show_questions,
-                        CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
-                            tab.layers.show_github_comments
-                        }
-                    };
-                    if !visible {
-                        continue;
-                    }
-                    if tab.layers.hide_resolved && comment.is_resolved() {
+            let comment_line_num = match side {
+                SplitSide::New => row
+                    .right
+                    .as_ref()
+                    .and_then(|c| c.line.new_num)
+                    .or_else(|| row.left.as_ref().and_then(|c| c.line.old_num)),
+                SplitSide::Old => row
+                    .right
+                    .as_ref()
+                    .and_then(|c| c.line.new_num)
+                    .or_else(|| row.left.as_ref().and_then(|c| c.line.old_num)),
+            };
+            if let Some(line_num) = comment_line_num {
+                for comment in line_comments_at(&hunk_anchors, line_num) {
+                    if !comment_layer_visible(tab, comment) {
                         continue;
                     }
 

@@ -1263,8 +1263,8 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
     gc.comments = local_unpushed;
     gc.comments.extend(github_entries);
 
-    if !is_remote {
-        std::fs::create_dir_all(format!("{}/.er", repo_root))?;
+    if let Some(dir) = std::path::Path::new(&comments_path).parent() {
+        std::fs::create_dir_all(dir)?;
     }
     let json = serde_json::to_string_pretty(&gc)?;
     let tmp_path = format!("{}.tmp", comments_path);

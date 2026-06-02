@@ -1366,6 +1366,11 @@ mod tests {
             .output()
             .unwrap();
         std::process::Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
             .args(["checkout", "-b", "feature"])
             .current_dir(root)
             .output()
