@@ -1770,8 +1770,7 @@ mod tests {
         });
 
         // Full-file delete: @@ -1,28 +0,0 @@ — new side empty, old side 1..28
-        let results =
-            state.comments_for_hunk_or_line_range(".airlock/config.sh", 0, 0, 0, 1, 28);
+        let results = state.comments_for_hunk_or_line_range(".airlock/config.sh", 0, 0, 0, 1, 28);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].line_start(), Some(1));
     }

@@ -159,10 +159,7 @@ fn hunk_level_comments<'a>(anchors: &'a [CommentRef<'a>]) -> Vec<&'a CommentRef<
         .collect()
 }
 
-fn line_comments_at<'a>(
-    anchors: &'a [CommentRef<'a>],
-    line_num: usize,
-) -> Vec<&'a CommentRef<'a>> {
+fn line_comments_at<'a>(anchors: &'a [CommentRef<'a>], line_num: usize) -> Vec<&'a CommentRef<'a>> {
     anchors
         .iter()
         .filter(|c| c.in_reply_to().is_none() && c.line_start() == Some(line_num))
@@ -1391,20 +1388,12 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     .right
                     .as_ref()
                     .and_then(|c| c.line.new_num)
-                    .or_else(|| {
-                        row.left
-                            .as_ref()
-                            .and_then(|c| c.line.old_num)
-                    }),
+                    .or_else(|| row.left.as_ref().and_then(|c| c.line.old_num)),
                 SplitSide::Old => row
                     .right
                     .as_ref()
                     .and_then(|c| c.line.new_num)
-                    .or_else(|| {
-                        row.left
-                            .as_ref()
-                            .and_then(|c| c.line.old_num)
-                    }),
+                    .or_else(|| row.left.as_ref().and_then(|c| c.line.old_num)),
             };
             if let Some(line_num) = comment_line_num {
                 for comment in line_comments_at(&hunk_anchors, line_num) {
