@@ -52,6 +52,7 @@
 
   let inboxPopoverOpen = $state(false);
   let inboxFilter = $state<"all" | "unread" | "read">("all");
+  let inboxProjectFilter = $state<"all" | string>("all");
   let selectedInboxMessage = $state<InboxItemSnapshot | null>(null);
   let expandedProject = $state<string | null>(null);
   let pendingBranchKey = $state<string | null>(null);
@@ -209,15 +210,54 @@
       .slice(0, 2),
   );
 
+  /** Resolve which project an inbox item belongs to (explicit id or repo/remote match). */
+  function inboxItemProjectId(item: InboxItemSnapshot): string | null {
+    if (item.target.project_id) return item.target.project_id;
+    const root = item.target.repo_root;
+    if (root) {
+      const match = projects.find((p) => p.root_path && p.root_path === root);
+      if (match) return match.id;
+    }
+    const remote = item.target.remote;
+    if (remote) {
+      const match = projects.find((p) => p.remote && p.remote === remote);
+      if (match) return match.id;
+    }
+    return null;
+  }
+
+  /** Projects that have at least one inbox item, sorted by name. */
+  const inboxProjectOptions = $derived(
+    projects
+      .filter((p) => inboxItems.some((item) => inboxItemProjectId(item) === p.id))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  );
+
+  $effect(() => {
+    if (
+      inboxProjectFilter !== "all" &&
+      !inboxProjectOptions.some((p) => p.id === inboxProjectFilter)
+    ) {
+      inboxProjectFilter = "all";
+    }
+  });
+
+  /** Inbox items filtered by the selected project. */
+  const inboxByProject = $derived(
+    inboxProjectFilter === "all"
+      ? inboxVisible
+      : inboxVisible.filter((i) => inboxItemProjectId(i) === inboxProjectFilter),
+  );
+
   /** Inbox items filtered by the popover tab selection. */
   const inboxFiltered = $derived(
-    inboxVisible.filter((i) => {
+    inboxByProject.filter((i) => {
       if (inboxFilter === "unread") return i.read_at_ms == null;
       if (inboxFilter === "read") return i.read_at_ms != null;
       return true;
     }),
   );
-  const inboxUnreadCountAll = $derived(inboxVisible.filter((i) => i.read_at_ms == null).length);
+  const inboxUnreadCountAll = $derived(inboxByProject.filter((i) => i.read_at_ms == null).length);
 
   function isProjectOpen(p: ProjectSnapshot): boolean {
     if (sidebarSearchNeedle) return true;
@@ -670,7 +710,7 @@
               type="button"
               onclick={() => (inboxFilter = "all")}
               class="h-[22px] px-2 rounded-sm text-[11px] font-medium flex items-center gap-1 {inboxFilter === 'all' ? 'bg-hover text-fg' : 'text-muted hover:text-fg-3'}"
-            >All <span class="{inboxFilter === 'all' ? 'text-muted' : 'text-muted'} ml-0.5">{inboxVisible.length}</span></button>
+            >All <span class="{inboxFilter === 'all' ? 'text-muted' : 'text-muted'} ml-0.5">{inboxByProject.length}</span></button>
             <button
               type="button"
               onclick={() => (inboxFilter = "unread")}
@@ -702,6 +742,21 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6l-1 14H6L5 6M10 11v6M14 11v6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           </button>
         </div>
+        {#if inboxProjectOptions.length > 0}
+          <div class="flex items-center gap-2">
+            <label for="inbox-project-filter" class="text-[11px] text-muted shrink-0">Project</label>
+            <select
+              id="inbox-project-filter"
+              bind:value={inboxProjectFilter}
+              class="flex-1 min-w-0 bg-surface border border-hairline rounded px-2 py-1 text-[11px] text-fg outline-none"
+            >
+              <option value="all">All</option>
+              {#each inboxProjectOptions as project (project.id)}
+                <option value={project.id}>{project.name}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
       </div>
       <!-- Item list -->
       <div class="flex-1 overflow-y-auto p-1">

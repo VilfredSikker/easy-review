@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import InboxHarness from "$lib/stories/InboxHarness.svelte";
-import type { InboxItemSnapshot } from "$lib/types";
+import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
 
 // ─── fixture items covering all supported inbox kinds ───────────────────────
 // LeftSidebar.inboxKindMeta() switches on: "pr_merged"|"merged",
@@ -9,6 +9,37 @@ import type { InboxItemSnapshot } from "$lib/types";
 // severity branch ("error"|"warning") or the default briefcase icon.
 
 const now = Date.now();
+
+const inboxProjects: ProjectSnapshot[] = [
+  {
+    id: "discovery-platform",
+    name: "discovery-platform",
+    root_path: "/Users/vilfred/Projects/discovery-platform",
+    remote: "org/discovery-platform",
+    is_active: true,
+    local_branches: [],
+    auto_branches: [],
+    saved_prs: [],
+    my_prs: [],
+    prs_to_review: [],
+    recent_prs: [],
+    recently_merged: [],
+  },
+  {
+    id: "design-system",
+    name: "design-system",
+    root_path: "/Users/vilfred/Projects/design-system",
+    remote: "org/design-system",
+    is_active: false,
+    local_branches: [],
+    auto_branches: [],
+    saved_prs: [],
+    my_prs: [],
+    prs_to_review: [],
+    recent_prs: [],
+    recently_merged: [],
+  },
+];
 
 const allKindsItems: InboxItemSnapshot[] = [
   // ── unread ──────────────────────────────────────────────────────────────
@@ -85,6 +116,18 @@ const allKindsItems: InboxItemSnapshot[] = [
     read_at_ms: now - 2 * 3_600_000,
     dedupe_key: "comment:2030:thread-8",
   },
+  {
+    id: "inbox-review-design-1",
+    kind: "review_requested",
+    severity: "info",
+    title: "Review requested: feat/button-variants",
+    body: "sam requested your review on PR #88.",
+    source: "github",
+    target: { pr_number: 88, project_id: "design-system" },
+    created_at_ms: now - 45 * 60 * 1000,
+    read_at_ms: null,
+    dedupe_key: "review_requested:88",
+  },
 ];
 
 const meta = {
@@ -106,6 +149,7 @@ type Story = StoryObj<typeof meta>;
 export const Teaser: Story = {
   args: {
     inboxItems: allKindsItems,
+    projects: inboxProjects,
     autoOpenPopover: false,
   },
 };
@@ -119,6 +163,7 @@ export const Teaser: Story = {
 export const PopoverOpen: Story = {
   args: {
     inboxItems: allKindsItems,
+    projects: inboxProjects,
     autoOpenPopover: true,
   },
 };
