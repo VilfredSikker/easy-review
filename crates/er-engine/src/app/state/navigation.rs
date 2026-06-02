@@ -803,7 +803,7 @@ impl TabState {
     /// Get cached visible files, rebuilding cache if needed
     #[allow(dead_code)]
     pub fn visible_files_cached(&mut self) -> Vec<usize> {
-        let reviewed_count = self.reviewed.len();
+        let (reviewed_count, _) = self.active_reviewed_count();
         let needs_rebuild = match &self.file_tree_cache {
             Some(cache) => {
                 cache.search_query != self.search_query
