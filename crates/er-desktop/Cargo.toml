@@ -3,10 +3,15 @@ name = "er-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "er-desktop"
 
 [[bin]]
 name = "er-desktop"
 path = "src/main.rs"
+
+[[bin]]
+name = "er-tauri-dev"
+path = "src/bin/er-tauri-dev.rs"
 
 [dependencies]
 er-engine = { path = "../er-engine" }

@@ -7,18 +7,18 @@ use ratatui::{
 
 use super::styles;
 use er_engine::app::{App, ConfigEditState};
-use er_engine::config::{self, ConfigItem};
+use er_engine::config::{ConfigItem, SettingsScope};
 
 /// Render the config hub overlay
 pub fn render_config_hub(
     f: &mut Frame,
     area: Rect,
     app: &App,
+    tab: SettingsScope,
+    items: &[ConfigItem],
     selected: usize,
     editing: &Option<ConfigEditState>,
 ) {
-    let items = config::config_hub_items(&app.config);
-
     // Calculate popup dimensions — taller and wider than old settings overlay
     let max_height = area.height.saturating_sub(4);
     let popup_height = (items.len() as u16 + 4).min(max_height).max(12);
@@ -401,6 +401,13 @@ pub fn render_config_hub(
                 ratatui::style::Style::default().fg(styles::DIM()),
             ),
             Span::styled(
+                "1/2",
+                ratatui::style::Style::default()
+                    .fg(styles::TEXT())
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            Span::styled(" tab  ", ratatui::style::Style::default().fg(styles::DIM())),
+            Span::styled(
                 "s",
                 ratatui::style::Style::default()
                     .fg(styles::TEXT())
@@ -449,9 +456,10 @@ pub fn render_config_hub(
     list_items
         .push(ListItem::new(help_line).style(ratatui::style::Style::default().bg(styles::PANEL())));
 
+    let title = format!(" Config — {} ", tab.label());
     let block = Block::default()
         .title(Span::styled(
-            " Config ",
+            title,
             ratatui::style::Style::default()
                 .fg(styles::CYAN())
                 .add_modifier(ratatui::style::Modifier::BOLD),

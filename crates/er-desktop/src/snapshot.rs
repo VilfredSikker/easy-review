@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
+use er_engine::arena::{ArenaRunSnapshot, ArenaRunSummary};
 use er_engine::git::{DiffFile, FileStatus, LineType};
 use serde::Serialize;
 
@@ -10,6 +11,12 @@ use crate::inbox::InboxHandle;
 use crate::projects;
 
 // ── Wire types ──────────────────────────────────────────────────────────────
+
+/// Full arena run + projections (`arena_get` / `arena_override`).
+pub type ArenaRunSnapshotWire = ArenaRunSnapshot;
+
+/// Arena run list entry for the review tab (`arena_list` / poll snapshot).
+pub type ArenaRunSummaryWire = ArenaRunSummary;
 
 /// Which background fetches are currently in-flight. Included in every snapshot
 /// so the frontend can show loading indicators without adding its own timers.
@@ -64,6 +71,50 @@ pub struct DiffSourceSnapshot {
     pub suggestion: String,
 }
 
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureFlagsSnapshot {
+    pub view_branch: bool,
+    pub view_unstaged: bool,
+    pub view_staged: bool,
+    pub view_history: bool,
+    pub view_conflicts: bool,
+    pub view_hidden: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayConfigSnapshot {
+    pub line_numbers: bool,
+    pub wrap_lines: bool,
+    pub split_diff: bool,
+    pub tab_width: u8,
+}
+
+impl From<&er_engine::config::FeatureFlags> for FeatureFlagsSnapshot {
+    fn from(f: &er_engine::config::FeatureFlags) -> Self {
+        Self {
+            view_branch: f.view_branch,
+            view_unstaged: f.view_unstaged,
+            view_staged: f.view_staged,
+            view_history: f.view_history,
+            view_conflicts: f.view_conflicts,
+            view_hidden: f.view_hidden,
+        }
+    }
+}
+
+impl From<&er_engine::config::DisplayConfig> for DisplayConfigSnapshot {
+    fn from(d: &er_engine::config::DisplayConfig) -> Self {
+        Self {
+            line_numbers: d.line_numbers,
+            wrap_lines: d.wrap_lines,
+            split_diff: d.split_diff,
+            tab_width: d.tab_width,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
     pub mode: String,
@@ -80,6 +131,10 @@ pub struct AppSnapshot {
     pub pr: Option<PrSnapshot>,
     pub panels: Panels,
     pub theme: String,
+    #[serde(default)]
+    pub features: FeatureFlagsSnapshot,
+    #[serde(default)]
+    pub display: DisplayConfigSnapshot,
     pub watch_active: bool,
     pub watch_status: WatchStatusSnapshot,
     pub worktrees: Vec<WorktreeSnapshot>,
@@ -115,6 +170,9 @@ pub struct AppSnapshot {
     /// Human-readable label for the currently selected AI provider/model.
     #[serde(default)]
     pub active_ai_label: String,
+    /// Claude Code effort level for the current session (`low` … `max`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_ai_effort: Option<String>,
     /// Filter presets + recent filter history for the active tab. Presets
     /// come first to mirror the TUI's filter overlay ordering.
     #[serde(default)]
@@ -138,6 +196,15 @@ pub struct AppSnapshot {
     pub inbox_unread_count: usize,
     #[serde(default)]
     pub inbox_last_refresh_ms: u64,
+    /// AI Review Arena UI (`features.arena`, on by default).
+    #[serde(default)]
+    pub arena_enabled: bool,
+    /// Active arena run id for this tab, if any.
+    #[serde(default)]
+    pub active_arena_run: Option<String>,
+    /// Recent arena runs for the active tab (newest first).
+    #[serde(default)]
+    pub arena_runs: Vec<ArenaRunSummaryWire>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1214,7 +1281,9 @@ fn build_snapshot_inner(
             tree: app.panels_visible.tree,
             right: app.panels_visible.right,
         },
-        theme: "dark".to_string(),
+        theme: app.config.display.theme.clone(),
+        features: FeatureFlagsSnapshot::from(&app.config.features),
+        display: DisplayConfigSnapshot::from(&app.config.display),
         watch_active: {
             let ws = watch_status
                 .and_then(|w| w.lock().ok().map(|g| g.clone()))
@@ -1245,6 +1314,7 @@ fn build_snapshot_inner(
         agent_commands: build_agent_commands(app, tab),
         agent_log: build_agent_log(tab),
         active_ai_label: app.active_ai_selection_label(),
+        active_ai_effort: app.current_ai_effort.clone(),
         filter_suggestions,
         commits,
         selected_commit_sha,
@@ -1300,6 +1370,12 @@ fn build_snapshot_inner(
         inbox_last_refresh_ms: inbox
             .and_then(|h| h.lock().ok().map(|g| g.last_refresh_ms))
             .unwrap_or(0),
+        arena_enabled: true,
+        active_arena_run: app.active_arena_run(),
+        arena_runs: {
+            let branch = app.arena_branch_ref();
+            app.arena_list_summaries(Some(&branch)).unwrap_or_default()
+        },
     };
     if crate::profile_log::profile_enabled() {
         let total_lines: usize = out
@@ -1996,7 +2072,7 @@ fn build_projects_from_file(
                         .collect();
 
                     all.retain(|pr| pr.state == "MERGED");
-                    all.sort_by(|a, b| b.merged_at.cmp(&a.merged_at));
+                    all.sort_by_key(|run| std::cmp::Reverse(run.merged_at.clone()));
                     all.truncate(5);
 
                     let now_ms = std::time::SystemTime::now()

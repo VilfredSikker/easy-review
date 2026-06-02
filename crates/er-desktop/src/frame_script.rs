@@ -181,6 +181,12 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
   window.addEventListener('load',reportReady,{once:true});
   window.addEventListener('popstate',reportLocation);
   window.addEventListener('hashchange',reportLocation);
+  (function(){
+    var _push=history.pushState;
+    history.pushState=function(){_push.apply(this,arguments);reportLocation();};
+    var _replace=history.replaceState;
+    history.replaceState=function(){_replace.apply(this,arguments);reportLocation();};
+  })();
   document.addEventListener('click',function(ev){
     if(ev.defaultPrevented||ev.button!==0||ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey)return;
     var a=ev.target&&ev.target.closest?ev.target.closest('a[href]'):null;

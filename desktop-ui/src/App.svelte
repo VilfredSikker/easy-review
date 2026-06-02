@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { app } from "$lib/stores/app.svelte";
+  import { arena } from "$lib/stores/arena.svelte";
   import { initKeyboard } from "$lib/stores/keyboard";
   import FileTree from "$lib/components/FileTree.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
@@ -14,6 +16,9 @@
   import AiActionPalette from "$lib/components/AiActionPalette.svelte";
   import AiReviewFilesModal from "$lib/components/AiReviewFilesModal.svelte";
   import ProfessorFocusModal from "$lib/components/ProfessorFocusModal.svelte";
+  import ArenaLauncher from "$lib/components/arena/ArenaLauncher.svelte";
+  import ArenaRunningPanel from "$lib/components/arena/ArenaRunningPanel.svelte";
+  import ArenaOverlay from "$lib/components/arena/ArenaOverlay.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import PrUrlModal from "$lib/components/PrUrlModal.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
@@ -24,6 +29,7 @@
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
+  import SettingsPage from "$lib/components/settings/SettingsPage.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { browserHide } from "$lib/stores/browserHost";
   import { installExternalLinkGuard } from "$lib/openExternalUrl";
@@ -131,8 +137,11 @@
   }
 
   const browserLayout = $derived(browser.layout);
-  const showDiff = $derived(browserLayout !== "fullscreen");
-  const showBrowser = $derived(browserLayout === "split" || browserLayout === "fullscreen");
+  const isSettingsView = $derived(app.mainView === "settings");
+  const showDiff = $derived(!isSettingsView && browserLayout !== "fullscreen");
+  const showBrowser = $derived(
+    !isSettingsView && (browserLayout === "split" || browserLayout === "fullscreen"),
+  );
 
   // Belt-and-suspenders: when the browser pane is closed in the UI, park every
   // native child webview. BrowserView's onDestroy also hides, but unmount can
@@ -193,6 +202,11 @@
       "",
   );
 
+  $effect(() => {
+    app.snapshot;
+    arena.syncFromSnapshot();
+  });
+
   onMount(() => {
     // Restore persisted drawer height before the drawer can render.
     try {
@@ -209,13 +223,18 @@
     } catch {
       /* ignore */
     }
+    void import("$lib/dev/log").then(({ initDevLog }) => initDevLog());
     app.load().then(() => app.startPolling());
     const cleanupKeyboard = initKeyboard();
     const cleanupLinkGuard = installExternalLinkGuard();
+    const unlistenArena = listen<number>("er://revision", () => {
+      arena.onRevision();
+    });
     return () => {
       cleanupKeyboard();
       cleanupLinkGuard();
       app.stopPolling();
+      void unlistenArena.then((fn) => fn());
     };
   });
 </script>
@@ -286,6 +305,9 @@
     {/if}
 
     <main class="flex-1 flex min-w-0 min-h-0">
+      {#if isSettingsView}
+        <SettingsPage onBack={() => app.setMainView("diff")} />
+      {:else}
       <div class="flex flex-1 min-w-0 min-h-0 flex-row">
         {#if showDiff}
           <div
@@ -320,6 +342,7 @@
           </div>
         {/if}
       </div>
+      {/if}
     </main>
 
     {#if showDiff && app.mainView === "diff"}
@@ -386,6 +409,40 @@
   <AiActionPalette />
   <AiReviewFilesModal />
   <ProfessorFocusModal />
+
+  <ArenaLauncher
+    open={arena.launcherOpen}
+    onClose={() => arena.closeLauncher()}
+    preset={arena.lastConfig?.reviewers}
+  />
+  <ArenaRunningPanel
+    open={arena.runningOpen}
+    minimized={arena.runningMinimized}
+    config={arena.lastConfig}
+    liveRuns={arena.liveRuns}
+    liveRunStates={arena.liveRunStates}
+    snapshot={arena.liveSnapshot}
+    progress={arena.progress}
+    startedAt={arena.runStartedAt}
+    onMinimize={() => arena.minimizeRunning()}
+    onRestore={() => arena.restoreRunning()}
+    onCancel={() => void arena.cancelRun()}
+    onComplete={() => {
+      /* Terminal handling (Review tab vs Arena overlay) lives in arena.svelte refreshLiveRun. */
+    }}
+  />
+  {#if arena.overlayOpen && arena.overlaySnapshot}
+    <ArenaOverlay
+      open={true}
+      snapshot={arena.overlaySnapshot}
+      bind:layoutMode={arena.layoutMode}
+      onClose={() => arena.closeOverlay()}
+      onNewRun={() => {
+        arena.closeOverlay();
+        arena.openLauncher();
+      }}
+    />
+  {/if}
 
   {#if showWelcomeOverlay}
     <div class="fixed inset-0 z-[200]">

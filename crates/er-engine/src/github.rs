@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;

@@ -298,6 +298,10 @@ export interface AppSnapshot {
   pr: PrSnapshot | null;
   panels: Panels;
   theme: string;
+  /** Feature flags from ErConfig — controls which diff scopes appear in the UI. */
+  features?: FeatureFlagsSnapshot;
+  /** Display options from ErConfig (diff gear menu still uses localStorage for split/unified). */
+  display?: DisplayConfigSnapshot;
   watch_active: boolean;
   watch_status: WatchStatusSnapshot;
   worktrees: WorktreeSnapshot[];
@@ -322,6 +326,8 @@ export interface AppSnapshot {
   agent_log?: AgentLogEntry[];
   /** Human-readable label for the currently selected AI provider/model. */
   active_ai_label?: string;
+  /** Claude Code effort level (`low` … `max`). */
+  active_ai_effort?: string | null;
   /** Filter presets + recent filter history for the active tab. */
   filter_suggestions?: FilterSuggestionSnapshot[];
   /** Session-scoped background review tasks across all tabs. */
@@ -331,6 +337,9 @@ export interface AppSnapshot {
   inbox_items?: InboxItemSnapshot[];
   inbox_unread_count?: number;
   inbox_last_refresh_ms?: number;
+  arena_enabled?: boolean;
+  active_arena_run?: string | null;
+  arena_runs?: import("./types/arena").ArenaRunSummary[];
 }
 
 export interface InboxTargetSnapshot {
@@ -415,6 +424,10 @@ export interface AiModelInfo {
   id: string;
   label: string;
   is_selected: boolean;
+  description?: string | null;
+  cost_per_1k_in?: number | null;
+  cost_per_1k_out?: number | null;
+  avg_latency_ms?: number | null;
 }
 
 export interface AiProviderInfo {
@@ -473,6 +486,23 @@ export interface UiDomContext {
   outer_html?: string | null;
 }
 
+export type {
+  ArenaConfig,
+  ArenaFinding,
+  ArenaRun,
+  ArenaRunSnapshot,
+  ArenaRunSummary,
+  ArenaScope,
+  ArenaSeverity,
+  Ballot,
+  FunnelStages,
+  MatrixRow,
+  Reviewer,
+  RunStatus,
+  Verdict,
+  Vote,
+} from "./types/arena";
+
 export interface UiDomNodeContext {
   tag?: string | null;
   id?: string | null;
@@ -481,4 +511,70 @@ export interface UiDomNodeContext {
   aria_label?: string | null;
   text?: string | null;
   attrs?: Record<string, string | null>;
+}
+
+/** Patch value for `apply_config_patch` (matches Rust `ConfigFieldValue`). */
+export type ConfigFieldValue = boolean | string | number;
+
+export type ConfigHubField =
+  | { kind: "section"; title: string }
+  | {
+      kind: "bool";
+      key: string;
+      label: string;
+      description: string;
+      value: boolean;
+    }
+  | {
+      kind: "cycle";
+      key: string;
+      label: string;
+      description: string;
+      options: string[];
+      value: string;
+    }
+  | {
+      kind: "text";
+      key: string;
+      label: string;
+      description: string;
+      placeholder: string;
+      value: string;
+      strict: boolean;
+    }
+  | { kind: "listEntry"; key: string; label: string; index: number }
+  | { kind: "listAdd"; key: string; label: string };
+
+export type SettingsTab = "general" | "terminal";
+
+export interface DesktopSettingsSnapshot {
+  general: ConfigHubField[];
+  app: ConfigHubField[];
+  terminal: ConfigHubField[];
+  agentEffort: string;
+  hasLocalConfig: boolean;
+  /** Repo `.er-config.toml` `[display].theme` — overrides global for the TUI. */
+  localThemeOverride?: string | null;
+  repoRoot: string;
+}
+
+export interface GetConfigHubResponse {
+  settings: DesktopSettingsSnapshot;
+  providers: AiProviderInfo[];
+}
+
+export interface FeatureFlagsSnapshot {
+  viewBranch: boolean;
+  viewUnstaged: boolean;
+  viewStaged: boolean;
+  viewHistory: boolean;
+  viewConflicts: boolean;
+  viewHidden: boolean;
+}
+
+export interface DisplayConfigSnapshot {
+  lineNumbers: boolean;
+  wrapLines: boolean;
+  splitDiff: boolean;
+  tabWidth: number;
 }

@@ -65,8 +65,12 @@ class BrowserStore {
     void (this.layout === "hidden" ? this.setLayout("split") : this.setLayout("hidden"));
   }
 
-  async setUrl(next: string) {
-    await app.cmd("update_tab_browser", { url: next });
+  /** Persist tab URL. Pass `navigate: true` to also load it in the review webview. */
+  async setUrl(next: string, opts?: { navigate?: boolean }) {
+    await app.cmd("update_tab_browser", {
+      url: next,
+      navigate: opts?.navigate ?? false,
+    });
   }
 
   async setAnnotateMode(v: boolean) {

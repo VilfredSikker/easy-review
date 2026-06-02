@@ -36,7 +36,7 @@ fn since_last_ms(kind: &str) -> u64 {
 
 /// Single-line stderr log: `er-desktop kind=… ts_ms=… since_last_ms=… key=value …`
 pub fn profile_log(kind: &str, fields: &[(&str, String)]) {
-    if !profile_enabled() {
+    if !crate::dev_log::enabled(crate::dev_log::GROUP_PROFILE) || !profile_enabled() {
         return;
     }
     let since = since_last_ms(kind);

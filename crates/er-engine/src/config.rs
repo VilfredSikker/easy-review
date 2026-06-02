@@ -1,4 +1,19 @@
+#[path = "config_desktop_settings.rs"]
+mod config_desktop_settings;
+
+#[path = "config_settings.rs"]
+mod config_settings;
+
 use anyhow::Result;
+
+pub use config_desktop_settings::{
+    apply_config_field, desktop_settings_snapshot, validate_config_text_field, ConfigFieldValue,
+    ConfigHubFieldDto, DesktopSettingsSnapshot,
+};
+pub use config_settings::{
+    agent_effort_label, desktop_settings_fields_flat, desktop_settings_fields_for_scope,
+    settings_fields_grouped, SettingsFieldsGrouped, SettingsScope, THEME_OPTIONS,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -110,7 +125,13 @@ pub struct FeatureFlags {
     pub view_conflicts: bool,
     #[serde(default = "default_true")]
     pub view_hidden: bool,
+    /// Multi-round AI Review Arena (orchestrated debate + consensus UI).
+    #[serde(default = "default_true")]
+    pub arena: bool,
 }
+
+/// Claude-compatible effort levels passed as `--effort` when spawning agents.
+pub const AGENT_EFFORT_OPTIONS: &[&str] = &["low", "medium", "high"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -120,6 +141,9 @@ pub struct AgentConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub model: String,
+    /// Claude Code `--effort` when ai_hub is empty (legacy fallback).
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -128,6 +152,9 @@ pub struct AiHubConfig {
     pub default_provider: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    /// Default Claude Code `--effort` for spawns (overridden per arena run).
+    #[serde(default)]
+    pub default_effort: Option<String>,
     #[serde(default)]
     pub providers: BTreeMap<String, AiProviderConfig>,
 }
@@ -150,7 +177,16 @@ pub struct AiModelConfig {
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub args: Vec<String>,
+    /// USD per 1k input tokens (arena cost estimate).
+    #[serde(default)]
+    pub cost_per_1k_in: Option<f32>,
+    #[serde(default)]
+    pub cost_per_1k_out: Option<f32>,
+    #[serde(default)]
+    pub avg_latency_ms: Option<u32>,
 }
 
 /// [summary] section — configuration for diff summary / changelog generation
@@ -248,6 +284,7 @@ impl Default for FeatureFlags {
             view_history: true,
             view_conflicts: true,
             view_hidden: true,
+            arena: true,
         }
     }
 }
@@ -258,6 +295,7 @@ impl Default for AgentConfig {
             command: default_agent_cmd(),
             args: default_agent_args(),
             model: String::new(),
+            effort: None,
         }
     }
 }
@@ -346,6 +384,63 @@ pub fn agent_command_uses_stream_json(command: &str) -> bool {
         || command.ends_with("/agent")
 }
 
+/// True when the provider command is the Claude CLI (supports `--effort`).
+pub fn agent_command_is_claude(command: &str) -> bool {
+    command == "claude" || command.ends_with("/claude")
+}
+
+pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+const EFFORT_LEVELS_OPUS_46_SONNET: &[&str] = &["low", "medium", "high", "max"];
+
+/// Effort levels supported for an ai_hub model id (empty when effort does not apply).
+pub fn effort_levels_for_hub_model(model_id: &str) -> &'static [&'static str] {
+    if model_id.starts_with("opus-4.7")
+        || model_id.starts_with("opus-4.8")
+        || model_id.contains("opus-4-7")
+        || model_id.contains("opus-4-8")
+    {
+        return EFFORT_LEVELS;
+    }
+    if model_id.starts_with("opus-4.6")
+        || model_id.starts_with("sonnet-4.6")
+        || model_id.contains("opus-4-6")
+        || model_id.contains("sonnet-4-6")
+    {
+        return EFFORT_LEVELS_OPUS_46_SONNET;
+    }
+    &[]
+}
+
+/// Precedence: run override → runtime → hub default → agent fallback.
+pub fn resolve_effort(
+    hub: &AiHubConfig,
+    agent: &AgentConfig,
+    runtime: Option<&str>,
+    run_override: Option<&str>,
+) -> Option<String> {
+    let pick = |s: Option<&str>| {
+        s.filter(|v| !v.trim().is_empty())
+            .map(|v| v.trim().to_string())
+    };
+    pick(run_override)
+        .or_else(|| pick(runtime))
+        .or_else(|| pick(hub.default_effort.as_deref()))
+        .or_else(|| pick(agent.effort.as_deref()))
+}
+
+/// Append `--effort <level>` when not already present.
+pub fn inject_claude_effort(args: &mut Vec<String>, effort: Option<&str>) {
+    let Some(level) = effort.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if args.iter().any(|a| a == "--effort") {
+        return;
+    }
+    args.push("--effort".into());
+    args.push(level.to_string());
+}
+
 impl AiModelConfig {
     pub fn display_name(&self) -> String {
         self.label.clone().unwrap_or_else(|| self.id.clone())
@@ -403,6 +498,18 @@ impl ErConfig {
             _ => None,
         }
     }
+}
+
+/// Theme set in repo-local `.er-config.toml` (overrides global for `load_config`).
+pub fn local_display_theme_override(repo_root: &str) -> Option<String> {
+    let local_path = format!("{repo_root}/.er-config.toml");
+    let content = std::fs::read_to_string(&local_path).ok()?;
+    let table: toml::Table = content.parse().ok()?;
+    table
+        .get("display")?
+        .get("theme")?
+        .as_str()
+        .map(|s| s.to_string())
 }
 
 /// Load config by merging global defaults with per-repo overrides.
@@ -621,124 +728,24 @@ impl std::fmt::Debug for ConfigItem {
     }
 }
 
-/// Build the list of config hub items for the config hub overlay.
+/// Build config hub items for one settings tab.
+pub fn config_hub_items_for_scope(config: &ErConfig, scope: SettingsScope) -> Vec<ConfigItem> {
+    match scope {
+        SettingsScope::General => general_config_hub_items(config),
+        SettingsScope::App => Vec::new(),
+        SettingsScope::Terminal => terminal_config_hub_items(config),
+    }
+}
+
+/// Flat list (all tabs) for tests.
 pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
+    let mut items = config_hub_items_for_scope(config, SettingsScope::General);
+    items.extend(config_hub_items_for_scope(config, SettingsScope::Terminal));
+    items
+}
+
+fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
     let mut items: Vec<ConfigItem> = vec![
-        // ── Views ──
-        ConfigItem::SectionHeader("Views".into()),
-        ConfigItem::BoolToggle {
-            label: "Branch diff (1)".into(),
-            description: "Show branch diff mode".into(),
-            get: |c| c.features.view_branch,
-            set: |c, v| c.features.view_branch = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Unstaged changes (2)".into(),
-            description: "Show unstaged changes mode".into(),
-            get: |c| c.features.view_unstaged,
-            set: |c, v| c.features.view_unstaged = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Staged changes (3)".into(),
-            description: "Show staged changes mode".into(),
-            get: |c| c.features.view_staged,
-            set: |c, v| c.features.view_staged = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "History (4)".into(),
-            description: "Show commit history mode".into(),
-            get: |c| c.features.view_history,
-            set: |c, v| c.features.view_history = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Conflicts (5)".into(),
-            description: "Show merge conflicts mode".into(),
-            get: |c| c.features.view_conflicts,
-            set: |c, v| c.features.view_conflicts = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Hidden files (6)".into(),
-            description: "Show hidden files mode".into(),
-            get: |c| c.features.view_hidden,
-            set: |c, v| c.features.view_hidden = v,
-        },
-        // ── Display ──
-        ConfigItem::SectionHeader("Display".into()),
-        ConfigItem::StringCycle {
-            label: "Theme".into(),
-            description: "Color theme".into(),
-            options: &[
-                "ocean-depth",
-                "moonlight",
-                "daybreak",
-                "high-contrast",
-                "tokyo-night",
-                "tokyo-night-storm",
-                "tokyo-night-moon",
-                "tokyo-night-day",
-            ],
-            get: |c| c.display.theme.clone(),
-            set: |c, v| c.display.theme = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Line numbers".into(),
-            description: "Show line numbers in diff".into(),
-            get: |c| c.display.line_numbers,
-            set: |c, v| c.display.line_numbers = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Wrap lines".into(),
-            description: "Wrap long lines".into(),
-            get: |c| c.display.wrap_lines,
-            set: |c, v| c.display.wrap_lines = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Split diff".into(),
-            description: "Side-by-side diff view".into(),
-            get: |c| c.display.split_diff,
-            set: |c, v| c.display.split_diff = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Auto-expand context".into(),
-            description: "Pick unified context per file (small → more, big → less)".into(),
-            get: |c| c.display.auto_context_threshold > 0,
-            set: |c, v| c.display.auto_context_threshold = if v { 1 } else { 0 },
-        },
-        ConfigItem::NumberEdit {
-            label: "Tab width".into(),
-            description: "Spaces per tab stop".into(),
-            min: 1,
-            max: 16,
-            get: |c| c.display.tab_width,
-            set: |c, v| c.display.tab_width = v,
-        },
-        // ── Key Hints ──
-        ConfigItem::SectionHeader("Key Hints".into()),
-        ConfigItem::BoolToggle {
-            label: "Navigation hints".into(),
-            description: "Show j/k, n/N, ␣, / hints".into(),
-            get: |c| c.hints.navigation,
-            set: |c, v| c.hints.navigation = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Staging hints".into(),
-            description: "Show s, c commit hints".into(),
-            get: |c| c.hints.staging,
-            set: |c, v| c.hints.staging = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Comment hints".into(),
-            description: "Show r, d comment action hints".into(),
-            get: |c| c.hints.comments,
-            set: |c, v| c.hints.comments = v,
-        },
-        ConfigItem::BoolToggle {
-            label: "Verbose hints".into(),
-            description: "Show all key hints (resize, filters, etc)".into(),
-            get: |c| c.hints.verbose,
-            set: |c, v| c.hints.verbose = v,
-        },
-        // ── Commands ──
         ConfigItem::SectionHeader("Commands".into()),
         ConfigItem::StringEdit {
             label: "Summary".into(),
@@ -781,7 +788,6 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             get: |c| c.summary.push_to_pr,
             set: |c, v| c.summary.push_to_pr = v,
         },
-        // ── Agent ──
         ConfigItem::SectionHeader("Agent".into()),
         ConfigItem::StringEdit {
             label: "Command".into(),
@@ -801,19 +807,20 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             get: |c| c.agent.args.join(" "),
             set: |c, v| c.agent.args = split_shell_args(&v),
         },
-        // ── AI ──
-        ConfigItem::SectionHeader("AI".into()),
-        ConfigItem::Action {
-            label: "Copy review.json".into(),
-            description: "Copy .er/review.json to clipboard".into(),
-            action_id: "copy_review_json",
+        ConfigItem::StringCycle {
+            label: "Effort".into(),
+            description: "Claude effort level (--effort)".into(),
+            options: AGENT_EFFORT_OPTIONS,
+            get: |c| {
+                c.agent
+                    .effort
+                    .clone()
+                    .unwrap_or_else(|| "medium".to_string())
+            },
+            set: |c, v| {
+                c.agent.effort = if v.is_empty() { None } else { Some(v) };
+            },
         },
-        ConfigItem::Action {
-            label: "Copy questions.json".into(),
-            description: "Copy .er/questions.json to clipboard".into(),
-            action_id: "copy_questions_json",
-        },
-        // ── Watched Paths ──
         ConfigItem::SectionHeader("Watched Paths".into()),
         ConfigItem::StringCycle {
             label: "Diff mode".into(),
@@ -824,7 +831,6 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
         },
     ];
 
-    // One ListEntry per watched path
     for (i, path) in config.watched.paths.iter().enumerate() {
         items.push(ConfigItem::ListEntry {
             label: path.clone(),
@@ -838,6 +844,124 @@ pub fn config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
     });
 
     items
+}
+
+fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
+    vec![
+        ConfigItem::SectionHeader("Views".into()),
+        ConfigItem::BoolToggle {
+            label: "Branch diff (1)".into(),
+            description: "Show branch diff mode".into(),
+            get: |c| c.features.view_branch,
+            set: |c, v| c.features.view_branch = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Unstaged changes (2)".into(),
+            description: "Show unstaged changes mode".into(),
+            get: |c| c.features.view_unstaged,
+            set: |c, v| c.features.view_unstaged = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Staged changes (3)".into(),
+            description: "Show staged changes mode".into(),
+            get: |c| c.features.view_staged,
+            set: |c, v| c.features.view_staged = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "History (4)".into(),
+            description: "Show commit history mode".into(),
+            get: |c| c.features.view_history,
+            set: |c, v| c.features.view_history = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Conflicts (5)".into(),
+            description: "Show merge conflicts mode".into(),
+            get: |c| c.features.view_conflicts,
+            set: |c, v| c.features.view_conflicts = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Hidden files (6)".into(),
+            description: "Show hidden files mode".into(),
+            get: |c| c.features.view_hidden,
+            set: |c, v| c.features.view_hidden = v,
+        },
+        ConfigItem::SectionHeader("Display".into()),
+        ConfigItem::StringCycle {
+            label: "Theme".into(),
+            description: "Color theme".into(),
+            options: THEME_OPTIONS,
+            get: |c| c.display.theme.clone(),
+            set: |c, v| c.display.theme = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Line numbers".into(),
+            description: "Show line numbers in diff".into(),
+            get: |c| c.display.line_numbers,
+            set: |c, v| c.display.line_numbers = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Wrap lines".into(),
+            description: "Wrap long lines".into(),
+            get: |c| c.display.wrap_lines,
+            set: |c, v| c.display.wrap_lines = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Split diff".into(),
+            description: "Side-by-side diff view".into(),
+            get: |c| c.display.split_diff,
+            set: |c, v| c.display.split_diff = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Auto-expand context".into(),
+            description: "Pick unified context per file (small → more, big → less)".into(),
+            get: |c| c.display.auto_context_threshold > 0,
+            set: |c, v| c.display.auto_context_threshold = if v { 1 } else { 0 },
+        },
+        ConfigItem::NumberEdit {
+            label: "Tab width".into(),
+            description: "Spaces per tab stop".into(),
+            min: 1,
+            max: 16,
+            get: |c| c.display.tab_width,
+            set: |c, v| c.display.tab_width = v,
+        },
+        ConfigItem::SectionHeader("Key Hints".into()),
+        ConfigItem::BoolToggle {
+            label: "Navigation hints".into(),
+            description: "Show j/k, n/N, ␣, / hints".into(),
+            get: |c| c.hints.navigation,
+            set: |c, v| c.hints.navigation = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Staging hints".into(),
+            description: "Show s, c commit hints".into(),
+            get: |c| c.hints.staging,
+            set: |c, v| c.hints.staging = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Comment hints".into(),
+            description: "Show r, d comment action hints".into(),
+            get: |c| c.hints.comments,
+            set: |c, v| c.hints.comments = v,
+        },
+        ConfigItem::BoolToggle {
+            label: "Verbose hints".into(),
+            description: "Show all key hints (resize, filters, etc)".into(),
+            get: |c| c.hints.verbose,
+            set: |c, v| c.hints.verbose = v,
+        },
+        ConfigItem::SectionHeader("AI".into()),
+        ConfigItem::Action {
+            label: "Copy review.json".into(),
+            description: "Copy .er/review.json to clipboard".into(),
+            action_id: "copy_review_json",
+        },
+        ConfigItem::Action {
+            label: "Copy questions.json".into(),
+            description: "Copy .er/questions.json to clipboard".into(),
+            action_id: "copy_questions_json",
+        },
+    ]
 }
 
 /// Save config to the repo-local `.er-config.toml` (atomic tmp+rename).
@@ -1097,12 +1221,20 @@ args = ["--model", "gpt-5.4"]
                     AiModelConfig {
                         id: "gpt-5.4".into(),
                         label: Some("GPT-5.4".into()),
+                        description: None,
                         args: vec!["--model".into(), "gpt-5.4".into()],
+                        cost_per_1k_in: None,
+                        cost_per_1k_out: None,
+                        avg_latency_ms: None,
                     },
                     AiModelConfig {
                         id: "gpt-5.3-codex".into(),
                         label: None,
+                        description: None,
                         args: vec!["--model".into(), "gpt-5.3-codex".into()],
+                        cost_per_1k_in: None,
+                        cost_per_1k_out: None,
+                        avg_latency_ms: None,
                     },
                 ],
             },
@@ -1124,6 +1256,7 @@ args = ["--model", "gpt-5.4"]
                 view_history: true,
                 view_conflicts: false,
                 view_hidden: true,
+                arena: false,
             },
             display: DisplayConfig {
                 tab_width: 8,
@@ -1137,6 +1270,7 @@ args = ["--model", "gpt-5.4"]
                 command: "my-agent".into(),
                 args: vec!["--flag".into()],
                 model: String::new(),
+                effort: None,
             },
             ..Default::default()
         };
@@ -1281,7 +1415,7 @@ args = ["--model", "gpt-5.4"]
     #[test]
     fn config_hub_items_bool_toggle_get_set_round_trip() {
         let mut config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::Terminal);
 
         // Find the "Branch diff" toggle
         let branch_toggle = items.iter().find(|i| match i {
@@ -1299,9 +1433,32 @@ args = ["--model", "gpt-5.4"]
     }
 
     #[test]
+    fn config_hub_items_per_scope_partition() {
+        let config = ErConfig::default();
+        let general = config_hub_items_for_scope(&config, SettingsScope::General);
+        let app = config_hub_items_for_scope(&config, SettingsScope::App);
+        let terminal = config_hub_items_for_scope(&config, SettingsScope::Terminal);
+
+        assert!(!general.iter().any(|i| matches!(
+            i,
+            ConfigItem::BoolToggle { label, .. } if label.contains("Branch")
+        )));
+        assert!(terminal.iter().any(|i| matches!(
+            i,
+            ConfigItem::BoolToggle { label, .. } if label.contains("Branch")
+        )));
+        assert!(!terminal.is_empty());
+        assert!(app.is_empty());
+        assert!(terminal.iter().any(|i| matches!(
+            i,
+            ConfigItem::StringCycle { label, .. } if label == "Theme"
+        )));
+    }
+
+    #[test]
     fn config_hub_items_string_cycle_get_set_round_trip() {
         let mut config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::Terminal);
 
         let theme_cycle = items.iter().find(|i| match i {
             ConfigItem::StringCycle { label, .. } => label == "Theme",
@@ -1322,7 +1479,7 @@ args = ["--model", "gpt-5.4"]
     #[test]
     fn config_hub_items_string_edit_get_set_round_trip() {
         let mut config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::General);
 
         let cmd_edit = items.iter().find(|i| match i {
             ConfigItem::StringEdit { label, .. } => label == "Command",
@@ -1340,7 +1497,7 @@ args = ["--model", "gpt-5.4"]
     #[test]
     fn config_hub_items_number_edit_get_set_round_trip() {
         let mut config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::Terminal);
 
         let tab_width = items.iter().find(|i| match i {
             ConfigItem::NumberEdit { label, .. } => label == "Tab width",
@@ -1364,7 +1521,7 @@ args = ["--model", "gpt-5.4"]
     fn config_hub_items_watched_paths_generate_list_entries() {
         let mut config = ErConfig::default();
         config.watched.paths = vec![".work/**".to_string(), "logs/*.log".to_string()];
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::General);
 
         let list_entries: Vec<_> = items
             .iter()
@@ -1384,7 +1541,7 @@ args = ["--model", "gpt-5.4"]
     #[test]
     fn config_hub_items_includes_list_add_for_watched() {
         let config = ErConfig::default();
-        let items = config_hub_items(&config);
+        let items = config_hub_items_for_scope(&config, SettingsScope::General);
         let has_add = items
             .iter()
             .any(|i| matches!(i, ConfigItem::ListAdd { .. }));
@@ -1399,6 +1556,7 @@ args = ["--model", "gpt-5.4"]
             command: "claude".into(),
             args: vec![],
             model: String::new(),
+            effort: None,
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -1409,6 +1567,7 @@ args = ["--model", "gpt-5.4"]
             command: "/usr/local/bin/claude".into(),
             args: vec![],
             model: String::new(),
+            effort: None,
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -1419,7 +1578,56 @@ args = ["--model", "gpt-5.4"]
             command: "".into(),
             args: vec![],
             model: String::new(),
+            effort: None,
         };
         assert_eq!(agent.display_name(), "AI");
+    }
+
+    #[test]
+    fn hub_model_effort_levels() {
+        assert!(effort_levels_for_hub_model("opus-4.8").contains(&"xhigh"));
+        assert!(!effort_levels_for_hub_model("opus-4.6").contains(&"xhigh"));
+        assert!(effort_levels_for_hub_model("sonnet-4.6").contains(&"max"));
+        assert!(effort_levels_for_hub_model("haiku-4.5").is_empty());
+    }
+
+    #[test]
+    fn inject_claude_effort_idempotent() {
+        let mut args = vec!["--print".into()];
+        inject_claude_effort(&mut args, Some("high"));
+        assert!(args.contains(&"--effort".to_string()));
+        assert!(args.contains(&"high".to_string()));
+        let len = args.len();
+        inject_claude_effort(&mut args, Some("low"));
+        assert_eq!(args.len(), len);
+    }
+
+    #[test]
+    fn resolve_effort_precedence() {
+        let hub = AiHubConfig {
+            default_effort: Some("medium".into()),
+            ..Default::default()
+        };
+        let agent = AgentConfig {
+            effort: Some("low".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_effort(&hub, &agent, Some("high"), None).as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            resolve_effort(&hub, &agent, Some("high"), Some("max")).as_deref(),
+            Some("max")
+        );
+        assert_eq!(
+            resolve_effort(&hub, &agent, None, None).as_deref(),
+            Some("medium")
+        );
+        let hub_empty = AiHubConfig::default();
+        assert_eq!(
+            resolve_effort(&hub_empty, &agent, None, None).as_deref(),
+            Some("low")
+        );
     }
 }

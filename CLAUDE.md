@@ -106,7 +106,7 @@ crates/er-tui/src/ui/utils.rs          Shared utilities (word_wrap)
 
 ## Current State
 
-v1.5 with dynamic tab numbering (assigned sequentially based on visible modes). Building v0.3.0 release branch. Earlier: v1.4 with `.er/` directory migration, auto-unmark reviewed, post-commit diff view, cleanup commands, sticky file path header, and lazy comment index. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log` and shows memory budget in the status bar. Test fixtures via `scripts/generate-test-fixtures.sh`. Desktop profiling: `ER_DESKTOP_PROFILE_POLL=1` logs `build_snapshot_ms`, `lines_in_ipc`, `max_file_lines`, `budget_omitted` to stderr; frontend mount timing logs to devtools console in dev builds.
+v1.5 with dynamic tab numbering (assigned sequentially based on visible modes). Building v0.3.0 release branch. Earlier: v1.4 with `.er/` directory migration, auto-unmark reviewed, post-commit diff view, cleanup commands, sticky file path header, and lazy comment index. Debug mode via `ER_DEBUG=1 er` writes to `/tmp/er_debug.log` and shows memory budget in the status bar. Test fixtures via `scripts/generate-test-fixtures.sh`. Desktop profiling (opt-in): `ER_DESKTOP_PROFILE_POLL=1 ER_LOG=profile ./scripts/tauri-dev.sh` — Rust `er-desktop kind=…` on stderr; webview `[er-profile]` in devtools console only (off by default in dev).
 
 ## Roadmap
 

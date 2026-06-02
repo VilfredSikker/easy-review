@@ -68,3 +68,7 @@ export async function browserSetAnnotateMode(active: boolean, tabIdx?: number): 
     tabIdx: activeTabIdx(tabIdx),
   });
 }
+
+export async function browserReload(tabIdx?: number): Promise<void> {
+  await invoke("browser_reload", { tabIdx: activeTabIdx(tabIdx) });
+}
