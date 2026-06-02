@@ -1033,8 +1033,7 @@ fn build_snapshot_inner(
         InputMode::RemoteUrl => "remoteurl",
     };
 
-    let reviewed_count = tab.reviewed.len();
-    let total_count = tab.active_diff_files().len();
+    let (reviewed_count, total_count) = tab.active_reviewed_count();
     let active_selected = tab.active_selected_file_index();
 
     let visible = tab.visible_files();

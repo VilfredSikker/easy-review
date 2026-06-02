@@ -218,6 +218,7 @@ fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
     tab.local_branch_view = Some(branch);
     tab.mode = er_engine::app::DiffMode::Branch;
     tab.local_branch_diff_ref = resolved_ref;
+    tab.sync_managed_storage();
     if lazy {
         tab.needs_initial_refresh = true;
     } else {
@@ -242,6 +243,7 @@ fn rebuild_local_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::Tab
     tab.pr_number = Some(number);
     tab.pr_head_ref = d.pr_head_ref.clone();
     tab.mode = er_engine::app::DiffMode::Branch;
+    tab.sync_managed_storage();
     tab.needs_initial_refresh = true;
     Ok(tab)
 }
@@ -285,7 +287,6 @@ pub fn rebuild_tab_with(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
         TabKind::RemotePr => rebuild_remote_pr(d, lazy)?,
         TabKind::LocalPr => rebuild_local_pr(d, lazy)?,
     };
-    tab.apply_managed_root();
     apply_descriptor_browser(&mut tab, d);
     Ok(tab)
 }

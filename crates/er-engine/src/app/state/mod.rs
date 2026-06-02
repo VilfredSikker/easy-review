@@ -953,6 +953,7 @@ impl TabState {
         let mut tab = TabState::new(repo_root)?;
         tab.local_branch_view = Some(branch);
         tab.mode = DiffMode::Branch;
+        tab.sync_managed_storage();
         tab.refresh_diff()?;
         Ok(tab)
     }
@@ -977,6 +978,7 @@ impl TabState {
         tab.pr_head_ref = Some(format!("refs/er/pr/{}/head", pr_number));
         tab.pr_number = Some(pr_number);
         tab.mode = DiffMode::Branch;
+        tab.sync_managed_storage();
         tab.refresh_diff()?;
         Ok(tab)
     }
@@ -1058,7 +1060,7 @@ impl TabState {
         tab.mtime_cache.clear();
         tab.update_mem_budget();
         let t_ai_reload = Instant::now();
-        tab.reload_ai_state();
+        tab.sync_managed_storage();
         eprintln!(
             "pr_open repo={} pr={} phase=ai_reload ms={}",
             tab.repo_root,
@@ -1725,6 +1727,60 @@ impl TabState {
         self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
     }
 
+    /// Re-resolve managed storage for this tab's branch/PR and reload sidecars.
+    ///
+    /// Call after `local_branch_view` / `pr_number` / `remote_repo` are set — e.g.
+    /// before the first `refresh_diff()` on a read-only branch tab. `new_inner` runs
+    /// `finish_storage_setup()` while `local_branch_view` is still unset, so branch
+    /// views must sync again once the viewed branch is known.
+    pub fn sync_managed_storage(&mut self) {
+        self.apply_managed_root();
+        self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+        if !self.active_diff_files().is_empty() {
+            self.prune_reviewed_not_in_diff();
+        }
+        self.reload_ai_state();
+    }
+
+    /// Working-tree tab only: if HEAD branch changed since last refresh, persist
+    /// reviewed markers for the old branch and reload storage for the new branch.
+    pub fn sync_storage_if_checkout_branch_changed(&mut self) -> Result<()> {
+        if self.remote_repo.is_some() || self.local_branch_view.is_some() {
+            return Ok(());
+        }
+        let git_branch = git::get_current_branch_in(&self.repo_root)?;
+        self.apply_checkout_branch_storage_change(&git_branch)
+    }
+
+    /// Apply storage switch when the checkout branch name changes (used by refresh
+    /// and unit tests).
+    pub(crate) fn apply_checkout_branch_storage_change(
+        &mut self,
+        git_branch: &str,
+    ) -> Result<()> {
+        if git_branch == self.current_branch {
+            return Ok(());
+        }
+        self.save_reviewed_files()?;
+        self.current_branch = git_branch.to_string();
+        self.sync_managed_storage();
+        Ok(())
+    }
+
+    /// Branch name used to resolve managed storage for this tab (for sidecar validation).
+    pub fn storage_branch_scope(&self) -> Option<&str> {
+        if self.local_branch_view.is_some() {
+            self.local_branch_view.as_deref()
+        } else if self.remote_repo.is_some() {
+            // PR storage is keyed by pr-{n}; path isolation is enough.
+            None
+        } else if self.current_branch.is_empty() {
+            None
+        } else {
+            Some(&self.current_branch)
+        }
+    }
+
     /// Path to github-comments.json. Uses cache dir in remote mode.
     pub fn github_comments_path(&self) -> String {
         format!("{}/github-comments.json", self.comments_dir())
@@ -2118,6 +2174,8 @@ impl TabState {
 
     fn refresh_diff_impl(&mut self, recompute_branch_hash: bool, auto_unmark: bool) -> Result<()> {
         let t_total = Instant::now();
+
+        self.sync_storage_if_checkout_branch_changed()?;
 
         // Probe upstream presence for the branch this tab is showing. Cheap single
         // `git for-each-ref`; result gates whether the UI offers the Origin source.
@@ -2532,7 +2590,12 @@ impl TabState {
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         let er_dir = self.er_dir();
-        self.ai = ai::load_ai_state(&er_dir, &self.branch_diff_hash);
+        let branch_scope = self.storage_branch_scope().map(str::to_string);
+        self.ai = ai::load_ai_state(
+            &er_dir,
+            &self.branch_diff_hash,
+            branch_scope.as_deref(),
+        );
         // Finding IDs may change after review reload — clear stale reference
         self.focused_finding_id = None;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
@@ -3392,15 +3455,21 @@ impl TabState {
 
     // ── Reviewed-File Tracking ──
 
-    /// Count of reviewed files vs total (all files, ignoring filters)
-    pub fn reviewed_count(&self) -> (usize, usize) {
-        let total = self.files.len();
-        let reviewed = self
-            .files
+    /// Count of reviewed files vs total in the active diff (branch / history commit).
+    pub fn active_reviewed_count(&self) -> (usize, usize) {
+        let files = self.active_diff_files();
+        let total = files.len();
+        let reviewed = files
             .iter()
             .filter(|f| self.reviewed.contains_key(&f.path))
             .count();
         (reviewed, total)
+    }
+
+    /// Count of reviewed files vs total (all files, ignoring filters).
+    /// Delegates to [`Self::active_reviewed_count`] so History mode and desktop stay aligned.
+    pub fn reviewed_count(&self) -> (usize, usize) {
+        self.active_reviewed_count()
     }
 
     /// Count of reviewed files vs total among filtered files only.
@@ -3466,20 +3535,47 @@ impl TabState {
         Ok(())
     }
 
+    /// Remove reviewed entries for paths not in the active diff (orphans from another
+    /// branch's `reviewed` file or legacy empty-hash lines). Persists when any removed.
+    pub fn prune_reviewed_not_in_diff(&mut self) -> usize {
+        if self.active_diff_files().is_empty() {
+            return 0;
+        }
+        let active: std::collections::HashSet<&str> = self
+            .active_diff_files()
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        let orphan: Vec<String> = self
+            .reviewed
+            .keys()
+            .filter(|p| !active.contains(p.as_str()))
+            .cloned()
+            .collect();
+        let count = orphan.len();
+        if count > 0 {
+            for path in orphan {
+                self.reviewed.remove(&path);
+            }
+            let _ = self.save_reviewed_files();
+        }
+        count
+    }
+
     /// Remove reviewed entries whose stored diff hash no longer matches the current diff.
-    /// Entries with an empty hash (old-format backwards compat sentinel) are skipped.
+    /// Also drops paths absent from the active diff (including legacy empty-hash lines).
     /// Returns the number of entries removed. Saves the file if any were removed.
     fn auto_unmark_changed_reviewed(&mut self) -> usize {
+        let mut count = self.prune_reviewed_not_in_diff();
+
         let stale: Vec<String> = self
             .reviewed
             .iter()
             .filter_map(|(path, stored_hash)| {
-                // Skip old-format entries (no hash stored)
                 if stored_hash.is_empty() {
                     return None;
                 }
                 let current_hash = self.current_per_file_hashes.get(path);
-                // Unmark if the hash changed or the file disappeared from the diff
                 match current_hash {
                     Some(h) if h == stored_hash => None,
                     _ => Some(path.clone()),
@@ -3487,8 +3583,8 @@ impl TabState {
             })
             .collect();
 
-        let count = stale.len();
-        if count > 0 {
+        count += stale.len();
+        if !stale.is_empty() {
             for path in &stale {
                 self.reviewed.remove(path);
             }
@@ -4213,7 +4309,7 @@ impl App {
 
     /// Push a new tab and focus it. Returns the new tab's index.
     pub fn open_tab(&mut self, mut tab: TabState) -> usize {
-        tab.apply_managed_root();
+        tab.sync_managed_storage();
         if let Some(msg) = tab.storage_notice.take() {
             self.notify(&msg);
         }
@@ -6781,6 +6877,40 @@ mod tests {
         assert_eq!(tab.reviewed_count(), (2, 2));
     }
 
+    #[test]
+    fn active_reviewed_count_ignores_orphan_reviewed_paths() {
+        let files = vec![
+            make_file("a.json", vec![], 1, 0),
+            make_file("b.json", vec![], 1, 0),
+            make_file("c.json", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.reviewed.insert("a.json".to_string(), "h".to_string());
+        tab.reviewed.insert("b.json".to_string(), "h".to_string());
+        tab.reviewed.insert("c.json".to_string(), "h".to_string());
+        for i in 0..4 {
+            tab.reviewed
+                .insert(format!("other/{i}.rs"), "h".to_string());
+        }
+        assert_eq!(tab.reviewed.len(), 7);
+        assert_eq!(tab.active_reviewed_count(), (3, 3));
+        assert_eq!(tab.reviewed_count(), (3, 3));
+    }
+
+    #[test]
+    fn prune_reviewed_not_in_diff_drops_orphans_and_keeps_active() {
+        let files = vec![
+            make_file("a.json", vec![], 1, 0),
+            make_file("b.json", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.reviewed.insert("a.json".to_string(), String::new());
+        tab.reviewed.insert("gone.rs".to_string(), String::new());
+        assert_eq!(tab.prune_reviewed_not_in_diff(), 1);
+        assert_eq!(tab.reviewed.len(), 1);
+        assert!(tab.reviewed.contains_key("a.json"));
+    }
+
     // ── next_file / prev_file ──
 
     #[test]
@@ -8384,6 +8514,83 @@ mod tests {
         let expected =
             crate::storage::branch_dir(&crate::storage::slug_branch("owner/repo"), "pr-42");
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
+    }
+
+    #[test]
+    fn comments_dir_uses_viewed_branch_for_local_branch_tabs() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "main".to_string();
+        tab.local_branch_view = Some("claude/dev-5067".to_string());
+        tab.sync_managed_storage();
+        let repo_slug = crate::storage::slug_repo(&tab.repo_root);
+        let branch_slug = crate::storage::slug_branch("claude/dev-5067");
+        let expected = crate::storage::branch_dir(&repo_slug, &branch_slug);
+        assert_eq!(tab.comments_dir(), expected.to_string_lossy());
+        assert_ne!(
+            tab.comments_dir(),
+            crate::storage::branch_dir(&repo_slug, &crate::storage::slug_branch("main"))
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn reviewed_path_uses_viewed_branch_for_local_branch_tab() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "main".to_string();
+        tab.local_branch_view = Some("claude/dev-5067".to_string());
+        tab.sync_managed_storage();
+        let repo_slug = crate::storage::slug_repo(&tab.repo_root);
+        let branch_slug = crate::storage::slug_branch("claude/dev-5067");
+        let expected = crate::storage::branch_dir(&repo_slug, &branch_slug).join("reviewed");
+        assert_eq!(tab.er_root.reviewed_path(), expected.to_string_lossy());
+        assert!(!tab.er_root.reviewed_path().contains(&crate::storage::slug_branch("main")));
+    }
+
+    #[test]
+    fn apply_checkout_branch_storage_change_reloads_reviewed() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "main".to_string();
+        tab.sync_managed_storage();
+
+        let repo_slug = crate::storage::slug_repo(&tab.repo_root);
+        let main_dir =
+            crate::storage::branch_dir(&repo_slug, &crate::storage::slug_branch("main"));
+        let feature_dir =
+            crate::storage::branch_dir(&repo_slug, &crate::storage::slug_branch("feature"));
+        std::fs::create_dir_all(&main_dir).unwrap();
+        std::fs::create_dir_all(&feature_dir).unwrap();
+        std::fs::write(main_dir.join("reviewed"), "a.rs\thash-main\n").unwrap();
+        std::fs::write(feature_dir.join("reviewed"), "b.rs\thash-feat\n").unwrap();
+
+        tab.reviewed
+            .insert("a.rs".to_string(), "hash-main".to_string());
+        tab.apply_checkout_branch_storage_change("feature")
+            .unwrap();
+
+        assert_eq!(tab.current_branch, "feature");
+        assert_eq!(
+            tab.reviewed.get("b.rs").map(String::as_str),
+            Some("hash-feat")
+        );
+        assert!(!tab.reviewed.contains_key("a.rs"));
+    }
+
+    #[test]
+    fn sync_storage_if_checkout_branch_changed_skips_local_branch_view() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "main".to_string();
+        tab.local_branch_view = Some("feature/x".to_string());
+        tab.sync_managed_storage();
+        let path_before = tab.er_root.reviewed_path();
+        tab.reviewed.insert("only.rs".to_string(), "h".to_string());
+        tab.sync_storage_if_checkout_branch_changed()
+            .unwrap();
+        assert_eq!(tab.er_root.reviewed_path(), path_before);
+        assert!(tab.reviewed.contains_key("only.rs"));
     }
 
     #[test]

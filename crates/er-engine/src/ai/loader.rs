@@ -94,12 +94,76 @@ pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
     hashes
 }
 
-/// Load all .er-* files from the er_dir and check staleness against current diff hash
-pub fn load_ai_state(er_dir: &str, current_diff_hash: &str) -> AiState {
+/// True when `stored` names the same branch as `expected` (exact or slug match).
+pub fn storage_branches_match(expected: &str, stored: &str) -> bool {
+    if expected == stored {
+        return true;
+    }
+    crate::storage::slug_branch(expected) == crate::storage::slug_branch(stored)
+}
+
+/// Branch name from AI-generated `summary.md` titles (`# Branch Review: …`).
+pub fn summary_declares_branch(summary: &str) -> Option<String> {
+    for line in summary.lines() {
+        let trimmed = line.trim();
+        let rest = trimmed
+            .strip_prefix("# Branch Review:")
+            .or_else(|| trimmed.strip_prefix("## Branch Review:"))
+            .map(str::trim);
+        if let Some(branch) = rest {
+            if !branch.is_empty() {
+                return Some(branch.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// True when sidecars in `er_dir` clearly belong to another branch than `scope`.
+pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
+    let review_path = er_dir.join("review.json");
+    if let Ok(content) = read_sidecar(&review_path) {
+        if let Ok(review) = serde_json::from_str::<ErReview>(&content) {
+            if !review.head_branch.is_empty()
+                && !storage_branches_match(scope, &review.head_branch)
+            {
+                return true;
+            }
+        }
+    }
+    let summary_path = er_dir.join("summary.md");
+    if let Ok(content) = read_sidecar(&summary_path) {
+        if let Some(declared) = summary_declares_branch(&content) {
+            if !storage_branches_match(scope, &declared) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Load all .er-* files from the er_dir and check staleness against current diff hash.
+///
+/// When `branch_scope` is set (viewed branch or checkout), `review.json` with a
+/// non-empty `head_branch` that does not match is ignored — including `summary.md`
+/// and other review artifacts from the same directory. This avoids showing a prior
+/// branch's review after mistaken migration into the wrong managed folder.
+pub fn load_ai_state(
+    er_dir: &str,
+    current_diff_hash: &str,
+    branch_scope: Option<&str>,
+) -> AiState {
     let mut state = AiState::default();
+    let er_path = Path::new(er_dir);
+
+    if let Some(scope) = branch_scope {
+        if artifacts_branch_mismatch(er_path, scope) {
+            return state;
+        }
+    }
 
     // Load .er/review.json
-    let review_path = Path::new(er_dir).join("review.json");
+    let review_path = er_path.join("review.json");
     if let Ok(content) = read_sidecar(&review_path) {
         // TODO(risk:minor): Deserialization errors are silently swallowed (`Err(_) => {}`).
         // A malformed sidecar will appear as if the file doesn't exist; there is no
@@ -280,6 +344,76 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_branches_match_compares_slugs() {
+        assert!(storage_branches_match("main", "main"));
+        assert!(!storage_branches_match(
+            "claude/dev-5067-remove-async-media-export",
+            "dependabot/npm_and_yarn/foo",
+        ));
+    }
+
+    #[test]
+    fn summary_declares_branch_parses_heading() {
+        let md = "# Branch Review: claude/dev-5067\n\nBody.";
+        assert_eq!(
+            summary_declares_branch(md).as_deref(),
+            Some("claude/dev-5067")
+        );
+    }
+
+    #[test]
+    fn load_ai_state_ignores_summary_only_wrong_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        std::fs::write(
+            dir.path().join("summary.md"),
+            "# Branch Review: claude/dev-5067\n\nOld summary.",
+        )
+        .unwrap();
+        let state = load_ai_state(er_dir, "abc", Some("dependabot/npm_and_yarn/foo"));
+        assert!(state.review.is_none());
+        assert!(state.summary.is_none());
+    }
+
+    #[test]
+    fn load_ai_state_ignores_review_for_wrong_branch_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc",
+            "head_branch": "claude/dev-5067",
+            "files": {
+                "a.rs": {
+                    "risk": "low",
+                    "findings": [{
+                        "id": "f1",
+                        "title": "t",
+                        "description": "d",
+                        "severity": "low",
+                        "category": "logic",
+                        "hunk_index": 0
+                    }]
+                }
+            }
+        });
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::to_string(&review).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("summary.md"),
+            "# Branch Review: claude/dev-5067\n\nOld summary.",
+        )
+        .unwrap();
+
+        let state = load_ai_state(er_dir, "abc", Some("dependabot/npm_and_yarn/foo"));
+        assert!(state.review.is_none());
+        assert!(state.summary.is_none());
+    }
 
     #[test]
     fn compute_diff_hash_empty_string_returns_known_sha256() {

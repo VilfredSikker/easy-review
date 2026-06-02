@@ -3382,11 +3382,11 @@ fn finding_fields_for_ref(
 /// (Cmd-click / middle-click semantics), otherwise push a new tab.
 pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: bool) {
     let mut tab = tab;
-    tab.apply_managed_root();
-    if let Some(msg) = tab.storage_notice.take() {
-        app.notify(&msg);
-    }
     if replace && !app.tabs.is_empty() {
+        tab.sync_managed_storage();
+        if let Some(msg) = tab.storage_notice.take() {
+            app.notify(&msg);
+        }
         let idx = app.active_tab.min(app.tabs.len() - 1);
         let name = tab.tab_name();
         app.tabs[idx] = tab;
@@ -3727,6 +3727,7 @@ fn build_local_branch_tab(
 
     new_tab.local_branch_view = Some(name);
     new_tab.mode = er_engine::app::DiffMode::Branch;
+    new_tab.sync_managed_storage();
     let t_local_refresh = std::time::Instant::now();
     match new_tab.refresh_diff_without_remote_fetch_quick() {
         Ok(()) => {
@@ -4941,6 +4942,7 @@ pub fn open_project_branch(
     .map_err(|e| e.to_string())?;
     new_tab.local_branch_view = Some(branch);
     new_tab.mode = er_engine::app::DiffMode::Branch;
+    new_tab.sync_managed_storage();
     refresh_branch_open_diff(&mut new_tab)?;
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
