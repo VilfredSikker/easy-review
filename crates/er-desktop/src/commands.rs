@@ -13,6 +13,7 @@ use er_engine::app::{
     build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
     BrowserLayout, CardAiContextParams, DiffMode, InputMode,
 };
+use er_engine::config::ErConfig;
 
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
@@ -84,6 +85,7 @@ pub struct OpenSourceResult {
 
 pub struct AppState {
     pub app: Arc<Mutex<App>>,
+    pub config_edit_baseline: Arc<Mutex<Option<ErConfig>>>,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     pub pr_cache_fetched_at: PrCacheFetchedAtMap,
     pub pr_open_cache: Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
@@ -198,7 +200,7 @@ macro_rules! snap {
 }
 
 /// Build a snapshot using the lock guards directly (when callers already hold them).
-fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
+pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     build_snapshot(
         app,
         Some(&state.pr_cache),
@@ -779,13 +781,29 @@ pub fn toggle_compacted(state: State<AppState>) -> Result<AppSnapshot, String> {
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
 
+fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &str) -> bool {
+    match mode {
+        "unstaged" => features.view_unstaged,
+        "staged" => features.view_staged,
+        "history" => features.view_history,
+        "conflicts" => features.view_conflicts,
+        "hidden" => features.view_hidden,
+        _ => features.view_branch,
+    }
+}
+
 #[tauri::command]
 pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
+        return Err(format!("'{mode}' view is disabled in settings"));
+    }
     let diff_mode = match mode.as_str() {
         "unstaged" => DiffMode::Unstaged,
         "staged" => DiffMode::Staged,
         "history" => DiffMode::History,
+        "conflicts" => DiffMode::Conflicts,
+        "hidden" => DiffMode::Hidden,
         _ => DiffMode::Branch,
     };
     app.tab_mut().set_mode(diff_mode);
@@ -1346,31 +1364,27 @@ pub fn process_inbox_after_pr_refresh(
 
             inbox.observed_pr.insert(
                 key,
-                crate::inbox::ObservedPrState {
-                    review_decision: pr.review_decision.clone(),
+                crate::inbox::ObservedPrState::from_pr_poll(
+                    pr.review_decision.clone(),
                     requested_reviewers,
-                    pr_state: pr.state.clone(),
+                    pr.state.clone(),
                     is_my_pr,
-                    check_state: prev.as_ref().and_then(|p| p.check_state.clone()),
-                    failing_checks: prev
-                        .as_ref()
+                    prev.as_ref().and_then(|p| p.check_state.clone()),
+                    prev.as_ref()
                         .map(|p| p.failing_checks.clone())
                         .unwrap_or_default(),
-                    in_to_review: crate::snapshot::pr_is_to_review(&pr, Some(&gh_user))
-                        && !pr.is_draft,
-                    triage_done: prev
-                        .as_ref()
+                    crate::snapshot::pr_is_to_review(&pr, Some(&gh_user)) && !pr.is_draft,
+                    prev.as_ref()
                         .map(|p| {
                             p.triage_done
-                                || er_engine::ai::load_triage(&er_storage::pr_review_er_dir(
-                                    remote, pr.number,
-                                ))
+                                || er_engine::ai::load_triage(
+                                    &er_engine::storage::pr_review_er_dir(&remote, pr.number),
+                                )
                                 .is_some()
                         })
                         .unwrap_or(false),
-                    triage_failed: prev.as_ref().map(|p| p.triage_failed).unwrap_or(false),
-                    ..Default::default()
-                },
+                    prev.as_ref().map(|p| p.triage_failed).unwrap_or(false),
+                ),
             );
         }
     }
@@ -3448,17 +3462,16 @@ fn finding_fields_for_ref(
 /// (Cmd-click / middle-click semantics), otherwise push a new tab.
 pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: bool) {
     let mut tab = tab;
-    // Point the tab at managed storage so reads (loader, reveal) and writes
-    // (run_ai_review) resolve to the same agent_dir. Without this, fresh
-    // LocalPr/LocalBranch tabs default to `er_root = RepoLocal` and `er_dir()`
-    // falls back to the legacy `~/.cache/er/...` path, which never matches
-    // where the agent actually writes review.json.
-    crate::tabs::apply_managed_root(&mut tab);
+    tab.apply_managed_root();
+    if let Some(msg) = tab.storage_notice.take() {
+        app.notify(&msg);
+    }
     if replace && !app.tabs.is_empty() {
         let idx = app.active_tab.min(app.tabs.len() - 1);
         let name = tab.tab_name();
         app.tabs[idx] = tab;
         app.active_tab = idx;
+        app.sync_config_from_active_tab();
         app.notify(&format!("Opened: {}", name));
     } else {
         app.open_tab(tab);
@@ -5680,7 +5693,7 @@ pub fn update_tab_browser(
     let tab_idx = app.active_tab;
     let tab = app.tab_mut();
     if let Some(l) = layout.as_deref() {
-        tab.browser_layout = BrowserLayout::parse_layout(l);
+        tab.browser_layout = BrowserLayout::from_label(l);
     }
     let had_url = url.is_some();
     if let Some(u) = url {
@@ -6180,6 +6193,7 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
         inbox.unread_count().hash(&mut h);
         inbox.last_refresh_ms.hash(&mut h);
     }
+    state.desktop_revision.load(Ordering::Relaxed).hash(&mut h);
     crate::profile_log::finish_hash(h)
 }
 

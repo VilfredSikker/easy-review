@@ -4,33 +4,28 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use er_engine::ai::prompts::build_triage_prompt_prepared_diff;
-use er_engine::ai::review::ErReview;
-use er_engine::ai::{compute_diff_hash, load_triage};
+use er_engine::ai::{compute_diff_hash, load_triage, ErReview};
 use er_engine::app::App;
 use er_engine::app::BackgroundTaskTarget;
 
 use crate::commands::AppState;
-use crate::er_storage;
 use crate::inbox::{InboxHandle, ObservedPrState};
 use crate::snapshot::pr_is_to_review;
 use crate::snapshot::PrInfo;
 
 fn triage_running_count(app: &App) -> u32 {
-    app.background_tasks
-        .values()
-        .filter(|h| {
-            h.task.kind == "triage"
-                && matches!(h.task.status, er_engine::app::CommandStatus::Running)
-        })
+    app.background_task_snapshots()
+        .into_iter()
+        .filter(|t| t.kind == "triage" && t.status == "running")
         .count() as u32
 }
 
 fn triage_running_for_pr(app: &App, remote: &str, pr_number: u64) -> bool {
-    app.background_tasks.values().any(|h| {
-        h.task.kind == "triage"
-            && matches!(h.task.status, er_engine::app::CommandStatus::Running)
-            && h.task.target.remote_repo.as_deref() == Some(remote)
-            && h.task.target.pr_number == Some(pr_number)
+    app.background_task_snapshots().iter().any(|t| {
+        t.kind == "triage"
+            && t.status == "running"
+            && t.remote_repo.as_deref() == Some(remote)
+            && t.pr_number == Some(pr_number)
     })
 }
 
@@ -74,7 +69,7 @@ fn needs_triage_scan(
 
 /// Schedule preemptive triage scans for eligible To Review PRs. Called from `poll()`.
 pub fn maybe_schedule_preemptive_scans(app: &mut App, state: &AppState) {
-    let cfg = &app.config.automation.preemptive;
+    let cfg = app.config.automation.preemptive.clone();
     if !cfg.enabled {
         return;
     }
@@ -121,7 +116,7 @@ pub fn maybe_schedule_preemptive_scans(app: &mut App, state: &AppState) {
                 .ok()
                 .and_then(|inbox| inbox.observed_pr.get(&key).cloned());
 
-            let er_dir = er_storage::pr_review_er_dir(remote, pr.number);
+            let er_dir = er_engine::storage::pr_review_er_dir(remote, pr.number);
 
             if !needs_triage_scan(pr, prev.as_ref(), &gh_user, &er_dir) {
                 continue;
@@ -290,12 +285,17 @@ mod tests {
     }
 
     fn sample_prev(in_to_review: bool, triage_done: bool, triage_failed: bool) -> ObservedPrState {
-        ObservedPrState {
+        ObservedPrState::from_pr_poll(
+            None,
+            vec![],
+            "OPEN".into(),
+            false,
+            None,
+            vec![],
             in_to_review,
             triage_done,
             triage_failed,
-            ..Default::default()
-        }
+        )
     }
 
     #[test]

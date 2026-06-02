@@ -56,6 +56,31 @@ pub struct ObservedPrState {
 }
 
 impl ObservedPrState {
+    pub fn from_pr_poll(
+        review_decision: Option<String>,
+        requested_reviewers: Vec<String>,
+        pr_state: String,
+        is_my_pr: bool,
+        check_state: Option<String>,
+        failing_checks: Vec<String>,
+        in_to_review: bool,
+        triage_done: bool,
+        triage_failed: bool,
+    ) -> Self {
+        Self {
+            review_decision,
+            requested_reviewers,
+            pr_state,
+            is_my_pr,
+            check_state,
+            failing_checks,
+            in_to_review,
+            triage_done,
+            triage_failed,
+            triage_head_oid: None,
+        }
+    }
+
     pub fn migrate_legacy_fields(&mut self) {
         if !self.triage_done && self.triage_head_oid.is_some() {
             self.triage_done = true;

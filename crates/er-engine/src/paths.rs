@@ -1,17 +1,17 @@
-/// Selects where `.er/`-equivalent files live for a given tab.
+/// Selects where review-artifact files live for a given tab.
 ///
-/// `RepoLocal` preserves existing TUI behaviour — paths resolve to `<repo_root>/.er/`.
-/// `Managed` is for the desktop app — paths resolve into a versioned app-data directory.
+/// `Managed` (default for TUI and Desktop) resolves to
+/// `<app_data>/easy-review/repos/<repo>/branches/<branch>/`.
+/// `RepoLocal` (`ER_REPO_LOCAL=1`) uses `<repo_root>/.er/` for debugging.
 #[derive(Clone, Debug)]
 pub enum ErRoot {
-    /// Standard TUI mode: `.er/` lives inside the repo working tree.
+    /// Debug / escape hatch: `.er/` inside the repo working tree.
     RepoLocal(String),
-    /// Desktop managed mode: agent files and session/reviewed files are in separate dirs.
+    /// Shared managed storage (TUI + Desktop).
     Managed {
-        /// Absolute path to the active agent's directory (e.g. `.../revisions/<id>/agents/claude`).
+        /// Absolute path to the branch review directory (review.json, questions.json, …).
         agent_dir: String,
-        /// Absolute path to the revision root (e.g. `.../revisions/<id>/`).
-        /// session.json and `reviewed` file live here.
+        /// Same as `agent_dir` — `session.json` and `reviewed` live here.
         session_dir: String,
     },
 }

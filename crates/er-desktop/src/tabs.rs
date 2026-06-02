@@ -11,8 +11,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::er_storage;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TabKind {
@@ -128,7 +126,7 @@ pub fn apply_descriptor_browser(tab: &mut er_engine::app::TabState, d: &TabDescr
         tab.browser_url = url;
     }
     if let Some(layout) = d.browser_layout.as_deref() {
-        tab.browser_layout = er_engine::app::BrowserLayout::parse_layout(layout);
+        tab.browser_layout = er_engine::app::BrowserLayout::from_label(layout);
     }
 }
 
@@ -204,40 +202,6 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
         browser_url,
         browser_layout,
     }
-}
-
-/// Apply the desktop-managed `ErRoot` to a tab, pointing it at the flat
-/// branch-level managed storage dir under
-/// `~/Library/Application Support/easy-review/repos/<repo>/branches/<branch>/`.
-///
-/// Works for local tabs (LocalBranch, LocalPr, Working) and remote PR tabs
-/// (RemotePr). For remote tabs we slug the `owner/repo` and use `pr-<n>` as
-/// the branch component since there's no local branch name to anchor on.
-pub fn apply_managed_root(tab: &mut er_engine::app::TabState) {
-    let (repo_slug, branch_slug) = if let Some(remote_repo) = tab.remote_repo.clone() {
-        // Remote PR: slug derived from `owner/repo`, branch from `pr-<n>`.
-        let Some(pr_num) = tab.pr_number else {
-            return;
-        };
-        (
-            er_storage::slug_branch(&remote_repo), // reuses the generic slugifier
-            format!("pr-{}", pr_num),
-        )
-    } else {
-        let branch = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        if branch.is_empty() || tab.repo_root.is_empty() {
-            return;
-        }
-        (
-            er_storage::slug_repo(&tab.repo_root),
-            er_storage::slug_branch(&branch),
-        )
-    };
-
-    tab.er_root = er_storage::resolve_managed_root_from_slugs(&repo_slug, &branch_slug);
 }
 
 fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::TabState> {
@@ -321,7 +285,7 @@ pub fn rebuild_tab_with(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
         TabKind::RemotePr => rebuild_remote_pr(d, lazy)?,
         TabKind::LocalPr => rebuild_local_pr(d, lazy)?,
     };
-    apply_managed_root(&mut tab);
+    tab.apply_managed_root();
     apply_descriptor_browser(&mut tab, d);
     Ok(tab)
 }

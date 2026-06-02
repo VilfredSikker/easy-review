@@ -98,6 +98,34 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => app.config_hub_activate(),
                 KeyCode::Left => app.config_hub_activate_prev(),
                 KeyCode::Char('d') => app.config_hub_delete_selected(),
+                KeyCode::Char('1') => {
+                    app.config_hub_switch_tab(er_engine::config::SettingsScope::General);
+                }
+                KeyCode::Char('2') => {
+                    app.config_hub_switch_tab(er_engine::config::SettingsScope::Terminal);
+                }
+                KeyCode::Char('[') => {
+                    let tab = match &app.overlay {
+                        Some(er_engine::app::OverlayData::ConfigHub { tab, .. }) => *tab,
+                        _ => return Ok(()),
+                    };
+                    let prev = match tab.tab_index() {
+                        0 => er_engine::config::SettingsScope::Terminal,
+                        _ => er_engine::config::SettingsScope::General,
+                    };
+                    app.config_hub_switch_tab(prev);
+                }
+                KeyCode::Char(']') => {
+                    let tab = match &app.overlay {
+                        Some(er_engine::app::OverlayData::ConfigHub { tab, .. }) => *tab,
+                        _ => return Ok(()),
+                    };
+                    let next = match tab.tab_index() {
+                        0 => er_engine::config::SettingsScope::Terminal,
+                        _ => er_engine::config::SettingsScope::General,
+                    };
+                    app.config_hub_switch_tab(next);
+                }
                 KeyCode::Char('s') => app.config_hub_save_local(),
                 KeyCode::Char('S') => app.config_hub_save_global(),
                 KeyCode::Esc | KeyCode::Char('q') => app.config_hub_cancel(),
@@ -1235,8 +1263,8 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
     gc.comments = local_unpushed;
     gc.comments.extend(github_entries);
 
-    if !is_remote {
-        std::fs::create_dir_all(format!("{}/.er", repo_root))?;
+    if let Some(dir) = std::path::Path::new(&comments_path).parent() {
+        std::fs::create_dir_all(dir)?;
     }
     let json = serde_json::to_string_pretty(&gc)?;
     let tmp_path = format!("{}.tmp", comments_path);
