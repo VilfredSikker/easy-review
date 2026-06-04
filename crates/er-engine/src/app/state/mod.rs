@@ -230,15 +230,6 @@ pub enum SplitSide {
     New,
 }
 
-/// Which source the current diff is computed against.
-/// Derived from tab refs — not stored, to avoid desync.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffSource {
-    Pr,
-    Origin,
-    Local,
-}
-
 // ── Overlay types ──
 
 /// Inline editing state for the config hub (StringEdit / ListAdd items)
@@ -687,19 +678,6 @@ pub struct TabState {
     /// `git_diff_checkout_against_base` against that working tree so live edits
     /// surface. Set/cleared by the desktop active-branch watcher.
     pub local_branch_checkout_root: Option<String>,
-
-    /// When Some and the tab is a plain local branch view (not a local PR, not a
-    /// checkout-backed view), use this git ref as the diff target instead of the
-    /// raw branch name. Set by `refetch_and_refresh_diff()` after fetching the
-    /// branch's upstream into `refs/er/branches/<branch>/head`. Persists across
-    /// tab recreation so switching branches and back keeps the refreshed view.
-    pub local_branch_diff_ref: Option<String>,
-
-    /// Whether `local_branch_view` (or `current_branch` for working-tree tabs) has
-    /// an upstream configured. Refreshed during `refresh_diff_impl`. `None` = not
-    /// yet probed or git probe failed — treat as false for gating, but don't hide
-    /// Origin if a refreshed ref already exists.
-    pub has_upstream: Option<bool>,
 
     /// Desktop-only: marks a tab restored as a stub (no diff loaded) that needs
     /// a `refresh_diff()` the first time it gains focus. Used by the desktop
@@ -1232,8 +1210,6 @@ impl TabState {
             remote_repo: Some(repo_slug),
             local_branch_view: None,
             local_branch_checkout_root: None,
-            local_branch_diff_ref: None,
-            has_upstream: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1351,8 +1327,6 @@ impl TabState {
             remote_repo: Some(repo_slug),
             local_branch_view: None,
             local_branch_checkout_root: None,
-            local_branch_diff_ref: None,
-            has_upstream: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1466,8 +1440,6 @@ impl TabState {
             remote_repo: None,
             local_branch_view: None,
             local_branch_checkout_root: None,
-            local_branch_diff_ref: None,
-            has_upstream: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1581,8 +1553,6 @@ impl TabState {
             remote_repo: None,
             local_branch_view: None,
             local_branch_checkout_root: None,
-            local_branch_diff_ref: None,
-            has_upstream: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1717,10 +1687,10 @@ impl TabState {
         }
         let read_only =
             self.is_local_branch_view() && self.local_branch_checkout_root.is_none();
-        if config.features.view_unstaged && !read_only && self.pr_head_ref.is_none() {
+        if config.features.view_unstaged && !read_only {
             modes.push(DiffMode::Unstaged);
         }
-        if config.features.view_staged && !read_only && self.pr_head_ref.is_none() {
+        if config.features.view_staged && !read_only {
             modes.push(DiffMode::Staged);
         }
         // PrDiff is available whenever a PR number is known (local clone with --pr).
@@ -1871,110 +1841,6 @@ impl TabState {
         format!("{}/github-comments.json", self.comments_dir())
     }
 
-    /// Derive the current diff source from tab refs without storing extra state.
-    pub fn diff_source(&self) -> DiffSource {
-        if self.remote_repo.is_some() || self.pr_head_ref.is_some() {
-            DiffSource::Pr
-        } else if self.local_branch_diff_ref.is_some() {
-            DiffSource::Origin
-        } else {
-            DiffSource::Local
-        }
-    }
-
-    /// Which sources are valid for this tab based on what's available.
-    pub fn available_diff_sources(&self) -> Vec<DiffSource> {
-        // Working tree tabs (no local_branch_view) only support Local.
-        if self.local_branch_view.is_none() && self.remote_repo.is_none() {
-            return vec![DiffSource::Local];
-        }
-        let mut sources = vec![DiffSource::Local];
-        // Origin: only if there's an upstream (we check via local_branch_view + upstream field,
-        // but we can't call out to git here; instead we expose Origin as available when
-        // a refreshed ref exists or the tab is currently in Origin mode).
-        if (self.local_branch_diff_ref.is_some() || self.diff_source() == DiffSource::Origin)
-            && !sources.contains(&DiffSource::Origin)
-        {
-            sources.push(DiffSource::Origin);
-        }
-        // Offer Origin for a local_branch_view only when an upstream is actually
-        // configured (or we've already fetched one into an er-ref). Without this
-        // gate, clicking Origin on a branch with no upstream would error.
-        let has_upstream =
-            self.has_upstream.unwrap_or(false) || self.local_branch_diff_ref.is_some();
-        if has_upstream
-            && self.local_branch_view.is_some()
-            && !sources.contains(&DiffSource::Origin)
-        {
-            sources.push(DiffSource::Origin);
-        }
-        // PR: only if we have a pr_number.
-        if self.pr_number.is_some() && !sources.contains(&DiffSource::Pr) {
-            sources.push(DiffSource::Pr);
-        }
-        sources.sort_by_key(|s| match s {
-            DiffSource::Pr => 0,
-            DiffSource::Origin => 1,
-            DiffSource::Local => 2,
-        });
-        sources
-    }
-
-    /// Switch to a different diff source.
-    /// For Pr: requires pr_number; fetches PR head + base.
-    /// For Origin: requires local_branch_view; fetches upstream into er-ref.
-    /// For Local: clears local_branch_diff_ref and pr_head_ref; uses base_branch as-is.
-    pub fn set_diff_source(&mut self, source: DiffSource) -> Result<()> {
-        match source {
-            DiffSource::Pr => {
-                let pr_number = self
-                    .pr_number
-                    .ok_or_else(|| anyhow::anyhow!("No PR number available for this tab"))?;
-                let head_ref = crate::github::fetch_pr_head(pr_number, &self.repo_root)?;
-                let base = self.base_branch.clone();
-                let base_ref = crate::github::fetch_base_branch_ref(
-                    &self.repo_root,
-                    base.trim_start_matches("origin/"),
-                )?;
-                self.pr_head_ref = Some(head_ref);
-                self.local_branch_diff_ref = None;
-                self.base_branch = base_ref;
-                self.refresh_diff()?;
-            }
-            DiffSource::Origin => {
-                let branch = self
-                    .local_branch_view
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("No local branch view for this tab"))?;
-                let er_ref =
-                    crate::github::fetch_branch_upstream_into_er_ref(&self.repo_root, &branch)?;
-                let base = self.base_branch.clone();
-                let base_ref =
-                    crate::github::fetch_remote_base_ref_for_diff(&self.repo_root, &base)?;
-                self.pr_head_ref = None;
-                self.local_branch_diff_ref = Some(er_ref);
-                self.base_branch = base_ref;
-                self.refresh_diff()?;
-            }
-            DiffSource::Local => {
-                self.pr_head_ref = None;
-                self.local_branch_diff_ref = None;
-                self.refresh_diff()?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Returns (ahead, behind) for the local branch vs its upstream.
-    /// Returns None if no upstream is configured or the call fails.
-    pub fn ahead_behind_vs_upstream(&self) -> Option<(u32, u32)> {
-        let branch = self
-            .local_branch_view
-            .as_deref()
-            .unwrap_or(&self.current_branch);
-        crate::github::ahead_behind_local_vs_upstream(&self.repo_root, branch).unwrap_or(None)
-    }
-
     // ── PR Diff mode ──
 
     /// Switch to `PrDiff` mode: fetch the PR head + base refs (first entry only),
@@ -2001,7 +1867,6 @@ impl TabState {
                 base.trim_start_matches("origin/"),
             )?;
             self.pr_head_ref = Some(head_ref);
-            self.local_branch_diff_ref = None;
             self.base_branch = base_ref;
             self.pr_refs_fetched = true;
         }
@@ -2040,26 +1905,6 @@ impl TabState {
 
             self.pr_head_ref = Some(head_ref);
             self.base_branch = resolved_base;
-        } else if !self.is_remote()
-            && self.pr_head_ref.is_none()
-            && self.local_branch_checkout_root.is_none()
-        {
-            // Plain local branch view: fetch the branch's upstream into an Easy
-            // Review owned ref. Does not move or checkout the user's branch.
-            if let Some(branch) = self.local_branch_view.clone() {
-                let t = Instant::now();
-                let er_ref =
-                    crate::github::fetch_branch_upstream_into_er_ref(&self.repo_root, &branch)?;
-                log_branch_profile_phase(self, "fetch_branch_upstream_into_er_ref", t);
-                let t = Instant::now();
-                let resolved_base = crate::github::fetch_remote_base_ref_for_diff(
-                    &self.repo_root,
-                    &self.base_branch,
-                )?;
-                log_branch_profile_phase(self, "fetch_remote_base_ref_for_diff", t);
-                self.base_branch = resolved_base;
-                self.local_branch_diff_ref = Some(er_ref);
-            }
         }
 
         let t = Instant::now();
@@ -2095,14 +1940,10 @@ impl TabState {
             };
         }
 
-        let branch = self
+        let _branch = self
             .local_branch_view
             .clone()
             .ok_or_else(|| anyhow::anyhow!("No local branch view for this tab"))?;
-
-        let diff_target =
-            crate::github::resolve_fast_local_branch_diff_ref(&self.repo_root, &branch)
-                .ok_or_else(|| anyhow::anyhow!("No local diff target resolved for '{branch}'"))?;
 
         let base_short = self
             .base_branch
@@ -2117,7 +1958,6 @@ impl TabState {
             })?;
 
         self.pr_head_ref = None;
-        self.local_branch_diff_ref = Some(diff_target);
         self.base_branch = resolved_base;
         if quick {
             self.refresh_diff_quick()
@@ -2240,11 +2080,7 @@ impl TabState {
                     _ => crate::git::git_diff_checkout_against_base(&checkout_root, &base),
                 };
             } else {
-                let diff_target = self
-                    .local_branch_diff_ref
-                    .clone()
-                    .unwrap_or_else(|| branch.clone());
-                crate::git::git_diff_against_branch(&self.repo_root, &base, &diff_target)
+                crate::git::git_diff_against_branch(&self.repo_root, &base, branch)
             };
         }
 
@@ -2299,24 +2135,6 @@ impl TabState {
         let t_total = Instant::now();
 
         self.sync_storage_if_checkout_branch_changed()?;
-
-        // Probe upstream presence for the branch this tab is showing. Cheap single
-        // `git for-each-ref`; result gates whether the UI offers the Origin source.
-        // Remote-only tabs (no local clone) skip this — has_upstream stays None.
-        if self.remote_repo.is_none() {
-            let branch = self
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| self.current_branch.clone());
-            if !branch.is_empty() {
-                self.has_upstream =
-                    match crate::github::branch_upstream_short(&self.repo_root, &branch) {
-                        Ok(Some(_)) => Some(true),
-                        Ok(None) => Some(false),
-                        Err(_) => None,
-                    };
-            }
-        }
 
         // History mode doesn't use git_diff_raw — skip normal diff refresh
         if self.mode == DiffMode::History {
@@ -6810,8 +6628,6 @@ mod tests {
             remote_repo: None,
             local_branch_view: None,
             local_branch_checkout_root: None,
-            local_branch_diff_ref: None,
-            has_upstream: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -9331,6 +9147,32 @@ mod tests {
         let config = ErConfig::default();
         let modes = tab.visible_modes(&config);
         assert!(!modes.contains(&DiffMode::PrDiff));
+    }
+
+    /// A live local checkout with pr_head_ref set (after enter_pr_diff) must still
+    /// expose Unstaged and Staged — those views belong to the working tree, not to the
+    /// PR diff view, and must not be gated on pr_head_ref.
+    #[test]
+    fn visible_modes_live_local_checkout_keeps_unstaged_staged_after_enter_pr_diff() {
+        let mut tab = make_test_tab(vec![]);
+        // Simulate a working-tree tab: local_branch_view is None → read_only = false.
+        // Set pr_number + pr_head_ref as enter_pr_diff would.
+        tab.pr_number = Some(42);
+        tab.pr_head_ref = Some("refs/er/pr/42/head".into());
+        let config = ErConfig::default();
+        let modes = tab.visible_modes(&config);
+        assert!(
+            modes.contains(&DiffMode::Unstaged),
+            "Unstaged must be present even when pr_head_ref is set on a live checkout"
+        );
+        assert!(
+            modes.contains(&DiffMode::Staged),
+            "Staged must be present even when pr_head_ref is set on a live checkout"
+        );
+        assert!(
+            modes.contains(&DiffMode::PrDiff),
+            "PrDiff must also be present"
+        );
     }
 
     /// new_remote and new_remote_stub constructors must set mode = PrDiff.

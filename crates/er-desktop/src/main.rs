@@ -1456,7 +1456,6 @@ fn main() {
             commands::terminal_resize,
             commands::terminal_close,
             commands::detect_dev_url,
-            commands::set_diff_source,
             commands::get_background_task_log,
             browser_webview::browser_ensure,
             browser_webview::browser_hide,

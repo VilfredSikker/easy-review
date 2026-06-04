@@ -718,6 +718,7 @@ fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &st
         "history" => features.view_history,
         "conflicts" => features.view_conflicts,
         "hidden" => features.view_hidden,
+        "pr" | "pr_diff" => features.view_branch,
         _ => features.view_branch,
     }
 }
@@ -727,6 +728,16 @@ pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, Str
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
         return Err(format!("'{mode}' view is disabled in settings"));
+    }
+    if matches!(mode.as_str(), "pr" | "pr_diff") {
+        // Only enter PrDiff when not already there (avoids re-fetching refs
+        // on a tab that is already in PrDiff from construction).
+        if app.tab().mode != DiffMode::PrDiff {
+            app.tab_mut()
+                .enter_pr_diff()
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(snap_from(&app, &state));
     }
     let diff_mode = match mode.as_str() {
         "unstaged" => DiffMode::Unstaged,
@@ -3775,13 +3786,10 @@ fn kick_background_branch_refresh(
     base_branch: String,
 ) {
     std::thread::spawn(move || {
-        let er_ref_result =
-            er_engine::github::fetch_branch_upstream_into_er_ref(&repo_root, &branch_name);
-        let base_ref_result =
-            er_engine::github::fetch_remote_base_ref_for_diff(&repo_root, &base_branch);
-
-        match (er_ref_result, base_ref_result) {
-            (Ok(er_ref), Ok(base_ref)) => {
+        // Fetch the base branch from origin so the local diff is up-to-date.
+        let base_strip = base_branch.strip_prefix("origin/").unwrap_or(&base_branch);
+        match er_engine::github::fetch_base_branch_ref(&repo_root, base_strip) {
+            Ok(base_ref) => {
                 let mut refreshed_active_tab = false;
                 if let Ok(mut app) = app_state.lock() {
                     let active_tab = app.active_tab;
@@ -3789,7 +3797,6 @@ fn kick_background_branch_refresh(
                         tab.repo_root == repo_root
                             && tab.local_branch_view.as_deref() == Some(branch_name.as_str())
                     }) {
-                        tab.local_branch_diff_ref = Some(er_ref);
                         tab.base_branch = base_ref;
                         if let Err(err) = tab.refresh_diff() {
                             log::warn!(
@@ -3804,16 +3811,7 @@ fn kick_background_branch_refresh(
                     desktop_revision.fetch_add(1, Ordering::Relaxed);
                 }
             }
-            (Err(err), _) => {
-                log::warn!("background branch upstream refresh failed for {branch_name}: {err}");
-                refresh_active_branch_after_background_miss(
-                    &app_state,
-                    &desktop_revision,
-                    &repo_root,
-                    &branch_name,
-                );
-            }
-            (_, Err(err)) => {
+            Err(err) => {
                 log::warn!("background branch base refresh failed for {branch_name}: {err}");
                 refresh_active_branch_after_background_miss(
                     &app_state,
@@ -4528,32 +4526,6 @@ pub fn prefetch_pr_open(
         }
     });
     Ok(())
-}
-
-/// Switch the active tab to a different diff source.
-/// Valid sources: "pr", "origin", "local".
-#[tauri::command]
-pub fn set_diff_source(source: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    use er_engine::app::DiffSource;
-    let diff_source = match source.as_str() {
-        "pr" => DiffSource::Pr,
-        "origin" => DiffSource::Origin,
-        "local" => DiffSource::Local,
-        other => return Err(format!("Invalid diff source: {other}")),
-    };
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    {
-        let available = app.tab().available_diff_sources();
-        if !available.contains(&diff_source) {
-            return Err(format!(
-                "Diff source '{source}' is not available for this tab"
-            ));
-        }
-    }
-    app.tab_mut()
-        .set_diff_source(diff_source)
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
 }
 
 /// Trigger a manual PR-list refresh. Returns the current snapshot immediately

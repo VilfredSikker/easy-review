@@ -6,7 +6,6 @@
   import { copyToClipboard } from "$lib/clipboard";
   import { resolveActivePrUrl } from "$lib/prUrl";
   import { openExternalUrl } from "$lib/openExternalUrl";
-  import type { DiffSourceSnapshot } from "$lib/types";
 
   const snapshot = $derived(app.snapshot);
   const tabs = $derived(snapshot?.tabs ?? []);
@@ -26,34 +25,6 @@
     activeTab?.pr_number ??
     null
   );
-
-  // Diff source control.
-  const diffSource = $derived(snapshot?.diff_source ?? null);
-
-  let switchingSource = $state<"pr" | "origin" | "local" | null>(null);
-
-  async function switchDiffSource(s: "pr" | "origin" | "local") {
-    if (switchingSource) return;
-    switchingSource = s;
-    try {
-      await app.cmd("set_diff_source", { source: s });
-    } finally {
-      switchingSource = null;
-    }
-  }
-
-  const diffSourceLabels: Record<string, string> = {
-    pr: "PR diff",
-    origin: "Origin branch",
-    local: "Local branch",
-  };
-
-  // Short labels for the segmented control (keep it terse).
-  const segLabels: Record<string, string> = {
-    pr: "PR diff",
-    origin: "Origin",
-    local: "Local branch",
-  };
 
   async function copyBranchName() {
     const name = snapshot?.branch ?? "";
@@ -179,32 +150,4 @@
   </div>
 
   <div class="flex-1 min-w-0"></div>
-
-  <!-- PR diff | Local branch segmented control (right side) -->
-  {#if diffSource && diffSource.available.length > 1}
-    <div
-      role="tablist"
-      class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 shrink-0"
-    >
-      {#each diffSource.available as s (s)}
-        {@const isActive = s === diffSource.active}
-        {@const isLoading = switchingSource === s}
-        <button
-          role="tab"
-          aria-selected={isActive}
-          disabled={isActive || !!switchingSource}
-          onclick={() => switchDiffSource(s)}
-          class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors
-            {isActive
-              ? 'bg-ink-650 text-fg cursor-default'
-              : 'text-muted hover:text-fg-2 disabled:opacity-40 disabled:cursor-not-allowed'}"
-        >
-          {#if isLoading}
-            <span class="inline-block w-2.5 h-2.5 border border-current border-t-transparent rounded-full animate-spin"></span>
-          {/if}
-          {segLabels[s] ?? s}
-        </button>
-      {/each}
-    </div>
-  {/if}
 </div>

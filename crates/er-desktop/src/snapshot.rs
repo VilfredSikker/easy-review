@@ -52,24 +52,6 @@ pub type WatchStatusState = Arc<Mutex<WatchStatusSnapshot>>;
 /// file serializes every highlighted line on every poll.
 const SNAPSHOT_DIFF_LINE_BUDGET: usize = 15_000;
 
-/// Snapshot of the current diff source and what's available.
-#[derive(Debug, Clone, Serialize)]
-pub struct DiffSourceSnapshot {
-    /// "pr" | "origin" | "local"
-    pub active: String,
-    /// Subset of ["pr", "origin", "local"] — only sources valid for this tab.
-    pub available: Vec<String>,
-    pub branch: String,
-    pub upstream: Option<String>,
-    pub base: String,
-    pub pr_number: Option<u64>,
-    pub ahead: Option<u32>,
-    pub behind: Option<u32>,
-    /// Short status phrase for UI display.
-    pub status: String,
-    /// Suggestion to the user about what to do.
-    pub suggestion: String,
-}
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -156,9 +138,6 @@ pub struct AppSnapshot {
     pub browser: BrowserSnapshot,
     /// Live GitHub status for the active tab when it's a remote PR with cached data.
     pub github: Option<GithubStatusSnapshot>,
-    /// Diff source state for the active tab. None for working-tree tabs.
-    #[serde(default)]
-    pub diff_source: Option<DiffSourceSnapshot>,
     /// Which background fetches are currently in-flight.
     pub bg_loading: LoadingFlags,
     /// Running/done/failed background AI commands for the active tab.
@@ -1258,8 +1237,6 @@ fn build_snapshot_inner(
         status
     });
 
-    let diff_source = build_diff_source_snapshot(tab, pr_cache, meta_cache);
-
     let out = AppSnapshot {
         mode: mode.to_string(),
         branch: tab
@@ -1307,7 +1284,6 @@ fn build_snapshot_inner(
         ui_annotations,
         browser: browser_snapshot_from_tab(tab),
         github,
-        diff_source,
         bg_loading: loading
             .and_then(|l| l.lock().ok().map(|g| g.clone()))
             .unwrap_or_default(),
@@ -2482,151 +2458,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     }
 }
 
-fn build_diff_source_snapshot(
-    tab: &er_engine::app::TabState,
-    _pr_cache: Option<&PrCache>,
-    meta_cache: Option<&MetaCache>,
-) -> Option<DiffSourceSnapshot> {
-    use er_engine::app::DiffSource;
-
-    // Working-tree tabs (no local_branch_view, no remote_repo) don't show the card.
-    if tab.local_branch_view.is_none() && tab.remote_repo.is_none() {
-        return None;
-    }
-
-    let branch = tab
-        .local_branch_view
-        .clone()
-        .unwrap_or_else(|| tab.current_branch.clone());
-
-    // Look up upstream from meta_cache if available.
-    let upstream = meta_cache.and_then(|mc| mc.lock().ok()).and_then(|cache| {
-        cache.values().find_map(|entry| {
-            entry
-                .local_branches
-                .iter()
-                .chain(entry.auto_branches.iter())
-                .find(|b| b.name == branch)
-                .and_then(|b| b.upstream.clone())
-        })
-    });
-
-    let active = tab.diff_source();
-    let available = tab.available_diff_sources();
-
-    let active_str = match active {
-        DiffSource::Pr => "pr",
-        DiffSource::Origin => "origin",
-        DiffSource::Local => "local",
-    }
-    .to_string();
-
-    let available_strs: Vec<String> = available
-        .iter()
-        .map(|s| match s {
-            DiffSource::Pr => "pr",
-            DiffSource::Origin => "origin",
-            DiffSource::Local => "local",
-        })
-        .map(|s| s.to_string())
-        .collect();
-
-    let ahead_behind = tab.ahead_behind_vs_upstream();
-    let (ahead, behind) = match ahead_behind {
-        Some((a, b)) => (Some(a), Some(b)),
-        None => (None, None),
-    };
-
-    let has_upstream = upstream.is_some();
-
-    let (status, suggestion) = build_diff_source_copy(active, ahead, behind, has_upstream);
-
-    Some(DiffSourceSnapshot {
-        active: active_str,
-        available: available_strs,
-        branch,
-        upstream,
-        base: tab.base_branch.clone(),
-        pr_number: tab.pr_number,
-        ahead,
-        behind,
-        status,
-        suggestion,
-    })
-}
-
-fn build_diff_source_copy(
-    source: er_engine::app::DiffSource,
-    ahead: Option<u32>,
-    behind: Option<u32>,
-    has_upstream: bool,
-) -> (String, String) {
-    use er_engine::app::DiffSource;
-    if !has_upstream && source != DiffSource::Pr {
-        return (
-            "No upstream configured. Only Local diff is available.".into(),
-            String::new(),
-        );
-    }
-    match source {
-        DiffSource::Pr => (
-            "Showing GitHub PR diff. This should match Files changed on GitHub.".into(),
-            String::new(),
-        ),
-        DiffSource::Origin => {
-            let ahead = ahead.unwrap_or(0);
-            let behind = behind.unwrap_or(0);
-            if ahead > 0 && behind > 0 {
-                (
-                    format!(
-                        "Showing pushed branch. Local and origin have both moved ({ahead} ahead, {behind} behind)."
-                    ),
-                    "Prefer PR or Origin for review parity.".into(),
-                )
-            } else if ahead > 0 {
-                (
-                    format!("Showing pushed branch. Local has {ahead} unpushed commit(s)."),
-                    "Switch to Local to inspect unpushed work.".into(),
-                )
-            } else if behind > 0 {
-                (
-                    format!("Showing pushed branch. Local is behind origin by {behind} commit(s)."),
-                    String::new(),
-                )
-            } else {
-                (
-                    "Showing pushed branch. Local is up to date with origin.".into(),
-                    String::new(),
-                )
-            }
-        }
-        DiffSource::Local => {
-            let ahead = ahead.unwrap_or(0);
-            let behind = behind.unwrap_or(0);
-            if ahead > 0 && behind > 0 {
-                (
-                    format!("Showing local branch. Local and origin have both moved ({ahead} ahead, {behind} behind)."),
-                    "Prefer PR or Origin for review parity.".into(),
-                )
-            } else if ahead > 0 {
-                (
-                    format!("Showing local branch with {ahead} unpushed commit(s)."),
-                    String::new(),
-                )
-            } else if behind > 0 {
-                (
-                    format!("Showing local branch, but origin is {behind} commit(s) ahead."),
-                    "Switch to Origin or PR for current review.".into(),
-                )
-            } else {
-                (
-                    "Showing local branch. In sync with origin.".into(),
-                    String::new(),
-                )
-            }
-        }
-    }
-}
 
 fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
     let pr = tab.pr_data.as_ref()?;

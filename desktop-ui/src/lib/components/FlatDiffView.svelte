@@ -258,6 +258,9 @@
     const pending = diffNav.pendingScrollPx;
     const top = pending !== null ? pending : diffScroll.getScrollTop(snapshotKey);
     diffNav.pendingScrollPx = null;
+    // On any key change (tab/branch/mode), reset scroll to the stored position (0 for new keys)
+    // and clear the applied-spans set so fresh hunks get highlighted rather than skipped.
+    _spansAppliedKeys.clear();
     lastViewKey = snapshotKey;
     tick().then(() => { if (scrollEl) scrollEl.scrollTop = top; });
   });

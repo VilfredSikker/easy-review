@@ -241,110 +241,6 @@ pub fn fetch_pr_head(number: u64, root: &str) -> Result<String> {
     Ok(ref_name)
 }
 
-/// Easy Review owned ref path for a refreshed local branch view.
-/// Stable for the same branch name so subsequent refreshes overwrite the same ref.
-pub fn er_branch_ref_name(branch: &str) -> String {
-    format!("refs/er/branches/{}/head", branch)
-}
-
-/// Resolve a branch's upstream short-name via `for-each-ref`.
-/// Returns `Some("remote/branch")` when an upstream is configured, `None` otherwise.
-pub(crate) fn branch_upstream_short(repo_root: &str, branch: &str) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .args([
-            "for-each-ref",
-            "--format=%(upstream:short)",
-            &format!("refs/heads/{}", branch),
-        ])
-        .current_dir(repo_root)
-        .output()
-        .context("failed to run git for-each-ref")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git for-each-ref failed: {}", stderr.trim());
-    }
-    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(s))
-    }
-}
-
-/// Returns `(ahead, behind)` counts for `branch` relative to its upstream.
-/// `ahead` = commits local has that upstream doesn't.
-/// `behind` = commits upstream has that local doesn't.
-/// Returns `None` if the branch has no upstream configured.
-pub(crate) fn ahead_behind_local_vs_upstream(
-    repo_root: &str,
-    branch: &str,
-) -> Result<Option<(u32, u32)>> {
-    let upstream = match branch_upstream_short(repo_root, branch)? {
-        Some(u) => u,
-        None => return Ok(None),
-    };
-    let range = format!("{}...{}", branch, upstream);
-    let output = Command::new("git")
-        .args(["rev-list", "--left-right", "--count", &range])
-        .current_dir(repo_root)
-        .output()
-        .context("failed to run git rev-list for ahead/behind")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git rev-list ahead/behind failed: {}", stderr.trim());
-    }
-    let s = String::from_utf8_lossy(&output.stdout);
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.len() != 2 {
-        anyhow::bail!("unexpected git rev-list output: {:?}", s.trim());
-    }
-    let ahead: u32 = parts[0].parse().context("parsing ahead count")?;
-    let behind: u32 = parts[1].parse().context("parsing behind count")?;
-    Ok(Some((ahead, behind)))
-}
-
-/// Force-fetch a branch's upstream into an Easy Review owned ref
-/// (`refs/er/branches/<branch>/head`) without moving the user's local branch.
-/// Never runs `git pull`, never checks out, never updates `refs/heads/<branch>`.
-/// Returns the local Easy Review ref name on success.
-pub fn fetch_branch_upstream_into_er_ref(repo_root: &str, branch: &str) -> Result<String> {
-    let upstream = branch_upstream_short(repo_root, branch)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Branch '{branch}' has no upstream to refresh. Run \
-             `git branch --set-upstream-to=origin/{branch} {branch}` \
-             or use the Local branch source instead."
-        )
-    })?;
-    // Split remote/branch from upstream short name. Branches with slashes are valid;
-    // splitn(2) gives "remote" and the rest as the remote-side branch.
-    let (remote, remote_branch) = match upstream.split_once('/') {
-        Some((r, b)) => (r.to_string(), b.to_string()),
-        None => anyhow::bail!(
-            "Branch '{}' has an unexpected upstream format: '{}'",
-            branch,
-            upstream
-        ),
-    };
-    let er_ref = er_branch_ref_name(branch);
-    let refspec = format!("+refs/heads/{}:{}", remote_branch, er_ref);
-
-    let fetch = Command::new("git")
-        .args(["fetch", &remote, &refspec])
-        .current_dir(repo_root)
-        .output()
-        .context("Failed to fetch branch upstream")?;
-    if !fetch.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch.stderr);
-        anyhow::bail!(
-            "Failed to fetch upstream for '{}' from '{}': {}",
-            branch,
-            remote,
-            stderr.trim()
-        );
-    }
-    Ok(er_ref)
-}
-
 /// Whether an error came from a local branch that genuinely has no upstream.
 /// Callers may fall back to a local-only diff for this case, but not for fetch
 /// failures where falling back would show stale remote-backed state.
@@ -353,57 +249,12 @@ pub fn is_no_upstream_to_refresh(err: &anyhow::Error) -> bool {
         .any(|cause| cause.to_string().contains("has no upstream to refresh"))
 }
 
-/// Returns the Easy Review branch ref name if it already exists locally.
-/// Used to reuse a previously refreshed view when the branch tab is recreated.
-pub fn refreshed_branch_ref_if_exists(repo_root: &str, branch: &str) -> Option<String> {
-    let er_ref = er_branch_ref_name(branch);
-    let out = Command::new("git")
-        .args(["rev-parse", "--verify", &er_ref])
-        .current_dir(repo_root)
-        .output()
-        .ok()?;
-    if out.status.success() {
-        Some(er_ref)
-    } else {
-        None
-    }
-}
-
 pub fn ref_exists_locally(repo_root: &str, ref_name: &str) -> bool {
     let out = Command::new("git")
         .args(["rev-parse", "--verify", ref_name])
         .current_dir(repo_root)
         .output();
     out.map(|o| o.status.success()).unwrap_or(false)
-}
-
-/// Resolve a fast local branch diff target without running any network fetches.
-/// Priority order:
-/// 1) existing `refs/er/branches/<branch>/head`
-/// 2) configured upstream short ref (if locally resolvable)
-/// 3) `origin/<branch>` (if locally resolvable)
-/// 4) local branch name (if locally resolvable)
-pub fn resolve_fast_local_branch_diff_ref(repo_root: &str, branch: &str) -> Option<String> {
-    if let Some(er_ref) = refreshed_branch_ref_if_exists(repo_root, branch) {
-        return Some(er_ref);
-    }
-
-    if let Ok(Some(upstream)) = branch_upstream_short(repo_root, branch) {
-        if ref_exists_locally(repo_root, &upstream) {
-            return Some(upstream);
-        }
-    }
-
-    let origin_branch = format!("origin/{branch}");
-    if ref_exists_locally(repo_root, &origin_branch) {
-        return Some(origin_branch);
-    }
-
-    if ref_exists_locally(repo_root, branch) {
-        return Some(branch.to_string());
-    }
-
-    None
 }
 
 /// Force-fetch a base branch from origin, updating `origin/<base>` even if it already exists.
@@ -445,15 +296,6 @@ pub fn fetch_base_branch_ref(repo_root: &str, base_branch: &str) -> Result<Strin
     }
 
     Ok(remote_ref)
-}
-
-/// Force-fetch the remote-tracking base ref for a diff base.
-///
-/// Branch tabs should not diff against a potentially stale local `main`; this
-/// normalizes either `main` or `origin/main` to a freshly fetched `origin/main`.
-pub fn fetch_remote_base_ref_for_diff(repo_root: &str, base_branch: &str) -> Result<String> {
-    let base = base_branch.strip_prefix("origin/").unwrap_or(base_branch);
-    fetch_base_branch_ref(repo_root, base)
 }
 
 /// Get the head branch name of a PR via gh CLI

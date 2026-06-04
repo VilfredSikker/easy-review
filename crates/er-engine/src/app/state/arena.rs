@@ -354,7 +354,6 @@ mod tests {
         let root = dir.path().to_string_lossy().into_owned();
         let mut tab = TabState::new_with_base_unloaded(root.clone(), "main".into()).unwrap();
         tab.local_branch_view = Some("feature".into());
-        tab.local_branch_diff_ref = Some("feature".into());
 
         let naive = git::git_diff_raw("branch", "main", &root, None).unwrap();
         assert!(
