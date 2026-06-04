@@ -88,6 +88,13 @@ impl App {
         tab.last_diff_head_oid = result.head_oid;
         // Rebuild precomputed scroll offsets for the new file list.
         tab.rebuild_hunk_offsets();
+        tab.reload_ai_state();
+        tab.relocate_all_comments();
+        if tab.ai.is_stale {
+            if let Some(raw) = tab.raw_diff.clone() {
+                tab.compute_stale_files(&raw);
+            }
+        }
     }
 }
 

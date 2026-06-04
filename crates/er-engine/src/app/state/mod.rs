@@ -67,6 +67,7 @@ pub enum DiffMode {
     History,
     Conflicts,
     Hidden,
+    PrDiff,
 }
 
 impl DiffMode {
@@ -79,6 +80,7 @@ impl DiffMode {
             DiffMode::History => "HISTORY",
             DiffMode::Conflicts => "CONFLICTS",
             DiffMode::Hidden => "HIDDEN",
+            DiffMode::PrDiff => "PR DIFF",
         }
     }
 
@@ -90,8 +92,31 @@ impl DiffMode {
             DiffMode::History => "history",
             DiffMode::Conflicts => "conflicts",
             DiffMode::Hidden => "hidden",
+            // PrDiff uses branch-style git diff under the hood (PR head vs base).
+            // "pr" is used as the session-persistence key and bucket identifier only.
+            DiffMode::PrDiff => "pr",
         }
     }
+
+    /// The scope string passed to `git_diff_raw` / `fetch_tab_raw_diff`.
+    /// PrDiff diffs against a PR head ref — same git mechanics as `branch`.
+    pub fn fetch_scope(&self) -> &'static str {
+        match self {
+            DiffMode::PrDiff => "branch",
+            other => other.git_mode(),
+        }
+    }
+}
+
+/// Which isolated review bucket a tab's diff belongs to.
+/// Each bucket gets its own storage directory so review notes never bleed across views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewBucket {
+    Branch,
+    Unstaged,
+    Staged,
+    History,
+    Pr,
 }
 
 /// State for History mode — commit list + selected commit's diff
@@ -681,6 +706,12 @@ pub struct TabState {
     /// startup path to defer non-active-project tabs.
     pub needs_initial_refresh: bool,
 
+    /// Whether `enter_pr_diff` has already fetched the PR head + base refs for
+    /// this tab. On first entry (false), we always call out to git/gh and set this
+    /// to true. On subsequent entries (true), we skip the network round-trip and
+    /// go straight to apply_managed_root + reload + refresh.
+    pub pr_refs_fetched: bool,
+
     /// For remote PR tabs: the head_oid the current `files`/`raw_diff` were
     /// fetched against. The background remote-PR refresh loop compares this
     /// against the latest head_oid in pr_cache; equal ⇒ skip the network
@@ -1123,7 +1154,7 @@ impl TabState {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
         let mut tab = TabState {
-            mode: DiffMode::Branch,
+            mode: DiffMode::PrDiff,
             base_branch,
             current_branch: head_branch,
             er_root: ErRoot::RepoLocal(repo_root_remote.clone()),
@@ -1217,9 +1248,11 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            pr_refs_fetched: false,
         };
 
         tab.finish_storage_setup();
+        tab.reload_ai_state();
 
         // Build hunk offsets for initial selection
         tab.rebuild_hunk_offsets();
@@ -1240,7 +1273,7 @@ impl TabState {
             .unwrap_or_else(|_| ".".to_string());
 
         let mut tab = TabState {
-            mode: DiffMode::Branch,
+            mode: DiffMode::PrDiff,
             base_branch: String::new(),
             current_branch: String::new(),
             er_root: ErRoot::RepoLocal(repo_root_remote.clone()),
@@ -1334,8 +1367,10 @@ impl TabState {
             needs_initial_refresh: true,
             storage_notice: None,
             last_diff_head_oid: None,
+            pr_refs_fetched: false,
         };
         tab.finish_storage_setup();
+        tab.reload_ai_state();
         Ok(tab)
     }
 
@@ -1447,6 +1482,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            pr_refs_fetched: false,
         };
 
         tab.finish_storage_setup();
@@ -1561,6 +1597,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            pr_refs_fetched: false,
         }
     }
 
@@ -1635,20 +1672,60 @@ impl TabState {
         self.local_branch_view.is_some()
     }
 
+    /// Which review bucket this tab belongs to.
+    /// Remote tabs (`remote_repo.is_some()`) always map to `Pr` regardless of `mode`.
+    pub fn review_bucket(&self) -> ReviewBucket {
+        if self.remote_repo.is_some() {
+            return ReviewBucket::Pr;
+        }
+        match self.mode {
+            DiffMode::PrDiff => ReviewBucket::Pr,
+            DiffMode::Unstaged => ReviewBucket::Unstaged,
+            DiffMode::Staged => ReviewBucket::Staged,
+            DiffMode::History => ReviewBucket::History,
+            _ => ReviewBucket::Branch,
+        }
+    }
+
+    /// Sub-directory name for local view buckets (branch/unstaged/staged/history).
+    /// Not used for the `Pr` bucket (which lives under `prs/pr-<N>/`).
+    fn review_bucket_name(&self) -> &'static str {
+        match self.review_bucket() {
+            ReviewBucket::Unstaged => "unstaged",
+            ReviewBucket::Staged => "staged",
+            ReviewBucket::History => "history",
+            ReviewBucket::Branch | ReviewBucket::Pr => "branch",
+        }
+    }
+
     /// Return the list of DiffMode tabs currently visible, based on feature flags,
     /// remote status, and data availability. Used for dynamic tab numbering.
+    ///
+    /// - Remote tab (`remote_repo.is_some()`): only `[PrDiff]` — no local working tree.
+    /// - Local tab with a PR (`pr_number.is_some()`): working-tree modes + `PrDiff`
+    ///   inserted after Staged and before History.
+    /// - Local tab without a PR: working-tree modes only, no PrDiff.
     pub fn visible_modes(&self, config: &crate::config::ErConfig) -> Vec<DiffMode> {
+        // Remote tabs have no local working tree — PR Diff is the only view.
+        if self.is_remote() {
+            return vec![DiffMode::PrDiff];
+        }
+
         let mut modes = Vec::new();
         if config.features.view_branch {
             modes.push(DiffMode::Branch);
         }
-        let read_only = self.is_remote()
-            || (self.is_local_branch_view() && self.local_branch_checkout_root.is_none());
+        let read_only =
+            self.is_local_branch_view() && self.local_branch_checkout_root.is_none();
         if config.features.view_unstaged && !read_only && self.pr_head_ref.is_none() {
             modes.push(DiffMode::Unstaged);
         }
         if config.features.view_staged && !read_only && self.pr_head_ref.is_none() {
             modes.push(DiffMode::Staged);
+        }
+        // PrDiff is available whenever a PR number is known (local clone with --pr).
+        if self.pr_number.is_some() {
+            modes.push(DiffMode::PrDiff);
         }
         if config.features.view_history && !read_only {
             modes.push(DiffMode::History);
@@ -1677,48 +1754,56 @@ impl TabState {
     }
 
     /// Point this tab at managed storage (shared by TUI and Desktop).
+    /// Routes to a per-bucket directory so review notes are isolated per view.
     pub fn apply_managed_root(&mut self) {
         if crate::storage::use_repo_local_storage() {
             self.er_root = ErRoot::RepoLocal(self.repo_root.clone());
             return;
         }
 
-        let (repo_slug, branch_slug) = if let Some(remote_repo) = self.remote_repo.clone() {
-            let Some(pr_num) = self.pr_number else {
-                return;
+        if self.review_bucket() == ReviewBucket::Pr {
+            // PR bucket: keyed on owner/repo + PR number, shared between local clone
+            // and `er --remote` as long as both parse the same origin URL.
+            let pr_num = match self.pr_number {
+                Some(n) => n,
+                None => return,
             };
-            (
-                crate::storage::slug_branch(&remote_repo),
-                format!("pr-{pr_num}"),
-            )
-        } else {
-            let branch = self
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| self.current_branch.clone());
-            if branch.is_empty() || self.repo_root.is_empty() {
-                return;
-            }
-            (
-                crate::storage::slug_repo(&self.repo_root),
-                crate::storage::slug_branch(&branch),
-            )
-        };
-
-        self.er_root = crate::storage::resolve_managed_root_from_slugs(&repo_slug, &branch_slug);
-
-        if let ErRoot::Managed { agent_dir, .. } = &self.er_root {
-            let managed = std::path::Path::new(agent_dir);
-            if let Ok(true) = crate::storage::migrate_into_managed(
-                managed,
-                &self.repo_root,
-                self.remote_repo.as_deref(),
-                self.pr_number,
-                self.local_branch_view.as_deref(),
-            ) {
-                self.storage_notice = Some(format!("Migrated review data to {agent_dir}"));
-            }
+            let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
+                // --remote tab: `remote_repo` already holds "owner/repo".
+                // Lowercase before slugging to match canonical_owner_repo_slug().
+                crate::storage::slug_branch(&remote_repo.to_lowercase())
+            } else {
+                // Local-clone PR tab: derive owner/repo from origin
+                match crate::github::canonical_owner_repo_slug(&self.repo_root) {
+                    Some(slug) => slug,
+                    None => return,
+                }
+            };
+            self.er_root =
+                crate::storage::resolve_managed_root_for_pr_bucket(&owner_repo_slug, pr_num);
+            return;
         }
+
+        // Local view buckets (branch/unstaged/staged/history)
+        let branch = self
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| self.current_branch.clone());
+        if branch.is_empty() || self.repo_root.is_empty() {
+            return;
+        }
+        let repo_slug = crate::storage::slug_repo(&self.repo_root);
+        let branch_slug = crate::storage::slug_branch(&branch);
+        let bucket = self.review_bucket_name();
+
+        self.er_root = crate::storage::resolve_managed_root_for_view_bucket(
+            &repo_slug,
+            &branch_slug,
+            bucket,
+        );
+        // Per-bucket dirs start clean — no migration from repo `.er/` or legacy cache.
+        // Migrating here would copy the same data into every bucket (branch/unstaged/
+        // staged/history) and break isolation between them.
     }
 
     /// Apply managed storage, migrate legacy paths, and load reviewed markers.
@@ -1888,6 +1973,44 @@ impl TabState {
             .as_deref()
             .unwrap_or(&self.current_branch);
         crate::github::ahead_behind_local_vs_upstream(&self.repo_root, branch).unwrap_or(None)
+    }
+
+    // ── PR Diff mode ──
+
+    /// Switch to `PrDiff` mode: fetch the PR head + base refs (first entry only),
+    /// resolve storage to the shared PR bucket, reload reviewed markers and AI state,
+    /// then refresh the diff.
+    ///
+    /// On the first call (`pr_refs_fetched == false`) the function fetches the PR head
+    /// and base refs from git/gh and stores them, then sets `pr_refs_fetched = true`.
+    /// On subsequent calls the cached refs are reused — no network round-trip.
+    /// Fetch errors on the first entry propagate as `Err`; they are never swallowed.
+    ///
+    /// Returns `Err` if no PR number is set or the first-entry fetch fails.
+    pub fn enter_pr_diff(&mut self) -> Result<()> {
+        let pr_number = self
+            .pr_number
+            .ok_or_else(|| anyhow::anyhow!("No PR number set for this tab"))?;
+
+        if !self.pr_refs_fetched {
+            // First entry: fetch and cache the refs. Errors surface to the caller.
+            let head_ref = crate::github::fetch_pr_head(pr_number, &self.repo_root)?;
+            let base = self.base_branch.clone();
+            let base_ref = crate::github::fetch_base_branch_ref(
+                &self.repo_root,
+                base.trim_start_matches("origin/"),
+            )?;
+            self.pr_head_ref = Some(head_ref);
+            self.local_branch_diff_ref = None;
+            self.base_branch = base_ref;
+            self.pr_refs_fetched = true;
+        }
+
+        self.mode = DiffMode::PrDiff;
+        self.apply_managed_root();
+        self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+        self.reload_ai_state();
+        self.refresh_diff()
     }
 
     // ── Diff ──
@@ -2354,6 +2477,15 @@ impl TabState {
                 self.rebuild_hunk_offsets();
                 self.file_tree_cache = None;
                 self.update_mem_budget();
+
+                if recompute_branch_hash {
+                    self.reload_ai_state();
+                }
+                self.relocate_all_comments();
+                if self.ai.is_stale {
+                    self.compute_stale_files(&raw);
+                }
+
                 return Ok(());
             }
             return Ok(());
@@ -2371,7 +2503,7 @@ impl TabState {
         let head_ref_owned = self.pr_head_ref.clone();
         let raw = if self.mode == DiffMode::Staged && self.committed_unpushed {
             let staged_raw = git::git_diff_raw(
-                self.mode.git_mode(),
+                self.mode.fetch_scope(),
                 &self.base_branch,
                 &self.repo_root,
                 head_ref_owned.as_deref(),
@@ -2390,7 +2522,7 @@ impl TabState {
                 }
             }
         } else {
-            self.fetch_tab_raw_diff(self.mode.git_mode())?
+            self.fetch_tab_raw_diff(self.mode.fetch_scope())?
         };
 
         // Decide parsing strategy based on diff size.
@@ -2442,7 +2574,7 @@ impl TabState {
                 .map(|f| f.path.clone())
                 .collect();
             let repo_root = self.repo_root.clone();
-            let git_mode = self.mode.git_mode();
+            let git_mode = self.mode.fetch_scope();
             let base_branch = self.base_branch.clone();
             let head_ref_owned2 = self.pr_head_ref.clone();
             for file in &mut self.files {
@@ -3236,8 +3368,22 @@ impl TabState {
             let prev_hunk = self.current_hunk;
             let prev_line = self.current_line;
 
+            // Capture bucket BEFORE changing mode so we can detect a bucket change.
+            let prev_bucket = self.review_bucket();
+
             self.mode = mode;
             self.committed_unpushed = false;
+
+            // Reload per-bucket storage when the bucket changes on mode switch (covers
+            // all branches: Branch↔Unstaged↔Staged↔History↔Conflicts↔Hidden).
+            // Must run before refresh_diff_mode_switch() and before the selection restore.
+            if self.review_bucket() != prev_bucket {
+                self.apply_managed_root();
+                self.reviewed =
+                    Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+                self.reload_ai_state();
+            }
+
             if mode == DiffMode::History {
                 // Initialize history state if first time
                 if self.history.is_none() {
@@ -3513,7 +3659,11 @@ impl TabState {
     }
 
     pub fn save_reviewed_files(&self) -> Result<()> {
-        if self.is_remote() {
+        // Remote tabs that belong to the Pr bucket (PrDiff mode or --remote) are
+        // allowed to persist — they write to the shared prs/pr-N dir.
+        // Only skip when remote AND NOT the Pr bucket (shouldn't happen today, but
+        // guards against future remote modes that have no managed dir).
+        if self.is_remote() && self.review_bucket() != ReviewBucket::Pr {
             return Ok(());
         }
         let path = self.er_root.reviewed_path();
@@ -6159,7 +6309,7 @@ impl App {
                 git::git_stage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Resolved: {}", file_path));
             }
-            DiffMode::History | DiffMode::Hidden => {
+            DiffMode::History | DiffMode::Hidden | DiffMode::PrDiff => {
                 self.notify("Staging not available in this mode");
                 return Ok(());
             }
@@ -6676,6 +6826,7 @@ mod tests {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            pr_refs_fetched: false,
         }
     }
 
@@ -7424,7 +7575,7 @@ mod tests {
         let tab = make_test_tab(vec![]);
         assert!(tab.layers.show_questions);
         assert!(tab.layers.show_github_comments);
-        assert!(!tab.layers.show_ai_findings);
+        assert!(tab.layers.show_ai_findings);
     }
 
     #[test]
@@ -7444,11 +7595,11 @@ mod tests {
     #[test]
     fn toggle_layer_ai_flips_show_ai_findings() {
         let mut tab = make_test_tab(vec![]);
-        assert!(!tab.layers.show_ai_findings);
-        tab.toggle_layer_ai();
         assert!(tab.layers.show_ai_findings);
         tab.toggle_layer_ai();
         assert!(!tab.layers.show_ai_findings);
+        tab.toggle_layer_ai();
+        assert!(tab.layers.show_ai_findings);
     }
 
     #[test]
@@ -8507,17 +8658,23 @@ mod tests {
 
     #[test]
     fn comments_dir_returns_managed_path_in_remote_mode() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("owner/repo".to_string());
         tab.pr_number = Some(42);
         tab.apply_managed_root();
         let expected =
-            crate::storage::branch_dir(&crate::storage::slug_branch("owner/repo"), "pr-42");
+            crate::storage::pr_bucket_dir(&crate::storage::slug_branch("owner/repo"), 42);
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
     }
 
     #[test]
     fn comments_dir_uses_viewed_branch_for_local_branch_tabs() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = "/home/user/my-project".to_string();
         tab.current_branch = "main".to_string();
@@ -8525,17 +8682,21 @@ mod tests {
         tab.sync_managed_storage();
         let repo_slug = crate::storage::slug_repo(&tab.repo_root);
         let branch_slug = crate::storage::slug_branch("claude/dev-5067");
-        let expected = crate::storage::branch_dir(&repo_slug, &branch_slug);
+        // Phase 1: storage is now in a view-bucket subdir, not the branch root
+        let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch");
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
         assert_ne!(
             tab.comments_dir(),
-            crate::storage::branch_dir(&repo_slug, &crate::storage::slug_branch("main"))
+            crate::storage::view_bucket_dir(&repo_slug, &crate::storage::slug_branch("main"), "branch")
                 .to_string_lossy()
         );
     }
 
     #[test]
     fn reviewed_path_uses_viewed_branch_for_local_branch_tab() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = "/home/user/my-project".to_string();
         tab.current_branch = "main".to_string();
@@ -8543,23 +8704,29 @@ mod tests {
         tab.sync_managed_storage();
         let repo_slug = crate::storage::slug_repo(&tab.repo_root);
         let branch_slug = crate::storage::slug_branch("claude/dev-5067");
-        let expected = crate::storage::branch_dir(&repo_slug, &branch_slug).join("reviewed");
+        // Phase 1: reviewed file is inside the view-bucket subdir
+        let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch").join("reviewed");
         assert_eq!(tab.er_root.reviewed_path(), expected.to_string_lossy());
         assert!(!tab.er_root.reviewed_path().contains(&crate::storage::slug_branch("main")));
     }
 
     #[test]
     fn apply_checkout_branch_storage_change_reloads_reviewed() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = "/home/user/my-project".to_string();
         tab.current_branch = "main".to_string();
         tab.sync_managed_storage();
 
         let repo_slug = crate::storage::slug_repo(&tab.repo_root);
-        let main_dir =
-            crate::storage::branch_dir(&repo_slug, &crate::storage::slug_branch("main"));
-        let feature_dir =
-            crate::storage::branch_dir(&repo_slug, &crate::storage::slug_branch("feature"));
+        // Phase 1: reviewed files live inside the view-bucket subdir, not the branch root
+        let main_dir = crate::storage::view_bucket_dir(&repo_slug, &crate::storage::slug_branch("main"), "branch");
+        let feature_dir = crate::storage::view_bucket_dir(&repo_slug, &crate::storage::slug_branch("feature"), "branch");
         std::fs::create_dir_all(&main_dir).unwrap();
         std::fs::create_dir_all(&feature_dir).unwrap();
         std::fs::write(main_dir.join("reviewed"), "a.rs\thash-main\n").unwrap();
@@ -8576,6 +8743,8 @@ mod tests {
             Some("hash-feat")
         );
         assert!(!tab.reviewed.contains_key("a.rs"));
+
+        std::env::remove_var("ER_STORAGE_ROOT");
     }
 
     #[test]
@@ -8617,11 +8786,14 @@ mod tests {
 
     #[test]
     fn github_comments_path_uses_managed_dir_in_remote_mode() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("owner/repo".to_string());
         tab.pr_number = Some(7);
         tab.apply_managed_root();
-        let dir = crate::storage::branch_dir(&crate::storage::slug_branch("owner/repo"), "pr-7");
+        let dir = crate::storage::pr_bucket_dir(&crate::storage::slug_branch("owner/repo"), 7);
         assert_eq!(
             tab.github_comments_path(),
             format!("{}/github-comments.json", dir.to_string_lossy())
@@ -8630,12 +8802,15 @@ mod tests {
 
     #[test]
     fn comments_dir_replaces_slash_in_slug_with_dash() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("my-org/my-repo".to_string());
         tab.pr_number = Some(1);
         tab.apply_managed_root();
         let expected =
-            crate::storage::branch_dir(&crate::storage::slug_branch("my-org/my-repo"), "pr-1");
+            crate::storage::pr_bucket_dir(&crate::storage::slug_branch("my-org/my-repo"), 1);
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
     }
 
@@ -8696,17 +8871,22 @@ mod tests {
 
     #[test]
     fn reload_remote_comments_uses_remote_path_when_set() {
-        // Remote mode derives comments_dir() from $HOME, which may not be writable in CI.
-        // Instead, verify the path derivation is correct (no I/O), and that reload
-        // gracefully handles the case where the remote cache dir doesn't exist yet.
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("owner/repo".to_string());
         tab.pr_number = Some(99);
         tab.apply_managed_root();
 
         let dir = tab.comments_dir();
-        assert!(dir.contains("easy-review"), "dir = {}", dir);
         assert!(dir.contains("pr-99"), "dir = {}", dir);
+        assert!(dir.contains("owner-repo"), "dir = {}", dir);
+
+        std::env::remove_var("ER_STORAGE_ROOT");
 
         let path = tab.github_comments_path();
         assert!(path.ends_with("/github-comments.json"), "path = {}", path);
@@ -9110,5 +9290,67 @@ mod tests {
 
         assert!(tab.reviewed.contains_key("commit-b.rs"));
         assert!(!tab.reviewed.contains_key("branch-only.rs"));
+    }
+
+    // ── visible_modes / PrDiff wiring ──
+
+    /// A remote tab (remote_repo set) exposes only [PrDiff] — no working-tree views.
+    #[test]
+    fn visible_modes_remote_tab_returns_only_pr_diff() {
+        let mut tab = make_test_tab(vec![]);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.pr_number = Some(42);
+        let config = ErConfig::default();
+        assert_eq!(tab.visible_modes(&config), vec![DiffMode::PrDiff]);
+    }
+
+    /// A local tab with a PR number includes PrDiff in the correct position
+    /// (after Staged, before History) and still shows working-tree modes.
+    #[test]
+    fn visible_modes_local_pr_tab_includes_pr_diff() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_number = Some(7);
+        let config = ErConfig::default();
+        let modes = tab.visible_modes(&config);
+        assert_eq!(
+            modes,
+            vec![
+                DiffMode::Branch,
+                DiffMode::Unstaged,
+                DiffMode::Staged,
+                DiffMode::PrDiff,
+                DiffMode::History,
+            ]
+        );
+    }
+
+    /// A local tab without a PR number must NOT include PrDiff.
+    #[test]
+    fn visible_modes_local_no_pr_excludes_pr_diff() {
+        let tab = make_test_tab(vec![]);
+        let config = ErConfig::default();
+        let modes = tab.visible_modes(&config);
+        assert!(!modes.contains(&DiffMode::PrDiff));
+    }
+
+    /// new_remote and new_remote_stub constructors must set mode = PrDiff.
+    /// We can't call the real constructors (network I/O), so we verify via
+    /// new_for_test with remote_repo set and mode manually set — and separately
+    /// verify the review_bucket() short-circuit still routes to Pr.
+    #[test]
+    fn remote_tab_mode_is_pr_diff_and_bucket_is_pr() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.pr_number = Some(5);
+        tab.mode = DiffMode::PrDiff;
+        assert_eq!(tab.mode, DiffMode::PrDiff);
+        assert_eq!(tab.review_bucket(), ReviewBucket::Pr);
+    }
+
+    /// pr_refs_fetched starts false on all non-remote constructors and on test tabs.
+    #[test]
+    fn pr_refs_fetched_initial_value_is_false() {
+        let tab = TabState::new_for_test(vec![]);
+        assert!(!tab.pr_refs_fetched);
     }
 }

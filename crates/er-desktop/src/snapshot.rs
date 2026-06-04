@@ -1021,6 +1021,7 @@ fn build_snapshot_inner(
         DiffMode::History => "history",
         DiffMode::Conflicts => "conflicts",
         DiffMode::Hidden => "hidden",
+        DiffMode::PrDiff => "pr",
     };
 
     let input_mode = match &app.input_mode {

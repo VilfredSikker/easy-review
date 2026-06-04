@@ -11,7 +11,7 @@ use super::utils::word_wrap;
 use er_engine::ai::{CommentRef, CommentType, Finding, RiskLevel};
 use er_engine::app::{App, DiffMode, SplitSide, TabState};
 use er_engine::config::ErConfig;
-use er_engine::git::{DiffHunk, LineType};
+use er_engine::git::{DiffHunk, DiffLine, LineType};
 
 /// Expand tab characters to spaces based on configured tab width.
 /// Uses column-aware expansion (tabs align to tab stops, not fixed width).
@@ -164,6 +164,26 @@ fn line_comments_at<'a>(anchors: &'a [CommentRef<'a>], line_num: usize) -> Vec<&
         .iter()
         .filter(|c| c.in_reply_to().is_none() && c.line_start() == Some(line_num))
         .collect()
+}
+
+/// Matches desktop `findingRendersInline` / `skipDelDuplicate`: when a line was
+/// modified (delete + add at the same new-side number), render the comment once
+/// on the add/context row, not again on the delete row.
+fn should_render_inline_line_comment(
+    diff_line: &DiffLine,
+    hunk: &DiffHunk,
+    line_num: usize,
+) -> bool {
+    if diff_line.new_num == Some(line_num) {
+        return true;
+    }
+    if diff_line.old_num == Some(line_num)
+        && matches!(diff_line.line_type, LineType::Delete)
+        && hunk.lines.iter().any(|l| l.new_num == Some(line_num))
+    {
+        return false;
+    }
+    diff_line.old_num == Some(line_num)
 }
 
 /// Number of terminal rows this cell will occupy given wrapping settings.
@@ -584,6 +604,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
 
             // ── Inline line comments (rendered directly after the target line) ──
             if let Some(line_num) = diff_line.new_num.or(diff_line.old_num) {
+                if !should_render_inline_line_comment(diff_line, hunk, line_num) {
+                    continue;
+                }
                 for comment in line_comments_at(&hunk_anchors, line_num) {
                     if !comment_layer_visible(tab, comment) {
                         continue;
@@ -622,7 +645,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         DiffMode::Unstaged | DiffMode::Staged => {
                             tab.ai.findings_for_line_by_range(&file.path, new_line_num)
                         }
-                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
+                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::PrDiff => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -672,7 +695,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![], // AI findings not shown in these modes
+                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::PrDiff => vec![], // AI findings not shown in these modes
             };
             for finding in &findings {
                 let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
@@ -1467,7 +1490,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         DiffMode::Unstaged | DiffMode::Staged => {
                             tab.ai.findings_for_line_by_range(&file.path, new_line_num)
                         }
-                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
+                        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::PrDiff => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -1526,7 +1549,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden => vec![],
+                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::PrDiff => vec![],
             };
             for finding in &findings {
                 if side == SplitSide::New {
@@ -2955,6 +2978,22 @@ mod build_split_rows_tests {
         assert!(rows[0].right.is_some());
         assert_eq!(rows[0].left.as_ref().unwrap().line_idx, 0);
         assert_eq!(rows[0].right.as_ref().unwrap().line_idx, 0);
+    }
+
+    #[test]
+    fn inline_comment_skips_delete_when_add_has_same_new_num() {
+        let hunk = make_hunk(vec![
+            make_line(LineType::Delete, "old", Some(5), None),
+            make_line(LineType::Add, "new", None, Some(5)),
+        ]);
+        assert!(!should_render_inline_line_comment(&hunk.lines[0], &hunk, 5));
+        assert!(should_render_inline_line_comment(&hunk.lines[1], &hunk, 5));
+    }
+
+    #[test]
+    fn inline_comment_renders_on_delete_when_no_matching_new_num() {
+        let hunk = make_hunk(vec![make_line(LineType::Delete, "gone", Some(10), None)]);
+        assert!(should_render_inline_line_comment(&hunk.lines[0], &hunk, 10));
     }
 }
 
