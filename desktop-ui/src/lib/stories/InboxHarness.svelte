@@ -3,10 +3,11 @@
   import { app } from "$lib/stores/app.svelte";
   import LeftSidebar from "$lib/components/LeftSidebar.svelte";
   import { richSnapshot } from "$lib/stories/fixtures";
-  import type { InboxItemSnapshot } from "$lib/types";
+  import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
 
   interface Props {
     inboxItems?: InboxItemSnapshot[];
+    projects?: ProjectSnapshot[];
     /**
      * When true, the harness performs a DOM click on the inbox "Inbox" header
      * button after mount so the popover opens without modifying LeftSidebar.
@@ -15,12 +16,13 @@
     autoOpenPopover?: boolean;
   }
 
-  const { inboxItems = [], autoOpenPopover = false }: Props = $props();
+  const { inboxItems = [], projects = [], autoOpenPopover = false }: Props = $props();
 
   // Seed app.snapshot so LeftSidebar derives the inbox state from the store.
   $effect(() => {
     app.snapshot = {
       ...richSnapshot,
+      projects,
       inbox_items: inboxItems,
       inbox_unread_count: inboxItems.filter((i) => i.read_at_ms == null).length,
       inbox_last_refresh_ms: inboxItems.length > 0 ? Date.now() - 2 * 60 * 1000 : 0,
