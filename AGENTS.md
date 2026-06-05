@@ -19,7 +19,7 @@ This is a single-crate Rust CLI tool (`er`) with no external services. See `CLAU
 
 ### Gotchas
 
-- **Rust toolchain**: The default VM ships with Rust 1.83 which is too old — `time-core` requires `edition2024` (stabilized in 1.85). The update script runs `rustup update stable && rustup default stable` to ensure a recent toolchain.
+- **Rust toolchain**: easy-review needs Rust **1.85+** (`edition2024`). Cloud VMs may ship an older or already-current stable under `/usr/local/rustup`. The install hook [`scripts/cloud-agent-install.sh`](scripts/cloud-agent-install.sh) runs `rustup update stable` **only when** `rustc` is missing or < 1.85 — unconditional `rustup update` fails on overlayfs (EXDEV / “Invalid cross-device link”) when updating the baked system toolchain. It always runs `rustup default stable` and `cargo fetch`.
 - **TUI requires a terminal**: `er` renders via crossterm/ratatui, so it must run inside a real terminal (tmux session, not a headless pipe). Use `tmux` to launch and `computerUse` subagent to interact with it.
 - **Clippy warnings**: As of the current codebase, `cargo clippy --all-targets -- -D warnings` reports 9 pre-existing warnings (collapsible_match, unnecessary_sort_by, manual_checked_ops). These are not regressions — they exist on `main`.
 - **No external services**: No databases, Docker, or network services needed. The only runtime dependency is `git` (and optionally `gh` CLI for GitHub PR features).
