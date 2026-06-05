@@ -112,14 +112,14 @@
   <span class="mono text-xs text-add-fg shrink-0">+{row.additions}</span>
   <span class="mono text-xs text-del-fg shrink-0">−{row.deletions}</span>
 
-  <!-- Reviewed toggle (labeled, separate from collapse) -->
+  <!-- Reviewed toggle -->
   <button
     type="button"
     onclick={toggleReviewed}
     title={row.reviewed ? "Marked reviewed — click to unmark" : "Mark file reviewed"}
     aria-label={row.reviewed ? "Unmark as reviewed" : "Mark as reviewed"}
     aria-pressed={row.reviewed}
-    class="shrink-0 flex items-center gap-1.5 px-2 h-6 rounded text-xs transition hover:bg-hover
+    class="shrink-0 w-5 h-5 rounded flex items-center justify-center transition hover:bg-hover
     {row.reviewed ? 'text-periwinkle' : 'text-fg-3 hover:text-fg'}"
   >
     <span
@@ -130,21 +130,20 @@
         <polyline points="20 6 9 17 4 12" />
       </svg>
     </span>
-    Reviewed
   </button>
 
-  <!-- Open source button -->
+  <!-- Open in editor -->
   <button
     type="button"
     onclick={openSource}
     title="Open in editor"
-    class="shrink-0 flex items-center gap-1 px-2 h-6 rounded text-xs text-fg-3 hover:bg-hover hover:text-fg transition"
+    aria-label="Open in editor"
+    class="shrink-0 w-5 h-5 text-fg-3 hover:bg-hover hover:text-fg rounded flex items-center justify-center transition"
   >
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
       <polyline points="15 3 21 3 21 9" />
       <line x1="10" y1="14" x2="21" y2="3" />
     </svg>
-    Open source
   </button>
 </div>

@@ -44,7 +44,7 @@ class DiffNavStore {
     this.nav = null;
   }
 
-  /** After collapsing a file, scroll to the next file's header (or own header if last). */
+  /** After collapsing a file, scroll so that file's header is at the top of the diff viewport. */
   async scrollAfterCollapse(collapsedPath: string): Promise<void> {
     await this.nav?.scrollAfterCollapse(collapsedPath);
   }

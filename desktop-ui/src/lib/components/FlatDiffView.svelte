@@ -862,11 +862,9 @@
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
-    const i = files.findIndex((f) => f.path === collapsedPath);
-    if (i === -1) return;
-    const target = files[i + 1] ?? files[i];
-    if (!scrollToFileHeader(target.path)) return;
-    const file = files.find((f) => f.path === target.path);
+    if (!crossFileModel.fileStartRow.has(collapsedPath)) return;
+    if (!scrollToFileHeader(collapsedPath)) return;
+    const file = files.find((f) => f.path === collapsedPath);
     if (file?.is_lazy_stub) await requestLazyFiles([file.source_index]);
   }
 
