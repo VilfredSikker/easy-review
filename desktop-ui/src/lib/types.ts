@@ -280,11 +280,16 @@ export interface GithubStatusSnapshot {
 }
 
 export interface AppSnapshot {
-  mode: "branch" | "unstaged" | "staged" | "history";
+  mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden";
   /** Optional — populated by the engine when in history mode or branch-mode scope. */
   commits?: CommitSummary[];
   /** SHA of the selected commit when in history mode; null otherwise. */
   selected_commit_sha?: string | null;
+  /** +/- counts for the unstaged / staged diffs (for scope-selector counters). */
+  unstaged_stat?: { additions: number; deletions: number };
+  staged_stat?: { additions: number; deletions: number };
+  /** PR detected for the active branch (PR-list cache). Drives the Local|PR Diff toggle. */
+  detected_pr_number?: number | null;
   branch: string;
   base: string;
   input_mode: "normal" | "search" | "comment" | "filter" | "commit" | "confirm";
@@ -332,8 +337,6 @@ export interface AppSnapshot {
   filter_suggestions?: FilterSuggestionSnapshot[];
   /** Session-scoped background review tasks across all tabs. */
   background_tasks?: BackgroundTaskSnapshot[];
-  /** Diff source state for the active tab. Null for working-tree tabs. */
-  diff_source?: DiffSourceSnapshot | null;
   inbox_items?: InboxItemSnapshot[];
   inbox_unread_count?: number;
   inbox_last_refresh_ms?: number;
@@ -381,18 +384,6 @@ export interface BackgroundTaskSnapshot {
   debug_log_path?: string | null;
 }
 
-export interface DiffSourceSnapshot {
-  active: "pr" | "origin" | "local";
-  available: Array<"pr" | "origin" | "local">;
-  branch: string;
-  upstream: string | null;
-  base: string;
-  pr_number: number | null;
-  ahead: number | null;
-  behind: number | null;
-  status: string;
-  suggestion: string;
-}
 
 export interface WatchStatusSnapshot {
   active: boolean;

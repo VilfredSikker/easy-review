@@ -39,11 +39,6 @@ pub struct TabDescriptor {
     /// For `LocalPr` tabs: the resolved base ref used for the diff.
     #[serde(default)]
     pub base_ref: Option<String>,
-    /// For `LocalBranch` tabs: the Easy Review owned ref (e.g.
-    /// `refs/er/branches/<branch>/head`) populated by an explicit force-refresh.
-    /// Persisting it ensures the refreshed view survives tab recreation/app restart.
-    #[serde(default)]
-    pub local_branch_diff_ref: Option<String>,
     /// Last browser URL for this tab (desktop).
     #[serde(default)]
     pub browser_url: Option<String>,
@@ -147,7 +142,6 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_number: Some(num),
             pr_head_ref: None,
             base_ref: None,
-            local_branch_diff_ref: None,
             browser_url: browser_url.clone(),
             browser_layout: browser_layout.clone(),
         };
@@ -168,7 +162,6 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_number: Some(num),
             pr_head_ref: tab.pr_head_ref.clone(),
             base_ref,
-            local_branch_diff_ref: None,
             browser_url: browser_url.clone(),
             browser_layout: browser_layout.clone(),
         };
@@ -184,7 +177,6 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_number: None,
             pr_head_ref: None,
             base_ref: None,
-            local_branch_diff_ref: tab.local_branch_diff_ref.clone(),
             browser_url: browser_url.clone(),
             browser_layout: browser_layout.clone(),
         };
@@ -198,7 +190,6 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
         pr_number: None,
         pr_head_ref: None,
         base_ref: None,
-        local_branch_diff_ref: None,
         browser_url,
         browser_layout,
     }
@@ -209,15 +200,10 @@ fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
         .branch
         .clone()
         .context("local_branch descriptor missing branch")?;
-    let resolved_ref = d
-        .local_branch_diff_ref
-        .clone()
-        .or_else(|| er_engine::github::refreshed_branch_ref_if_exists(&d.repo_root, &branch));
     let base = er_engine::git::detect_base_branch_in(&d.repo_root)?;
     let mut tab = er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
     tab.local_branch_view = Some(branch);
     tab.mode = er_engine::app::DiffMode::Branch;
-    tab.local_branch_diff_ref = resolved_ref;
     tab.sync_managed_storage();
     if lazy {
         tab.needs_initial_refresh = true;
@@ -324,7 +310,6 @@ mod tests {
                 pr_number: None,
                 pr_head_ref: None,
                 base_ref: None,
-                local_branch_diff_ref: None,
                 browser_url: None,
                 browser_layout: None,
             },
@@ -337,7 +322,6 @@ mod tests {
                 pr_number: None,
                 pr_head_ref: None,
                 base_ref: None,
-                local_branch_diff_ref: None,
                 browser_url: None,
                 browser_layout: None,
             },
@@ -350,7 +334,6 @@ mod tests {
                 pr_number: Some(42),
                 pr_head_ref: None,
                 base_ref: None,
-                local_branch_diff_ref: None,
                 browser_url: None,
                 browser_layout: None,
             },
@@ -363,7 +346,6 @@ mod tests {
                 pr_number: Some(1110),
                 pr_head_ref: Some("refs/er/pr/1110/head".to_string()),
                 base_ref: Some("origin/main".to_string()),
-                local_branch_diff_ref: None,
                 browser_url: None,
                 browser_layout: None,
             },
@@ -440,24 +422,6 @@ mod tests {
         assert_eq!(d.pr_number, Some(42));
         assert!(d.pr_head_ref.is_none());
         assert_eq!(d.branch.as_deref(), Some("dependabot/cargo-abc"));
-    }
-
-    #[test]
-    fn descriptor_local_branch_preserves_diff_ref() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        init_git_repo(tmp.path());
-        let root = tmp.path().to_string_lossy().to_string();
-        let mut tab = er_engine::app::TabState::new_with_base_unloaded(root, "main".to_string())
-            .expect("tab");
-        tab.local_branch_view = Some("feat/x".to_string());
-        tab.local_branch_diff_ref = Some("refs/er/branches/feat/x/head".to_string());
-        let d = descriptor_from_tab(&tab);
-        assert_eq!(d.kind, TabKind::LocalBranch);
-        assert_eq!(d.branch.as_deref(), Some("feat/x"));
-        assert_eq!(
-            d.local_branch_diff_ref.as_deref(),
-            Some("refs/er/branches/feat/x/head")
-        );
     }
 
     #[test]

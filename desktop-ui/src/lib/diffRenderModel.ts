@@ -767,12 +767,35 @@ function insertLru(identity: string, model: CrossFileModel): void {
   }
 }
 
+// ── applyCollapsedFiles memo ──────────────────────────────────────────────
+// Cache up to 2 results (current collapse state + last expand/collapse op).
+// Key: `${model.identity}::${sorted collapsed paths joined by \0}`.
+// Returns the identical object reference on a hit → downstream $derived
+// consumers see no change and skip re-render.
+interface CollapsedCacheEntry {
+  key: string;
+  result: CrossFileModel;
+}
+const _collapsedCache: CollapsedCacheEntry[] = [];
+const COLLAPSED_CACHE_SIZE = 2;
+
+function collapsedCacheKey(modelIdentity: string, collapsedPaths: ReadonlySet<string>): string {
+  if (collapsedPaths.size === 0) return `${modelIdentity}::`;
+  // Sort for deterministic key regardless of insertion order.
+  return `${modelIdentity}::${[...collapsedPaths].sort().join("\x00")}`;
+}
+
 /** Hide diff body rows for collapsed files; keeps each file-header row. */
 export function applyCollapsedFiles(
   model: CrossFileModel,
   collapsedPaths: ReadonlySet<string>,
 ): CrossFileModel {
   if (collapsedPaths.size === 0) return model;
+
+  const memoKey = collapsedCacheKey(model.identity, collapsedPaths);
+  for (const entry of _collapsedCache) {
+    if (entry.key === memoKey) return entry.result;
+  }
 
   const filteredRows: CrossFileFlatRow[] = [];
   const filteredRowFile: number[] = [];
@@ -816,8 +839,10 @@ export function applyCollapsedFiles(
     }
   }
 
-  return {
-    identity: `${model.identity}|collapsed:${collapsedPaths.size}`,
+  const result: CrossFileModel = {
+    // Use the full sorted-paths signature so two different sets of the same
+    // size (e.g. collapse A then swap to collapse B) don't share an identity.
+    identity: memoKey,
     rows: filteredRows,
     cumulativeOffsets,
     totalHeight: cumulativeOffsets[rowCount],
@@ -835,4 +860,10 @@ export function applyCollapsedFiles(
     unifiedPairsByFile: model.unifiedPairsByFile,
     splitRowsByFile: model.splitRowsByFile,
   };
+
+  // Store in bounded LRU cache (newest at end, evict oldest when full).
+  _collapsedCache.push({ key: memoKey, result });
+  if (_collapsedCache.length > COLLAPSED_CACHE_SIZE) _collapsedCache.shift();
+
+  return result;
 }

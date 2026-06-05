@@ -885,6 +885,27 @@ fn parse_git_log(output: &str) -> Result<Vec<CommitInfo>> {
     Ok(commits)
 }
 
+/// Quick (additions, deletions) summary for the working-tree (unstaged) or
+/// index (staged) diff. Cheap `--shortstat` call; returns (0, 0) on any failure.
+pub fn diff_shortstat(repo_root: &str, staged: bool) -> (usize, usize) {
+    let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "--shortstat"];
+    if staged {
+        args.push("--cached");
+    }
+    let output = match std::process::Command::new("git")
+        .args(&args)
+        .current_dir(repo_root)
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return (0, 0),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().last().unwrap_or("");
+    let (_files, adds, dels) = parse_shortstat(line);
+    (adds, dels)
+}
+
 /// Parse a --shortstat line like " 3 files changed, 45 insertions(+), 12 deletions(-)"
 fn parse_shortstat(line: &str) -> (usize, usize, usize) {
     let mut file_count = 0;

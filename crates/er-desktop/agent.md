@@ -33,7 +33,7 @@
 
 ## Tab persistence
 
-Open tabs (repo, branch/PR identity, active index, optional `local_branch_diff_ref` and browser fields) are written to `tabs.json` via `tabs::persist_app_tabs` whenever the tab strip changes: open/close/reorder, branch or PR open (`place_tab`), project switch, tab select, and force-refresh (updates the refreshed branch ref). The same save runs on main-window `CloseRequested` and app exit as a safety net.
+Open tabs (repo, branch/PR identity, active index, optional browser fields) are written to `tabs.json` via `tabs::persist_app_tabs` whenever the tab strip changes: open/close/reorder, branch or PR open (`place_tab`), project switch, tab select, and force-refresh (updates the refreshed branch ref). The same save runs on main-window `CloseRequested` and app exit as a safety net.
 
 On launch, `main.rs` restores from `tabs.json` when present (eager diff for the active tab only; other tabs are lazy stubs). Call `persist_app_tabs` after any new code path that mutates `app.tabs` or `app.active_tab`. Do not persist from `poll` / `get_snapshot`.
 

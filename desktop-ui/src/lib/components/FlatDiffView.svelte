@@ -259,12 +259,24 @@
     const pending = diffNav.pendingScrollPx;
     const top = pending !== null ? pending : diffScroll.getScrollTop(snapshotKey);
     diffNav.pendingScrollPx = null;
+    // On any key change (tab/branch/mode), reset scroll to the stored position (0 for new keys)
+    // and clear the applied-spans set so fresh hunks get highlighted rather than skipped.
+    // Clear dead-stub memo too: source indices map to different files in the new context.
+    _spansAppliedKeys.clear();
+    _deadStubs.clear();
     lastViewKey = snapshotKey;
     tick().then(() => { if (scrollEl) scrollEl.scrollTop = top; });
   });
 
   // ── Virtual window ────────────────────────────────────────────────────────
-  const OVERSCAN = 5;
+  const OVERSCAN = 15;
+  /**
+   * Pixel band rendered beyond the viewport in each direction. Row-count overscan
+   * alone can't keep up with a fast momentum flick (it jumps many rows per frame,
+   * exposing the spacer as a black gap); ~1.5 viewport-heights of pre-rendered
+   * pixels keeps the window ahead of the native scroll regardless of row heights.
+   */
+  const OVERSCAN_PX = $derived(Math.round(viewportHeightPx * 1.5));
   /** Sticky file-path bar in .vscroll (h-10) — row offsets live inside .hscroll below it. */
   const STICKY_HEADER_PX = 40;
   const rowScrollTopPx = $derived(Math.max(0, scrollTopPx - STICKY_HEADER_PX));
@@ -275,6 +287,7 @@
       rowScrollTopPx,
       viewportHeightPx,
       OVERSCAN,
+      OVERSCAN_PX,
     ),
   );
   const windowedRows = $derived(crossFileModel.rows.slice(vw.start, vw.end));
@@ -328,49 +341,135 @@
 
   // ── Lazy-load effect ──────────────────────────────────────────────────────
   const _requestingFiles = new Set<number>();
-  const REQUEST_FILE_CONCURRENCY = 2;
+  /** Source indices that came back still-lazy after a parse attempt (no parseable
+   *  hunks: binary, mode-only, rename-without-content, empty). Re-requesting can't
+   *  produce hunks, so we never ask again — this avoids wasted IPC on every scroll
+   *  re-run and closes a latent spin if a perpetual stub's cache_key ever churned.
+   *  Cleared on context change (tab/branch/mode) alongside _spansAppliedKeys. */
+  const _deadStubs = new Set<number>();
+  /** Max distinct lazy files fetched per round-trip (bounds how long the backend
+   *  holds the app mutex for one call). */
+  const REQUEST_FILE_BATCH = 12;
 
-  async function requestLazyFile(sourceIndex: number): Promise<void> {
-    if (_requestingFiles.has(sourceIndex)) return;
-    _requestingFiles.add(sourceIndex);
+  // `request_file_content` returns only the requested files' `FileSnapshot`s
+  // (not the whole `AppSnapshot`), which we merge in place. This keeps the
+  // viewport-driven lazy round-trip cheap on large diffs — a fast-scroll burst
+  // that reveals several stubs is one call, not N full-snapshot serializations.
+  async function requestLazyFiles(sourceIndices: number[]): Promise<void> {
+    const fresh = sourceIndices.filter((i) => !_requestingFiles.has(i));
+    if (fresh.length === 0) return;
+    for (const i of fresh) _requestingFiles.add(i);
     const reqSnap = app.snapshot;
     const reqTab = reqSnap?.active_tab;
     const reqMode = reqSnap?.mode;
     const reqBase = reqSnap?.base;
     const reqBranch = reqSnap?.branch;
     try {
-      const snap = await invoke<AppSnapshot>("request_file_content", { sourceIndex });
-      if (!snap || !app.snapshot) return;
+      const files = await invoke<FileSnapshot[]>("request_file_content", {
+        sourceIndices: fresh,
+      });
+      if (!files || !app.snapshot) return;
+      // Drop stale responses: the view changed while the round-trip was in flight.
       if (
         app.snapshot.active_tab !== reqTab ||
         app.snapshot.mode !== reqMode ||
         app.snapshot.base !== reqBase ||
         app.snapshot.branch !== reqBranch
-      ) return;
-      const oldFile = app.snapshot.files.find((f) => f.source_index === sourceIndex);
-      const newFile = snap.files.find((f) => f.source_index === sourceIndex);
-      if (!oldFile || !newFile) return;
-      oldFile.hunks = newFile.hunks;
-      oldFile.is_lazy_stub = newFile.is_lazy_stub;
-      oldFile.compacted = newFile.compacted;
-      oldFile.additions = newFile.additions;
-      oldFile.deletions = newFile.deletions;
-      oldFile.cache_key = newFile.cache_key;
-      evictSpanKeysForPath(oldFile.path);
+      )
+        return;
+      for (const newFile of files) {
+        const oldFile = app.snapshot.files.find((f) => f.source_index === newFile.source_index);
+        if (!oldFile) continue;
+        const prevCacheKey = oldFile.cache_key;
+        oldFile.hunks = newFile.hunks;
+        oldFile.is_lazy_stub = newFile.is_lazy_stub;
+        oldFile.compacted = newFile.compacted;
+        oldFile.additions = newFile.additions;
+        oldFile.deletions = newFile.deletions;
+        oldFile.cache_key = newFile.cache_key;
+        // Parsed but still a stub → no hunks will ever come from this file; don't
+        // ask again until the context changes.
+        if (newFile.is_lazy_stub) _deadStubs.add(newFile.source_index);
+        // Only evict highlight spans when the hunks actually changed (cache_key
+        // changed) — skipping eviction on unchanged hunks avoids a redundant flush.
+        if (prevCacheKey !== newFile.cache_key) {
+          evictSpanKeysForPath(oldFile.path);
+        }
+      }
       scheduleHighlightDrain();
     } finally {
-      _requestingFiles.delete(sourceIndex);
+      for (const i of fresh) _requestingFiles.delete(i);
+    }
+  }
+
+  // Forward prefetch: also request lazy stubs *ahead* of the rendered window in
+  // the scroll direction, so a fast flick lands on already-parsed content. The
+  // look-ahead distance scales with per-frame scroll speed (the throttled
+  // position delta between effect runs) and is clamped. This drives only
+  // `request_file_content`, never `windowedRows` — so it fetches data ahead
+  // without adding to per-frame render/mount cost.
+  const PREFETCH_LOOKAHEAD_FACTOR = 4;
+  const PREFETCH_MAX_VIEWPORTS = 3;
+  let _prefetchLastTop = 0;
+
+  function collectLazyStubsInRows(
+    startRow: number,
+    endRow: number,
+    into: number[],
+    seen: Set<number>,
+  ): void {
+    const rows = crossFileModel.rows;
+    const hi = Math.min(rows.length, endRow);
+    for (let i = Math.max(0, startRow); i < hi; i++) {
+      if (into.length >= REQUEST_FILE_BATCH) return;
+      const row = rows[i];
+      if (row.type !== "lazy-stub") continue;
+      if (
+        _requestingFiles.has(row.sourceIndex) ||
+        _deadStubs.has(row.sourceIndex) ||
+        seen.has(row.sourceIndex)
+      )
+        continue;
+      seen.add(row.sourceIndex);
+      into.push(row.sourceIndex);
     }
   }
 
   $effect(() => {
-    const rows = windowedRows;
-    for (const row of rows) {
-      if (row.type !== "lazy-stub") continue;
-      if (_requestingFiles.size >= REQUEST_FILE_CONCURRENCY) break;
-      if (_requestingFiles.has(row.sourceIndex)) continue;
-      requestLazyFile(row.sourceIndex);
+    const pending: number[] = [];
+    const seen = new Set<number>();
+
+    // 1) Stubs already inside the rendered window.
+    collectLazyStubsInRows(vw.start, vw.end, pending, seen);
+
+    // 2) Forward look-ahead band, sized by recent scroll speed and direction.
+    const delta = rowScrollTopPx - _prefetchLastTop;
+    _prefetchLastTop = rowScrollTopPx;
+    if (pending.length < REQUEST_FILE_BATCH && delta !== 0) {
+      const lookAheadPx = Math.min(
+        Math.abs(delta) * PREFETCH_LOOKAHEAD_FACTOR,
+        viewportHeightPx * PREFETCH_MAX_VIEWPORTS,
+      );
+      if (delta > 0) {
+        const bandTop = rowScrollTopPx + viewportHeightPx + OVERSCAN_PX;
+        collectLazyStubsInRows(
+          rowIndexAtOffset(effectiveGeometry, bandTop),
+          rowIndexAtOffset(effectiveGeometry, bandTop + lookAheadPx) + 1,
+          pending,
+          seen,
+        );
+      } else {
+        const bandBottom = Math.max(0, rowScrollTopPx - OVERSCAN_PX);
+        collectLazyStubsInRows(
+          rowIndexAtOffset(effectiveGeometry, Math.max(0, bandBottom - lookAheadPx)),
+          rowIndexAtOffset(effectiveGeometry, bandBottom) + 1,
+          pending,
+          seen,
+        );
+      }
     }
+
+    if (pending.length > 0) void requestLazyFiles(pending);
   });
 
   // ── Highlight effect (Shiki web worker) ───────────────────────────────────
@@ -549,12 +648,20 @@
       if (cachedHunks) {
         const cacheExhausted =
           _spansAppliedKeys.has(spanKey) && !cacheWouldImproveFile(snapFile, cachedHunks);
-        if (!cacheExhausted) {
-          const changed = untrack(() => tryApplyHighlightSpans(snapFile, cachedHunks, spanKey));
-          if (changed) cacheApplied += 1;
-          else cacheApplySkipped += 1;
+        if (cacheExhausted) {
+          // Cached spans are applied and can't be improved — this spanKey is fully
+          // resolved. Mark it terminal so the drain pulse can't re-queue the worker
+          // forever for files with an uncolorable line (blank/whitespace/unknown
+          // lang), whose fileNeedsSyntaxSpans never flips false. spanKey encodes
+          // path+cache_key+theme, so a real diff/theme change yields a new key (and
+          // the eviction effects drop the stale one) — legit re-highlight still runs.
+          _highlightCompletedKeys.add(spanKey);
           continue;
         }
+        const changed = untrack(() => tryApplyHighlightSpans(snapFile, cachedHunks, spanKey));
+        if (changed) cacheApplied += 1;
+        else cacheApplySkipped += 1;
+        continue;
       }
 
       if (_highlightCompletedKeys.has(spanKey)) continue;
@@ -760,7 +867,7 @@
     const target = files[i + 1] ?? files[i];
     if (!scrollToFileHeader(target.path)) return;
     const file = files.find((f) => f.path === target.path);
-    if (file?.is_lazy_stub) await requestLazyFile(file.source_index);
+    if (file?.is_lazy_stub) await requestLazyFiles([file.source_index]);
   }
 
   // ── Register FlatNavigator with diffNav ───────────────────────────────────
@@ -780,7 +887,7 @@
         applyScrollTop(to === "top" ? 0 : scrollEl.scrollHeight);
       },
       scrollAfterCollapse,
-      requestFileContent: (src) => requestLazyFile(src),
+      requestFileContent: (src) => requestLazyFiles([src]),
       getModel: () => crossFileModel,
       getFiles: () => files,
     });

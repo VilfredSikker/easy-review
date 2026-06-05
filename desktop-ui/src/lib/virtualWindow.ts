@@ -56,6 +56,12 @@ export function windowFromScrollVariable(
   scrollTop: number,
   viewportHeight: number,
   overscan = DEFAULT_OVERSCAN,
+  // Pixel band rendered beyond the viewport in each direction. A fixed row
+  // `overscan` can't cover a fast momentum flick (it moves many rows per frame);
+  // a viewport-proportional pixel band keeps the rendered window ahead of the
+  // native scroll so the spacer never shows as a black gap. Default 0 preserves
+  // the original row-only behavior.
+  overscanPx = 0,
 ): VirtualWindow {
   const rowCount = Math.max(0, cumulativeOffsets.length - 1);
   if (rowCount === 0) {
@@ -64,19 +70,18 @@ export function windowFromScrollVariable(
 
   const clampedScroll = Math.max(0, scrollTop);
 
-  // First row whose top edge is >= scrollTop. Step back one so the row that
-  // straddles `scrollTop` is included (binary-search returns the row whose
-  // top is at or after scrollTop; the row visually at scrollTop is one before
-  // unless scrollTop falls exactly on a row boundary).
-  const firstAtOrAfter = binarySearchLeft(cumulativeOffsets, clampedScroll);
+  // First row whose top edge is >= the (pixel-overscanned) top. Step back one so
+  // the row that straddles the edge is included.
+  const topEdge = Math.max(0, clampedScroll - overscanPx);
+  const firstAtOrAfter = binarySearchLeft(cumulativeOffsets, topEdge);
   const firstVisible =
-    firstAtOrAfter < cumulativeOffsets.length && cumulativeOffsets[firstAtOrAfter] === clampedScroll
+    firstAtOrAfter < cumulativeOffsets.length && cumulativeOffsets[firstAtOrAfter] === topEdge
       ? firstAtOrAfter
       : Math.max(0, firstAtOrAfter - 1);
 
-  // First row whose top edge is >= visibleBottom. This row is the first NOT
-  // visible — use it directly as exclusive `end`.
-  const visibleBottom = clampedScroll + viewportHeight;
+  // First row whose top edge is >= the (pixel-overscanned) bottom — the first
+  // row NOT rendered — use directly as exclusive `end`.
+  const visibleBottom = clampedScroll + viewportHeight + overscanPx;
   const lastVisibleExclusive = binarySearchLeft(cumulativeOffsets, visibleBottom);
 
   const start = Math.max(0, firstVisible - overscan);
