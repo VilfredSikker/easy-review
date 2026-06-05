@@ -47,6 +47,9 @@ args    = ["--print", "--output-format", "stream-json", "-p", "{prompt}"]
 default_provider = "claude"
 default_model = "sonnet-4.6"
 
+[ai_hub.reviewer_models]
+triage = "haiku-4.5"
+
 [ai_hub.providers.claude]
 label = "Claude"
 command = "claude"

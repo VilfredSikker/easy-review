@@ -155,6 +155,9 @@ pub struct AiHubConfig {
     /// Default Claude Code `--effort` for spawns (overridden per arena run).
     #[serde(default)]
     pub default_effort: Option<String>,
+    /// Per-reviewer model overrides (e.g. `triage = "haiku-4.5"`).
+    #[serde(default)]
+    pub reviewer_models: BTreeMap<String, String>,
     #[serde(default)]
     pub providers: BTreeMap<String, AiProviderConfig>,
 }
@@ -361,6 +364,37 @@ impl AiHubConfig {
                 })
             })
             .or_else(|| provider.models.first().map(|m| m.id.clone()))
+    }
+
+    /// Model id for a reviewer kind when spawning (e.g. triage → haiku).
+    pub fn resolve_reviewer_model(&self, reviewer_kind: &str, provider_id: &str) -> Option<String> {
+        let provider = self.providers.get(provider_id)?;
+        if let Some(configured) = self.reviewer_models.get(reviewer_kind) {
+            if provider.models.iter().any(|m| &m.id == configured) {
+                return Some(configured.clone());
+            }
+        }
+        if reviewer_kind == "triage" {
+            return provider
+                .models
+                .iter()
+                .min_by_key(|m| m.avg_latency_ms.unwrap_or(u32::MAX))
+                .map(|m| m.id.clone());
+        }
+        None
+    }
+
+    /// Resolve model for spawn: reviewer override when configured, else user selection.
+    pub fn resolve_spawn_model_id(
+        &self,
+        provider_id: &str,
+        user_model: Option<&str>,
+        task_kind: &str,
+    ) -> Option<String> {
+        if let Some(id) = self.resolve_reviewer_model(task_kind, provider_id) {
+            return Some(id);
+        }
+        self.resolve_model_id(provider_id, user_model)
     }
 }
 
@@ -1628,6 +1662,35 @@ args = ["--model", "gpt-5.4"]
         assert_eq!(
             resolve_effort(&hub_empty, &agent, None, None).as_deref(),
             Some("low")
+        );
+    }
+
+    #[test]
+    fn resolve_reviewer_model_prefers_configured_triage() {
+        let mut hub = AiHubConfig::default();
+        hub.reviewer_models
+            .insert("triage".into(), "haiku-4.5".into());
+        hub.providers.insert(
+            "claude".into(),
+            AiProviderConfig {
+                models: vec![
+                    AiModelConfig {
+                        id: "sonnet-4.6".into(),
+                        avg_latency_ms: Some(12_000),
+                        ..Default::default()
+                    },
+                    AiModelConfig {
+                        id: "haiku-4.5".into(),
+                        avg_latency_ms: Some(5_000),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            hub.resolve_reviewer_model("triage", "claude").as_deref(),
+            Some("haiku-4.5")
         );
     }
 }

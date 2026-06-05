@@ -538,6 +538,28 @@ pub struct AiSnapshot {
     pub has_review_json: bool,
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
     pub eligible_comment_count: usize,
+    pub triage: Option<TriageSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriagePriorityFileSnapshot {
+    pub path: String,
+    pub reason: String,
+    pub risk: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriageSnapshot {
+    pub fresh: bool,
+    pub first_impression: String,
+    pub verdict_primary: String,
+    pub experts: Vec<String>,
+    pub rationale: String,
+    pub confidence: String,
+    pub priority_files: Vec<TriagePriorityFileSnapshot>,
+    pub files_changed: u32,
+    pub approx_risk: String,
+    pub domains: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1434,6 +1456,7 @@ fn empty_ai_snapshot() -> AiSnapshot {
         findings: Vec::new(),
         has_review_json: false,
         eligible_comment_count: 0,
+        triage: None,
     }
 }
 
@@ -2461,6 +2484,30 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         .map(er_engine::ai::count_eligible_github_comments)
         .unwrap_or(0);
 
+    let triage = ai.triage.as_ref().map(|t| {
+        let fresh = er_engine::ai::triage_is_fresh(t, &tab.branch_diff_hash);
+        TriageSnapshot {
+            fresh,
+            first_impression: t.first_impression.clone(),
+            verdict_primary: er_engine::ai::verdict_primary_str(&t.verdict.primary).to_string(),
+            experts: t.verdict.experts.clone(),
+            rationale: t.verdict.rationale.clone(),
+            confidence: t.verdict.confidence.clone(),
+            priority_files: t
+                .priority_files
+                .iter()
+                .map(|pf| TriagePriorityFileSnapshot {
+                    path: pf.path.clone(),
+                    reason: pf.reason.clone(),
+                    risk: pf.risk.clone(),
+                })
+                .collect(),
+            files_changed: t.diff_stats.files_changed,
+            approx_risk: t.diff_stats.approx_risk.clone(),
+            domains: t.diff_stats.domains.clone(),
+        }
+    });
+
     AiSnapshot {
         fresh: !ai.is_stale,
         stale_reason,
@@ -2478,6 +2525,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         findings,
         has_review_json,
         eligible_comment_count,
+        triage,
     }
 }
 

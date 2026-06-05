@@ -14,6 +14,7 @@ Up to **~10** file/range reads for **this** finding or thread only; **no global 
 /// Shared rules live in `skills/REVIEW_RULES.md` and `review_rules_preamble()`.
 use super::experts::{expert_by_id, expert_summary_focus, FindingCaps};
 use super::professor::PROFESSOR_SUMMARY_FOCUS;
+use super::triage::TRIAGE_SKILL;
 /// Returns true if the value contains only characters safe for shell interpolation.
 /// Allows alphanumeric, dots, underscores, hyphens, colons, slashes, and @.
 #[cfg(test)]
@@ -701,6 +702,135 @@ fn file_scope_if_present(output_dir: &str) -> String {
 pub fn append_file_scope_if_present(mut prompt: String, output_dir: &str) -> String {
     prompt.push_str(&file_scope_if_present(output_dir));
     prompt
+}
+
+fn triage_lens_instructions() -> String {
+    r#"## Triage lens: breadth over depth
+
+Scan every changed file at **file + hunk-header** level. Do **not** hunt P0 bugs line-by-line.
+
+**Deliver:**
+1. `first_impression` — 2–4 short paragraphs: what changed, blast radius, gut feel.
+2. `diff_stats` — file count, `approx_risk` (`low`|`medium`|`high`), `domains` touched (e.g. auth, api, tests).
+3. `verdict` — route the human to the next review:
+   - `skip` — cosmetic/docs/lockfiles only; no logic to review.
+   - `general` — mixed concerns; run full `/er-review`.
+   - `expert` — dominant lens; set `experts` to one or more ids: security, performance, reliability, testing, api, patterns, simplifying, mentorship.
+   - `arena` — large/high-stakes diff or needs multi-model second opinion.
+   - `professor` — novel subsystem the reader should learn first.
+4. `priority_files` — up to **12** paths worth reading line-by-line before anything else (`path`, `reason`, `risk`).
+
+**Speed budget:** ≤8 tool calls, <60 seconds. Read diff once in context; write only `triage.json`.
+
+**Do not write** `review.json`, `order.json`, `checklist.json`, or `summary.md."#
+        .to_string()
+}
+
+fn triage_output_section(output_dir: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    format!(
+        r#"Write **only** `{safe_output_dir}/triage.json`:
+
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256 from step 1>",
+  "diff_scope": "<scope>",
+  "created_at": "<ISO 8601>",
+  "first_impression": "2–4 short markdown paragraphs",
+  "diff_stats": {{
+    "files_changed": 0,
+    "approx_risk": "low|medium|high",
+    "domains": ["auth", "api"]
+  }},
+  "verdict": {{
+    "primary": "general|expert|arena|professor|skip",
+    "experts": ["security"],
+    "rationale": "Why this next step",
+    "confidence": "high|medium|low"
+  }},
+  "priority_files": [
+    {{ "path": "src/lib.rs", "reason": "Core logic change", "risk": "high" }}
+  ]
+}}
+```
+
+Skill reference: `/{TRIAGE_SKILL}`."#,
+        TRIAGE_SKILL = TRIAGE_SKILL,
+    )
+}
+
+/// Triage scan (TUI / skill — runs `git diff`).
+pub fn build_triage_review_prompt(base_branch: &str, scope: &str) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch);
+    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+    };
+    let capture = format!(
+        "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
+    );
+    let preamble = review_rules_preamble(
+        ".er",
+        false,
+        FindingCaps {
+            per_file: 0,
+            total: 2,
+            is_expert: true,
+        },
+        Some(&capture),
+    );
+    let lens = triage_lens_instructions();
+    let output = triage_output_section(".er");
+    format!(
+        r#"You are a code review triage agent. Scan the branch diff broadly and write routing guidance to `.er/triage.json`.
+
+Ensure `.er/` exists: `mkdir -p .er`
+
+{preamble}
+
+{lens}
+
+{analyze}
+
+{output}"#,
+        analyze = general_review_instructions_read_analyze(),
+    )
+}
+
+/// Triage when `{output_dir}/diff-tmp` is already prepared (desktop).
+pub fn build_triage_review_prompt_prepared_diff(scope: &str, output_dir: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let preamble = review_rules_preamble(
+        output_dir,
+        true,
+        FindingCaps {
+            per_file: 0,
+            total: 2,
+            is_expert: true,
+        },
+        None,
+    );
+    let lens = triage_lens_instructions();
+    let output = triage_output_section(output_dir);
+    format!(
+        r#"You are a code review triage agent for scope `{scope}`. Scan broadly and write routing guidance to `{safe_output_dir}/triage.json`.
+
+{preamble}
+
+{lens}
+
+{analyze}
+
+{output}"#,
+        analyze = general_review_instructions_read_analyze(),
+    )
 }
 
 /// Build the questions-answering prompt.
@@ -1635,5 +1765,22 @@ mod tests {
         let appendix = file_scope_appendix("/tmp/out");
         assert!(appendix.contains("review-files.txt"));
         assert!(appendix.contains("selected files only"));
+    }
+
+    #[test]
+    fn triage_prompt_targets_triage_json_only() {
+        let prompt = build_triage_review_prompt("main", "branch");
+        assert!(prompt.contains("triage.json"));
+        assert!(prompt.contains("verdict"));
+        assert!(prompt.contains("≤8 tool calls"));
+        assert!(prompt.contains("priority_files"));
+        assert!(!prompt.contains("`.er/review.json`"));
+    }
+
+    #[test]
+    fn triage_prepared_prompt_mentions_routing_verdicts() {
+        let prompt = build_triage_review_prompt_prepared_diff("branch", "/tmp/out");
+        assert!(prompt.contains("general|expert|arena|professor|skip"));
+        assert!(prompt.contains("triage.json"));
     }
 }

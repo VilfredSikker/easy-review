@@ -309,6 +309,8 @@ pub struct AiState {
     pub questions: Option<ErQuestions>,
     /// GitHub PR comments (.er-github-comments.json)
     pub github_comments: Option<ErGitHubComments>,
+    /// Fast branch triage (`.er/triage.json`) — routing verdict, not merged into review.
+    pub triage: Option<super::triage::TriageReview>,
     /// Legacy feedback (kept for migration, not used for new comments)
     pub feedback: Option<ErFeedback>,
     /// Whether the loaded data matches the current diff
@@ -330,6 +332,7 @@ impl Default for AiState {
             checklist: None,
             questions: None,
             github_comments: None,
+            triage: None,
             feedback: None,
             is_stale: false,
             stale_files: HashSet::new(),

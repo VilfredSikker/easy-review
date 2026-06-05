@@ -293,14 +293,8 @@ mod tests {
         std::fs::create_dir_all(&repo_er).unwrap();
         std::fs::write(repo_er.join("review.json"), r#"{"version":1}"#).unwrap();
 
-        let copied = migrate_into_managed(
-            &managed,
-            &repo_root.to_string_lossy(),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let copied =
+            migrate_into_managed(&managed, &repo_root.to_string_lossy(), None, None, None).unwrap();
         assert!(copied);
         assert!(managed.join("review.json").exists());
     }

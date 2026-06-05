@@ -267,6 +267,7 @@ pub enum OverlayData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiActionKind {
+    Triage,
     Review,
     ExpertReview { expert_id: String },
     Professor,
@@ -372,6 +373,8 @@ pub enum HubAction {
     },
     /// Run the Professor learning agent
     RunProfessorReview,
+    /// Fast triage scan (routes to deeper review)
+    RunTriageReview,
     /// Run AI review via configured agent command
     PromptReview,
     /// Re-validate an existing AI review (refreshes confidence + evidence)
@@ -1754,10 +1757,7 @@ impl TabState {
 
     /// Apply storage switch when the checkout branch name changes (used by refresh
     /// and unit tests).
-    pub(crate) fn apply_checkout_branch_storage_change(
-        &mut self,
-        git_branch: &str,
-    ) -> Result<()> {
+    pub(crate) fn apply_checkout_branch_storage_change(&mut self, git_branch: &str) -> Result<()> {
         if git_branch == self.current_branch {
             return Ok(());
         }
@@ -2591,11 +2591,7 @@ impl TabState {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         let er_dir = self.er_dir();
         let branch_scope = self.storage_branch_scope().map(str::to_string);
-        self.ai = ai::load_ai_state(
-            &er_dir,
-            &self.branch_diff_hash,
-            branch_scope.as_deref(),
-        );
+        self.ai = ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref());
         // Finding IDs may change after review reload — clear stale reference
         self.focused_finding_id = None;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
@@ -4563,6 +4559,16 @@ impl App {
             .is_some_and(|q| q.questions.iter().any(|q| !q.resolved));
         let selection_label = self.active_ai_selection_label();
         let items = vec![
+            HubItem {
+                label: "Triage branch".into(),
+                hint: "".into(),
+                description: format!(
+                    "Fast scan — first impression and review routing via {selection_label} (Haiku-class model)"
+                ),
+                action: HubAction::RunTriageReview,
+                is_header: false,
+                enabled: true,
+            },
             HubItem {
                 label: "Review work".into(),
                 hint: "".into(),
@@ -8545,7 +8551,10 @@ mod tests {
         let branch_slug = crate::storage::slug_branch("claude/dev-5067");
         let expected = crate::storage::branch_dir(&repo_slug, &branch_slug).join("reviewed");
         assert_eq!(tab.er_root.reviewed_path(), expected.to_string_lossy());
-        assert!(!tab.er_root.reviewed_path().contains(&crate::storage::slug_branch("main")));
+        assert!(!tab
+            .er_root
+            .reviewed_path()
+            .contains(&crate::storage::slug_branch("main")));
     }
 
     #[test]
@@ -8556,8 +8565,7 @@ mod tests {
         tab.sync_managed_storage();
 
         let repo_slug = crate::storage::slug_repo(&tab.repo_root);
-        let main_dir =
-            crate::storage::branch_dir(&repo_slug, &crate::storage::slug_branch("main"));
+        let main_dir = crate::storage::branch_dir(&repo_slug, &crate::storage::slug_branch("main"));
         let feature_dir =
             crate::storage::branch_dir(&repo_slug, &crate::storage::slug_branch("feature"));
         std::fs::create_dir_all(&main_dir).unwrap();
@@ -8567,8 +8575,7 @@ mod tests {
 
         tab.reviewed
             .insert("a.rs".to_string(), "hash-main".to_string());
-        tab.apply_checkout_branch_storage_change("feature")
-            .unwrap();
+        tab.apply_checkout_branch_storage_change("feature").unwrap();
 
         assert_eq!(tab.current_branch, "feature");
         assert_eq!(
@@ -8587,8 +8594,7 @@ mod tests {
         tab.sync_managed_storage();
         let path_before = tab.er_root.reviewed_path();
         tab.reviewed.insert("only.rs".to_string(), "h".to_string());
-        tab.sync_storage_if_checkout_branch_changed()
-            .unwrap();
+        tab.sync_storage_if_checkout_branch_changed().unwrap();
         assert_eq!(tab.er_root.reviewed_path(), path_before);
         assert!(tab.reviewed.contains_key("only.rs"));
     }

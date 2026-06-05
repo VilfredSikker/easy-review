@@ -49,6 +49,7 @@ done
 
 | Skill | What it does |
 |-------|-------------|
+| `er-triage` | Fast branch scan: first impression, routing verdict, priority files → `.er/triage.json` |
 | `er-review` | Full review: risk levels, findings, order, checklist, summary |
 | `er-review-security` | Expert: security findings → `.er/experts/security.json` |
 | `er-review-performance` | Expert: performance → `.er/experts/performance.json` |

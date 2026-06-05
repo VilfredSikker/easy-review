@@ -2,6 +2,7 @@
 
 use crate::ai::experts::{expert_by_id, list_ai_reviewers};
 use crate::ai::professor::{PROFESSOR_ID, PROFESSOR_LABEL};
+use crate::ai::triage::{TRIAGE_ID, TRIAGE_LABEL};
 
 #[derive(Debug, Clone)]
 pub struct AgentMeta {
@@ -13,6 +14,15 @@ pub struct AgentMeta {
 }
 
 pub fn agent_meta(agent_kind: &str) -> Option<AgentMeta> {
+    if agent_kind == TRIAGE_ID {
+        return Some(AgentMeta {
+            kind: TRIAGE_ID.into(),
+            label: TRIAGE_LABEL.into(),
+            description: "Fast branch scan — first impression and review routing".into(),
+            color: "#22d3ee".into(),
+            icon: "radar".into(),
+        });
+    }
     if agent_kind == "general" {
         return Some(AgentMeta {
             kind: "general".into(),

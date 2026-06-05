@@ -2039,11 +2039,11 @@ impl App {
                     .get(&provider_id)
                     .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
                 let mut args = provider.args.clone();
-                if let Some(model_id) = self
-                    .config
-                    .ai_hub
-                    .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
-                {
+                if let Some(model_id) = self.config.ai_hub.resolve_spawn_model_id(
+                    &provider_id,
+                    self.current_ai_model.as_deref(),
+                    name,
+                ) {
                     if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
                         args.extend(model.args.clone());
                     }
@@ -2067,11 +2067,12 @@ impl App {
                 )
             };
         if is_claude_compatible {
+            let effort_override = if name == "triage" { Some("low") } else { None };
             let effort = crate::config::resolve_effort(
                 &self.config.ai_hub,
                 &self.config.agent,
                 self.current_ai_effort.as_deref(),
-                None,
+                effort_override,
             );
             crate::config::inject_claude_effort(&mut config_args, effort.as_deref());
         }
@@ -2304,6 +2305,22 @@ impl App {
         )
     }
 
+    /// Spawn triage scan (`kind` = `triage`). Uses fast model from `[ai_hub.reviewer_models]`.
+    pub fn spawn_background_triage_review(
+        &mut self,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+    ) -> Result<()> {
+        self.spawn_background_agent_task(
+            crate::ai::triage_task_kind(),
+            "triage",
+            target,
+            prompt,
+            prepared_diff,
+        )
+    }
+
     /// App-level background agent task (review or expert).
     fn spawn_background_agent_task(
         &mut self,
@@ -2342,11 +2359,11 @@ impl App {
                     .get(&provider_id)
                     .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
                 let mut args = provider.args.clone();
-                if let Some(model_id) = self
-                    .config
-                    .ai_hub
-                    .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
-                {
+                if let Some(model_id) = self.config.ai_hub.resolve_spawn_model_id(
+                    &provider_id,
+                    self.current_ai_model.as_deref(),
+                    &kind,
+                ) {
                     if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
                         args.extend(model.args.clone());
                     }
@@ -2370,11 +2387,12 @@ impl App {
                 )
             };
         if is_claude_compatible {
+            let effort_override = if kind == "triage" { Some("low") } else { None };
             let effort = crate::config::resolve_effort(
                 &self.config.ai_hub,
                 &self.config.agent,
                 self.current_ai_effort.as_deref(),
-                None,
+                effort_override,
             );
             crate::config::inject_claude_effort(&mut config_args, effort.as_deref());
         }

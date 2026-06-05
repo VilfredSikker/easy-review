@@ -106,6 +106,25 @@ export interface FlatFinding {
   thread_id: string | null;
 }
 
+export interface TriagePriorityFileSnapshot {
+  path: string;
+  reason: string;
+  risk: string;
+}
+
+export interface TriageSnapshot {
+  fresh: boolean;
+  first_impression: string;
+  verdict_primary: string;
+  experts: string[];
+  rationale: string;
+  confidence: string;
+  priority_files: TriagePriorityFileSnapshot[];
+  files_changed: number;
+  approx_risk: string;
+  domains: string[];
+}
+
 export interface AiSnapshot {
   fresh: boolean;
   stale_reason: string | null;
@@ -126,6 +145,7 @@ export interface AiSnapshot {
   has_review_json: boolean;
   /** Top-level GitHub comments eligible for batch validate (!resolved, !outdated). */
   eligible_comment_count: number;
+  triage: TriageSnapshot | null;
 }
 
 export interface PrSnapshot {

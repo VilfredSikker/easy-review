@@ -141,6 +141,9 @@ pub fn expert_label_for_category(category: &str) -> Option<&'static str> {
 
 /// Display label for the agent that produced a finding (pill in UI).
 pub fn agent_label_for_category(category: &str) -> &'static str {
+    if category == super::triage::TRIAGE_ID {
+        return super::triage::TRIAGE_LABEL;
+    }
     if category == super::professor::PROFESSOR_ID {
         return super::professor::PROFESSOR_LABEL;
     }
@@ -159,11 +162,18 @@ pub struct ReviewerInfo {
 }
 
 pub fn list_ai_reviewers() -> Vec<ReviewerInfo> {
-    let mut out = vec![ReviewerInfo {
-        kind: "general".to_string(),
-        label: "General".to_string(),
-        description: "Risk, order, checklist, and summary".to_string(),
-    }];
+    let mut out = vec![
+        ReviewerInfo {
+            kind: super::triage::TRIAGE_ID.to_string(),
+            label: super::triage::TRIAGE_LABEL.to_string(),
+            description: "Fast branch scan — first impression and review routing".to_string(),
+        },
+        ReviewerInfo {
+            kind: "general".to_string(),
+            label: "General".to_string(),
+            description: "Risk, order, checklist, and summary".to_string(),
+        },
+    ];
     for e in EXPERTS {
         out.push(ReviewerInfo {
             kind: format!("expert:{}", e.id),
@@ -183,6 +193,7 @@ pub fn list_ai_reviewers() -> Vec<ReviewerInfo> {
 pub fn parse_reviewer_kind(kind: &str) -> Option<ReviewerKind> {
     match kind {
         "general" => Some(ReviewerKind::General),
+        "triage" => Some(ReviewerKind::Triage),
         "professor" => Some(ReviewerKind::Professor),
         s if s.starts_with("expert:") => {
             let id = s.strip_prefix("expert:")?;
@@ -194,6 +205,7 @@ pub fn parse_reviewer_kind(kind: &str) -> Option<ReviewerKind> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewerKind {
+    Triage,
     General,
     Expert(String),
     Professor,
@@ -449,6 +461,7 @@ mod tests {
             parse_reviewer_kind("professor"),
             Some(ReviewerKind::Professor)
         );
+        assert_eq!(parse_reviewer_kind("triage"), Some(ReviewerKind::Triage));
         assert!(parse_reviewer_kind("expert:unknown").is_none());
     }
 
@@ -457,7 +470,8 @@ mod tests {
         let list = list_ai_reviewers();
         assert!(list.iter().any(|r| r.kind == "general"));
         assert!(list.iter().any(|r| r.kind == "professor"));
-        assert_eq!(list.len(), EXPERTS.len() + 2);
+        assert!(list.first().is_some_and(|r| r.kind == "triage"));
+        assert_eq!(list.len(), EXPERTS.len() + 3);
     }
 
     #[test]

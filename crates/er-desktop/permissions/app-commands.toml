@@ -47,6 +47,7 @@ commands.allow = [
   "run_ai_review",
   "run_ai_expert_review",
   "run_ai_professor_review",
+  "run_ai_triage_review",
   "list_ai_experts",
   "list_ai_reviewers",
   "run_ai_review_files",

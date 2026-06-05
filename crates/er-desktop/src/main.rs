@@ -1369,6 +1369,7 @@ fn main() {
             commands::run_ai_review,
             commands::run_ai_expert_review,
             commands::run_ai_professor_review,
+            commands::run_ai_triage_review,
             commands::list_ai_experts,
             commands::list_ai_reviewers,
             commands::run_ai_review_files,

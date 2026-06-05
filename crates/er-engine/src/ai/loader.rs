@@ -4,6 +4,7 @@ use super::experts::{
 };
 use super::professor::{load_professor_review, merge_professor_into_review};
 use super::review::*;
+use super::triage::load_triage_review;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -124,8 +125,7 @@ pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
     let review_path = er_dir.join("review.json");
     if let Ok(content) = read_sidecar(&review_path) {
         if let Ok(review) = serde_json::from_str::<ErReview>(&content) {
-            if !review.head_branch.is_empty()
-                && !storage_branches_match(scope, &review.head_branch)
+            if !review.head_branch.is_empty() && !storage_branches_match(scope, &review.head_branch)
             {
                 return true;
             }
@@ -148,11 +148,7 @@ pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
 /// non-empty `head_branch` that does not match is ignored — including `summary.md`
 /// and other review artifacts from the same directory. This avoids showing a prior
 /// branch's review after mistaken migration into the wrong managed folder.
-pub fn load_ai_state(
-    er_dir: &str,
-    current_diff_hash: &str,
-    branch_scope: Option<&str>,
-) -> AiState {
+pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option<&str>) -> AiState {
     let mut state = AiState::default();
     let er_path = Path::new(er_dir);
 
@@ -247,6 +243,13 @@ pub fn load_ai_state(
         state.review = Some(synthetic);
     }
 
+    if let Some(triage) = load_triage_review(er_dir) {
+        if triage.diff_hash != current_diff_hash {
+            state.is_stale = true;
+        }
+        state.triage = Some(triage);
+    }
+
     if let Some(prof) = load_professor_review(er_dir) {
         let summary = prof.summary.trim();
         if prof.diff_hash == current_diff_hash && !summary.is_empty() {
@@ -309,6 +312,8 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
         "feedback.json",
         "questions.json",
         "github-comments.json",
+        "triage.json",
+        "professor.json",
     ];
 
     let mut latest = files

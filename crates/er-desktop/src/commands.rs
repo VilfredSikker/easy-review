@@ -2500,6 +2500,11 @@ pub fn run_ai_professor_review(
 }
 
 #[tauri::command]
+pub fn run_ai_triage_review(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    run_ai_scoped_review(scope, vec![], vec!["triage".to_string()], None, state)
+}
+
+#[tauri::command]
 pub fn run_ai_review_files(
     scope: String,
     paths: Vec<String>,
@@ -2660,6 +2665,10 @@ fn spawn_scoped_reviewers(
             .unwrap_or_else(|| kind.clone());
 
         let spawn_result = match &parsed {
+            ReviewerKind::Triage => {
+                let prompt = prompts::build_triage_review_prompt_prepared_diff(scope, er_dir);
+                app.spawn_background_triage_review(target.clone(), prompt, true)
+            }
             ReviewerKind::General => {
                 let mut prompt = prompts::build_review_prompt_prepared_diff(scope, er_dir);
                 if scoped_files {

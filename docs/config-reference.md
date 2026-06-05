@@ -65,6 +65,9 @@ Optional runtime provider/model presets for the AI Hub. When present, AI Hub act
 default_provider = "claude"
 default_model = "sonnet-4.6"
 
+[ai_hub.reviewer_models]
+triage = "haiku-4.5"
+
 [ai_hub.providers.claude]
 label = "Claude"
 command = "claude"
@@ -101,6 +104,7 @@ Rules:
 - Model `args` are appended after provider args.
 - If `[ai_hub]` is absent, `er` falls back to the single `[agent]` configuration.
 - The selected provider/model applies to AI Hub actions such as review, questions, quiz, wizard, and summary.
+- `[ai_hub.reviewer_models]` overrides the hub model for specific reviewer kinds. Triage uses `triage = "haiku-4.5"` by default in the example config; when unset, triage falls back to the fastest model in the active provider list.
 
 ### `[watched]`
 
