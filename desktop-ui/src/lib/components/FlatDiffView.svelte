@@ -260,7 +260,9 @@
     diffNav.pendingScrollPx = null;
     // On any key change (tab/branch/mode), reset scroll to the stored position (0 for new keys)
     // and clear the applied-spans set so fresh hunks get highlighted rather than skipped.
+    // Clear dead-stub memo too: source indices map to different files in the new context.
     _spansAppliedKeys.clear();
+    _deadStubs.clear();
     lastViewKey = snapshotKey;
     tick().then(() => { if (scrollEl) scrollEl.scrollTop = top; });
   });
@@ -338,6 +340,12 @@
 
   // ── Lazy-load effect ──────────────────────────────────────────────────────
   const _requestingFiles = new Set<number>();
+  /** Source indices that came back still-lazy after a parse attempt (no parseable
+   *  hunks: binary, mode-only, rename-without-content, empty). Re-requesting can't
+   *  produce hunks, so we never ask again — this avoids wasted IPC on every scroll
+   *  re-run and closes a latent spin if a perpetual stub's cache_key ever churned.
+   *  Cleared on context change (tab/branch/mode) alongside _spansAppliedKeys. */
+  const _deadStubs = new Set<number>();
   /** Max distinct lazy files fetched per round-trip (bounds how long the backend
    *  holds the app mutex for one call). */
   const REQUEST_FILE_BATCH = 12;
@@ -378,6 +386,9 @@
         oldFile.additions = newFile.additions;
         oldFile.deletions = newFile.deletions;
         oldFile.cache_key = newFile.cache_key;
+        // Parsed but still a stub → no hunks will ever come from this file; don't
+        // ask again until the context changes.
+        if (newFile.is_lazy_stub) _deadStubs.add(newFile.source_index);
         // Only evict highlight spans when the hunks actually changed (cache_key
         // changed) — skipping eviction on unchanged hunks avoids a redundant flush.
         if (prevCacheKey !== newFile.cache_key) {
@@ -412,7 +423,12 @@
       if (into.length >= REQUEST_FILE_BATCH) return;
       const row = rows[i];
       if (row.type !== "lazy-stub") continue;
-      if (_requestingFiles.has(row.sourceIndex) || seen.has(row.sourceIndex)) continue;
+      if (
+        _requestingFiles.has(row.sourceIndex) ||
+        _deadStubs.has(row.sourceIndex) ||
+        seen.has(row.sourceIndex)
+      )
+        continue;
       seen.add(row.sourceIndex);
       into.push(row.sourceIndex);
     }
@@ -631,12 +647,20 @@
       if (cachedHunks) {
         const cacheExhausted =
           _spansAppliedKeys.has(spanKey) && !cacheWouldImproveFile(snapFile, cachedHunks);
-        if (!cacheExhausted) {
-          const changed = untrack(() => tryApplyHighlightSpans(snapFile, cachedHunks, spanKey));
-          if (changed) cacheApplied += 1;
-          else cacheApplySkipped += 1;
+        if (cacheExhausted) {
+          // Cached spans are applied and can't be improved — this spanKey is fully
+          // resolved. Mark it terminal so the drain pulse can't re-queue the worker
+          // forever for files with an uncolorable line (blank/whitespace/unknown
+          // lang), whose fileNeedsSyntaxSpans never flips false. spanKey encodes
+          // path+cache_key+theme, so a real diff/theme change yields a new key (and
+          // the eviction effects drop the stale one) — legit re-highlight still runs.
+          _highlightCompletedKeys.add(spanKey);
           continue;
         }
+        const changed = untrack(() => tryApplyHighlightSpans(snapFile, cachedHunks, spanKey));
+        if (changed) cacheApplied += 1;
+        else cacheApplySkipped += 1;
+        continue;
       }
 
       if (_highlightCompletedKeys.has(spanKey)) continue;
