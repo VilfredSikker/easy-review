@@ -56,14 +56,13 @@
    */
   const availableModes = $derived.by((): string[] => {
     if (isRemotePr) return ["pr"];
+    // Local scopes only. PR Diff moved to the header toggle (BranchContextBar);
+    // History is reachable by clicking a commit in the COMMITS list below — no
+    // dedicated scope row.
     const modes: string[] = [];
     if (features.viewBranch) modes.push("branch");
     if (features.viewUnstaged && !isReadOnly) modes.push("unstaged");
     if (features.viewStaged && !isReadOnly) modes.push("staged");
-    // PR Diff is available whenever a pr_number is known (local --pr tab or remote tab).
-    const prNumber = snapshot?.pr?.number ?? activeTab?.pr_number ?? null;
-    if (prNumber != null) modes.push("pr");
-    if (features.viewHistory && !isReadOnly) modes.push("history");
     return modes;
   });
 
@@ -74,6 +73,10 @@
   const totalDeletions = $derived(
     (snapshot?.files ?? []).reduce((s, f) => s + f.deletions, 0),
   );
+
+  /** Per-scope +/- counts so Unstaged/Staged rows show changes without switching. */
+  const unstagedStat = $derived(snapshot?.unstaged_stat ?? { additions: 0, deletions: 0 });
+  const stagedStat = $derived(snapshot?.staged_stat ?? { additions: 0, deletions: 0 });
 
   /** Commits are expanded by default so they're discoverable. */
   let commitsCollapsed = $state(false);
@@ -113,6 +116,10 @@
       {/if}
       <span class="w-1.5 h-1.5 rounded-full bg-risk-med shrink-0"></span>
       <span class="text-[12px]">Unstaged</span>
+      <span class="ml-auto flex items-center gap-1">
+        {#if unstagedStat.additions > 0}<span class="mono text-[10px] text-add-fg">+{unstagedStat.additions}</span>{/if}
+        {#if unstagedStat.deletions > 0}<span class="mono text-[10px] text-del-fg">−{unstagedStat.deletions}</span>{/if}
+      </span>
     </button>
     {/if}
 
@@ -126,6 +133,10 @@
       {/if}
       <span class="w-1.5 h-1.5 rounded-full bg-add-fg shrink-0"></span>
       <span class="text-[12px]">Staged</span>
+      <span class="ml-auto flex items-center gap-1">
+        {#if stagedStat.additions > 0}<span class="mono text-[10px] text-add-fg">+{stagedStat.additions}</span>{/if}
+        {#if stagedStat.deletions > 0}<span class="mono text-[10px] text-del-fg">−{stagedStat.deletions}</span>{/if}
+      </span>
     </button>
     {/if}
 
@@ -142,18 +153,6 @@
     </button>
     {/if}
 
-    {#if availableModes.includes("history")}
-    <button
-      class="w-full text-left px-2 py-[5px] rounded-md flex items-center gap-2 relative {mode === 'history' ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
-      onclick={() => void app.cmd("set_mode", { mode: "history" })}
-    >
-      {#if mode === 'history'}
-        <span class="absolute left-0 top-[4px] bottom-[4px] w-[2px] rounded-r bg-accent"></span>
-      {/if}
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 {mode === 'history' ? 'text-accent' : 'text-fg-3'}"><circle cx="12" cy="12" r="3"/><line x1="3" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="21" y2="12"/></svg>
-      <span class="text-[12px]">History</span>
-    </button>
-    {/if}
   </div>
 
   <!-- Commits in scope (only when engine provides them; hidden on remote PR tabs) -->

@@ -97,6 +97,14 @@ impl From<&er_engine::config::DisplayConfig> for DisplayConfigSnapshot {
     }
 }
 
+/// +/- summary for a scope (unstaged / staged) so the scope selector can show
+/// counts without switching modes.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ScopeStat {
+    pub additions: usize,
+    pub deletions: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
     pub mode: String,
@@ -138,6 +146,11 @@ pub struct AppSnapshot {
     pub browser: BrowserSnapshot,
     /// Live GitHub status for the active tab when it's a remote PR with cached data.
     pub github: Option<GithubStatusSnapshot>,
+    /// PR number detected for the active branch from the PR-list cache (sidebar
+    /// match). Reliable regardless of whether gh-status has been fetched — drives
+    /// the Local|PR Diff toggle.
+    #[serde(default)]
+    pub detected_pr_number: Option<u64>,
     /// Which background fetches are currently in-flight.
     pub bg_loading: LoadingFlags,
     /// Running/done/failed background AI commands for the active tab.
@@ -164,6 +177,13 @@ pub struct AppSnapshot {
     /// None when viewing a non-history scope ("All changes", unstaged, staged).
     #[serde(default)]
     pub selected_commit_sha: Option<String>,
+    /// +/- summary for the working-tree (unstaged) and index (staged) diffs, so
+    /// the scope selector shows counts without switching modes. Zeros when the
+    /// tab isn't a live local checkout.
+    #[serde(default)]
+    pub unstaged_stat: ScopeStat,
+    #[serde(default)]
+    pub staged_stat: ScopeStat,
     /// Session-scoped background review tasks across all tabs. Includes
     /// Running tasks and Done/Failed tasks within the last 8 seconds so
     /// the frontend can render transient toasts.
@@ -920,6 +940,66 @@ pub fn pr_cache_fingerprint(
     crate::profile_log::finish_hash(h)
 }
 
+/// Build a single `FileSnapshot`.
+///
+/// `include_hunks` controls whether the file's diff hunks are serialized:
+/// `false` for compacted files or files dropped by the snapshot-wide IPC line
+/// budget (`budget_omitted`). Callers that need one file's content regardless of
+/// that budget — the viewport-driven lazy loader — pass `true`, which keeps the
+/// per-file lazy round-trip from re-serializing the entire diff.
+pub(crate) fn build_file_snapshot(
+    source_index: usize,
+    f: &DiffFile,
+    tab: &TabState,
+    pending_ai: Option<&PendingAiReplies>,
+    include_hunks: bool,
+) -> FileSnapshot {
+    let budget_omitted = !f.compacted && !include_hunks;
+    let hunks = if include_hunks {
+        build_hunks(f, tab, pending_ai)
+    } else {
+        vec![]
+    };
+
+    let finding_count = tab
+        .ai
+        .review
+        .as_ref()
+        .map(|r| {
+            r.files
+                .get(&f.path)
+                .map(|fr| fr.findings.len())
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let comment_count = tab.ai.file_github_comment_count(&f.path);
+    let question_count = tab.ai.file_question_count(&f.path);
+
+    let risk = tab
+        .ai
+        .review
+        .as_ref()
+        .and_then(|r| r.files.get(&f.path))
+        .map(|fr| severity_str(&fr.risk).to_string());
+
+    FileSnapshot {
+        path: f.path.clone(),
+        status: status_str(&f.status),
+        additions: f.adds,
+        deletions: f.dels,
+        reviewed: tab.reviewed.contains_key(&f.path),
+        compacted: f.compacted,
+        risk,
+        finding_count,
+        comment_count,
+        question_count,
+        is_lazy_stub: (tab.lazy_mode && f.hunks.is_empty() && !f.compacted) || budget_omitted,
+        hunks,
+        source_index,
+        cache_key: er_engine::cache::file_cache_key(&tab.branch_diff_hash, &f.path),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_snapshot(
     app: &App,
@@ -1031,54 +1111,10 @@ fn build_snapshot_inner(
                 let line_count = f.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
                 let include_hunks =
                     !f.compacted && (source_index == active_selected || diff_line_budget > 0);
-                let budget_omitted = !f.compacted && !include_hunks;
-                let hunks = if include_hunks {
+                if include_hunks {
                     diff_line_budget = diff_line_budget.saturating_sub(line_count);
-                    build_hunks(f, tab, pending_ai)
-                } else {
-                    vec![]
-                };
-
-                // Per-file counts from AI state
-                let finding_count = tab
-                    .ai
-                    .review
-                    .as_ref()
-                    .map(|r| {
-                        r.files
-                            .get(&f.path)
-                            .map(|fr| fr.findings.len())
-                            .unwrap_or(0)
-                    })
-                    .unwrap_or(0);
-                let comment_count = tab.ai.file_github_comment_count(&f.path);
-                let question_count = tab.ai.file_question_count(&f.path);
-
-                // File-level risk from AI review
-                let risk = tab
-                    .ai
-                    .review
-                    .as_ref()
-                    .and_then(|r| r.files.get(&f.path))
-                    .map(|fr| severity_str(&fr.risk).to_string());
-
-                FileSnapshot {
-                    path: f.path.clone(),
-                    status: status_str(&f.status),
-                    additions: f.adds,
-                    deletions: f.dels,
-                    reviewed: tab.reviewed.contains_key(&f.path),
-                    compacted: f.compacted,
-                    risk,
-                    finding_count,
-                    comment_count,
-                    question_count,
-                    is_lazy_stub: (tab.lazy_mode && f.hunks.is_empty() && !f.compacted)
-                        || budget_omitted,
-                    hunks,
-                    source_index,
-                    cache_key: er_engine::cache::file_cache_key(&tab.branch_diff_hash, &f.path),
                 }
+                build_file_snapshot(source_index, f, tab, pending_ai, include_hunks)
             })
             .collect()
     };
@@ -1237,6 +1273,46 @@ fn build_snapshot_inner(
         status
     });
 
+    // Detected PR number for the active branch — taken straight from the PR-list
+    // cache (the same branch→PR match the sidebar badge uses). Unlike `github`,
+    // this does NOT require a gh-status fetch to have run, so the Local|PR Diff
+    // toggle is reliable instead of timing-dependent.
+    let detected_pr_number: Option<u64> = if let Some(n) = tab.pr_number {
+        Some(n)
+    } else if tab.is_remote() {
+        None
+    } else {
+        let branch = tab
+            .local_branch_view
+            .as_deref()
+            .unwrap_or(&tab.current_branch);
+        pr_cache.and_then(|pc| pc.lock().ok()).and_then(|cache| {
+            cache
+                .values()
+                .flat_map(|prs| prs.iter())
+                .filter(|p| p.head_ref == branch)
+                .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
+                .map(|p| p.number)
+        })
+    };
+
+    // Per-scope +/- counters for the scope selector. Only meaningful for a live
+    // local checkout (working tree or checked-out branch view); skipped on remote
+    // PR tabs, read-only branch views, and chrome-only rebuilds.
+    let (unstaged_stat, staged_stat) = if !chrome_only
+        && !tab.is_remote()
+        && !(tab.local_branch_view.is_some() && tab.local_branch_checkout_root.is_none())
+    {
+        let (ua, ud) = er_engine::git::diff_shortstat(&tab.repo_root, false);
+        let (sa, sd) = er_engine::git::diff_shortstat(&tab.repo_root, true);
+        (
+            ScopeStat { additions: ua, deletions: ud },
+            ScopeStat { additions: sa, deletions: sd },
+        )
+    } else {
+        (ScopeStat::default(), ScopeStat::default())
+    };
+
     let out = AppSnapshot {
         mode: mode.to_string(),
         branch: tab
@@ -1279,11 +1355,14 @@ fn build_snapshot_inner(
         notification: app.watch_message.clone(),
         local_branch: tab.local_branch_view.clone(),
         local_branch_checked_out: tab.local_branch_checkout_root.is_some(),
+        unstaged_stat,
+        staged_stat,
         tabs,
         active_tab,
         ui_annotations,
         browser: browser_snapshot_from_tab(tab),
         github,
+        detected_pr_number,
         bg_loading: loading
             .and_then(|l| l.lock().ok().map(|g| g.clone()))
             .unwrap_or_default(),
@@ -2588,6 +2667,30 @@ mod tests {
         );
 
         assert!(thread.stale);
+    }
+
+    #[test]
+    fn build_file_snapshot_includes_hunks_only_when_requested() {
+        let raw = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n fn baz() {}\n";
+        let files = er_engine::git::parse_diff(raw);
+        assert_eq!(files.len(), 1, "fixture diff should parse one file");
+        assert!(!files[0].hunks.is_empty(), "fixture file should have hunks");
+
+        let tab = TabState::new_for_test(files);
+        let f = &tab.files[0];
+
+        // include_hunks = true: the lazy-load command path delivers the file's
+        // content, so it is no longer a stub.
+        let with = build_file_snapshot(0, f, &tab, None, true);
+        assert!(!with.hunks.is_empty(), "requested file must carry its hunks");
+        assert!(!with.is_lazy_stub);
+        assert_eq!(with.source_index, 0);
+
+        // include_hunks = false (budget-omitted): hunks must NOT be serialized and
+        // the file must read as a stub so the UI shows a loading state.
+        let without = build_file_snapshot(0, f, &tab, None, false);
+        assert!(without.hunks.is_empty(), "omitted file must not carry hunks");
+        assert!(without.is_lazy_stub);
     }
 
     #[test]

@@ -285,6 +285,11 @@ export interface AppSnapshot {
   commits?: CommitSummary[];
   /** SHA of the selected commit when in history mode; null otherwise. */
   selected_commit_sha?: string | null;
+  /** +/- counts for the unstaged / staged diffs (for scope-selector counters). */
+  unstaged_stat?: { additions: number; deletions: number };
+  staged_stat?: { additions: number; deletions: number };
+  /** PR detected for the active branch (PR-list cache). Drives the Local|PR Diff toggle. */
+  detected_pr_number?: number | null;
   branch: string;
   base: string;
   input_mode: "normal" | "search" | "comment" | "filter" | "commit" | "confirm";

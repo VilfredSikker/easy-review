@@ -19,9 +19,9 @@ use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects;
 use crate::snapshot::{
-    build_chrome_snapshot, build_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary,
-    GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState,
-    MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
+    build_chrome_snapshot, build_file_snapshot, build_snapshot, AgentLogSnapshot, AppSnapshot,
+    CheckSummary, FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser,
+    GithubStatusSnapshot, LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
 };
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
@@ -615,21 +615,42 @@ pub fn toggle_panel(panel: String, state: State<AppState>) -> Result<AppSnapshot
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 
-/// Parse a lazy stub file and return the updated snapshot without changing the
-/// navigation selection. Used by the frontend to pre-load in-viewport files.
+/// Parse one or more lazy-stub files and return *only those* `FileSnapshot`s
+/// (not the full `AppSnapshot`), without changing the navigation selection. The
+/// frontend merges each returned file into its existing snapshot in place.
+///
+/// Returning per-file payloads instead of re-serializing the entire diff via
+/// `snap_from` keeps the viewport-driven lazy round-trip cheap on large diffs —
+/// a fast-scroll burst that reveals several stubs is one call, not N full
+/// snapshots. History mode has no lazy stubs, so it returns an empty vec.
 #[tauri::command]
 pub fn request_file_content(
-    source_index: usize,
+    source_indices: Vec<usize>,
     state: State<AppState>,
-) -> Result<AppSnapshot, String> {
+) -> Result<Vec<FileSnapshot>, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if app.tab().mode == er_engine::app::DiffMode::History {
+        return Ok(vec![]);
+    }
     {
         let tab = app.tab_mut();
-        if tab.mode != er_engine::app::DiffMode::History && source_index < tab.files.len() {
-            tab.ensure_file_parsed_at(source_index);
+        for &source_index in &source_indices {
+            if source_index < tab.files.len() {
+                tab.ensure_file_parsed_at(source_index);
+            }
         }
     }
-    Ok(snap_from(&app, &state))
+    let tab = app.tab();
+    let pending_ai = Some(&state.pending_ai_replies);
+    let out = source_indices
+        .iter()
+        .filter_map(|&source_index| {
+            tab.files
+                .get(source_index)
+                .map(|f| build_file_snapshot(source_index, f, tab, pending_ai, true))
+        })
+        .collect();
+    Ok(out)
 }
 
 #[tauri::command]
@@ -730,7 +751,11 @@ fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &st
 }
 
 #[tauri::command]
-pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+pub fn set_mode(
+    mode: String,
+    pr_number: Option<u64>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
         return Err(format!("'{mode}' view is disabled in settings"));
@@ -739,6 +764,14 @@ pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, Str
         // Only enter PrDiff when not already there (avoids re-fetching refs
         // on a tab that is already in PrDiff from construction).
         if app.tab().mode != DiffMode::PrDiff {
+            // Seed a detected PR number (from the header toggle) onto a local
+            // branch tab that wasn't opened via --pr, so enter_pr_diff can fetch
+            // the head and resolve the shared `pr` bucket.
+            if app.tab().pr_number.is_none() {
+                if let Some(n) = pr_number {
+                    app.tab_mut().pr_number = Some(n);
+                }
+            }
             app.tab_mut()
                 .enter_pr_diff()
                 .map_err(|e| e.to_string())?;
