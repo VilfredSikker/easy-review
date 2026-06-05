@@ -267,6 +267,13 @@
 
   // ── Virtual window ────────────────────────────────────────────────────────
   const OVERSCAN = 15;
+  /**
+   * Pixel band rendered beyond the viewport in each direction. Row-count overscan
+   * alone can't keep up with a fast momentum flick (it jumps many rows per frame,
+   * exposing the spacer as a black gap); ~1.5 viewport-heights of pre-rendered
+   * pixels keeps the window ahead of the native scroll regardless of row heights.
+   */
+  const OVERSCAN_PX = $derived(Math.round(viewportHeightPx * 1.5));
   /** Sticky file-path bar in .vscroll (h-10) — row offsets live inside .hscroll below it. */
   const STICKY_HEADER_PX = 40;
   const rowScrollTopPx = $derived(Math.max(0, scrollTopPx - STICKY_HEADER_PX));
@@ -277,6 +284,7 @@
       rowScrollTopPx,
       viewportHeightPx,
       OVERSCAN,
+      OVERSCAN_PX,
     ),
   );
   const windowedRows = $derived(crossFileModel.rows.slice(vw.start, vw.end));
