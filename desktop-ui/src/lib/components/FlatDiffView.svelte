@@ -338,54 +338,121 @@
 
   // ── Lazy-load effect ──────────────────────────────────────────────────────
   const _requestingFiles = new Set<number>();
-  const REQUEST_FILE_CONCURRENCY = 4;
+  /** Max distinct lazy files fetched per round-trip (bounds how long the backend
+   *  holds the app mutex for one call). */
+  const REQUEST_FILE_BATCH = 12;
 
-  async function requestLazyFile(sourceIndex: number): Promise<void> {
-    if (_requestingFiles.has(sourceIndex)) return;
-    _requestingFiles.add(sourceIndex);
+  // `request_file_content` returns only the requested files' `FileSnapshot`s
+  // (not the whole `AppSnapshot`), which we merge in place. This keeps the
+  // viewport-driven lazy round-trip cheap on large diffs — a fast-scroll burst
+  // that reveals several stubs is one call, not N full-snapshot serializations.
+  async function requestLazyFiles(sourceIndices: number[]): Promise<void> {
+    const fresh = sourceIndices.filter((i) => !_requestingFiles.has(i));
+    if (fresh.length === 0) return;
+    for (const i of fresh) _requestingFiles.add(i);
     const reqSnap = app.snapshot;
     const reqTab = reqSnap?.active_tab;
     const reqMode = reqSnap?.mode;
     const reqBase = reqSnap?.base;
     const reqBranch = reqSnap?.branch;
     try {
-      const snap = await invoke<AppSnapshot>("request_file_content", { sourceIndex });
-      if (!snap || !app.snapshot) return;
+      const files = await invoke<FileSnapshot[]>("request_file_content", {
+        sourceIndices: fresh,
+      });
+      if (!files || !app.snapshot) return;
+      // Drop stale responses: the view changed while the round-trip was in flight.
       if (
         app.snapshot.active_tab !== reqTab ||
         app.snapshot.mode !== reqMode ||
         app.snapshot.base !== reqBase ||
         app.snapshot.branch !== reqBranch
-      ) return;
-      const oldFile = app.snapshot.files.find((f) => f.source_index === sourceIndex);
-      const newFile = snap.files.find((f) => f.source_index === sourceIndex);
-      if (!oldFile || !newFile) return;
-      const prevCacheKey = oldFile.cache_key;
-      oldFile.hunks = newFile.hunks;
-      oldFile.is_lazy_stub = newFile.is_lazy_stub;
-      oldFile.compacted = newFile.compacted;
-      oldFile.additions = newFile.additions;
-      oldFile.deletions = newFile.deletions;
-      oldFile.cache_key = newFile.cache_key;
-      // Only evict highlight spans when the hunks actually changed (cache_key changed).
-      // Skipping eviction on unchanged hunks prevents a redundant re-highlight flush.
-      if (prevCacheKey !== newFile.cache_key) {
-        evictSpanKeysForPath(oldFile.path);
+      )
+        return;
+      for (const newFile of files) {
+        const oldFile = app.snapshot.files.find((f) => f.source_index === newFile.source_index);
+        if (!oldFile) continue;
+        const prevCacheKey = oldFile.cache_key;
+        oldFile.hunks = newFile.hunks;
+        oldFile.is_lazy_stub = newFile.is_lazy_stub;
+        oldFile.compacted = newFile.compacted;
+        oldFile.additions = newFile.additions;
+        oldFile.deletions = newFile.deletions;
+        oldFile.cache_key = newFile.cache_key;
+        // Only evict highlight spans when the hunks actually changed (cache_key
+        // changed) — skipping eviction on unchanged hunks avoids a redundant flush.
+        if (prevCacheKey !== newFile.cache_key) {
+          evictSpanKeysForPath(oldFile.path);
+        }
       }
       scheduleHighlightDrain();
     } finally {
-      _requestingFiles.delete(sourceIndex);
+      for (const i of fresh) _requestingFiles.delete(i);
+    }
+  }
+
+  // Forward prefetch: also request lazy stubs *ahead* of the rendered window in
+  // the scroll direction, so a fast flick lands on already-parsed content. The
+  // look-ahead distance scales with per-frame scroll speed (the throttled
+  // position delta between effect runs) and is clamped. This drives only
+  // `request_file_content`, never `windowedRows` — so it fetches data ahead
+  // without adding to per-frame render/mount cost.
+  const PREFETCH_LOOKAHEAD_FACTOR = 4;
+  const PREFETCH_MAX_VIEWPORTS = 3;
+  let _prefetchLastTop = 0;
+
+  function collectLazyStubsInRows(
+    startRow: number,
+    endRow: number,
+    into: number[],
+    seen: Set<number>,
+  ): void {
+    const rows = crossFileModel.rows;
+    const hi = Math.min(rows.length, endRow);
+    for (let i = Math.max(0, startRow); i < hi; i++) {
+      if (into.length >= REQUEST_FILE_BATCH) return;
+      const row = rows[i];
+      if (row.type !== "lazy-stub") continue;
+      if (_requestingFiles.has(row.sourceIndex) || seen.has(row.sourceIndex)) continue;
+      seen.add(row.sourceIndex);
+      into.push(row.sourceIndex);
     }
   }
 
   $effect(() => {
-    const rows = windowedRows;
-    for (const row of rows) {
-      if (row.type !== "lazy-stub") continue;
-      if (_requestingFiles.size >= REQUEST_FILE_CONCURRENCY) break;
-      if (_requestingFiles.has(row.sourceIndex)) continue;
-      requestLazyFile(row.sourceIndex);
+    const pending: number[] = [];
+    const seen = new Set<number>();
+
+    // 1) Stubs already inside the rendered window.
+    collectLazyStubsInRows(vw.start, vw.end, pending, seen);
+
+    // 2) Forward look-ahead band, sized by recent scroll speed and direction.
+    const delta = rowScrollTopPx - _prefetchLastTop;
+    _prefetchLastTop = rowScrollTopPx;
+    if (pending.length < REQUEST_FILE_BATCH && delta !== 0) {
+      const lookAheadPx = Math.min(
+        Math.abs(delta) * PREFETCH_LOOKAHEAD_FACTOR,
+        viewportHeightPx * PREFETCH_MAX_VIEWPORTS,
+      );
+      if (delta > 0) {
+        const bandTop = rowScrollTopPx + viewportHeightPx + OVERSCAN_PX;
+        collectLazyStubsInRows(
+          rowIndexAtOffset(effectiveGeometry, bandTop),
+          rowIndexAtOffset(effectiveGeometry, bandTop + lookAheadPx) + 1,
+          pending,
+          seen,
+        );
+      } else {
+        const bandBottom = Math.max(0, rowScrollTopPx - OVERSCAN_PX);
+        collectLazyStubsInRows(
+          rowIndexAtOffset(effectiveGeometry, Math.max(0, bandBottom - lookAheadPx)),
+          rowIndexAtOffset(effectiveGeometry, bandBottom) + 1,
+          pending,
+          seen,
+        );
+      }
     }
+
+    if (pending.length > 0) void requestLazyFiles(pending);
   });
 
   // ── Highlight effect (Shiki web worker) ───────────────────────────────────
@@ -775,7 +842,7 @@
     const target = files[i + 1] ?? files[i];
     if (!scrollToFileHeader(target.path)) return;
     const file = files.find((f) => f.path === target.path);
-    if (file?.is_lazy_stub) await requestLazyFile(file.source_index);
+    if (file?.is_lazy_stub) await requestLazyFiles([file.source_index]);
   }
 
   // ── Register FlatNavigator with diffNav ───────────────────────────────────
@@ -795,7 +862,7 @@
         applyScrollTop(to === "top" ? 0 : scrollEl.scrollHeight);
       },
       scrollAfterCollapse,
-      requestFileContent: (src) => requestLazyFile(src),
+      requestFileContent: (src) => requestLazyFiles([src]),
       getModel: () => crossFileModel,
       getFiles: () => files,
     });
