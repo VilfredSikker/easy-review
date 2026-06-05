@@ -414,7 +414,61 @@ class AppStore {
     this.lastPollChromeRevision = null;
   }
 
+  /**
+   * Optimistically toggle a file's reviewed flag and update reviewed_count in
+   * place, then confirm with the backend. On success, applies the returned
+   * snapshot as a chrome-only merge (preserves hunks + highlight spans).
+   * Rolls back both mutations on error.
+   */
+  private async cmdReviewed(command: "mark_reviewed" | "unmark_reviewed", path: string): Promise<void> {
+    const snap = this.snapshot;
+    if (!snap) return;
+    const file = snap.files.find((f) => f.path === path);
+    if (!file) return;
+
+    const wasReviewed = file.reviewed;
+    const newReviewed = command === "mark_reviewed";
+    if (file.reviewed === newReviewed) return; // no-op
+
+    // Optimistic update: mutate in place so $derived model rebuilds only the
+    // touched file's header block (cache_key unchanged → other blocks/spans stable).
+    file.reviewed = newReviewed;
+    snap.reviewed_count += newReviewed ? 1 : -1;
+
+    try {
+      const returned = await invoke<AppSnapshot>(command, { path });
+      // Apply chrome fields from backend response without replacing hunks/spans.
+      // reviewed_count comes from the authoritative backend value.
+      if (this.snapshot) {
+        this.snapshot = mergeChromeSnapshot(this.snapshot, {
+          ...returned,
+          reviewed_count: returned.reviewed_count,
+        });
+      }
+    } catch (e) {
+      // Roll back optimistic mutation.
+      if (this.snapshot) {
+        const f = this.snapshot.files.find((ff) => ff.path === path);
+        if (f) f.reviewed = wasReviewed;
+        this.snapshot.reviewed_count -= newReviewed ? 1 : -1;
+      }
+      console.error(`${command} failed:`, e);
+      this.pushLog("error", command, String(e));
+      this.error = `${command}: ${e}`;
+      this.showToast("error", `${command}: ${e}`);
+      setTimeout(() => {
+        if (this.error?.startsWith(`${command}:`)) this.error = null;
+      }, 5000);
+    }
+  }
+
   async cmd(command: string, args?: Record<string, unknown>) {
+    // Reviewed toggling uses an optimistic path that preserves hunks + spans.
+    if (command === "mark_reviewed" || command === "unmark_reviewed") {
+      const path = (args as { path?: string } | undefined)?.path;
+      if (path) return this.cmdReviewed(command, path);
+    }
+
     if (
       command === "run_ai_review"
       || command === "run_ai_expert_review"

@@ -18,7 +18,7 @@ impl Default for InlineLayers {
         InlineLayers {
             show_questions: true,
             show_github_comments: true,
-            show_ai_findings: false,
+            show_ai_findings: true,
             hide_resolved: false,
         }
     }
@@ -1985,7 +1985,7 @@ mod tests {
     #[test]
     fn inline_layers_default_ai_findings_false() {
         let layers = InlineLayers::default();
-        assert!(!layers.show_ai_findings);
+        assert!(layers.show_ai_findings);
     }
 
     // ── PanelContent ──

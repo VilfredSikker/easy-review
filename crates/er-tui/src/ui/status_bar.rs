@@ -173,6 +173,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             DiffMode::History => " HISTORY ",
             DiffMode::Conflicts => " CONFLICTS ",
             DiffMode::Hidden => " HIDDEN ",
+            DiffMode::PrDiff => " PR DIFF ",
         };
         modes.push(Span::styled(num, mode_style(vmode, tab.mode)));
         modes.push(Span::styled(label, mode_style(vmode, tab.mode)));

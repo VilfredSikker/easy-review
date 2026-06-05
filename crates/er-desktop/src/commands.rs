@@ -19,9 +19,9 @@ use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects;
 use crate::snapshot::{
-    build_chrome_snapshot, build_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary,
-    GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState,
-    MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
+    build_chrome_snapshot, build_file_snapshot, build_snapshot, AgentLogSnapshot, AppSnapshot,
+    CheckSummary, FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser,
+    GithubStatusSnapshot, LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
 };
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
@@ -59,6 +59,10 @@ pub struct PollResponse {
     pub revision: u64,
     pub content_revision: u64,
     pub chrome_revision: u64,
+    /// Monotonic counter bumped only when the reviewed set changes. Kept out of
+    /// content_revision and chrome_revision so reviewed-only changes can return
+    /// snapshot=None + chrome_only=true without triggering a full hunk rebuild.
+    pub reviewed_revision: u64,
     /// When true, the frontend should merge chrome fields and keep existing file hunks/spans.
     pub chrome_only: bool,
     /// Full snapshot — `None` when both revisions are unchanged since the last poll.
@@ -113,6 +117,8 @@ pub struct AppState {
     pub last_sent_content_revision: Arc<AtomicU64>,
     /// Last chrome revision included in a poll response.
     pub last_sent_chrome_revision: Arc<AtomicU64>,
+    /// Last reviewed_revision included in a poll response.
+    pub last_sent_reviewed_revision: Arc<AtomicU64>,
     /// Active-branch watcher status. Read by `build_snapshot` so the UI can
     /// show `Watching` when the desktop watcher is following a checkout.
     pub watch_status: WatchStatusState,
@@ -609,21 +615,42 @@ pub fn toggle_panel(panel: String, state: State<AppState>) -> Result<AppSnapshot
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 
-/// Parse a lazy stub file and return the updated snapshot without changing the
-/// navigation selection. Used by the frontend to pre-load in-viewport files.
+/// Parse one or more lazy-stub files and return *only those* `FileSnapshot`s
+/// (not the full `AppSnapshot`), without changing the navigation selection. The
+/// frontend merges each returned file into its existing snapshot in place.
+///
+/// Returning per-file payloads instead of re-serializing the entire diff via
+/// `snap_from` keeps the viewport-driven lazy round-trip cheap on large diffs —
+/// a fast-scroll burst that reveals several stubs is one call, not N full
+/// snapshots. History mode has no lazy stubs, so it returns an empty vec.
 #[tauri::command]
 pub fn request_file_content(
-    source_index: usize,
+    source_indices: Vec<usize>,
     state: State<AppState>,
-) -> Result<AppSnapshot, String> {
+) -> Result<Vec<FileSnapshot>, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if app.tab().mode == er_engine::app::DiffMode::History {
+        return Ok(vec![]);
+    }
     {
         let tab = app.tab_mut();
-        if tab.mode != er_engine::app::DiffMode::History && source_index < tab.files.len() {
-            tab.ensure_file_parsed_at(source_index);
+        for &source_index in &source_indices {
+            if source_index < tab.files.len() {
+                tab.ensure_file_parsed_at(source_index);
+            }
         }
     }
-    Ok(snap_from(&app, &state))
+    let tab = app.tab();
+    let pending_ai = Some(&state.pending_ai_replies);
+    let out = source_indices
+        .iter()
+        .filter_map(|&source_index| {
+            tab.files
+                .get(source_index)
+                .map(|f| build_file_snapshot(source_index, f, tab, pending_ai, true))
+        })
+        .collect();
+    Ok(out)
 }
 
 #[tauri::command]
@@ -718,15 +745,36 @@ fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &st
         "history" => features.view_history,
         "conflicts" => features.view_conflicts,
         "hidden" => features.view_hidden,
+        "pr" | "pr_diff" => features.view_branch,
         _ => features.view_branch,
     }
 }
 
 #[tauri::command]
-pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+pub fn set_mode(
+    mode: String,
+    pr_number: Option<u64>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
         return Err(format!("'{mode}' view is disabled in settings"));
+    }
+    if matches!(mode.as_str(), "pr" | "pr_diff") {
+        // Only enter PrDiff when not already there (avoids re-fetching refs
+        // on a tab that is already in PrDiff from construction).
+        if app.tab().mode != DiffMode::PrDiff {
+            // Seed a detected PR number (from the header toggle) onto a local
+            // branch tab that wasn't opened via --pr, so enter_pr_diff can fetch
+            // the head and resolve the shared `pr` bucket.
+            if app.tab().pr_number.is_none() {
+                if let Some(n) = pr_number {
+                    app.tab_mut().pr_number = Some(n);
+                }
+            }
+            app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
+        }
+        return Ok(snap_from(&app, &state));
     }
     let diff_mode = match mode.as_str() {
         "unstaged" => DiffMode::Unstaged,
@@ -745,8 +793,10 @@ pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, Str
 #[tauri::command]
 pub fn toggle_reviewed(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    // toggle_reviewed bumps tab.reviewed_revision internally
     app.toggle_reviewed().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    // Return chrome-only: counts update, no hunk rebuild needed
+    Ok(chrome_snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -761,10 +811,12 @@ pub fn mark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot
                 .cloned()
                 .unwrap_or_default();
             tab.reviewed.insert(path, hash);
+            tab.reviewed_revision += 1;
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(snap_from(&app, &state))
+    // Return chrome-only: counts update, no hunk rebuild needed
+    Ok(chrome_snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -774,10 +826,12 @@ pub fn unmark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapsh
         let tab = app.tab_mut();
         if tab.active_diff_files().iter().any(|f| f.path == path) {
             tab.reviewed.remove(&path);
+            tab.reviewed_revision += 1;
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(snap_from(&app, &state))
+    // Return chrome-only: counts update, no hunk rebuild needed
+    Ok(chrome_snap_from(&app, &state))
 }
 
 // ── Editor ────────────────────────────────────────────────────────────────────
@@ -3775,13 +3829,10 @@ fn kick_background_branch_refresh(
     base_branch: String,
 ) {
     std::thread::spawn(move || {
-        let er_ref_result =
-            er_engine::github::fetch_branch_upstream_into_er_ref(&repo_root, &branch_name);
-        let base_ref_result =
-            er_engine::github::fetch_remote_base_ref_for_diff(&repo_root, &base_branch);
-
-        match (er_ref_result, base_ref_result) {
-            (Ok(er_ref), Ok(base_ref)) => {
+        // Fetch the base branch from origin so the local diff is up-to-date.
+        let base_strip = base_branch.strip_prefix("origin/").unwrap_or(&base_branch);
+        match er_engine::github::fetch_base_branch_ref(&repo_root, base_strip) {
+            Ok(base_ref) => {
                 let mut refreshed_active_tab = false;
                 if let Ok(mut app) = app_state.lock() {
                     let active_tab = app.active_tab;
@@ -3789,7 +3840,6 @@ fn kick_background_branch_refresh(
                         tab.repo_root == repo_root
                             && tab.local_branch_view.as_deref() == Some(branch_name.as_str())
                     }) {
-                        tab.local_branch_diff_ref = Some(er_ref);
                         tab.base_branch = base_ref;
                         if let Err(err) = tab.refresh_diff() {
                             log::warn!(
@@ -3804,16 +3854,7 @@ fn kick_background_branch_refresh(
                     desktop_revision.fetch_add(1, Ordering::Relaxed);
                 }
             }
-            (Err(err), _) => {
-                log::warn!("background branch upstream refresh failed for {branch_name}: {err}");
-                refresh_active_branch_after_background_miss(
-                    &app_state,
-                    &desktop_revision,
-                    &repo_root,
-                    &branch_name,
-                );
-            }
-            (_, Err(err)) => {
+            Err(err) => {
                 log::warn!("background branch base refresh failed for {branch_name}: {err}");
                 refresh_active_branch_after_background_miss(
                     &app_state,
@@ -4528,32 +4569,6 @@ pub fn prefetch_pr_open(
         }
     });
     Ok(())
-}
-
-/// Switch the active tab to a different diff source.
-/// Valid sources: "pr", "origin", "local".
-#[tauri::command]
-pub fn set_diff_source(source: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    use er_engine::app::DiffSource;
-    let diff_source = match source.as_str() {
-        "pr" => DiffSource::Pr,
-        "origin" => DiffSource::Origin,
-        "local" => DiffSource::Local,
-        other => return Err(format!("Invalid diff source: {other}")),
-    };
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    {
-        let available = app.tab().available_diff_sources();
-        if !available.contains(&diff_source) {
-            return Err(format!(
-                "Diff source '{source}' is not available for this tab"
-            ));
-        }
-    }
-    app.tab_mut()
-        .set_diff_source(diff_source)
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
 }
 
 /// Trigger a manual PR-list refresh. Returns the current snapshot immediately
@@ -5994,17 +6009,24 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
     let content_revision = compute_content_revision(&app);
     let chrome_revision = compute_chrome_revision(&state);
+    let reviewed_revision = app.tab().reviewed_revision;
     let revision = content_revision.max(chrome_revision);
     let last_content = state.last_sent_content_revision.load(Ordering::Relaxed);
     let last_chrome = state.last_sent_chrome_revision.load(Ordering::Relaxed);
+    let last_reviewed = state.last_sent_reviewed_revision.load(Ordering::Relaxed);
 
-    if content_revision == last_content && chrome_revision == last_chrome {
+    // Nothing changed — return early without a snapshot.
+    if content_revision == last_content
+        && chrome_revision == last_chrome
+        && reviewed_revision == last_reviewed
+    {
         crate::profile_log::profile_log(
             "poll_skip",
             &[
                 ("revision", revision.to_string()),
                 ("content_revision", content_revision.to_string()),
                 ("chrome_revision", chrome_revision.to_string()),
+                ("reviewed_revision", reviewed_revision.to_string()),
                 ("desktop_rev", desktop_rev.to_string()),
                 ("lock_wait_ms", lock_wait_ms.to_string()),
                 ("poll_ms", t0.elapsed().as_millis().to_string()),
@@ -6014,7 +6036,34 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
             revision,
             content_revision,
             chrome_revision,
+            reviewed_revision,
             chrome_only: false,
+            snapshot: None,
+        });
+    }
+
+    // Reviewed-only change: return snapshot=null + chrome_only=true so the frontend
+    // knows the count updated without replacing hunk data (avoids jank on checkmarks).
+    if content_revision == last_content
+        && chrome_revision == last_chrome
+        && reviewed_revision != last_reviewed
+    {
+        state
+            .last_sent_reviewed_revision
+            .store(reviewed_revision, Ordering::Relaxed);
+        crate::profile_log::profile_log(
+            "poll_reviewed_only",
+            &[
+                ("reviewed_revision", reviewed_revision.to_string()),
+                ("poll_ms", t0.elapsed().as_millis().to_string()),
+            ],
+        );
+        return Ok(PollResponse {
+            revision,
+            content_revision,
+            chrome_revision,
+            reviewed_revision,
+            chrome_only: true,
             snapshot: None,
         });
     }
@@ -6032,6 +6081,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
                 "chrome_only",
                 if chrome_only { "1" } else { "0" }.to_string(),
             ),
+            ("reviewed_revision", reviewed_revision.to_string()),
             ("desktop_rev", desktop_rev.to_string()),
             (
                 "diff_hash",
@@ -6055,6 +6105,11 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     state
         .last_sent_chrome_revision
         .store(chrome_revision, Ordering::Relaxed);
+    // Always sync reviewed_revision so a simultaneous content+reviewed change
+    // doesn't fire a spurious reviewed-only poll next tick.
+    state
+        .last_sent_reviewed_revision
+        .store(reviewed_revision, Ordering::Relaxed);
 
     crate::profile_log::profile_log(
         "poll",
@@ -6063,6 +6118,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
             ("revision", revision.to_string()),
             ("content_revision", content_revision.to_string()),
             ("chrome_revision", chrome_revision.to_string()),
+            ("reviewed_revision", reviewed_revision.to_string()),
             (
                 "chrome_only",
                 if chrome_only { "1" } else { "0" }.to_string(),
@@ -6077,6 +6133,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
         revision,
         content_revision,
         chrome_revision,
+        reviewed_revision,
         chrome_only,
         snapshot: Some(snapshot),
     })

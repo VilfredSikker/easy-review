@@ -116,8 +116,7 @@
       {
         id: "open-settings",
         label: "Open settings",
-        section: "App",
-        keywords: ["config", "preferences"],
+        group: "Actions",
         run: () => { close(); app.setMainView("settings"); },
       },
       {
