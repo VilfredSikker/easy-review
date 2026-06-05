@@ -59,6 +59,10 @@ pub struct PollResponse {
     pub revision: u64,
     pub content_revision: u64,
     pub chrome_revision: u64,
+    /// Monotonic counter bumped only when the reviewed set changes. Kept out of
+    /// content_revision and chrome_revision so reviewed-only changes can return
+    /// snapshot=None + chrome_only=true without triggering a full hunk rebuild.
+    pub reviewed_revision: u64,
     /// When true, the frontend should merge chrome fields and keep existing file hunks/spans.
     pub chrome_only: bool,
     /// Full snapshot — `None` when both revisions are unchanged since the last poll.
@@ -113,6 +117,8 @@ pub struct AppState {
     pub last_sent_content_revision: Arc<AtomicU64>,
     /// Last chrome revision included in a poll response.
     pub last_sent_chrome_revision: Arc<AtomicU64>,
+    /// Last reviewed_revision included in a poll response.
+    pub last_sent_reviewed_revision: Arc<AtomicU64>,
     /// Active-branch watcher status. Read by `build_snapshot` so the UI can
     /// show `Watching` when the desktop watcher is following a checkout.
     pub watch_status: WatchStatusState,
@@ -756,8 +762,10 @@ pub fn set_mode(mode: String, state: State<AppState>) -> Result<AppSnapshot, Str
 #[tauri::command]
 pub fn toggle_reviewed(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    // toggle_reviewed bumps tab.reviewed_revision internally
     app.toggle_reviewed().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    // Return chrome-only: counts update, no hunk rebuild needed
+    Ok(chrome_snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -772,10 +780,12 @@ pub fn mark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot
                 .cloned()
                 .unwrap_or_default();
             tab.reviewed.insert(path, hash);
+            tab.reviewed_revision += 1;
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(snap_from(&app, &state))
+    // Return chrome-only: counts update, no hunk rebuild needed
+    Ok(chrome_snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -785,10 +795,12 @@ pub fn unmark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapsh
         let tab = app.tab_mut();
         if tab.active_diff_files().iter().any(|f| f.path == path) {
             tab.reviewed.remove(&path);
+            tab.reviewed_revision += 1;
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(snap_from(&app, &state))
+    // Return chrome-only: counts update, no hunk rebuild needed
+    Ok(chrome_snap_from(&app, &state))
 }
 
 // ── Editor ────────────────────────────────────────────────────────────────────
@@ -5966,17 +5978,24 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
     let content_revision = compute_content_revision(&app);
     let chrome_revision = compute_chrome_revision(&state);
+    let reviewed_revision = app.tab().reviewed_revision;
     let revision = content_revision.max(chrome_revision);
     let last_content = state.last_sent_content_revision.load(Ordering::Relaxed);
     let last_chrome = state.last_sent_chrome_revision.load(Ordering::Relaxed);
+    let last_reviewed = state.last_sent_reviewed_revision.load(Ordering::Relaxed);
 
-    if content_revision == last_content && chrome_revision == last_chrome {
+    // Nothing changed — return early without a snapshot.
+    if content_revision == last_content
+        && chrome_revision == last_chrome
+        && reviewed_revision == last_reviewed
+    {
         crate::profile_log::profile_log(
             "poll_skip",
             &[
                 ("revision", revision.to_string()),
                 ("content_revision", content_revision.to_string()),
                 ("chrome_revision", chrome_revision.to_string()),
+                ("reviewed_revision", reviewed_revision.to_string()),
                 ("desktop_rev", desktop_rev.to_string()),
                 ("lock_wait_ms", lock_wait_ms.to_string()),
                 ("poll_ms", t0.elapsed().as_millis().to_string()),
@@ -5986,7 +6005,34 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
             revision,
             content_revision,
             chrome_revision,
+            reviewed_revision,
             chrome_only: false,
+            snapshot: None,
+        });
+    }
+
+    // Reviewed-only change: return snapshot=null + chrome_only=true so the frontend
+    // knows the count updated without replacing hunk data (avoids jank on checkmarks).
+    if content_revision == last_content
+        && chrome_revision == last_chrome
+        && reviewed_revision != last_reviewed
+    {
+        state
+            .last_sent_reviewed_revision
+            .store(reviewed_revision, Ordering::Relaxed);
+        crate::profile_log::profile_log(
+            "poll_reviewed_only",
+            &[
+                ("reviewed_revision", reviewed_revision.to_string()),
+                ("poll_ms", t0.elapsed().as_millis().to_string()),
+            ],
+        );
+        return Ok(PollResponse {
+            revision,
+            content_revision,
+            chrome_revision,
+            reviewed_revision,
+            chrome_only: true,
             snapshot: None,
         });
     }
@@ -6004,6 +6050,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
                 "chrome_only",
                 if chrome_only { "1" } else { "0" }.to_string(),
             ),
+            ("reviewed_revision", reviewed_revision.to_string()),
             ("desktop_rev", desktop_rev.to_string()),
             (
                 "diff_hash",
@@ -6027,6 +6074,11 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     state
         .last_sent_chrome_revision
         .store(chrome_revision, Ordering::Relaxed);
+    // Always sync reviewed_revision so a simultaneous content+reviewed change
+    // doesn't fire a spurious reviewed-only poll next tick.
+    state
+        .last_sent_reviewed_revision
+        .store(reviewed_revision, Ordering::Relaxed);
 
     crate::profile_log::profile_log(
         "poll",
@@ -6035,6 +6087,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
             ("revision", revision.to_string()),
             ("content_revision", content_revision.to_string()),
             ("chrome_revision", chrome_revision.to_string()),
+            ("reviewed_revision", reviewed_revision.to_string()),
             (
                 "chrome_only",
                 if chrome_only { "1" } else { "0" }.to_string(),
@@ -6049,6 +6102,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
         revision,
         content_revision,
         chrome_revision,
+        reviewed_revision,
         chrome_only,
         snapshot: Some(snapshot),
     })

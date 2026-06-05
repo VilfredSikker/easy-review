@@ -266,7 +266,7 @@
   });
 
   // ── Virtual window ────────────────────────────────────────────────────────
-  const OVERSCAN = 5;
+  const OVERSCAN = 15;
   /** Sticky file-path bar in .vscroll (h-10) — row offsets live inside .hscroll below it. */
   const STICKY_HEADER_PX = 40;
   const rowScrollTopPx = $derived(Math.max(0, scrollTopPx - STICKY_HEADER_PX));
@@ -330,7 +330,7 @@
 
   // ── Lazy-load effect ──────────────────────────────────────────────────────
   const _requestingFiles = new Set<number>();
-  const REQUEST_FILE_CONCURRENCY = 2;
+  const REQUEST_FILE_CONCURRENCY = 4;
 
   async function requestLazyFile(sourceIndex: number): Promise<void> {
     if (_requestingFiles.has(sourceIndex)) return;
@@ -352,13 +352,18 @@
       const oldFile = app.snapshot.files.find((f) => f.source_index === sourceIndex);
       const newFile = snap.files.find((f) => f.source_index === sourceIndex);
       if (!oldFile || !newFile) return;
+      const prevCacheKey = oldFile.cache_key;
       oldFile.hunks = newFile.hunks;
       oldFile.is_lazy_stub = newFile.is_lazy_stub;
       oldFile.compacted = newFile.compacted;
       oldFile.additions = newFile.additions;
       oldFile.deletions = newFile.deletions;
       oldFile.cache_key = newFile.cache_key;
-      evictSpanKeysForPath(oldFile.path);
+      // Only evict highlight spans when the hunks actually changed (cache_key changed).
+      // Skipping eviction on unchanged hunks prevents a redundant re-highlight flush.
+      if (prevCacheKey !== newFile.cache_key) {
+        evictSpanKeysForPath(oldFile.path);
+      }
       scheduleHighlightDrain();
     } finally {
       _requestingFiles.delete(sourceIndex);

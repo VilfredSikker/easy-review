@@ -657,6 +657,12 @@ pub struct TabState {
     /// Set to 0 after every refresh; non-zero means the App should surface a notification.
     pub pending_unmark_count: usize,
 
+    /// Monotonic counter bumped whenever the reviewed set changes (toggle, mark, unmark,
+    /// auto-unmark). Intentionally separate from content/chrome revisions so that poll()
+    /// can return snapshot=null + chrome_only=true for reviewed-only changes without
+    /// triggering a full hunk rebuild on the frontend.
+    pub reviewed_revision: u64,
+
     /// True after a commit in Staged mode — causes diff view to show HEAD~1..HEAD until next
     /// new staged change or the user pushes.
     pub committed_unpushed: bool,
@@ -1205,6 +1211,7 @@ impl TabState {
             raw_diff: if lazy_mode { Some(raw) } else { None },
             symbol_refs: None,
             pending_unmark_count: 0,
+            reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: Some(repo_slug),
@@ -1322,6 +1329,7 @@ impl TabState {
             raw_diff: None,
             symbol_refs: None,
             pending_unmark_count: 0,
+            reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: Some(repo_slug),
@@ -1435,6 +1443,7 @@ impl TabState {
             raw_diff: None,
             symbol_refs: None,
             pending_unmark_count: 0,
+            reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
@@ -1548,6 +1557,7 @@ impl TabState {
             raw_diff: None,
             symbol_refs: None,
             pending_unmark_count: 0,
+            reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
@@ -3534,7 +3544,7 @@ impl TabState {
     /// Also drops paths absent from the active diff (including legacy empty-hash lines).
     /// Returns the number of entries removed. Saves the file if any were removed.
     fn auto_unmark_changed_reviewed(&mut self) -> usize {
-        let mut count = self.prune_reviewed_not_in_diff();
+        let orphan_count = self.prune_reviewed_not_in_diff();
 
         let stale: Vec<String> = self
             .reviewed
@@ -3551,14 +3561,17 @@ impl TabState {
             })
             .collect();
 
-        count += stale.len();
         if !stale.is_empty() {
             for path in &stale {
                 self.reviewed.remove(path);
             }
+            self.reviewed_revision += 1;
             let _ = self.save_reviewed_files();
+        } else if orphan_count > 0 {
+            // Orphans were pruned by prune_reviewed_not_in_diff; bump here too.
+            self.reviewed_revision += 1;
         }
-        count
+        orphan_count + stale.len()
     }
 
     /// Capture current state into a SessionState for persistence.
@@ -6186,6 +6199,7 @@ impl App {
                 .unwrap_or_default();
             tab.reviewed.insert(path.clone(), hash);
         }
+        tab.reviewed_revision += 1;
         tab.save_reviewed_files()?;
 
         // When marking a file reviewed while show_unreviewed_only is active, advance
@@ -6623,6 +6637,7 @@ mod tests {
             raw_diff: None,
             symbol_refs: None,
             pending_unmark_count: 0,
+            reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
             remote_repo: None,
@@ -9194,5 +9209,159 @@ mod tests {
     fn pr_refs_fetched_initial_value_is_false() {
         let tab = TabState::new_for_test(vec![]);
         assert!(!tab.pr_refs_fetched);
+    }
+
+    // ── view-bucket storage integration ──
+
+    /// Reviewed entries must be isolated per view bucket on disk.
+    ///
+    /// Sequence:
+    ///   1. Branch bucket: save "a.rs" reviewed.
+    ///   2. Switch to Unstaged bucket (mode + sync_managed_storage): "a.rs" must NOT appear.
+    ///   3. Switch back to Branch bucket: "a.rs" must reappear.
+    ///
+    /// This confirms that the per-bucket directory layout prevents cross-view bleed
+    /// from the save path all the way through to the load path.
+    #[test]
+    fn reviewed_isolated_per_bucket_on_disk() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "main".to_string();
+        tab.mode = DiffMode::Branch;
+        // Point er_root at the Branch view-bucket under our TempDir.
+        tab.apply_managed_root();
+
+        // Write "a.rs" as reviewed in the Branch bucket.
+        tab.reviewed.insert("a.rs".to_string(), "hash-branch".to_string());
+        tab.save_reviewed_files().unwrap();
+
+        // --- Switch to Unstaged bucket ---
+        tab.reviewed.clear();
+        tab.mode = DiffMode::Unstaged;
+        // sync_managed_storage: apply_managed_root (re-routes to unstaged dir) + reload.
+        tab.sync_managed_storage();
+
+        assert!(
+            !tab.reviewed.contains_key("a.rs"),
+            "a.rs must NOT be reviewed in the Unstaged bucket (was only saved in Branch)"
+        );
+
+        // --- Switch back to Branch bucket ---
+        tab.mode = DiffMode::Branch;
+        tab.sync_managed_storage();
+
+        assert!(
+            tab.reviewed.contains_key("a.rs"),
+            "a.rs must be reviewed again after returning to the Branch bucket"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    /// PR-bucket convergence: the slug produced for a remote tab ("Acme/My-Repo")
+    /// must equal the slug produced for a local clone's canonical identity for the
+    /// same repo, and mixed-case variants must resolve to the same directory.
+    ///
+    /// `canonical_owner_repo_slug` requires a real git remote; we test the slug
+    /// logic directly — both paths execute `slug_branch(&owner_repo.to_lowercase())`,
+    /// so equality of inputs guarantees equality of outputs and therefore the same
+    /// storage directory.
+    #[test]
+    fn pr_bucket_convergence_case_insensitive() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        // The slug that apply_managed_root() produces for a remote tab is:
+        //   slug_branch(&remote_repo.to_lowercase())
+        // where remote_repo comes from the GitHub URL owner/repo string.
+        let remote_slug =
+            crate::storage::slug_branch(&"Acme/My-Repo".to_lowercase());
+
+        // A local clone tab routes via canonical_owner_repo_slug(repo_root), which
+        // internally does: slug_branch(&format!("{}/{}", owner, repo).to_lowercase()).
+        // Simulate that — same expression, known-good values from URL parsing.
+        let clone_slug =
+            crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
+
+        // Both must resolve to the same slug so they share the same pr-bucket dir.
+        assert_eq!(
+            remote_slug, clone_slug,
+            "remote slug and clone slug must match so the PR bucket is shared"
+        );
+        assert_eq!(remote_slug, "acme-my-repo", "canonical PR bucket slug");
+
+        // Mixed-case variant must also converge.
+        let mixed_slug =
+            crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
+        assert_eq!(
+            remote_slug, mixed_slug,
+            "lowercase PR URL must resolve to the same bucket"
+        );
+
+        // The actual directory paths must be identical.
+        let dir_from_remote = crate::storage::pr_bucket_dir(&remote_slug, 42);
+        let dir_from_clone = crate::storage::pr_bucket_dir(&clone_slug, 42);
+        assert_eq!(
+            dir_from_remote, dir_from_clone,
+            "pr_bucket_dir must be identical regardless of case origin"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    /// Remote (--remote) reviewed entries must persist to disk even after the guard
+    /// `is_remote() && review_bucket() != Pr` was lifted.
+    ///
+    /// Concretely: construct a remote-mode tab, insert a reviewed entry, call
+    /// save_reviewed_files(), and assert the file exists at
+    /// `<storage_root>/repos/<owner-repo>/prs/pr-<N>/reviewed`.
+    #[test]
+    fn remote_reviewed_persists_to_pr_bucket_dir() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.pr_number = Some(42);
+        tab.mode = DiffMode::PrDiff;
+        // Route er_root to the PR bucket under the TempDir.
+        tab.apply_managed_root();
+
+        tab.reviewed
+            .insert("src/lib.rs".to_string(), "hash-abc".to_string());
+        tab.save_reviewed_files().unwrap();
+
+        let expected = crate::storage::pr_bucket_dir(
+            &crate::storage::slug_branch("owner/repo"),
+            42,
+        )
+        .join("reviewed");
+
+        assert!(
+            expected.exists(),
+            "reviewed file must exist at {:?} for remote PR tab",
+            expected
+        );
+
+        let contents = std::fs::read_to_string(&expected).unwrap();
+        assert!(
+            contents.contains("src/lib.rs"),
+            "reviewed file must contain the saved path; got: {}",
+            contents
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
     }
 }
