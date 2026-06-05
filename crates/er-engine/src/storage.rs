@@ -302,7 +302,9 @@ mod tests {
 
     #[test]
     fn resolve_managed_root_creates_branch_dir() {
-        let _guard = STORAGE_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
         let root = resolve_managed_root_from_slugs("test-repo", "feature-branch");
@@ -371,7 +373,10 @@ mod tests {
         let s = dir.to_string_lossy();
         assert!(s.contains("my-repo"), "missing repo slug: {s}");
         assert!(s.contains("feature-branch"), "missing branch slug: {s}");
-        assert!(s.contains("view-buckets/unstaged"), "missing bucket path: {s}");
+        assert!(
+            s.contains("view-buckets/unstaged"),
+            "missing bucket path: {s}"
+        );
     }
 
     #[test]
@@ -384,32 +389,56 @@ mod tests {
 
     #[test]
     fn resolve_managed_root_for_view_bucket_creates_dir() {
-        let _guard = STORAGE_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
         let root = resolve_managed_root_for_view_bucket("test-repo", "main", "branch");
         std::env::remove_var("ER_STORAGE_ROOT");
-        let crate::ErRoot::Managed { agent_dir, session_dir } = root else {
+        let crate::ErRoot::Managed {
+            agent_dir,
+            session_dir,
+        } = root
+        else {
             panic!("expected Managed root");
         };
         assert_eq!(agent_dir, session_dir);
-        assert!(agent_dir.contains("view-buckets/branch"), "unexpected path: {agent_dir}");
-        assert!(agent_dir.contains("test-repo"), "missing repo slug: {agent_dir}");
+        assert!(
+            agent_dir.contains("view-buckets/branch"),
+            "unexpected path: {agent_dir}"
+        );
+        assert!(
+            agent_dir.contains("test-repo"),
+            "missing repo slug: {agent_dir}"
+        );
     }
 
     #[test]
     fn resolve_managed_root_for_pr_bucket_creates_dir() {
-        let _guard = STORAGE_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
         let root = resolve_managed_root_for_pr_bucket("myorg-myrepo", 7);
         std::env::remove_var("ER_STORAGE_ROOT");
-        let crate::ErRoot::Managed { agent_dir, session_dir } = root else {
+        let crate::ErRoot::Managed {
+            agent_dir,
+            session_dir,
+        } = root
+        else {
             panic!("expected Managed root");
         };
         assert_eq!(agent_dir, session_dir);
-        assert!(agent_dir.contains("prs/pr-7"), "unexpected path: {agent_dir}");
-        assert!(agent_dir.contains("myorg-myrepo"), "missing slug: {agent_dir}");
+        assert!(
+            agent_dir.contains("prs/pr-7"),
+            "unexpected path: {agent_dir}"
+        );
+        assert!(
+            agent_dir.contains("myorg-myrepo"),
+            "missing slug: {agent_dir}"
+        );
     }
 
     #[test]
@@ -421,14 +450,8 @@ mod tests {
         std::fs::create_dir_all(&repo_er).unwrap();
         std::fs::write(repo_er.join("review.json"), r#"{"version":1}"#).unwrap();
 
-        let copied = migrate_into_managed(
-            &managed,
-            &repo_root.to_string_lossy(),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let copied =
+            migrate_into_managed(&managed, &repo_root.to_string_lossy(), None, None, None).unwrap();
         assert!(copied);
         assert!(managed.join("review.json").exists());
     }

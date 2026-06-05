@@ -52,7 +52,6 @@ pub type WatchStatusState = Arc<Mutex<WatchStatusSnapshot>>;
 /// file serializes every highlighted line on every poll.
 const SNAPSHOT_DIFF_LINE_BUDGET: usize = 15_000;
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct FeatureFlagsSnapshot {
@@ -1301,13 +1300,19 @@ fn build_snapshot_inner(
     // PR tabs, read-only branch views, and chrome-only rebuilds.
     let (unstaged_stat, staged_stat) = if !chrome_only
         && !tab.is_remote()
-        && !(tab.local_branch_view.is_some() && tab.local_branch_checkout_root.is_none())
+        && (tab.local_branch_view.is_none() || tab.local_branch_checkout_root.is_some())
     {
         let (ua, ud) = er_engine::git::diff_shortstat(&tab.repo_root, false);
         let (sa, sd) = er_engine::git::diff_shortstat(&tab.repo_root, true);
         (
-            ScopeStat { additions: ua, deletions: ud },
-            ScopeStat { additions: sa, deletions: sd },
+            ScopeStat {
+                additions: ua,
+                deletions: ud,
+            },
+            ScopeStat {
+                additions: sa,
+                deletions: sd,
+            },
         )
     } else {
         (ScopeStat::default(), ScopeStat::default())
@@ -2537,7 +2542,6 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     }
 }
 
-
 fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
     let pr = tab.pr_data.as_ref()?;
     Some(PrSnapshot {
@@ -2682,14 +2686,20 @@ mod tests {
         // include_hunks = true: the lazy-load command path delivers the file's
         // content, so it is no longer a stub.
         let with = build_file_snapshot(0, f, &tab, None, true);
-        assert!(!with.hunks.is_empty(), "requested file must carry its hunks");
+        assert!(
+            !with.hunks.is_empty(),
+            "requested file must carry its hunks"
+        );
         assert!(!with.is_lazy_stub);
         assert_eq!(with.source_index, 0);
 
         // include_hunks = false (budget-omitted): hunks must NOT be serialized and
         // the file must read as a stub so the UI shows a loading state.
         let without = build_file_snapshot(0, f, &tab, None, false);
-        assert!(without.hunks.is_empty(), "omitted file must not carry hunks");
+        assert!(
+            without.hunks.is_empty(),
+            "omitted file must not carry hunks"
+        );
         assert!(without.is_lazy_stub);
     }
 

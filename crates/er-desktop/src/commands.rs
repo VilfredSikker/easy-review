@@ -772,9 +772,7 @@ pub fn set_mode(
                     app.tab_mut().pr_number = Some(n);
                 }
             }
-            app.tab_mut()
-                .enter_pr_diff()
-                .map_err(|e| e.to_string())?;
+            app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
         }
         return Ok(snap_from(&app, &state));
     }

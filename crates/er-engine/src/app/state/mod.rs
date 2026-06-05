@@ -1695,8 +1695,7 @@ impl TabState {
         if config.features.view_branch {
             modes.push(DiffMode::Branch);
         }
-        let read_only =
-            self.is_local_branch_view() && self.local_branch_checkout_root.is_none();
+        let read_only = self.is_local_branch_view() && self.local_branch_checkout_root.is_none();
         if config.features.view_unstaged && !read_only {
             modes.push(DiffMode::Unstaged);
         }
@@ -1776,11 +1775,8 @@ impl TabState {
         let branch_slug = crate::storage::slug_branch(&branch);
         let bucket = self.review_bucket_name();
 
-        self.er_root = crate::storage::resolve_managed_root_for_view_bucket(
-            &repo_slug,
-            &branch_slug,
-            bucket,
-        );
+        self.er_root =
+            crate::storage::resolve_managed_root_for_view_bucket(&repo_slug, &branch_slug, bucket);
         // Per-bucket dirs start clean — no migration from repo `.er/` or legacy cache.
         // Migrating here would copy the same data into every bucket (branch/unstaged/
         // staged/history) and break isolation between them.
@@ -1819,10 +1815,7 @@ impl TabState {
 
     /// Apply storage switch when the checkout branch name changes (used by refresh
     /// and unit tests).
-    pub(crate) fn apply_checkout_branch_storage_change(
-        &mut self,
-        git_branch: &str,
-    ) -> Result<()> {
+    pub(crate) fn apply_checkout_branch_storage_change(&mut self, git_branch: &str) -> Result<()> {
         if git_branch == self.current_branch {
             return Ok(());
         }
@@ -2551,11 +2544,7 @@ impl TabState {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         let er_dir = self.er_dir();
         let branch_scope = self.storage_branch_scope().map(str::to_string);
-        self.ai = ai::load_ai_state(
-            &er_dir,
-            &self.branch_diff_hash,
-            branch_scope.as_deref(),
-        );
+        self.ai = ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref());
         // Finding IDs may change after review reload — clear stale reference
         self.focused_finding_id = None;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
@@ -3207,8 +3196,7 @@ impl TabState {
             // Must run before refresh_diff_mode_switch() and before the selection restore.
             if self.review_bucket() != prev_bucket {
                 self.apply_managed_root();
-                self.reviewed =
-                    Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+                self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
                 self.reload_ai_state();
             }
 
@@ -8518,8 +8506,12 @@ mod tests {
         assert_eq!(tab.comments_dir(), expected.to_string_lossy());
         assert_ne!(
             tab.comments_dir(),
-            crate::storage::view_bucket_dir(&repo_slug, &crate::storage::slug_branch("main"), "branch")
-                .to_string_lossy()
+            crate::storage::view_bucket_dir(
+                &repo_slug,
+                &crate::storage::slug_branch("main"),
+                "branch"
+            )
+            .to_string_lossy()
         );
     }
 
@@ -8536,9 +8528,13 @@ mod tests {
         let repo_slug = crate::storage::slug_repo(&tab.repo_root);
         let branch_slug = crate::storage::slug_branch("claude/dev-5067");
         // Phase 1: reviewed file is inside the view-bucket subdir
-        let expected = crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch").join("reviewed");
+        let expected =
+            crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch").join("reviewed");
         assert_eq!(tab.er_root.reviewed_path(), expected.to_string_lossy());
-        assert!(!tab.er_root.reviewed_path().contains(&crate::storage::slug_branch("main")));
+        assert!(!tab
+            .er_root
+            .reviewed_path()
+            .contains(&crate::storage::slug_branch("main")));
     }
 
     #[test]
@@ -8556,8 +8552,16 @@ mod tests {
 
         let repo_slug = crate::storage::slug_repo(&tab.repo_root);
         // Phase 1: reviewed files live inside the view-bucket subdir, not the branch root
-        let main_dir = crate::storage::view_bucket_dir(&repo_slug, &crate::storage::slug_branch("main"), "branch");
-        let feature_dir = crate::storage::view_bucket_dir(&repo_slug, &crate::storage::slug_branch("feature"), "branch");
+        let main_dir = crate::storage::view_bucket_dir(
+            &repo_slug,
+            &crate::storage::slug_branch("main"),
+            "branch",
+        );
+        let feature_dir = crate::storage::view_bucket_dir(
+            &repo_slug,
+            &crate::storage::slug_branch("feature"),
+            "branch",
+        );
         std::fs::create_dir_all(&main_dir).unwrap();
         std::fs::create_dir_all(&feature_dir).unwrap();
         std::fs::write(main_dir.join("reviewed"), "a.rs\thash-main\n").unwrap();
@@ -8565,8 +8569,7 @@ mod tests {
 
         tab.reviewed
             .insert("a.rs".to_string(), "hash-main".to_string());
-        tab.apply_checkout_branch_storage_change("feature")
-            .unwrap();
+        tab.apply_checkout_branch_storage_change("feature").unwrap();
 
         assert_eq!(tab.current_branch, "feature");
         assert_eq!(
@@ -8587,8 +8590,7 @@ mod tests {
         tab.sync_managed_storage();
         let path_before = tab.er_root.reviewed_path();
         tab.reviewed.insert("only.rs".to_string(), "h".to_string());
-        tab.sync_storage_if_checkout_branch_changed()
-            .unwrap();
+        tab.sync_storage_if_checkout_branch_changed().unwrap();
         assert_eq!(tab.er_root.reviewed_path(), path_before);
         assert!(tab.reviewed.contains_key("only.rs"));
     }
@@ -9238,7 +9240,8 @@ mod tests {
         tab.apply_managed_root();
 
         // Write "a.rs" as reviewed in the Branch bucket.
-        tab.reviewed.insert("a.rs".to_string(), "hash-branch".to_string());
+        tab.reviewed
+            .insert("a.rs".to_string(), "hash-branch".to_string());
         tab.save_reviewed_files().unwrap();
 
         // --- Switch to Unstaged bucket ---
@@ -9283,14 +9286,12 @@ mod tests {
         // The slug that apply_managed_root() produces for a remote tab is:
         //   slug_branch(&remote_repo.to_lowercase())
         // where remote_repo comes from the GitHub URL owner/repo string.
-        let remote_slug =
-            crate::storage::slug_branch(&"Acme/My-Repo".to_lowercase());
+        let remote_slug = crate::storage::slug_branch(&"Acme/My-Repo".to_lowercase());
 
         // A local clone tab routes via canonical_owner_repo_slug(repo_root), which
         // internally does: slug_branch(&format!("{}/{}", owner, repo).to_lowercase()).
         // Simulate that — same expression, known-good values from URL parsing.
-        let clone_slug =
-            crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
+        let clone_slug = crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
 
         // Both must resolve to the same slug so they share the same pr-bucket dir.
         assert_eq!(
@@ -9300,8 +9301,7 @@ mod tests {
         assert_eq!(remote_slug, "acme-my-repo", "canonical PR bucket slug");
 
         // Mixed-case variant must also converge.
-        let mixed_slug =
-            crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
+        let mixed_slug = crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
         assert_eq!(
             remote_slug, mixed_slug,
             "lowercase PR URL must resolve to the same bucket"
@@ -9343,11 +9343,9 @@ mod tests {
             .insert("src/lib.rs".to_string(), "hash-abc".to_string());
         tab.save_reviewed_files().unwrap();
 
-        let expected = crate::storage::pr_bucket_dir(
-            &crate::storage::slug_branch("owner/repo"),
-            42,
-        )
-        .join("reviewed");
+        let expected =
+            crate::storage::pr_bucket_dir(&crate::storage::slug_branch("owner/repo"), 42)
+                .join("reviewed");
 
         assert!(
             expected.exists(),

@@ -2080,7 +2080,7 @@ pub fn parse_remote_url(url: &str) -> Option<(String, String)> {
     };
 
     // Drop the host portion (everything up to and including the first `/`).
-    let path = rest.splitn(2, '/').nth(1)?;
+    let path = rest.split_once('/')?.1;
     parse_path_components(path)
 }
 
@@ -2669,17 +2669,14 @@ mod tests {
     fn canonical_slug_matches_for_ssh_and_https_urls() {
         // Test the slug produced by the same logic canonical_owner_repo_slug uses,
         // without needing a real git repo: parse URL → slug_branch(lower("owner/repo")).
-        let (ssh_owner, ssh_repo) =
-            parse_remote_url("git@github.com:Acme/My-Repo.git").unwrap();
+        let (ssh_owner, ssh_repo) = parse_remote_url("git@github.com:Acme/My-Repo.git").unwrap();
         let (https_owner, https_repo) =
             parse_remote_url("https://github.com/Acme/My-Repo.git").unwrap();
 
-        let slug_ssh = crate::storage::slug_branch(
-            &format!("{}/{}", ssh_owner, ssh_repo).to_lowercase(),
-        );
-        let slug_https = crate::storage::slug_branch(
-            &format!("{}/{}", https_owner, https_repo).to_lowercase(),
-        );
+        let slug_ssh =
+            crate::storage::slug_branch(&format!("{}/{}", ssh_owner, ssh_repo).to_lowercase());
+        let slug_https =
+            crate::storage::slug_branch(&format!("{}/{}", https_owner, https_repo).to_lowercase());
 
         // Both forms must produce the same slug.
         assert_eq!(slug_ssh, slug_https);
@@ -2690,12 +2687,8 @@ mod tests {
     #[test]
     fn canonical_slug_is_case_insensitive() {
         // "Acme/My-Repo" and "acme/my-repo" must resolve to the same directory.
-        let slug_upper = crate::storage::slug_branch(
-            &"Acme/My-Repo".to_lowercase(),
-        );
-        let slug_lower = crate::storage::slug_branch(
-            &"acme/my-repo".to_lowercase(),
-        );
+        let slug_upper = crate::storage::slug_branch(&"Acme/My-Repo".to_lowercase());
+        let slug_lower = crate::storage::slug_branch(&"acme/my-repo".to_lowercase());
         assert_eq!(slug_upper, slug_lower);
         assert_eq!(slug_upper, "acme-my-repo");
     }
