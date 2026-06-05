@@ -13,7 +13,7 @@ export function shortenPath(path: string, maxChars: number): string {
   const dir = slash === -1 ? "" : path.slice(0, slash + 1);
 
   if (name.length <= maxChars) {
-    const remaining = maxChars - name.length - 4; // room for "…/"
+    const remaining = maxChars - name.length - 2; // room for "…/" (2 chars)
     if (remaining > 0 && dir.length > 0) {
       const dirPart = dir.slice(0, -1).slice(0, remaining);
       return `${dirPart}${ELLIPSIS}/${name}`;
@@ -33,5 +33,7 @@ export function splitPathForDisplay(path: string): { dir: string; name: string }
 
 /** Approximate character budget for `text-xs` mono in a given pixel width. */
 export function charsForMonoWidth(widthPx: number): number {
-  return Math.max(0, Math.floor(widthPx / 7));
+  if (widthPx <= 0) return 0;
+  // Slightly conservative vs 7px/char so programmatic shorten stays inside overflow-hidden.
+  return Math.max(0, Math.floor(widthPx / 8));
 }

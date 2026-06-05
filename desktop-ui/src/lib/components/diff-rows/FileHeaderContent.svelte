@@ -9,8 +9,13 @@
 
   interface Props {
     row: Extract<CrossFileFlatRow, { type: "file-header" }>;
+    /** Viewport width estimate before the path element is measured (avoids a zero-width flash). */
+    fallbackWidthPx?: number;
   }
-  const { row }: Props = $props();
+  const { row, fallbackWidthPx }: Props = $props();
+
+  /** Non-path chrome in the header row (chevron, stats, action buttons, padding). */
+  const PATH_CHROME_PX = 200;
 
   const collapsed = $derived.by(() => {
     diffFileCollapse.revision;
@@ -30,9 +35,18 @@
     return () => ro.disconnect();
   });
 
-  const displayPath = $derived.by(() =>
-    shortenPath(row.filePath, charsForMonoWidth(pathWidthPx)),
-  );
+  const displayPath = $derived.by(() => {
+    const widthPx =
+      pathWidthPx > 0
+        ? pathWidthPx
+        : fallbackWidthPx != null && fallbackWidthPx > PATH_CHROME_PX
+          ? fallbackWidthPx - PATH_CHROME_PX
+          : 0;
+    const budget = charsForMonoWidth(widthPx);
+    if (budget <= 0) return row.filePath;
+    return shortenPath(row.filePath, budget);
+  });
+  const pathTruncated = $derived(displayPath !== row.filePath);
   const pathParts = $derived(splitPathForDisplay(displayPath));
 
   async function afterCollapse(collapsedPath: string) {
@@ -101,11 +115,15 @@
   </button>
 
   <!-- Breadcrumb path: dir muted, filename emphasized; prefix truncated when narrow -->
-  <div bind:this={pathEl} class="mono text-xs flex-1 min-w-0 overflow-hidden whitespace-nowrap">
+  <div
+    bind:this={pathEl}
+    class="mono text-xs flex-1 min-w-0 overflow-hidden whitespace-nowrap"
+    title={pathTruncated ? row.filePath : undefined}
+  >
     {#if pathParts.dir}
-      <span class="text-muted">{pathParts.dir}</span>
+      <span class="text-muted truncate inline-block max-w-[65%] align-bottom">{pathParts.dir}</span>
     {/if}
-    <span class="text-fg font-medium">{pathParts.name}</span>
+    <span class="text-fg font-medium truncate inline-block min-w-0 align-bottom">{pathParts.name}</span>
   </div>
 
   <!-- +N/−N totals -->

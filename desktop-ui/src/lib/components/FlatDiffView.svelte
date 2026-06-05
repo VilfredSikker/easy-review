@@ -1327,7 +1327,11 @@
       <div class="flex items-center justify-center h-full text-muted text-sm">No changes</div>
     {:else}
       <!-- Sticky file path overlay: hides when real file-header is in viewport top band -->
-      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden} />
+      <StickyFileHeader
+        row={visibleFileHeaderRow}
+        hidden={stickyHeaderHidden}
+        viewportWidthPx={viewportWidthPx > 0 ? viewportWidthPx : undefined}
+      />
 
       <!-- X-scroll surface: full-height absolute-positioned band -->
       <div

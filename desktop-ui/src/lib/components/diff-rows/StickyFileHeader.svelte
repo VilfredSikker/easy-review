@@ -6,8 +6,9 @@
     row: Extract<CrossFileFlatRow, { type: "file-header" }> | null;
     /** When true, hide the overlay (real file-header row is in viewport top band). */
     hidden?: boolean;
+    viewportWidthPx?: number;
   }
-  const { row, hidden = false }: Props = $props();
+  const { row, hidden = false, viewportWidthPx }: Props = $props();
 </script>
 
 <!-- Always in DOM so it doesn't shift .hscroll layout when toggling visibility. -->
@@ -17,6 +18,6 @@
     : 'pointer-events-auto'}"
 >
   {#if row}
-    <FileHeaderContent {row} />
+    <FileHeaderContent {row} fallbackWidthPx={viewportWidthPx} />
   {/if}
 </div>

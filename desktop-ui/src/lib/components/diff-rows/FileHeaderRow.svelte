@@ -12,9 +12,12 @@
 
 <div
   class="h-10 px-3 border-t border-ink-650 border-b border-hairline bg-ink-800 flex items-center gap-2 shrink-0 sticky left-0 z-10 overflow-hidden"
-  style:width={viewportWidthPx != null ? `${viewportWidthPx}px` : undefined}
-  style:max-width={viewportWidthPx != null ? `${viewportWidthPx}px` : undefined}
+  style:width={viewportWidthPx != null && viewportWidthPx > 0 ? `${viewportWidthPx}px` : undefined}
+  style:max-width={viewportWidthPx != null && viewportWidthPx > 0 ? `${viewportWidthPx}px` : undefined}
   data-row-identity={row.identity}
 >
-  <FileHeaderContent {row} />
+  <FileHeaderContent
+    {row}
+    fallbackWidthPx={viewportWidthPx != null && viewportWidthPx > 0 ? viewportWidthPx : undefined}
+  />
 </div>

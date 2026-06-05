@@ -7,11 +7,11 @@ describe("shortenPath", () => {
   });
 
   it("truncates directory prefix when filename fits", () => {
-    expect(shortenPath("src/very/long/nested/path/main.rs", 20)).toBe("src/very/…/main.rs");
+    expect(shortenPath("src/very/long/nested/path/main.rs", 20)).toBe("src/very/lo…/main.rs");
   });
 
-  it("returns filename only when no room for directory", () => {
-    expect(shortenPath("src/very/long/nested/path/main.rs", 10)).toBe("main.rs");
+  it("uses minimal directory hint when budget is very tight", () => {
+    expect(shortenPath("src/very/long/nested/path/main.rs", 10)).toBe("s…/main.rs");
   });
 
   it("truncates long filename", () => {
@@ -34,6 +34,10 @@ describe("splitPathForDisplay", () => {
 
 describe("charsForMonoWidth", () => {
   it("floors pixel width to char estimate", () => {
-    expect(charsForMonoWidth(70)).toBe(10);
+    expect(charsForMonoWidth(70)).toBe(8);
+  });
+
+  it("returns zero for non-positive width", () => {
+    expect(charsForMonoWidth(0)).toBe(0);
   });
 });
