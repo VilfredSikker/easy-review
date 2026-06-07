@@ -58,8 +58,7 @@ fn default_auto_triage_when() -> String {
     "new-and-push".to_string()
 }
 
-pub const AUTO_TRIAGE_WHEN_OPTIONS: &[&str] =
-    &["new-and-push", "new-only", "review-requested"];
+pub const AUTO_TRIAGE_WHEN_OPTIONS: &[&str] = &["new-and-push", "new-only", "review-requested"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentPrEntry {
@@ -424,16 +423,17 @@ fn sync_project_refs_in_file(file: &mut ProjectsFile, refs: &[TabProjectRef]) ->
     let mut seen_roots = HashSet::new();
     let mut seen_remotes = HashSet::new();
     for r in refs {
-        if !r.repo_root.is_empty() && seen_roots.insert(r.repo_root.clone()) {
-            if register_local_root_in_file(file, &r.repo_root) {
-                changed = true;
-            }
+        if !r.repo_root.is_empty()
+            && seen_roots.insert(r.repo_root.clone())
+            && register_local_root_in_file(file, &r.repo_root)
+        {
+            changed = true;
         }
         if let Some(ref remote) = r.remote {
-            if seen_remotes.insert(remote.clone()) {
-                if ensure_remote_project_in_file(file, remote).is_ok() {
-                    changed = true;
-                }
+            if seen_remotes.insert(remote.clone())
+                && ensure_remote_project_in_file(file, remote).is_ok()
+            {
+                changed = true;
             }
         }
     }

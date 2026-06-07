@@ -135,10 +135,8 @@ pub fn dispatch_auto_triage(ctx: &AutoTriageContext, requests: Vec<AutoTriageReq
 fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Result<(), String> {
     let mut raw_diff = fetch_pr_diff(&req.repo_root, &req.remote, req.pr_number)?;
     if !req.review_ignore_globs.is_empty() {
-        raw_diff = er_engine::git::filter_raw_diff_exclude_globs(
-            &raw_diff,
-            &req.review_ignore_globs,
-        );
+        raw_diff =
+            er_engine::git::filter_raw_diff_exclude_globs(&raw_diff, &req.review_ignore_globs);
     }
     if req.auto_triage_max_diff_kb > 0
         && raw_diff.len() > (req.auto_triage_max_diff_kb as usize) * 1024

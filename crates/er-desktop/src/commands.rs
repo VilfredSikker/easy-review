@@ -1175,9 +1175,9 @@ pub fn process_inbox_after_pr_refresh(
                 title: format!("GitHub refresh failed for {remote}"),
                 body: "Could not refresh PR data; using stale cache.".to_string(),
                 source: "github".to_string(),
-                    target: InboxTarget {
-                        project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                        repo_root: project_by_remote.get(&remote).map(|p| p.root_path.clone()),
+                target: InboxTarget {
+                    project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                    repo_root: project_by_remote.get(&remote).map(|p| p.root_path.clone()),
                     remote: Some(remote.clone()),
                     pr_number: None,
                     branch: None,
@@ -1211,9 +1211,11 @@ pub fn process_inbox_after_pr_refresh(
                             title: format!("PR #{} approved", pr.number),
                             body: pr.title.clone(),
                             source: "github".to_string(),
-                    target: InboxTarget {
-                        project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                        repo_root: project_by_remote.get(&remote).map(|p| p.root_path.clone()),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1237,9 +1239,11 @@ pub fn process_inbox_after_pr_refresh(
                             title: format!("Changes requested on PR #{}", pr.number),
                             body: pr.title.clone(),
                             source: "github".to_string(),
-                    target: InboxTarget {
-                        project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                        repo_root: project_by_remote.get(&remote).map(|p| p.root_path.clone()),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1270,9 +1274,11 @@ pub fn process_inbox_after_pr_refresh(
                             title: format!("Review requested: PR #{}", pr.number),
                             body: pr.title.clone(),
                             source: "github".to_string(),
-                    target: InboxTarget {
-                        project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                        repo_root: project_by_remote.get(&remote).map(|p| p.root_path.clone()),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1293,9 +1299,11 @@ pub fn process_inbox_after_pr_refresh(
                             title: format!("PR #{} merged", pr.number),
                             body: pr.title.clone(),
                             source: "github".to_string(),
-                    target: InboxTarget {
-                        project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                        repo_root: project_by_remote.get(&remote).map(|p| p.root_path.clone()),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1313,9 +1321,11 @@ pub fn process_inbox_after_pr_refresh(
                             title: format!("PR #{} closed", pr.number),
                             body: pr.title.clone(),
                             source: "github".to_string(),
-                    target: InboxTarget {
-                        project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                        repo_root: project_by_remote.get(&remote).map(|p| p.root_path.clone()),
+                            target: InboxTarget {
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1350,9 +1360,7 @@ pub fn process_inbox_after_pr_refresh(
                 }
             }
 
-            let triaged_head_oid = prev
-                .as_ref()
-                .and_then(|p| p.triaged_head_oid.clone());
+            let triaged_head_oid = prev.as_ref().and_then(|p| p.triaged_head_oid.clone());
             let queue_ctx = crate::auto_triage::AutoTriageQueueContext {
                 is_my_pr,
                 requested_me,
@@ -1360,11 +1368,9 @@ pub fn process_inbox_after_pr_refresh(
                 triaged_head_oid: triaged_head_oid.as_deref(),
             };
             let queue_auto_triage = auto_triage.is_some()
-                && project_by_remote
-                    .get(&remote)
-                    .is_some_and(|project| {
-                        crate::auto_triage::should_queue_auto_triage(project, &pr, queue_ctx)
-                    });
+                && project_by_remote.get(&remote).is_some_and(|project| {
+                    crate::auto_triage::should_queue_auto_triage(project, &pr, queue_ctx)
+                });
             if queue_auto_triage {
                 if let Some(project) = project_by_remote.get(&remote) {
                     auto_triage_requests.push(crate::auto_triage::AutoTriageRequest {
@@ -3554,7 +3560,7 @@ pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: b
         app.open_tab(tab);
     }
     crate::tabs::persist_app_tabs(app);
-    let _ = projects::sync_projects_from_tabs(&app.tabs);
+    projects::sync_projects_from_tabs(&app.tabs);
 }
 
 /// Internal helper: open a remote PR view. If the same PR is already open,
