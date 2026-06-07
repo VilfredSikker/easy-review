@@ -185,6 +185,26 @@ pub fn filter_raw_diff_by_paths(raw: &str, paths: &[String]) -> String {
     out
 }
 
+/// Drop file sections whose paths match any glob in `globs` (see [`compact_files_match`]).
+pub fn filter_raw_diff_exclude_globs(raw: &str, globs: &[String]) -> String {
+    if raw.is_empty() || globs.is_empty() {
+        return raw.to_string();
+    }
+    let headers = parse_diff_headers(raw);
+    let mut out = String::new();
+    for h in headers {
+        if globs
+            .iter()
+            .any(|pattern| compact_files_match(pattern, &h.path))
+        {
+            continue;
+        }
+        let end = (h.byte_offset + h.byte_length).min(raw.len());
+        out.push_str(&raw[h.byte_offset..end]);
+    }
+    out
+}
+
 /// Parse hunks for a single file from a raw diff section.
 /// Used for on-demand (lazy) parsing when a file is selected.
 pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
@@ -1371,6 +1391,14 @@ index aaa..bbb 100644
     fn filter_raw_diff_by_paths_empty_paths_returns_empty() {
         let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n x\n";
         assert!(filter_raw_diff_by_paths(raw, &[]).is_empty());
+    }
+
+    #[test]
+    fn filter_raw_diff_exclude_globs_drops_matching_files() {
+        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n x\ndiff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n@@ -1 +1 @@\n y\n";
+        let filtered = filter_raw_diff_exclude_globs(raw, &["package-lock.json".to_string()]);
+        assert!(filtered.contains("a.rs"));
+        assert!(!filtered.contains("package-lock.json"));
     }
 
     // ── header_to_stub ──

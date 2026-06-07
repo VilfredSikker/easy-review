@@ -9,7 +9,7 @@
 </script>
 
 <div
-  class="h-10 px-3 border-t border-ink-650 border-b border-hairline bg-ink-800 flex items-center gap-2 shrink-0"
+  class="file-header-viewport-row diff-viewport-row h-10 px-3 border-t border-ink-650 border-b border-hairline bg-ink-800 flex items-center gap-2 shrink-0"
   data-row-identity={row.identity}
 >
   <FileHeaderContent {row} />

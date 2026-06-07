@@ -6,6 +6,7 @@
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+  import CardDeleteButton from "$lib/components/ui/CardDeleteButton.svelte";
   import { tick } from "svelte";
 
   interface Props {
@@ -30,6 +31,12 @@
       skip: "Skip deep review",
     } as Record<string, string>)[triage.verdict_primary] ?? triage.verdict_primary,
   );
+
+  const verdictSummary = $derived.by(() => {
+    const parts = [`Next: ${verdictLabel}`];
+    if (triage.confidence) parts.push(`(${triage.confidence} confidence)`);
+    return parts.join(" ");
+  });
 
   async function navigateToPath(path: string) {
     const snap = app.snapshot;
@@ -81,20 +88,33 @@
       triage.verdict_primary !== "skip" &&
       triage.fresh,
   );
+
+  async function discardTriage() {
+    try {
+      await app.cmd("delete_review_artifact", { kind: "triage" });
+      app.showToast("success", "Triage discarded");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      app.showToast("error", msg);
+    }
+  }
 </script>
 
-<Card class="triage-card">
-  <button
-    type="button"
-    class="w-full flex items-center justify-between gap-2 text-left"
-    onclick={() => (open = !open)}
-  >
-    <SectionLabel>Triage</SectionLabel>
-    <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border
-      {triage.fresh ? 'text-cyan-400 border-cyan-400/30 bg-cyan-400/10' : 'text-amber-400 border-amber-400/30 bg-amber-400/10'}">
-      {triage.fresh ? verdictLabel : "stale"}
-    </span>
-  </button>
+<Card class="triage-card group">
+  <div class="flex items-center justify-between gap-2">
+    <button
+      type="button"
+      class="flex-1 flex items-center justify-between gap-2 text-left min-w-0"
+      onclick={() => (open = !open)}
+    >
+      <SectionLabel>Triage</SectionLabel>
+      <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border
+        {triage.fresh ? 'text-cyan-400 border-cyan-400/30 bg-cyan-400/10' : 'text-amber-400 border-amber-400/30 bg-amber-400/10'}">
+        {triage.fresh ? verdictLabel : "stale"}
+      </span>
+    </button>
+    <CardDeleteButton label="Discard triage" onDelete={discardTriage} />
+  </div>
 
   {#if open}
     <div class="mt-3 space-y-3 text-[12px] leading-relaxed">
@@ -114,9 +134,18 @@
         {/if}
       </div>
 
-      {#if triage.rationale}
-        <p class="text-fg-2">{triage.rationale}</p>
-      {/if}
+      <div class="rounded-md border border-cyan-400/20 bg-cyan-400/5 px-3 py-2.5 space-y-1.5">
+        <SectionLabel size="sm">Verdict</SectionLabel>
+        <p class="text-fg-1 font-medium">{verdictSummary}</p>
+        {#if triage.verdict_primary === "expert" && triage.experts.length > 0}
+          <p class="text-[11px] text-muted">
+            Recommended experts: {triage.experts.join(", ")}
+          </p>
+        {/if}
+        {#if triage.rationale}
+          <p class="text-fg-2">{triage.rationale}</p>
+        {/if}
+      </div>
 
       {#if triage.priority_files.length > 0}
         <div>

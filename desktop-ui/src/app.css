@@ -209,16 +209,23 @@ body {
   font-family: var(--font-mono);
 }
 
-/* Inline comments / questions / AI findings: stay viewport-wide inside wide diff bands. */
+/* Rows inside wide .band: clamp to .hscroll viewport width (container query). */
 .hscroll {
   container-type: inline-size;
   container-name: diff-hscroll;
 }
+.diff-viewport-row,
 .annotation-inline-row {
   width: 100cqw;
   max-width: 100cqw;
   min-width: 0;
   box-sizing: border-box;
+}
+/* In-flow file headers: viewport-wide + pinned left when scrolling long lines horizontally. */
+.file-header-viewport-row {
+  position: sticky;
+  left: 0;
+  z-index: 20;
 }
 .annotation-body-scroll {
   min-width: 0;

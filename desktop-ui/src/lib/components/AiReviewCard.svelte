@@ -21,6 +21,7 @@
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
   import { arenaLog } from "$lib/arena/log";
   import ArenaHistoryList from "$lib/components/arena/ArenaHistoryList.svelte";
+  import CardDeleteButton from "$lib/components/ui/CardDeleteButton.svelte";
   import { arena } from "$lib/stores/arena.svelte";
 
   interface Props {
@@ -63,6 +64,10 @@
   const isEmpty = $derived(
     ai.findings.length === 0 &&
       scopedCounts.high + scopedCounts.med + scopedCounts.low === 0
+  );
+
+  const hasReviewContent = $derived(
+    !isEmpty || !!ai.summary_markdown || ai.has_review_json,
   );
 
   const resolvedSummary = $derived(
@@ -125,9 +130,19 @@
       app.showToast("error", msg.includes("review.json") ? "No review.json found" : msg);
     }
   }
+
+  async function discardReview() {
+    try {
+      await app.cmd("delete_review_artifact", { kind: "review" });
+      app.showToast("success", "Review cleared");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      app.showToast("error", msg);
+    }
+  }
 </script>
 
-<Card>
+<Card class="group">
   {#if arena.enabled}
     <div
       class="mb-4 rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)] p-3"
@@ -212,23 +227,28 @@
     </select>
   {/if}
 
-  <div class="flex items-center justify-between mb-2">
+  <div class="flex items-center justify-between mb-2 gap-2">
     <SectionLabel>AI Review</SectionLabel>
-    {#if ai.fresh}
-      <span class="text-[10px] mono text-add-fg">fresh</span>
-    {:else}
-      <div class="flex items-center gap-1">
-        <span class="text-[10px] mono text-ai">stale</span>
-        <button
-          type="button"
-          class="text-[10px] mono text-ai hover:text-fg-2"
-          title={staleReason}
-          aria-label={staleReason}
-          aria-expanded={staleHelpOpen}
-          onclick={() => staleHelpOpen = !staleHelpOpen}
-        >?</button>
-      </div>
-    {/if}
+    <div class="flex items-center gap-1 shrink-0">
+      {#if hasReviewContent}
+        <CardDeleteButton label="Clear review" onDelete={discardReview} />
+      {/if}
+      {#if ai.fresh}
+        <span class="text-[10px] mono text-add-fg">fresh</span>
+      {:else}
+        <div class="flex items-center gap-1">
+          <span class="text-[10px] mono text-ai">stale</span>
+          <button
+            type="button"
+            class="text-[10px] mono text-ai hover:text-fg-2"
+            title={staleReason}
+            aria-label={staleReason}
+            aria-expanded={staleHelpOpen}
+            onclick={() => staleHelpOpen = !staleHelpOpen}
+          >?</button>
+        </div>
+      {/if}
+    </div>
   </div>
   {#if !ai.fresh && staleHelpOpen}
     <div class="mb-2 rounded border border-hairline bg-bg px-2 py-1.5 text-[11px] text-fg-2">

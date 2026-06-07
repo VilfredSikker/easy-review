@@ -43,6 +43,12 @@ pub struct ObservedPrState {
     pub is_my_pr: bool,
     pub check_state: Option<String>,
     pub failing_checks: Vec<String>,
+    /// Last seen head commit SHA (for push detection).
+    #[serde(default)]
+    pub head_oid: String,
+    /// Head SHA we already queued auto-triage for (opt-in projects only).
+    #[serde(default)]
+    pub triaged_head_oid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod arena_commands;
+mod auto_triage;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
@@ -521,14 +522,6 @@ fn main() {
         },
     };
 
-    // Auto-register the current repo on launch.
-    {
-        let root = app.tab().repo_root.clone();
-        if !root.is_empty() {
-            let _ = projects::auto_register(&root);
-        }
-    }
-
     // Restore persisted tab list, if present. Failures are non-fatal: we
     // simply keep the default single-tab launch.
     //
@@ -565,6 +558,15 @@ fn main() {
         if !rebuilt.is_empty() {
             app.tabs = rebuilt;
             app.active_tab = active_idx.min(app.tabs.len() - 1);
+        }
+    }
+
+    // Register every unique repo root / remote referenced by open tabs.
+    projects::sync_projects_from_tabs(&app.tabs);
+    if projects::load().projects.is_empty() {
+        let root = app.tab().repo_root.clone();
+        if !root.is_empty() {
+            let _ = projects::auto_register(&root);
         }
     }
 
@@ -659,6 +661,7 @@ fn main() {
         watch_status: Arc::clone(&watch_status),
         inbox: Arc::clone(&inbox),
         tauri_app_handle: Arc::clone(&tauri_app_handle),
+        auto_triage_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
     };
 
     match pr_cache::load_persisted_pr_cache() {
@@ -1034,7 +1037,14 @@ fn main() {
     let bg_gh_user = Arc::clone(&gh_user);
     let bg_inbox = Arc::clone(&inbox);
     let bg_handle = Arc::clone(&tauri_app_handle);
+    let bg_app = Arc::clone(&app_arc);
+    let bg_auto_triage_in_flight = Arc::clone(&state.auto_triage_in_flight);
     std::thread::spawn(move || {
+        let auto_triage_ctx = crate::auto_triage::AutoTriageContext {
+            app: bg_app,
+            in_flight: bg_auto_triage_in_flight,
+            desktop_revision: Arc::clone(&bg_desktop_rev),
+        };
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1053,6 +1063,7 @@ fn main() {
                     &bg_desktop_rev,
                     &bg_handle,
                     Some(remote),
+                    Some(&auto_triage_ctx),
                 );
             }
             commands::process_inbox_after_pr_refresh(
@@ -1062,6 +1073,7 @@ fn main() {
                 &bg_desktop_rev,
                 &bg_handle,
                 None,
+                Some(&auto_triage_ctx),
             );
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
@@ -1086,6 +1098,7 @@ fn main() {
                 &bg_desktop_rev,
                 &bg_handle,
                 Some(active_remote),
+                Some(&auto_triage_ctx),
             );
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
@@ -1408,6 +1421,7 @@ fn main() {
             commands::open_remote_pr,
             commands::open_worktree,
             commands::dismiss_finding,
+            commands::delete_review_artifact,
             commands::remove_finding_thread,
             commands::promote_finding_to_comment,
             commands::reply_to_finding,
@@ -1436,6 +1450,9 @@ fn main() {
             commands::unsave_pr,
             commands::list_available_prs,
             commands::set_active_project,
+            commands::set_project_auto_triage,
+            commands::set_project_auto_triage_own_prs,
+            commands::patch_project_review_settings,
             commands::add_tracked_branch,
             commands::remove_tracked_branch,
             commands::list_available_branches,

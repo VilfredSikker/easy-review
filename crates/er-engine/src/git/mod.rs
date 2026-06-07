@@ -24,6 +24,7 @@ pub const SIZE_LADDER: &[(usize, usize)] = &[(60, FULL_CONTEXT), (180, 80), (500
 #[allow(unused_imports)]
 pub use diff::{
     compact_files, compact_files_match, expand_compacted_file, filter_raw_diff_by_paths,
+    filter_raw_diff_exclude_globs,
     header_to_stub, parse_diff, parse_diff_headers, parse_file_at_offset,
     refetch_file_with_context, CompactionConfig, DiffFile, DiffFileHeader, DiffHunk, DiffLine,
     LineType,

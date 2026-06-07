@@ -12,6 +12,7 @@
   import Toggle from "./Toggle.svelte";
   import OptionGroup from "./OptionGroup.svelte";
   import SettingsTextField from "./SettingsTextField.svelte";
+  import ProjectSettingsCard from "./ProjectSettingsCard.svelte";
   import Button from "$lib/components/ui/Button.svelte";
 
   interface Props {
@@ -22,6 +23,11 @@
 
   const TABS: { id: SettingsTab; label: string; blurb: string }[] = [
     { id: "general", label: "General", blurb: "Shared config for both app and terminal." },
+    {
+      id: "projects",
+      label: "Projects",
+      blurb: "Per-project triage timing, size limits, and review ignore patterns.",
+    },
     { id: "terminal", label: "Terminal", blurb: "TUI (`er`) only — view modes, display, and key hints." },
   ];
 
@@ -39,6 +45,8 @@
   const fields = $derived(activeTab === "general" ? generalFields : terminalFields);
 
   const tabBlurb = $derived(TABS.find((t) => t.id === activeTab)?.blurb ?? "");
+
+  const projects = $derived(app.snapshot?.projects ?? []);
 
   const selectedProvider = $derived(providers.find((p) => p.is_selected) ?? null);
   const selectedModels = $derived(selectedProvider?.models ?? []);
@@ -134,6 +142,21 @@
     }
   }
 
+  async function patchProjectReviewSettings(
+    projectId: string,
+    patch: Record<string, unknown>,
+  ) {
+    try {
+      const snap = await invoke<AppSnapshot>("patch_project_review_settings", {
+        projectId,
+        patch,
+      });
+      app.ingestCommandSnapshot(snap);
+    } catch (e) {
+      app.showToast("error", `patch_project_review_settings: ${e}`);
+    }
+  }
+
   async function saveGlobal() {
     try {
       const snap = await invoke<AppSnapshot>("save_config_global_cmd");
@@ -207,6 +230,18 @@
         </p>
       {/if}
 
+      {#if activeTab === "projects"}
+        {#if projects.length === 0}
+          <p class="text-sm text-muted">No projects registered yet. Open a repo from the sidebar first.</p>
+        {:else}
+          {#each projects as project (project.id)}
+            <ProjectSettingsCard
+              {project}
+              onpatch={(patch) => patchProjectReviewSettings(project.id, patch)}
+            />
+          {/each}
+        {/if}
+      {:else}
       {#each fields as field, i (field.kind === "section" ? field.title : "field-" + i + (field.kind === "bool" || field.kind === "cycle" || field.kind === "text" ? field.key : field.kind === "listEntry" ? field.key : field.label))}
         {#if field.kind === "section"}
           <h2 class="text-xs uppercase tracking-wider text-muted font-semibold mt-6 mb-2 first:mt-0">
@@ -274,6 +309,7 @@
           </div>
         {/if}
       {/each}
+      {/if}
 
       {#if activeTab === "general"}
         {#if providers.length > 0}
