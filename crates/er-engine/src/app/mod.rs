@@ -16,6 +16,6 @@ pub use state::remote_diff_sync::{fetch_remote_diff_data, RemoteDiffContext, Rem
 pub use state::{
     cleanup_question_answers, cleanup_questions, cleanup_reviews, AgentLogEntry, AgentLogSource,
     AiActionKind, App, BrowserLayout, CommandStatus, ConfigEditState, ConfirmAction, DiffMode,
-    DiffSource, DirEntry, HubAction, HubItem, HubKind, InputMode, OverlayData, PanelsVisible,
-    SplitSide, TabState,
+    DirEntry, HubAction, HubItem, HubKind, InputMode, OverlayData, PanelsVisible, SplitSide,
+    TabState,
 };

@@ -19,7 +19,15 @@ const MARKER_FILES: &[&str] = &[
 ];
 
 /// Root of all managed review storage.
+///
+/// Overridden by `ER_STORAGE_ROOT` when set — used by tests to write under a
+/// temporary directory without touching the real user data dir.
 pub fn storage_root() -> PathBuf {
+    if let Ok(override_path) = std::env::var("ER_STORAGE_ROOT") {
+        if !override_path.is_empty() {
+            return PathBuf::from(override_path);
+        }
+    }
     dirs::data_dir()
         .unwrap_or_else(|| {
             dirs::home_dir()
@@ -95,6 +103,68 @@ pub fn resolve_managed_root_from_slugs(repo_slug: &str, branch_slug: &str) -> Er
         return ErRoot::RepoLocal(String::new());
     }
     let path_str = branch_path.to_string_lossy().into_owned();
+    ErRoot::Managed {
+        agent_dir: path_str.clone(),
+        session_dir: path_str,
+    }
+}
+
+/// Directory for a specific view bucket under the managed storage root.
+///
+/// Layout: `<storage_root>/repos/<repo_slug>/branches/<branch_slug>/view-buckets/<bucket>`
+/// Bucket is one of `"branch"`, `"unstaged"`, `"staged"`, or `"history"`.
+pub fn view_bucket_dir(repo_slug: &str, branch_slug: &str, bucket: &str) -> PathBuf {
+    storage_root()
+        .join("repos")
+        .join(repo_slug)
+        .join("branches")
+        .join(branch_slug)
+        .join("view-buckets")
+        .join(bucket)
+}
+
+/// Directory for a PR bucket under the managed storage root.
+///
+/// Layout: `<storage_root>/repos/<owner_repo_slug>/prs/pr-<N>`
+/// `owner_repo_slug` is the slugified `owner-repo` string (e.g. `"myorg-myrepo"`).
+pub fn pr_bucket_dir(owner_repo_slug: &str, pr_number: u64) -> PathBuf {
+    storage_root()
+        .join("repos")
+        .join(owner_repo_slug)
+        .join("prs")
+        .join(format!("pr-{pr_number}"))
+}
+
+/// Resolve managed storage for a local view bucket (branch/unstaged/staged/history).
+///
+/// Creates the directory if it does not exist. Falls back to `ErRoot::RepoLocal("")`
+/// on failure (mirrors `resolve_managed_root_from_slugs`).
+pub fn resolve_managed_root_for_view_bucket(
+    repo_slug: &str,
+    branch_slug: &str,
+    bucket: &str,
+) -> ErRoot {
+    let dir = view_bucket_dir(repo_slug, branch_slug, bucket);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return ErRoot::RepoLocal(String::new());
+    }
+    let path_str = dir.to_string_lossy().into_owned();
+    ErRoot::Managed {
+        agent_dir: path_str.clone(),
+        session_dir: path_str,
+    }
+}
+
+/// Resolve managed storage for a PR bucket.
+///
+/// Creates the directory if it does not exist. Falls back to `ErRoot::RepoLocal("")`
+/// on failure.
+pub fn resolve_managed_root_for_pr_bucket(owner_repo_slug: &str, pr_number: u64) -> ErRoot {
+    let dir = pr_bucket_dir(owner_repo_slug, pr_number);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return ErRoot::RepoLocal(String::new());
+    }
+    let path_str = dir.to_string_lossy().into_owned();
     ErRoot::Managed {
         agent_dir: path_str.clone(),
         session_dir: path_str,
@@ -212,6 +282,14 @@ pub fn migrate_into_managed(
     Ok(any)
 }
 
+/// Shared mutex for tests that mutate `ER_STORAGE_ROOT`.
+///
+/// All tests setting `ER_STORAGE_ROOT` must hold this lock for the duration of the
+/// test.  Use `.lock().unwrap_or_else(|e| e.into_inner())` so a panicking test does
+/// not poison the mutex and cascade into sibling tests.
+#[cfg(test)]
+pub static STORAGE_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,7 +302,13 @@ mod tests {
 
     #[test]
     fn resolve_managed_root_creates_branch_dir() {
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
         let root = resolve_managed_root_from_slugs("test-repo", "feature-branch");
+        std::env::remove_var("ER_STORAGE_ROOT");
         let crate::ErRoot::Managed {
             agent_dir,
             session_dir,
@@ -233,7 +317,6 @@ mod tests {
             panic!("expected Managed root");
         };
         assert_eq!(agent_dir, session_dir);
-        assert!(agent_dir.contains("easy-review"));
         assert!(agent_dir.contains("test-repo"));
         assert!(agent_dir.contains("feature-branch"));
     }
@@ -282,6 +365,80 @@ mod tests {
         .unwrap();
         assert!(!copied);
         assert!(!managed.join("review.json").exists());
+    }
+
+    #[test]
+    fn view_bucket_dir_contains_expected_components() {
+        let dir = view_bucket_dir("my-repo", "feature-branch", "unstaged");
+        let s = dir.to_string_lossy();
+        assert!(s.contains("my-repo"), "missing repo slug: {s}");
+        assert!(s.contains("feature-branch"), "missing branch slug: {s}");
+        assert!(
+            s.contains("view-buckets/unstaged"),
+            "missing bucket path: {s}"
+        );
+    }
+
+    #[test]
+    fn pr_bucket_dir_contains_expected_components() {
+        let dir = pr_bucket_dir("myorg-myrepo", 42);
+        let s = dir.to_string_lossy();
+        assert!(s.contains("myorg-myrepo"), "missing owner-repo slug: {s}");
+        assert!(s.contains("prs/pr-42"), "missing pr path: {s}");
+    }
+
+    #[test]
+    fn resolve_managed_root_for_view_bucket_creates_dir() {
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let root = resolve_managed_root_for_view_bucket("test-repo", "main", "branch");
+        std::env::remove_var("ER_STORAGE_ROOT");
+        let crate::ErRoot::Managed {
+            agent_dir,
+            session_dir,
+        } = root
+        else {
+            panic!("expected Managed root");
+        };
+        assert_eq!(agent_dir, session_dir);
+        assert!(
+            agent_dir.contains("view-buckets/branch"),
+            "unexpected path: {agent_dir}"
+        );
+        assert!(
+            agent_dir.contains("test-repo"),
+            "missing repo slug: {agent_dir}"
+        );
+    }
+
+    #[test]
+    fn resolve_managed_root_for_pr_bucket_creates_dir() {
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let root = resolve_managed_root_for_pr_bucket("myorg-myrepo", 7);
+        std::env::remove_var("ER_STORAGE_ROOT");
+        let crate::ErRoot::Managed {
+            agent_dir,
+            session_dir,
+        } = root
+        else {
+            panic!("expected Managed root");
+        };
+        assert_eq!(agent_dir, session_dir);
+        assert!(
+            agent_dir.contains("prs/pr-7"),
+            "unexpected path: {agent_dir}"
+        );
+        assert!(
+            agent_dir.contains("myorg-myrepo"),
+            "missing slug: {agent_dir}"
+        );
     }
 
     #[test]

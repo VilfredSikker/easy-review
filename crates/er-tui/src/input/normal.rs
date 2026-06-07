@@ -34,7 +34,17 @@ pub fn handle_normal_input(
             let idx = (c as usize) - ('1' as usize);
             let visible = app.tab().visible_modes(&app.config);
             if let Some(&mode) = visible.get(idx) {
-                app.tab_mut().set_mode(mode);
+                if mode == DiffMode::PrDiff {
+                    // Only enter PrDiff when not already there (avoids re-fetching refs
+                    // on a remote tab that is already in PrDiff from construction).
+                    if app.tab().mode != DiffMode::PrDiff {
+                        if let Err(e) = app.tab_mut().enter_pr_diff() {
+                            app.notify(&format!("PR diff unavailable: {}", e));
+                        }
+                    }
+                } else {
+                    app.tab_mut().set_mode(mode);
+                }
             }
             return Ok(());
         }

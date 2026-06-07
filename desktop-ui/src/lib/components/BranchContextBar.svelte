@@ -6,7 +6,6 @@
   import { copyToClipboard } from "$lib/clipboard";
   import { resolveActivePrUrl } from "$lib/prUrl";
   import { openExternalUrl } from "$lib/openExternalUrl";
-  import type { DiffSourceSnapshot } from "$lib/types";
 
   const snapshot = $derived(app.snapshot);
   const tabs = $derived(snapshot?.tabs ?? []);
@@ -20,40 +19,24 @@
   const deletions = $derived((snapshot?.files ?? []).reduce((s, f) => s + f.deletions, 0));
 
   // Resolve the PR number for the badge.
+  const currentWorktree = $derived(snapshot?.worktrees?.find((w) => w.is_current) ?? null);
+  // Mirror resolveActivePrUrl's resolution exactly, so the toggle appears
+  // whenever the header's #NNNN PR button does (incl. the worktree's pr_number,
+  // which is the source for branches whose PR isn't in the bulk pr_cache).
   const prNumber = $derived(
-    snapshot?.pr?.number ??
+    snapshot?.detected_pr_number ??
     snapshot?.github?.number ??
+    snapshot?.pr?.number ??
     activeTab?.pr_number ??
+    currentWorktree?.pr_number ??
     null
   );
 
-  // Diff source control.
-  const diffSource = $derived(snapshot?.diff_source ?? null);
-
-  let switchingSource = $state<"pr" | "origin" | "local" | null>(null);
-
-  async function switchDiffSource(s: "pr" | "origin" | "local") {
-    if (switchingSource) return;
-    switchingSource = s;
-    try {
-      await app.cmd("set_diff_source", { source: s });
-    } finally {
-      switchingSource = null;
-    }
-  }
-
-  const diffSourceLabels: Record<string, string> = {
-    pr: "PR diff",
-    origin: "Origin branch",
-    local: "Local branch",
-  };
-
-  // Short labels for the segmented control (keep it terse).
-  const segLabels: Record<string, string> = {
-    pr: "PR diff",
-    origin: "Origin",
-    local: "Local branch",
-  };
+  const mode = $derived(snapshot?.mode ?? "branch");
+  const prActive = $derived(mode === "pr");
+  /** Show the [Local Branch | PR Diff] toggle when the branch has a PR and the
+   *  tab is local (remote-only tabs are implicitly PR Diff). */
+  const showSourceToggle = $derived(prNumber != null && activeTab?.kind !== "remote_pr");
 
   async function copyBranchName() {
     const name = snapshot?.branch ?? "";
@@ -180,31 +163,28 @@
 
   <div class="flex-1 min-w-0"></div>
 
-  <!-- PR diff | Local branch segmented control (right side) -->
-  {#if diffSource && diffSource.available.length > 1}
-    <div
-      role="tablist"
-      class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 shrink-0"
-    >
-      {#each diffSource.available as s (s)}
-        {@const isActive = s === diffSource.active}
-        {@const isLoading = switchingSource === s}
-        <button
-          role="tab"
-          aria-selected={isActive}
-          disabled={isActive || !!switchingSource}
-          onclick={() => switchDiffSource(s)}
-          class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors
-            {isActive
-              ? 'bg-ink-650 text-fg cursor-default'
-              : 'text-muted hover:text-fg-2 disabled:opacity-40 disabled:cursor-not-allowed'}"
-        >
-          {#if isLoading}
-            <span class="inline-block w-2.5 h-2.5 border border-current border-t-transparent rounded-full animate-spin"></span>
-          {/if}
-          {segLabels[s] ?? s}
-        </button>
-      {/each}
+  <!-- Local Branch | PR Diff segmented toggle (right side) -->
+  {#if showSourceToggle}
+    <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 shrink-0">
+      <button
+        role="tab"
+        aria-selected={!prActive}
+        disabled={!prActive}
+        onclick={() => void app.cmd("set_mode", { mode: "branch" })}
+        class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {!prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+      >
+        Local Branch
+      </button>
+      <button
+        role="tab"
+        aria-selected={prActive}
+        disabled={prActive}
+        onclick={() => void app.cmd("set_mode", { mode: "pr_diff", prNumber: prNumber })}
+        class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
+        PR Diff
+      </button>
     </div>
   {/if}
 </div>

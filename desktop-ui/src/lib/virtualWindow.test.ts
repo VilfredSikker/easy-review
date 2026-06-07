@@ -124,6 +124,22 @@ describe("windowFromScrollVariable (terminal-entry convention)", () => {
     expect(w.start).toBe(0);
     expect(w.end).toBeLessThanOrEqual(3);
   });
+
+  it("pixel overscan expands the window beyond the visible rows (fast-scroll buffer)", () => {
+    // scrollTop=100 (top of row 3), viewport=20, no row overscan, no px band:
+    // only the straddling row → start=3, end=4.
+    const base = windowFromScrollVariable(cumulative, totalHeight, 100, 20, 0, 0);
+    expect(base.start).toBe(3);
+    expect(base.end).toBe(4);
+
+    // A 30px band each direction reaches row 1 above (top=30) and row 5 below,
+    // pre-rendering ahead of the scroll so a fast flick lands on rendered rows.
+    const padded = windowFromScrollVariable(cumulative, totalHeight, 100, 20, 0, 30);
+    expect(padded.start).toBe(1);
+    expect(padded.end).toBe(5);
+    expect(padded.paddingTop).toBe(cumulative[1]); // 30
+    expect(padded.paddingBottom).toBe(0); // end=rowCount → no bottom spacer
+  });
 });
 
 describe("rowIndexAtOffset", () => {

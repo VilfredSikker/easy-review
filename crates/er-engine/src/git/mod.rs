@@ -29,7 +29,7 @@ pub use diff::{
     LineType,
 };
 pub use status::{
-    detect_base_branch_in, diff_watched_file_snapshot, discover_watched_files,
+    detect_base_branch_in, diff_shortstat, diff_watched_file_snapshot, discover_watched_files,
     get_current_branch_in, get_repo_root, get_repo_root_in, git_commit, git_diff_against_branch,
     git_diff_checkout_against_base, git_diff_commit, git_diff_conflicts, git_diff_raw,
     git_diff_raw_file, git_diff_raw_range, git_log_branch, git_log_head, git_log_range, git_push,

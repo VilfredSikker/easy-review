@@ -636,6 +636,8 @@ fn main() {
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let last_sent_chrome_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+    let last_sent_reviewed_revision: Arc<std::sync::atomic::AtomicU64> =
+        Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let state = AppState {
         config_edit_baseline: Arc::new(Mutex::new(None)),
         app: Arc::clone(&app_arc),
@@ -653,6 +655,7 @@ fn main() {
         desktop_revision: Arc::clone(&desktop_revision),
         last_sent_content_revision: Arc::clone(&last_sent_content_revision),
         last_sent_chrome_revision: Arc::clone(&last_sent_chrome_revision),
+        last_sent_reviewed_revision: Arc::clone(&last_sent_reviewed_revision),
         watch_status: Arc::clone(&watch_status),
         inbox: Arc::clone(&inbox),
         tauri_app_handle: Arc::clone(&tauri_app_handle),
@@ -944,7 +947,7 @@ fn main() {
                 if desired != current_key {
                     watcher = None; // drop old watcher
                     if let Some((ref branch, ref root_path)) = desired {
-                        match FileWatcher::new(Path::new(root_path), 500, tx.clone()) {
+                        match FileWatcher::new(Path::new(root_path), 250, tx.clone()) {
                             Ok(w) => {
                                 watcher = Some(w);
                                 if let Ok(mut s) = watcher_status.lock() {
@@ -1457,7 +1460,6 @@ fn main() {
             commands::terminal_resize,
             commands::terminal_close,
             commands::detect_dev_url,
-            commands::set_diff_source,
             commands::get_background_task_log,
             browser_webview::browser_ensure,
             browser_webview::browser_hide,
