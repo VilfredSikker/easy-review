@@ -63,6 +63,20 @@
   let sidebarSearch = $state("");
   // Per-project 3-dot menu open state
   let projectMenuOpen = $state<string | null>(null);
+  interface MenuAnchor {
+    right: number;
+    top: number;
+    bottom: number;
+  }
+  let projectMenuAnchor = $state<MenuAnchor | null>(null);
+  let projectMenuFlip = $state(false);
+  let branchPickerAnchor = $state<MenuAnchor | null>(null);
+  let branchPickerFlip = $state(false);
+
+  const PROJECT_MENU_EST_HEIGHT = 200;
+  const BRANCH_PICKER_EST_HEIGHT = 256;
+  /** Settings footer + gap — keep menus above it when flipping. */
+  const SIDEBAR_FOOTER_RESERVE_PX = 52;
   // Per-project sync loading state
   let syncingProject = $state<string | null>(null);
   // Per-project pending delete state
@@ -92,12 +106,40 @@
   let availableBranches = $state<string[]>([]);
   let pickerLoading = $state(false);
 
-  async function openBranchPicker(projectId: string) {
+  function anchorFromButton(btn: HTMLElement, estimatedMenuHeight: number): { anchor: MenuAnchor; flip: boolean } {
+    const rect = btn.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom - SIDEBAR_FOOTER_RESERVE_PX;
+    return {
+      anchor: {
+        right: window.innerWidth - rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+      },
+      flip: spaceBelow < estimatedMenuHeight,
+    };
+  }
+
+  function floatingMenuStyle(anchor: MenuAnchor, flip: boolean): string {
+    const gap = 4;
+    if (flip) {
+      return `right:${anchor.right}px;bottom:${window.innerHeight - anchor.top + gap}px`;
+    }
+    return `right:${anchor.right}px;top:${anchor.bottom + gap}px`;
+  }
+
+  async function openBranchPicker(
+    projectId: string,
+    anchor?: MenuAnchor | null,
+    flip = false,
+  ) {
     if (addingTo === projectId) {
       addingTo = null;
+      branchPickerAnchor = null;
       return;
     }
     addingTo = projectId;
+    branchPickerAnchor = anchor ?? null;
+    branchPickerFlip = flip;
     pickerLoading = true;
     try {
       availableBranches = await invoke<string[]>("list_available_branches", { projectId });
@@ -116,6 +158,7 @@
 
   function closeBranchPicker() {
     addingTo = null;
+    branchPickerAnchor = null;
   }
 
 
@@ -259,9 +302,17 @@
   );
   const inboxUnreadCountAll = $derived(inboxByProject.filter((i) => i.read_at_ms == null).length);
 
+  const hasExpandedProject = $derived(
+    !sidebarSearchNeedle && expandedProject !== null,
+  );
+
   function isProjectOpen(p: ProjectSnapshot): boolean {
     if (sidebarSearchNeedle) return true;
-    return p.is_active || expandedProject === p.id;
+    return expandedProject === p.id;
+  }
+
+  function collapseAllProjects() {
+    expandedProject = null;
   }
 
   function visibleBranches(project: ProjectSnapshot) {
@@ -336,13 +387,28 @@
     }
   }
 
+  async function toggleAutoTriage(project: ProjectSnapshot) {
+    const enabled = !project.auto_triage;
+    projectMenuOpen = null;
+    await app.cmd("set_project_auto_triage", { projectId: project.id, enabled });
+  }
+
   function openProjectMenu(projectId: string, e: MouseEvent) {
     e.stopPropagation();
-    projectMenuOpen = projectMenuOpen === projectId ? null : projectId;
+    if (projectMenuOpen === projectId) {
+      closeProjectMenu();
+      return;
+    }
+    const btn = e.currentTarget as HTMLElement;
+    const { anchor, flip } = anchorFromButton(btn, PROJECT_MENU_EST_HEIGHT);
+    projectMenuAnchor = anchor;
+    projectMenuFlip = flip;
+    projectMenuOpen = projectId;
   }
 
   function closeProjectMenu() {
     projectMenuOpen = null;
+    projectMenuAnchor = null;
   }
 
   function branchRowAction(projectId: string, name: string, e: MouseEvent) {
@@ -830,16 +896,41 @@
   <!-- Projects -->
   <div class="px-2 pt-3 pb-2">
     <!-- Section eyebrow — 10px uppercase 0.06em font-semibold text-muted -->
-    <div class="flex items-center px-2 mb-1.5">
+    <div class="flex items-center px-2 mb-1.5 gap-1">
       <span class="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Projects</span>
-      <button
-        type="button"
-        onclick={() => app.cmd("refresh_pr_list")}
-        disabled={loadingPrList}
-        title="Refresh PR list"
-        aria-label="Refresh PR list"
-        class="ml-auto text-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed"
-      >
+      <div class="ml-auto flex items-center gap-1">
+        <button
+          type="button"
+          onclick={collapseAllProjects}
+          disabled={!hasExpandedProject}
+          title="Collapse all projects"
+          aria-label="Collapse all projects"
+          class="text-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="m7 15 5 5 5-5"/>
+            <path d="m7 9 5-5 5 5"/>
+          </svg>
+        </button>
+        <button
+          type="button"
+          onclick={() => app.cmd("open_worktree", {})}
+          title="Add project"
+          aria-label="Add project"
+          class="text-muted hover:text-fg"
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+        </button>
+        <button
+          type="button"
+          onclick={() => app.cmd("refresh_pr_list")}
+          disabled={loadingPrList}
+          title="Refresh PR list"
+          aria-label="Refresh PR list"
+          class="text-muted hover:text-fg disabled:opacity-40 disabled:cursor-not-allowed"
+        >
         <svg
           width="11"
           height="11"
@@ -852,7 +943,8 @@
           <path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 7.8 4.5"/>
           <polyline points="21 3 21 8 16 8"/>
         </svg>
-      </button>
+        </button>
+      </div>
     </div>
     <div class="space-y-0.5">
       {#if filteredProjects.length > 0}
@@ -898,15 +990,23 @@
             </div>
 
             <!-- 3-dot dropdown menu — matches new-tab menu pattern -->
-            {#if projectMenuOpen === project.id}
+            {#if projectMenuOpen === project.id && projectMenuAnchor}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="fixed inset-0 z-40" onclick={closeProjectMenu}></div>
-              <div class="absolute right-0 top-full mt-1 z-50 bg-ink-800 border border-hairline rounded shadow-xl w-36 py-1">
+              <div
+                class="fixed z-50 bg-ink-800 border border-hairline rounded shadow-xl w-36 py-1"
+                style={floatingMenuStyle(projectMenuAnchor, projectMenuFlip)}
+              >
                 {#if !project.remote_only}
                   <button
                     type="button"
-                    onclick={() => { closeProjectMenu(); openBranchPicker(project.id); }}
+                    onclick={() => {
+                      const anchor = projectMenuAnchor;
+                      const flip = projectMenuFlip;
+                      closeProjectMenu();
+                      void openBranchPicker(project.id, anchor, flip);
+                    }}
                     class="w-full text-left px-3 py-1.5 text-[12px] text-ink-100 hover:bg-ink-700 flex items-center gap-2"
                   >
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-muted"><path d="M12 5v14M5 12h14"/></svg>
@@ -926,6 +1026,19 @@
                   {/if}
                   Sync
                 </button>
+                {#if project.remote}
+                  <button
+                    type="button"
+                    onclick={() => toggleAutoTriage(project)}
+                    class="w-full text-left px-3 py-1.5 text-[12px] text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                    title="Run triage on new/updated open PRs while Desktop is open"
+                  >
+                    <span class="w-3 shrink-0 text-center {project.auto_triage ? 'text-cyan-400' : 'text-muted'}">
+                      {project.auto_triage ? "✓" : ""}
+                    </span>
+                    Auto-triage PRs
+                  </button>
+                {/if}
                 <div class="h-px bg-hairline my-1"></div>
                 <button
                   type="button"
@@ -939,11 +1052,14 @@
             {/if}
 
             <!-- Branch picker (opened from 3-dot menu → New) -->
-            {#if addingTo === project.id}
+            {#if addingTo === project.id && branchPickerAnchor}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="fixed inset-0 z-[150]" onclick={closeBranchPicker}></div>
-              <div class="absolute right-0 top-full mt-1 z-[151] w-56 max-h-64 overflow-y-auto rounded-md border border-border bg-card shadow-xl py-1">
+              <div
+                class="fixed z-[151] w-56 max-h-64 overflow-y-auto rounded-md border border-border bg-card shadow-xl py-1"
+                style={floatingMenuStyle(branchPickerAnchor, branchPickerFlip)}
+              >
                 {#if pickerLoading}
                   <div class="px-3 py-2 text-xs text-muted">Loading…</div>
                 {:else if availableBranches.length === 0}

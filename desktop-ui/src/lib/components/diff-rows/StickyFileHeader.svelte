@@ -12,7 +12,7 @@
 
 <!-- Always in DOM so it doesn't shift .hscroll layout when toggling visibility. -->
 <div
-  class="sticky top-0 z-30 isolate h-10 px-3 border-b border-hairline bg-ink-800 flex items-center gap-2 shrink-0 {hidden || !row
+  class="sticky top-0 z-30 isolate w-full max-w-full overflow-hidden h-10 px-3 border-b border-hairline bg-ink-800 flex items-center gap-2 shrink-0 {hidden || !row
     ? 'pointer-events-none invisible'
     : 'pointer-events-auto'}"
 >

@@ -585,6 +585,45 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
     )]));
     lines.push(Line::from(""));
 
+    if let Some(ref triage) = tab.ai.triage {
+        let triage_stale = !er_engine::ai::triage_is_fresh(triage, &tab.branch_diff_hash);
+        let tag = if triage_stale { " [stale]" } else { "" };
+        lines.push(Line::from(vec![Span::styled(
+            format!(" Triage verdict{tag}"),
+            Style::default()
+                .fg(styles::CYAN())
+                .add_modifier(Modifier::BOLD),
+        )]));
+        let primary = er_engine::ai::verdict_primary_str(&triage.verdict.primary);
+        lines.push(Line::from(vec![Span::styled(
+            format!(" Next: {primary} ({})", triage.verdict.confidence),
+            Style::default().fg(styles::BRIGHT()),
+        )]));
+        if !triage.verdict.rationale.is_empty() {
+            let max_w = area.width.saturating_sub(4) as usize;
+            for wrapped in word_wrap(&triage.verdict.rationale, max_w) {
+                lines.push(Line::from(vec![Span::styled(
+                    format!(" {wrapped}"),
+                    Style::default().fg(styles::TEXT()),
+                )]));
+            }
+        }
+        if !triage.priority_files.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![Span::styled(
+                " Priority files:",
+                Style::default().fg(styles::BORDER()),
+            )]));
+            for pf in triage.priority_files.iter().take(5) {
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  • {}", pf.path),
+                    Style::default().fg(styles::TEXT()),
+                )]));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+
     if let Some(ref summary) = tab.ai.summary {
         let max_w = area.width.saturating_sub(4) as usize;
         for line in summary.lines() {

@@ -4,6 +4,7 @@
   import { resolveActivePrUrl } from "$lib/prUrl";
   import BranchCard from "./BranchCard.svelte";
   import AiReviewCard from "./AiReviewCard.svelte";
+  import TriageCard from "./TriageCard.svelte";
   import CommentsCard from "./CommentsCard.svelte";
   import QuestionsCard from "./QuestionsCard.svelte";
   import UiAnnotationsCard from "./UiAnnotationsCard.svelte";
@@ -207,6 +208,9 @@
     {:else if activeTab === "review"}
       <div class="p-4 space-y-4 pb-8">
         {#if ai}
+          {#if ai.triage}
+            <TriageCard triage={ai.triage} />
+          {/if}
           <AiReviewCard {ai} />
         {/if}
         <AgentOutputCard />

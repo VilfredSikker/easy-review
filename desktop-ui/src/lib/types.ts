@@ -106,6 +106,25 @@ export interface FlatFinding {
   thread_id: string | null;
 }
 
+export interface TriagePriorityFileSnapshot {
+  path: string;
+  reason: string;
+  risk: string;
+}
+
+export interface TriageSnapshot {
+  fresh: boolean;
+  first_impression: string;
+  verdict_primary: string;
+  experts: string[];
+  rationale: string;
+  confidence: string;
+  priority_files: TriagePriorityFileSnapshot[];
+  files_changed: number;
+  approx_risk: string;
+  domains: string[];
+}
+
 export interface AiSnapshot {
   fresh: boolean;
   stale_reason: string | null;
@@ -126,6 +145,7 @@ export interface AiSnapshot {
   has_review_json: boolean;
   /** Top-level GitHub comments eligible for batch validate (!resolved, !outdated). */
   eligible_comment_count: number;
+  triage: TriageSnapshot | null;
 }
 
 export interface PrSnapshot {
@@ -208,6 +228,16 @@ export interface ProjectSnapshot {
   pr_cache_stale?: boolean;
   /** Age of cached PR data in ms. */
   pr_cache_age_ms?: number | null;
+  /** Auto-run triage on new/updated open PRs while Desktop is open. */
+  auto_triage?: boolean;
+  /** Also triage your own open PRs when auto_triage is on. */
+  auto_triage_own_prs?: boolean;
+  /** When to auto-triage: new-and-push | new-only | review-requested */
+  auto_triage_when?: string;
+  /** Skip auto-triage when filtered diff exceeds this size (KB). 0 = no limit. */
+  auto_triage_max_diff_kb?: number;
+  /** Glob patterns excluded from AI review diffs. */
+  review_ignore_globs?: string[];
 }
 
 export interface CommitSummary {
@@ -536,7 +566,7 @@ export type ConfigHubField =
   | { kind: "listEntry"; key: string; label: string; index: number }
   | { kind: "listAdd"; key: string; label: string };
 
-export type SettingsTab = "general" | "terminal";
+export type SettingsTab = "general" | "projects" | "terminal";
 
 export interface DesktopSettingsSnapshot {
   general: ConfigHubField[];

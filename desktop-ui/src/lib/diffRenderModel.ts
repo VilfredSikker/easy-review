@@ -146,7 +146,6 @@ export type CrossFileFlatRow =
       identity: string;
       additions: number;
       deletions: number;
-      reviewed: boolean;
     }
   | {
       type: "hunk-header";
@@ -326,7 +325,7 @@ export function diffLineCount(file: FileSnapshot): number {
 /** Fingerprint for cross-file model cache — busts when any file diff changes. */
 export function filesRenderFingerprint(files: FileSnapshot[]): string {
   return files
-    .map((f) => `${f.path}:${f.cache_key}:${diffLineCount(f)}:${f.is_lazy_stub ? 1 : 0}:${f.reviewed ? 1 : 0}`)
+    .map((f) => `${f.path}:${f.cache_key}:${diffLineCount(f)}:${f.is_lazy_stub ? 1 : 0}`)
     .join("|");
 }
 
@@ -334,7 +333,7 @@ const _blockCache = new WeakMap<FileSnapshot, Map<string, FileBlock>>();
 
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
-  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.reviewed ? 1 : 0}`;
+  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}`;
 
   let perFile = _blockCache.get(file);
   if (!perFile) {
@@ -358,7 +357,6 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
     identity: `fh:${file.path}`,
     additions: file.additions,
     deletions: file.deletions,
-    reviewed: file.reviewed,
   });
 
   if (file.is_lazy_stub === true) {

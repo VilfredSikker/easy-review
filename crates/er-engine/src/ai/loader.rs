@@ -4,6 +4,7 @@ use super::experts::{
 };
 use super::professor::{load_professor_review, merge_professor_into_review};
 use super::review::*;
+use super::triage::load_triage_review;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -242,6 +243,13 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
         state.review = Some(synthetic);
     }
 
+    if let Some(triage) = load_triage_review(er_dir) {
+        if triage.diff_hash != current_diff_hash {
+            state.is_stale = true;
+        }
+        state.triage = Some(triage);
+    }
+
     if let Some(prof) = load_professor_review(er_dir) {
         let summary = prof.summary.trim();
         if prof.diff_hash == current_diff_hash && !summary.is_empty() {
@@ -304,6 +312,8 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
         "feedback.json",
         "questions.json",
         "github-comments.json",
+        "triage.json",
+        "professor.json",
     ];
 
     let mut latest = files

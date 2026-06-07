@@ -124,6 +124,8 @@ pub struct AppState {
     pub watch_status: WatchStatusState,
     pub inbox: InboxHandle,
     pub tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
+    /// Dedupes concurrent auto-triage workers per remote/pr/head.
+    pub auto_triage_in_flight: crate::auto_triage::AutoTriageInFlight,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1103,6 +1105,7 @@ pub fn process_inbox_after_pr_refresh(
     desktop_revision: &Arc<AtomicU64>,
     app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
     refresh_failed_remote: Option<String>,
+    auto_triage: Option<&crate::auto_triage::AutoTriageContext>,
 ) {
     let now = now_ms();
     if let Ok(mut inbox) = inbox_handle.lock() {
@@ -1146,15 +1149,16 @@ pub fn process_inbox_after_pr_refresh(
     };
 
     let projects_file = projects::load();
-    let mut project_by_remote: HashMap<String, (String, String)> = HashMap::new();
+    let mut project_by_remote: HashMap<String, projects::ProjectRecord> = HashMap::new();
     for p in projects_file.projects {
-        if let Some(remote) = p.remote {
-            project_by_remote.insert(remote, (p.id, p.root_path));
+        if let Some(remote) = p.remote.clone() {
+            project_by_remote.insert(remote, p);
         }
     }
     let cache = pr_cache.lock().ok().map(|g| g.clone()).unwrap_or_default();
 
     let mut new_items: Vec<InboxItem> = Vec::new();
+    let mut auto_triage_requests: Vec<crate::auto_triage::AutoTriageRequest> = Vec::new();
     let mut ci_work: Vec<(String, String, u64, String, String, String)> = Vec::new();
     let mut inbox = match inbox_handle.lock() {
         Ok(g) => g,
@@ -1172,8 +1176,8 @@ pub fn process_inbox_after_pr_refresh(
                 body: "Could not refresh PR data; using stale cache.".to_string(),
                 source: "github".to_string(),
                 target: InboxTarget {
-                    project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
-                    repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                    project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                    repo_root: project_by_remote.get(&remote).map(|p| p.root_path.clone()),
                     remote: Some(remote.clone()),
                     pr_number: None,
                     branch: None,
@@ -1208,8 +1212,10 @@ pub fn process_inbox_after_pr_refresh(
                             body: pr.title.clone(),
                             source: "github".to_string(),
                             target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
-                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1234,8 +1240,10 @@ pub fn process_inbox_after_pr_refresh(
                             body: pr.title.clone(),
                             source: "github".to_string(),
                             target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
-                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1267,8 +1275,10 @@ pub fn process_inbox_after_pr_refresh(
                             body: pr.title.clone(),
                             source: "github".to_string(),
                             target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
-                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1290,8 +1300,10 @@ pub fn process_inbox_after_pr_refresh(
                             body: pr.title.clone(),
                             source: "github".to_string(),
                             target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
-                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1310,8 +1322,10 @@ pub fn process_inbox_after_pr_refresh(
                             body: pr.title.clone(),
                             source: "github".to_string(),
                             target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
-                                repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                                repo_root: project_by_remote
+                                    .get(&remote)
+                                    .map(|p| p.root_path.clone()),
                                 remote: Some(remote.clone()),
                                 pr_number: Some(pr.number),
                                 branch: Some(pr.head_ref.clone()),
@@ -1346,6 +1360,32 @@ pub fn process_inbox_after_pr_refresh(
                 }
             }
 
+            let triaged_head_oid = prev.as_ref().and_then(|p| p.triaged_head_oid.clone());
+            let queue_ctx = crate::auto_triage::AutoTriageQueueContext {
+                is_my_pr,
+                requested_me,
+                is_new_pr: prev.is_none(),
+                triaged_head_oid: triaged_head_oid.as_deref(),
+            };
+            let queue_auto_triage = auto_triage.is_some()
+                && project_by_remote.get(&remote).is_some_and(|project| {
+                    crate::auto_triage::should_queue_auto_triage(project, &pr, queue_ctx)
+                });
+            if queue_auto_triage {
+                if let Some(project) = project_by_remote.get(&remote) {
+                    auto_triage_requests.push(crate::auto_triage::AutoTriageRequest {
+                        project_id: project.id.clone(),
+                        remote: remote.clone(),
+                        repo_root: project.root_path.clone(),
+                        pr_number: pr.number,
+                        head_oid: pr.head_oid.clone(),
+                        base_ref: pr.base_ref.clone(),
+                        review_ignore_globs: project.review_ignore_globs.clone(),
+                        auto_triage_max_diff_kb: project.auto_triage_max_diff_kb,
+                    });
+                }
+            }
+
             inbox.observed_pr.insert(
                 key,
                 crate::inbox::ObservedPrState {
@@ -1358,6 +1398,12 @@ pub fn process_inbox_after_pr_refresh(
                         .as_ref()
                         .map(|p| p.failing_checks.clone())
                         .unwrap_or_default(),
+                    head_oid: pr.head_oid.clone(),
+                    triaged_head_oid: if queue_auto_triage {
+                        Some(pr.head_oid.clone())
+                    } else {
+                        triaged_head_oid
+                    },
                 },
             );
         }
@@ -1392,8 +1438,8 @@ pub fn process_inbox_after_pr_refresh(
                 body,
                 source: "github".to_string(),
                 target: InboxTarget {
-                    project_id: project_by_remote.get(&remote).map(|p| p.0.clone()),
-                    repo_root: project_by_remote.get(&remote).map(|p| p.1.clone()),
+                    project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
+                    repo_root: project_by_remote.get(&remote).map(|p| p.root_path.clone()),
                     remote: Some(remote.clone()),
                     pr_number: Some(pr_number),
                     branch: Some(head_ref.clone()),
@@ -1435,6 +1481,47 @@ pub fn process_inbox_after_pr_refresh(
     if emitted_any {
         crate::profile_log::bump_desktop_revision(desktop_revision, "inbox_items");
     }
+    if let Some(ctx) = auto_triage {
+        if !auto_triage_requests.is_empty() {
+            crate::auto_triage::dispatch_auto_triage(ctx, auto_triage_requests);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn set_project_auto_triage(
+    project_id: String,
+    enabled: bool,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    projects::set_auto_triage(&project_id, enabled).map_err(|e| e.to_string())?;
+    crate::profile_log::bump_desktop_revision(&state.desktop_revision, "project_auto_triage");
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &state))
+}
+
+#[tauri::command]
+pub fn set_project_auto_triage_own_prs(
+    project_id: String,
+    enabled: bool,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    projects::set_auto_triage_own_prs(&project_id, enabled).map_err(|e| e.to_string())?;
+    crate::profile_log::bump_desktop_revision(&state.desktop_revision, "project_auto_triage_own");
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &state))
+}
+
+#[tauri::command]
+pub fn patch_project_review_settings(
+    project_id: String,
+    patch: projects::ProjectReviewSettingsPatch,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    projects::patch_project_review_settings(&project_id, patch).map_err(|e| e.to_string())?;
+    crate::profile_log::bump_desktop_revision(&state.desktop_revision, "project_review_settings");
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -2383,10 +2470,14 @@ pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapsho
     std::fs::create_dir_all(&er_dir)
         .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
 
-    let raw = app
+    let mut raw = app
         .tab()
         .raw_diff_for_review(&scope)
         .map_err(|e| e.to_string())?;
+    let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+    if !ignore.is_empty() {
+        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+    }
     spawn_ai_review_with_diff(
         &mut app,
         &state,
@@ -2504,12 +2595,16 @@ pub fn run_ai_expert_review(
     std::fs::create_dir_all(&er_dir)
         .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
 
-    let raw = app
+    let mut raw = app
         .tab()
         .raw_diff_for_review(&scope)
         .map_err(|e| e.to_string())?;
     if raw.trim().is_empty() {
         return Err("Nothing to review".to_string());
+    }
+    let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+    if !ignore.is_empty() {
+        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
     }
     std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
         .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
@@ -2551,6 +2646,11 @@ pub fn run_ai_professor_review(
         focus_prompt,
         state,
     )
+}
+
+#[tauri::command]
+pub fn run_ai_triage_review(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    run_ai_scoped_review(scope, vec![], vec!["triage".to_string()], None, state)
 }
 
 #[tauri::command]
@@ -2624,7 +2724,12 @@ pub fn run_ai_scoped_review(
     } else {
         // Full-diff multi-reviewer run: no file manifest.
         let _ = std::fs::remove_file(std::path::Path::new(&er_dir).join("review-files.txt"));
-        raw
+        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        if ignore.is_empty() {
+            raw
+        } else {
+            er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore)
+        }
     };
 
     std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &diff_body)
@@ -2714,6 +2819,10 @@ fn spawn_scoped_reviewers(
             .unwrap_or_else(|| kind.clone());
 
         let spawn_result = match &parsed {
+            ReviewerKind::Triage => {
+                let prompt = prompts::build_triage_review_prompt_prepared_diff(scope, er_dir);
+                app.spawn_background_triage_review(target.clone(), prompt, true)
+            }
             ReviewerKind::General => {
                 let mut prompt = prompts::build_review_prompt_prepared_diff(scope, er_dir);
                 if scoped_files {
@@ -3451,6 +3560,7 @@ pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: b
         app.open_tab(tab);
     }
     crate::tabs::persist_app_tabs(app);
+    projects::sync_projects_from_tabs(&app.tabs);
 }
 
 /// Internal helper: open a remote PR view. If the same PR is already open,
@@ -4596,6 +4706,11 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
         let gh_user = Arc::clone(&state.gh_user);
         let inbox = Arc::clone(&state.inbox);
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
+        let auto_triage_ctx = crate::auto_triage::AutoTriageContext {
+            app: Arc::clone(&state.app),
+            in_flight: Arc::clone(&state.auto_triage_in_flight),
+            desktop_revision: Arc::clone(&state.desktop_revision),
+        };
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -4613,6 +4728,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                     &desktop_rev,
                     &app_handle_state,
                     Some(remote),
+                    Some(&auto_triage_ctx),
                 );
             }
             process_inbox_after_pr_refresh(
@@ -4622,6 +4738,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                 &desktop_rev,
                 &app_handle_state,
                 None,
+                Some(&auto_triage_ctx),
             );
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
@@ -4670,6 +4787,11 @@ pub fn refresh_project_pr_list(
         let gh_user = Arc::clone(&state.gh_user);
         let inbox = Arc::clone(&state.inbox);
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
+        let auto_triage_ctx = crate::auto_triage::AutoTriageContext {
+            app: Arc::clone(&state.app),
+            in_flight: Arc::clone(&state.auto_triage_in_flight),
+            desktop_revision: Arc::clone(&state.desktop_revision),
+        };
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -4688,6 +4810,7 @@ pub fn refresh_project_pr_list(
                     &desktop_rev,
                     &app_handle_state,
                     Some(remote),
+                    Some(&auto_triage_ctx),
                 );
             }
             process_inbox_after_pr_refresh(
@@ -4697,6 +4820,7 @@ pub fn refresh_project_pr_list(
                 &desktop_rev,
                 &app_handle_state,
                 None,
+                Some(&auto_triage_ctx),
             );
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
@@ -5159,6 +5283,24 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
     projects::set_active(&id);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_active_gh_status(&app, &state);
+    Ok(snap_from(&app, &state))
+}
+
+#[tauri::command]
+pub fn delete_review_artifact(kind: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let er_dir = app.tab().er_dir();
+
+    match kind.as_str() {
+        "triage" => er_engine::app::cleanup_triage(&er_dir),
+        "review" => er_engine::app::cleanup_review_artifacts(&er_dir),
+        other => return Err(format!("Unknown review artifact kind: {other}")),
+    }
+
+    app.tab_mut().reload_ai_state();
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(snap_from(&app, &state))
 }
 

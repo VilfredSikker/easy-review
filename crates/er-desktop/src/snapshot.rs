@@ -337,6 +337,20 @@ pub struct ProjectSnapshot {
     pub pr_cache_stale: bool,
     #[serde(default)]
     pub pr_cache_age_ms: Option<u64>,
+    /// When true, Desktop auto-runs triage on new/updated open PRs while the app is open.
+    #[serde(default)]
+    pub auto_triage: bool,
+    /// When true (and `auto_triage`), also triage your own open PRs.
+    #[serde(default)]
+    pub auto_triage_own_prs: bool,
+    /// When to auto-triage: `new-and-push`, `new-only`, or `review-requested`.
+    pub auto_triage_when: String,
+    /// Skip auto-triage when filtered diff exceeds this size (KB). `0` = no limit.
+    #[serde(default)]
+    pub auto_triage_max_diff_kb: u32,
+    /// Glob patterns excluded from AI review diffs.
+    #[serde(default)]
+    pub review_ignore_globs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -536,6 +550,28 @@ pub struct AiSnapshot {
     pub has_review_json: bool,
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
     pub eligible_comment_count: usize,
+    pub triage: Option<TriageSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriagePriorityFileSnapshot {
+    pub path: String,
+    pub reason: String,
+    pub risk: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriageSnapshot {
+    pub fresh: bool,
+    pub first_impression: String,
+    pub verdict_primary: String,
+    pub experts: Vec<String>,
+    pub rationale: String,
+    pub confidence: String,
+    pub priority_files: Vec<TriagePriorityFileSnapshot>,
+    pub files_changed: u32,
+    pub approx_risk: String,
+    pub domains: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1495,6 +1531,7 @@ fn empty_ai_snapshot() -> AiSnapshot {
         findings: Vec::new(),
         has_review_json: false,
         eligible_comment_count: 0,
+        triage: None,
     }
 }
 
@@ -2183,6 +2220,11 @@ fn build_projects_from_file(
                 recently_merged,
                 pr_cache_stale,
                 pr_cache_age_ms,
+                auto_triage: p.auto_triage,
+                auto_triage_own_prs: p.auto_triage_own_prs,
+                auto_triage_when: p.auto_triage_when.clone(),
+                auto_triage_max_diff_kb: p.auto_triage_max_diff_kb,
+                review_ignore_globs: p.review_ignore_globs.clone(),
             }
         })
         .collect()
@@ -2522,6 +2564,30 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         .map(er_engine::ai::count_eligible_github_comments)
         .unwrap_or(0);
 
+    let triage = ai.triage.as_ref().map(|t| {
+        let fresh = er_engine::ai::triage_is_fresh(t, &tab.branch_diff_hash);
+        TriageSnapshot {
+            fresh,
+            first_impression: t.first_impression.clone(),
+            verdict_primary: er_engine::ai::verdict_primary_str(&t.verdict.primary).to_string(),
+            experts: t.verdict.experts.clone(),
+            rationale: t.verdict.rationale.clone(),
+            confidence: t.verdict.confidence.clone(),
+            priority_files: t
+                .priority_files
+                .iter()
+                .map(|pf| TriagePriorityFileSnapshot {
+                    path: pf.path.clone(),
+                    reason: pf.reason.clone(),
+                    risk: pf.risk.clone(),
+                })
+                .collect(),
+            files_changed: t.diff_stats.files_changed,
+            approx_risk: t.diff_stats.approx_risk.clone(),
+            domains: t.diff_stats.domains.clone(),
+        }
+    });
+
     AiSnapshot {
         fresh: !ai.is_stale,
         stale_reason,
@@ -2539,6 +2605,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         findings,
         has_review_json,
         eligible_comment_count,
+        triage,
     }
 }
 
@@ -2752,6 +2819,11 @@ mod tests {
                     title: "Cached title fallback".to_string(),
                 }],
                 saved_prs: Vec::new(),
+                auto_triage: false,
+                auto_triage_own_prs: false,
+                auto_triage_when: "new-and-push".to_string(),
+                auto_triage_max_diff_kb: 0,
+                review_ignore_globs: Vec::new(),
             }],
             active_id: None,
         };
@@ -2797,5 +2869,43 @@ mod tests {
         assert!(projects[0].recently_merged.is_empty());
         assert_eq!(projects[0].recent_prs.len(), 1);
         assert_eq!(projects[0].recent_prs[0].title, "Remote PR title");
+    }
+
+    #[test]
+    fn projects_snapshot_includes_review_settings_fields() {
+        let tab = TabState::new_for_test(vec![]);
+        let file = projects::ProjectsFile {
+            projects: vec![projects::ProjectRecord {
+                id: "discovery".to_string(),
+                name: "discovery".to_string(),
+                root_path: "/tmp/discovery".to_string(),
+                remote: Some("owner/discovery".to_string()),
+                dismissed_prs: Vec::new(),
+                tracked_prs: Vec::new(),
+                tracked_branches: Vec::new(),
+                dismissed_branches: Vec::new(),
+                recent_prs: Vec::new(),
+                saved_prs: Vec::new(),
+                auto_triage: true,
+                auto_triage_own_prs: true,
+                auto_triage_when: "review-requested".to_string(),
+                auto_triage_max_diff_kb: 512,
+                review_ignore_globs: vec!["**/*.lock".to_string(), "dist/**".to_string()],
+            }],
+            active_id: None,
+        };
+
+        let projects = build_projects_from_file(&file, &tab, None, None, None, None);
+
+        assert_eq!(projects.len(), 1);
+        let p = &projects[0];
+        assert!(p.auto_triage);
+        assert!(p.auto_triage_own_prs);
+        assert_eq!(p.auto_triage_when, "review-requested");
+        assert_eq!(p.auto_triage_max_diff_kb, 512);
+        assert_eq!(
+            p.review_ignore_globs,
+            vec!["**/*.lock".to_string(), "dist/**".to_string()]
+        );
     }
 }

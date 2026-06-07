@@ -283,6 +283,7 @@ pub enum OverlayData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiActionKind {
+    Triage,
     Review,
     ExpertReview { expert_id: String },
     Professor,
@@ -388,6 +389,8 @@ pub enum HubAction {
     },
     /// Run the Professor learning agent
     RunProfessorReview,
+    /// Fast triage scan (routes to deeper review)
+    RunTriageReview,
     /// Run AI review via configured agent command
     PromptReview,
     /// Re-validate an existing AI review (refreshes confidence + evidence)
@@ -4533,6 +4536,16 @@ impl App {
         let selection_label = self.active_ai_selection_label();
         let items = vec![
             HubItem {
+                label: "Triage branch".into(),
+                hint: "".into(),
+                description: format!(
+                    "Fast scan — first impression and review routing via {selection_label} (Haiku-class model)"
+                ),
+                action: HubAction::RunTriageReview,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
                 label: "Review work".into(),
                 hint: "".into(),
                 description: if has_review {
@@ -6530,6 +6543,27 @@ pub fn cleanup_reviews(er_dir: &str) {
     let _ = std::fs::remove_file(base.join("order.json"));
     let _ = std::fs::remove_file(base.join("checklist.json"));
     let _ = std::fs::remove_file(base.join("summary.md"));
+}
+
+/// Delete triage sidecar only. Errors are ignored (file may not exist).
+pub fn cleanup_triage(er_dir: &str) {
+    let _ = std::fs::remove_file(std::path::Path::new(er_dir).join("triage.json"));
+}
+
+/// Delete all AI review artifacts (general, expert, professor). Leaves triage intact.
+pub fn cleanup_review_artifacts(er_dir: &str) {
+    cleanup_reviews(er_dir);
+    let base = std::path::Path::new(er_dir);
+    let _ = std::fs::remove_file(base.join("professor.json"));
+    let experts_dir = base.join("experts");
+    if let Ok(entries) = std::fs::read_dir(&experts_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "json") {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
 }
 
 /// Truncate a string to max_len chars, adding … if truncated
@@ -9361,5 +9395,43 @@ mod tests {
         );
 
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn cleanup_triage_removes_only_triage_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::write(er.join("triage.json"), "{}").unwrap();
+        std::fs::write(er.join("review.json"), "{}").unwrap();
+
+        cleanup_triage(er.to_str().unwrap());
+
+        assert!(!er.join("triage.json").exists());
+        assert!(er.join("review.json").exists());
+    }
+
+    #[test]
+    fn cleanup_review_artifacts_removes_review_sidecars_not_triage() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::write(er.join("triage.json"), "{}").unwrap();
+        std::fs::write(er.join("review.json"), "{}").unwrap();
+        std::fs::write(er.join("order.json"), "{}").unwrap();
+        std::fs::write(er.join("checklist.json"), "{}").unwrap();
+        std::fs::write(er.join("summary.md"), "# hi").unwrap();
+        std::fs::write(er.join("professor.json"), "{}").unwrap();
+        let experts = er.join("experts");
+        std::fs::create_dir_all(&experts).unwrap();
+        std::fs::write(experts.join("security.json"), "{}").unwrap();
+
+        cleanup_review_artifacts(er.to_str().unwrap());
+
+        assert!(er.join("triage.json").exists());
+        assert!(!er.join("review.json").exists());
+        assert!(!er.join("order.json").exists());
+        assert!(!er.join("checklist.json").exists());
+        assert!(!er.join("summary.md").exists());
+        assert!(!er.join("professor.json").exists());
+        assert!(!experts.join("security.json").exists());
     }
 }

@@ -1,4 +1,5 @@
 pub mod arena_commands;
+pub mod auto_triage;
 pub mod browser_webview;
 pub mod commands;
 pub mod config_commands;

@@ -10,6 +10,7 @@ export interface AgentCatalogEntry {
 }
 
 const COLORS: Record<string, string> = {
+  triage: "#22d3ee",
   general: "#ff7a2b",
   professor: "#9b87f5",
   "expert:security": "#ff6b6b",
@@ -23,6 +24,7 @@ const COLORS: Record<string, string> = {
 };
 
 const GLYPHS: Record<string, string> = {
+  triage: "◎",
   general: "✦",
   professor: "🎓",
   "expert:security": "🛡",

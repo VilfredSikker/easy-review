@@ -37,7 +37,28 @@ pub struct ProjectRecord {
     /// PRs the user has manually bookmarked (max 50 persisted).
     #[serde(default)]
     pub saved_prs: Vec<SavedPrEntry>,
+    /// When true, Desktop auto-runs triage on new/updated open PRs while the app is open.
+    #[serde(default)]
+    pub auto_triage: bool,
+    /// When true (and `auto_triage`), also triage open PRs you authored.
+    #[serde(default)]
+    pub auto_triage_own_prs: bool,
+    /// When to auto-triage: `new-and-push`, `new-only`, or `review-requested`.
+    #[serde(default = "default_auto_triage_when")]
+    pub auto_triage_when: String,
+    /// Skip auto-triage when filtered diff exceeds this size (KB). `0` = no limit.
+    #[serde(default)]
+    pub auto_triage_max_diff_kb: u32,
+    /// Glob patterns excluded from AI review diffs (triage + full review).
+    #[serde(default)]
+    pub review_ignore_globs: Vec<String>,
 }
+
+fn default_auto_triage_when() -> String {
+    "new-and-push".to_string()
+}
+
+pub const AUTO_TRIAGE_WHEN_OPTIONS: &[&str] = &["new-and-push", "new-only", "review-requested"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentPrEntry {
@@ -145,6 +166,11 @@ fn ensure_remote_project_in_file(file: &mut ProjectsFile, remote: &str) -> anyho
         dismissed_branches: Vec::new(),
         recent_prs: Vec::new(),
         saved_prs: Vec::new(),
+        auto_triage: false,
+        auto_triage_own_prs: false,
+        auto_triage_when: default_auto_triage_when(),
+        auto_triage_max_diff_kb: 0,
+        review_ignore_globs: Vec::new(),
     };
     file.projects.push(record);
     Ok(unique_id)
@@ -216,15 +242,24 @@ pub fn config_path() -> PathBuf {
     base.join("er").join("projects.json")
 }
 
+use std::sync::Mutex;
+
+static PROJECTS_LOAD_CACHE: Mutex<Option<(std::time::SystemTime, ProjectsFile)>> = Mutex::new(None);
+
+/// Drop the in-process parse cache so the next [`load`] re-reads from disk.
+pub fn invalidate_load_cache() {
+    if let Ok(mut guard) = PROJECTS_LOAD_CACHE.lock() {
+        *guard = None;
+    }
+}
+
 pub fn load() -> ProjectsFile {
     let path = config_path();
     // Skip JSON parse when mtime hasn't advanced since the last load. The file
     // is hit on every snapshot build; with multiple polls per second under
     // user input, parsing it repeatedly is wasted work.
-    use std::sync::Mutex;
-    static CACHE: Mutex<Option<(std::time::SystemTime, ProjectsFile)>> = Mutex::new(None);
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-    if let (Some(mtime), Ok(guard)) = (mtime, CACHE.lock()) {
+    if let (Some(mtime), Ok(guard)) = (mtime, PROJECTS_LOAD_CACHE.lock()) {
         if let Some((cached_mtime, cached_file)) = guard.as_ref() {
             if *cached_mtime == mtime {
                 return cached_file.clone();
@@ -234,8 +269,14 @@ pub fn load() -> ProjectsFile {
     let Ok(bytes) = std::fs::read(&path) else {
         return ProjectsFile::default();
     };
-    let parsed: ProjectsFile = serde_json::from_slice(&bytes).unwrap_or_default();
-    if let (Some(mtime), Ok(mut guard)) = (mtime, CACHE.lock()) {
+    let parsed: ProjectsFile = match serde_json::from_slice(&bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("projects.json parse failed ({}): {e}", path.display());
+            return ProjectsFile::default();
+        }
+    };
+    if let (Some(mtime), Ok(mut guard)) = (mtime, PROJECTS_LOAD_CACHE.lock()) {
         *guard = Some((mtime, parsed.clone()));
     }
     parsed
@@ -250,6 +291,7 @@ pub fn save(file: &ProjectsFile) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(file)?;
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, &path)?;
+    invalidate_load_cache();
     Ok(())
 }
 
@@ -313,6 +355,114 @@ fn query_remote(root_path: &str) -> Option<String> {
     }
 }
 
+/// Lightweight tab identity for project registration (testable without git/gh).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabProjectRef {
+    pub repo_root: String,
+    pub remote: Option<String>,
+}
+
+impl TabProjectRef {
+    pub fn from_tab(tab: &er_engine::app::TabState) -> Self {
+        Self {
+            repo_root: tab.repo_root.clone(),
+            remote: tab.remote_repo.clone(),
+        }
+    }
+}
+
+/// Register a local repo root in `file` when missing. Returns true if a row was added.
+#[cfg(test)]
+fn register_local_root_in_file(file: &mut ProjectsFile, root_path: &str) -> bool {
+    if root_path.is_empty() {
+        return false;
+    }
+    if file.projects.iter().any(|p| p.root_path == root_path) {
+        return false;
+    }
+    let folder = std::path::Path::new(root_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
+    let id = sanitize_id(&folder);
+    let mut unique_id = id.clone();
+    let mut n = 2;
+    while file.projects.iter().any(|p| p.id == unique_id) {
+        unique_id = format!("{}-{}", id, n);
+        n += 1;
+    }
+    file.projects.push(ProjectRecord {
+        id: unique_id.clone(),
+        name: folder,
+        root_path: root_path.to_string(),
+        remote: None,
+        dismissed_prs: Vec::new(),
+        tracked_prs: Vec::new(),
+        tracked_branches: Vec::new(),
+        dismissed_branches: Vec::new(),
+        recent_prs: Vec::new(),
+        saved_prs: Vec::new(),
+        auto_triage: false,
+        auto_triage_own_prs: false,
+        auto_triage_when: default_auto_triage_when(),
+        auto_triage_max_diff_kb: 0,
+        review_ignore_globs: Vec::new(),
+    });
+    if file.active_id.is_none() {
+        file.active_id = Some(unique_id);
+    }
+    true
+}
+
+/// Upsert project rows for tab refs into an in-memory file. Returns true if changed.
+#[cfg(test)]
+fn sync_project_refs_in_file(file: &mut ProjectsFile, refs: &[TabProjectRef]) -> bool {
+    use std::collections::HashSet;
+    let mut changed = false;
+    let mut seen_roots = HashSet::new();
+    let mut seen_remotes = HashSet::new();
+    for r in refs {
+        if !r.repo_root.is_empty()
+            && seen_roots.insert(r.repo_root.clone())
+            && register_local_root_in_file(file, &r.repo_root)
+        {
+            changed = true;
+        }
+        if let Some(ref remote) = r.remote {
+            if seen_remotes.insert(remote.clone())
+                && ensure_remote_project_in_file(file, remote).is_ok()
+            {
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Register every unique local repo and remote slug referenced by open tabs.
+pub fn sync_projects_from_tabs(tabs: &[er_engine::app::TabState]) {
+    if tabs.is_empty() {
+        return;
+    }
+    use std::collections::HashSet;
+    let refs: Vec<TabProjectRef> = tabs.iter().map(TabProjectRef::from_tab).collect();
+    let mut seen_roots = HashSet::new();
+    for r in &refs {
+        if !r.repo_root.is_empty() && seen_roots.insert(r.repo_root.clone()) {
+            let _ = auto_register(&r.repo_root);
+        }
+    }
+    let mut seen_remotes = HashSet::new();
+    for r in &refs {
+        if let Some(ref remote) = r.remote {
+            if seen_remotes.insert(remote.clone()) {
+                let _ = ensure_remote_project(remote);
+            }
+        }
+    }
+}
+
 pub fn auto_register(root_path: &str) -> ProjectRecord {
     let mut file = load();
     let folder = std::path::Path::new(root_path)
@@ -356,6 +506,11 @@ pub fn auto_register(root_path: &str) -> ProjectRecord {
         dismissed_branches: Vec::new(),
         recent_prs: Vec::new(),
         saved_prs: Vec::new(),
+        auto_triage: false,
+        auto_triage_own_prs: false,
+        auto_triage_when: default_auto_triage_when(),
+        auto_triage_max_diff_kb: 0,
+        review_ignore_globs: Vec::new(),
     };
     file.projects.push(record.clone());
     if file.active_id.is_none() {
@@ -476,6 +631,123 @@ pub fn set_active(id: &str) {
     }
 }
 
+pub fn set_auto_triage(project_id: &str, enabled: bool) -> anyhow::Result<()> {
+    patch_project_review_settings(
+        project_id,
+        ProjectReviewSettingsPatch {
+            auto_triage: Some(enabled),
+            ..Default::default()
+        },
+    )
+}
+
+pub fn set_auto_triage_own_prs(project_id: &str, enabled: bool) -> anyhow::Result<()> {
+    patch_project_review_settings(
+        project_id,
+        ProjectReviewSettingsPatch {
+            auto_triage_own_prs: Some(enabled),
+            ..Default::default()
+        },
+    )
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectReviewSettingsPatch {
+    pub auto_triage: Option<bool>,
+    pub auto_triage_own_prs: Option<bool>,
+    pub auto_triage_when: Option<String>,
+    pub auto_triage_max_diff_kb: Option<u32>,
+    pub review_ignore_glob_add: Option<String>,
+    pub review_ignore_glob_remove: Option<usize>,
+}
+
+pub fn patch_project_review_settings(
+    project_id: &str,
+    patch: ProjectReviewSettingsPatch,
+) -> anyhow::Result<()> {
+    let mut file = load();
+    let proj = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+    let mut changed = false;
+
+    if let Some(enabled) = patch.auto_triage {
+        if proj.auto_triage != enabled {
+            proj.auto_triage = enabled;
+            changed = true;
+        }
+        if !enabled && proj.auto_triage_own_prs {
+            proj.auto_triage_own_prs = false;
+            changed = true;
+        }
+    }
+    if let Some(enabled) = patch.auto_triage_own_prs {
+        if enabled && !proj.auto_triage {
+            anyhow::bail!("Enable auto-triage before including your own PRs");
+        }
+        if proj.auto_triage_own_prs != enabled {
+            proj.auto_triage_own_prs = enabled;
+            changed = true;
+        }
+    }
+    if let Some(when) = patch.auto_triage_when {
+        if !AUTO_TRIAGE_WHEN_OPTIONS.contains(&when.as_str()) {
+            anyhow::bail!("Invalid auto_triage_when: {when}");
+        }
+        if proj.auto_triage_when != when {
+            proj.auto_triage_when = when;
+            changed = true;
+        }
+    }
+    if let Some(max_kb) = patch.auto_triage_max_diff_kb {
+        if proj.auto_triage_max_diff_kb != max_kb {
+            proj.auto_triage_max_diff_kb = max_kb;
+            changed = true;
+        }
+    }
+    if let Some(glob) = patch.review_ignore_glob_add {
+        let glob = glob.trim().to_string();
+        if !glob.is_empty() && !proj.review_ignore_globs.iter().any(|g| g == &glob) {
+            proj.review_ignore_globs.push(glob);
+            changed = true;
+        }
+    }
+    if let Some(index) = patch.review_ignore_glob_remove {
+        if index < proj.review_ignore_globs.len() {
+            proj.review_ignore_globs.remove(index);
+            changed = true;
+        }
+    }
+
+    if changed {
+        save(&file)?;
+    }
+    Ok(())
+}
+
+pub fn review_ignore_globs_for_repo(repo_root: &str, remote: Option<&str>) -> Vec<String> {
+    let file = load();
+    if !repo_root.is_empty() {
+        if let Some(p) = file.projects.iter().find(|p| p.root_path == repo_root) {
+            return p.review_ignore_globs.clone();
+        }
+    }
+    if let Some(slug) = remote.and_then(normalize_remote_slug) {
+        if let Some(p) = file.projects.iter().find(|p| {
+            p.remote
+                .as_deref()
+                .and_then(normalize_remote_slug)
+                .is_some_and(|r| r == slug)
+        }) {
+            return p.review_ignore_globs.clone();
+        }
+    }
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,6 +764,11 @@ mod tests {
             dismissed_branches: Vec::new(),
             recent_prs: Vec::new(),
             saved_prs: Vec::new(),
+            auto_triage: false,
+            auto_triage_own_prs: false,
+            auto_triage_when: default_auto_triage_when(),
+            auto_triage_max_diff_kb: 0,
+            review_ignore_globs: Vec::new(),
         }
     }
 
@@ -577,5 +854,35 @@ mod tests {
         assert_eq!(file.projects.len(), 1);
         assert_eq!(file.projects[0].id, "second");
         assert_eq!(file.active_id.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn sync_project_refs_registers_multiple_roots() {
+        let mut file = ProjectsFile::default();
+        let refs = vec![
+            TabProjectRef {
+                repo_root: "/tmp/easy-review".to_string(),
+                remote: None,
+            },
+            TabProjectRef {
+                repo_root: "/tmp/discovery".to_string(),
+                remote: None,
+            },
+            TabProjectRef {
+                repo_root: "/tmp/inkbooking".to_string(),
+                remote: None,
+            },
+        ];
+
+        assert!(sync_project_refs_in_file(&mut file, &refs));
+        assert_eq!(file.projects.len(), 3);
+        let roots: Vec<&str> = file.projects.iter().map(|p| p.root_path.as_str()).collect();
+        assert!(roots.contains(&"/tmp/easy-review"));
+        assert!(roots.contains(&"/tmp/discovery"));
+        assert!(roots.contains(&"/tmp/inkbooking"));
+
+        // Idempotent — duplicate refs do not add rows.
+        assert!(!sync_project_refs_in_file(&mut file, &refs));
+        assert_eq!(file.projects.len(), 3);
     }
 }

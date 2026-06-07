@@ -191,6 +191,17 @@
 
   const actions = $derived<AiAction[]>([
     {
+      id: "triage-current",
+      label: "Triage branch",
+      description: reviewScope
+        ? "Fast scan — first impression and review routing (Haiku-class model)"
+        : "Not available in this view",
+      run: () => {
+        if (!reviewScope) return;
+        dismissAndRun(() => void app.cmd("run_ai_triage_review", { scope: reviewScope }));
+      },
+    },
+    {
       id: "review-current",
       label: "Run review",
       description: reviewScope
@@ -286,7 +297,7 @@
       label: a.label,
       description: a.description,
       disabled: a.disabled ?? (
-        (!reviewScope && (a.id === "review-current" || a.id === "validate-current" || a.id === "review-select-files" || a.id === "review-reviewers" || a.id === "professor"))
+        (!reviewScope && (a.id === "triage-current" || a.id === "review-current" || a.id === "validate-current" || a.id === "review-select-files" || a.id === "review-reviewers" || a.id === "professor"))
         || (a.id === "validate-current" && !validateAvailable)
       ),
       onSelect: a.run,

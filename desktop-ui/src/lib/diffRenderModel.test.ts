@@ -130,6 +130,7 @@ function emptyAi(threads: ThreadSnapshot[] = [], findings: FlatFinding[] = []): 
     findings,
     has_review_json: false,
     eligible_comment_count: 0,
+    triage: null,
   };
 }
 

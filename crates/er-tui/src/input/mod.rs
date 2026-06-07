@@ -297,6 +297,11 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 app.spawn_agent_prompt("professor", &prompt)?;
             }
         }
+        HubAction::RunTriageReview => {
+            if let Some(prompt) = build_agent_triage_prompt(app) {
+                app.spawn_agent_prompt("triage", &prompt)?;
+            }
+        }
         HubAction::PromptReview => {
             let has_review = app.tab().ai.review.is_some();
             if has_review {
@@ -446,6 +451,7 @@ fn execute_ai_action(app: &mut App, action: AiActionKind) -> Result<()> {
             dispatch_hub_action(app, HubAction::RunExpertReview { expert_id })
         }
         AiActionKind::Professor => dispatch_hub_action(app, HubAction::RunProfessorReview),
+        AiActionKind::Triage => dispatch_hub_action(app, HubAction::RunTriageReview),
         AiActionKind::Validate => dispatch_hub_action(app, HubAction::PromptValidate),
         AiActionKind::Questions => dispatch_hub_action(app, HubAction::PromptQuestions),
         AiActionKind::Summary => {
@@ -715,6 +721,20 @@ pub fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Build the triage scan prompt (local diff modes only).
+pub(super) fn build_agent_triage_prompt(app: &mut App) -> Option<String> {
+    let mode = app.tab().mode;
+    if app.tab().is_remote() {
+        app.notify("Triage is local-only in v1 — checkout the PR first");
+        return None;
+    }
+    let base = app.tab().base_branch.clone();
+    Some(er_engine::ai::prompts::build_triage_review_prompt(
+        &base,
+        mode.git_mode(),
+    ))
 }
 
 /// Build the Professor learning prompt (local diff modes only).
