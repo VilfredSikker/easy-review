@@ -393,15 +393,13 @@
   {/if}
 
   {#if !pickerMode && snapshot && snapshot.total_count > 0}
-    <!-- Review progress meter: segmented bar -->
+    <!-- Review progress meter: single fill (O(1) DOM regardless of file count) -->
     <div class="px-3 pb-1.5 shrink-0">
-      <div class="flex gap-[2px]">
-        {#each { length: snapshot.total_count } as _, i}
-          <span
-            class="flex-1 h-[3px] rounded-[2px] transition-colors duration-150"
-            style="background: {i < snapshot.reviewed_count ? 'var(--color-periwinkle)' : 'rgba(255,255,255,0.06)'}"
-          ></span>
-        {/each}
+      <div class="h-[3px] rounded-[2px] overflow-hidden" style="background: rgba(255,255,255,0.06)">
+        <div
+          class="h-full rounded-[2px] transition-[width] duration-150"
+          style="width: {(snapshot.reviewed_count / snapshot.total_count) * 100}%; background: var(--color-periwinkle)"
+        ></div>
       </div>
     </div>
   {/if}

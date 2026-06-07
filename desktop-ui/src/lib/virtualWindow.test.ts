@@ -1,9 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
   binarySearchLeft,
+  fileHeaderInView,
+  filePathAtContentTop,
   rowIndexAtOffset,
   rowOffsetFromContentTopY,
   rowOffsetFromViewportY,
+  stickyFileHeaderOverlayHidden,
   windowFromScroll,
   windowFromScrollVariable,
   type EffectiveGeometry,
@@ -271,6 +274,63 @@ describe("rowOffsetFromContentTopY", () => {
     const hscrollTop = 12;
     const offset = rowOffsetFromContentTopY(hscrollTop + 80, hscrollTop);
     expect(rowIndexAtOffset(geom, offset)).toBe(2);
+  });
+});
+
+describe("filePathAtContentTop", () => {
+  const rows = [
+    { filePath: "a/__init__.py" },
+    { filePath: "a/__init__.py" },
+    { filePath: "a/__init__.py" },
+    { filePath: "b/validation_error_context.py" },
+    { filePath: "b/validation_error_context.py" },
+  ];
+  const geom: EffectiveGeometry = {
+    cumulativeOffsets: [0, 40, 120, 200, 260, 320],
+    totalHeight: 320,
+    rowCount: 5,
+  };
+
+  it("uses raw scrollTopPx, not scrollTopPx minus sticky header", () => {
+    const scrollTopPx = 200;
+    expect(filePathAtContentTop(geom, rows, scrollTopPx)).toBe("b/validation_error_context.py");
+    expect(filePathAtContentTop(geom, rows, scrollTopPx - STICKY_HEADER_PX)).toBe("a/__init__.py");
+  });
+});
+
+describe("stickyFileHeaderOverlayHidden", () => {
+  const headerTopPx = 200;
+
+  it("hides overlay when the real header is in the top band", () => {
+    expect(stickyFileHeaderOverlayHidden(headerTopPx, 200, STICKY_HEADER_PX)).toBe(true);
+    expect(stickyFileHeaderOverlayHidden(headerTopPx, 220, STICKY_HEADER_PX)).toBe(true);
+  });
+
+  it("keeps overlay visible once the header has scrolled past the band", () => {
+    expect(stickyFileHeaderOverlayHidden(headerTopPx, 241, STICKY_HEADER_PX)).toBe(false);
+  });
+});
+
+describe("fileHeaderInView (skip post-collapse scroll when next header is on screen)", () => {
+  const VIEWPORT = 600;
+
+  it("is in view (NO scroll) when the next header sits below the sticky band, above the fold", () => {
+    // scrollTop=200 → visible band is [240, 800); a header at 300 is on screen.
+    expect(fileHeaderInView(300, 200, VIEWPORT, STICKY_HEADER_PX)).toBe(true);
+  });
+
+  it("needs a scroll when the next header is hidden under the sticky overlay", () => {
+    // header at 230 is inside the [200,240) sticky band → not freely visible.
+    expect(fileHeaderInView(230, 200, VIEWPORT, STICKY_HEADER_PX)).toBe(false);
+  });
+
+  it("needs a scroll when the next header is below the fold", () => {
+    // header at 800 is at the bottom edge of [240,800) → off screen.
+    expect(fileHeaderInView(800, 200, VIEWPORT, STICKY_HEADER_PX)).toBe(false);
+  });
+
+  it("needs a scroll when the next header is above the current viewport", () => {
+    expect(fileHeaderInView(100, 200, VIEWPORT, STICKY_HEADER_PX)).toBe(false);
   });
 });
 

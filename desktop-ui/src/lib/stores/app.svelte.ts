@@ -437,13 +437,12 @@ class AppStore {
 
     try {
       const returned = await invoke<AppSnapshot>(command, { path });
-      // Apply chrome fields from backend response without replacing hunks/spans.
-      // reviewed_count comes from the authoritative backend value.
+      // Refresh chrome/sidebar fields from the backend response without replacing
+      // hunks/spans. reviewed_count + files are intentionally preserved from the
+      // optimistic state by mergeChromeSnapshot (the count must stay consistent
+      // with the kept files' reviewed flags).
       if (this.snapshot) {
-        this.snapshot = mergeChromeSnapshot(this.snapshot, {
-          ...returned,
-          reviewed_count: returned.reviewed_count,
-        });
+        this.snapshot = mergeChromeSnapshot(this.snapshot, returned);
       }
     } catch (e) {
       // Roll back optimistic mutation.

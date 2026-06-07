@@ -209,6 +209,19 @@ body {
   font-family: var(--font-mono);
 }
 
+/* Ellipsis on the left — keeps the end of a string visible (e.g. file paths). */
+.truncate-start {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.truncate-start-inner {
+  direction: ltr;
+  unicode-bidi: embed;
+}
+
 /* Rows inside wide .band: clamp to .hscroll viewport width (container query). */
 .hscroll {
   container-type: inline-size;
@@ -225,6 +238,7 @@ body {
 .file-header-viewport-row {
   position: sticky;
   left: 0;
+  top: auto; /* horizontal pin only — no vertical stick (global overlay handles that) */
   z-index: 20;
 }
 .annotation-body-scroll {

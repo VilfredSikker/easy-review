@@ -136,6 +136,50 @@ export function rowOffsetFromContentTopY(clientY: number, contentTop: number): n
   return clientY - contentTop;
 }
 
+/**
+ * File path for the row at the top of the diff content band (just below the
+ * global sticky file-header overlay). Uses raw `scrollTopPx` from `.vscroll`,
+ * not `scrollTopPx - stickyHeaderPx` (that adjustment is only for hscroll
+ * virtual-window coordinates).
+ */
+export function filePathAtContentTop(
+  geom: EffectiveGeometry,
+  rows: ReadonlyArray<{ filePath?: string }>,
+  scrollTopPx: number,
+): string | null {
+  const idx = rowIndexAtOffset(geom, scrollTopPx);
+  if (idx < 0 || idx >= rows.length) return null;
+  return rows[idx].filePath ?? null;
+}
+
+/** True when the real in-flow file-header row sits under the sticky overlay band. */
+export function stickyFileHeaderOverlayHidden(
+  headerTopPx: number,
+  scrollTopPx: number,
+  stickyHeaderPx: number,
+): boolean {
+  return (
+    headerTopPx >= scrollTopPx - stickyHeaderPx && headerTopPx <= scrollTopPx
+  );
+}
+
+/**
+ * True when a file-header at `headerTopPx` is already on screen below the sticky
+ * overlay band — so collapsing the file above it needs no scroll to keep the next
+ * file in view. Skipping that scroll avoids a viewport repaint on every click.
+ */
+export function fileHeaderInView(
+  headerTopPx: number,
+  scrollTopPx: number,
+  viewportHeightPx: number,
+  stickyHeaderPx: number,
+): boolean {
+  return (
+    headerTopPx >= scrollTopPx + stickyHeaderPx &&
+    headerTopPx < scrollTopPx + viewportHeightPx
+  );
+}
+
 export function rowIndexAtOffset(geom: EffectiveGeometry, offsetPx: number): number {
   if (geom.rowCount === 0) return -1;
   if (offsetPx <= 0) return 0;

@@ -33,6 +33,9 @@
     windowFromScrollVariable,
     rowIndexAtOffset,
     rowOffsetFromContentTopY,
+    filePathAtContentTop,
+    fileHeaderInView,
+    stickyFileHeaderOverlayHidden,
     type EffectiveGeometry,
   } from "$lib/virtualWindow";
   import { buildAnnotationIndex } from "$lib/diffAnnotations";
@@ -292,11 +295,9 @@
   const windowedRows = $derived(crossFileModel.rows.slice(vw.start, vw.end));
 
   // ── Visible file (for sticky header) ─────────────────────────────────────
-  const visibleFilePath = $derived.by(() => {
-    const idx = rowIndexAtOffset(effectiveGeometry, rowScrollTopPx);
-    if (idx < 0 || idx >= crossFileModel.rows.length) return null;
-    return crossFileModel.rows[idx].filePath ?? null;
-  });
+  const visibleFilePath = $derived(
+    filePathAtContentTop(effectiveGeometry, crossFileModel.rows, scrollTopLivePx),
+  );
 
   const visibleFileHeaderRow = $derived.by((): Extract<CrossFileFlatRow, { type: "file-header" }> | null => {
     if (!visibleFilePath) return null;
@@ -312,8 +313,13 @@
     const startRow = crossFileModel.fileStartRow.get(visibleFilePath);
     if (startRow === undefined) return false;
     const headerTop = effectiveGeometry.cumulativeOffsets[startRow] ?? 0;
-    return headerTop >= rowScrollTopPx && headerTop < rowScrollTopPx + STICKY_HEADER_PX;
+    return stickyFileHeaderOverlayHidden(headerTop, scrollTopLivePx, STICKY_HEADER_PX);
   });
+
+  /** Sticky overlay handles header clicks; in-flow headers must not sit underneath. */
+  const stickyHeaderClicksOverlay = $derived(
+    !stickyHeaderHidden && visibleFileHeaderRow !== null,
+  );
 
   // ── Selection validation ─────────────────────────────────────────────────
   let selectionContextKey: string | null = $state(null);
@@ -864,7 +870,13 @@
     const i = files.findIndex((f) => f.path === collapsedPath);
     if (i === -1) return;
     const target = files[i + 1] ?? files[i];
-    if (!scrollToFileHeader(target.path)) return;
+    const rowIdx = crossFileModel.fileStartRow.get(target.path);
+    if (rowIdx === undefined) return;
+    const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
+    // Skip the scroll (and the diff-viewport repaint it triggers) when the next
+    // header is already on screen below the sticky overlay.
+    const inView = fileHeaderInView(top, scrollEl.scrollTop, scrollEl.clientHeight, STICKY_HEADER_PX);
+    if (!inView) applyScrollTop(top);
     const file = files.find((f) => f.path === target.path);
     if (file?.is_lazy_stub) await requestLazyFiles([file.source_index]);
   }
@@ -1330,7 +1342,7 @@
       <div
         bind:this={hscrollEl}
         class="hscroll"
-        style="height:{effectiveGeometry.totalHeight}px;overflow-x:auto;overflow-y:visible;position:relative;width:100%"
+        style="height:{effectiveGeometry.totalHeight}px;overflow-x:auto;overflow-y:hidden;position:relative;width:100%"
       >
         <div
           class="band"
@@ -1339,7 +1351,7 @@
           {#each windowedRows as row, localIdx (row.identity)}
             {@const rowIdx = vw.start + localIdx}
             {#if row.type === "file-header"}
-              <FileHeaderRow {row} />
+              <FileHeaderRow {row} pointerEventsNone={stickyHeaderClicksOverlay} />
             {:else if row.type === "hunk-header"}
               <HunkHeaderRow {row} />
             {:else if row.type === "content-fold"}
