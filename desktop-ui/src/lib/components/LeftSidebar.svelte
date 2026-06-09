@@ -57,6 +57,8 @@
   let expandedProject = $state<string | null>(null);
   let pendingBranchKey = $state<string | null>(null);
   let pendingPrKey = $state<string | null>(null);
+  let triagingPrKey = $state<string | null>(null);
+  let triagingBranchKey = $state<string | null>(null);
   let prRevealCountByProject = $state<Record<string, number>>({});
   let prSavedRevealCountByProject = $state<Record<string, number>>({});
   let prRecentRevealCountByProject = $state<Record<string, number>>({});
@@ -387,10 +389,28 @@
     }
   }
 
-  async function toggleAutoTriage(project: ProjectSnapshot) {
-    const enabled = !project.auto_triage;
-    projectMenuOpen = null;
-    await app.cmd("set_project_auto_triage", { projectId: project.id, enabled });
+  async function runPrTriage(project: ProjectSnapshot, pr: PrInfo, e: MouseEvent) {
+    e.stopPropagation();
+    const key = `${project.id}:${pr.number}`;
+    if (triagingPrKey === key) return;
+    triagingPrKey = key;
+    try {
+      await app.cmd("run_pr_triage", { projectId: project.id, prNumber: pr.number });
+    } finally {
+      if (triagingPrKey === key) triagingPrKey = null;
+    }
+  }
+
+  async function runBranchTriage(project: ProjectSnapshot, name: string, e: MouseEvent) {
+    e.stopPropagation();
+    const key = `${project.id}:${name}`;
+    if (triagingBranchKey === key) return;
+    triagingBranchKey = key;
+    try {
+      await app.cmd("run_branch_triage", { projectId: project.id, branch: name });
+    } finally {
+      if (triagingBranchKey === key) triagingBranchKey = null;
+    }
   }
 
   function openProjectMenu(projectId: string, e: MouseEvent) {
@@ -1026,19 +1046,6 @@
                   {/if}
                   Sync
                 </button>
-                {#if project.remote}
-                  <button
-                    type="button"
-                    onclick={() => toggleAutoTriage(project)}
-                    class="w-full text-left px-3 py-1.5 text-[12px] text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                    title="Run triage on new/updated open PRs while Desktop is open"
-                  >
-                    <span class="w-3 shrink-0 text-center {project.auto_triage ? 'text-cyan-400' : 'text-muted'}">
-                      {project.auto_triage ? "✓" : ""}
-                    </span>
-                    Auto-triage PRs
-                  </button>
-                {/if}
                 <div class="h-px bg-hairline my-1"></div>
                 <button
                   type="button"
@@ -1107,7 +1114,7 @@
                       title={br.name}
                       onclick={(e) => openBranch(project.id, br.name, e)}
                       onauxclick={(e) => { if (e.button === 1) openBranch(project.id, br.name, e); }}
-                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left {(isActiveView || branchPending) ? 'bg-hover text-fg font-medium' : 'text-fg-3 hover:bg-hover'} {!br.is_current && !isActiveView ? 'pr-6' : ''}"
+                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left pr-6 {(isActiveView || branchPending) ? 'bg-hover text-fg font-medium' : 'text-fg-3 hover:bg-hover'}"
                     >
                       {#if isActiveView}
                         <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-purple-400' : 'bg-accent'} shrink-0"></span>
@@ -1127,22 +1134,36 @@
                         </svg>
                       {/if}
                     </button>
-                    <!-- Hover-reveal row actions — only on hover, not active rows -->
-                    {#if !isActiveView}
-                      <span class="absolute right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {#if !br.is_current}
-                          <button
-                            type="button"
-                            onclick={(e) => branchRowAction(project.id, br.name, e)}
-                            title="Remove from view"
-                            aria-label="Remove branch {br.name} from view"
-                            class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-del-fg hover:bg-ink-600"
-                          >
-                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                          </button>
-                        {/if}
-                      </span>
-                    {/if}
+                    {@const branchTriaging = triagingBranchKey === `${project.id}:${br.name}`}
+                    <span class="absolute right-1 flex items-center gap-0.5 {isActiveView || br.is_current ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity">
+                      {#if project.remote}
+                        <button
+                          type="button"
+                          onclick={(e) => runBranchTriage(project, br.name, e)}
+                          disabled={branchTriaging}
+                          title="Run triage on this branch"
+                          aria-label="Run triage on branch {br.name}"
+                          class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-cyan-400 hover:bg-ink-600 disabled:opacity-50"
+                        >
+                          {#if branchTriaging}
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="animate-spin"><path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 7.8 4.5"/><polyline points="21 3 21 8 16 8"/></svg>
+                          {:else}
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                          {/if}
+                        </button>
+                      {/if}
+                      {#if !br.is_current && !isActiveView}
+                        <button
+                          type="button"
+                          onclick={(e) => branchRowAction(project.id, br.name, e)}
+                          title="Remove from view"
+                          aria-label="Remove branch {br.name} from view"
+                          class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-del-fg hover:bg-ink-600"
+                        >
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                        </button>
+                      {/if}
+                    </span>
                   </div>
                 {/each}
               {/if}
@@ -1151,30 +1172,47 @@
                 {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number && project.is_active) ||
                   (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
                 {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
-                <button
-                  type="button"
-                  title="{pr.title} #{pr.number}"
-                  onclick={(e) => openPr(project, pr.number, pr.head_ref, e, pr)}
-                  onauxclick={(e) => { if (e.button === 1) openPr(project, pr.number, pr.head_ref, e, pr); }}
-                  onmouseenter={() => { if (!project.remote_only) schedulePrPrefetch(project.id, pr); }}
-                  onmouseleave={() => { if (!project.remote_only) cancelPrPrefetch(project.id, pr.number); }}
-                  class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left {(isActivePr || prPending) ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="{prIconColor(pr)} shrink-0">
-                    <line x1="6" y1="3" x2="6" y2="15"/>
-                    <circle cx="18" cy="6" r="3"/>
-                    <circle cx="6" cy="18" r="3"/>
-                    <path d="M18 9a9 9 0 0 1-9 9"/>
-                  </svg>
-                  <span class="truncate text-[12px]">{pr.title}</span>
-                  {#if prPending}
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0">
-                      <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
-                      <path d="M21 3v5h-5"/>
+                {@const prTriaging = triagingPrKey === `${project.id}:${pr.number}`}
+                <div class="group relative flex items-center">
+                  <button
+                    type="button"
+                    title="{pr.title} #{pr.number}"
+                    onclick={(e) => openPr(project, pr.number, pr.head_ref, e, pr)}
+                    onauxclick={(e) => { if (e.button === 1) openPr(project, pr.number, pr.head_ref, e, pr); }}
+                    onmouseenter={() => { if (!project.remote_only) schedulePrPrefetch(project.id, pr); }}
+                    onmouseleave={() => { if (!project.remote_only) cancelPrPrefetch(project.id, pr.number); }}
+                    class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left pr-6 {(isActivePr || prPending) ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="{prIconColor(pr)} shrink-0">
+                      <line x1="6" y1="3" x2="6" y2="15"/>
+                      <circle cx="18" cy="6" r="3"/>
+                      <circle cx="6" cy="18" r="3"/>
+                      <path d="M18 9a9 9 0 0 1-9 9"/>
                     </svg>
+                    <span class="truncate text-[12px]">{pr.title}</span>
+                    {#if prPending || prTriaging}
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0">
+                        <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
+                        <path d="M21 3v5h-5"/>
+                      </svg>
+                    {/if}
+                    <span class="shrink-0 text-[10px] mono text-muted">#{pr.number}</span>
+                  </button>
+                  {#if project.remote}
+                    <span class="absolute right-1 flex items-center {isActivePr ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity">
+                      <button
+                        type="button"
+                        onclick={(e) => runPrTriage(project, pr, e)}
+                        disabled={prTriaging}
+                        title="Run triage on this PR"
+                        aria-label="Run triage on PR #{pr.number}"
+                        class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-cyan-400 hover:bg-ink-600 disabled:opacity-50"
+                      >
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                      </button>
+                    </span>
                   {/if}
-                  <span class="shrink-0 text-[10px] mono text-muted">#{pr.number}</span>
-                </button>
+                </div>
               {/snippet}
 
               {#snippet prSectionLabel(text: string)}

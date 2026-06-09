@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-run-pr-triage"
+description = "Run triage for a PR from the sidebar"
+commands.allow = ["run_pr_triage"]

@@ -2095,8 +2095,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
-                let debug_path =
-                    std::path::Path::new(&er_dir_path).join(format!("debug-{}.log", name_owned));
+                let debug_path = std::path::Path::new(&er_dir_path).join("debug-agent.log");
 
                 let mut agent_args: Vec<String> = config_args
                     .iter()
@@ -2227,7 +2226,7 @@ impl App {
                 let _ = std::fs::write(&debug_path, &debug_content);
 
                 if !status.success() {
-                    anyhow::bail!("{} failed (see .er/debug-{}.log)", name_owned, name_owned);
+                    anyhow::bail!("{} failed (see {}/debug-agent.log)", name_owned, er_dir_path);
                 }
 
                 Ok(())
@@ -2425,7 +2424,7 @@ impl App {
         let command_name_fail = command_name.to_string();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
-                let debug_path = std::path::Path::new(&er_dir).join("debug-review.log");
+                let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
 
                 let mut agent_args: Vec<String> = config_args
                     .iter()
@@ -2560,7 +2559,7 @@ impl App {
 
                 if !status.success() {
                     anyhow::bail!(
-                        "{command_name_fail} failed (see {}/debug-review.log)",
+                        "{command_name_fail} failed (see {}/debug-agent.log)",
                         er_dir
                     );
                 }

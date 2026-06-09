@@ -18,6 +18,7 @@
   import { openAiReviewFilesModal } from "$lib/components/AiReviewFilesModal.svelte";
   import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
   import { effortLabel, effortLevelsForModel, modelSupportsEffort } from "$lib/arena/effort";
+  import { reviewScopeFromMode, scopeDescriptionFromMode } from "$lib/reviewScope";
   import type { AiProviderInfo } from "$lib/types";
 
   type SubView = "main" | "providers" | "models" | "reviewers";
@@ -156,18 +157,8 @@
   const reviewerCount = $derived(selectedReviewers.size);
 
   const mode = $derived(app.snapshot?.mode);
-  const reviewScope = $derived(
-    mode === "branch" || mode === "unstaged" || mode === "staged" ? mode : null,
-  );
-  const scopeDescription = $derived(
-    mode === "branch"
-      ? "All changes vs base"
-      : mode === "unstaged"
-        ? "Working tree changes"
-        : mode === "staged"
-          ? "Staged changes only"
-          : "Switch to All changes, Unstaged, or Staged",
-  );
+  const reviewScope = $derived(reviewScopeFromMode(mode));
+  const scopeDescription = $derived(scopeDescriptionFromMode(mode));
 
   const runningCommands = $derived(
     (app.snapshot?.agent_commands ?? []).filter((c) => c.status === "running")

@@ -549,6 +549,8 @@ function successToastForCommand(command: string): string | null {
     case "run_ai_expert_review":
       return "Specialized review started";
     case "run_ai_triage_review":
+    case "run_pr_triage":
+    case "run_branch_triage":
       return "Triage scan started";
     case "run_ai_professor_review":
     case "run_ai_scoped_review":

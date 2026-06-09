@@ -7,6 +7,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import CardDeleteButton from "$lib/components/ui/CardDeleteButton.svelte";
+  import { reviewScopeFromMode } from "$lib/reviewScope";
   import { tick } from "svelte";
 
   interface Props {
@@ -17,10 +18,7 @@
 
   let open = $state(true);
 
-  const reviewScope = $derived.by(() => {
-    const mode = app.snapshot?.mode;
-    return mode === "branch" || mode === "unstaged" || mode === "staged" ? mode : null;
-  });
+  const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
 
   const verdictLabel = $derived(
     ({

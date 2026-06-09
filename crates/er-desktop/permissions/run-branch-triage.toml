@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-run-branch-triage"
+description = "Run triage for a tracked branch from the sidebar"
+commands.allow = ["run_branch_triage"]

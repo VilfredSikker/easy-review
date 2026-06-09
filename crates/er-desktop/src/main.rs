@@ -467,6 +467,7 @@ fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 fn main() {
+    er_engine::env_path::init_cli_path();
     dev_log::init();
 
     // When a persisted tabs.json exists we're going to replace `app.tabs`
@@ -1037,14 +1038,16 @@ fn main() {
     let bg_gh_user = Arc::clone(&gh_user);
     let bg_inbox = Arc::clone(&inbox);
     let bg_handle = Arc::clone(&tauri_app_handle);
-    let bg_app = Arc::clone(&app_arc);
-    let bg_auto_triage_in_flight = Arc::clone(&state.auto_triage_in_flight);
     std::thread::spawn(move || {
-        let auto_triage_ctx = crate::auto_triage::AutoTriageContext {
-            app: bg_app,
-            in_flight: bg_auto_triage_in_flight,
-            desktop_revision: Arc::clone(&bg_desktop_rev),
-        };
+        // Inbox native notifications need `tauri_app_handle`; setup stores it after
+        // this thread starts (release builds are especially tight on timing).
+        for _ in 0..200 {
+            if bg_handle.lock().ok().and_then(|g| g.clone()).is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1063,7 +1066,7 @@ fn main() {
                     &bg_desktop_rev,
                     &bg_handle,
                     Some(remote),
-                    Some(&auto_triage_ctx),
+                    None,
                 );
             }
             commands::process_inbox_after_pr_refresh(
@@ -1073,7 +1076,7 @@ fn main() {
                 &bg_desktop_rev,
                 &bg_handle,
                 None,
-                Some(&auto_triage_ctx),
+                None,
             );
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
@@ -1098,7 +1101,7 @@ fn main() {
                 &bg_desktop_rev,
                 &bg_handle,
                 Some(active_remote),
-                Some(&auto_triage_ctx),
+                None,
             );
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
@@ -1266,6 +1269,11 @@ fn main() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());
                 }
+                commands::prepare_macos_notifications(app.handle());
+                commands::flush_pending_native_notifications(
+                    &state.inbox,
+                    &state.tauri_app_handle,
+                );
                 // Revision watcher: emit a Tauri event whenever the backend's
                 // `desktop_revision` advances. The frontend listens and only
                 // calls `poll` on demand instead of every 2s — cuts idle
@@ -1304,6 +1312,12 @@ fn main() {
 
             install_app_menu(app.handle())?;
 
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::ActivationPolicy;
+                app.set_activation_policy(ActivationPolicy::Regular);
+            }
+
             let window_builder = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -1337,8 +1351,17 @@ fn main() {
                 | StateFlags::FULLSCREEN
                 | StateFlags::DECORATIONS;
             window.restore_state(flags)?;
-            window_placement::ensure_window_visible(&window)?;
+            if let Err(e) = window_placement::ensure_window_visible(&window) {
+                log::warn!("window placement failed, recentering: {e}");
+                let _ = window.center();
+            }
             window.show()?;
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+            #[cfg(target_os = "macos")]
+            {
+                let _ = app.handle().show();
+            }
 
             Ok(())
         })
@@ -1386,6 +1409,8 @@ fn main() {
             commands::run_ai_expert_review,
             commands::run_ai_professor_review,
             commands::run_ai_triage_review,
+            commands::run_pr_triage,
+            commands::run_branch_triage,
             commands::list_ai_experts,
             commands::list_ai_reviewers,
             commands::run_ai_review_files,

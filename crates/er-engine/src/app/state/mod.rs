@@ -1743,27 +1743,27 @@ impl TabState {
             return;
         }
 
-        if self.review_bucket() == ReviewBucket::Pr {
-            // PR bucket: keyed on owner/repo + PR number, shared between local clone
-            // and `er --remote` as long as both parse the same origin URL.
-            let pr_num = match self.pr_number {
-                Some(n) => n,
-                None => return,
-            };
-            let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
-                // --remote tab: `remote_repo` already holds "owner/repo".
-                // Lowercase before slugging to match canonical_owner_repo_slug().
-                crate::storage::slug_branch(&remote_repo.to_lowercase())
-            } else {
-                // Local-clone PR tab: derive owner/repo from origin
-                match crate::github::canonical_owner_repo_slug(&self.repo_root) {
-                    Some(slug) => slug,
-                    None => return,
+        // PR-associated tabs share one bucket for branch-level review artifacts
+        // (triage, review.json, questions, reviewed) regardless of Branch vs PrDiff mode.
+        if let Some(pr_num) = self.pr_number {
+            match self.review_bucket() {
+                ReviewBucket::Unstaged | ReviewBucket::Staged | ReviewBucket::History => {}
+                ReviewBucket::Branch | ReviewBucket::Pr => {
+                    let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
+                        crate::storage::slug_branch(&remote_repo.to_lowercase())
+                    } else {
+                        match crate::github::canonical_owner_repo_slug(&self.repo_root) {
+                            Some(slug) => slug,
+                            None => return,
+                        }
+                    };
+                    self.er_root = crate::storage::resolve_managed_root_for_pr_bucket(
+                        &owner_repo_slug,
+                        pr_num,
+                    );
+                    return;
                 }
-            };
-            self.er_root =
-                crate::storage::resolve_managed_root_for_pr_bucket(&owner_repo_slug, pr_num);
-            return;
+            }
         }
 
         // Local view buckets (branch/unstaged/staged/history)
@@ -2055,8 +2055,30 @@ impl TabState {
         match scope {
             "unstaged" => self.mode == DiffMode::Unstaged,
             "staged" => self.mode == DiffMode::Staged,
-            _ => self.mode == DiffMode::Branch,
+            _ => self.mode == DiffMode::Branch || self.mode == DiffMode::PrDiff,
         }
+    }
+
+    /// GitHub PR diff for AI review when this tab is PR-associated. Skips local
+    /// working-tree scopes on a checked-out branch.
+    fn fetch_pr_diff_for_review(&self, scope: &str) -> Option<Result<String>> {
+        let pr_number = self.pr_number?;
+        if matches!(scope, "unstaged" | "staged") && self.local_branch_checkout_root.is_some() {
+            return None;
+        }
+        if let Some(ref repo_slug) = self.remote_repo {
+            let parts: Vec<&str> = repo_slug.split('/').collect();
+            if parts.len() == 2 {
+                return Some(crate::github::gh_pr_diff_remote(parts[0], parts[1], pr_number));
+            }
+            return Some(Err(anyhow::anyhow!(
+                "Remote tab missing owner/repo for PR diff"
+            )));
+        }
+        if self.repo_root.is_empty() {
+            return None;
+        }
+        Some(crate::github::gh_pr_diff(pr_number, &self.repo_root))
     }
 
     /// Fetch raw unified-diff text using the same subprocess rules as `refresh_diff`.
@@ -2068,6 +2090,10 @@ impl TabState {
         }
         if self.mode == DiffMode::Hidden {
             return Ok(String::new());
+        }
+
+        if let Some(result) = self.fetch_pr_diff_for_review(scope) {
+            return result;
         }
 
         if let Some(ref branch) = self.local_branch_view {
@@ -9350,6 +9376,43 @@ mod tests {
         );
 
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    /// Local PR tabs in Branch mode must share the PR bucket (not the branch view-bucket).
+    #[test]
+    fn pr_number_branch_mode_routes_to_pr_bucket() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.pr_number = Some(42);
+        tab.mode = DiffMode::Branch;
+        tab.local_branch_view = Some("feat/foo".to_string());
+        tab.apply_managed_root();
+
+        let expected = crate::storage::resolve_managed_root_for_pr_bucket(
+            &crate::storage::slug_branch("owner/repo"),
+            42,
+        );
+        assert_eq!(tab.er_dir(), expected.er_dir());
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn pr_diff_mode_uses_cached_diff_for_ai_review() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.mode = DiffMode::PrDiff;
+        tab.raw_diff = Some("diff --git a/foo b/foo\n".to_string());
+        tab.branch_diff_hash = "abc".to_string();
+        assert_eq!(
+            tab.raw_diff_for_review("branch").unwrap(),
+            "diff --git a/foo b/foo\n"
+        );
     }
 
     /// Remote (--remote) reviewed entries must persist to disk even after the guard

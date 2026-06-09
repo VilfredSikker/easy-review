@@ -1,7 +1,8 @@
-//! Opt-in per-project auto-triage while Desktop is open.
+//! Manual and (legacy) per-project auto-triage for open PRs.
 //!
-//! Triggered from PR cache refresh (inbox processing): new open PRs and head pushes
-//! on projects with `ProjectRecord.auto_triage` enabled (optionally including your PRs).
+//! Auto-dispatch on PR cache refresh is disabled — triage is started from the
+//! sidebar (`run_pr_triage` / `run_branch_triage`). The `auto_triage` project flag
+//! is kept for settings compatibility but no longer queues work on refresh.
 
 use std::collections::HashSet;
 use std::sync::atomic::AtomicU64;
@@ -87,8 +88,14 @@ fn fetch_pr_diff(repo_root: &str, remote: &str, pr_number: u64) -> Result<String
     er_engine::github::gh_pr_diff_remote(owner, repo, pr_number).map_err(|e| e.to_string())
 }
 
-fn resolve_er_dir(remote: &str, pr_number: u64) -> Result<String, String> {
-    let slug = er_engine::storage::slug_branch(&remote.to_lowercase());
+fn resolve_er_dir(remote: &str, repo_root: &str, pr_number: u64) -> Result<String, String> {
+    let slug = if !repo_root.is_empty() {
+        er_engine::github::canonical_owner_repo_slug(repo_root).unwrap_or_else(|| {
+            er_engine::storage::slug_branch(&remote.to_lowercase())
+        })
+    } else {
+        er_engine::storage::slug_branch(&remote.to_lowercase())
+    };
     let er_root = er_engine::storage::resolve_managed_root_for_pr_bucket(&slug, pr_number);
     let er_dir = er_root.er_dir();
     if er_dir.is_empty() {
@@ -154,7 +161,7 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
         return Ok(());
     }
 
-    let er_dir = resolve_er_dir(&req.remote, req.pr_number)?;
+    let er_dir = resolve_er_dir(&req.remote, &req.repo_root, req.pr_number)?;
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
     std::fs::write(format!("{er_dir}/diff-tmp"), &raw_diff)
         .map_err(|e| format!("write diff-tmp: {e}"))?;
@@ -181,10 +188,110 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
     app.spawn_background_triage_review(target, prompt, true)
         .map_err(|e| e.to_string())?;
     app.notify(&format!(
-        "Auto-triage started for {}#{}",
+        "Triage started for {}#{}",
         req.remote, req.pr_number
     ));
-    crate::profile_log::bump_desktop_revision(&ctx.desktop_revision, "auto_triage_started");
+    crate::profile_log::bump_desktop_revision(&ctx.desktop_revision, "manual_triage_started");
+    Ok(())
+}
+
+/// Triage a local branch diff when no open PR matches `branch` (uses branch view-bucket).
+pub fn dispatch_branch_triage(
+    ctx: &AutoTriageContext,
+    _project_id: &str,
+    remote: &str,
+    repo_root: &str,
+    branch: &str,
+    review_ignore_globs: &[String],
+) {
+    let key = format!("branch:{remote}:{branch}");
+    {
+        let mut guard = match ctx.in_flight.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if !guard.insert(key.clone()) {
+            return;
+        }
+    }
+
+    let ctx = AutoTriageContext {
+        app: Arc::clone(&ctx.app),
+        in_flight: Arc::clone(&ctx.in_flight),
+        desktop_revision: Arc::clone(&ctx.desktop_revision),
+    };
+    let remote = remote.to_string();
+    let repo_root = repo_root.to_string();
+    let branch = branch.to_string();
+    let review_ignore_globs = review_ignore_globs.to_vec();
+    std::thread::spawn(move || {
+        let result =
+            run_branch_triage_once(&ctx, &remote, &repo_root, &branch, &review_ignore_globs);
+        if let Err(e) = &result {
+            log::warn!("branch_triage failed branch={branch}: {e}");
+        }
+        if let Ok(mut guard) = ctx.in_flight.lock() {
+            guard.remove(&key);
+        }
+    });
+}
+
+fn run_branch_triage_once(
+    ctx: &AutoTriageContext,
+    remote: &str,
+    repo_root: &str,
+    branch: &str,
+    review_ignore_globs: &[String],
+) -> Result<(), String> {
+    if repo_root.is_empty() {
+        return Err("Branch triage requires a local clone".to_string());
+    }
+    let base_branch =
+        er_engine::git::detect_base_branch_in(repo_root).map_err(|e| e.to_string())?;
+    let mut raw_diff = er_engine::git::git_diff_raw_range(&base_branch, branch, repo_root)
+        .map_err(|e| e.to_string())?;
+    if !review_ignore_globs.is_empty() {
+        raw_diff =
+            er_engine::git::filter_raw_diff_exclude_globs(&raw_diff, review_ignore_globs);
+    }
+    if raw_diff.trim().is_empty() {
+        return Err("Nothing to triage on this branch".to_string());
+    }
+
+    let slug = er_engine::github::canonical_owner_repo_slug(repo_root).unwrap_or_else(|| {
+        er_engine::storage::slug_branch(&remote.to_lowercase())
+    });
+    let branch_slug = er_engine::storage::slug_branch(branch);
+    let er_dir = er_engine::storage::resolve_managed_root_for_view_bucket(
+        &slug,
+        &branch_slug,
+        "branch",
+    )
+    .er_dir();
+    if er_dir.is_empty() {
+        return Err("Failed to resolve branch storage".to_string());
+    }
+    std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
+    std::fs::write(format!("{er_dir}/diff-tmp"), &raw_diff)
+        .map_err(|e| format!("write diff-tmp: {e}"))?;
+
+    let target = BackgroundTaskTarget {
+        repo_root: repo_root.to_string(),
+        er_dir: er_dir.clone(),
+        branch_label: branch.to_string(),
+        base_branch: base_branch.clone(),
+        scope: "branch".to_string(),
+        pr_number: None,
+        remote_repo: Some(remote.to_string()),
+        managed_local: true,
+    };
+
+    let prompt = prompts::build_triage_review_prompt_prepared_diff("branch", &er_dir);
+    let mut app = ctx.app.lock().map_err(|e| e.to_string())?;
+    app.spawn_background_triage_review(target, prompt, true)
+        .map_err(|e| e.to_string())?;
+    app.notify(&format!("Triage started for branch {branch}"));
+    crate::profile_log::bump_desktop_revision(&ctx.desktop_revision, "manual_triage_started");
     Ok(())
 }
 

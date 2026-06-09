@@ -30,6 +30,9 @@ dirs.workspace = true
 portable-pty = "0.8"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+notify-rust = "4.17"
+
 [dev-dependencies]
 tempfile = "3"
 

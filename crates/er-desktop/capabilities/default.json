@@ -5,6 +5,8 @@
   "windows": ["main"],
   "permissions": [
     "allow-app-commands",
+    "allow-run-pr-triage",
+    "allow-run-branch-triage",
     "core:default",
     "core:webview:allow-webview-position",
     "core:webview:allow-webview-size",

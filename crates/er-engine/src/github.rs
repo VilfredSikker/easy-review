@@ -137,6 +137,17 @@ pub fn parse_github_pr_url(url: &str) -> Option<PrRef> {
     })
 }
 
+fn gh_spawn_context(err: std::io::Error) -> anyhow::Error {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        anyhow::anyhow!(
+            "GitHub CLI (`gh`) not found on PATH. Install it (https://cli.github.com) \
+             and ensure it is on PATH for GUI apps (e.g. /opt/homebrew/bin)."
+        )
+    } else {
+        anyhow::Error::new(err).context("Failed to run gh")
+    }
+}
+
 /// Check if `gh` CLI is installed and authenticated
 pub fn ensure_gh_installed() -> Result<()> {
     let output = Command::new("gh")
@@ -1004,7 +1015,7 @@ pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String>
     let output = Command::new("gh")
         .args(["pr", "diff", &number.to_string(), "--repo", &repo_slug])
         .output()
-        .context("Failed to run gh pr diff")?;
+        .map_err(gh_spawn_context)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1029,7 +1040,7 @@ pub fn gh_pr_diff(pr_number: u64, repo_root: &str) -> Result<String> {
         .args(["pr", "diff", &pr_number.to_string()])
         .current_dir(repo_root)
         .output()
-        .context("Failed to run gh pr diff")?;
+        .map_err(gh_spawn_context)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

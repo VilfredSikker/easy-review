@@ -40,6 +40,8 @@ Be concise. If the concern is already addressed in the current diff, say so clea
 const REQUESTED_KINDS: &[&str] = &[
     "ai_review_done",
     "ai_review_failed",
+    "ai_triage_done",
+    "ai_triage_failed",
     "ai_review_cancelled",
     "pr_review_approved",
     "pr_review_changes_requested",
@@ -257,6 +259,52 @@ fn now_ms() -> u64 {
     crate::inbox::now_epoch_ms()
 }
 
+/// Show native notifications for inbox items that were created before the Tauri
+/// `AppHandle` was stored (startup PR refresh races setup in release builds).
+pub fn flush_pending_native_notifications(
+    inbox_handle: &InboxHandle,
+    app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
+) {
+    let pending: Vec<InboxItem> = {
+        let Ok(inbox) = inbox_handle.lock() else {
+            return;
+        };
+        inbox
+            .items
+            .iter()
+            .filter(|item| {
+                (REQUESTED_KINDS.contains(&item.kind.as_str())
+                    || item.severity == "warning"
+                    || item.severity == "error")
+                    && !inbox.notified_item_ids.contains(&item.id)
+            })
+            .cloned()
+            .collect()
+    };
+    for item in &pending {
+        maybe_send_native_notification(inbox_handle, app_handle_state, item);
+    }
+}
+
+/// Release builds deliver notifications under the app bundle id (not Terminal).
+#[cfg(target_os = "macos")]
+pub fn prepare_macos_notifications(app: &tauri::AppHandle) {
+    if tauri::is_dev() {
+        return;
+    }
+    let ident = app.config().identifier.clone();
+    match notify_rust::set_application(&ident) {
+        Ok(()) => log::info!("macOS notifications: registered bundle id {ident}"),
+        Err(e) => log::warn!(
+            "macOS notifications: could not use bundle id {ident} ({e}). \
+             Launch the installed Easy Review.app and enable notifications in System Settings."
+        ),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn prepare_macos_notifications(_app: &tauri::AppHandle) {}
+
 fn maybe_send_native_notification(
     inbox_handle: &InboxHandle,
     app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
@@ -408,16 +456,35 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
         .clone()
         .unwrap_or_else(|| tab.current_branch.clone());
 
+    let project_id = projects::resolve_project_id_for_inbox(
+        Some(repo_root.as_str()),
+        remote.as_deref(),
+    );
+
     let mut emitted_any = false;
     let mut just_added: Vec<InboxItem> = Vec::new();
     if let Ok(mut inbox) = state.inbox.lock() {
         for task in tasks {
             let (kind, severity, title, body) = match task.status.as_str() {
+                "done" if task.kind == "triage" => (
+                    "ai_triage_done".to_string(),
+                    "success".to_string(),
+                    format!("Triage completed ({})", task.target_label),
+                    task.label.clone(),
+                ),
                 "done" => (
                     "ai_review_done".to_string(),
                     "success".to_string(),
                     format!("AI review completed ({})", task.target_label),
                     task.label.clone(),
+                ),
+                "failed" if task.kind == "triage" => (
+                    "ai_triage_failed".to_string(),
+                    "error".to_string(),
+                    format!("Triage failed ({})", task.target_label),
+                    task.error
+                        .clone()
+                        .unwrap_or_else(|| "Triage failed".to_string()),
                 ),
                 "failed" => (
                     "ai_review_failed".to_string(),
@@ -437,7 +504,7 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
                 body,
                 source: "ai".to_string(),
                 target: InboxTarget {
-                    project_id: None,
+                    project_id: project_id.clone(),
                     repo_root: Some(repo_root.clone()),
                     remote: remote.clone(),
                     pr_number,
@@ -1512,6 +1579,128 @@ pub fn set_project_auto_triage_own_prs(
     Ok(snap_from(&app, &state))
 }
 
+fn auto_triage_ctx(state: &AppState) -> crate::auto_triage::AutoTriageContext {
+    crate::auto_triage::AutoTriageContext {
+        app: Arc::clone(&state.app),
+        in_flight: Arc::clone(&state.auto_triage_in_flight),
+        desktop_revision: Arc::clone(&state.desktop_revision),
+    }
+}
+
+fn pr_from_cache(
+    pr_cache: &Arc<Mutex<HashMap<String, Vec<crate::snapshot::PrInfo>>>>,
+    remote: &str,
+    pr_number: u64,
+) -> Option<crate::snapshot::PrInfo> {
+    pr_cache
+        .lock()
+        .ok()
+        .and_then(|cache| {
+            cache
+                .get(remote)
+                .and_then(|prs| prs.iter().find(|p| p.number == pr_number).cloned())
+        })
+}
+
+fn open_pr_for_branch(
+    pr_cache: &Arc<Mutex<HashMap<String, Vec<crate::snapshot::PrInfo>>>>,
+    remote: &str,
+    branch: &str,
+) -> Option<crate::snapshot::PrInfo> {
+    pr_cache.lock().ok().and_then(|cache| {
+        cache.get(remote).and_then(|prs| {
+            prs.iter()
+                .find(|p| p.state == "OPEN" && !p.is_draft && p.head_ref == branch)
+                .cloned()
+        })
+    })
+}
+
+fn mark_pr_triaged(inbox_handle: &InboxHandle, remote: &str, pr_number: u64, head_oid: &str) {
+    let key = format!("{remote}#{pr_number}");
+    if let Ok(mut inbox) = inbox_handle.lock() {
+        if let Some(state) = inbox.observed_pr.get_mut(&key) {
+            state.triaged_head_oid = Some(head_oid.to_string());
+        }
+        drop(inbox);
+        crate::inbox::save_inbox_state(inbox_handle);
+    }
+}
+
+/// Start triage for a single PR from the sidebar (does not open the review tab).
+#[tauri::command]
+pub fn run_pr_triage(
+    project_id: String,
+    pr_number: u64,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let file = projects::load();
+    let project = file
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    let remote = project
+        .remote
+        .clone()
+        .ok_or_else(|| "Project has no GitHub remote".to_string())?;
+    let pr = pr_from_cache(&state.pr_cache, &remote, pr_number)
+        .ok_or_else(|| format!("PR #{pr_number} not in cache — try Sync first"))?;
+
+    let req = crate::auto_triage::AutoTriageRequest {
+        project_id: project.id.clone(),
+        remote: remote.clone(),
+        repo_root: project.root_path.clone(),
+        pr_number: pr.number,
+        head_oid: pr.head_oid.clone(),
+        base_ref: pr.base_ref.clone(),
+        review_ignore_globs: project.review_ignore_globs.clone(),
+        auto_triage_max_diff_kb: project.auto_triage_max_diff_kb,
+    };
+    let ctx = auto_triage_ctx(&state);
+    crate::auto_triage::dispatch_auto_triage(&ctx, vec![req]);
+    if !pr.head_oid.is_empty() {
+        mark_pr_triaged(&state.inbox, &remote, pr_number, &pr.head_oid);
+    }
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &state))
+}
+
+/// Triage a tracked branch: uses the open PR when `branch` is a PR head, else local branch diff.
+#[tauri::command]
+pub fn run_branch_triage(
+    project_id: String,
+    branch: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let file = projects::load();
+    let project = file
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    let remote = project
+        .remote
+        .clone()
+        .ok_or_else(|| "Project has no GitHub remote".to_string())?;
+
+    if let Some(pr) = open_pr_for_branch(&state.pr_cache, &remote, &branch) {
+        return run_pr_triage(project_id, pr.number, state);
+    }
+
+    let ctx = auto_triage_ctx(&state);
+    crate::auto_triage::dispatch_branch_triage(
+        &ctx,
+        &project.id,
+        &remote,
+        &project.root_path,
+        &branch,
+        &project.review_ignore_globs,
+    );
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &state))
+}
+
 #[tauri::command]
 pub fn patch_project_review_settings(
     project_id: String,
@@ -2410,14 +2599,23 @@ fn resolve_review_scope(scope: &str, tab: &er_engine::app::TabState) -> Result<S
             DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
                 tab.mode.git_mode().to_string()
             }
+            DiffMode::PrDiff => "branch".to_string(),
             _ => {
                 return Err(format!(
-                    "AI review not available in {} view — switch to All changes, Unstaged, or Staged",
+                    "AI review not available in {} view — switch to All changes, PR Diff, Unstaged, or Staged",
                     tab.mode.git_mode()
                 ));
             }
         }
+    } else if scope == "pr" {
+        "branch".to_string()
     } else if matches!(scope, "branch" | "unstaged" | "staged") {
+        if matches!(scope, "unstaged" | "staged") && tab.mode == DiffMode::PrDiff {
+            return Err(
+                "Unstaged/Staged review not available in PR Diff — switch to Unstaged or Staged view"
+                    .to_string(),
+            );
+        }
         scope.to_string()
     } else {
         return Err(format!("Invalid review scope: {scope}"));
@@ -2430,7 +2628,7 @@ pub fn list_diff_paths(state: State<AppState>) -> Result<Vec<String>, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab = app.tab();
     match tab.mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {}
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {}
         _ => {
             return Err(format!(
                 "File list not available in {} view",
@@ -4572,6 +4770,11 @@ pub fn open_pr_review(
     let t_place_tab = std::time::Instant::now();
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
+    let t_pr_diff = std::time::Instant::now();
+    app.tab_mut()
+        .enter_pr_diff()
+        .map_err(|e| e.to_string())?;
+    log_branch_open_phase(&project_id, &branch_label, "pr_diff_enter", t_pr_diff);
     let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
@@ -4706,11 +4909,6 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
         let gh_user = Arc::clone(&state.gh_user);
         let inbox = Arc::clone(&state.inbox);
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
-        let auto_triage_ctx = crate::auto_triage::AutoTriageContext {
-            app: Arc::clone(&state.app),
-            in_flight: Arc::clone(&state.auto_triage_in_flight),
-            desktop_revision: Arc::clone(&state.desktop_revision),
-        };
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -4728,7 +4926,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                     &desktop_rev,
                     &app_handle_state,
                     Some(remote),
-                    Some(&auto_triage_ctx),
+                    None,
                 );
             }
             process_inbox_after_pr_refresh(
@@ -4738,7 +4936,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                 &desktop_rev,
                 &app_handle_state,
                 None,
-                Some(&auto_triage_ctx),
+                None,
             );
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
@@ -4787,11 +4985,6 @@ pub fn refresh_project_pr_list(
         let gh_user = Arc::clone(&state.gh_user);
         let inbox = Arc::clone(&state.inbox);
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
-        let auto_triage_ctx = crate::auto_triage::AutoTriageContext {
-            app: Arc::clone(&state.app),
-            in_flight: Arc::clone(&state.auto_triage_in_flight),
-            desktop_revision: Arc::clone(&state.desktop_revision),
-        };
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -4810,7 +5003,7 @@ pub fn refresh_project_pr_list(
                     &desktop_rev,
                     &app_handle_state,
                     Some(remote),
-                    Some(&auto_triage_ctx),
+                    None,
                 );
             }
             process_inbox_after_pr_refresh(
@@ -4820,7 +5013,7 @@ pub fn refresh_project_pr_list(
                 &desktop_rev,
                 &app_handle_state,
                 None,
-                Some(&auto_triage_ctx),
+                None,
             );
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
@@ -4875,7 +5068,7 @@ pub fn refresh_notifications(state: State<AppState>) -> Result<AppSnapshot, Stri
 #[tauri::command]
 pub fn open_inbox_item(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let now = now_ms();
-    let target = {
+    let mut target = {
         let mut inbox = state.inbox.lock().map_err(|e| e.to_string())?;
         let target = inbox
             .items
@@ -4888,7 +5081,13 @@ pub fn open_inbox_item(id: String, state: State<AppState>) -> Result<AppSnapshot
     crate::inbox::save_inbox_state(&state.inbox);
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
-    if let Some(target) = target {
+    if let Some(mut target) = target.take() {
+        if target.project_id.is_none() {
+            target.project_id = projects::resolve_project_id_for_inbox(
+                target.repo_root.as_deref(),
+                target.remote.as_deref(),
+            );
+        }
         if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
             return open_pr_review(project_id, pr_number, Some(true), None, state);
         }
@@ -4897,6 +5096,11 @@ pub fn open_inbox_item(id: String, state: State<AppState>) -> Result<AppSnapshot
         }
     }
 
+    if let Ok(mut app) = state.app.lock() {
+        app.notify(
+            "Could not open notification target — add or select the project in Easy Review first",
+        );
+    }
     snap!(state)
 }
 
@@ -6663,6 +6867,16 @@ mod tests {
             None => std::env::remove_var("ER_FAKE_CLAUDE"),
         }
         out
+    }
+
+    #[test]
+    fn resolve_review_scope_accepts_pr_diff_mode() {
+        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
+        tab.mode = er_engine::app::DiffMode::PrDiff;
+        tab.pr_number = Some(42);
+        assert_eq!(resolve_review_scope("branch", &tab).unwrap(), "branch");
+        assert_eq!(resolve_review_scope("current", &tab).unwrap(), "branch");
+        assert_eq!(resolve_review_scope("pr", &tab).unwrap(), "branch");
     }
 
     #[test]

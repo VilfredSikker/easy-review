@@ -1,10 +1,6 @@
 <script lang="ts">
   import type { ProjectSnapshot } from "$lib/types";
-  import Toggle from "./Toggle.svelte";
-  import OptionGroup from "./OptionGroup.svelte";
   import Button from "$lib/components/ui/Button.svelte";
-
-  const AUTO_TRIAGE_WHEN_OPTIONS = ["new-and-push", "new-only", "review-requested"] as const;
 
   interface Props {
     project: ProjectSnapshot;
@@ -16,7 +12,6 @@
   let addGlob = $state("");
   let maxDiffInput = $state("");
 
-  const autoTriageWhen = $derived(project.auto_triage_when ?? "new-and-push");
   const maxDiffKb = $derived(project.auto_triage_max_diff_kb ?? 0);
   const ignoreGlobs = $derived(project.review_ignore_globs ?? []);
 
@@ -24,11 +19,6 @@
     maxDiffInput = maxDiffKb === 0 ? "" : String(maxDiffKb);
   });
 
-  const whenDescriptions: Record<string, string> = {
-    "new-and-push": "Triage when a PR is new or its head commit changes.",
-    "new-only": "Triage once per PR; skip updates after new commits.",
-    "review-requested": "Triage only when you are added as a reviewer.",
-  };
 </script>
 
 <section class="border border-hairline rounded-lg px-4 py-3 mb-3 bg-surface/40">
@@ -44,52 +34,29 @@
     </p>
   {/if}
 
-  {#if !project.remote}
-    <p class="text-xs text-muted">No GitHub remote — auto-triage needs a linked remote.</p>
-  {:else}
-    <Toggle
-      label="Auto-triage open PRs"
-      description="Run triage while Desktop is open (PR list refresh ~every 10 min)."
-      checked={project.auto_triage ?? false}
-      onchange={(v) => onpatch({ autoTriage: v })}
-    />
-    <Toggle
-      label="Include my PRs"
-      description="Also triage PRs you authored."
-      checked={project.auto_triage_own_prs ?? false}
-      disabled={!(project.auto_triage ?? false)}
-      onchange={(v) => onpatch({ autoTriageOwnPrs: v })}
-    />
-
-    <div class={project.auto_triage ? "" : "opacity-50 pointer-events-none"}>
-      <OptionGroup
-        label="When to triage"
-        description={whenDescriptions[autoTriageWhen] ?? whenDescriptions["new-and-push"]}
-        options={[...AUTO_TRIAGE_WHEN_OPTIONS]}
-        value={autoTriageWhen}
-        onchange={(v) => onpatch({ autoTriageWhen: v })}
-      />
-
-      <div class="py-2">
-        <div class="text-sm text-fg mb-1">Max diff size (KB)</div>
-        <div class="text-xs text-muted mb-1.5">
-          Skip auto-triage when the filtered diff exceeds this size. Leave empty for no limit.
-        </div>
-        <div class="flex gap-2 max-w-xs">
-          <input
-            type="number"
-            min="0"
-            step="1"
-            class="flex-1 bg-surface border border-hairline rounded-md px-2 py-1.5 text-sm font-mono"
-            placeholder="No limit"
-            bind:value={maxDiffInput}
-            onchange={() => {
-              const trimmed = maxDiffInput.trim();
-              const kb = trimmed === "" ? 0 : Math.max(0, parseInt(trimmed, 10) || 0);
-              void onpatch({ autoTriageMaxDiffKb: kb });
-            }}
-          />
-        </div>
+  {#if project.remote}
+    <p class="text-xs text-muted mb-2">
+      Run triage from the sidebar — hover a branch or PR row and click the scan icon.
+    </p>
+    <div class="py-2">
+      <div class="text-sm text-fg mb-1">Max diff size (KB)</div>
+      <div class="text-xs text-muted mb-1.5">
+        Skip sidebar triage when the filtered diff exceeds this size. Leave empty for no limit.
+      </div>
+      <div class="flex gap-2 max-w-xs">
+        <input
+          type="number"
+          min="0"
+          step="1"
+          class="flex-1 bg-surface border border-hairline rounded-md px-2 py-1.5 text-sm font-mono"
+          placeholder="No limit"
+          bind:value={maxDiffInput}
+          onchange={() => {
+            const trimmed = maxDiffInput.trim();
+            const kb = trimmed === "" ? 0 : Math.max(0, parseInt(trimmed, 10) || 0);
+            void onpatch({ autoTriageMaxDiffKb: kb });
+          }}
+        />
       </div>
     </div>
   {/if}

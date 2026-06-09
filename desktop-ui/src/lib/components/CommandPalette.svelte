@@ -6,6 +6,7 @@
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import { copyToClipboard } from "$lib/clipboard";
+  import { reviewScopeFromMode, scopeDescriptionFromMode } from "$lib/reviewScope";
 
   interface CommandItem {
     id: string;
@@ -38,16 +39,8 @@
 
   function buildItems(): CommandItem[] {
     const mode = snapshot?.mode;
-    const reviewScope =
-      mode === "branch" || mode === "unstaged" || mode === "staged" ? mode : null;
-    const scopeDescription =
-      mode === "branch"
-        ? "All changes vs base"
-        : mode === "unstaged"
-          ? "Working tree changes"
-          : mode === "staged"
-            ? "Staged changes only"
-            : "Switch to All changes, Unstaged, or Staged";
+    const reviewScope = reviewScopeFromMode(mode);
+    const scopeDescription = scopeDescriptionFromMode(mode);
     const hasReviewJson = snapshot?.ai?.has_review_json ?? false;
     const eligibleCommentCount = snapshot?.ai?.eligible_comment_count ?? 0;
     const validateAvailable = hasReviewJson || eligibleCommentCount > 0;

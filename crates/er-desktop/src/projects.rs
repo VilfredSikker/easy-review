@@ -728,6 +728,30 @@ pub fn patch_project_review_settings(
     Ok(())
 }
 
+/// Resolve a configured project id from inbox target hints (explicit id preferred by caller).
+pub fn resolve_project_id_for_inbox(
+    repo_root: Option<&str>,
+    remote: Option<&str>,
+) -> Option<String> {
+    let file = load();
+    if let Some(root) = repo_root.filter(|r| !r.is_empty()) {
+        if let Some(p) = file.projects.iter().find(|p| p.root_path == root) {
+            return Some(p.id.clone());
+        }
+    }
+    if let Some(slug) = remote.and_then(normalize_remote_slug) {
+        if let Some(p) = file.projects.iter().find(|p| {
+            p.remote
+                .as_deref()
+                .and_then(normalize_remote_slug)
+                .is_some_and(|r| r == slug)
+        }) {
+            return Some(p.id.clone());
+        }
+    }
+    None
+}
+
 pub fn review_ignore_globs_for_repo(repo_root: &str, remote: Option<&str>) -> Vec<String> {
     let file = load();
     if !repo_root.is_empty() {

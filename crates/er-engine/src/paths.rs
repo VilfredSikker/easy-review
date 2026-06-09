@@ -46,8 +46,8 @@ impl ErRoot {
         format!("{}/snapshots", self.er_dir())
     }
 
-    /// Path for a named debug log file.
-    pub fn debug_log_path(&self, name: &str) -> String {
-        format!("{}/debug-{}.log", self.er_dir(), name)
+    /// Path for the agent subprocess debug log (overwritten each run).
+    pub fn debug_log_path(&self) -> String {
+        format!("{}/debug-agent.log", self.er_dir())
     }
 }

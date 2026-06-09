@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Dispatches `cargo er <task>` → scripts/ (see .cargo/config.toml aliases).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# Cargo may pass the subcommand name as argv[1] on some versions.
+if [[ "${1:-}" == "er" ]]; then
+  shift
+fi
+TASK="${1:-}"
+shift || true
+
+case "$TASK" in
+  tui)
+    exec "$ROOT/scripts/er-tui.sh" "$@"
+    ;;
+  tui-build)
+    exec "$ROOT/scripts/er-tui.sh" build -p er-tui "$@"
+    ;;
+  tui-release)
+    exec "$ROOT/scripts/er-tui.sh" build --release -p er-tui "$@"
+    ;;
+  tui-install)
+    exec "$ROOT/scripts/er-tui.sh" install --path crates/er-tui "$@"
+    ;;
+  tui-test)
+    exec "$ROOT/scripts/er-tui.sh" test -p er-engine -p er-tui "$@"
+    ;;
+  tui-run)
+    exec "$ROOT/scripts/er-tui.sh" run -p er-tui "$@"
+    ;;
+  dev)
+    exec "$ROOT/scripts/tauri-dev.sh" "$@"
+    ;;
+  desktop-release)
+    exec "$ROOT/scripts/tauri-build.sh" "$@"
+    ;;
+  *)
+    echo "cargo er: unknown task '$TASK'" >&2
+    echo "Tasks: tui, tui-build, tui-release, tui-install, tui-test, tui-run, dev, desktop-release" >&2
+    exit 1
+    ;;
+esac

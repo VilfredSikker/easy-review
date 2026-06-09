@@ -45,6 +45,7 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    er_engine::env_path::init_cli_path();
     let cli = Cli::parse();
 
     // Reject conflicting --pr and PR URL arguments

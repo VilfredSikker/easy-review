@@ -24,5 +24,8 @@ done
 if [[ -n "$LOGS" ]]; then
   export ER_LOG="$LOGS"
 fi
+export CARGO_TARGET_DIR="$ROOT/target/desktop"
+"$ROOT/scripts/cargo-gc.sh" --quiet
 cd "$ROOT/crates/er-desktop"
+rm -rf gen/schemas
 exec cargo tauri dev "${ARGS[@]}"

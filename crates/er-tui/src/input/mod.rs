@@ -811,6 +811,7 @@ pub(super) fn build_agent_review_prompt(app: &mut App) -> Option<String> {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
             er_engine::ai::prompts::build_review_prompt(&base, mode.git_mode()),
         ),
+        DiffMode::PrDiff => Some(er_engine::ai::prompts::build_review_prompt(&base, "branch")),
         _ => {
             app.notify("AI review not available in this mode");
             None
@@ -832,6 +833,7 @@ pub(super) fn build_agent_validate_prompt(app: &mut App) -> Option<String> {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
             er_engine::ai::prompts::build_validate_prompt(&base, mode.git_mode()),
         ),
+        DiffMode::PrDiff => Some(er_engine::ai::prompts::build_validate_prompt(&base, "branch")),
         _ => {
             app.notify("validate not available in this mode");
             None

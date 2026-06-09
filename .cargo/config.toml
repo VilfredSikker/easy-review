@@ -1,3 +1,26 @@
+# Cargo aliases → `cargo er <task>` → scripts/ (single source of truth).
+# Wrapper: .cargo/bin/cargo-er (add to PATH — see .envrc or export PATH="$PWD/.cargo/bin:$PATH")
+#
+#   cargo tui-build       → scripts/er-tui.sh build -p er-tui
+#   cargo tui-release     → scripts/er-tui.sh build --release -p er-tui
+#   cargo tui-install     → scripts/er-tui.sh install --path crates/er-tui
+#   cargo tui-test        → scripts/er-tui.sh test -p er-engine -p er-tui
+#   cargo tui-run         → scripts/er-tui.sh run -p er-tui
+#   cargo tui …           → scripts/er-tui.sh …
+#   cargo er-dev          → scripts/tauri-dev.sh
+#   cargo desktop-release → scripts/tauri-build.sh
+#
+# Extra args append: cargo tui-build --release, cargo er-dev --logs arena
+
+[env]
+PATH = { value = "bin:${env:PATH}", relative = true }
+
 [alias]
-# Desktop dev with log groups: cargo er-dev -- --logs arena
-er-dev = "run -p er-desktop --bin er-tauri-dev --"
+tui = "er tui"
+tui-build = "er tui-build"
+tui-release = "er tui-release"
+tui-install = "er tui-install"
+tui-test = "er tui-test"
+tui-run = "er tui-run"
+er-dev = "er dev"
+desktop-release = "er desktop-release"
