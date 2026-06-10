@@ -55,7 +55,7 @@ Base branch is auto-detected from upstream tracking, falling back to main/master
 - **AI-powered review** — `/er-review` generates per-file risk levels, inline findings, and a review checklist. Four view modes: Default, Overlay, Side Panel, AI Review.
 - **Two comment types** — Personal questions (`q`/`Q`, yellow) for your own notes, and GitHub comments (`c`/`C`, cyan) for PR discussions. Reply with `r`, delete with `d`.
 - **GitHub PR sync** — Pull review comments with `G`, push yours back with `P`. Two-way sync via `gh` CLI.
-- **Four diff modes** — Branch diff (`1`), unstaged (`2`), staged (`3`), commit history (`4`). Sort by recency with `Shift+R`.
+- **Six diff modes** — Branch diff (`1`), unstaged (`2`), staged (`3`), commit history (`4`), merge conflicts (`5`), hidden/ignored files (`6`). Sort by recency with `Shift+R`.
 - **Large diff performance** — Auto-compacts lock files and generated code. Lazy-parses 5,000+ line diffs. Viewport-based rendering only builds visible lines.
 - **Review tracking** — Mark files reviewed with `Space`, filter to unreviewed with `u`, jump to next unreviewed with `U`.
 - **Composable filters** — `f` to filter by glob/status/size (`+*.rs,-*.lock,>50`). `F` for presets and history.
@@ -84,6 +84,8 @@ Base branch is auto-detected from upstream tracking, falling back to main/master
 | `2` | Unstaged changes |
 | `3` | Staged changes |
 | `4` | Commit history |
+| `5` | Merge conflicts |
+| `6` | Hidden / ignored files |
 | `Shift+R` | Toggle sort by recency |
 
 ### Actions
