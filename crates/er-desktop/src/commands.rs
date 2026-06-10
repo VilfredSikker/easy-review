@@ -4156,6 +4156,7 @@ fn fetch_single_pr_for_remote(remote: &str, pr_number: u64) -> Result<PrInfo, St
         base_ref: raw.base_ref_name,
         head_oid: raw.head_ref_oid,
         updated_at: raw.updated_at,
+        cached: false,
         latest_reviewer_states,
     })
 }

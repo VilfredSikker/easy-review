@@ -174,8 +174,26 @@ fn pr_info_from_cached(pr: &er_engine::pr_cache::CachedPr) -> PrInfo {
         base_ref: pr.base_ref.clone(),
         head_oid: pr.head_oid.clone(),
         updated_at: pr.updated_at.clone(),
+        // Served straight from the persistent cache — checkout-ready by definition.
+        cached: true,
         latest_reviewer_states: Vec::new(),
     }
+}
+
+/// Head SHAs of the PRs currently in the persistent nearest-PR cache, keyed by
+/// PR number. The snapshot builder uses this to mark live "My PRs" /
+/// "To Review" rows as checkout-ready (`PrInfo.cached`) when the cached entry
+/// still matches the live head SHA.
+pub(crate) fn cached_head_oids(remote: &str) -> HashMap<u64, String> {
+    let Ok(Some(cache)) = er_engine::pr_cache::load(remote) else {
+        return HashMap::new();
+    };
+    cache
+        .my_prs
+        .iter()
+        .chain(cache.to_review.iter())
+        .map(|pr| (pr.number, pr.head_oid.clone()))
+        .collect()
 }
 
 fn nearest_pr_ttl_ms() -> u64 {
@@ -545,6 +563,7 @@ pub(crate) async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
                     base_ref: r.base_ref_name,
                     head_oid: r.head_ref_oid,
                     updated_at: r.updated_at,
+                    cached: false, // marked in build_projects() from the persisted cache
                     latest_reviewer_states,
                 }
             })
@@ -573,6 +592,7 @@ mod tests {
             base_ref: "main".to_string(),
             head_oid: String::new(),
             updated_at: String::new(),
+            cached: false,
             latest_reviewer_states: vec![],
         }
     }
@@ -676,6 +696,43 @@ mod tests {
         assert_eq!(back.state, "OPEN");
         assert!(back.is_draft);
         assert_eq!(back.author, "alice");
+        assert!(back.cached, "fallback rows come from the cache itself");
+    }
+
+    /// Serializes tests that mutate the process-wide `ER_STORAGE_ROOT` env var.
+    static STORAGE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn cached_head_oids_maps_number_to_head_sha() {
+        let _guard = STORAGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let result = std::panic::catch_unwind(|| {
+            let remote = "org/repo";
+            assert!(cached_head_oids(remote).is_empty(), "cold cache → empty");
+
+            let mut pr = make_pr(7, "feature/seven");
+            pr.head_oid = "sha7".to_string();
+            pr.updated_at = "2026-06-09T00:00:00Z".to_string();
+            let cached = cached_pr_from_info(&pr, remote);
+            let cache = er_engine::pr_cache::update_cache(
+                None,
+                &[cached],
+                &[],
+                er_engine::pr_cache::parse_iso8601_epoch_ms("2026-06-10T00:00:00Z").unwrap(),
+                er_engine::pr_cache::ttl_ms_from_days(7),
+            );
+            er_engine::pr_cache::save(remote, &cache).unwrap();
+
+            let oids = cached_head_oids(remote);
+            assert_eq!(oids.get(&7).map(String::as_str), Some("sha7"));
+            assert_eq!(oids.len(), 1);
+        });
+        std::env::remove_var("ER_STORAGE_ROOT");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]

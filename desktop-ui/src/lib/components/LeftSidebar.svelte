@@ -1170,6 +1170,13 @@
                 {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
                 {@const prTriaging = triagingPrKey === `${project.id}:${pr.number}` || isPrTriageRunning(project, pr.number)}
                 <div class="group relative flex items-center">
+                  {#if pr.cached}
+                    <!-- Sits in the button's left padding — no layout shift for uncached rows. -->
+                    <span
+                      class="absolute left-0.5 top-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-add-fg z-10"
+                      title="Cached — instant checkout"
+                    ></span>
+                  {/if}
                   <button
                     type="button"
                     title="{pr.title} #{pr.number}"

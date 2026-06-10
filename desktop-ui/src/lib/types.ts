@@ -227,6 +227,8 @@ export interface PrInfo {
   head_oid: string;
   /** PR `updatedAt` ISO timestamp. Part of the freshness key. */
   updated_at: string;
+  /** True when this PR is in the persistent nearest-PR cache (instant checkout). */
+  cached?: boolean;
 }
 
 export interface ProjectSnapshot {

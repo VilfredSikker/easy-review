@@ -576,6 +576,11 @@ pub struct PrInfo {
     /// PR `updatedAt` ISO timestamp — part of the freshness key.
     #[serde(default)]
     pub updated_at: String,
+    /// True when this PR is in the persistent nearest-PR cache with the same
+    /// head SHA — its branch can be checked out instantly, without waiting on
+    /// `gh` (issue #70). Drives the green dot on sidebar PR rows.
+    #[serde(default)]
+    pub cached: bool,
     /// Transient: latest review per reviewer (login, state). Not serialized to frontend.
     #[serde(skip)]
     pub latest_reviewer_states: Vec<(String, String)>,
@@ -2129,6 +2134,7 @@ fn minimal_pr_info(number: u64, title: &str) -> PrInfo {
         base_ref: String::new(),
         head_oid: String::new(),
         updated_at: String::new(),
+        cached: false,
         latest_reviewer_states: Vec::new(),
     }
 }
@@ -2429,12 +2435,24 @@ fn build_projects_from_file(
                     // lists can't be split without it), serve the persisted
                     // nearest-PR cache so the sidebar renders — and branches
                     // can be checked out — without waiting on `gh`.
-                    let (my, to_review) = if cache.get(remote).is_none() || me.is_none() {
+                    let (mut my, mut to_review) = if cache.get(remote).is_none() || me.is_none() {
                         crate::pr_cache::nearest_prs_fallback(remote, &p.dismissed_prs)
                             .unwrap_or((my, to_review))
                     } else {
                         (my, to_review)
                     };
+
+                    // Mark rows whose branch is checkout-ready: present in the
+                    // persistent nearest-PR cache with the same head SHA
+                    // (issue #70). Fallback rows are already marked — they come
+                    // from the cache itself.
+                    let cached_oids = crate::pr_cache::cached_head_oids(remote);
+                    for pr in my.iter_mut().chain(to_review.iter_mut()) {
+                        pr.cached = pr.cached
+                            || cached_oids
+                                .get(&pr.number)
+                                .is_some_and(|oid| !oid.is_empty() && *oid == pr.head_oid);
+                    }
 
                     all.retain(|pr| pr.state == "MERGED");
                     all.sort_by_key(|run| std::cmp::Reverse(run.merged_at.clone()));
@@ -3272,6 +3290,7 @@ mod tests {
             base_ref: "main".to_string(),
             head_oid: "abc123".to_string(),
             updated_at: "2026-05-22T00:00:00Z".to_string(),
+            cached: false,
             latest_reviewer_states: Vec::new(),
         };
         let pr_cache = Arc::new(Mutex::new(HashMap::from([(
