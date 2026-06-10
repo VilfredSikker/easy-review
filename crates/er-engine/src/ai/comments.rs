@@ -182,10 +182,8 @@ impl<'a> CommentRef<'a> {
     pub fn can_delete(&self) -> bool {
         match self {
             CommentRef::Question(_) => true,
-            // TODO(risk:medium): Authorship check compares `c.author` (a display name from
-            // the JSON file) to the literal string "You". A GitHub comment whose author
-            // happens to be named "You", or a crafted sidecar that sets `author = "You"`,
-            // would allow the UI to offer deletion of a remote comment it does not own.
+            // Local comments are stored with author "You" — ownership is inferred from
+            // that display name, not from the GitHub identity.
             CommentRef::GitHubComment(c) => c.source != "github" || c.author == "You",
             CommentRef::Legacy(c) => c.source != "github" || c.author == "You",
         }
@@ -194,8 +192,6 @@ impl<'a> CommentRef<'a> {
 
 // ── .er-questions.json — personal review notes ──
 
-// TODO(risk:medium): No upper bound on `questions` vec. If an external tool writes
-// thousands of questions, every hunk render scans the full list (O(n) per hunk per frame).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErQuestions {
     pub version: u32,
@@ -238,9 +234,8 @@ pub struct ReviewQuestion {
     pub hunk_header: String,
     /// "original" | "relocated" | "lost"
     #[serde(default = "default_anchor_status")]
-    // TODO(risk:minor): `anchor_status` is a free-form String from untrusted JSON, but code
-    // elsewhere pattern-matches on the string values "original"/"relocated"/"lost". An
-    // unexpected value silently falls through without warning.
+    // Matched elsewhere against the string values "original"/"relocated"/"lost";
+    // any other value falls through unmatched.
     pub anchor_status: String,
     /// Diff hash when this comment was last relocated
     #[serde(default)]
@@ -276,8 +271,6 @@ pub struct GitHubSyncState {
     pub last_synced: String,
 }
 
-// TODO(risk:medium): No upper bound on `comments` vec. Repos with active review threads
-// can accumulate hundreds of entries; scanning all of them on every hunk render is O(n).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErGitHubComments {
     pub version: u32,

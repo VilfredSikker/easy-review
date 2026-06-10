@@ -370,9 +370,6 @@ impl TabState {
         // Use precomputed hunk offsets if available (O(1) lookup)
         if let Some(ref offsets) = self.hunk_offsets {
             if let Some(&base) = offsets.offsets.get(self.current_hunk) {
-                // TODO(risk:medium): base + current_line can overflow usize on pathological inputs
-                // (e.g., a hunk with usize::MAX lines). saturating_sub then .min(u16::MAX) masks the overflow
-                // rather than preventing it. Add a bounds check on current_line before the addition.
                 let line_offset = base + self.current_line.unwrap_or(0);
                 self.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
                 return;
@@ -614,9 +611,8 @@ impl TabState {
             self.update_mem_budget();
         } else if let Some(file) = self.files.get_mut(self.selected_file) {
             // Re-compact: only if it matched a pattern or was large
-            // TODO(risk:minor): any file can be re-compacted via Enter regardless of whether it originally
-            // matched a compaction pattern. A file that was never auto-compacted (user navigated to it
-            // in eager mode) still gets compacted on the second Enter press, which may be surprising.
+            // Enter re-compacts any expanded file, even one that never matched a
+            // compaction pattern in the first place.
             let path = file.path.clone();
             file.compacted = true;
             file.raw_hunk_count = file.hunks.len();
@@ -869,9 +865,6 @@ impl TabState {
                 None => return,
             };
             // Check cache first (promotes to MRU on access)
-            // TODO(risk:medium): cached.clone() copies the entire Vec<DiffFile> including all hunk lines.
-            // For a commit with thousands of changed lines this is an expensive allocation on every
-            // back-navigation to a cached commit. Consider storing Arcs or indices instead of cloning.
             if let Some(cached) = history.diff_cache.get(&commit_hash) {
                 let files = cached.clone();
                 history.commit_files = files;
@@ -1122,9 +1115,8 @@ impl TabState {
             return;
         }
 
-        // TODO(risk:medium): git_log_branch is called synchronously on the event loop thread. Loading 50
-        // commits on a slow filesystem or network-mounted repo blocks the UI for the full duration of the
-        // git log call. This should be moved to a background thread like the PR hint check.
+        // Runs synchronously on the event loop thread — a slow `git log` blocks the UI
+        // for its full duration.
         let log_root = self.commit_log_root().to_string();
         let head_ref = self.commit_head_ref().to_string();
         let new_commits = git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, skip)

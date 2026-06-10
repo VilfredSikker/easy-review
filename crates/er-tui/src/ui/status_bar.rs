@@ -374,11 +374,6 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let modes_w = spans_width(&modes);
     let right_w = spans_width(&right);
-    // TODO(risk:minor): modes_w + right_w can exceed bar_width when the terminal is very
-    // narrow (< ~40 cols) or when many mode badges are enabled simultaneously. saturating_sub
-    // prevents underflow, so gap becomes 0 — correct. But the spans still overflow the
-    // terminal width, causing Ratatui to wrap or truncate text in an unpredictable order.
-    // Consider skipping lower-priority right spans when the combined width exceeds bar_width.
     let gap = bar_width.saturating_sub(modes_w + right_w);
     modes.push(Span::raw(" ".repeat(gap)));
     modes.extend(right);
@@ -990,11 +985,8 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 .constraints(constraints)
                 .split(area);
 
-            // TODO(risk:medium): rows is split from area with exactly `row_count` slots, one per
-            // hint line. If pack_hint_lines returns more lines than row_count (which can happen if
-            // bottom_bar_height and render_bottom_bar compute hint packing differently due to a
-            // race on terminal resize), rows[i] will panic with an out-of-bounds index. Clamp the
-            // enumeration to rows.len().
+            // rows has exactly row_count slots; the break below guards against
+            // pack_hint_lines producing more lines than were budgeted at layout time.
             for (i, line) in lines.into_iter().enumerate() {
                 if i >= rows.len() {
                     break;

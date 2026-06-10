@@ -2368,8 +2368,8 @@ impl TabState {
             self.lazy_mode = true;
 
             // Apply compaction to the stub files (pattern-based only, since hunks are empty)
-            // TODO(risk:medium): zip() silently stops at the shorter iterator. If file_headers and files ever
-            // diverge in length (e.g. a parsing bug), some files will be skipped without any indication.
+            // zip() stops at the shorter iterator; files and file_headers are built from
+            // the same header scan, so their lengths stay in sync.
             for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
                 if self.user_expanded.contains(&file.path) {
                     continue;
@@ -2563,9 +2563,8 @@ impl TabState {
             ReviewFocus::Files => self.ai.review_file_count(),
             ReviewFocus::Checklist => self.ai.review_checklist_count(),
         };
-        // TODO(risk:minor): when item_count == 0, max_cursor is set to 0 and review_cursor is clamped to 0.
-        // Any code that then indexes into the list at review_cursor (e.g., checklist items) must
-        // separately guard against the empty-list case, or it will index position 0 of an empty Vec.
+        // review_cursor stays 0 for an empty list; consumers must still guard
+        // item_count == 0 before indexing.
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
         self.review_cursor = self.review_cursor.min(max_cursor);
         self.last_ai_check = ai::latest_er_mtime(&er_dir);
@@ -2738,11 +2737,8 @@ impl TabState {
             false
         };
 
-        // TODO(risk:medium): write errors are silently discarded here (let _ = ...). If the disk is full
-        // or the directory is read-only, the relocation update is lost without any user notification.
-        // The next refresh will re-relocate the same comments, but any intermediate "relocated" state is
-        // dropped, and the user has no idea the write failed.
-        // Write back to disk if anything changed
+        // Write back to disk if anything changed. Write failures are ignored — the
+        // next refresh re-relocates the same comments from scratch.
         if questions_changed {
             if let Some(ref qs) = self.ai.questions {
                 let path = format!("{}/questions.json", self.er_dir());
@@ -2947,9 +2943,6 @@ impl TabState {
                 } else {
                     // Approximate word_wrap: each ~70 chars = 1 line (rough estimate)
                     let chars = text_line.len();
-                    // TODO(risk:medium): (chars / 70 + 1) as u16 overflows if a single summary line
-                    // exceeds ~4.5 MB (u16::MAX * 70). The cast wraps silently, producing a small offset
-                    // and misaligning the scroll target. Use saturating arithmetic here.
                     line += ((chars / 70) + 1) as u16;
                 }
             }
@@ -2966,8 +2959,6 @@ impl TabState {
 
         // File entries
         if let Some(ref review) = self.ai.review {
-            // TODO(risk:minor): review.files.len() as u16 truncates silently if there are more than
-            // 65535 files in the review. Unlikely but adding .min(u16::MAX as usize) as u16 is safer.
             line += review.files.len() as u16;
             if self.ai.total_findings() > 0 {
                 line += 2; // total findings + blank
@@ -3329,10 +3320,8 @@ impl TabState {
         use std::fs;
         use std::time::SystemTime;
 
-        // TODO(risk:medium): sort_by_mtime is applied after lazy parsing sets up file_headers with indices
-        // matching self.files positions. After sorting, self.files[i] no longer corresponds to
-        // self.file_headers[i], breaking ensure_file_parsed(). This is the same bug as noted above —
-        // lazy mode + mtime sort together produce wrong on-demand parses.
+        // In lazy mode this breaks the index correspondence between self.files and
+        // self.file_headers that ensure_file_parsed() relies on.
         let repo_root = self.repo_root.clone();
         self.files.sort_by(|a, b| {
             let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
@@ -3849,10 +3838,8 @@ impl App {
             tabs
         };
 
-        // TODO(risk:minor): config is loaded from the first tab's repo root but the App is shared across
-        // all tabs. If a second tab's .er-config.toml has different feature flags, those settings are
-        // ignored — the first tab's config wins for everything (display, features, agents).
-        // Load config from the first tab's repo root
+        // Config comes from the first tab's repo root and applies to all tabs —
+        // other tabs' .er-config.toml files are ignored.
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);

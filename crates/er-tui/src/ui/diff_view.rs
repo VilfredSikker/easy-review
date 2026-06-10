@@ -826,11 +826,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     } else {
         tab.h_scroll
     };
-    // TODO(risk:medium): scroll.saturating_sub(render_start) is a usize value cast
-    // directly to u16. For viewport-mode diffs with large scroll offsets (> 65535 lines
-    // rendered before the viewport window), this overflows silently. In practice diffs
-    // that large are auto-compacted, but the cast should use min(u16::MAX) or be
-    // validated to match the actual rendered buffer height.
     let visible_scroll = if use_viewport {
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
         (scroll_into_rendered, effective_h_scroll)
@@ -902,9 +897,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     // Render hunk indicator overlay in top-right corner
     if total_hunks > 0 {
         let indicator_text = format!("Hunk {}/{}", tab.active_current_hunk() + 1, total_hunks);
-        // TODO(risk:minor): indicator_width is usize cast to u16. If total_hunks is very
-        // large (> 9999) the formatted string can exceed u16::MAX chars — harmless in
-        // practice but the cast is silent. saturating_as or a length cap would be safer.
         let indicator_width = indicator_text.len() + 3;
         let indicator_area = Rect {
             x: area.x + area.width.saturating_sub(indicator_width as u16 + 1),
@@ -1616,8 +1608,6 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     } else {
         h_scroll
     };
-    // TODO(risk:medium): same silent usize→u16 truncation as in the unified render path.
-    // scroll.saturating_sub(render_start) can exceed u16::MAX on pathologically large diffs.
     let visible_scroll = if use_viewport {
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
         (scroll_into_rendered, effective_h_scroll)

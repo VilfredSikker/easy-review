@@ -298,9 +298,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     // Start watching by default (disabled in remote mode — no local files to watch)
     let root_str = app.tab().repo_root.clone();
     let root = std::path::Path::new(&root_str);
-    // TODO(risk:minor): FileWatcher::new failure is silently swallowed — the user gets no
-    // notification that watch mode failed to start. app.watching stays false, which is correct,
-    // but there is no visible indication of why. Log or surface the error.
+    // If FileWatcher::new fails, watch mode is silently disabled (app.watching stays false).
     let mut _watcher: Option<FileWatcher> = if app.tab().is_remote() {
         None
     } else {

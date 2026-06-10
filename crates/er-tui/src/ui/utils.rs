@@ -8,11 +8,7 @@ pub(crate) fn horizontal_rule(width: usize) -> String {
 /// Uses `chars().count()` for the width check so multi-byte UTF-8 strings
 /// are measured in characters, not bytes.
 /// Preserves leading whitespace on the first segment of each line.
-// TODO(risk:minor): when max_width == 0 the function returns the whole input string
-// unsplit. Callers that pass this output to a fixed-width terminal cell (e.g. a
-// Ratatui Paragraph) will then render a line longer than the widget width. The
-// safest contract would be to return an empty vec or a single empty string so callers
-// get no output rather than overflowing output.
+// A max_width of 0 disables wrapping: the input comes back as a single unsplit line.
 pub(crate) fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {
         return vec![text.to_string()];
@@ -24,11 +20,6 @@ pub(crate) fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
             continue;
         }
         // Capture leading whitespace to preserve indentation
-        // TODO(risk:medium): line.len() counts bytes but line.trim_start().len() also
-        // counts bytes, so indent_len is correct for byte-indexing. However &line[..indent_len]
-        // will panic with a byte-boundary panic if the leading whitespace contains
-        // multi-byte characters (e.g. a line starting with a U+2003 EM SPACE). Use
-        // line.char_indices() or split_at() with a char boundary to be safe.
         let indent_len = line.len() - line.trim_start().len();
         let indent = &line[..indent_len];
         let indent_chars = indent.chars().count();

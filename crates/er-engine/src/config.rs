@@ -284,10 +284,8 @@ fn default_agent_cmd() -> String {
 }
 
 fn default_agent_args() -> Vec<String> {
-    // TODO(risk:medium): the {prompt} placeholder must be present in args for the agent command
-    // to receive user input. If a user overrides `agent.args` in their config and omits
-    // {prompt}, the prompt is silently dropped and the agent runs with no meaningful input.
-    // Validate that {prompt} appears in args when loading config.
+    // The {prompt} placeholder is how the agent command receives user input;
+    // config overrides of `agent.args` that omit it silently drop the prompt.
     vec![
         "--print".into(),
         "--output-format".into(),

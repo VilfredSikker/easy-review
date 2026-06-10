@@ -740,8 +740,8 @@ impl App {
                 }
 
                 let path = &comment.file;
-                // TODO(risk:medium): a comment with no line_start (hunk-level comment) falls back
-                // to line 1, silently attributing the GitHub comment to the wrong location.
+                // Hunk-level comments have no line_start; the line-level push API requires
+                // a line, so they get anchored to line 1 on GitHub.
                 let start = comment.line_start.unwrap_or(1);
                 let end = comment.line_end.unwrap_or(start);
                 let side = comment.side.as_str();

@@ -39,11 +39,8 @@ pub fn compute_diff_hash(raw_diff: &str) -> String {
 /// Compute a fast (non-cryptographic) hash for internal change detection.
 /// Much faster than SHA-256 — used for detecting if the diff has changed
 /// between ticks without the overhead of a full cryptographic hash.
-// TODO(risk:minor): `DefaultHasher` is explicitly documented by the Rust standard library
-// as having no stability guarantee — its output can change across Rust releases or even
-// between program runs (randomised on some platforms). It must never be persisted or
-// compared across processes; currently it isn't, but this is a sharp edge to keep in mind
-// if the fast hash is ever extended beyond in-process change detection.
+// `DefaultHasher` has no stability guarantee across Rust releases or program runs,
+// so this hash is for in-process change detection only — never persist or compare it across processes.
 pub fn compute_diff_hash_fast(raw_diff: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     raw_diff.hash(&mut hasher);
@@ -65,12 +62,8 @@ pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
                 hashes.insert(file.clone(), hash);
             }
             // Parse file path from "diff --git a/path b/path"
-            // TODO(risk:medium): This parser assumes the `a/` and `b/` path components are
-            // identical, which is true for renames only when git uses the `--no-renames`
-            // flag. For a rename ("diff --git a/old.rs b/new.rs"), `split(" b/").next()`
-            // extracts "old.rs" and maps the hash under the old name. The resulting
-            // mismatch means the per-file staleness check will always fail to find the file
-            // and will never mark it as stale, silently hiding out-of-date review data.
+            // For renames ("diff --git a/old.rs b/new.rs") this extracts the old path,
+            // so per-file staleness lookups keyed by the new path miss renamed files.
             let path = line
                 .strip_prefix("diff --git a/")
                 .and_then(|rest| rest.split(" b/").next())
@@ -161,9 +154,7 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
     // Load .er/review.json
     let review_path = er_path.join("review.json");
     if let Ok(content) = read_sidecar(&review_path) {
-        // TODO(risk:minor): Deserialization errors are silently swallowed (`Err(_) => {}`).
-        // A malformed sidecar will appear as if the file doesn't exist; there is no
-        // user-visible indication that a parse failure occurred.
+        // A sidecar that fails to deserialize is treated the same as an absent file.
         if let Ok(review) = serde_json::from_str::<ErReview>(&content) {
             state.is_stale = review.diff_hash != current_diff_hash;
             state.review = Some(review);
@@ -178,10 +169,6 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
             if !state.is_stale && order.diff_hash != current_diff_hash {
                 state.is_stale = true;
             }
-            // TODO(risk:medium): `ErOrder.order` is an unbounded Vec<OrderEntry> from
-            // untrusted JSON with no size cap. A crafted file could list tens of
-            // thousands of paths, consuming memory and making any O(n) scan over them
-            // (e.g. file-tree display ordering) noticeably slow.
             state.order = Some(order);
         }
     }
@@ -278,11 +265,6 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
     }
 
     // Load legacy .er-feedback.json (only if new files don't exist — migration support)
-    // TODO(risk:medium): TOCTOU window here: between the time `.er-questions.json` and
-    // `.er-github-comments.json` were found to not exist (earlier reads) and this check,
-    // another process could have written those files. The result is that the legacy file
-    // is loaded even though the new files are now present, potentially causing duplicate
-    // comments to be shown via the Legacy fallback path in the query methods.
     if state.questions.is_none() && state.github_comments.is_none() {
         let feedback_path = Path::new(er_dir).join("feedback.json");
         if let Ok(content) = read_sidecar(&feedback_path) {
@@ -296,12 +278,6 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
 }
 
 /// Get the mtime of the most recently modified .er-* file
-// TODO(risk:medium): TOCTOU race: mtime is read here, but the actual file read happens
-// later in `load_ai_state`. Between these two calls another process (e.g. a concurrent
-// AI skill run) can overwrite the file, so the mtime poll can indicate "no change" while
-// `load_ai_state` reads a newer version, or vice-versa (it shows "changed" but by the
-// time `load_ai_state` runs the file is already overwritten again with identical content).
-// The impact is a missed or spurious reload — incorrect data displayed until the next tick.
 pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
     let er_dir = Path::new(er_dir);
     let files = [

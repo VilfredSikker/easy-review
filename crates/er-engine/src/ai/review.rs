@@ -36,14 +36,9 @@ pub enum PanelContent {
 
 // ── .er-review.json ──
 
-// TODO(risk:medium): No maximum bounds on `files` or `file_hashes` HashMaps — a malformed
-// sidecar with millions of entries would cause unbounded memory growth before serde returns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErReview {
     pub version: u32,
-    // TODO(risk:medium): `diff_hash` is trusted as a String from untrusted JSON; a crafted
-    // file could supply a non-hex or absurdly long string that passes the equality check
-    // against the real hash, causing stale data to appear fresh.
     pub diff_hash: String,
     #[serde(default)]
     pub created_at: String,
@@ -58,9 +53,6 @@ pub struct ErReview {
     pub file_hashes: HashMap<String, String>,
 }
 
-// TODO(risk:medium): No upper bound on `findings` vec — an adversarial sidecar with
-// thousands of findings per file will make the UI O(n) for every hunk render, and
-// the `all_hints_ordered` sort becomes O(n log n) across the full set each frame.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErFileReview {
     pub risk: RiskLevel,
@@ -122,9 +114,6 @@ pub struct EvidenceItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
-    // TODO(risk:minor): `id` is an unsanitised String from external JSON; it is used as a
-    // lookup key and displayed verbatim. A crafted sidecar could inject control characters
-    // or ANSI escape sequences that corrupt terminal output.
     pub id: String,
     pub severity: RiskLevel,
     #[serde(default)]
@@ -157,8 +146,6 @@ pub struct Finding {
     /// Files/ranges the AI actually read while evaluating this finding.
     #[serde(default)]
     pub evidence: Vec<EvidenceItem>,
-    // TODO(risk:medium): No upper bound on `responses` — a crafted sidecar can embed an
-    // unbounded number of AiResponse entries per finding, growing memory indefinitely.
     #[serde(default)]
     pub responses: Vec<AiResponse>,
     /// User has fixed (or otherwise addressed) this finding. Set by validate
