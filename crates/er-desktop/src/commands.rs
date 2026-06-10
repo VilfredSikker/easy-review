@@ -19,9 +19,9 @@ use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects;
 use crate::snapshot::{
-    build_chrome_snapshot, build_file_snapshot, build_snapshot, AgentLogSnapshot, AppSnapshot,
-    CheckSummary, FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser,
-    GithubStatusSnapshot, LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
+    build_chrome_snapshot, build_file_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary,
+    FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot,
+    LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
 };
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
@@ -129,6 +129,9 @@ pub struct AppState {
     pub tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
     /// Dedupes concurrent auto-triage workers per remote/pr/head.
     pub auto_triage_in_flight: crate::auto_triage::AutoTriageInFlight,
+    /// Differential snapshots: per-file content keys the frontend currently
+    /// holds, so unchanged hunks can be omitted from later snapshots.
+    pub sent_files: crate::snapshot::SentFilesHandle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -214,24 +217,14 @@ where
 macro_rules! snap {
     ($state:expr) => {{
         let app = $state.app.lock().map_err(|e| e.to_string())?;
-        Ok(build_snapshot(
-            &app,
-            Some(&$state.pr_cache),
-            Some(&$state.pr_cache_fetched_at),
-            Some(&$state.meta_cache),
-            Some(&$state.gh_user),
-            Some(&$state.pending_ai_replies),
-            Some(&$state.gh_status_cache),
-            Some(&$state.loading),
-            Some(&$state.watch_status),
-            Some(&$state.inbox),
-        ))
+        Ok(snap_from(&app, &$state))
     }};
 }
 
 /// Build a snapshot using the lock guards directly (when callers already hold them).
+/// Differential: hunks the frontend already holds are omitted (`hunks_omitted`).
 pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
-    build_snapshot(
+    crate::snapshot::build_snapshot_with_delta(
         app,
         Some(&state.pr_cache),
         Some(&state.pr_cache_fetched_at),
@@ -242,6 +235,7 @@ pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
         Some(&state.loading),
         Some(&state.watch_status),
         Some(&state.inbox),
+        Some(&state.sent_files),
     )
 }
 
@@ -685,6 +679,11 @@ pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Str
     let state = state.inner().clone();
     run_blocking(move || {
         let t0 = std::time::Instant::now();
+        // Full fetch — the frontend is (re)building its state from scratch,
+        // so forget what was previously sent and serialize everything.
+        if let Ok(mut sent) = state.sent_files.lock() {
+            sent.reset();
+        }
         let app = state.app.lock().map_err(|e| e.to_string())?;
         let snap = snap_from(&app, &state);
         crate::profile_log::profile_log(
@@ -737,7 +736,7 @@ pub async fn request_file_content(
         }
         let tab = app.tab();
         let pending_ai = Some(&state.pending_ai_replies);
-        let out = source_indices
+        let out: Vec<FileSnapshot> = source_indices
             .iter()
             .filter_map(|&source_index| {
                 tab.files
@@ -745,6 +744,11 @@ pub async fn request_file_content(
                     .map(|f| build_file_snapshot(source_index, f, tab, pending_ai, true))
             })
             .collect();
+        // These hunks bypass build_snapshot — record them so later polls can
+        // omit the same content.
+        for snap in &out {
+            crate::snapshot::record_sent_file(&app, tab, snap, &state.sent_files);
+        }
         Ok(out)
     })
     .await
@@ -6256,7 +6260,7 @@ pub fn close_tab(
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.close_tab_at(idx);
-    ensure_active_tab_loaded(&mut app);
+    kick_deferred_tab_refresh(&mut app, &state);
     crate::browser_webview::reset_all_tab_webviews(&app_handle, &browser_state)?;
     let active = app.active_tab;
     crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, active)?;
@@ -6277,7 +6281,7 @@ pub async fn select_tab(
         let browser_state = app_handle.state::<crate::browser_webview::BrowserWebviewState>();
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.select_tab(idx);
-        ensure_active_tab_loaded(&mut app);
+        kick_deferred_tab_refresh(&mut app, &state);
         kick_active_gh_status(&app, &state);
         crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, idx)?;
         crate::tabs::persist_app_tabs(&app);
@@ -6286,29 +6290,53 @@ pub async fn select_tab(
     .await
 }
 
-/// If the active tab was restored as a lazy stub, run its first `refresh_diff()`
-/// now and clear the flag. No-op for tabs that already have their diff loaded.
-pub(crate) fn ensure_active_tab_loaded(app: &mut App) {
+/// If the active tab was restored as a lazy stub, kick its first
+/// `refresh_diff()` to a background thread and return immediately. The
+/// caller's snapshot shows the stub with `loading.tab_diff = true`; the
+/// loaded diff arrives via the revision-event poll when the worker finishes.
+/// (This used to run inline while holding the App lock — a tab switch onto a
+/// large stub tab serialized every other command behind a multi-second git
+/// diff + parse.)
+pub(crate) fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
+    let idx = app.active_tab;
     let tab = app.tab_mut();
     if !tab.needs_initial_refresh {
         return;
     }
     tab.needs_initial_refresh = false;
-    let t = std::time::Instant::now();
-    let is_local_pr = tab.pr_number.is_some() && !tab.is_remote();
-    let result = if is_local_pr {
-        tab.refetch_and_refresh_diff()
-    } else {
-        tab.refresh_diff()
-    };
-    if let Err(e) = result {
-        log::error!("er-desktop: lazy tab refresh failed: {e}");
-    } else {
+    let expect_root = tab.repo_root.clone();
+    if let Ok(mut l) = state.loading.lock() {
+        l.tab_diff = true;
+    }
+    let app_arc = Arc::clone(&state.app);
+    let loading = Arc::clone(&state.loading);
+    let desktop_revision = Arc::clone(&state.desktop_revision);
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        if let Ok(mut app) = app_arc.lock() {
+            // Re-resolve the tab by index + repo_root in case tabs changed
+            // while this worker waited for the lock.
+            if let Some(tab) = app.tabs.get_mut(idx).filter(|t| t.repo_root == expect_root) {
+                let is_local_pr = tab.pr_number.is_some() && !tab.is_remote();
+                let result = if is_local_pr {
+                    tab.refetch_and_refresh_diff()
+                } else {
+                    tab.refresh_diff()
+                };
+                if let Err(e) = result {
+                    log::error!("er-desktop: deferred tab refresh failed: {e}");
+                }
+            }
+        }
+        if let Ok(mut l) = loading.lock() {
+            l.tab_diff = false;
+        }
+        desktop_revision.fetch_add(1, Ordering::Relaxed);
         crate::profile_log::profile_log(
             "lazy_tab_refresh",
             &[("ms", t.elapsed().as_millis().to_string())],
         );
-    }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1260,7 +1260,7 @@ impl TabState {
     }
 
     /// Remote PR tab shell without network I/O. Call `refresh_diff()` (or focus
-    /// via desktop `ensure_active_tab_loaded`) to load `gh pr diff`.
+    /// via desktop `kick_deferred_tab_refresh`) to load `gh pr diff`.
     pub fn new_remote_stub(pr_ref: &crate::github::PrRef) -> Result<Self> {
         let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();

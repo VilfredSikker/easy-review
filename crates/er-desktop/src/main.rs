@@ -530,7 +530,7 @@ fn main() {
     // active tab. Every other tab is rebuilt as a stub (`needs_initial_refresh`
     // set) so a fresh launch with many tabs across many repos doesn't pay N
     // cold `git diff` calls before the window appears. Each stub is upgraded
-    // when its tab gains focus (see `commands::ensure_active_tab_loaded`).
+    // when its tab gains focus (see `commands::kick_deferred_tab_refresh`).
     let mut deferred_tab_indices: Vec<usize> = Vec::new();
     if let Some(file) = tabs::load_tabs() {
         let active_idx = file.active_idx.min(file.tabs.len().saturating_sub(1));
@@ -663,6 +663,7 @@ fn main() {
         inbox: Arc::clone(&inbox),
         tauri_app_handle: Arc::clone(&tauri_app_handle),
         auto_triage_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        sent_files: Arc::new(Mutex::new(Default::default())),
     };
 
     match pr_cache::load_persisted_pr_cache() {
@@ -1169,7 +1170,7 @@ fn main() {
 
     // Background warmer: refresh persisted tab stubs that belong to the
     // **active project**. Tabs from other projects stay stubs until the user
-    // focuses them (`commands::ensure_active_tab_loaded` runs the diff then).
+    // focuses them (`commands::kick_deferred_tab_refresh` loads the diff then).
     // Avoids paying `git diff` cost on launch for repos the user didn't open.
     if !deferred_tab_indices.is_empty() {
         let warmer_app = Arc::clone(&app_arc);
