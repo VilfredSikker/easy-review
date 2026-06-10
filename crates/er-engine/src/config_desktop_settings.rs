@@ -303,8 +303,11 @@ mod tests {
         assert!(!general.iter().any(|k| k == "features.arena"));
         assert!(app.is_empty());
 
+        // Theme is shared — the desktop app follows it too.
+        assert!(general.iter().any(|k| k == "display.theme"));
+        assert!(!terminal.iter().any(|k| k == "display.theme"));
+
         assert!(terminal.iter().any(|k| k == "features.view_branch"));
-        assert!(terminal.iter().any(|k| k == "display.theme"));
         assert!(terminal.iter().any(|k| k == "display.line_numbers"));
 
         assert_eq!(

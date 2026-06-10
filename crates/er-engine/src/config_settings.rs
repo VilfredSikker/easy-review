@@ -96,6 +96,16 @@ pub fn desktop_settings_fields_flat(config: &ErConfig) -> Vec<ConfigHubFieldDto>
 fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
     let mut fields: Vec<ConfigHubFieldDto> = vec![
         ConfigHubFieldDto::Section {
+            title: "Appearance".into(),
+        },
+        ConfigHubFieldDto::Cycle {
+            key: "display.theme".into(),
+            label: "Theme".into(),
+            description: "Color theme for the desktop app and TUI".into(),
+            options: THEME_OPTIONS.iter().map(|s| s.to_string()).collect(),
+            value: config.display.theme.clone(),
+        },
+        ConfigHubFieldDto::Section {
             title: "Commands".into(),
         },
         ConfigHubFieldDto::Text {
@@ -248,13 +258,6 @@ fn terminal_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
         },
         ConfigHubFieldDto::Section {
             title: "Display".into(),
-        },
-        ConfigHubFieldDto::Cycle {
-            key: "display.theme".into(),
-            label: "Theme".into(),
-            description: "TUI color theme".into(),
-            options: THEME_OPTIONS.iter().map(|s| s.to_string()).collect(),
-            value: config.display.theme.clone(),
         },
         ConfigHubFieldDto::Bool {
             key: "display.line_numbers".into(),

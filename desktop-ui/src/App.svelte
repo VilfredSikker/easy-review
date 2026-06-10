@@ -34,7 +34,18 @@
   import { browserHide } from "$lib/stores/browserHost";
   import { installExternalLinkGuard } from "$lib/openExternalUrl";
   import { startWindowDrag } from "$lib/windowDrag";
+  import { applyTheme } from "$lib/themes";
   const panels = $derived(app.snapshot?.panels);
+
+  // Follow the configured theme (`display.theme`, same as the TUI): override
+  // the CSS vars on the root element and switch the Shiki syntax theme.
+  $effect(() => {
+    if (!app.snapshot) return;
+    const theme = applyTheme(app.snapshot.theme);
+    if (app.currentSyntaxTheme !== theme.syntaxThemeId) {
+      app.currentSyntaxTheme = theme.syntaxThemeId;
+    }
+  });
 
   /** True when a loaded snapshot confirms there is no repo/diff and no saved projects. */
   const naturalEmpty = $derived(

@@ -50,6 +50,13 @@
   --color-tree-selected: rgba(88, 166, 255, 0.14);
   --color-finding: #c9a3f5;
 
+  /* Diff row drag-selection (overridden per theme by themes.ts). */
+  --color-row-select: rgba(59, 130, 246, 0.18);
+  --color-row-select-weak: rgba(59, 130, 246, 0.1);
+  --color-row-select-strong: rgba(59, 130, 246, 0.22);
+  --color-row-select-edge: rgba(59, 130, 246, 0.55);
+  --color-row-select-accent: #3b82f6;
+
   /* Semantic surface aliases (consume the ink-* scale). Use these in
    * components instead of raw ink shades or inline hex. */
   --color-bg:        var(--color-ink-900);
@@ -258,29 +265,29 @@ body {
   background: var(--color-ink-870);
 }
 .diff-row.is-selected > div {
-  background-color: rgba(59, 130, 246, 0.18) !important;
+  background-color: var(--color-row-select) !important;
 }
 .diff-row.is-selected > div.diff-add {
-  background-color: rgba(59, 130, 246, 0.18) !important;
+  background-color: var(--color-row-select) !important;
 }
 .diff-row.is-selected > div.gutter:first-child {
-  box-shadow: inset 3px 0 0 0 #3b82f6;
+  box-shadow: inset 3px 0 0 0 var(--color-row-select-accent);
 }
 .diff-row.is-anchor-range > div {
-  background-color: rgba(59, 130, 246, 0.1) !important;
+  background-color: var(--color-row-select-weak) !important;
 }
 .diff-row.is-anchor-range > div.diff-add,
 .diff-row.is-anchor-range > div.diff-del {
-  background-color: rgba(59, 130, 246, 0.1) !important;
+  background-color: var(--color-row-select-weak) !important;
 }
 .diff-row.is-anchor-range > div.gutter:first-child,
 .diff-row.is-anchor-range > .gutter:nth-child(3) {
-  box-shadow: inset 2px 0 0 0 rgba(59, 130, 246, 0.55);
+  box-shadow: inset 2px 0 0 0 var(--color-row-select-edge);
 }
 .diff-row.is-selected.is-anchor-range > div {
-  background-color: rgba(59, 130, 246, 0.22) !important;
+  background-color: var(--color-row-select-strong) !important;
 }
-.gutter { color: #737373; user-select: none; position: relative; }
+.gutter { color: var(--color-muted); user-select: none; position: relative; }
 .diff-add { background-color: var(--color-add-bg); }
 .diff-del { background-color: var(--color-del-bg); }
 /* First gutter per panel gets the left accent border — unified nth-child(1), split left nth-child(1), split right nth-child(3) */
