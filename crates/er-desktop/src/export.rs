@@ -14,6 +14,26 @@ fn default_true() -> bool {
     true
 }
 
+/// Output format for the export body. `Markdown` is the raw document;
+/// `Html` is the same document rendered to a standalone dark-themed page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    #[default]
+    Markdown,
+    Html,
+}
+
+impl ExportFormat {
+    /// File extension for `export.<ext>` when saving to disk.
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportFormat::Markdown => "md",
+            ExportFormat::Html => "html",
+        }
+    }
+}
+
 /// Toggles for which annotation kinds to include in the export.
 ///
 /// JSON shape from the UI uses camelCase (Tauri 2 default).
@@ -26,6 +46,8 @@ pub struct ExportOpts {
     pub only_unresolved: bool,
     #[serde(default = "default_true")]
     pub include_annotations: bool,
+    #[serde(default)]
+    pub format: ExportFormat,
 }
 
 impl Default for ExportOpts {
@@ -36,18 +58,33 @@ impl Default for ExportOpts {
             include_findings: true,
             only_unresolved: false,
             include_annotations: true,
+            format: ExportFormat::Markdown,
         }
+    }
+}
+
+/// Render the export body in the format selected by `opts.format`.
+/// Both formats share the same markdown source — HTML is derived from it.
+pub fn render_export(tab: &TabState, opts: &ExportOpts) -> String {
+    let markdown = render_markdown(tab, opts);
+    match opts.format {
+        ExportFormat::Markdown => markdown,
+        ExportFormat::Html => render_html_document(&markdown, branch_label(tab)),
+    }
+}
+
+fn branch_label(tab: &TabState) -> &str {
+    if tab.current_branch.is_empty() {
+        "(unknown)"
+    } else {
+        tab.current_branch.as_str()
     }
 }
 
 /// Render the active tab's annotations as a single markdown document, grouped
 /// by file path. Returns a placeholder body when there is nothing to export.
 pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
-    let branch = if tab.current_branch.is_empty() {
-        "(unknown)"
-    } else {
-        tab.current_branch.as_str()
-    };
+    let branch = branch_label(tab);
 
     // Group items by file path while preserving insertion order across kinds.
     // Within a file we emit: questions → comments → findings, matching the
@@ -357,6 +394,118 @@ fn push_blockquote(out: &mut String, body: &str, depth: usize) {
     out.push('\n');
 }
 
+/// Convert markdown to an HTML fragment via pulldown-cmark.
+///
+/// Raw HTML embedded in annotation text is re-emitted as text events so it is
+/// escaped by the serializer — review content is arbitrary user/AI text and
+/// must never become live markup in the exported page.
+pub fn markdown_to_html(markdown: &str) -> String {
+    use pulldown_cmark::{html, Event, Options, Parser};
+    let parser = Parser::new_ext(markdown, Options::empty()).map(|event| match event {
+        Event::Html(raw) => Event::Text(raw),
+        Event::InlineHtml(raw) => Event::Text(raw),
+        other => other,
+    });
+    let mut out = String::new();
+    html::push_html(&mut out, parser);
+    out
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Wrap rendered markdown in a standalone HTML document. The embedded styles
+/// mirror the desktop dark theme (ink scale + semantic accents) so the saved
+/// page reads like the app: dense, monospace headers, semantic color only.
+pub fn render_html_document(markdown: &str, title: &str) -> String {
+    let body = markdown_to_html(markdown);
+    let title = html_escape(title);
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review export — {title}</title>
+<style>
+  :root {{
+    --bg: #0a0a0a;
+    --surface: #0d0d0d;
+    --border: #2a2a2a;
+    --hairline: #1f1f1f;
+    --fg: #f5f5f5;
+    --fg-2: #cccccc;
+    --fg-3: #999999;
+    --muted: #5e5e5e;
+    --accent: #ff6a3d;
+    --code-fg: #07c480;
+    --code-bg: rgba(34, 197, 94, 0.08);
+    --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    max-width: 860px;
+    background: var(--bg);
+    color: var(--fg-2);
+    font: 14px/1.55 "DM Sans", system-ui, sans-serif;
+    overflow-wrap: anywhere;
+  }}
+  h1 {{ font-size: 1.3rem; color: var(--fg); margin: 0 0 1rem; }}
+  h2 {{
+    font-size: 0.95rem;
+    font-family: var(--mono);
+    color: var(--fg-2);
+    margin: 1.4rem 0 0.5rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--hairline);
+  }}
+  h3 {{ font-size: 0.85rem; color: var(--fg-2); margin: 1rem 0 0.35rem; }}
+  h4, h5, h6 {{ font-size: 0.8rem; color: var(--fg-3); margin: 0.8rem 0 0.3rem; }}
+  p {{ margin: 0 0 0.5rem; }}
+  ul, ol {{ margin: 0.3rem 0 0.6rem 1.3rem; padding: 0; }}
+  li {{ margin: 0.15rem 0; }}
+  blockquote {{
+    margin: 0.35rem 0 0.7rem;
+    padding-left: 0.75rem;
+    border-left: 2px solid var(--border);
+    color: var(--fg-3);
+  }}
+  blockquote blockquote {{ margin: 0.25rem 0; }}
+  code {{
+    font-family: var(--mono);
+    font-size: 0.85em;
+    color: var(--code-fg);
+    background: var(--code-bg);
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+  }}
+  pre {{
+    margin: 0.5rem 0 0.8rem;
+    padding: 0.6rem 0.7rem;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    overflow-x: auto;
+  }}
+  pre code {{ background: none; padding: 0; color: var(--fg-2); }}
+  a {{ color: var(--accent); }}
+  strong {{ color: var(--fg); }}
+  hr {{ border: 0; border-top: 1px solid var(--hairline); margin: 1rem 0; }}
+</style>
+</head>
+<body>
+{body}</body>
+</html>
+"#
+    )
+}
+
 /// Minimal "Xm ago" / "Xh ago" / "Xd ago" label from an ISO 8601 timestamp.
 /// Returns "" if parsing fails (we don't pull chrono just for this).
 fn ago_label(ts: &str) -> String {
@@ -501,6 +650,7 @@ mod tests {
             include_findings: false,
             only_unresolved: true,
             include_annotations: false,
+            ..ExportOpts::default()
         };
         let out = render_markdown(&tab, &opts);
 
@@ -519,6 +669,96 @@ mod tests {
         let tab = tab_with_ai(AiState::default());
         let out = render_markdown(&tab, &ExportOpts::default());
         assert!(out.contains("No annotations."), "got:\n{out}");
+    }
+
+    #[test]
+    fn html_format_renders_standalone_document() {
+        let mut ai = AiState::default();
+        ai.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![make_question(
+                "q-1",
+                "src/a.ts",
+                7,
+                "Is `unwrap` safe here?",
+                false,
+            )],
+        });
+        let tab = tab_with_ai(ai);
+        let opts = ExportOpts {
+            format: ExportFormat::Html,
+            ..ExportOpts::default()
+        };
+        let out = render_export(&tab, &opts);
+
+        assert!(out.starts_with("<!doctype html>"), "got:\n{out}");
+        assert!(out.contains("</html>"), "got:\n{out}");
+        assert!(
+            out.contains("<h1>Review export — feature</h1>"),
+            "missing rendered h1:\n{out}"
+        );
+        assert!(
+            out.contains("<h2>src/a.ts</h2>"),
+            "missing rendered file heading:\n{out}"
+        );
+        assert!(
+            out.contains("<code>unwrap</code>"),
+            "inline code should render:\n{out}"
+        );
+    }
+
+    #[test]
+    fn html_format_escapes_raw_html_in_annotations() {
+        let mut ai = AiState::default();
+        ai.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![make_question(
+                "q-1",
+                "src/a.ts",
+                1,
+                "<script>alert(1)</script> <img src=x onerror=alert(2)>",
+                false,
+            )],
+        });
+        let tab = tab_with_ai(ai);
+        let opts = ExportOpts {
+            format: ExportFormat::Html,
+            ..ExportOpts::default()
+        };
+        let out = render_export(&tab, &opts);
+
+        assert!(
+            !out.contains("<script>alert(1)"),
+            "raw script tag must be escaped:\n{out}"
+        );
+        assert!(
+            !out.contains("<img src=x"),
+            "raw img tag must be escaped:\n{out}"
+        );
+        assert!(
+            out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "expected escaped script tag:\n{out}"
+        );
+    }
+
+    #[test]
+    fn markdown_format_is_default_and_unchanged() {
+        let tab = tab_with_ai(AiState::default());
+        let opts: ExportOpts = serde_json::from_str(
+            r#"{"includeComments":true,"includeQuestions":true,"includeFindings":true,"onlyUnresolved":false}"#,
+        )
+        .unwrap();
+        assert_eq!(opts.format, ExportFormat::Markdown);
+        assert_eq!(render_export(&tab, &opts), render_markdown(&tab, &opts));
+
+        let html_opts: ExportOpts =
+            serde_json::from_str(r#"{"includeComments":true,"includeQuestions":true,"includeFindings":true,"onlyUnresolved":false,"format":"html"}"#)
+                .unwrap();
+        assert_eq!(html_opts.format, ExportFormat::Html);
+        assert_eq!(ExportFormat::Markdown.extension(), "md");
+        assert_eq!(ExportFormat::Html.extension(), "html");
     }
 
     #[test]

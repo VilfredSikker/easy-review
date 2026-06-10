@@ -4,20 +4,25 @@
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { app } from "$lib/stores/app.svelte";
 
+  type ExportFormat = "markdown" | "html";
+  type PreviewView = "rendered" | "source";
   type ExportOpts = {
     includeComments: boolean;
     includeQuestions: boolean;
     includeFindings: boolean;
     includeAnnotations: boolean;
     onlyUnresolved: boolean;
+    format: ExportFormat;
   };
-  type ExportOptionKey = keyof ExportOpts;
+  type ExportOptionKey = keyof Omit<ExportOpts, "format">;
 
   let includeComments = $state(true);
   let includeQuestions = $state(true);
   let includeFindings = $state(true);
   let includeAnnotations = $state(true);
   let onlyUnresolved = $state(false);
+  let format = $state<ExportFormat>("markdown");
+  let previewView = $state<PreviewView>("rendered");
 
   let preview = $state("");
   let loadingPreview = $state(false);
@@ -34,7 +39,14 @@
       includeFindings,
       includeAnnotations,
       onlyUnresolved,
+      format,
     };
+  }
+
+  function setFormat(next: ExportFormat) {
+    if (next === format) return;
+    format = next;
+    void refreshPreview();
   }
 
   async function refreshPreview(optsSnapshot = currentExportOpts()) {
@@ -59,6 +71,7 @@
     includeFindings = nextOpts.includeFindings;
     includeAnnotations = nextOpts.includeAnnotations;
     onlyUnresolved = nextOpts.onlyUnresolved;
+    format = nextOpts.format;
     void refreshPreview(nextOpts);
   }
 
@@ -68,6 +81,7 @@
 
   function includeAllOptions() {
     applyExportOpts({
+      ...currentExportOpts(),
       includeComments: true,
       includeQuestions: true,
       includeFindings: true,
@@ -78,6 +92,7 @@
 
   function excludeAllOptions() {
     applyExportOpts({
+      ...currentExportOpts(),
       includeComments: false,
       includeQuestions: false,
       includeFindings: false,
@@ -94,8 +109,8 @@
     try {
       const body = await invoke<string>("export_review", { opts: currentExportOpts() });
       await copyToClipboard(body);
-      app.pushLog("info", "clipboard", `Copied ${body.length} chars`);
-      savedPath = "Copied to clipboard";
+      app.pushLog("info", "clipboard", `Copied ${body.length} chars (${format})`);
+      savedPath = `Copied ${format === "html" ? "HTML" : "markdown"} to clipboard`;
       savedAt = Date.now();
       setTimeout(() => {
         if (Date.now() - savedAt >= 1900) savedPath = null;
@@ -146,8 +161,29 @@
     {#if loadingPreview}
       <span class="text-[11px] text-muted mono">Refreshing…</span>
     {/if}
+    <div
+      class="ml-auto flex items-center rounded border border-border overflow-hidden"
+      role="group"
+      aria-label="Export format"
+    >
+      <button
+        class={`px-2 py-1 text-xs ${format === "markdown" ? "bg-hover text-fg" : "text-muted hover:text-fg-2"}`}
+        aria-pressed={format === "markdown"}
+        onclick={() => setFormat("markdown")}
+      >
+        Markdown
+      </button>
+      <span class="w-px self-stretch bg-border" aria-hidden="true"></span>
+      <button
+        class={`px-2 py-1 text-xs ${format === "html" ? "bg-hover text-fg" : "text-muted hover:text-fg-2"}`}
+        aria-pressed={format === "html"}
+        onclick={() => setFormat("html")}
+      >
+        HTML
+      </button>
+    </div>
     <button
-      class="ml-auto px-2 py-1 text-xs border border-border rounded hover:bg-hover"
+      class="px-2 py-1 text-xs border border-border rounded hover:bg-hover"
       onclick={handleCopyToClipboard}
       disabled={loadingPreview && !preview}
     >
@@ -232,19 +268,56 @@
     {/if}
   </div>
 
-  <div class="flex-1 min-h-0 overflow-y-auto p-4">
-    <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Preview</div>
-    <div class="min-h-full text-[12px] text-fg-2 bg-bg border border-hairline rounded p-3 break-words export-preview">
-      {#if preview}
-        <MarkdownText text={preview} className="export-preview-markdown" />
-      {:else if loadingPreview}
-        <p class="text-muted mono">(loading…)</p>
-      {:else if error}
-        <p class="text-del-fg mono">(error) {error}</p>
-      {:else}
-        <p class="text-muted">No preview.</p>
-      {/if}
+  <div class="flex-1 min-h-0 overflow-hidden p-4 flex flex-col">
+    <div class="flex items-center gap-2 mb-1">
+      <span class="text-[10px] uppercase tracking-wider text-muted">
+        Preview — {format === "html" ? "export.html" : "export.md"}
+      </span>
+      <div class="ml-auto flex items-center gap-2 text-[10px] uppercase tracking-wider">
+        <button
+          class={previewView === "rendered" ? "text-fg-2" : "text-muted hover:text-fg-3"}
+          aria-pressed={previewView === "rendered"}
+          onclick={() => (previewView = "rendered")}
+        >
+          Rendered
+        </button>
+        <button
+          class={previewView === "source" ? "text-fg-2" : "text-muted hover:text-fg-3"}
+          aria-pressed={previewView === "source"}
+          onclick={() => (previewView = "source")}
+        >
+          Source
+        </button>
+      </div>
     </div>
+    {#if preview && previewView === "rendered" && format === "html"}
+      <!-- WYSIWYG preview of the standalone HTML document. sandbox="" blocks
+           scripts/navigation; the document itself escapes annotation HTML. -->
+      <iframe
+        class="flex-1 min-h-0 w-full bg-bg border border-hairline rounded"
+        title="HTML export preview"
+        sandbox=""
+        srcdoc={preview}
+      ></iframe>
+    {:else}
+      <div
+        class="flex-1 min-h-0 overflow-y-auto text-[12px] text-fg-2 bg-bg border border-hairline rounded p-3 break-words export-preview"
+      >
+        {#if preview}
+          {#if previewView === "source"}
+            <pre class="mono text-[11px] leading-relaxed text-fg-3 whitespace-pre-wrap break-words">{preview}</pre>
+          {:else}
+            <MarkdownText text={preview} className="export-preview-markdown" />
+          {/if}
+        {:else if loadingPreview}
+          <p class="text-muted mono">(loading…)</p>
+        {:else if error}
+          <p class="text-del-fg mono">(error) {error}</p>
+        {:else}
+          <p class="text-muted">No preview.</p>
+        {/if}
+      </div>
+    {/if}
   </div>
 </div>
 

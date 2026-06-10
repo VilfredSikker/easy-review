@@ -29,6 +29,7 @@ rfd = "0.15"
 dirs.workspace = true
 portable-pty = "0.8"
 ureq = { version = "2", default-features = false, features = ["tls"] }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 notify-rust = "4.17"

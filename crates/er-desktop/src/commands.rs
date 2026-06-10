@@ -6053,19 +6053,21 @@ pub fn update_thread_message(
     Ok(snap_from(&app, &state))
 }
 
-// ── Review export (markdown) ─────────────────────────────────────────────────
+// ── Review export (markdown / html) ──────────────────────────────────────────
 
-use crate::export::{render_markdown, ExportOpts};
+use crate::export::{render_export, render_markdown, ExportOpts};
 
-/// Render the active tab's annotations as markdown and return the body to
-/// the UI for clipboard copy / preview.
+/// Render the active tab's annotations in the format selected by
+/// `opts.format` (markdown or standalone HTML) and return the body to the UI
+/// for clipboard copy / preview.
 #[tauri::command]
 pub fn export_review(opts: ExportOpts, state: State<AppState>) -> Result<String, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(render_markdown(app.tab(), &opts))
+    Ok(render_export(app.tab(), &opts))
 }
 
-/// Render and write to disk. Empty `path` writes to `<comments_dir>/export.md`.
+/// Render and write to disk. Empty `path` writes to
+/// `<comments_dir>/export.<md|html>` based on `opts.format`.
 /// Returns the resolved absolute path so the UI can show it in a toast.
 #[tauri::command]
 pub fn export_review_to_file(
@@ -6075,11 +6077,11 @@ pub fn export_review_to_file(
 ) -> Result<String, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab = app.tab();
-    let body = render_markdown(tab, &opts);
+    let body = render_export(tab, &opts);
     let target = if path.trim().is_empty() {
         let dir = tab.comments_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {dir}: {e}"))?;
-        format!("{dir}/export.md")
+        format!("{dir}/export.{}", opts.format.extension())
     } else {
         path
     };
