@@ -15,20 +15,21 @@
   }
 </script>
 
-<div class="py-2">
-  <div class="mb-1.5">
+<div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3">
+  <div class="min-w-0">
     <div class="text-sm text-fg">{label}</div>
     {#if description}
       <div class="text-xs text-muted mt-0.5">{description}</div>
     {/if}
   </div>
-  <div class="flex flex-wrap gap-1">
+  <div class="inline-flex min-w-0 max-w-full p-0.5 gap-0.5 bg-ink-850 border border-hairline rounded-lg flex-wrap justify-end">
     {#each options as opt (opt)}
       <button
         type="button"
-        class="px-2.5 py-1 text-xs rounded-md border transition-colors {value === opt
-          ? 'bg-accent text-black border-accent'
-          : 'bg-surface text-fg-2 border-hairline hover:bg-hover'}"
+        aria-pressed={value === opt}
+        class="px-2.5 py-1 text-xs rounded-md transition-colors {value === opt
+          ? 'bg-accent-soft text-accent font-medium'
+          : 'text-fg-3 hover:text-fg hover:bg-hover'}"
         onclick={() => onchange(opt)}
       >
         {display(opt)}
