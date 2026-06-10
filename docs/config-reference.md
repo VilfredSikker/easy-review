@@ -78,6 +78,26 @@ id = "sonnet-4.6"
 label = "Sonnet 4.6"
 args = ["--model", "claude-sonnet-4-6"]
 
+[[ai_hub.providers.claude.models]]
+id = "opus-4.6"
+label = "Opus 4.6"
+args = ["--model", "claude-opus-4-6"]
+
+[[ai_hub.providers.claude.models]]
+id = "opus-4.7"
+label = "Opus 4.7"
+args = ["--model", "claude-opus-4-7"]
+
+[[ai_hub.providers.claude.models]]
+id = "opus-4.8"
+label = "Opus 4.8"
+args = ["--model", "claude-opus-4-8"]
+
+[[ai_hub.providers.claude.models]]
+id = "haiku-4.5"
+label = "Haiku 4.5"
+args = ["--model", "claude-haiku-4-5-20251001"]
+
 [ai_hub.providers.codex]
 label = "Codex"
 command = "codex"
@@ -103,6 +123,7 @@ Rules:
 - Provider `args` are the shared base arguments for that CLI.
 - Model `args` are appended after provider args.
 - If `[ai_hub]` is absent, `er` falls back to the single `[agent]` configuration.
+- On load, `er` merges any missing built-in catalog models (e.g. new Opus releases) into your config in memory without rewriting your TOML file.
 - The selected provider/model applies to AI Hub actions such as review, questions, quiz, wizard, and summary.
 - `[ai_hub.reviewer_models]` overrides the hub model for specific reviewer kinds. Triage uses `triage = "haiku-4.5"` by default in the example config; when unset, triage falls back to the fastest model in the active provider list.
 
