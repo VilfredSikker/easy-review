@@ -111,20 +111,25 @@ fn record_recent_pr_on_project(proj: &mut ProjectRecord, pr_number: u64, title: 
     proj.recent_prs.truncate(MAX_PR_HISTORY);
 }
 
-fn normalize_remote_slug(remote: &str) -> Option<String> {
+/// Normalize a GitHub remote reference (URL or `owner/repo`) to a lowercase
+/// `owner/repo` slug. Does not validate the shape — see [`valid_remote_slug`].
+pub fn normalize_remote_slug(remote: &str) -> String {
     let trimmed = remote.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
     let without_scheme = trimmed
         .strip_prefix("https://github.com/")
         .or_else(|| trimmed.strip_prefix("http://github.com/"))
         .unwrap_or(trimmed);
-    let slug = without_scheme
+    without_scheme
         .trim_end_matches(".git")
         .trim_matches('/')
-        .to_ascii_lowercase();
-    if slug.split('/').count() == 2 {
+        .to_ascii_lowercase()
+}
+
+/// Like [`normalize_remote_slug`], but returns `None` unless the result is a
+/// well-formed `owner/repo` slug.
+fn valid_remote_slug(remote: &str) -> Option<String> {
+    let slug = normalize_remote_slug(remote);
+    if !slug.is_empty() && slug.split('/').count() == 2 {
         Some(slug)
     } else {
         None
@@ -136,12 +141,12 @@ fn remote_project_id(remote: &str) -> String {
 }
 
 fn ensure_remote_project_in_file(file: &mut ProjectsFile, remote: &str) -> anyhow::Result<String> {
-    let remote = normalize_remote_slug(remote)
+    let remote = valid_remote_slug(remote)
         .ok_or_else(|| anyhow::anyhow!("Invalid GitHub remote slug: {remote}"))?;
     if let Some(existing) = file.projects.iter().find(|p| {
         p.remote
             .as_deref()
-            .and_then(normalize_remote_slug)
+            .and_then(valid_remote_slug)
             .is_some_and(|existing| existing == remote)
     }) {
         return Ok(existing.id.clone());
@@ -739,11 +744,11 @@ pub fn resolve_project_id_for_inbox(
             return Some(p.id.clone());
         }
     }
-    if let Some(slug) = remote.and_then(normalize_remote_slug) {
+    if let Some(slug) = remote.and_then(valid_remote_slug) {
         if let Some(p) = file.projects.iter().find(|p| {
             p.remote
                 .as_deref()
-                .and_then(normalize_remote_slug)
+                .and_then(valid_remote_slug)
                 .is_some_and(|r| r == slug)
         }) {
             return Some(p.id.clone());
@@ -759,11 +764,11 @@ pub fn review_ignore_globs_for_repo(repo_root: &str, remote: Option<&str>) -> Ve
             return p.review_ignore_globs.clone();
         }
     }
-    if let Some(slug) = remote.and_then(normalize_remote_slug) {
+    if let Some(slug) = remote.and_then(valid_remote_slug) {
         if let Some(p) = file.projects.iter().find(|p| {
             p.remote
                 .as_deref()
-                .and_then(normalize_remote_slug)
+                .and_then(valid_remote_slug)
                 .is_some_and(|r| r == slug)
         }) {
             return p.review_ignore_globs.clone();

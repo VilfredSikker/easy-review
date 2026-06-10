@@ -110,10 +110,11 @@ Storybook / Vite without the Rust backend:
 
 ```bash
 cd desktop-ui
-npm install
-npm run dev          # http://localhost:5183
-npm run storybook    # http://localhost:6006
-npm run check        # svelte-check
+bun install
+bun run dev          # http://localhost:5183
+bun run storybook    # http://localhost:6006
+bun run check        # svelte-check
+bun test src         # unit tests
 ```
 
 ## Per-crate: release build
@@ -149,7 +150,7 @@ Requires `cargo-tauri` and platform deps (WebKit/GTK on Linux). Not part of the 
 
 ```bash
 cd desktop-ui
-npm run build        # dist/ for Vite production bundle
+bun run build        # dist/ for Vite production bundle
 ```
 
 ## Whole workspace

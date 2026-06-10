@@ -17,7 +17,7 @@ use er_engine::config::ErConfig;
 
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
-use crate::projects;
+use crate::projects::{self, normalize_remote_slug};
 use crate::snapshot::{
     build_chrome_snapshot, build_file_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary,
     FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot,
@@ -4028,18 +4028,6 @@ fn do_open_remote_pr(
     tab.reload_remote_comments();
     place_tab(app, tab, replace);
     Ok(())
-}
-
-fn normalize_remote_slug(remote: &str) -> String {
-    let trimmed = remote.trim();
-    let without_scheme = trimmed
-        .strip_prefix("https://github.com/")
-        .or_else(|| trimmed.strip_prefix("http://github.com/"))
-        .unwrap_or(trimmed);
-    without_scheme
-        .trim_end_matches(".git")
-        .trim_matches('/')
-        .to_ascii_lowercase()
 }
 
 fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) -> Option<String> {

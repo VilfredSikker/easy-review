@@ -8,7 +8,7 @@ use er_engine::git::{DiffFile, FileStatus, LineType};
 use serde::Serialize;
 
 use crate::inbox::InboxHandle;
-use crate::projects;
+use crate::projects::{self, normalize_remote_slug};
 
 /// Mtime/size-cached wrapper around `load_ui_annotations`. `build_snapshot`
 /// runs on every poll; the annotations file rarely changes, so skip the disk
@@ -1040,9 +1040,7 @@ pub type PendingAiReplies = Arc<Mutex<HashMap<String, u64>>>;
 
 #[derive(Clone, Default)]
 pub struct ProjectMeta {
-    #[allow(dead_code)]
     pub current_branch: String,
-    #[allow(dead_code)]
     pub base_branch: String,
     pub local_branches: Vec<BranchInfo>,
     pub auto_branches: Vec<BranchInfo>,
@@ -2175,18 +2173,6 @@ fn resolve_recent_prs(
         }
     }
     out
-}
-
-fn normalize_remote_slug(remote: &str) -> String {
-    let trimmed = remote.trim();
-    let without_scheme = trimmed
-        .strip_prefix("https://github.com/")
-        .or_else(|| trimmed.strip_prefix("http://github.com/"))
-        .unwrap_or(trimmed);
-    without_scheme
-        .trim_end_matches(".git")
-        .trim_matches('/')
-        .to_ascii_lowercase()
 }
 
 fn build_projects(

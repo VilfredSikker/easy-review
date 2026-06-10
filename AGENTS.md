@@ -16,7 +16,7 @@ environment gotchas, and a map of the desktop app, which spans three layers.
 | Test desktop backend | `cargo test -p er-desktop` |
 | Desktop dev | `./scripts/tauri-dev.sh` |
 | Desktop release | `./scripts/tauri-build.sh` or `cargo desktop-release` |
-| Frontend checks | `cd desktop-ui && npm run check && npm test` |
+| Frontend checks | `cd desktop-ui && bun run check && bun test src` |
 | Test full workspace | `cargo test --workspace` (slow — builds Tauri) |
 | Reclaim `target/` disk | `./scripts/cargo-gc.sh` (also runs from dev scripts) |
 | Clippy | `cargo clippy --workspace --all-targets -- -D warnings` |

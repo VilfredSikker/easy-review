@@ -11,6 +11,11 @@ pub mod normal;
 
 pub use normal::handle_normal_input;
 
+/// Byte index of the char boundary immediately before `pos` (0 if at start).
+fn prev_char_boundary(s: &str, pos: usize) -> usize {
+    s[..pos].char_indices().last().map(|(i, _)| i).unwrap_or(0)
+}
+
 pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     // Config hub overlay — handles inline string editing
     if matches!(app.overlay, Some(app::OverlayData::ConfigHub { .. })) {
@@ -24,72 +29,37 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
 
         if is_editing {
             match key.code {
-                KeyCode::Char(c) => {
+                KeyCode::Enter => app.config_hub_confirm_edit(),
+                KeyCode::Esc => app.config_hub_cancel_edit(),
+                code => {
                     if let Some(app::OverlayData::ConfigHub {
                         editing: Some(ref mut edit),
                         ..
                     }) = &mut app.overlay
                     {
-                        edit.buffer.insert(edit.cursor_pos, c);
-                        edit.cursor_pos += c.len_utf8();
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let Some(app::OverlayData::ConfigHub {
-                        editing: Some(ref mut edit),
-                        ..
-                    }) = &mut app.overlay
-                    {
-                        if edit.cursor_pos > 0 {
-                            // Find the char boundary before cursor_pos
-                            let prev_boundary = edit.buffer[..edit.cursor_pos]
-                                .char_indices()
-                                .last()
-                                .map(|(i, _)| i)
-                                .unwrap_or(0);
-                            edit.cursor_pos = prev_boundary;
-                            edit.buffer.remove(edit.cursor_pos);
+                        match code {
+                            KeyCode::Char(c) => {
+                                edit.buffer.insert(edit.cursor_pos, c);
+                                edit.cursor_pos += c.len_utf8();
+                            }
+                            KeyCode::Backspace if edit.cursor_pos > 0 => {
+                                edit.cursor_pos = prev_char_boundary(&edit.buffer, edit.cursor_pos);
+                                edit.buffer.remove(edit.cursor_pos);
+                            }
+                            KeyCode::Left if edit.cursor_pos > 0 => {
+                                edit.cursor_pos = prev_char_boundary(&edit.buffer, edit.cursor_pos);
+                            }
+                            KeyCode::Right if edit.cursor_pos < edit.buffer.len() => {
+                                let next_char = edit.buffer[edit.cursor_pos..]
+                                    .chars()
+                                    .next()
+                                    .unwrap_or('\0');
+                                edit.cursor_pos += next_char.len_utf8();
+                            }
+                            _ => {}
                         }
                     }
                 }
-                KeyCode::Left => {
-                    if let Some(app::OverlayData::ConfigHub {
-                        editing: Some(ref mut edit),
-                        ..
-                    }) = &mut app.overlay
-                    {
-                        if edit.cursor_pos > 0 {
-                            let prev_boundary = edit.buffer[..edit.cursor_pos]
-                                .char_indices()
-                                .last()
-                                .map(|(i, _)| i)
-                                .unwrap_or(0);
-                            edit.cursor_pos = prev_boundary;
-                        }
-                    }
-                }
-                KeyCode::Right => {
-                    if let Some(app::OverlayData::ConfigHub {
-                        editing: Some(ref mut edit),
-                        ..
-                    }) = &mut app.overlay
-                    {
-                        if edit.cursor_pos < edit.buffer.len() {
-                            let next_char = edit.buffer[edit.cursor_pos..]
-                                .chars()
-                                .next()
-                                .unwrap_or('\0');
-                            edit.cursor_pos += next_char.len_utf8();
-                        }
-                    }
-                }
-                KeyCode::Enter => {
-                    app.config_hub_confirm_edit();
-                }
-                KeyCode::Esc => {
-                    app.config_hub_cancel_edit();
-                }
-                _ => {}
             }
         } else {
             match key.code {

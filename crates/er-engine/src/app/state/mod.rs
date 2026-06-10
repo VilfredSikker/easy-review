@@ -158,15 +158,10 @@ impl DiffCache {
     }
 
     pub fn get(&mut self, hash: &str) -> Option<&Vec<DiffFile>> {
-        // TODO(risk:minor): remove(pos).unwrap() is safe only because position() just confirmed the index exists,
-        // but if VecDeque ever changes contract this is a hidden panic. Consider using swap_remove_back or expect().
-        if let Some(pos) = self.entries.iter().position(|(h, _)| h == hash) {
-            let entry = self.entries.remove(pos).unwrap();
-            self.entries.push_back(entry);
-            self.entries.back().map(|(_, f)| f)
-        } else {
-            None
-        }
+        let pos = self.entries.iter().position(|(h, _)| h == hash)?;
+        let entry = self.entries.remove(pos)?;
+        self.entries.push_back(entry);
+        self.entries.back().map(|(_, f)| f)
     }
 
     pub fn insert(&mut self, hash: String, files: Vec<DiffFile>) {
@@ -640,9 +635,6 @@ pub struct TabState {
     /// Precomputed hunk offsets for O(1) scroll position lookup
     pub hunk_offsets: Option<HunkOffsets>,
 
-    /// Cached visible file indices (invalidated on search/filter/file list change)
-    pub file_tree_cache: Option<FileTreeCache>,
-
     /// Memory budget tracking
     pub mem_budget: MemoryBudget,
 
@@ -897,9 +889,6 @@ impl SessionState {
 pub struct HunkOffsets {
     /// offsets[i] = logical line number where hunk i starts
     pub offsets: Vec<usize>,
-    /// Total logical lines for this file
-    #[allow(dead_code)]
-    pub total: usize,
 }
 
 impl HunkOffsets {
@@ -912,24 +901,8 @@ impl HunkOffsets {
             cursor += hunk.lines.len();
             cursor += 1; // blank line between hunks
         }
-        Self {
-            offsets,
-            total: cursor,
-        }
+        Self { offsets }
     }
-}
-
-/// Cached visible file indices for file tree rendering
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct FileTreeCache {
-    /// Indices into the files array that pass filters
-    pub visible: Vec<usize>,
-    /// Inputs that produced this cache
-    search_query: String,
-    show_unreviewed_only: bool,
-    file_count: usize,
-    reviewed_count: usize,
 }
 
 /// Lightweight memory tracking
@@ -1082,7 +1055,6 @@ impl TabState {
         tab.clamp_hunk();
         tab.ensure_file_parsed();
         tab.rebuild_hunk_offsets();
-        tab.file_tree_cache = None;
         tab.mtime_cache.clear();
         tab.update_mem_budget();
         let t_ai_reload = Instant::now();
@@ -1218,7 +1190,6 @@ impl TabState {
             unresolved_count: 0,
             compaction_config,
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode,
             file_headers,
@@ -1337,7 +1308,6 @@ impl TabState {
             unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode: false,
             file_headers: Vec::new(),
@@ -1452,7 +1422,6 @@ impl TabState {
             unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode: false,
             file_headers: Vec::new(),
@@ -1567,7 +1536,6 @@ impl TabState {
             unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode: false,
             file_headers: Vec::new(),
@@ -2055,7 +2023,6 @@ impl TabState {
         self.diff_scroll = 0;
         self.h_scroll = 0;
         self.rebuild_hunk_offsets();
-        self.file_tree_cache = None;
     }
 
     /// Whether `raw_diff` (if present) matches the review `scope` for this tab.
@@ -2271,7 +2238,6 @@ impl TabState {
             self.clamp_hunk();
             self.ensure_file_parsed();
             self.rebuild_hunk_offsets();
-            self.file_tree_cache = None;
             self.mtime_cache.clear();
             self.update_mem_budget();
             // Reload AI sidecar for this branch's comment directory
@@ -2341,7 +2307,6 @@ impl TabState {
                 self.clamp_hunk();
                 self.ensure_file_parsed();
                 self.rebuild_hunk_offsets();
-                self.file_tree_cache = None;
                 self.update_mem_budget();
 
                 if recompute_branch_hash {
@@ -2576,9 +2541,6 @@ impl TabState {
 
         // Rebuild hunk offsets for the new selection
         self.rebuild_hunk_offsets();
-
-        // Invalidate file tree cache
-        self.file_tree_cache = None;
 
         log_branch_profile_phase(self, "refresh_diff_impl_total", t_total);
         Ok(())
@@ -2868,84 +2830,56 @@ impl TabState {
         self.layers.show_ai_findings = !self.layers.show_ai_findings;
     }
 
+    /// Forward cycle order for the side panel. `FileDetail` and `AgentLog` are
+    /// always available; the others are skipped when their data is absent.
+    const PANEL_CYCLE: [PanelContent; 5] = [
+        PanelContent::FileDetail,
+        PanelContent::AiSummary,
+        PanelContent::PrOverview,
+        PanelContent::SymbolRefs,
+        PanelContent::AgentLog,
+    ];
+
+    fn panel_available(&self, panel: PanelContent) -> bool {
+        match panel {
+            PanelContent::FileDetail | PanelContent::AgentLog => true,
+            PanelContent::AiSummary => self.layers.show_ai_findings && self.ai.has_data(),
+            PanelContent::PrOverview => self.pr_data.is_some(),
+            PanelContent::SymbolRefs => self.symbol_refs.is_some(),
+        }
+    }
+
     /// Cycle panel: None → FileDetail → AiSummary (if AI data) → PrOverview (if PR live) → SymbolRefs (if symbols) → AgentLog → None
     pub fn toggle_panel(&mut self) {
-        let has_ai = self.layers.show_ai_findings && self.ai.has_data();
-        let has_pr = self.pr_data.is_some();
-        self.panel = match self.panel {
-            None => Some(PanelContent::FileDetail),
-            Some(PanelContent::FileDetail) => {
-                if has_ai {
-                    Some(PanelContent::AiSummary)
-                } else if has_pr {
-                    Some(PanelContent::PrOverview)
-                } else if self.symbol_refs.is_some() {
-                    Some(PanelContent::SymbolRefs)
-                } else {
-                    Some(PanelContent::AgentLog)
-                }
-            }
-            Some(PanelContent::AiSummary) => {
-                if has_pr {
-                    Some(PanelContent::PrOverview)
-                } else if self.symbol_refs.is_some() {
-                    Some(PanelContent::SymbolRefs)
-                } else {
-                    Some(PanelContent::AgentLog)
-                }
-            }
-            Some(PanelContent::PrOverview) => {
-                if self.symbol_refs.is_some() {
-                    Some(PanelContent::SymbolRefs)
-                } else {
-                    Some(PanelContent::AgentLog)
-                }
-            }
-            Some(PanelContent::SymbolRefs) => Some(PanelContent::AgentLog),
-            Some(PanelContent::AgentLog) => None,
-        };
-        self.panel_scroll = 0;
-        if self.panel.is_none() {
-            self.panel_focus = false;
-        }
+        self.cycle_panel(true);
     }
 
     /// Cycle panel in reverse: None → AgentLog → SymbolRefs → PrOverview → AiSummary → FileDetail → None
     pub fn toggle_panel_reverse(&mut self) {
-        let has_ai = self.layers.show_ai_findings && self.ai.has_data();
-        let has_pr = self.pr_data.is_some();
-        let has_sym = self.symbol_refs.is_some();
-        self.panel = match self.panel {
-            None => Some(PanelContent::AgentLog),
-            Some(PanelContent::AgentLog) => {
-                if has_sym {
-                    Some(PanelContent::SymbolRefs)
-                } else if has_pr {
-                    Some(PanelContent::PrOverview)
-                } else if has_ai {
-                    Some(PanelContent::AiSummary)
-                } else {
-                    Some(PanelContent::FileDetail)
-                }
-            }
-            Some(PanelContent::SymbolRefs) => {
-                if has_pr {
-                    Some(PanelContent::PrOverview)
-                } else if has_ai {
-                    Some(PanelContent::AiSummary)
-                } else {
-                    Some(PanelContent::FileDetail)
-                }
-            }
-            Some(PanelContent::PrOverview) => {
-                if has_ai {
-                    Some(PanelContent::AiSummary)
-                } else {
-                    Some(PanelContent::FileDetail)
-                }
-            }
-            Some(PanelContent::AiSummary) => Some(PanelContent::FileDetail),
-            Some(PanelContent::FileDetail) => None,
+        self.cycle_panel(false);
+    }
+
+    /// Move to the next available panel in the cycle direction, closing the
+    /// panel after the last one.
+    fn cycle_panel(&mut self, forward: bool) {
+        let cycle = &Self::PANEL_CYCLE;
+        let pos = self.panel.and_then(|p| cycle.iter().position(|&c| c == p));
+        self.panel = match (forward, pos) {
+            (true, None) => cycle.iter().copied().find(|&p| self.panel_available(p)),
+            (true, Some(i)) => cycle[i + 1..]
+                .iter()
+                .copied()
+                .find(|&p| self.panel_available(p)),
+            (false, None) => cycle
+                .iter()
+                .rev()
+                .copied()
+                .find(|&p| self.panel_available(p)),
+            (false, Some(i)) => cycle[..i]
+                .iter()
+                .rev()
+                .copied()
+                .find(|&p| self.panel_available(p)),
         };
         self.panel_scroll = 0;
         if self.panel.is_none() {
@@ -6711,7 +6645,6 @@ mod tests {
             unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode: false,
             file_headers: Vec::new(),

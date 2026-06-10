@@ -800,39 +800,6 @@ impl TabState {
         }
     }
 
-    /// Get cached visible files, rebuilding cache if needed
-    #[allow(dead_code)]
-    pub fn visible_files_cached(&mut self) -> Vec<usize> {
-        let (reviewed_count, _) = self.active_reviewed_count();
-        let needs_rebuild = match &self.file_tree_cache {
-            Some(cache) => {
-                cache.search_query != self.search_query
-                    || cache.show_unreviewed_only != self.show_unreviewed_only
-                    || cache.file_count != self.files.len()
-                    || cache.reviewed_count != reviewed_count
-            }
-            None => true,
-        };
-
-        if needs_rebuild {
-            let visible = self
-                .visible_files()
-                .iter()
-                .map(|(i, _)| *i)
-                .collect::<Vec<_>>();
-            self.file_tree_cache = Some(FileTreeCache {
-                visible: visible.clone(),
-                search_query: self.search_query.clone(),
-                show_unreviewed_only: self.show_unreviewed_only,
-                file_count: self.files.len(),
-                reviewed_count,
-            });
-            visible
-        } else {
-            self.file_tree_cache.as_ref().unwrap().visible.clone()
-        }
-    }
-
     // ── Editor ──
 
     pub fn open_in_editor(&self) -> Result<()> {
