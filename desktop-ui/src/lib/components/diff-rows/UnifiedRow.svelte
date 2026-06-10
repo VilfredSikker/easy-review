@@ -2,6 +2,8 @@
   import { lineHasAnchorRangeHighlight, type AnnotationIndex } from "$lib/diffAnnotations";
   import type { CommentVisibility } from "$lib/diffAnnotations";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
+  import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
+  import { caretTextOffset, identifierAt } from "$lib/referenceHighlight";
   import { wordDiff } from "$lib/wordDiff";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
   import DiffLineContent from "./DiffLineContent.svelte";
@@ -43,6 +45,21 @@
       lineHasAnchorRangeHighlight(annotationIndex, filePath, ln, side, commentVisibility),
   );
 
+  /**
+   * Reference highlight (issue #69): click an identifier to highlight all
+   * occurrences across the rendered diff; click it again (or a non-identifier
+   * spot, or press Escape) to clear. Skipped when the user is selecting text.
+   * The code div renders a 1-char marker (+/-/nbsp) before the line text, so
+   * the caret offset is shifted by 1.
+   */
+  function onCodeClick(e: MouseEvent) {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return;
+    const caret = caretTextOffset(e, e.currentTarget as HTMLElement);
+    const ident = caret === null ? null : identifierAt(line.text, caret - 1);
+    refHighlight.toggle(ident);
+  }
+
   function leadingWS(): string {
     const t = line.text;
     let n = 0;
@@ -69,7 +86,7 @@
       >+</button>
     {/if}
   </div>
-  <div class="leading-6 pr-3 whitespace-pre break-all {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}" style={leadingWS()}>
+  <div class="leading-6 pr-3 whitespace-pre break-all {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}" style={leadingWS()} onclick={onCodeClick}>
     {#if line.kind === "add"}
       <span class="text-add-fg">+</span>
     {:else if line.kind === "del"}

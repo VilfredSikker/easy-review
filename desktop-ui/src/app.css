@@ -280,6 +280,15 @@ body {
 .diff-row.is-selected.is-anchor-range > div {
   background-color: rgba(59, 130, 246, 0.22) !important;
 }
+/* Reference highlight (issue #69) — every occurrence of the clicked identifier.
+ * Derives from the periwinkle selection accent so it reads as "selection",
+ * distinct from word-diff add/del backgrounds and comment-anchor blue. */
+.ref-highlight {
+  background-color: var(--color-periwinkle-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-periwinkle) 45%, transparent);
+  border-radius: 2px;
+}
+
 .gutter { color: #737373; user-select: none; position: relative; }
 .diff-add { background-color: var(--color-add-bg); }
 .diff-del { background-color: var(--color-del-bg); }

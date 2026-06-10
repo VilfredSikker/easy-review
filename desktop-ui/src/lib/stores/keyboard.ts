@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { app } from "./app.svelte";
 import { diffSel } from "./diffSelection.svelte";
+import { refHighlight } from "./referenceHighlight.svelte";
 import { terminal } from "./terminal.svelte";
 import { browser } from "./browser.svelte";
 import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
@@ -150,6 +151,11 @@ export function initKeyboard(): () => void {
       closeAiActionPalette();
       if (diffSel.active) {
         diffSel.clear();
+        e.preventDefault();
+        return;
+      }
+      if (refHighlight.active) {
+        refHighlight.clear();
         e.preventDefault();
         return;
       }
