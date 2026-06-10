@@ -2226,7 +2226,11 @@ impl App {
                 let _ = std::fs::write(&debug_path, &debug_content);
 
                 if !status.success() {
-                    anyhow::bail!("{} failed (see {}/debug-agent.log)", name_owned, er_dir_path);
+                    anyhow::bail!(
+                        "{} failed (see {}/debug-agent.log)",
+                        name_owned,
+                        er_dir_path
+                    );
                 }
 
                 Ok(())
@@ -2320,7 +2324,17 @@ impl App {
         )
     }
 
-    /// App-level background agent task (review or expert).
+    /// Number of background agent tasks currently running a subprocess.
+    pub(crate) fn running_background_task_count(&self) -> usize {
+        self.background_tasks
+            .values()
+            .filter(|h| matches!(h.task.status, CommandStatus::Running))
+            .count()
+    }
+
+    /// App-level background agent task (review or expert). When the number
+    /// of running tasks has reached `ai_hub.max_concurrent_reviews`, the
+    /// task is queued and launched later by `poll_background_tasks`.
     fn spawn_background_agent_task(
         &mut self,
         kind: String,
@@ -2329,19 +2343,63 @@ impl App {
         prompt: String,
         prepared_diff: bool,
     ) -> Result<()> {
-        use super::background::{BackgroundTask, BackgroundTaskHandle};
+        use super::background::{BackgroundTask, PendingBackgroundTask};
 
-        let already_running = self.background_tasks.values().any(|h| {
+        let already_active = self.background_tasks.values().any(|h| {
             h.task.kind == kind
                 && h.task.target == target
                 && matches!(h.task.status, CommandStatus::Running)
-        });
-        if already_running {
+        }) || self
+            .pending_background_tasks
+            .iter()
+            .any(|p| p.task.kind == kind && p.task.target == target);
+        if already_active {
             anyhow::bail!(
                 "{command_name} already running for {}",
                 target.display_label()
             );
         }
+
+        let pending = PendingBackgroundTask {
+            task: BackgroundTask::new(kind, target),
+            command_name: command_name.to_string(),
+            prompt,
+            prepared_diff,
+        };
+
+        let cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        if self.running_background_task_count() >= cap {
+            let label = pending.task.target.display_label();
+            self.pending_background_tasks.push_back(pending);
+            let pos = self.pending_background_tasks.len();
+            self.notify(&format!("{command_name} queued (#{pos}, {label})"));
+            return Ok(());
+        }
+
+        self.launch_background_agent_task(pending)
+    }
+
+    /// Actually spawn the agent subprocess for an accepted task. Split from
+    /// `spawn_background_agent_task` so the dispatch loop can launch queued
+    /// tasks when capacity frees up.
+    fn launch_background_agent_task(
+        &mut self,
+        pending: super::background::PendingBackgroundTask,
+    ) -> Result<()> {
+        use super::background::BackgroundTaskHandle;
+
+        let super::background::PendingBackgroundTask {
+            mut task,
+            command_name,
+            prompt,
+            prepared_diff,
+        } = pending;
+        let command_name = command_name.as_str();
+        let kind = task.kind.clone();
+        let target = task.target.clone();
+        // The task may have waited in the queue; report runtime from launch.
+        // The id (assigned at enqueue) stays stable so UI pills don't jump.
+        task.started_at_ms = super::background::unix_now_ms();
 
         self.sync_ai_selection();
 
@@ -2398,7 +2456,6 @@ impl App {
 
         std::fs::create_dir_all(&target.er_dir)?;
 
-        let task = BackgroundTask::new(kind.clone(), target.clone());
         let task_id = task.id.clone();
         let er_dir = target.er_dir.clone();
         let repo_root = target.repo_root.clone();
@@ -2422,8 +2479,13 @@ impl App {
         let command_name_stdout = command_name.to_string();
         let command_name_stderr = command_name.to_string();
         let command_name_fail = command_name.to_string();
+        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         std::thread::spawn(move || {
             let result = (|| -> Result<()> {
+                // Hard process-wide cap shared with arena reviewers. The
+                // App-level queue already bounds how many of these workers
+                // exist, so this only waits while arena rounds hold slots.
+                let _slot = crate::agent_slots::acquire_blocking(slot_cap);
                 let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
 
                 let mut agent_args: Vec<String> = config_args
@@ -2726,6 +2788,49 @@ impl App {
                 }
             }
         }
+
+        // 4. Launch queued tasks while there's capacity.
+        self.dispatch_pending_background_tasks();
+    }
+
+    /// Pop queued review tasks and launch them while the running count is
+    /// below the configured cap. Launch failures are surfaced as failed
+    /// tasks so the UI shows them like any other review failure.
+    fn dispatch_pending_background_tasks(&mut self) {
+        let cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        while !self.pending_background_tasks.is_empty()
+            && self.running_background_task_count() < cap
+        {
+            let Some(pending) = self.pending_background_tasks.pop_front() else {
+                break;
+            };
+            let label = pending.task.target.display_label();
+            let command_name = pending.command_name.clone();
+            let mut failed_task = pending.task.clone();
+            if let Err(e) = self.launch_background_agent_task(pending) {
+                let msg = format!("{command_name} failed to start ({label}): {e}");
+                failed_task.status = CommandStatus::Failed(e.to_string());
+                failed_task.error = Some(e.to_string());
+                failed_task.finished_at_ms = Some(super::background::unix_now_ms());
+                self.recent_background_tasks.push(failed_task);
+                if self.recent_background_tasks.len() > 32 {
+                    self.recent_background_tasks.remove(0);
+                }
+                self.notify_long(&msg);
+            }
+        }
+    }
+
+    /// Remove a queued (not yet started) review task. Returns true when a
+    /// matching task was found and removed.
+    pub fn cancel_queued_background_task(&mut self, id: &str) -> bool {
+        let before = self.pending_background_tasks.len();
+        self.pending_background_tasks.retain(|p| p.task.id != id);
+        let removed = self.pending_background_tasks.len() != before;
+        if removed {
+            self.notify("review removed from queue");
+        }
+        removed
     }
 
     /// Snapshot of in-flight + recently finished background tasks. Includes
@@ -2779,6 +2884,11 @@ impl App {
                 out.push(super::background::BackgroundTaskSnapshot::from_task(task));
             }
         }
+        for pending in &self.pending_background_tasks {
+            let mut snap = super::background::BackgroundTaskSnapshot::from_task(&pending.task);
+            snap.status = "queued".to_string();
+            out.push(snap);
+        }
         out.sort_by_key(|t| t.started_at_ms);
         if debug_bg {
             eprintln!(
@@ -2820,6 +2930,14 @@ impl App {
                 ));
             }
         }
+        for pending in &self.pending_background_tasks {
+            if !tab.matches_target(&pending.task.target) {
+                continue;
+            }
+            let mut snap = super::background::BackgroundTaskSnapshot::from_task(&pending.task);
+            snap.status = "queued".to_string();
+            out.push(snap);
+        }
         out
     }
 
@@ -2830,5 +2948,117 @@ impl App {
             .get(task_id)
             .map(|h| h.recent_log.iter().cloned().collect())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod background_queue_tests {
+    use crate::app::{App, BackgroundTaskTarget};
+
+    fn target(tmp: &std::path::Path, branch: &str) -> BackgroundTaskTarget {
+        BackgroundTaskTarget {
+            repo_root: tmp.to_string_lossy().to_string(),
+            er_dir: tmp.join(".er").to_string_lossy().to_string(),
+            branch_label: branch.to_string(),
+            base_branch: "main".to_string(),
+            scope: "branch".to_string(),
+            pr_number: None,
+            remote_repo: None,
+            managed_local: false,
+        }
+    }
+
+    /// Build an App over a throwaway git repo with a slow no-op agent so
+    /// spawned "reviews" run long enough to observe queue state. Returns
+    /// None when git isn't available (test then silently skips, matching
+    /// the pattern in background.rs).
+    fn test_app(cap: usize) -> Option<(App, std::path::PathBuf)> {
+        let tmp =
+            std::env::temp_dir().join(format!("er-bg-queue-test-{}-{}", std::process::id(), cap));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).ok()?;
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(&tmp)
+            .output()
+            .ok()?;
+        let mut app = App::new_with_args(&[tmp.to_string_lossy().to_string()]).ok()?;
+        app.config.ai_hub.max_concurrent_reviews = cap;
+        app.config.agent.command = "sleep".to_string();
+        app.config.agent.args = vec!["5".to_string()];
+        Some((app, tmp))
+    }
+
+    #[test]
+    fn excess_reviews_queue_and_dedup() {
+        let Some((mut app, tmp)) = test_app(1) else {
+            return;
+        };
+
+        app.spawn_background_triage_review(target(&tmp, "feat-a"), "p".into(), true)
+            .unwrap();
+        app.spawn_background_triage_review(target(&tmp, "feat-b"), "p".into(), true)
+            .unwrap();
+
+        assert_eq!(app.running_background_task_count(), 1, "cap of 1 enforced");
+        assert_eq!(app.pending_background_tasks.len(), 1, "second task queued");
+
+        // Same kind+target as the queued task is rejected as a duplicate.
+        let dup = app.spawn_background_triage_review(target(&tmp, "feat-b"), "p".into(), true);
+        assert!(dup.is_err(), "duplicate of queued task rejected");
+
+        // Queued task is visible in snapshots as "queued".
+        let snaps = app.background_task_snapshots();
+        assert!(
+            snaps.iter().any(|s| s.status == "queued"),
+            "queued status surfaced: {:?}",
+            snaps.iter().map(|s| s.status.clone()).collect::<Vec<_>>()
+        );
+
+        // Polling while the first task still runs must not launch the queued one.
+        app.poll_background_tasks();
+        assert_eq!(app.running_background_task_count(), 1);
+        assert_eq!(app.pending_background_tasks.len(), 1);
+
+        // Queued tasks can be cancelled by id.
+        let queued_id = app.pending_background_tasks[0].task.id.clone();
+        assert!(app.cancel_queued_background_task(&queued_id));
+        assert!(app.pending_background_tasks.is_empty());
+        assert!(!app.cancel_queued_background_task(&queued_id));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dispatch_launches_queued_when_slot_frees() {
+        let Some((mut app, tmp)) = test_app(2) else {
+            return;
+        };
+        // Fast-exiting agent: completion frees a slot on the next poll.
+        app.config.agent.args = vec!["0".to_string()];
+
+        for branch in ["a", "b", "c"] {
+            app.spawn_background_triage_review(target(&tmp, branch), "p".into(), true)
+                .unwrap();
+        }
+        assert_eq!(app.running_background_task_count(), 2);
+        assert_eq!(app.pending_background_tasks.len(), 1);
+
+        // Wait for the fast agents to exit, then poll: completions are
+        // detected and the queued task is dispatched.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.poll_background_tasks();
+            if app.pending_background_tasks.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "queued task was never dispatched"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

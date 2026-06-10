@@ -96,6 +96,18 @@ pub fn unix_now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+/// A review/agent task accepted but not yet started because the
+/// concurrent-review cap was reached. Holds everything needed to launch
+/// later from the dispatch loop. `task.started_at_ms` is the enqueue time
+/// until launch, when it's refreshed.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingBackgroundTask {
+    pub task: BackgroundTask,
+    pub command_name: String,
+    pub prompt: String,
+    pub prepared_diff: bool,
+}
+
 /// In-flight + recently finished background task channels. The `App` owns
 /// this; one entry per task id.
 pub(crate) struct BackgroundTaskHandle {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BackgroundTaskSnapshot } from "$lib/types";
   import RunningAgentPanel from "./RunningAgentPanel.svelte";
+  import { app } from "$lib/stores/app.svelte";
 
   interface Props {
     tasks: BackgroundTaskSnapshot[];
@@ -25,7 +26,7 @@
   const visible = $derived.by(() => {
     const out: BackgroundTaskSnapshot[] = [];
     for (const t of tasks) {
-      if (t.status === "running") {
+      if (t.status === "running" || t.status === "queued") {
         out.push(t);
         continue;
       }
@@ -38,6 +39,7 @@
   });
 
   const running = $derived(visible.filter((t) => t.status === "running"));
+  const queued = $derived(visible.filter((t) => t.status === "queued"));
   const failed = $derived(visible.filter((t) => t.status === "failed"));
   const done = $derived(visible.filter((t) => t.status === "done"));
 
@@ -48,9 +50,11 @@
 
   type Pill = {
     key: string;
-    status: "running" | "done" | "failed";
+    status: "queued" | "running" | "done" | "failed";
     text: string;
     title?: string;
+    /** Queued pills can be cancelled — removes the task from the queue. */
+    cancelTaskId?: string;
   };
 
   const pills = $derived.by<Pill[]>(() => {
@@ -67,6 +71,22 @@
         status: "running",
         text: `${running.length} reviews running`,
         title: running.map((t) => t.label).join(", "),
+      });
+    }
+    if (queued.length === 1) {
+      out.push({
+        key: `queue-${queued[0].id}`,
+        status: "queued",
+        text: `Review queued · ${truncate(queued[0].label)}`,
+        title: "Waiting for a free review slot — click ✕ to remove",
+        cancelTaskId: queued[0].id,
+      });
+    } else if (queued.length > 1) {
+      out.push({
+        key: "queue-multi",
+        status: "queued",
+        text: `${queued.length} reviews queued`,
+        title: queued.map((t) => t.label).join(", "),
       });
     }
     for (const t of failed) {
@@ -89,8 +109,14 @@
 
   function dotColor(status: Pill["status"]): string {
     if (status === "running") return "bg-accent animate-pulse";
+    if (status === "queued") return "bg-arena-warn";
     if (status === "done") return "bg-add-fg";
     return "bg-del-fg";
+  }
+
+  function cancelQueued(taskId: string, event: MouseEvent) {
+    event.stopPropagation();
+    void app.cmd("cancel_queued_review", { id: taskId });
   }
 
   const rightOffset = $derived(avoidRightPanel ? rightPanelWidth + 16 : 24);
@@ -112,26 +138,40 @@
     {/if}
 
     {#each pills as pill (pill.key)}
-      {@const pillTaskId = pill.key.startsWith("run-multi")
+      {@const pillTaskId = pill.key.startsWith("run-")
         ? running[0]?.id
-        : pill.key.startsWith("run-")
-          ? running[0]?.id
+        : pill.key.startsWith("queue-")
+          ? queued[0]?.id
           : pill.key.startsWith("fail-")
             ? pill.key.slice("fail-".length)
             : pill.key.slice("done-".length)}
-      <button
-        class="bg-ink-800 text-ink-100 text-[11px] font-mono px-2.5 py-1 rounded-sm border border-ink-500 shadow flex items-center gap-1.5 max-w-[260px] cursor-pointer hover:bg-ink-700 transition-colors"
-        title={pill.title ?? ""}
-        onclick={() => {
-          expandedTaskId = expandedTaskId === pillTaskId ? null : (pillTaskId ?? null);
-        }}
+      <div
+        class="bg-ink-800 text-ink-100 text-[11px] font-mono rounded-sm border border-ink-500 shadow flex items-center max-w-[280px]"
       >
-        <span
-          class="inline-block w-1.5 h-1.5 rounded-full shrink-0 {dotColor(pill.status)}"
-          aria-hidden="true"
-        ></span>
-        <span class="truncate">{pill.text}</span>
-      </button>
+        <button
+          class="px-2.5 py-1 flex items-center gap-1.5 min-w-0 cursor-pointer hover:bg-ink-700 transition-colors rounded-sm"
+          title={pill.title ?? ""}
+          onclick={() => {
+            expandedTaskId = expandedTaskId === pillTaskId ? null : (pillTaskId ?? null);
+          }}
+        >
+          <span
+            class="inline-block w-1.5 h-1.5 rounded-full shrink-0 {dotColor(pill.status)}"
+            aria-hidden="true"
+          ></span>
+          <span class="truncate">{pill.text}</span>
+        </button>
+        {#if pill.cancelTaskId}
+          <button
+            class="px-1.5 py-1 shrink-0 text-ink-300 hover:text-ink-100 hover:bg-ink-700 transition-colors rounded-sm cursor-pointer"
+            title="Remove from queue"
+            aria-label="Remove queued review"
+            onclick={(e) => cancelQueued(pill.cancelTaskId!, e)}
+          >
+            ✕
+          </button>
+        {/if}
+      </div>
     {/each}
   </div>
 {/if}

@@ -160,6 +160,25 @@ pub struct AiHubConfig {
     pub reviewer_models: BTreeMap<String, String>,
     #[serde(default)]
     pub providers: BTreeMap<String, AiProviderConfig>,
+    /// Max agent processes running at once (background reviews + arena
+    /// reviewers). Extra requests queue and start as slots free up.
+    /// 0 means "use the default".
+    #[serde(default)]
+    pub max_concurrent_reviews: usize,
+}
+
+/// Default cap on concurrently running agent processes.
+pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
+
+impl AiHubConfig {
+    /// Effective concurrency cap — configured value, or the default when unset.
+    pub fn effective_max_concurrent_reviews(&self) -> usize {
+        if self.max_concurrent_reviews == 0 {
+            DEFAULT_MAX_CONCURRENT_REVIEWS
+        } else {
+            self.max_concurrent_reviews
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1240,8 +1259,17 @@ args = ["--model", "gpt-5.4"]
         assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.4"));
         let codex = config.ai_hub.providers.get("codex").unwrap();
         assert_eq!(codex.command, "codex");
-        assert_eq!(codex.models.len(), 1);
+        // The user-defined model comes first and is NOT overwritten by the
+        // built-in catalog entry of the same id (the user's definition has no
+        // description; the catalog's does).
         assert_eq!(codex.models[0].id, "gpt-5.4");
+        assert!(codex.models[0].description.is_none());
+        // `supplement_ai_hub` adds the catalog's remaining codex models
+        // in-memory, so the picker shows them alongside the user's.
+        assert!(
+            codex.models.iter().any(|m| m.id == "gpt-5.3-codex"),
+            "catalog models should supplement user-defined providers"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1733,10 +1761,7 @@ args = ["--model", "gpt-5.4"]
         assert!(hub.providers.contains_key("cursor"));
         let claude = hub.providers.get("claude").unwrap();
         assert!(
-            claude
-                .models
-                .iter()
-                .any(|m| m.id == "opus-4.8"),
+            claude.models.iter().any(|m| m.id == "opus-4.8"),
             "catalog should include opus-4.8"
         );
     }
