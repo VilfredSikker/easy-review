@@ -1270,10 +1270,7 @@ fn main() {
                     *h = Some(app.handle().clone());
                 }
                 commands::prepare_macos_notifications(app.handle());
-                commands::flush_pending_native_notifications(
-                    &state.inbox,
-                    &state.tauri_app_handle,
-                );
+                commands::flush_pending_native_notifications(&state.inbox, &state.tauri_app_handle);
                 // Revision watcher: emit a Tauri event whenever the backend's
                 // `desktop_revision` advances. The frontend listens and only
                 // calls `poll` on demand instead of every 2s — cuts idle
@@ -1411,6 +1408,7 @@ fn main() {
             commands::run_ai_professor_review,
             commands::run_ai_triage_review,
             commands::run_pr_triage,
+            commands::cancel_queued_review,
             commands::run_branch_triage,
             commands::list_ai_experts,
             commands::list_ai_reviewers,

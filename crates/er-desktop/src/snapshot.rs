@@ -10,6 +10,39 @@ use serde::Serialize;
 use crate::inbox::InboxHandle;
 use crate::projects;
 
+/// Mtime/size-cached wrapper around `load_ui_annotations`. `build_snapshot`
+/// runs on every poll; the annotations file rarely changes, so skip the disk
+/// read + JSON parse unless the file's metadata moved. Writes go through
+/// `save_ui_annotations` (tmp+rename), which always bumps the mtime.
+fn load_ui_annotations_cached(comments_dir: &str) -> Vec<er_engine::ai::UiAnnotation> {
+    type Key = Option<(std::time::SystemTime, u64)>;
+    type AnnCache = HashMap<String, (Key, Vec<er_engine::ai::UiAnnotation>)>;
+    static CACHE: std::sync::LazyLock<Mutex<AnnCache>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let path = std::path::Path::new(comments_dir).join("ui-annotations.json");
+    let key: Key = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+
+    let mut cache = match CACHE.lock() {
+        Ok(g) => g,
+        Err(_) => return er_engine::ai::load_ui_annotations(comments_dir),
+    };
+    if let Some((cached_key, anns)) = cache.get(comments_dir) {
+        if *cached_key == key {
+            return anns.clone();
+        }
+    }
+    let anns = er_engine::ai::load_ui_annotations(comments_dir);
+    // Bounded: one entry per comments_dir; drop everything if it somehow grows.
+    if cache.len() > 64 {
+        cache.clear();
+    }
+    cache.insert(comments_dir.to_string(), (key, anns.clone()));
+    anns
+}
+
 // ── Wire types ──────────────────────────────────────────────────────────────
 
 /// Full arena run + projections (`arena_get` / `arena_override`).
@@ -1285,12 +1318,13 @@ fn build_snapshot_inner(
         Some(tab.filter_expr.clone())
     };
 
-    // Browser-view UI annotations — read freshly from the active tab's
-    // comments_dir so writes flow back to the UI on the next snapshot.
+    // Browser-view UI annotations — read from the active tab's comments_dir
+    // (mtime-cached: build_snapshot runs on every poll, and the annotations
+    // file rarely changes; saves a disk read + JSON parse per poll).
     let ui_annotations: Vec<UiAnnotationSnapshot> = if chrome_only {
         Vec::new()
     } else {
-        er_engine::ai::load_ui_annotations(&tab.comments_dir())
+        load_ui_annotations_cached(&tab.comments_dir())
             .into_iter()
             .map(|a| UiAnnotationSnapshot {
                 id: a.id,

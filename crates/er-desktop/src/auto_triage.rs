@@ -90,9 +90,8 @@ fn fetch_pr_diff(repo_root: &str, remote: &str, pr_number: u64) -> Result<String
 
 fn resolve_er_dir(remote: &str, repo_root: &str, pr_number: u64) -> Result<String, String> {
     let slug = if !repo_root.is_empty() {
-        er_engine::github::canonical_owner_repo_slug(repo_root).unwrap_or_else(|| {
-            er_engine::storage::slug_branch(&remote.to_lowercase())
-        })
+        er_engine::github::canonical_owner_repo_slug(repo_root)
+            .unwrap_or_else(|| er_engine::storage::slug_branch(&remote.to_lowercase()))
     } else {
         er_engine::storage::slug_branch(&remote.to_lowercase())
     };
@@ -251,23 +250,18 @@ fn run_branch_triage_once(
     let mut raw_diff = er_engine::git::git_diff_raw_range(&base_branch, branch, repo_root)
         .map_err(|e| e.to_string())?;
     if !review_ignore_globs.is_empty() {
-        raw_diff =
-            er_engine::git::filter_raw_diff_exclude_globs(&raw_diff, review_ignore_globs);
+        raw_diff = er_engine::git::filter_raw_diff_exclude_globs(&raw_diff, review_ignore_globs);
     }
     if raw_diff.trim().is_empty() {
         return Err("Nothing to triage on this branch".to_string());
     }
 
-    let slug = er_engine::github::canonical_owner_repo_slug(repo_root).unwrap_or_else(|| {
-        er_engine::storage::slug_branch(&remote.to_lowercase())
-    });
+    let slug = er_engine::github::canonical_owner_repo_slug(repo_root)
+        .unwrap_or_else(|| er_engine::storage::slug_branch(&remote.to_lowercase()));
     let branch_slug = er_engine::storage::slug_branch(branch);
-    let er_dir = er_engine::storage::resolve_managed_root_for_view_bucket(
-        &slug,
-        &branch_slug,
-        "branch",
-    )
-    .er_dir();
+    let er_dir =
+        er_engine::storage::resolve_managed_root_for_view_bucket(&slug, &branch_slug, "branch")
+            .er_dir();
     if er_dir.is_empty() {
         return Err("Failed to resolve branch storage".to_string());
     }

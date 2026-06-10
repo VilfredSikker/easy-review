@@ -425,7 +425,7 @@ export interface BackgroundTaskSnapshot {
   branch_label: string;
   pr_number?: number | null;
   remote_repo?: string | null;
-  /** "running" | "done" | "failed" */
+  /** "queued" | "running" | "done" | "failed" */
   status: string;
   error?: string | null;
   started_at_ms: number;

@@ -572,6 +572,13 @@ fn run_round1_parallel(
                 cancelled.store(true, Ordering::SeqCst);
                 return;
             }
+            // Wait for a global agent slot so several runs (or runs with many
+            // reviewers) can't spawn unbounded agent processes at once.
+            let cap = config.ai_hub.effective_max_concurrent_reviews();
+            let Some(_slot) = crate::agent_slots::acquire(cap, &cancel) else {
+                cancelled.store(true, Ordering::SeqCst);
+                return;
+            };
             let cmd = match resolve_provider_command(
                 &config.ai_hub,
                 &reviewer.provider_id,
@@ -700,6 +707,11 @@ fn run_round2_parallel(
                 cancelled.store(true, Ordering::SeqCst);
                 return;
             }
+            let cap = config.ai_hub.effective_max_concurrent_reviews();
+            let Some(_slot) = crate::agent_slots::acquire(cap, &cancel) else {
+                cancelled.store(true, Ordering::SeqCst);
+                return;
+            };
             let cmd = match resolve_provider_command(
                 &config.ai_hub,
                 &reviewer.provider_id,

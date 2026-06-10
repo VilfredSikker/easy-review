@@ -230,6 +230,16 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
                 }
             }
         }
+        "ai_hub.max_concurrent_reviews" => {
+            let parsed = match value {
+                ConfigFieldValue::Number(n) => Some(n as usize),
+                ConfigFieldValue::String(v) => v.parse::<usize>().ok(),
+                ConfigFieldValue::Bool(_) => None,
+            };
+            if let Some(n) = parsed.filter(|n| (1..=16).contains(n)) {
+                config.ai_hub.max_concurrent_reviews = n;
+            }
+        }
         "watched.diff_mode" => {
             if let ConfigFieldValue::String(v) = value {
                 if v == "content" || v == "snapshot" {

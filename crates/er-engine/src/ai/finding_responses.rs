@@ -54,7 +54,7 @@ fn iso_now() -> String {
             }
             break;
         }
-        d -= ydays as i64;
+        d -= ydays;
         year += 1;
     }
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
@@ -85,7 +85,11 @@ where
 }
 
 /// Append an AI validation reply to a finding. Returns the new response id.
-pub fn append_finding_response(er_dir: &str, finding_id: &str, text: &str) -> anyhow::Result<String> {
+pub fn append_finding_response(
+    er_dir: &str,
+    finding_id: &str,
+    text: &str,
+) -> anyhow::Result<String> {
     let id = format!(
         "fr-{}",
         std::time::SystemTime::now()
@@ -296,6 +300,9 @@ mod tests {
 
         let content = std::fs::read_to_string(er.join("review.json")).unwrap();
         let loaded: ErReview = serde_json::from_str(&content).unwrap();
-        assert_eq!(loaded.files["a.rs"].findings[0].responses[0].text, "updated");
+        assert_eq!(
+            loaded.files["a.rs"].findings[0].responses[0].text,
+            "updated"
+        );
     }
 }

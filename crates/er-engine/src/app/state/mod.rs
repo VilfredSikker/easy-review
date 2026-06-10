@@ -2083,7 +2083,9 @@ impl TabState {
         if let Some(ref repo_slug) = self.remote_repo {
             let parts: Vec<&str> = repo_slug.split('/').collect();
             if parts.len() == 2 {
-                return Some(crate::github::gh_pr_diff_remote(parts[0], parts[1], pr_number));
+                return Some(crate::github::gh_pr_diff_remote(
+                    parts[0], parts[1], pr_number,
+                ));
             }
             return Some(Err(anyhow::anyhow!(
                 "Remote tab missing owner/repo for PR diff"
@@ -3826,6 +3828,13 @@ pub struct App {
     /// continues running. Session-scoped; not persisted across restarts.
     pub(crate) background_tasks: background::BackgroundTaskMap,
 
+    /// FIFO queue of accepted-but-not-started review tasks. Tasks land here
+    /// when the number of running tasks reaches the configured
+    /// `ai_hub.max_concurrent_reviews` cap; `poll_background_tasks` launches
+    /// them as slots free up.
+    pub(crate) pending_background_tasks:
+        std::collections::VecDeque<background::PendingBackgroundTask>,
+
     /// Snapshot copies of finished background tasks retained briefly so
     /// the UI can show "done"/"failed" toasts. Cleared from `background_tasks`
     /// once `finished_at_ms` exits the 8s display window. We keep them here
@@ -3937,6 +3946,7 @@ impl App {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: arena_registry.clone(),
             active_arena_runs: std::collections::HashMap::new(),
         };
@@ -3978,6 +3988,7 @@ impl App {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
         })
@@ -4012,6 +4023,7 @@ impl App {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
         }
@@ -4041,6 +4053,7 @@ impl App {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
         }
@@ -8011,6 +8024,7 @@ mod tests {
             panels_visible: PanelsVisible::default(),
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
+            pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: App::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
         }

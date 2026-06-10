@@ -160,6 +160,25 @@ pub struct AiHubConfig {
     pub reviewer_models: BTreeMap<String, String>,
     #[serde(default)]
     pub providers: BTreeMap<String, AiProviderConfig>,
+    /// Max agent processes running at once (background reviews + arena
+    /// reviewers). Extra requests queue and start as slots free up.
+    /// 0 means "use the default".
+    #[serde(default)]
+    pub max_concurrent_reviews: usize,
+}
+
+/// Default cap on concurrently running agent processes.
+pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
+
+impl AiHubConfig {
+    /// Effective concurrency cap — configured value, or the default when unset.
+    pub fn effective_max_concurrent_reviews(&self) -> usize {
+        if self.max_concurrent_reviews == 0 {
+            DEFAULT_MAX_CONCURRENT_REVIEWS
+        } else {
+            self.max_concurrent_reviews
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
