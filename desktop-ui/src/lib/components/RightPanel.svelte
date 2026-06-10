@@ -199,8 +199,8 @@
             github={app.snapshot?.github ?? null}
           />
         {/if}
-        {#if ai && ai.comments > 0}
-          <CommentsCard {ai} />
+        {#if ai}
+          <CommentsCard {ai} active={activeTab === "branch"} />
         {/if}
       </div>
 

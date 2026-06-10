@@ -3,7 +3,21 @@
   import { app } from "$lib/stores/app.svelte";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
   import EditMessageModal from "$lib/components/EditMessageModal.svelte";
+  import ReplyActionBar from "$lib/components/ReplyActionBar.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+
+  type MergedReply = {
+    id: string;
+    author: string;
+    kind: "you" | "human" | "ai";
+    timestamp: string;
+    body_markdown: string;
+    origin: "finding_response" | "thread_reply";
+    source?: string;
+    synced?: boolean;
+    editable?: boolean;
+    deletable?: boolean;
+  };
 
   interface Props {
     finding: FlatFinding;
@@ -35,8 +49,44 @@
   let replyText = $state("");
   let showPromote = $state(false);
   let editMessageId = $state<string | null>(null);
+  let editOrigin = $state<"finding_response" | "thread_reply" | null>(null);
   let editInitialBody = $state("");
   let replyInputEl = $state<HTMLInputElement | null>(null);
+
+  const mergedReplies = $derived.by((): MergedReply[] => {
+    const byKey = new Map<string, MergedReply>();
+    const add = (r: MergedReply) => {
+      const key = `${r.origin}:${r.id || r.timestamp}:${r.body_markdown}`;
+      if (!byKey.has(key)) byKey.set(key, r);
+    };
+    for (const r of finding.responses ?? []) {
+      add({
+        id: r.id,
+        author: r.author,
+        kind: r.kind,
+        timestamp: r.timestamp,
+        body_markdown: r.body_markdown,
+        origin: "finding_response",
+        editable: r.editable,
+        deletable: r.deletable,
+      });
+    }
+    for (const r of thread?.replies ?? []) {
+      add({
+        id: r.id,
+        author: r.author,
+        kind: r.kind,
+        timestamp: r.timestamp,
+        body_markdown: r.body_markdown,
+        origin: r.origin ?? "thread_reply",
+        source: r.source,
+        synced: r.synced,
+        editable: r.editable ?? r.kind === "you",
+        deletable: r.deletable ?? true,
+      });
+    }
+    return [...byKey.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  });
 
   function focusReply() {
     replyInputEl?.focus();
@@ -65,28 +115,44 @@
     }
   }
 
-  function openEdit(replyId: string, body: string) {
-    editMessageId = replyId;
-    editInitialBody = body;
+  function openEdit(reply: MergedReply) {
+    editMessageId = reply.id;
+    editOrigin = reply.origin;
+    editInitialBody = reply.body_markdown;
   }
 
   async function submitEdit(body: string) {
-    if (!editMessageId) return;
-    await app.cmd("update_thread_message", { id: editMessageId, body });
+    if (!editMessageId || !editOrigin) return;
+    if (editOrigin === "finding_response") {
+      await app.cmd("update_finding_response", {
+        findingId: finding.id,
+        responseId: editMessageId,
+        body,
+      });
+    } else {
+      await app.cmd("update_thread_message", { id: editMessageId, body });
+    }
     editMessageId = null;
+    editOrigin = null;
   }
 
   async function validateWithAi() {
-    if (thread) {
-      await app.cmd("validate_with_ai", { threadId: thread.id, findingId: null });
-    } else {
-      await app.cmd("validate_with_ai", { threadId: null, findingId: finding.id });
-    }
+    await app.cmd("validate_with_ai", {
+      threadId: thread?.id ?? null,
+      findingId: finding.id,
+    });
   }
 
-  async function deleteReply(replyId: string) {
+  async function deleteReply(replyId: string, origin: MergedReply["origin"]) {
     if (!replyId) return;
-    await app.cmd("delete_thread", { id: replyId });
+    if (origin === "finding_response") {
+      await app.cmd("delete_finding_response", {
+        findingId: finding.id,
+        responseId: replyId,
+      });
+    } else {
+      await app.cmd("delete_thread", { id: replyId });
+    }
   }
 
   async function deleteConversation() {
@@ -94,9 +160,20 @@
   }
 
   function buildPromoteBody(): string {
-    return finding.message_markdown
-      ? `${finding.title}\n\n${finding.message_markdown}`
-      : finding.title;
+    const parts = [
+      finding.message_markdown
+        ? `${finding.title}\n\n${finding.message_markdown}`
+        : finding.title,
+    ];
+    for (const r of mergedReplies) {
+      if (r.body_markdown === "…thinking") continue;
+      const quoted = r.body_markdown
+        .split("\n")
+        .map((l) => `> ${l}`)
+        .join("\n");
+      parts.push(`> **${r.author}** replied:\n${quoted}`);
+    }
+    return parts.join("\n\n");
   }
 
   async function submitPromote(body: string) {
@@ -195,65 +272,45 @@
     <span class="ml-auto kbd">⇧R</span>
   </div>
 
-  <!-- Inline AI thread replies (created via Ask AI) -->
-  {#if thread}
+  <!-- Validation / AI replies (finding.responses + legacy thread replies) -->
+  {#if mergedReplies.length > 0}
     <div class="border-t border-hairline bg-surface">
-      <!-- Root message (the "AI follow-up requested" stub) is hidden; show replies only -->
-      {#if thread.replies.length === 0}
-        <div class="px-3 py-2.5 flex gap-2.5 items-center text-[12px] text-muted italic animate-pulse">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai shrink-0"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
-          AI is thinking…
-        </div>
-      {:else}
-        {#each thread.replies as reply, i}
-          <div class="px-3 py-2.5 flex gap-2.5 group/row {i > 0 ? 'border-t border-hairline' : ''}">
-            <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {reply.kind === 'ai' ? 'bg-ai/20' : 'bg-accent text-black'}">
-              {#if reply.kind === "ai"}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
-              {:else}
-                {(reply.author || "Y")[0].toUpperCase()}
-              {/if}
+      {#each mergedReplies as reply, i}
+        <div class="px-3 py-2.5 flex gap-2.5 group/row {i > 0 ? 'border-t border-hairline' : ''}">
+          <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {reply.kind === 'ai' ? 'bg-ai/20' : 'bg-accent text-black'}">
+            {#if reply.kind === "ai"}
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
+            {:else}
+              {(reply.author || "Y")[0].toUpperCase()}
+            {/if}
+          </div>
+          <div class="flex-1 min-w-0 {reply.kind === 'ai' ? 'border-l-2 border-ai pl-2.5' : ''}">
+            <div class="text-[11px] font-mono text-muted mb-0.5">
+              {#if reply.kind === "ai"}<span class="text-ai font-medium font-sans">AI</span>{:else}<span>{reply.author}</span>{/if}
+              {#if reply.timestamp}<span>· {formatTimestamp(reply.timestamp)}</span>{/if}
             </div>
-            <div class="flex-1 min-w-0 {reply.kind === 'ai' ? 'border-l-2 border-ai pl-2.5' : ''}">
-              <div class="text-[11px] font-mono text-muted mb-0.5">
-                {#if reply.kind === "ai"}<span class="text-ai font-medium font-sans">AI</span>{:else}<span>{reply.author}</span>{/if}
-                {#if reply.timestamp}<span>· {formatTimestamp(reply.timestamp)}</span>{/if}
-              </div>
-              {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
-                <div class="text-sm text-fg-3 italic animate-pulse">…thinking</div>
-              {:else}
-                <div class="annotation-body-scroll">
-                  <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
-                </div>
-              {/if}
-            </div>
-            {#if reply.id}
-              <div class="self-start shrink-0 flex gap-0.5 opacity-0 group-hover/row:opacity-60">
-                {#if reply.kind === "you"}
-                  <button
-                    type="button"
-                    onclick={() => openEdit(reply.id, reply.body_markdown)}
-                    title="Edit reply"
-                    aria-label="Edit reply"
-                    class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-fg-2 hover:bg-hover transition"
-                  >
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                  </button>
-                {/if}
-                <button
-                  type="button"
-                  onclick={() => deleteReply(reply.id)}
-                  title="Delete this reply"
-                  aria-label="Delete reply"
-                  class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
-                </button>
+            {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
+              <div class="text-sm text-fg-3 italic animate-pulse">…thinking</div>
+            {:else}
+              <div class="annotation-body-scroll">
+                <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
               </div>
             {/if}
           </div>
-        {/each}
-      {/if}
+          {#if reply.id && reply.body_markdown !== "…thinking"}
+            <ReplyActionBar
+              {reply}
+              rootThreadId={thread?.id ?? null}
+              findingId={finding.id}
+              isQuestion={thread?.kind === "question"}
+              parentSynced={thread?.synced ?? false}
+              threadResolved={thread?.resolved ?? false}
+              onEdit={reply.editable ? () => openEdit(reply) : undefined}
+              onDelete={() => deleteReply(reply.id, reply.origin)}
+            />
+          {/if}
+        </div>
+      {/each}
     </div>
   {/if}
 

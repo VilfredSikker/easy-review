@@ -227,6 +227,10 @@ pub struct BackgroundTaskSnapshotWire {
     pub label: String,
     pub target_label: String,
     pub scope: String,
+    pub repo_root: String,
+    pub branch_label: String,
+    pub pr_number: Option<u64>,
+    pub remote_repo: Option<String>,
     /// "running" | "done" | "failed"
     pub status: String,
     pub error: Option<String>,
@@ -508,6 +512,28 @@ pub struct ThreadMessage {
     pub kind: String, // "you" | "human" | "ai"
     pub timestamp: String,
     pub body_markdown: String,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub synced: Option<bool>,
+    #[serde(default)]
+    pub editable: Option<bool>,
+    #[serde(default)]
+    pub deletable: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FindingResponseSnapshot {
+    pub id: String,
+    pub author: String,
+    pub kind: String,
+    pub timestamp: String,
+    pub body_markdown: String,
+    pub origin: String,
+    pub editable: bool,
+    pub deletable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -527,6 +553,8 @@ pub struct FlatFinding {
     pub promoted_to: Option<String>,
     /// ID of the root GitHub comment thread created via "Ask AI" for this finding.
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub responses: Vec<FindingResponseSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -706,6 +734,11 @@ fn comment_ref_to_thread(
             kind: author_kind.to_string(),
             timestamp: c.timestamp().to_string(),
             body_markdown: c.text().to_string(),
+            origin: None,
+            source: None,
+            synced: None,
+            editable: None,
+            deletable: None,
         },
         replies: build_replies(c, tab, pending),
         promoted_to: match c {
@@ -754,6 +787,11 @@ fn build_replies(
                     kind: kind.to_string(),
                     timestamp: q.timestamp.clone(),
                     body_markdown: q.text.clone(),
+                    origin: Some("thread_reply".to_string()),
+                    source: Some("question".to_string()),
+                    synced: None,
+                    editable: Some(kind == "you"),
+                    deletable: Some(true),
                 });
             }
         }
@@ -769,6 +807,11 @@ fn build_replies(
                     kind: kind.to_string(),
                     timestamp: c.timestamp.clone(),
                     body_markdown: c.comment.clone(),
+                    origin: Some("thread_reply".to_string()),
+                    source: Some(c.source.clone()),
+                    synced: Some(c.synced),
+                    editable: Some(kind == "you"),
+                    deletable: Some(true),
                 });
             }
         }
@@ -791,6 +834,11 @@ fn build_replies(
                 kind: "ai".to_string(),
                 timestamp: String::new(),
                 body_markdown: "…thinking".to_string(),
+                origin: Some("thread_reply".to_string()),
+                source: None,
+                synced: None,
+                editable: None,
+                deletable: None,
             });
         }
     }
@@ -1437,6 +1485,10 @@ fn build_snapshot_inner(
                 label: t.label,
                 target_label: t.target_label,
                 scope: t.scope,
+                repo_root: t.repo_root,
+                branch_label: t.branch_label,
+                pr_number: t.pr_number,
+                remote_repo: t.remote_repo,
                 status: t.status,
                 error: t.error,
                 started_at_ms: t.started_at_ms,
@@ -1535,10 +1587,9 @@ fn empty_ai_snapshot() -> AiSnapshot {
     }
 }
 
-/// Load the most recent 10 commits on the current branch for the file viewer's
-/// commit history scroller. Reuses history-mode commits if already loaded.
-/// For local tabs shells out to `git log`. For remote PR tabs (no local repo),
-/// fetches commits via `gh pr view --json commits`.
+/// Load the most recent 10 commits for the file viewer's commit history
+/// scroller. PR tabs use cached GitHub PR commits so the list matches
+/// GitHub's PR Commits tab and snapshot rendering never shells out to `gh`.
 fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
     const LIMIT: usize = 10;
 
@@ -1546,18 +1597,8 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
 
     let raw: Vec<er_engine::git::CommitInfo> = if let Some(history) = tab.history.as_ref() {
         history.commits.iter().take(LIMIT).cloned().collect()
-    } else if let Some(ref repo_slug) = tab.remote_repo {
-        // Remote PR tab: no local git repo. Fetch commits via `gh pr view --json commits`.
-        // Parse the "owner/repo" slug back into owner + repo.
-        if let Some(pr_number) = tab.pr_number {
-            if let Some((owner, repo)) = repo_slug.split_once('/') {
-                er_engine::github::gh_pr_commits_remote(owner, repo, pr_number, LIMIT)
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        }
+    } else if tab.pr_number.is_some() {
+        tab.pr_commits.iter().take(LIMIT).cloned().collect()
     } else {
         // Log the VIEWED branch's commits (base..branch), not base..HEAD — when
         // the branch isn't the checked-out HEAD of log_root, base..HEAD logs the
@@ -2456,6 +2497,11 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             kind: "you".to_string(),
                             timestamp: q.timestamp.clone(),
                             body_markdown: q.text.clone(),
+                            origin: None,
+                            source: None,
+                            synced: None,
+                            editable: None,
+                            deletable: None,
                         },
                         replies: build_replies(&qref, tab, pending),
                         promoted_to: q.promoted_to.clone(),
@@ -2489,6 +2535,11 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             kind: author_kind.to_string(),
                             timestamp: c.timestamp.clone(),
                             body_markdown: c.comment.clone(),
+                            origin: None,
+                            source: None,
+                            synced: None,
+                            editable: None,
+                            deletable: None,
                         },
                         replies: build_replies(&cref, tab, pending),
                         promoted_to: None,
@@ -2531,6 +2582,39 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                                     .map(|q| q.id.clone())
                             })
                         });
+                    let mut responses: Vec<FindingResponseSnapshot> = f
+                        .responses
+                        .iter()
+                        .map(|r| FindingResponseSnapshot {
+                            id: r.id.clone(),
+                            author: "AI".to_string(),
+                            kind: "ai".to_string(),
+                            timestamp: r.timestamp.clone(),
+                            body_markdown: r.text.clone(),
+                            origin: "finding_response".to_string(),
+                            editable: false,
+                            deletable: true,
+                        })
+                        .collect();
+                    if let Some(pmap) = pending {
+                        let pending_key = format!("finding:{}", f.id);
+                        let is_pending = pmap
+                            .lock()
+                            .map(|g| g.contains_key(&pending_key))
+                            .unwrap_or(false);
+                        if is_pending {
+                            responses.push(FindingResponseSnapshot {
+                                id: String::new(),
+                                author: "AI".to_string(),
+                                kind: "ai".to_string(),
+                                timestamp: String::new(),
+                                body_markdown: "…thinking".to_string(),
+                                origin: "finding_response".to_string(),
+                                editable: false,
+                                deletable: false,
+                            });
+                        }
+                    }
                     FlatFinding {
                         id: f.id.clone(),
                         file: path.clone(),
@@ -2548,6 +2632,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             .cloned()
                             .or_else(|| f.promoted_to.clone()),
                         thread_id,
+                        responses,
                     }
                 })
             })
@@ -2679,6 +2764,52 @@ mod tests {
     use super::*;
     use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
 
+    fn commit_info(hash: &str, subject: &str) -> er_engine::git::CommitInfo {
+        er_engine::git::CommitInfo {
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            subject: subject.to_string(),
+            author: "octo".to_string(),
+            date: "2026-06-01T10:00:00Z".to_string(),
+            relative_date: "2026-06-01T10:00:00Z".to_string(),
+            file_count: 0,
+            adds: 0,
+            dels: 0,
+            is_merge: false,
+        }
+    }
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {args:?}: {e}"));
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_repo_with_feature_commit() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        run_git(root, &["init", "-b", "main"]);
+        run_git(root, &["config", "user.email", "test@example.com"]);
+        run_git(root, &["config", "user.name", "Test User"]);
+        run_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("file.txt"), "base\n").unwrap();
+        run_git(root, &["add", "file.txt"]);
+        run_git(root, &["commit", "-m", "base"]);
+        run_git(root, &["checkout", "-b", "feature"]);
+        std::fs::write(root.join("file.txt"), "base\nfeature\n").unwrap();
+        run_git(root, &["commit", "-am", "feature commit"]);
+        tmp
+    }
+
     fn github_comment(outdated: bool, stale: bool) -> GitHubReviewComment {
         GitHubReviewComment {
             id: "gh-1".to_string(),
@@ -2795,6 +2926,55 @@ mod tests {
             "https://github.com/reshapebiotech/discovery/pull/878"
         );
         assert_eq!(pr.head, "DEV-3884/data-table-sorting");
+    }
+
+    #[test]
+    fn pr_commit_snapshot_uses_cached_pr_commits() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_number = Some(42);
+        tab.local_branch_view = Some("feature".to_string());
+        tab.pr_commits = vec![
+            commit_info("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "newest"),
+            commit_info("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "older"),
+        ];
+
+        let commits = build_commits_snapshot(&tab);
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(commits[0].title, "newest");
+        assert_eq!(commits[1].sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    }
+
+    #[test]
+    fn pr_commit_snapshot_does_not_fallback_to_local_head_history() {
+        let tmp = init_repo_with_feature_commit();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.base_branch = "main".to_string();
+        tab.current_branch = "feature".to_string();
+        tab.local_branch_view = Some("feature".to_string());
+        tab.pr_number = Some(42);
+        tab.pr_commits = Vec::new();
+
+        let commits = build_commits_snapshot(&tab);
+
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn local_branch_commit_snapshot_still_uses_git_log_range() {
+        let tmp = init_repo_with_feature_commit();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.base_branch = "main".to_string();
+        tab.current_branch = "feature".to_string();
+        tab.local_branch_view = Some("feature".to_string());
+
+        let commits = build_commits_snapshot(&tab);
+
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].title, "feature commit");
     }
 
     #[test]

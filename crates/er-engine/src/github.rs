@@ -41,6 +41,92 @@ pub struct ReviewerStatus {
     pub state: String,
 }
 
+/// Parse `gh pr view --json commits` output into commit metadata.
+///
+/// GitHub returns PR commits in chronological order. The desktop scroller
+/// matches GitHub's PR Commits tab by showing newest first.
+pub fn parse_pr_commits_view_json(
+    bytes: &[u8],
+    limit: usize,
+) -> Result<Vec<crate::git::CommitInfo>> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).context("Failed to parse PR commits JSON")?;
+    Ok(parse_pr_commits_view_value(&value, limit))
+}
+
+pub fn parse_pr_commits_view_value(
+    value: &serde_json::Value,
+    limit: usize,
+) -> Vec<crate::git::CommitInfo> {
+    let Some(commits) = value.get("commits").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    commits
+        .iter()
+        .rev()
+        .take(limit)
+        .filter_map(|commit| {
+            let oid = commit.get("oid").and_then(|v| v.as_str())?;
+            let author = commit
+                .get("authors")
+                .and_then(|v| v.as_array())
+                .map(|authors| {
+                    authors
+                        .iter()
+                        .filter_map(|author| {
+                            author
+                                .get("login")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| author.get("name").and_then(|v| v.as_str()))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let date = commit
+                .get("committedDate")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some(crate::git::CommitInfo {
+                hash: oid.to_string(),
+                short_hash: oid.chars().take(7).collect(),
+                subject: commit
+                    .get("messageHeadline")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                author,
+                date: date.clone(),
+                relative_date: date,
+                file_count: 0,
+                adds: 0,
+                dels: 0,
+                is_merge: false,
+            })
+        })
+        .collect()
+}
+
+/// Fetch the commits on a local-clone PR using the GitHub API via `gh`.
+pub fn gh_pr_commits(
+    repo_root: &str,
+    number: u64,
+    limit: usize,
+) -> Result<Vec<crate::git::CommitInfo>> {
+    let output = Command::new("gh")
+        .args(["pr", "view", &number.to_string(), "--json", "commits"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run gh pr view for commits")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to get PR #{number} commits: {}", stderr.trim());
+    }
+    parse_pr_commits_view_json(&output.stdout, limit)
+}
+
 /// Deduplicate reviewers by login from the reviews array.
 /// APPROVED and CHANGES_REQUESTED are "decisive" — a later COMMENTED review
 /// does not downgrade them (matches GitHub's displayed review state).
@@ -1907,19 +1993,6 @@ pub fn gh_pr_commits_remote(
     limit: usize,
 ) -> Vec<crate::git::CommitInfo> {
     let repo_slug = format!("{}/{}", owner, repo);
-    // Ask gh for up to `limit` commits (gh returns at most 250 by default).
-    // The `commits` field is in chronological order; we reverse for newest-first.
-    let jq = format!(
-        r#"[.commits | reverse | .[:{limit}] | .[] | [
-            .oid,
-            (.oid | .[0:7]),
-            .messageHeadline,
-            (.authors | map(.login) | join(", ")),
-            (.committedDate // ""),
-            (.committedDate // "")
-        ] | @tsv] | .[]"#,
-        limit = limit
-    );
     let output = match Command::new("gh")
         .args([
             "pr",
@@ -1929,8 +2002,6 @@ pub fn gh_pr_commits_remote(
             &repo_slug,
             "--json",
             "commits",
-            "--jq",
-            &jq,
         ])
         .output()
     {
@@ -1942,28 +2013,7 @@ pub fn gh_pr_commits_remote(
         return Vec::new();
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(6, '\t').collect();
-            if parts.len() < 4 {
-                return None;
-            }
-            Some(crate::git::CommitInfo {
-                hash: parts[0].to_string(),
-                short_hash: parts[1].to_string(),
-                subject: parts[2].to_string(),
-                author: parts[3].to_string(),
-                date: parts.get(4).unwrap_or(&"").to_string(),
-                relative_date: parts.get(5).unwrap_or(&"").to_string(),
-                file_count: 0,
-                adds: 0,
-                dels: 0,
-                is_merge: false,
-            })
-        })
-        .collect()
+    parse_pr_commits_view_json(&output.stdout, limit).unwrap_or_default()
 }
 
 /// Fetch a rich PR overview (state, draft, review decision, mergeable, labels)
@@ -2393,6 +2443,36 @@ mod tests {
         assert_eq!(data.head_branch, "fix/the-bug");
         assert!(data.checks.is_empty());
         assert!(data.reviewers.is_empty());
+    }
+
+    #[test]
+    fn parse_pr_commits_reverses_chronological_github_order() {
+        let raw = br#"{
+          "commits": [
+            {
+              "oid": "1111111111111111111111111111111111111111",
+              "messageHeadline": "old commit",
+              "authors": [{"login": "ada"}],
+              "committedDate": "2026-06-01T10:00:00Z"
+            },
+            {
+              "oid": "2222222222222222222222222222222222222222",
+              "messageHeadline": "new commit",
+              "authors": [{"name": "Grace Hopper"}],
+              "committedDate": "2026-06-02T10:00:00Z"
+            }
+          ]
+        }"#;
+
+        let commits = parse_pr_commits_view_json(raw, 10).expect("parse commits");
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].hash, "2222222222222222222222222222222222222222");
+        assert_eq!(commits[0].short_hash, "2222222");
+        assert_eq!(commits[0].subject, "new commit");
+        assert_eq!(commits[0].author, "Grace Hopper");
+        assert_eq!(commits[1].hash, "1111111111111111111111111111111111111111");
+        assert_eq!(commits[1].author, "ada");
     }
 
     #[test]

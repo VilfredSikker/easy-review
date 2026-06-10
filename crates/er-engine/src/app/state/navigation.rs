@@ -919,9 +919,29 @@ impl TabState {
             (commit_hash, self.repo_root.clone())
         };
 
-        let files = match git::git_diff_commit(&hash, &repo_root) {
+        let raw_diff = match git::git_diff_commit(&hash, &repo_root) {
+            Ok(raw) => Ok(raw),
+            Err(first_err)
+                if self.pr_number.is_some()
+                    && self.local_branch_view.is_some()
+                    && !self.is_remote() =>
+            {
+                if let Some(pr_number) = self.pr_number {
+                    if let Ok(head_ref) = crate::github::fetch_pr_head(pr_number, &self.repo_root) {
+                        self.pr_head_ref = Some(head_ref);
+                        self.pr_refs_fetched = true;
+                    }
+                }
+                git::git_diff_commit(&hash, &repo_root).map_err(|_| first_err)
+            }
+            Err(err) => Err(err),
+        };
+        let files = match raw_diff {
             Ok(raw) => git::parse_diff(&raw),
-            Err(_) => vec![],
+            Err(err) => {
+                eprintln!("Failed to load commit diff for {hash}: {err}");
+                Vec::new()
+            }
         };
 
         let history = match self.history.as_mut() {
@@ -1127,6 +1147,12 @@ impl TabState {
             None => return,
         };
         if all_loaded {
+            return;
+        }
+        if self.pr_number.is_some() && self.local_branch_view.is_some() {
+            if let Some(history) = self.history.as_mut() {
+                history.all_loaded = true;
+            }
             return;
         }
 

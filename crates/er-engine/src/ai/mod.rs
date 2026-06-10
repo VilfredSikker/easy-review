@@ -1,6 +1,7 @@
 pub mod comments;
 pub mod experts;
 pub mod finding_cleanup;
+pub mod finding_responses;
 mod loader;
 pub mod professor;
 pub mod prompts;
@@ -11,6 +12,7 @@ pub mod triage;
 pub use comments::*;
 pub use experts::*;
 pub use finding_cleanup::*;
+pub use finding_responses::*;
 pub use loader::*;
 pub use professor::*;
 pub use relocate::*;

@@ -1351,7 +1351,10 @@
           {#each windowedRows as row, localIdx (row.identity)}
             {@const rowIdx = vw.start + localIdx}
             {#if row.type === "file-header"}
-              <FileHeaderRow {row} pointerEventsNone={stickyHeaderClicksOverlay} />
+              <FileHeaderRow
+                {row}
+                pointerEventsNone={stickyHeaderClicksOverlay && row.filePath === visibleFilePath}
+              />
             {:else if row.type === "hunk-header"}
               <HunkHeaderRow {row} />
             {:else if row.type === "content-fold"}
@@ -1421,5 +1424,6 @@
   .vscroll {
     overflow-y: auto;
     overflow-x: hidden;
+    scroll-padding-bottom: var(--shell-bottom-chrome, 32px);
   }
 </style>

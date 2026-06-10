@@ -19,6 +19,22 @@ export interface ThreadMessage {
   kind: "you" | "human" | "ai";
   timestamp: string;
   body_markdown: string;
+  origin?: "thread_reply" | "finding_response";
+  source?: string;
+  synced?: boolean;
+  editable?: boolean;
+  deletable?: boolean;
+}
+
+export interface FindingResponseSnapshot {
+  id: string;
+  author: string;
+  kind: "you" | "human" | "ai";
+  timestamp: string;
+  body_markdown: string;
+  origin: "finding_response";
+  editable: boolean;
+  deletable: boolean;
 }
 
 export interface ThreadSnapshot {
@@ -104,6 +120,8 @@ export interface FlatFinding {
   promoted_to: string | null;
   /** Id of the root comment thread created via "Ask AI" for this finding. */
   thread_id: string | null;
+  /** AI validation replies stored on the finding in review.json. */
+  responses?: FindingResponseSnapshot[];
 }
 
 export interface TriagePriorityFileSnapshot {
@@ -403,6 +421,10 @@ export interface BackgroundTaskSnapshot {
   label: string;
   target_label: string;
   scope: string;
+  repo_root: string;
+  branch_label: string;
+  pr_number?: number | null;
+  remote_repo?: string | null;
   /** "running" | "done" | "failed" */
   status: string;
   error?: string | null;

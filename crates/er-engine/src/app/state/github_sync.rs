@@ -1027,6 +1027,113 @@ impl App {
         }
         Ok(())
     }
+
+    /// Push one unsynced local reply whose parent comment is already on GitHub.
+    pub fn push_github_comment_reply(
+        &mut self,
+        reply_id: &str,
+        pr_number_hint: Option<u64>,
+    ) -> Result<()> {
+        if reply_id.starts_with("fr-") {
+            anyhow::bail!("Finding validation replies cannot be pushed individually");
+        }
+
+        let tab = self.tab();
+        let repo_root = tab.repo_root.clone();
+        let explicit_pr_number = tab.pr_number.or(pr_number_hint);
+        let is_remote = tab.is_remote();
+        let remote_repo = tab.remote_repo.clone();
+
+        let (owner, repo_name, pr_number) = if is_remote {
+            if let (Some(ref slug), Some(n)) = (&remote_repo, explicit_pr_number) {
+                let parts: Vec<&str> = slug.split('/').collect();
+                if parts.len() == 2 {
+                    (parts[0].to_string(), parts[1].to_string(), n)
+                } else {
+                    anyhow::bail!("Invalid remote repo slug");
+                }
+            } else {
+                anyhow::bail!("No PR info for remote mode");
+            }
+        } else {
+            local_pr_target(&repo_root, explicit_pr_number)
+                .map_err(|_| anyhow::anyhow!("No PR found for current branch"))?
+        };
+
+        let comments_path = self.tab().github_comments_path();
+        let mut gc: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(gc) => gc,
+                Err(e) => anyhow::bail!("Failed to parse github-comments.json: {e}"),
+            },
+            Err(_) => anyhow::bail!("No github-comments.json found"),
+        };
+
+        let reply = gc
+            .comments
+            .iter()
+            .find(|c| c.id == reply_id)
+            .ok_or_else(|| anyhow::anyhow!("Comment not found: {reply_id}"))?;
+        if reply.source != "local" {
+            anyhow::bail!("Only local comments can be pushed");
+        }
+        if reply.synced {
+            anyhow::bail!("Reply already pushed");
+        }
+        let parent_id = reply
+            .in_reply_to
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Push only works on replies, not thread roots"))?;
+        let parent = gc
+            .comments
+            .iter()
+            .find(|c| c.id == parent_id)
+            .ok_or_else(|| anyhow::anyhow!("Parent comment not found"))?;
+        if !parent.synced {
+            anyhow::bail!("Push the thread root to GitHub first");
+        }
+        let parent_github_id = parent
+            .github_id
+            .ok_or_else(|| anyhow::anyhow!("Parent comment has no GitHub id"))?;
+
+        let reply_body = reply.comment.clone();
+        let github_id = if is_remote {
+            github::gh_pr_reply_comment_remote(
+                &owner,
+                &repo_name,
+                pr_number,
+                parent_github_id,
+                &reply_body,
+            )
+        } else {
+            github::gh_pr_reply_comment(
+                &owner,
+                &repo_name,
+                pr_number,
+                parent_github_id,
+                &reply_body,
+                &repo_root,
+            )
+        }
+        .map_err(|e| anyhow::anyhow!("Failed to push reply: {e}"))?;
+
+        if let Some(c) = gc.comments.iter_mut().find(|c| c.id == reply_id) {
+            c.github_id = Some(github_id);
+            c.synced = true;
+        }
+
+        let json = serde_json::to_string_pretty(&gc)?;
+        let tmp_path = format!("{}.tmp", comments_path);
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, &comments_path)?;
+        if is_remote {
+            self.tab_mut().reload_remote_comments();
+        } else {
+            self.tab_mut().reload_ai_state();
+        }
+        self.notify("Reply pushed to GitHub");
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -212,7 +212,9 @@
       ? "unstaged"
       : app.snapshot?.mode === "staged"
         ? "staged"
-        : "branch",
+        : app.snapshot?.mode === "pr"
+          ? "PR Diff"
+          : "branch",
   );
 
   const scopeHint = $derived(

@@ -7,11 +7,15 @@
 
   interface Props {
     ai: AiSnapshot;
+    /** When false, skip auto-pull (e.g. Branch tab not active). */
+    active?: boolean;
   }
 
-  const { ai }: Props = $props();
+  const { ai, active = true }: Props = $props();
 
   let pushMode = $state<null | "review" | "individual">(null);
+  let manualRefreshing = $state(false);
+  let autoPulledFor = $state<string | null>(null);
   let decision = $state<"comment" | "approve" | "changes">("comment");
   let summary = $state("");
   let submitting = $state(false);
@@ -27,6 +31,30 @@
     );
   });
   const annotationCount = $derived(app.snapshot?.ui_annotations?.length ?? 0);
+  const refreshing = $derived(
+    manualRefreshing || (app.snapshot?.bg_loading?.gh_comments ?? false),
+  );
+
+  $effect(() => {
+    if (!active) return;
+    const pr = app.snapshot?.github?.number ?? app.snapshot?.pr?.number ?? null;
+    const branch = app.snapshot?.branch;
+    if (!pr || !branch) return;
+    const key = `${branch}:${pr}`;
+    if (autoPulledFor === key) return;
+    autoPulledFor = key;
+    void app.cmd("pull_github_comments");
+  });
+
+  async function onRefresh() {
+    manualRefreshing = true;
+    try {
+      await app.cmd("pull_github_comments");
+      app.showToast("success", "Comments refreshed");
+    } finally {
+      manualRefreshing = false;
+    }
+  }
 
   function scrollToAnnotations() {
     const el = document.getElementById("ui-annotations-card");
@@ -61,21 +89,34 @@
 </script>
 
 <Card>
-  <div class="flex items-center justify-between mb-3">
+  <div class="flex items-center justify-between mb-3 gap-2">
     <SectionLabel>Comments</SectionLabel>
-    <div class="flex items-center gap-2">
-      <span class="flex items-center gap-1 text-[10px] mono text-comment"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>{ai.local_comment_count} local</span>
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="flex items-center gap-1 text-[10px] mono text-comment shrink-0"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>{ai.local_comment_count} local</span>
       {#if ai.github_comment_count > 0}
-        <span class="flex items-center gap-1 text-[10px] mono text-muted">{ai.github_comment_count} GitHub</span>
+        <span class="flex items-center gap-1 text-[10px] mono text-muted shrink-0">{ai.github_comment_count} GitHub</span>
       {/if}
       {#if annotationCount > 0}
         <button
           type="button"
           onclick={scrollToAnnotations}
-          class="text-[10px] mono text-muted hover:text-fg-2 px-1 py-0.5 rounded border border-hairline"
+          class="text-[10px] mono text-muted hover:text-fg-2 px-1 py-0.5 rounded border border-hairline shrink-0"
           title="Jump to UI annotations"
         >+ {annotationCount} annotation{annotationCount === 1 ? "" : "s"}</button>
       {/if}
+      <button
+        type="button"
+        class={`p-1 rounded transition-colors shrink-0 ${refreshing ? "text-muted opacity-50 cursor-not-allowed" : "text-muted hover:text-fg-2 hover:bg-fg-3/10"}`}
+        onclick={onRefresh}
+        disabled={refreshing}
+        title="Refresh comments from GitHub"
+        aria-label="Refresh comments from GitHub"
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          class:animate-spin={refreshing}>
+          <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>
+        </svg>
+      </button>
     </div>
   </div>
 
@@ -106,6 +147,14 @@
   <div class="space-y-2">
     {#each visibleCommentThreads as thread (thread.id)}
       <InlineThread {thread} hunk_idx={0} variant="panel" />
+    {:else}
+      <p class="text-[11px] text-muted py-1">
+        {#if refreshing}
+          Fetching comments from GitHub…
+        {:else}
+          No comments on this diff
+        {/if}
+      </p>
     {/each}
   </div>
 

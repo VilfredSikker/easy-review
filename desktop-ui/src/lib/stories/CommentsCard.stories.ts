@@ -11,6 +11,20 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+export const Empty: Story = {
+  args: {
+    ai: {
+      ...aiWithFindings,
+      local_comment_count: 0,
+      github_comment_count: 0,
+      comments: 0,
+      unpushed: 0,
+      threads: [],
+    },
+    active: true,
+  },
+};
+
 export const GithubOnlyOutdated: Story = {
   args: {
     ai: {

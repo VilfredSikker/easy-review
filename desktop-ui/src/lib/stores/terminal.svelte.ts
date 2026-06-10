@@ -3,8 +3,8 @@
 // reach for this — keeps the prop-passing chain short.
 //
 // `open` is persisted to localStorage so the drawer stays open across app
-// restarts. We deliberately do NOT persist scrollback — closing still kills
-// the PTY (see Terminal.svelte teardown).
+// restarts. Hiding the drawer does not kill the PTY — use "End session" in
+// the terminal toolbar for that.
 
 const STORAGE_KEY = "terminalOpen";
 
@@ -28,17 +28,23 @@ function persist(v: boolean) {
 
 function createTerminalStore() {
   let open = $state(loadInitial());
+  let everOpened = $state(loadInitial());
 
   return {
     get open() {
       return open;
     },
+    get everOpened() {
+      return everOpened;
+    },
     set open(v: boolean) {
       open = v;
+      if (v) everOpened = true;
       persist(v);
     },
     toggle() {
       open = !open;
+      if (open) everOpened = true;
       persist(open);
     },
   };

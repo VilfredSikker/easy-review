@@ -2,7 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
-  import type { InboxItemSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
+  import type { BackgroundTaskSnapshot, InboxItemSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
 
@@ -387,6 +387,27 @@
     } finally {
       syncingProject = null;
     }
+  }
+
+  function isBranchTriageRunning(project: ProjectSnapshot, branchName: string): boolean {
+    return (snapshot?.background_tasks ?? []).some(
+      (t: BackgroundTaskSnapshot) =>
+        t.kind === "triage" &&
+        t.status === "running" &&
+        t.repo_root === project.root_path &&
+        t.branch_label === branchName &&
+        (t.pr_number == null || t.pr_number === undefined),
+    );
+  }
+
+  function isPrTriageRunning(project: ProjectSnapshot, prNumber: number): boolean {
+    return (snapshot?.background_tasks ?? []).some(
+      (t: BackgroundTaskSnapshot) =>
+        t.kind === "triage" &&
+        t.status === "running" &&
+        t.pr_number === prNumber &&
+        (t.remote_repo === project.remote || t.repo_root === project.root_path),
+    );
   }
 
   async function runPrTriage(project: ProjectSnapshot, pr: PrInfo, e: MouseEvent) {
@@ -1104,6 +1125,7 @@
                 {#each visibleBranches(project) as br (br.name)}
                   {@const isActiveView = activeTab?.branch === br.name && activeTab?.repo_root === project.root_path}
                   {@const branchPending = pendingBranchKey === `${project.id}:${br.name}`}
+                  {@const branchTriaging = triagingBranchKey === `${project.id}:${br.name}` || isBranchTriageRunning(project, br.name)}
                   <div class="group relative flex items-center">
                     <!-- Orange left tick for active branch row -->
                     {#if isActiveView}
@@ -1127,14 +1149,13 @@
                           <span class="truncate text-[10px] text-muted font-mono">{br.worktree_path.split("/").slice(-2).join("/")}</span>
                         {/if}
                       </div>
-                      {#if branchPending}
+                      {#if branchPending || branchTriaging}
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0 ml-auto">
                           <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
                           <path d="M21 3v5h-5"/>
                         </svg>
                       {/if}
                     </button>
-                    {@const branchTriaging = triagingBranchKey === `${project.id}:${br.name}`}
                     <span class="absolute right-1 flex items-center gap-0.5 {isActiveView || br.is_current ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity">
                       {#if project.remote}
                         <button
@@ -1172,7 +1193,7 @@
                 {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number && project.is_active) ||
                   (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
                 {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
-                {@const prTriaging = triagingPrKey === `${project.id}:${pr.number}`}
+                {@const prTriaging = triagingPrKey === `${project.id}:${pr.number}` || isPrTriageRunning(project, pr.number)}
                 <div class="group relative flex items-center">
                   <button
                     type="button"

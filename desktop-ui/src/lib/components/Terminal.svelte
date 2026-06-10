@@ -9,17 +9,14 @@
     sessionId: string;
     cwd: string;
     visible: boolean;
+    /** Increment to refit after drawer resize. */
+    refitToken?: number;
   }
 
-  const { sessionId, cwd, visible }: Props = $props();
+  const { sessionId, cwd, visible, refitToken = 0 }: Props = $props();
 
   const branch = $derived(app.snapshot?.branch ?? "");
 
-  /**
-   * Inserts `git checkout <branch>` at the PTY without a trailing newline.
-   * The user must press Enter to confirm — this is intentional (spec): we
-   * never auto-execute branch switches.
-   */
   async function insertCheckoutCommand() {
     if (!branch) return;
     const { invoke } = await import("@tauri-apps/api/core");
@@ -30,7 +27,6 @@
     } catch {
       /* ignore — PTY may have exited */
     }
-    // Return focus to xterm so the user can press Enter immediately.
     term?.focus();
   }
 
@@ -39,15 +35,13 @@
   let unlistenOutput: (() => void) | null = null;
   let unlistenExit: (() => void) | null = null;
   let resizeObs: ResizeObserver | null = null;
-  /**
-   * Approx character cell width in px. Measured once at mount; used to
-   * compute cols/rows on resize without pulling in `@xterm/addon-fit`.
-   * JetBrains Mono at 13px is roughly 7.8px wide × 17px tall.
-   */
+  let mountedSessionId = $state<string | null>(null);
+  /** After killSession, block remount until the drawer is hidden and reopened. */
+  let sessionEnded = $state(false);
+
   const CHAR_W = 7.8;
   const CHAR_H = 17;
 
-  // Encode/decode bytes — Tauri serializes `Vec<u8>` as a JS number array.
   function bytesToUint8Array(bytes: number[] | Uint8Array): Uint8Array {
     return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   }
@@ -91,7 +85,6 @@
     const { invoke } = await import("@tauri-apps/api/core");
     const { listen } = await import("@tauri-apps/api/event");
 
-    // Subscribe BEFORE spawning so we never miss the first chunk.
     unlistenOutput = await listen<{ session_id: string; bytes: number[] }>(
       "terminal-output",
       (event) => {
@@ -114,31 +107,33 @@
       return;
     }
 
-    // Pipe keystrokes back to the PTY. xterm gives us a UTF-8 string; encode.
     const encoder = new TextEncoder();
     term.onData((data) => {
       const bytes = Array.from(encoder.encode(data));
       invoke("terminal_write", { sessionId, bytes }).catch(() => {});
     });
 
-    // Drive PTY resize from the container size.
     resizeObs = new ResizeObserver(() => applyResize());
     resizeObs.observe(containerEl);
+    mountedSessionId = sessionId;
     applyResize();
+    if (visible) term.focus();
   }
 
   function applyResize() {
-    if (!term || !containerEl) return;
+    if (!term || !containerEl || !visible) return;
     const rect = containerEl.getBoundingClientRect();
+    if (rect.height < CHAR_H * 2 || rect.width < CHAR_W * 4) return;
     const cols = Math.max(20, Math.floor(rect.width / CHAR_W));
     const rows = Math.max(4, Math.floor(rect.height / CHAR_H));
     term.resize(cols, rows);
     import("@tauri-apps/api/core")
       .then(({ invoke }) => invoke("terminal_resize", { sessionId, rows, cols }))
       .catch(() => {});
+    term.scrollToBottom();
   }
 
-  async function teardown() {
+  function disposeXterm() {
     if (unlistenOutput) {
       unlistenOutput();
       unlistenOutput = null;
@@ -155,40 +150,61 @@
       term.dispose();
       term = null;
     }
+    mountedSessionId = null;
+  }
+
+  async function killSession() {
+    sessionEnded = true;
+    const sid = mountedSessionId ?? sessionId;
+    disposeXterm();
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("terminal_close", { sessionId });
+      await invoke("terminal_close", { sessionId: sid });
     } catch {
       /* ignore */
     }
+    terminal.open = false;
   }
 
-  // Mount when first visible. If `visible` flips false, we tear down — the
-  // shell dies (spec is fine with no scrollback persistence across toggle).
-  // Single mount path: $effect reacts to visible + containerEl (onMount alone races bind:this).
   $effect(() => {
-    if (visible && containerEl && !term) {
+    if (!visible && sessionEnded) {
+      sessionEnded = false;
+    }
+  });
+
+  $effect(() => {
+    const sid = sessionId;
+    if (mountedSessionId && mountedSessionId !== sid && term) {
+      void disposeXterm();
+    }
+    if (visible && containerEl && !term && !sessionEnded) {
       void mountTerminal();
-    } else if (!visible && term) {
-      void teardown();
+    }
+  });
+
+  $effect(() => {
+    void refitToken;
+    if (visible && term) {
+      applyResize();
+    }
+  });
+
+  $effect(() => {
+    if (visible && term) {
+      applyResize();
+      term.focus();
     }
   });
 
   onDestroy(() => {
-    teardown();
+    disposeXterm();
   });
 </script>
 
-<div class="w-full h-full flex flex-col bg-ink-900 overflow-hidden">
-  <!--
-    Thin toolbar: branch label + insert-checkout shortcut + close.
-    Height is locked at 24px so the existing container resize math (CHAR_H
-    rows) keeps working — only the xterm area is measured for PTY sizing.
-  -->
+<div class="w-full h-full flex flex-col bg-ink-900 overflow-hidden {visible ? '' : 'pointer-events-none'}">
   <div
     class="h-6 shrink-0 border-b border-hairline bg-ink-870 flex items-center gap-2 px-2 text-[11px] mono"
   >
-    <!-- Terminal icon -->
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-muted shrink-0">
       <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
     </svg>
@@ -203,13 +219,12 @@
       Insert: git checkout {branch}
     </button>
     <div class="flex-1"></div>
-    <!-- Clear terminal buffer -->
     <button
       type="button"
       class="w-5 h-5 flex items-center justify-center rounded text-fg-3 hover:bg-hover hover:text-fg"
-      onclick={() => term?.clear()}
-      title="Clear terminal"
-      aria-label="Clear terminal"
+      onclick={() => void killSession()}
+      title="End session (kills shell)"
+      aria-label="End session"
     >
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
@@ -219,19 +234,18 @@
       type="button"
       class="w-5 h-5 flex items-center justify-center rounded text-fg-3 hover:bg-hover hover:text-fg"
       onclick={() => terminal.toggle()}
-      title="Close terminal"
-      aria-label="Close terminal"
+      title="Hide terminal"
+      aria-label="Hide terminal"
     >
       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
       </svg>
     </button>
   </div>
-  <div bind:this={containerEl} class="flex-1 min-h-0 p-2 overflow-hidden"></div>
+  <div bind:this={containerEl} class="flex-1 min-h-0 overflow-hidden"></div>
 </div>
 
 <style>
-  /* xterm renders its own canvas; make sure it fills our box. */
   :global(.xterm) {
     height: 100%;
     width: 100%;

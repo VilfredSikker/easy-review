@@ -1,5 +1,6 @@
 import { tick } from "svelte";
 import { app } from "$lib/stores/app.svelte";
+import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import type { FlatFinding, ThreadSnapshot } from "$lib/types";
 
@@ -43,6 +44,15 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
       await tick();
     }
   }
+  if (thread.file) {
+    diffFileCollapse.expand(thread.file);
+    const latest = app.snapshot;
+    const fileSnap = latest?.files.find((f) => f.path === thread.file);
+    if (fileSnap?.compacted) {
+      await app.cmd("toggle_compacted");
+      await tick();
+    }
+  }
   const didScroll = await diffNav.scrollToThread(thread.id);
   if (didScroll) return;
 
@@ -63,6 +73,15 @@ export async function navigateToFinding(finding: FlatFinding): Promise<void> {
     const f = snap.files.find((f) => f.path === finding.file);
     if (f) {
       await app.cmd("select_file", { idx: f.source_index });
+      await tick();
+    }
+  }
+  if (finding.file) {
+    diffFileCollapse.expand(finding.file);
+    const latest = app.snapshot;
+    const fileSnap = latest?.files.find((f) => f.path === finding.file);
+    if (fileSnap?.compacted) {
+      await app.cmd("toggle_compacted");
       await tick();
     }
   }

@@ -3,6 +3,7 @@
   import type { ThreadSnapshot } from "$lib/types";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
   import EditMessageModal from "$lib/components/EditMessageModal.svelte";
+  import ReplyActionBar from "$lib/components/ReplyActionBar.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { navigateToThread } from "$lib/dom";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -285,29 +286,16 @@
               </div>
             {/if}
           </div>
-          {#if reply.id}
-            <div class="self-start shrink-0 flex gap-0.5 opacity-0 group-hover/row:opacity-60">
-              {#if reply.kind === "you"}
-                <button
-                  type="button"
-                  onclick={() => openEdit(reply.id, reply.body_markdown)}
-                  title="Edit reply"
-                  aria-label="Edit reply"
-                  class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-fg-2 hover:bg-hover transition"
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                </button>
-              {/if}
-              <button
-                type="button"
-                onclick={() => deleteReply(reply.id)}
-                title="Delete this reply"
-                aria-label="Delete reply"
-                class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
-              >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
-              </button>
-            </div>
+          {#if reply.id && reply.body_markdown !== "…thinking"}
+            <ReplyActionBar
+              reply={{ ...reply, origin: reply.origin ?? "thread_reply" }}
+              rootThreadId={thread.id}
+              {isQuestion}
+              parentSynced={thread.synced}
+              threadResolved={thread.resolved}
+              onEdit={reply.kind === "you" ? () => openEdit(reply.id, reply.body_markdown) : undefined}
+              onDelete={() => deleteReply(reply.id)}
+            />
           {/if}
         </div>
       {/each}

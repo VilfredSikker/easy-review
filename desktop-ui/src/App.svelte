@@ -111,6 +111,7 @@
   }
 
   let dragging = $state(false);
+  let terminalRefitToken = $state(0);
 
   function onResizeStart(e: MouseEvent) {
     e.preventDefault();
@@ -131,6 +132,7 @@
       } catch {
         /* ignore */
       }
+      terminalRefitToken += 1;
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -272,7 +274,10 @@
   </div>
 {:else}
 
-<div class="h-screen flex flex-col bg-ink-900 text-ink-50 overflow-hidden">
+<div
+  class="h-screen flex flex-col bg-ink-900 text-ink-50 overflow-hidden"
+  style="--shell-bottom-chrome: {terminal.open ? '12px' : '28px'}"
+>
   <TabStrip onToggleRightCollapse={rightRail.toggle} rightCollapsed={rightRail.collapsed} />
   <BranchContextBar />
 
@@ -364,10 +369,10 @@
     {/if}
   </div>
 
-  {#if terminal.open && browserLayout !== "fullscreen"}
+  {#if terminal.everOpened && browserLayout !== "fullscreen"}
     <div
-      class="relative border-t border-hairline bg-ink-900 shrink-0"
-      style="height: {drawerHeight}px"
+      class="relative border-t border-hairline bg-ink-900 shrink-0 overflow-hidden"
+      style="height: {terminal.open ? drawerHeight : 0}px"
     >
       <!--
         4px drag handle along the top edge. Sits above the border, captures
@@ -386,6 +391,7 @@
         sessionId={`tab-${activeTabIdx}`}
         cwd={activeTabRoot}
         visible={terminal.open}
+        refitToken={terminalRefitToken}
       />
     </div>
   {/if}

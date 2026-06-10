@@ -973,6 +973,11 @@ pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String> {
         .output()
         .context("Failed to run git diff-tree for root commit")?;
 
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git diff-tree failed for {hash}: {}", stderr.trim());
+    }
+
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 

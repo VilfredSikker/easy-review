@@ -183,7 +183,7 @@
         : []),
       {
         id: "toggle-terminal",
-        label: terminal.open ? "Close terminal" : "Toggle terminal",
+        label: terminal.open ? "Hide terminal" : "Show terminal",
         description: "Bottom drawer shell at the active tab's repo root",
         group: "Actions",
         kbd: "`",

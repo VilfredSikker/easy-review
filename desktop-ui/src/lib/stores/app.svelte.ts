@@ -542,6 +542,8 @@ function successToastForCommand(command: string): string | null {
       return "Diff force refreshed";
     case "refresh_github_status":
       return "GitHub status refreshed";
+    case "pull_github_comments":
+      return "Comments refreshed";
     case "run_ai_review":
       return "AI review started";
     case "run_ai_review_files":

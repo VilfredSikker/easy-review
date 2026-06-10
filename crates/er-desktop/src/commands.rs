@@ -152,12 +152,15 @@ pub struct PrOpenCacheEntry {
     /// Cached PR overview so a click after a hover-prefetch can render the
     /// right panel without re-running `gh pr view`.
     pr_data: Option<er_engine::github::PrOverviewData>,
+    /// Cached GitHub PR commits, newest first, keyed by the same freshness.
+    pr_commits: Option<Vec<er_engine::git::CommitInfo>>,
 }
 
 #[derive(Debug, Clone)]
 struct PrOpenMetadata {
     freshness: PrOpenFreshness,
     pr_data: er_engine::github::PrOverviewData,
+    pr_commits: Vec<er_engine::git::CommitInfo>,
 }
 
 struct PrOpenInputs {
@@ -2133,6 +2136,22 @@ pub fn push_github_comment_thread(
     Ok(snap_from(&app, &state))
 }
 
+/// Push a single unsynced local GitHub comment reply (parent must already be on GitHub).
+#[tauri::command]
+pub fn push_github_comment_reply(
+    reply_id: String,
+    pr_number: Option<u64>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    if reply_id.starts_with("fr-") {
+        return Err("Finding validation replies cannot be pushed individually — promote the finding instead.".to_string());
+    }
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    app.push_github_comment_reply(&reply_id, pr_number)
+        .map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &state))
+}
+
 /// Submit pending local comments as a GitHub PR review with an explicit decision.
 /// `mode` must be "COMMENT", "APPROVE", or "REQUEST_CHANGES".
 /// `summary` is the top-level review body sent to GitHub.
@@ -3388,96 +3407,26 @@ fn save_finding_promotions(
 // ── Ask AI ──────────────────────────────────────────────────────────────────
 
 /// Validate a comment, question, or finding with AI — adds a local reply on the card
-/// (questions.json for findings; never posts to GitHub until promoted/pushed).
+/// (finding responses in review.json; thread replies in sidecars).
 #[tauri::command]
 pub fn validate_with_ai(
     thread_id: Option<String>,
     finding_id: Option<String>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
-    let resolved_thread = if let Some(tid) = thread_id {
-        tid
-    } else if let Some(fid) = finding_id {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let tid = resolve_or_create_finding_validation_thread(&mut app, &fid)?;
-        drop(app);
-        tid
-    } else {
-        return Err("thread_id or finding_id is required".to_string());
-    };
-    ask_ai(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), state)
-}
-
-/// Question-thread id for finding validation, creating a private question root if needed.
-fn resolve_or_create_finding_validation_thread(
-    app: &mut er_engine::app::App,
-    finding_id: &str,
-) -> Result<String, String> {
-    if let Some(id) = er_engine::ai::find_finding_thread_root(&app.tab().ai, finding_id) {
-        return Ok(id);
-    }
-
-    let (file, hunk_idx, line_start, title, description) = {
-        let tab = app.tab();
-        let mut result = None;
-        if let Some(review) = tab.ai.review.as_ref() {
-            'outer: for (path, fr) in review.files.iter() {
-                for f in fr.findings.iter() {
-                    if f.id == finding_id {
-                        result = Some((
-                            path.clone(),
-                            f.hunk_index.unwrap_or(0),
-                            f.line_start,
-                            f.title.clone(),
-                            f.description.clone(),
-                        ));
-                        break 'outer;
-                    }
-                }
-            }
-        }
-        result.ok_or_else(|| format!("Finding not found: {finding_id}"))?
-    };
-
-    let stub = if description.trim().is_empty() {
-        format!("**Finding:** {title}\n\n_AI validation requested._")
-    } else {
-        format!("**Finding:** {title}\n\n{description}\n\n_AI validation requested._")
-    };
-
-    let existing_q: std::collections::HashSet<String> = app
-        .tab()
-        .ai
-        .questions
-        .as_ref()
-        .map(|qs| qs.questions.iter().map(|q| q.id.clone()).collect())
-        .unwrap_or_default();
-
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_start,
-        None,
-        stub,
-        er_engine::ai::CommentType::Question,
-        None,
-        Some(finding_id.to_string()),
-    )
-    .map_err(|e| e.to_string())?;
-
-    app.tab()
-        .ai
-        .questions
-        .as_ref()
-        .and_then(|qs| {
-            qs.questions
-                .iter()
-                .find(|q| {
-                    !existing_q.contains(&q.id) && q.finding_ref.as_deref() == Some(finding_id)
-                })
-                .map(|q| q.id.clone())
+    let resolved_finding = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        finding_id.or_else(|| {
+            thread_id
+                .as_ref()
+                .and_then(|tid| finding_id_for_thread(app.tab(), tid))
         })
-        .ok_or_else(|| "Failed to create validation thread for finding".to_string())
+    };
+    if let Some(fid) = resolved_finding {
+        return ask_ai_for_finding(fid, VALIDATE_CARD_AI_PROMPT.to_string(), state);
+    }
+    let resolved_thread = thread_id.ok_or_else(|| "thread_id or finding_id is required".to_string())?;
+    ask_ai(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), state)
 }
 
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
@@ -3715,6 +3664,247 @@ pub fn ask_ai(
     });
 
     Ok(snap)
+}
+
+fn finding_id_for_thread(tab: &er_engine::app::TabState, thread_id: &str) -> Option<String> {
+    if thread_id.starts_with("q-") {
+        tab.ai
+            .questions
+            .as_ref()
+            .and_then(|qs| qs.questions.iter().find(|q| q.id == thread_id))
+            .and_then(|q| q.finding_ref.clone())
+    } else {
+        tab.ai
+            .github_comments
+            .as_ref()
+            .and_then(|gc| gc.comments.iter().find(|c| c.id == thread_id))
+            .and_then(|c| c.finding_ref.clone())
+    }
+}
+
+fn lookup_finding_fields(
+    tab: &er_engine::app::TabState,
+    finding_id: &str,
+) -> Result<(String, usize, Option<usize>, String, String), String> {
+    let review = tab
+        .ai
+        .review
+        .as_ref()
+        .ok_or_else(|| "No review loaded".to_string())?;
+    for (path, fr) in review.files.iter() {
+        for f in fr.findings.iter() {
+            if f.id == finding_id {
+                return Ok((
+                    path.clone(),
+                    f.hunk_index.unwrap_or(0),
+                    f.line_start,
+                    f.title.clone(),
+                    f.description.clone(),
+                ));
+            }
+        }
+    }
+    Err(format!("Finding not found: {finding_id}"))
+}
+
+/// Run AI validation on a finding; reply is stored in `Finding.responses`.
+fn ask_ai_for_finding(
+    finding_id: String,
+    prompt: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    app.sync_ai_selection();
+
+    let (
+        file,
+        _hunk_idx,
+        line_num,
+        finding_title,
+        finding_description,
+        repo_root,
+        base_branch,
+        current_branch,
+        work_dir,
+        files,
+        raw_diff,
+        hunk_index,
+        line_content,
+        provider_id,
+        model_id,
+        agent_model_fallback,
+        er_dir,
+    ) = {
+        let tab = app.tab();
+        let (file, hunk_idx, line_num, finding_title, finding_description) =
+            lookup_finding_fields(tab, &finding_id)?;
+        let scope = match tab.mode {
+            DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
+                tab.mode.git_mode().to_string()
+            }
+            _ => "branch".to_string(),
+        };
+        let raw_diff = tab.raw_diff_for_review(&scope).ok();
+        let work_dir = if tab.is_remote() {
+            tab.er_dir()
+        } else {
+            tab.repo_root.clone()
+        };
+        let line_content = line_num.and_then(|ls| {
+            tab.files
+                .iter()
+                .find(|f| f.path == file)
+                .and_then(|df| df.hunks.get(hunk_idx))
+                .and_then(|h| h.lines.iter().find(|l| l.new_num == Some(ls)))
+                .map(|l| l.content.as_str())
+        });
+        (
+            file,
+            hunk_idx,
+            line_num,
+            finding_title,
+            finding_description,
+            tab.repo_root.clone(),
+            tab.base_branch.clone(),
+            tab.current_branch.clone(),
+            work_dir,
+            tab.files.clone(),
+            raw_diff,
+            hunk_idx,
+            line_content,
+            app.current_ai_provider.clone(),
+            app.current_ai_model.clone(),
+            app.config.agent.model.clone(),
+            tab.er_dir(),
+        )
+    };
+
+    let mut thread_body = format!("**Finding:** {finding_title}\n\n{finding_description}");
+    if let Some(review) = app.tab().ai.review.as_ref() {
+        for fr in review.files.values() {
+            if let Some(f) = fr.findings.iter().find(|f| f.id == finding_id) {
+                for r in &f.responses {
+                    thread_body.push_str(&format!("\n\n**AI** replied:\n{}", r.text));
+                }
+                break;
+            }
+        }
+    }
+
+    let system_context = build_card_ai_system_context(&CardAiContextParams {
+        repo_root: &repo_root,
+        base_branch: &base_branch,
+        current_branch: &current_branch,
+        files: &files,
+        raw_diff: raw_diff.as_deref(),
+        file: &file,
+        hunk_index,
+        line_start: line_num,
+        line_content,
+        thread_body: &thread_body,
+        finding_title: Some(finding_title.as_str()),
+        finding_description: Some(finding_description.as_str()),
+    });
+
+    let cfg = er_engine::config::load_config(&repo_root);
+    let invocation = plan_card_ai_invocation(
+        &cfg,
+        provider_id.as_deref(),
+        model_id.as_deref(),
+        app.current_ai_effort.as_deref(),
+        work_dir,
+    );
+    let model_for_subprocess: Option<String> = model_id.or_else(|| {
+        if agent_model_fallback.trim().is_empty() {
+            None
+        } else {
+            Some(agent_model_fallback)
+        }
+    });
+
+    let pending_key = format!("finding:{finding_id}");
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    if let Ok(mut p) = state.pending_ai_replies.lock() {
+        p.insert(pending_key.clone(), started_at);
+    }
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+
+    let user_prompt = if prompt.trim().is_empty() {
+        DEFAULT_ASK_AI_PROMPT.to_string()
+    } else {
+        prompt
+    };
+    let app_arc = Arc::clone(&state.app);
+    let pending_arc = Arc::clone(&state.pending_ai_replies);
+    let meta_cache = state.meta_cache.clone();
+    let desktop_revision = Arc::clone(&state.desktop_revision);
+    let finding_id_for_thread = finding_id.clone();
+    let er_dir_for_thread = er_dir.clone();
+    let repo_root_for_thread = repo_root.clone();
+    let inv_for_thread = invocation;
+    let model_for_thread = model_for_subprocess;
+
+    let snap = snap_from(&app, &state);
+    drop(app);
+
+    std::thread::spawn(move || {
+        let body = run_card_ai_subprocess(
+            &inv_for_thread,
+            &system_context,
+            &user_prompt,
+            model_for_thread.as_deref(),
+        );
+        if let Ok(mut app) = app_arc.lock() {
+            if let Err(e) = er_engine::ai::append_finding_response(
+                &er_dir_for_thread,
+                &finding_id_for_thread,
+                &body,
+            ) {
+                app.notify(&format!("Failed to save finding validation: {e}"));
+            } else {
+                app.tab_mut().reload_ai_state();
+            }
+        }
+        if let Ok(mut p) = pending_arc.lock() {
+            p.remove(&format!("finding:{finding_id_for_thread}"));
+        }
+        crate::snapshot::refresh_meta_cache(&repo_root_for_thread, &meta_cache);
+        desktop_revision.fetch_add(1, Ordering::Relaxed);
+    });
+
+    Ok(snap)
+}
+
+#[tauri::command]
+pub fn update_finding_response(
+    finding_id: String,
+    response_id: String,
+    body: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let er_dir = app.tab().er_dir();
+    er_engine::ai::update_finding_response(&er_dir, &finding_id, &response_id, &body)
+        .map_err(|e| e.to_string())?;
+    app.tab_mut().reload_ai_state();
+    Ok(snap_from(&app, &state))
+}
+
+#[tauri::command]
+pub fn delete_finding_response(
+    finding_id: String,
+    response_id: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let er_dir = app.tab().er_dir();
+    er_engine::ai::delete_finding_response(&er_dir, &finding_id, &response_id)
+        .map_err(|e| e.to_string())?;
+    app.tab_mut().reload_ai_state();
+    Ok(snap_from(&app, &state))
 }
 
 fn finding_fields_for_ref(
@@ -4254,6 +4444,8 @@ fn pr_open_cache_key(project_id: &str, repo_root: &str, pr_number: u64) -> PrOpe
     }
 }
 
+const PR_COMMIT_CACHE_LIMIT: usize = 250;
+
 fn cached_pr_open_diff(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: &PrOpenCacheKey,
@@ -4272,13 +4464,17 @@ fn cached_pr_open_entry(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: &PrOpenCacheKey,
     freshness: &PrOpenFreshness,
-) -> Option<(String, Option<er_engine::github::PrOverviewData>)> {
+) -> Option<(
+    String,
+    Option<er_engine::github::PrOverviewData>,
+    Option<Vec<er_engine::git::CommitInfo>>,
+)> {
     cache
         .lock()
         .ok()
         .and_then(|guard| guard.get(key).cloned())
         .filter(|entry| entry.freshness == *freshness)
-        .map(|entry| (entry.raw_diff, entry.pr_data))
+        .map(|entry| (entry.raw_diff, entry.pr_data, entry.pr_commits))
 }
 
 #[cfg(test)]
@@ -4288,7 +4484,7 @@ fn remember_pr_open_diff(
     freshness: PrOpenFreshness,
     raw_diff: String,
 ) {
-    remember_pr_open_entry(cache, key, freshness, raw_diff, None);
+    remember_pr_open_entry(cache, key, freshness, raw_diff, None, None);
 }
 
 fn remember_pr_open_entry(
@@ -4297,15 +4493,22 @@ fn remember_pr_open_entry(
     freshness: PrOpenFreshness,
     raw_diff: String,
     pr_data: Option<er_engine::github::PrOverviewData>,
+    pr_commits: Option<Vec<er_engine::git::CommitInfo>>,
 ) {
     if let Ok(mut guard) = cache.lock() {
-        // Preserve existing pr_data if the new entry doesn't bring one (lets a
-        // hint-based prefetch keep pr_data fetched by an earlier full open).
+        // Preserve existing metadata if the new entry doesn't bring it (lets a
+        // hint-based prefetch keep data fetched by an earlier full open).
         let pr_data = pr_data.or_else(|| {
             guard
                 .get(&key)
                 .filter(|e| e.freshness == freshness)
                 .and_then(|e| e.pr_data.clone())
+        });
+        let pr_commits = pr_commits.or_else(|| {
+            guard
+                .get(&key)
+                .filter(|e| e.freshness == freshness)
+                .and_then(|e| e.pr_commits.clone())
         });
         guard.insert(
             key,
@@ -4313,6 +4516,7 @@ fn remember_pr_open_entry(
                 freshness,
                 raw_diff,
                 pr_data,
+                pr_commits,
             },
         );
         const MAX_PR_OPEN_CACHE_ENTRIES: usize = 32;
@@ -4361,7 +4565,7 @@ fn run_gh_pr_view_for_open(repo_root: &str, pr_number: u64) -> Result<PrOpenMeta
             "view",
             &pr_number.to_string(),
             "--json",
-            "number,title,body,state,author,url,baseRefName,headRefName,headRefOid,updatedAt,reviews",
+            "number,title,body,state,author,url,baseRefName,headRefName,headRefOid,updatedAt,reviews,commits",
         ])
         .current_dir(repo_root)
         .output()
@@ -4372,6 +4576,9 @@ fn run_gh_pr_view_for_open(repo_root: &str, pr_number: u64) -> Result<PrOpenMeta
     }
     let raw: RawView = serde_json::from_slice(&out.stdout)
         .map_err(|e| format!("Failed to parse gh pr view for PR #{pr_number}: {e}"))?;
+    let pr_commits =
+        er_engine::github::parse_pr_commits_view_json(&out.stdout, PR_COMMIT_CACHE_LIMIT)
+            .unwrap_or_default();
     let reviewers = raw
         .reviews
         .into_iter()
@@ -4405,11 +4612,17 @@ fn run_gh_pr_view_for_open(repo_root: &str, pr_number: u64) -> Result<PrOpenMeta
             checks: Vec::new(),
             reviewers,
         },
+        pr_commits,
     })
 }
 
 fn run_gh_pr_diff_for_open(repo_root: &str, pr_number: u64) -> Result<String, String> {
     er_engine::github::gh_pr_diff(pr_number, repo_root).map_err(|e| e.to_string())
+}
+
+fn run_gh_pr_commits_for_open(repo_root: &str, pr_number: u64) -> Vec<er_engine::git::CommitInfo> {
+    er_engine::github::gh_pr_commits(repo_root, pr_number, PR_COMMIT_CACHE_LIMIT)
+        .unwrap_or_default()
 }
 
 /// Build a minimal `PrOverviewData` from a sidebar hint. Used when opening a PR
@@ -4477,8 +4690,9 @@ fn load_pr_open_inputs(
     if let Some(hint) = hint {
         let freshness = freshness_from_hint(hint);
 
-        // Cache hit on the hint's freshness key → no `gh` calls at all.
-        if let Some((raw_diff, cached_pr_data)) =
+        // Cache hit on the hint's freshness key → reuse diff; backfill commits
+        // only if this older cache entry does not have them yet.
+        if let Some((raw_diff, cached_pr_data, cached_pr_commits)) =
             cached_pr_open_entry(&state.pr_open_cache, &key, &freshness)
         {
             log::info!(
@@ -4493,9 +4707,23 @@ fn load_pr_open_inputs(
             log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
             let pr_data = cached_pr_data
                 .unwrap_or_else(|| pr_overview_from_hint(hint, pr_number, repo_slug.as_deref()));
+            let pr_commits = cached_pr_commits
+                .unwrap_or_else(|| run_gh_pr_commits_for_open(&repo_root, pr_number));
+            remember_pr_open_entry(
+                &state.pr_open_cache,
+                key,
+                freshness.clone(),
+                raw_diff.clone(),
+                None,
+                Some(pr_commits.clone()),
+            );
             return Ok(PrOpenInputs {
                 repo_root,
-                metadata: PrOpenMetadata { freshness, pr_data },
+                metadata: PrOpenMetadata {
+                    freshness,
+                    pr_data,
+                    pr_commits,
+                },
                 resolved_base,
                 raw_diff,
                 cache_hit: true,
@@ -4505,9 +4733,10 @@ fn load_pr_open_inputs(
         // Cache miss with hint: run `gh pr diff` and `ensure_base_ref_available`
         // in parallel. Skip `gh pr view` — overview is rendered from the hint
         // and a background refresh can fill in body/reviews later.
-        let (diff_res, base_res, diff_ms, base_ms) = std::thread::scope(|s| {
+        let (diff_res, base_res, commits, diff_ms, base_ms) = std::thread::scope(|s| {
             let diff_root = repo_root.clone();
             let base_root = repo_root.clone();
+            let commits_root = repo_root.clone();
             let base_branch = freshness.base_branch.clone();
             let diff_h = s.spawn(move || {
                 let t = std::time::Instant::now();
@@ -4520,13 +4749,15 @@ fn load_pr_open_inputs(
                     .map_err(|e| e.to_string());
                 (res, t.elapsed().as_millis())
             });
+            let commits_h = s.spawn(move || run_gh_pr_commits_for_open(&commits_root, pr_number));
             let (diff_res, diff_ms) = diff_h
                 .join()
                 .unwrap_or_else(|_| (Err("gh pr diff thread panicked".to_string()), 0));
             let (base_res, base_ms) = base_h
                 .join()
                 .unwrap_or_else(|_| (Err("base ref fetch thread panicked".to_string()), 0));
-            (diff_res, base_res, diff_ms, base_ms)
+            let commits = commits_h.join().unwrap_or_default();
+            (diff_res, base_res, commits, diff_ms, base_ms)
         });
         log::info!(
             "branch_open project={} branch={} phase=gh_pr_diff ms={} cache=miss_hint",
@@ -4549,10 +4780,15 @@ fn load_pr_open_inputs(
             freshness.clone(),
             raw_diff.clone(),
             None, // intentionally None — pr_data is a placeholder; full view will fill it later
+            Some(commits.clone()),
         );
         return Ok(PrOpenInputs {
             repo_root,
-            metadata: PrOpenMetadata { freshness, pr_data },
+            metadata: PrOpenMetadata {
+                freshness,
+                pr_data,
+                pr_commits: commits,
+            },
             resolved_base,
             raw_diff,
             cache_hit: false,
@@ -4596,6 +4832,7 @@ fn load_pr_open_inputs(
                 metadata.freshness.clone(),
                 raw_diff.clone(),
                 Some(metadata.pr_data.clone()),
+                Some(metadata.pr_commits.clone()),
             );
             return Ok(PrOpenInputs {
                 repo_root,
@@ -4653,6 +4890,7 @@ fn load_pr_open_inputs(
             metadata.freshness.clone(),
             raw_diff.clone(),
             Some(metadata.pr_data.clone()),
+            Some(metadata.pr_commits.clone()),
         );
         return Ok(PrOpenInputs {
             repo_root,
@@ -4709,6 +4947,7 @@ fn load_pr_open_inputs(
         metadata.freshness.clone(),
         raw_diff.clone(),
         Some(metadata.pr_data.clone()),
+        Some(metadata.pr_commits.clone()),
     );
     Ok(PrOpenInputs {
         repo_root,
@@ -4752,6 +4991,7 @@ pub fn open_pr_review(
         inputs.metadata.freshness.head_branch,
         inputs.raw_diff,
         Some(inputs.metadata.pr_data),
+        inputs.metadata.pr_commits,
     )
     .map_err(|e| {
         log::error!("open_pr_review: pr=#{pr_number} project_id={project_id} err={e}");
@@ -4842,24 +5082,34 @@ pub fn prefetch_pr_open(
         let t = std::time::Instant::now();
         let diff_root = repo_root.clone();
         let base_root = repo_root.clone();
+        let commits_root = repo_root.clone();
         let base_branch = freshness.base_branch.clone();
-        let (diff_res, base_res) = std::thread::scope(|s| {
+        let (diff_res, base_res, commits) = std::thread::scope(|s| {
             let diff_h = s.spawn(move || run_gh_pr_diff_for_open(&diff_root, pr_number));
             let base_h = s.spawn(move || {
                 er_engine::github::ensure_base_ref_available(&base_root, &base_branch)
                     .map_err(|e| e.to_string())
             });
+            let commits_h = s.spawn(move || run_gh_pr_commits_for_open(&commits_root, pr_number));
             let diff_res = diff_h
                 .join()
                 .unwrap_or_else(|_| Err("gh pr diff thread panicked".to_string()));
             let base_res = base_h
                 .join()
                 .unwrap_or_else(|_| Err("base ref fetch thread panicked".to_string()));
-            (diff_res, base_res)
+            let commits = commits_h.join().unwrap_or_default();
+            (diff_res, base_res, commits)
         });
         match (diff_res, base_res) {
             (Ok(raw_diff), Ok(_)) => {
-                remember_pr_open_entry(&cache, key, freshness.clone(), raw_diff, None);
+                remember_pr_open_entry(
+                    &cache,
+                    key,
+                    freshness.clone(),
+                    raw_diff,
+                    None,
+                    Some(commits),
+                );
                 log::info!(
                     "pr_open_prefetch project={} branch={} ok ms={}",
                     claim_key.0,
@@ -5572,7 +5822,14 @@ pub fn promote_finding_to_comment(
 
     let (file, hunk_idx, line_start, default_body) =
         found.ok_or_else(|| format!("Finding not found: {finding_id}"))?;
-    let text = body.unwrap_or(default_body);
+    let text = match body {
+        Some(b) => b,
+        None => {
+            let promote_replies =
+                er_engine::ai::collect_finding_promote_replies(&app.tab().ai, &finding_id);
+            er_engine::ai::append_promote_replies(default_body, &promote_replies)
+        }
+    };
 
     let existing_ids: std::collections::HashSet<String> = {
         let tab = app.tab();
@@ -6608,11 +6865,12 @@ pub fn terminal_spawn(
     use std::io::Read;
     use tauri::Emitter;
 
-    // If a session with this id already exists, drop it first (the old shell
-    // dies via RAII). Lets the frontend re-mount cleanly without leaking PTYs.
+    // Idempotent spawn: keep an existing PTY alive (hide/show must not kill shells).
     {
-        let mut map = state.terminals.lock().map_err(|e| e.to_string())?;
-        map.remove(&session_id);
+        let map = state.terminals.lock().map_err(|e| e.to_string())?;
+        if map.contains_key(&session_id) {
+            return Ok(());
+        }
     }
 
     let (session, mut reader) =

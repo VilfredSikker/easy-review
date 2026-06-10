@@ -28,9 +28,9 @@
   import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
   import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
   import { filesByPathMap } from "$lib/treeFromPaths";
+  import { reviewScopeFromMode } from "$lib/reviewScope";
   import type { FileSnapshot } from "$lib/types";
 
-  type ReviewScope = "branch" | "unstaged" | "staged";
   type SubView = "files" | "reviewers";
   type PickerMode = "review" | "pick-only";
 
@@ -49,18 +49,18 @@
   let reviewerPickerRef = $state<{ moveHighlight: (d: number) => void; toggleHighlighted: () => void } | null>(null);
 
   const mode = $derived(app.snapshot?.mode);
-  const reviewScope = $derived(
-    mode === "branch" || mode === "unstaged" || mode === "staged" ? (mode as ReviewScope) : null,
-  );
+  const reviewScope = $derived(reviewScopeFromMode(mode));
 
   const scopeLabel = $derived(
-    mode === "branch"
-      ? "All changes"
-      : mode === "unstaged"
-        ? "Unstaged"
-        : mode === "staged"
-          ? "Staged"
-          : "—",
+    mode === "pr"
+      ? "PR Diff"
+      : mode === "branch"
+        ? "All changes"
+        : mode === "unstaged"
+          ? "Unstaged"
+          : mode === "staged"
+            ? "Staged"
+            : "—",
   );
 
   const selectedCount = $derived(selected.size);

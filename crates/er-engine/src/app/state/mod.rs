@@ -611,6 +611,10 @@ pub struct TabState {
     /// Fetched PR overview data (loaded on startup if PR detected)
     pub pr_data: Option<PrOverviewData>,
 
+    /// PR commit list from GitHub, newest first. PR review tabs use this for
+    /// the commit scroller so it matches GitHub's PR Commits tab.
+    pub pr_commits: Vec<CommitInfo>,
+
     /// Local git ref for PR head (e.g. refs/er/pr/42/head). Set when opened via --pr or PR URL
     /// using no-checkout mode. When Some, diffs are computed against this ref instead of HEAD.
     pub pr_head_ref: Option<String>,
@@ -995,6 +999,8 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{}/head", pr_number));
         tab.pr_number = Some(pr_number);
+        tab.pr_commits =
+            crate::github::gh_pr_commits(&tab.repo_root, pr_number, 250).unwrap_or_default();
         tab.mode = DiffMode::Branch;
         tab.sync_managed_storage();
         tab.refresh_diff()?;
@@ -1011,6 +1017,7 @@ impl TabState {
         head_branch_name: String,
         raw: String,
         pr_data: Option<PrOverviewData>,
+        pr_commits: Vec<CommitInfo>,
     ) -> Result<Self> {
         let mut tab = TabState::new_with_base_unloaded(repo_root, resolved_base)?;
         tab.local_branch_view = Some(if head_branch_name.is_empty() {
@@ -1021,6 +1028,7 @@ impl TabState {
         tab.pr_head_ref = Some(format!("refs/er/pr/{}/head", pr_number));
         tab.pr_number = Some(pr_number);
         tab.pr_data = pr_data;
+        tab.pr_commits = pr_commits;
         tab.mode = DiffMode::Branch;
 
         let compaction_config = tab.compaction_config.clone();
@@ -1113,6 +1121,8 @@ impl TabState {
         };
 
         let diff_hash = crate::ai::compute_diff_hash(&raw);
+        let pr_commits =
+            crate::github::gh_pr_commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250);
         let lazy_mode = raw.len() > 200_000;
         let file_headers = if lazy_mode {
             let headers = crate::git::parse_diff_headers(&raw);
@@ -1194,6 +1204,7 @@ impl TabState {
             comment_author_override: None,
             comment_side: None,
             pr_data: None,
+            pr_commits,
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
             history: None,
@@ -1312,6 +1323,7 @@ impl TabState {
             comment_author_override: None,
             comment_side: None,
             pr_data: None,
+            pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
             history: None,
@@ -1426,6 +1438,7 @@ impl TabState {
             comment_author_override: None,
             comment_side: None,
             pr_data: None,
+            pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: None,
             history: None,
@@ -1540,6 +1553,7 @@ impl TabState {
             comment_author_override: None,
             comment_side: None,
             pr_data: None,
+            pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: None,
             history: None,
@@ -3233,10 +3247,15 @@ impl TabState {
                 // Initialize history state if first time
                 if self.history.is_none() {
                     let log_root = self.commit_log_root().to_string();
-                    let head_ref = self.commit_head_ref().to_string();
-                    let commits =
+                    let is_pr_review_tab =
+                        self.pr_number.is_some() && self.local_branch_view.is_some();
+                    let commits = if is_pr_review_tab {
+                        self.pr_commits.clone()
+                    } else {
+                        let head_ref = self.commit_head_ref().to_string();
                         git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, 0)
-                            .unwrap_or_default();
+                            .unwrap_or_default()
+                    };
 
                     let first_diff = if let Some(c) = commits.first() {
                         let raw = git::git_diff_commit(&c.hash, &log_root).unwrap_or_default();
@@ -3259,7 +3278,7 @@ impl TabState {
                         current_line: None,
                         diff_scroll: 0,
                         h_scroll: 0,
-                        all_loaded: false,
+                        all_loaded: is_pr_review_tab,
                         diff_cache: cache,
                     });
                 }
@@ -6665,6 +6684,7 @@ mod tests {
             comment_author_override: None,
             comment_side: None,
             pr_data: None,
+            pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: None,
             history: None,
@@ -9183,6 +9203,80 @@ mod tests {
 
         assert!(tab.reviewed.contains_key("commit-b.rs"));
         assert!(!tab.reviewed.contains_key("branch-only.rs"));
+    }
+
+    fn run_git_for_history_test(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {args:?}: {e}"));
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn history_commit_info(hash: String, subject: &str) -> crate::git::CommitInfo {
+        crate::git::CommitInfo {
+            short_hash: hash.chars().take(7).collect(),
+            hash,
+            subject: subject.to_string(),
+            author: "Test User".to_string(),
+            date: "2026-06-01T10:00:00Z".to_string(),
+            relative_date: "2026-06-01T10:00:00Z".to_string(),
+            file_count: 0,
+            adds: 0,
+            dels: 0,
+            is_merge: false,
+        }
+    }
+
+    #[test]
+    fn pr_history_uses_cached_commits_and_loads_selected_older_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        run_git_for_history_test(root, &["init", "-b", "main"]);
+        run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
+        run_git_for_history_test(root, &["config", "user.name", "Test User"]);
+        run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("file.txt"), "base\n").unwrap();
+        run_git_for_history_test(root, &["add", "file.txt"]);
+        run_git_for_history_test(root, &["commit", "-m", "base"]);
+        run_git_for_history_test(root, &["checkout", "-b", "feature"]);
+        std::fs::write(root.join("file.txt"), "base\nolder\n").unwrap();
+        run_git_for_history_test(root, &["commit", "-am", "older"]);
+        let older_hash = run_git_for_history_test(root, &["rev-parse", "HEAD"]);
+        std::fs::write(root.join("file.txt"), "base\nolder\nnewer\n").unwrap();
+        run_git_for_history_test(root, &["commit", "-am", "newer"]);
+        let newer_hash = run_git_for_history_test(root, &["rev-parse", "HEAD"]);
+
+        let mut tab =
+            TabState::new_with_base_unloaded(root.to_string_lossy().to_string(), "main".into())
+                .unwrap();
+        tab.local_branch_view = Some("feature".to_string());
+        tab.pr_number = Some(42);
+        tab.pr_commits = vec![
+            history_commit_info(newer_hash, "newer"),
+            history_commit_info(older_hash.clone(), "older"),
+        ];
+
+        tab.set_mode(DiffMode::History);
+        let history = tab.history.as_mut().expect("history");
+        assert_eq!(history.commits.len(), 2);
+        assert!(history.all_loaded);
+        history.selected_commit = 1;
+        tab.history_load_selected_diff();
+
+        let history = tab.history.as_ref().expect("history");
+        assert_eq!(history.commits[history.selected_commit].hash, older_hash);
+        assert!(
+            history.commit_files.iter().any(|f| f.path == "file.txt"),
+            "older commit diff should be loaded from the selected cached PR commit"
+        );
     }
 
     // ── visible_modes / PrDiff wiring ──

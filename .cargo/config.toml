@@ -12,8 +12,10 @@
 #
 # Extra args append: cargo tui-build --release, cargo er-dev --logs arena
 
-[env]
-PATH = { value = "bin:${env:PATH}", relative = true }
+# `cargo er <task>` requires `.cargo/bin` on PATH so cargo can find the
+# `cargo-er` wrapper. Cargo's [env] table is NOT consulted when resolving
+# external subcommands, so it can't put it there for you. Use direnv
+# (`direnv allow` — see .envrc) or, for one shell: export PATH="$PWD/.cargo/bin:$PATH"
 
 [alias]
 tui = "er tui"
