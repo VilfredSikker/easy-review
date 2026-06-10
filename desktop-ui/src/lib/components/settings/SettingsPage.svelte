@@ -265,15 +265,15 @@
         </div>
         <p class="text-xs text-muted mt-3 mb-5">{tabBlurb}</p>
 
-        {#if activeTab === "terminal" && localThemeOverride}
+        {#if activeTab === "general" && localThemeOverride}
           <div
             class="flex gap-2.5 text-xs text-question/90 mb-5 border border-question-border rounded-lg px-3.5 py-2.5 bg-question-surface"
           >
             <span aria-hidden="true" class="shrink-0">⚠</span>
             <p>
               This repo’s <code class="font-mono">.er-config.toml</code> sets theme to
-              <code class="font-mono">{localThemeOverride}</code>, which overrides your global config when you run
-              <code class="font-mono">er</code> here. Use “Save to repo” after changing theme, or remove
+              <code class="font-mono">{localThemeOverride}</code>, which overrides your global config for this repo
+              (app and <code class="font-mono">er</code>). Use “Save to repo” after changing theme, or remove
               <code class="font-mono">[display].theme</code> from the repo file to follow global only.
             </p>
           </div>
