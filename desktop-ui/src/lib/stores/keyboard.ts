@@ -149,6 +149,13 @@ export function initKeyboard(): () => void {
         return;
       }
       closeAiActionPalette();
+      // Usages popover closes before anything else; a second Esc then clears
+      // the highlight itself (next branch below).
+      if (refHighlight.popoverOpen) {
+        refHighlight.closePopover();
+        e.preventDefault();
+        return;
+      }
       if (diffSel.active) {
         diffSel.clear();
         e.preventDefault();

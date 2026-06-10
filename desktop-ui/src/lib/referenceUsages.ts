@@ -1,0 +1,177 @@
+/**
+ * Usage collection + presentation helpers for the reference-highlight
+ * feature (issue #69): the scrollbar overview ruler and the Cmd+click
+ * usages popover.
+ *
+ * Everything here is pure. The component layer (FlatDiffView and the
+ * popover/ruler components) feeds in row/line data plus geometry and renders
+ * the result — keeping the matching, grouping, trimming, and ruler math
+ * testable without a DOM.
+ */
+
+import { findIdentifierRanges } from "./referenceHighlight";
+
+/** A diff line that may contain identifier matches, in flat-row coordinates. */
+export interface UsageSource {
+  /** Index into the cross-file flat row array (drives scroll position). */
+  rowIdx: number;
+  filePath: string;
+  /** Display line number (new side preferred, old side for deletions). */
+  lineNum: number | null;
+  text: string;
+}
+
+/** A line with at least one word-boundary match of the active identifier. */
+export interface UsageLine extends UsageSource {
+  /** Sorted, non-overlapping `[start, end)` match ranges within `text`. */
+  ranges: Array<[number, number]>;
+}
+
+/**
+ * Filter `sources` down to lines containing whole-word occurrences of
+ * `identifier`. Input order is preserved (callers supply rows in render
+ * order, so results stay grouped by file).
+ */
+export function collectUsageLines(
+  sources: Iterable<UsageSource>,
+  identifier: string,
+): UsageLine[] {
+  const out: UsageLine[] = [];
+  if (identifier.length === 0) return out;
+  for (const s of sources) {
+    const ranges = findIdentifierRanges(s.text, identifier);
+    if (ranges.length > 0) out.push({ ...s, ranges });
+  }
+  return out;
+}
+
+export interface UsageGroup {
+  filePath: string;
+  usages: UsageLine[];
+}
+
+export interface GroupedUsages {
+  groups: UsageGroup[];
+  /** Total usages before the cap. */
+  total: number;
+  /** Usages actually included across `groups` (= min(total, cap)). */
+  shown: number;
+}
+
+/**
+ * Group consecutive usages by file, keeping at most `cap` usages overall
+ * (the cap applies across groups, in input order). Files whose usages fall
+ * entirely past the cap are omitted.
+ */
+export function groupUsagesByFile(usages: UsageLine[], cap = 100): GroupedUsages {
+  const groups: UsageGroup[] = [];
+  let shown = 0;
+  for (const u of usages) {
+    if (shown >= cap) break;
+    const last = groups[groups.length - 1];
+    if (last && last.filePath === u.filePath) {
+      last.usages.push(u);
+    } else {
+      groups.push({ filePath: u.filePath, usages: [u] });
+    }
+    shown++;
+  }
+  return { groups, total: usages.length, shown };
+}
+
+/** A one-line code preview split around the emphasized match. */
+export interface UsagePreview {
+  prefix: string;
+  match: string;
+  suffix: string;
+}
+
+/**
+ * Build a trimmed single-line preview around the first match range.
+ * Leading indentation is dropped; a long prefix is left-truncated with an
+ * ellipsis so the match stays visible; the suffix is cut to keep the whole
+ * preview within `maxTotal` characters.
+ */
+export function usagePreview(
+  text: string,
+  range: [number, number],
+  maxPrefix = 24,
+  maxTotal = 72,
+): UsagePreview {
+  const [start, end] = range;
+  // Drop leading whitespace (indentation carries no information in a list).
+  let lead = 0;
+  while (lead < start && (text[lead] === " " || text[lead] === "\t")) lead++;
+  let prefix = text.slice(lead, start);
+  const match = text.slice(start, end);
+  let suffix = text.slice(end);
+  if (prefix.length > maxPrefix) {
+    prefix = "…" + prefix.slice(prefix.length - (maxPrefix - 1));
+  }
+  const budget = Math.max(0, maxTotal - prefix.length - match.length);
+  if (suffix.length > budget) {
+    suffix = suffix.slice(0, Math.max(0, budget - 1)) + "…";
+  }
+  return { prefix, match, suffix };
+}
+
+/** One mark on the overview ruler, in ruler-local pixels. */
+export interface RulerMark {
+  /** Flat row index of the (first) match this mark represents. */
+  rowIdx: number;
+  topPx: number;
+}
+
+/**
+ * Map matched rows to overview-ruler marks.
+ *
+ * Positioning: a row at content offset `offsetPx` (top of the row in the
+ * scrollable content, whose full height is `totalContentPx`) maps to
+ * `offsetPx / totalContentPx * rulerPx`, clamped so the mark stays inside the
+ * ruler. Marks that would overlap (closer than `markHeightPx`) are merged
+ * into the earlier mark, so a dense cluster renders as one solid block
+ * instead of thousands of DOM nodes.
+ *
+ * `rows` must be sorted by `offsetPx` ascending (callers iterate flat rows in
+ * order, which guarantees this).
+ */
+export function buildRulerMarks(
+  rows: Array<{ rowIdx: number; offsetPx: number }>,
+  totalContentPx: number,
+  rulerPx: number,
+  markHeightPx = 3,
+): RulerMark[] {
+  const marks: RulerMark[] = [];
+  if (totalContentPx <= 0 || rulerPx <= 0) return marks;
+  const maxTop = Math.max(0, rulerPx - markHeightPx);
+  let lastTop = -Infinity;
+  for (const row of rows) {
+    const top = Math.min(
+      maxTop,
+      Math.max(0, Math.round((row.offsetPx / totalContentPx) * rulerPx)),
+    );
+    if (top - lastTop < markHeightPx) continue;
+    marks.push({ rowIdx: row.rowIdx, topPx: top });
+    lastTop = top;
+  }
+  return marks;
+}
+
+/**
+ * Clamp a popover's top-left corner so a `w`×`h` box stays inside the
+ * `vw`×`vh` viewport with `pad` breathing room. When the box can't fit, the
+ * top/left edge wins (content scrolls; the anchor edge stays reachable).
+ */
+export function clampPopoverPosition(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  vw: number,
+  vh: number,
+  pad = 8,
+): { left: number; top: number } {
+  const left = Math.max(pad, Math.min(x, vw - w - pad));
+  const top = Math.max(pad, Math.min(y, vh - h - pad));
+  return { left, top };
+}

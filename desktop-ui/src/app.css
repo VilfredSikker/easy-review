@@ -289,6 +289,39 @@ body {
   border-radius: 2px;
 }
 
+/* Reference-match overview ruler (issue #69) — thin overlay strip on the
+ * right edge of the diff scroll viewport (VSCode/Zed-style scrollbar
+ * markers). Same periwinkle accent as .ref-highlight. The container ignores
+ * pointer events so it never blocks the native scrollbar; only the marks
+ * themselves are clickable. Sits above the sticky file header (z-30). */
+.ref-ruler {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 35;
+  pointer-events: none;
+}
+.ref-ruler-mark {
+  position: absolute;
+  right: 1px;
+  width: 6px;
+  height: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 1px;
+  background: var(--color-periwinkle);
+  opacity: 0.85;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.ref-ruler-mark:hover {
+  opacity: 1;
+  right: 0;
+  width: 8px;
+}
+
 .gutter { color: #737373; user-select: none; position: relative; }
 .diff-add { background-color: var(--color-add-bg); }
 .diff-del { background-color: var(--color-del-bg); }

@@ -67,15 +67,20 @@
    * Reference highlight (issue #69): click an identifier to highlight all
    * occurrences across the rendered diff; click it again (or a non-identifier
    * spot, or press Escape) to clear. Skipped when the user is selecting text.
-   * Each code cell renders a 1-char marker (+/-/nbsp) before the line text,
-   * so the caret offset is shifted by 1.
+   * Cmd+click (Ctrl+click on non-mac) also opens the usages popover at the
+   * click point. Each code cell renders a 1-char marker (+/-/nbsp) before the
+   * line text, so the caret offset is shifted by 1.
    */
   function onCodeClick(e: MouseEvent, lineText: string) {
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) return;
     const caret = caretTextOffset(e, e.currentTarget as HTMLElement);
     const ident = caret === null ? null : identifierAt(lineText, caret - 1);
-    refHighlight.toggle(ident);
+    if (e.metaKey || e.ctrlKey) {
+      refHighlight.openUsages(ident, { x: e.clientX, y: e.clientY });
+    } else {
+      refHighlight.toggle(ident);
+    }
   }
 
   const rowAnchorClass = $derived(

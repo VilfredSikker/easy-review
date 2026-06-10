@@ -20,6 +20,14 @@
   import ThreadRow from "./diff-rows/ThreadRow.svelte";
   import FindingRow from "./diff-rows/FindingRow.svelte";
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
+  import ReferenceRuler from "./ReferenceRuler.svelte";
+  import ReferenceUsagesPopover from "./ReferenceUsagesPopover.svelte";
+  import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
+  import {
+    buildRulerMarks,
+    collectUsageLines,
+    type UsageSource,
+  } from "$lib/referenceUsages";
   import {
     applyCollapsedFiles,
     computeUnifiedPairs,
@@ -853,6 +861,96 @@
     diffNav.pendingScrollPx = nextTop;
   }
 
+  // ── Reference-highlight usages: overview ruler + Cmd+click popover ───────
+  // (issue #69). Collected over ALL model rows (not just the viewport): the
+  // ruler shows where every match lives in the scrollable content, and the
+  // popover lists them. Only computed while a highlight is active.
+  const RULER_MARK_HEIGHT_PX = 3;
+
+  function collectUsageSources(): UsageSource[] {
+    const rows = crossFileModel.rows;
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    const out: UsageSource[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (row.type === "content-unified") {
+        const line = byPath.get(row.filePath)?.hunks[row.hunkIdx]?.lines[row.lineIdx];
+        if (line && line.kind !== "fold") {
+          out.push({
+            rowIdx: i,
+            filePath: row.filePath,
+            lineNum: line.new_num ?? line.old_num,
+            text: line.text,
+          });
+        }
+      } else if (row.type === "content-split") {
+        const sr =
+          crossFileModel.splitRowsByFile.get(row.filePath)?.[row.hunkIdx]?.[row.splitRowIdx];
+        if (!sr) continue;
+        const { left, right } = sr;
+        if (left && left.kind !== "fold") {
+          out.push({
+            rowIdx: i,
+            filePath: row.filePath,
+            lineNum: left.new_num ?? left.old_num,
+            text: left.text,
+          });
+        }
+        // Context rows reuse the same LineSnapshot on both sides — count once.
+        if (right && right !== left && right.kind !== "fold") {
+          out.push({
+            rowIdx: i,
+            filePath: row.filePath,
+            lineNum: right.new_num ?? right.old_num,
+            text: right.text,
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  const usageLines = $derived.by(() => {
+    const ident = refHighlight.identifier;
+    if (!ident) return [];
+    return collectUsageLines(collectUsageSources(), ident);
+  });
+
+  const usageMarks = $derived.by(() => {
+    if (usageLines.length === 0 || viewportHeightPx <= 0) return [];
+    const offsets = effectiveGeometry.cumulativeOffsets;
+    // Row offsets live below the in-flow sticky header band; the scrollable
+    // content height is that band plus all rows.
+    return buildRulerMarks(
+      usageLines.map((u) => ({
+        rowIdx: u.rowIdx,
+        offsetPx: (offsets[u.rowIdx] ?? 0) + STICKY_HEADER_PX,
+      })),
+      effectiveGeometry.totalHeight + STICKY_HEADER_PX,
+      viewportHeightPx,
+      RULER_MARK_HEIGHT_PX,
+    );
+  });
+
+  /** Pulse a rendered row with the existing jump-to flash animation. */
+  function flashRowEl(rowIdx: number): void {
+    const rowEl = scrollEl?.querySelector<HTMLElement>(`[data-row-idx="${rowIdx}"]`);
+    if (!rowEl) return;
+    rowEl.classList.remove("flash");
+    // Force a reflow so the animation restarts when jumping to the same row twice.
+    void rowEl.offsetWidth;
+    rowEl.classList.add("flash");
+    setTimeout(() => rowEl.classList.remove("flash"), 1300);
+  }
+
+  /** Center a match row in the viewport and pulse it (ruler mark / popover entry). */
+  async function jumpToUsage(rowIdx: number): Promise<void> {
+    const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
+    applyScrollTop(Math.max(0, top - viewportHeightPx / 2));
+    await tick();
+    requestAnimationFrame(() => flashRowEl(rowIdx));
+  }
+
   function scrollToFileHeader(path: string): boolean {
     const rowIdx = crossFileModel.fileStartRow.get(path);
     if (rowIdx === undefined) return false;
@@ -1323,7 +1421,10 @@
     </div>
   {/if}
 
-  <!-- D11 three-layer scroll DOM -->
+  <!-- D11 three-layer scroll DOM. Wrapped so the reference-highlight overview
+       ruler and usages popover can overlay the scroll viewport (instead of
+       scrolling away with the content). -->
+  <div class="flex-1 min-h-0 relative flex flex-col">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={scrollEl}
@@ -1411,6 +1512,19 @@
         <DiffComposer topPx={composerTopPx} {viewMode} />
       {/if}
     {/if}
+  </div>
+
+  {#if usageMarks.length > 0}
+    <ReferenceRuler marks={usageMarks} onJump={jumpToUsage} />
+  {/if}
+  {#if refHighlight.popoverOpen && refHighlight.identifier !== null}
+    <ReferenceUsagesPopover
+      identifier={refHighlight.identifier}
+      usages={usageLines}
+      anchor={refHighlight.popoverAnchor}
+      onJump={jumpToUsage}
+    />
+  {/if}
   </div>
 
   {#if showGoBackToComment}
