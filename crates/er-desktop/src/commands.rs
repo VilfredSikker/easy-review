@@ -3188,7 +3188,8 @@ pub struct AiModelInfo {
 
 #[tauri::command]
 pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    app.sync_config_from_active_tab();
     let hub = &app.config.ai_hub;
     let current_provider = app.current_ai_provider.as_deref();
     let current_model = app.current_ai_model.as_deref();
