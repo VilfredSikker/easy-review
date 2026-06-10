@@ -991,15 +991,27 @@ pub struct WatchedFile {
     pub size: u64,
 }
 
+/// Join a watched-file relative path onto a root directory, rejecting paths
+/// that would escape it (absolute paths or `..` components). `rel_path` comes
+/// from user-configured glob patterns in `.er-config.toml`, so it is not
+/// trusted to stay inside the repository.
+fn join_within(root: &str, rel_path: &str) -> Result<std::path::PathBuf> {
+    use std::path::Component;
+    let rel = Path::new(rel_path);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+    {
+        anyhow::bail!("Watched file path escapes its root: {rel_path}");
+    }
+    Ok(Path::new(root).join(rel))
+}
+
 /// Discover watched files matching glob patterns relative to repo root
 pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Vec<WatchedFile>> {
     let mut files = Vec::new();
     for pattern in patterns {
-        // TODO(risk:high): `pattern` comes directly from .er-config.toml without validation.
-        // A pattern containing ".." components (e.g., "../../etc/*") will expand to paths
-        // outside the repository root. The glob crate does not restrict matches to a subtree.
-        // After glob expansion, each matched path should be checked to confirm it is still
-        // beneath `repo_root` using `path.starts_with(repo_root)` after canonicalization.
         // Normalize patterns so they match files recursively:
         // - "dir/**" → "dir/**/*" (glob's ** alone yields directories)
         // - "dir/*"  → "dir/**/*" (user likely wants all files under dir)
@@ -1021,10 +1033,18 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
                 Err(_) => continue,
             };
             if path.is_file() {
-                let rel_path = path
-                    .strip_prefix(repo_root)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                // Only include files inside the repo — a pattern containing
+                // `..` would otherwise expand to paths outside the root.
+                let rel_path = match path.strip_prefix(repo_root) {
+                    Ok(p)
+                        if !p
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir)) =>
+                    {
+                        p.to_string_lossy().to_string()
+                    }
+                    _ => continue,
+                };
                 let metadata = match std::fs::metadata(&path) {
                     Ok(m) => m,
                     Err(_) => continue,
@@ -1063,30 +1083,22 @@ pub fn verify_gitignored(repo_root: &str, path: &str) -> bool {
 /// `tab.er_root.snapshots_dir()`). This allows the caller to redirect storage
 /// away from `<repo_root>/.er/snapshots` in managed (desktop) mode.
 pub fn save_snapshot(repo_root: &str, rel_path: &str, snapshots_dir: &str) -> Result<()> {
-    let src = Path::new(repo_root).join(rel_path);
-    // TODO(risk:high): `rel_path` comes from glob expansion of user-configured patterns.
-    // A pattern like "../../../etc/passwd" or a symlink pointing outside the repo root
-    // would cause the join to escape the repo directory. `Path::join` does not sanitize
-    // ".." components. Validate that the resolved canonical path of `dst` still starts
-    // with `repo_root` before writing.
-    let dst = Path::new(snapshots_dir).join(rel_path);
+    let src = join_within(repo_root, rel_path)?;
+    let dst = join_within(snapshots_dir, rel_path)?;
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // TODO(risk:medium): the copy is not atomic — a crash or signal between create_dir_all
-    // and fs::copy leaves a partial or missing snapshot. On the next diff_watched_file_snapshot
-    // call the snapshot will exist but be empty/truncated, producing a misleading diff.
-    // Write to a temp file and rename into place for atomicity.
-    std::fs::copy(src, dst)?;
+    // Copy via tmp + rename so a crash mid-copy can't leave a truncated
+    // snapshot that would later produce a misleading diff.
+    let tmp = dst.with_extension("tmp-snapshot");
+    std::fs::copy(src, &tmp)?;
+    std::fs::rename(&tmp, dst)?;
     Ok(())
 }
 
 /// Read the content of a watched file, returning None if binary
 pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
-    // TODO(risk:high): same path traversal risk as save_snapshot — `rel_path` is not validated
-    // to stay within repo_root. A malicious glob pattern in .er-config.toml (e.g., "../../../etc/shadow")
-    // would cause this function to read arbitrary files on the filesystem.
-    let full_path = Path::new(repo_root).join(rel_path);
+    let full_path = join_within(repo_root, rel_path)?;
     let bytes = std::fs::read(&full_path)
         .with_context(|| format!("Failed to read watched file: {}", rel_path))?;
 
@@ -1112,9 +1124,8 @@ pub fn diff_watched_file_snapshot(
     rel_path: &str,
     snapshots_dir: &str,
 ) -> Result<Option<String>> {
-    // TODO(risk:high): same path traversal risk — `rel_path` is not canonicalized before joining.
-    let current_path = Path::new(repo_root).join(rel_path);
-    let snapshot_path = Path::new(snapshots_dir).join(rel_path);
+    let current_path = join_within(repo_root, rel_path)?;
+    let snapshot_path = join_within(snapshots_dir, rel_path)?;
 
     if !snapshot_path.exists() {
         // First time seeing this file — save snapshot, signal "new file"

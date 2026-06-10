@@ -443,13 +443,12 @@ impl TabState {
                 offset = content_end + 1; // blank line after hunk
             }
 
-            // TODO(risk:high): file.hunks.len() - 1 panics if hunks is empty. The early return above (line ~1699)
-            // guards against this, but only for the case where hunks.is_empty() at the top of the function.
-            // If a refactor moves or removes that guard, this becomes an OOB panic. Use saturating_sub(1) here.
             found.unwrap_or_else(|| {
                 // Past the end — clamp to last line of last hunk
-                let last = file.hunks.len() - 1;
-                (last, file.hunks[last].lines.len().saturating_sub(1))
+                match file.hunks.last() {
+                    Some(hunk) => (file.hunks.len() - 1, hunk.lines.len().saturating_sub(1)),
+                    None => (0, 0),
+                }
             })
         };
 

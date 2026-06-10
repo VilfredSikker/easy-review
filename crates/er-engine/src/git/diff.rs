@@ -200,7 +200,7 @@ pub fn filter_raw_diff_exclude_globs(raw: &str, globs: &[String]) -> String {
             continue;
         }
         let end = (h.byte_offset + h.byte_length).min(raw.len());
-        out.push_str(&raw[h.byte_offset..end]);
+        out.push_str(raw.get(h.byte_offset..end).unwrap_or(""));
     }
     out
 }
@@ -209,12 +209,10 @@ pub fn filter_raw_diff_exclude_globs(raw: &str, globs: &[String]) -> String {
 /// Used for on-demand (lazy) parsing when a file is selected.
 pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
     let end = (header.byte_offset + header.byte_length).min(raw.len());
-    // TODO(risk:high): slicing a &str at arbitrary byte offsets panics if the offset falls
-    // inside a multi-byte UTF-8 character. header.byte_offset / byte_length are computed by
-    // parse_diff_headers() which iterates with .lines() + manual byte arithmetic. Any CRLF
-    // drift or non-ASCII character in a diff header line can produce a non-char-boundary
-    // offset, causing a panic in the event loop.
-    let section = &raw[header.byte_offset..end];
+    // `get` instead of slicing: a stale or drifted offset that lands inside a
+    // multi-byte UTF-8 character degrades to the empty fallback below rather
+    // than panicking in the event loop.
+    let section = raw.get(header.byte_offset..end).unwrap_or("");
     let mut files = parse_diff(section);
     if let Some(mut file) = files.pop() {
         // Ensure path matches (the section parse may produce a valid file)

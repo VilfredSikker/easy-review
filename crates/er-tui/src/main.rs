@@ -44,8 +44,20 @@ struct Cli {
     target: Option<String>,
 }
 
+/// Restore the terminal before the default panic handler runs, so a panic
+/// inside the event loop doesn't leave the shell in raw mode with no cursor.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+        default_hook(info);
+    }));
+}
+
 fn main() -> Result<()> {
     er_engine::env_path::init_cli_path();
+    install_panic_hook();
     let cli = Cli::parse();
 
     // Reject conflicting --pr and PR URL arguments
@@ -222,10 +234,7 @@ fn main() -> Result<()> {
         pr_data_rx,
     );
 
-    // Cleanup
-    // TODO(risk:high): if run_app panics rather than returning Err, these cleanup calls never
-    // run and the terminal is left in raw mode with no cursor — requires a `reset` or terminal
-    // restart to recover. Consider a panic hook that calls disable_raw_mode.
+    // Cleanup (the panic hook covers the panic path)
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;

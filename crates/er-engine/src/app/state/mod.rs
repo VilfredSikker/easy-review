@@ -4179,11 +4179,6 @@ impl App {
 
     // ── Tab Accessors ──
 
-    /// Get a reference to the active tab
-    // TODO(risk:high): tab() and tab_mut() index self.tabs[self.active_tab] directly. If active_tab
-    // ever exceeds tabs.len() (e.g., after close_tab() removes the last non-first tab and the index
-    // is not decremented correctly, or if tabs is somehow emptied), this panics. All callers assume
-    // tabs is non-empty; that invariant is enforced only by close_tab's guard but not at the type level.
     pub fn toggle_panel(&mut self, name: &str) {
         match name {
             "left" => self.panels_visible.left = !self.panels_visible.left,
@@ -4193,13 +4188,18 @@ impl App {
         }
     }
 
+    /// Get a reference to the active tab. `App` always holds at least one tab
+    /// (`close_tab` refuses to remove the last one); the index is clamped so a
+    /// stale `active_tab` can't read out of bounds.
     pub fn tab(&self) -> &TabState {
-        &self.tabs[self.active_tab]
+        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        &self.tabs[idx]
     }
 
     /// Get a mutable reference to the active tab
     pub fn tab_mut(&mut self) -> &mut TabState {
-        &mut self.tabs[self.active_tab]
+        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        &mut self.tabs[idx]
     }
 
     /// Returns true when split diff rendering should be active.

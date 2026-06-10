@@ -1,49 +1,73 @@
 # ai/ — AI Review Integration
 
-Data model and loader for AI-generated review files. The `.er-*` files are produced by external tools (Claude Code skills) and consumed here. This module does NOT run AI — it reads AI output.
+Data model and loader for AI-generated review sidecars. Sidecar files are
+produced by external tools (Claude Code skills) or by agent subprocesses
+spawned from `app/state/comments.rs`; this module reads and models that
+output. Sidecars live in managed storage by default (`TabState::er_dir()`);
+paths below use the repo-local `.er/` names, which are identical.
 
 ## Files
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `mod.rs` | ~6 | Re-exports |
-| `review.rs` | ~920 | Data model: all structs, enums, navigation, state management |
-| `loader.rs` | ~145 | File I/O: loads `.er-*` JSON files, computes diff hash |
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Re-exports |
+| `review.rs` | Data model: `AiState`, `ErReview`, `Finding`, `InlineLayers`, `PanelContent`, `CommentRef`, comment index |
+| `loader.rs` | File I/O: loads sidecar JSON, computes diff hashes, mtime polling |
+| `comments.rs` | Question/GitHub-comment storage types and persistence (atomic writes) |
+| `prompts.rs` | Prompt templates for built-in agent spawns |
+| `experts.rs` | Expert review files (`experts/*.json`) |
+| `triage.rs` | Fast branch triage (`triage.json`) |
+| `professor.rs` | Learning/teaching insights (`professor.json`) |
+| `finding_cleanup.rs` / `finding_responses.rs` | Finding lifecycle: cleanup and AI responses |
+| `relocate.rs` | Re-anchor findings/comments when the diff shifts |
 
-## External Files (written by AI skills, read here)
+## Sidecar Files
 
 | File | Struct | Purpose |
 |------|--------|---------|
-| `.er/review.json` | `ErReview` | Per-file risk levels, findings, suggestions |
-| `.er/order.json` | `ErOrder` | Suggested file review order with groupings |
-| `.er/summary.md` | (raw text) | Markdown summary of overall changes |
-| `.er/checklist.json` | `ErChecklist` | Review checklist items |
-| `.er/questions.json` | JSON | Personal review questions |
-| `.er/github-comments.json` | JSON | GitHub PR comments (two-way sync) |
+| `review.json` | `ErReview` | Per-file risk levels, findings, suggestions |
+| `order.json` | `ErOrder` | Suggested file review order with groupings |
+| `summary.md` | (raw text) | Markdown summary of overall changes |
+| `checklist.json` | `ErChecklist` | Review checklist items |
+| `triage.json` | `TriageReview` | Fast branch scan / routing verdict |
+| `professor.json` | — | Teaching insights |
+| `experts/*.json` | — | Domain-specific expert findings |
+| `questions.json` | `ErQuestions` | Personal review questions (written by `er`) |
+| `github-comments.json` | `ErGitHubComments` | GitHub PR comments, two-way sync (written by `er`) |
 
 ## Key Types (review.rs)
 
-**`AiState`** — Aggregate state for one tab. Holds all five data types (optional) plus:
-- `is_stale` — true if any `.er/` file's `diff_hash` differs from current diff
-- `view_mode: ViewMode` — `Default | Overlay | SidePanel | AiReview`
-- `review_focus: ReviewFocus` — `Files | Checklist` (which AiReview column has focus)
-- `review_cursor: usize` — cursor position within the focused column
+**`AiState`** — Aggregate state for one tab: optional `review`, `order`,
+`summary`, `agent_summaries`, `checklist`, `questions`, `github_comments`,
+`triage`, legacy `feedback`, plus:
+- `is_stale` — true if any sidecar's `diff_hash` differs from the current diff
+- `stale_files` — per-file staleness set
+- `comment_index` — lazily-built `CommentIndexData` for O(1) per-file comment lookup
 
-**`ErReview`** → `ErFileReview` → `Finding` — hierarchical: review contains per-file reviews, each containing findings with severity, category, description, suggestion, hunk references.
+**`InlineLayers`** — visibility toggles for inline annotation layers
+(findings, questions, GitHub comments, hide-resolved). Replaced the old
+`ViewMode` enum together with **`PanelContent`** (what the side panel shows:
+`FileDetail | AiSummary | PrOverview | SymbolRefs | AgentLog`).
+
+**`ErReview`** → `ErFileReview` → `Finding` — review contains per-file
+reviews, each containing findings with severity, category, description,
+suggestion, hunk references.
 
 **`RiskLevel`** — `High | Medium | Low | Info` with display helpers.
 
-**`ViewMode`** — cycles via `v`/`V` keys. `Overlay` and `SidePanel` require AI data; `AiReview` requires review data specifically.
+**`CommentRef`** — unified query enum wrapping `ReviewQuestion`,
+`GitHubReviewComment`, or legacy `FeedbackComment`.
 
 ## Loader (loader.rs)
 
-- `compute_diff_hash(raw_diff)` — SHA-256 hex string via `sha2` crate
-- `load_ai_state(repo_root, current_diff_hash)` — reads all five files, sets `is_stale`
-- `latest_er_mtime(repo_root)` — max mtime across all files; used for live-reload polling
+- `compute_diff_hash(raw_diff)` — SHA-256 hex string via `sha2` (persisted in sidecars)
+- Fast non-cryptographic hash for internal watch-mode change detection
+- `load_ai_state(...)` — reads all sidecars, sets `is_stale` / `stale_files`
+- mtime polling with a cache to limit `stat` calls during the event loop
 
 ## Important Patterns
 
-- Staleness is all-or-nothing: if any `.er-*` file has a different `diff_hash`, the entire AI state is marked stale
-- `AiState` preserves `view_mode/review_focus/review_cursor` across reloads (handled by `TabState::reload_ai_state()`)
-- `ErFeedback` is the only file `er` writes to — all others are read-only from `er`'s perspective
-- Finding banners link to hunks via `hunk_index: Option<usize>`, enabling inline display in the diff view
+- Global staleness (`is_stale`) dims the AI overlay; per-file staleness dims individual files/comments
+- `AiState` preserves panel/review focus and cursor across reloads (handled by `TabState::reload_ai_state()`)
+- `er` writes only `questions.json` and `github-comments.json`; all other sidecars are read-only from `er`'s perspective
+- Findings link to hunks via `hunk_index: Option<usize>`, enabling inline display in the diff view
