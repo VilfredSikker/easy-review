@@ -15,14 +15,14 @@
   }
 </script>
 
-<div class="flex items-center justify-between gap-4 py-3">
+<div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3">
   <div class="min-w-0">
     <div class="text-sm text-fg">{label}</div>
     {#if description}
       <div class="text-xs text-muted mt-0.5">{description}</div>
     {/if}
   </div>
-  <div class="inline-flex shrink-0 p-0.5 gap-0.5 bg-ink-850 border border-hairline rounded-lg flex-wrap justify-end">
+  <div class="inline-flex min-w-0 max-w-full p-0.5 gap-0.5 bg-ink-850 border border-hairline rounded-lg flex-wrap justify-end">
     {#each options as opt (opt)}
       <button
         type="button"
