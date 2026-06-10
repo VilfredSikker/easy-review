@@ -1085,6 +1085,15 @@ pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String>
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Fetch a PR's diff and return its SHA-256 hash (the staleness key used by
+/// `.er/review.json` and the nearest-PR cache). Expensive — fetches the full
+/// diff; callers should consult `pr_cache::CachedPr::diff_hash` first and only
+/// recompute when the head SHA changed.
+pub fn gh_pr_diff_hash_remote(owner: &str, repo: &str, number: u64) -> Result<String> {
+    let raw = gh_pr_diff_remote(owner, repo, number)?;
+    Ok(crate::ai::compute_diff_hash(&raw))
+}
+
 /// Get raw unified diff for a PR using the local repo context.
 ///
 /// This intentionally delegates PR-source rendering to GitHub instead of

@@ -2424,6 +2424,18 @@ fn build_projects_from_file(
                         .cloned()
                         .collect();
 
+                    // Stale-while-revalidate (issue #70): until the live PR
+                    // cache has this remote AND the gh user is known (the
+                    // lists can't be split without it), serve the persisted
+                    // nearest-PR cache so the sidebar renders — and branches
+                    // can be checked out — without waiting on `gh`.
+                    let (my, to_review) = if cache.get(remote).is_none() || me.is_none() {
+                        crate::pr_cache::nearest_prs_fallback(remote, &p.dismissed_prs)
+                            .unwrap_or((my, to_review))
+                    } else {
+                        (my, to_review)
+                    };
+
                     all.retain(|pr| pr.state == "MERGED");
                     all.sort_by_key(|run| std::cmp::Reverse(run.merged_at.clone()));
                     all.truncate(5);

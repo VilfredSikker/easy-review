@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::projects;
-use crate::snapshot::PrInfo;
+use crate::snapshot::{GhUser, PrInfo};
 use anyhow::Result;
 
 pub type PrCacheMap = Arc<Mutex<HashMap<String, Vec<PrInfo>>>>;
@@ -112,6 +112,189 @@ pub(crate) fn merge_pr_results(
     }
 }
 
+// ── Nearest-PR cache (issue #70) ────────────────────────────────────────────
+//
+// On top of the per-remote full PR list above, we persist the top-10 most
+// recent PRs of "My PRs" and "To Review" (already split, so no gh user lookup
+// is needed to serve them) into the managed storage area via
+// `er_engine::pr_cache`. The sidebar reads them as an instant fallback while
+// the live cache / gh user are still resolving, and PR branch checkout works
+// from the cached head_ref without a `gh pr view` round-trip.
+
+/// How many missing diff hashes to backfill per refresh cycle. Each backfill
+/// costs one `gh pr diff` fetch, so keep the per-cycle budget small — unchanged
+/// head SHAs never recompute, so the lists converge after a few cycles.
+const DIFF_HASH_BACKFILL_PER_CYCLE: usize = 3;
+
+/// "My PRs": open and authored by the current user.
+pub(crate) fn pr_is_mine(pr: &PrInfo, me: &str) -> bool {
+    pr.state == "OPEN" && pr.author == me
+}
+
+/// "To Review": open, not mine, and I haven't approved / requested changes.
+/// Mirrors the sidebar derivation in `snapshot::build_projects_from_file`.
+pub(crate) fn pr_needs_my_review(pr: &PrInfo, me: &str) -> bool {
+    pr.state == "OPEN"
+        && pr.author != me
+        && !pr
+            .latest_reviewer_states
+            .iter()
+            .any(|(l, s)| l == me && (s == "APPROVED" || s == "CHANGES_REQUESTED"))
+}
+
+fn cached_pr_from_info(pr: &PrInfo, remote: &str) -> er_engine::pr_cache::CachedPr {
+    er_engine::pr_cache::CachedPr {
+        number: pr.number,
+        title: pr.title.clone(),
+        head_ref: pr.head_ref.clone(),
+        base_ref: pr.base_ref.clone(),
+        head_oid: pr.head_oid.clone(),
+        updated_at: pr.updated_at.clone(),
+        author: pr.author.clone(),
+        url: format!("https://github.com/{}/pull/{}", remote, pr.number),
+        is_draft: pr.is_draft,
+        diff_hash: None,
+    }
+}
+
+fn pr_info_from_cached(pr: &er_engine::pr_cache::CachedPr) -> PrInfo {
+    PrInfo {
+        number: pr.number,
+        title: pr.title.clone(),
+        head_ref: pr.head_ref.clone(),
+        state: "OPEN".to_string(),
+        is_draft: pr.is_draft,
+        author: pr.author.clone(),
+        assignees: Vec::new(),
+        reviewers: Vec::new(),
+        checks_state: None,
+        review_decision: None,
+        merged_at: None,
+        approved_by_me: false,
+        base_ref: pr.base_ref.clone(),
+        head_oid: pr.head_oid.clone(),
+        updated_at: pr.updated_at.clone(),
+        latest_reviewer_states: Vec::new(),
+    }
+}
+
+fn nearest_pr_ttl_ms() -> u64 {
+    er_engine::pr_cache::ttl_ms_from_days(er_engine::config::load_global_config().pr_cache.ttl_days)
+}
+
+/// Persist the top-10 "My PRs" / "To Review" entries for a remote. Carries
+/// cached diff hashes forward for unchanged head SHAs; merged/closed/stale PRs
+/// drop out (see `er_engine::pr_cache::update_cache`). No-op until the gh user
+/// is known — the lists cannot be split without it.
+pub(crate) fn persist_nearest_prs(remote: &str, prs: &[PrInfo], gh_user: &GhUser) {
+    let Some(me) = gh_user.lock().ok().and_then(|g| g.clone()) else {
+        return;
+    };
+    let my: Vec<er_engine::pr_cache::CachedPr> = prs
+        .iter()
+        .filter(|pr| pr_is_mine(pr, &me))
+        .map(|pr| cached_pr_from_info(pr, remote))
+        .collect();
+    let to_review: Vec<er_engine::pr_cache::CachedPr> = prs
+        .iter()
+        .filter(|pr| pr_needs_my_review(pr, &me))
+        .map(|pr| cached_pr_from_info(pr, remote))
+        .collect();
+
+    let old = match er_engine::pr_cache::load(remote) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("nearest-PR cache load failed for {remote}: {e}");
+            None
+        }
+    };
+    let updated = er_engine::pr_cache::update_cache(
+        old.as_ref(),
+        &my,
+        &to_review,
+        er_engine::pr_cache::now_epoch_ms(),
+        nearest_pr_ttl_ms(),
+    );
+    if let Err(e) = er_engine::pr_cache::save(remote, &updated) {
+        log::warn!("nearest-PR cache save failed for {remote}: {e}");
+    }
+}
+
+/// Serve the persisted nearest-PR lists for a remote (stale-while-revalidate
+/// read path). Applies the TTL at read time too, so a cache left on disk while
+/// the app was closed doesn't resurrect long-stale PRs. Returns
+/// `(my_prs, prs_to_review)` or `None` when no usable cache exists.
+pub(crate) fn nearest_prs_fallback(
+    remote: &str,
+    dismissed: &[u64],
+) -> Option<(Vec<PrInfo>, Vec<PrInfo>)> {
+    let cache = er_engine::pr_cache::load(remote).ok().flatten()?;
+    let now_ms = er_engine::pr_cache::now_epoch_ms();
+    let ttl_ms = nearest_pr_ttl_ms();
+    let convert = |list: &[er_engine::pr_cache::CachedPr]| -> Vec<PrInfo> {
+        er_engine::pr_cache::refresh_list(&[], list, now_ms, ttl_ms)
+            .iter()
+            .filter(|pr| !dismissed.contains(&pr.number))
+            .map(pr_info_from_cached)
+            .collect()
+    };
+    let my = convert(&cache.my_prs);
+    let to_review = convert(&cache.to_review);
+    if my.is_empty() && to_review.is_empty() {
+        return None;
+    }
+    Some((my, to_review))
+}
+
+/// Compute missing diff hashes for a remote's nearest PRs, bounded per cycle.
+/// A hash is only recomputed when `update_cache` cleared it — i.e. the head
+/// SHA changed (or it was never computed) and the PR is still top-10 recent.
+async fn backfill_missing_diff_hashes(remote: &str) {
+    let Ok(Some(cache)) = er_engine::pr_cache::load(remote) else {
+        return;
+    };
+    let pending = er_engine::pr_cache::prs_needing_diff_hash(&cache);
+    let Some((owner, repo)) = remote.split_once('/') else {
+        return;
+    };
+    for pr in pending.into_iter().take(DIFF_HASH_BACKFILL_PER_CYCLE) {
+        if pr.head_oid.is_empty() {
+            continue;
+        }
+        let (owner, repo) = (owner.to_string(), repo.to_string());
+        let number = pr.number;
+        let t = std::time::Instant::now();
+        let hash = tokio::task::spawn_blocking(move || {
+            er_engine::github::gh_pr_diff_hash_remote(&owner, &repo, number)
+        })
+        .await;
+        match hash {
+            Ok(Ok(hash)) => {
+                crate::profile_log::profile_log(
+                    "pr_diff_hash_backfill",
+                    &[
+                        ("remote", remote.to_string()),
+                        ("pr", number.to_string()),
+                        ("ms", t.elapsed().as_millis().to_string()),
+                    ],
+                );
+                // Ignored when newer commits landed mid-fetch (head_oid moved).
+                if let Err(e) =
+                    er_engine::pr_cache::record_diff_hash(remote, number, &pr.head_oid, &hash)
+                {
+                    log::warn!("recording diff hash for {remote}#{number} failed: {e}");
+                }
+            }
+            Ok(Err(e)) => {
+                log::warn!("diff hash backfill failed for {remote}#{number}: {e}");
+            }
+            Err(e) => {
+                log::warn!("diff hash backfill task panicked for {remote}#{number}: {e}");
+            }
+        }
+    }
+}
+
 /// Whether the startup full PR sweep should run (any configured remote missing
 /// or older than [`PR_CACHE_STARTUP_MAX_AGE_MS`]).
 pub fn startup_full_refresh_due(fetched_at: &PrCacheFetchedAtMap) -> bool {
@@ -147,6 +330,7 @@ pub async fn refresh_pr_cache_for_remote(
     remote: &str,
     cache: &PrCacheMap,
     fetched_at: &PrCacheFetchedAtMap,
+    gh_user: &GhUser,
 ) -> bool {
     let t = std::time::Instant::now();
     let result = fetch_prs_for_remote(remote).await;
@@ -161,6 +345,7 @@ pub async fn refresh_pr_cache_for_remote(
                 ("ms", ms.to_string()),
             ],
         );
+        persist_nearest_prs(remote, prs, gh_user);
     } else {
         log::warn!("pr_list fetch failed for {} after {}ms", remote, ms);
     }
@@ -173,6 +358,9 @@ pub async fn refresh_pr_cache_for_remote(
         }
     }
     save_persisted_pr_cache(cache, fetched_at);
+    if success {
+        backfill_missing_diff_hashes(remote).await;
+    }
     success
 }
 
@@ -189,6 +377,7 @@ fn refreshable_remotes(file: &projects::ProjectsFile) -> Vec<String> {
 pub(crate) async fn refresh_pr_cache(
     cache: &PrCacheMap,
     fetched_at: &PrCacheFetchedAtMap,
+    gh_user: &GhUser,
 ) -> Vec<String> {
     let file = projects::load();
     let remotes = refreshable_remotes(&file);
@@ -225,6 +414,7 @@ pub(crate) async fn refresh_pr_cache(
                         ("ms", ms.to_string()),
                     ],
                 );
+                persist_nearest_prs(&remote, prs, gh_user);
                 refreshed_remotes.push(remote.clone());
             } else {
                 log::warn!("pr_list fetch failed for {} after {}ms", remote, ms);
@@ -239,11 +429,14 @@ pub(crate) async fn refresh_pr_cache(
     }
     if let Ok(mut fetched_guard) = fetched_at.lock() {
         let ts = now_epoch_ms();
-        for remote in refreshed_remotes {
-            fetched_guard.insert(remote, ts);
+        for remote in &refreshed_remotes {
+            fetched_guard.insert(remote.clone(), ts);
         }
     }
     save_persisted_pr_cache(cache, fetched_at);
+    for remote in &refreshed_remotes {
+        backfill_missing_diff_hashes(remote).await;
+    }
     crate::profile_log::profile_log(
         "pr_list_refresh_done",
         &[
@@ -433,6 +626,56 @@ mod tests {
 
         assert_eq!(cache["org/a"][0].number, 3, "a should be updated");
         assert_eq!(cache["org/b"][0].number, 2, "b should be preserved");
+    }
+
+    #[test]
+    fn pr_is_mine_requires_open_and_authored_by_me() {
+        let mut pr = make_pr(1, "feature");
+        pr.author = "alice".to_string();
+        assert!(pr_is_mine(&pr, "alice"));
+        assert!(!pr_is_mine(&pr, "bob"));
+        pr.state = "MERGED".to_string();
+        assert!(!pr_is_mine(&pr, "alice"));
+    }
+
+    #[test]
+    fn pr_needs_my_review_excludes_own_reviewed_and_closed() {
+        let mut pr = make_pr(2, "feature");
+        pr.author = "alice".to_string();
+        assert!(pr_needs_my_review(&pr, "bob"));
+        // Own PR never needs my review.
+        assert!(!pr_needs_my_review(&pr, "alice"));
+        // Already approved by me — drops out.
+        pr.latest_reviewer_states = vec![("bob".to_string(), "APPROVED".to_string())];
+        assert!(!pr_needs_my_review(&pr, "bob"));
+        // Someone else's approval doesn't count.
+        assert!(pr_needs_my_review(&pr, "carol"));
+        // Changes requested by me — also drops out.
+        pr.latest_reviewer_states = vec![("carol".to_string(), "CHANGES_REQUESTED".to_string())];
+        assert!(!pr_needs_my_review(&pr, "carol"));
+        // Closed PRs drop out regardless.
+        pr.state = "CLOSED".to_string();
+        assert!(!pr_needs_my_review(&pr, "bob"));
+    }
+
+    #[test]
+    fn cached_pr_conversion_roundtrip_keeps_checkout_fields() {
+        let mut pr = make_pr(42, "feature/foo");
+        pr.base_ref = "develop".to_string();
+        pr.head_oid = "abc123".to_string();
+        pr.updated_at = "2026-06-09T10:00:00Z".to_string();
+        pr.is_draft = true;
+        let cached = cached_pr_from_info(&pr, "org/repo");
+        assert_eq!(cached.url, "https://github.com/org/repo/pull/42");
+        let back = pr_info_from_cached(&cached);
+        assert_eq!(back.number, 42);
+        assert_eq!(back.head_ref, "feature/foo");
+        assert_eq!(back.base_ref, "develop");
+        assert_eq!(back.head_oid, "abc123");
+        assert_eq!(back.updated_at, "2026-06-09T10:00:00Z");
+        assert_eq!(back.state, "OPEN");
+        assert!(back.is_draft);
+        assert_eq!(back.author, "alice");
     }
 
     #[test]

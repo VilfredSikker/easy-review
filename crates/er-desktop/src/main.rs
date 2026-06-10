@@ -746,6 +746,24 @@ fn main() {
 
             match result {
                 Ok(Some(r)) => {
+                    // Opportunistically persist the freshly computed diff hash
+                    // into the nearest-PR cache (issue #70). No-op unless the
+                    // PR is still cached (top-10 recent) with this head SHA —
+                    // saves the backfill a redundant `gh pr diff` fetch.
+                    if let Some(oid) = r.head_oid.clone() {
+                        let slug = format!("{}/{}", ctx.owner, ctx.repo);
+                        if let Err(e) = er_engine::pr_cache::record_diff_hash(
+                            &slug,
+                            ctx.pr_number,
+                            &oid,
+                            &r.branch_diff_hash,
+                        ) {
+                            log::debug!(
+                                "nearest-PR diff hash record failed for {slug}#{}: {e}",
+                                ctx.pr_number
+                            );
+                        }
+                    }
                     // Phase 3: brief lock — apply.
                     if let Ok(mut g) = remote_app.lock() {
                         g.apply_remote_diff_result(r);
@@ -1057,8 +1075,9 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
-            let failed =
-                rt.block_on(async { pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await });
+            let failed = rt.block_on(async {
+                pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at, &bg_gh_user).await
+            });
             for remote in failed {
                 commands::process_inbox_after_pr_refresh(
                     &bg_cache,
@@ -1092,8 +1111,13 @@ fn main() {
                 f.pr_list = true;
             }
             rt.block_on(async {
-                pr_cache::refresh_pr_cache_for_remote(&active_remote, &bg_cache, &bg_fetched_at)
-                    .await
+                pr_cache::refresh_pr_cache_for_remote(
+                    &active_remote,
+                    &bg_cache,
+                    &bg_fetched_at,
+                    &bg_gh_user,
+                )
+                .await
             });
             commands::process_inbox_after_pr_refresh(
                 &bg_cache,

@@ -5252,10 +5252,10 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                 .enable_all()
                 .build()
                 .expect("failed to build tokio runtime");
-            let failed =
-                rt.block_on(
-                    async move { crate::pr_cache::refresh_pr_cache(&cache, &fetched_at).await },
-                );
+            let gh_user_for_refresh = Arc::clone(&gh_user);
+            let failed = rt.block_on(async move {
+                crate::pr_cache::refresh_pr_cache(&cache, &fetched_at, &gh_user_for_refresh).await
+            });
             for remote in failed {
                 process_inbox_after_pr_refresh(
                     &pr_cache,
@@ -5329,9 +5329,15 @@ pub fn refresh_project_pr_list(
                 .build()
                 .expect("failed to build tokio runtime");
             let remote_clone = remote.clone();
+            let gh_user_for_refresh = Arc::clone(&gh_user);
             let success = rt.block_on(async move {
-                crate::pr_cache::refresh_pr_cache_for_remote(&remote_clone, &cache, &fetched_at)
-                    .await
+                crate::pr_cache::refresh_pr_cache_for_remote(
+                    &remote_clone,
+                    &cache,
+                    &fetched_at,
+                    &gh_user_for_refresh,
+                )
+                .await
             });
             if !success {
                 process_inbox_after_pr_refresh(

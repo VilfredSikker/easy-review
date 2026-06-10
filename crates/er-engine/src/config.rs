@@ -37,6 +37,28 @@ pub struct ErConfig {
     pub ai_hub: AiHubConfig,
     #[serde(default)]
     pub packages: PackagesConfig,
+    #[serde(default)]
+    pub pr_cache: PrCacheConfig,
+}
+
+/// [pr_cache] section — nearest-PR cache tuning (issue #70).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrCacheConfig {
+    /// Evict cached PRs whose `updatedAt` is older than this many days.
+    #[serde(default = "default_pr_cache_ttl_days")]
+    pub ttl_days: u64,
+}
+
+impl Default for PrCacheConfig {
+    fn default() -> Self {
+        Self {
+            ttl_days: default_pr_cache_ttl_days(),
+        }
+    }
+}
+
+fn default_pr_cache_ttl_days() -> u64 {
+    crate::pr_cache::DEFAULT_TTL_DAYS
 }
 
 /// [commands] section — configurable shell commands for hub actions.
