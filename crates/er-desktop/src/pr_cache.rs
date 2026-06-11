@@ -124,7 +124,7 @@ pub(crate) fn merge_pr_results(
 /// How many missing diff hashes to backfill per refresh cycle. Each backfill
 /// costs one `gh pr diff` fetch, so keep the per-cycle budget small — unchanged
 /// head SHAs never recompute, so the lists converge after a few cycles.
-const DIFF_HASH_BACKFILL_PER_CYCLE: usize = 3;
+pub const DIFF_HASH_BACKFILL_PER_CYCLE: usize = 3;
 
 /// "My PRs": open and authored by the current user.
 pub(crate) fn pr_is_mine(pr: &PrInfo, me: &str) -> bool {
@@ -294,7 +294,7 @@ pub(crate) fn nearest_prs_fallback(
 /// through to the persistent diff store — so after a few cycles the top-10
 /// PRs' diffs are prefetched and the green dot genuinely means "opens
 /// instantly".
-async fn backfill_missing_diff_hashes(remote: &str) {
+async fn backfill_missing_diff_hashes(remote: &str, budget: usize) {
     let Ok(Some(cache)) = er_engine::pr_cache::load(remote) else {
         return;
     };
@@ -302,7 +302,7 @@ async fn backfill_missing_diff_hashes(remote: &str) {
     let Some((owner, repo)) = remote.split_once('/') else {
         return;
     };
-    for pr in pending.into_iter().take(DIFF_HASH_BACKFILL_PER_CYCLE) {
+    for pr in pending.into_iter().take(budget) {
         if pr.head_oid.is_empty() {
             continue;
         }
@@ -399,6 +399,7 @@ pub async fn refresh_pr_cache_for_remote(
     cache: &PrCacheMap,
     fetched_at: &PrCacheFetchedAtMap,
     gh_user: &GhUser,
+    backfill_budget: usize,
 ) -> bool {
     let t = std::time::Instant::now();
     let result = fetch_prs_for_remote(remote).await;
@@ -427,7 +428,7 @@ pub async fn refresh_pr_cache_for_remote(
     }
     save_persisted_pr_cache(cache, fetched_at);
     if success {
-        backfill_missing_diff_hashes(remote).await;
+        backfill_missing_diff_hashes(remote, backfill_budget).await;
     }
     success
 }
@@ -446,6 +447,7 @@ pub(crate) async fn refresh_pr_cache(
     cache: &PrCacheMap,
     fetched_at: &PrCacheFetchedAtMap,
     gh_user: &GhUser,
+    backfill_budget: usize,
 ) -> Vec<String> {
     let file = projects::load();
     let remotes = refreshable_remotes(&file);
@@ -503,7 +505,7 @@ pub(crate) async fn refresh_pr_cache(
     }
     save_persisted_pr_cache(cache, fetched_at);
     for remote in &refreshed_remotes {
-        backfill_missing_diff_hashes(remote).await;
+        backfill_missing_diff_hashes(remote, backfill_budget).await;
     }
     crate::profile_log::profile_log(
         "pr_list_refresh_done",

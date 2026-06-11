@@ -1105,7 +1105,13 @@ fn main() {
                 f.pr_list = true;
             }
             let failed = rt.block_on(async {
-                pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at, &bg_gh_user).await
+                pr_cache::refresh_pr_cache(
+                    &bg_cache,
+                    &bg_fetched_at,
+                    &bg_gh_user,
+                    pr_cache::DIFF_HASH_BACKFILL_PER_CYCLE,
+                )
+                .await
             });
             for remote in failed {
                 commands::process_inbox_after_pr_refresh(
@@ -1145,6 +1151,7 @@ fn main() {
                     &bg_cache,
                     &bg_fetched_at,
                     &bg_gh_user,
+                    pr_cache::DIFF_HASH_BACKFILL_PER_CYCLE,
                 )
                 .await
             });
