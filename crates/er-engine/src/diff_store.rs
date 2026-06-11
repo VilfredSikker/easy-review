@@ -390,7 +390,7 @@ pub fn prune_remote(remote: &str, keep_numbers: &HashSet<u64>) -> Result<()> {
         return Ok(());
     }
     // Newest first; protected entries don't count against the evictable tail.
-    cached.sort_by(|a, b| b.1.cmp(&a.1));
+    cached.sort_by_key(|c| std::cmp::Reverse(c.1));
     let mut kept = cached
         .iter()
         .filter(|(n, _)| keep_numbers.contains(n))
