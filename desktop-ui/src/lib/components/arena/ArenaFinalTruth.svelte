@@ -99,7 +99,7 @@
       <button
         type="button"
         disabled={accepting}
-        class="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--arena-periwinkle)] px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
+        class="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-[var(--arena-periwinkle)] px-3 py-1.5 text-[11px] font-semibold text-[var(--arena-bg-0)] disabled:opacity-50"
         onclick={() => void acceptAll()}
       >
         Accept all into Review ({pendingAccept.length})
@@ -135,7 +135,7 @@
                   {basename(f.file)}{#if f.line}:{f.line}{/if}
                 </p>
                 {#if f.accepted_at || snapshot.run.accepted_finding_ids?.includes(f.id)}
-                  <span class="mt-1 inline-block text-[9px] font-semibold uppercase tracking-wider text-[var(--arena-ok,#4ec9a4)]">
+                  <span class="mt-1 inline-block text-[9px] font-semibold uppercase tracking-wider text-[var(--arena-ok)]">
                     In Review
                   </span>
                 {:else}

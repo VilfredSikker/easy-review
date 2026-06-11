@@ -90,7 +90,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     data-modal={dataModalValue()}
-    class={props.backdropClass ?? "fixed inset-0 z-[250] bg-black/50"}
+    class={props.backdropClass ?? "fixed inset-0 z-[250] bg-bg/50"}
     style={props.backdropStyle ?? "backdrop-filter: blur(2px);"}
     role="presentation"
     onpointerdown={closeFromBackdrop}

@@ -205,7 +205,7 @@
       </div>
     {/if}
     {#if captureError}
-      <div class="mt-1 text-[10px] text-red-400" title={captureError}>{captureError}</div>
+      <div class="mt-1 text-[10px] text-error" title={captureError}>{captureError}</div>
     {/if}
     <div class="flex justify-between items-center gap-2 mt-2">
       {#if canCapture}
@@ -240,7 +240,7 @@
         </button>
         <button
           type="button"
-          class="text-xs px-2 py-1 rounded bg-accent text-white hover:opacity-90"
+          class="text-xs px-2 py-1 rounded bg-accent text-on-accent hover:opacity-90"
           onclick={saveComposer}
         >
           Save

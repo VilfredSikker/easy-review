@@ -27,9 +27,9 @@
   const { finding, thread = null }: Props = $props();
 
   const severityColor = $derived(
-    finding.severity === "high" ? "#ef4444"
-    : finding.severity === "med" ? "#fbbf24"
-    : "#60a5fa",
+    finding.severity === "high" ? "var(--color-risk-high)"
+    : finding.severity === "med" ? "var(--color-risk-med)"
+    : "var(--color-risk-low)",
   );
 
   const isPromoted = $derived(finding.promoted_to != null);
@@ -40,10 +40,10 @@
 
   const agentPillStyle = $derived(
     agentLabel === "Professor"
-      ? "background: #f9731626; color: #fb923c; border-color: #f9731640"
+      ? "background: color-mix(in srgb, var(--color-emphasis) 15%, transparent); color: var(--color-emphasis); border-color: color-mix(in srgb, var(--color-emphasis) 25%, transparent)"
       : agentLabel === "General"
-        ? "background: #94a3b826; color: #94a3b8; border-color: #94a3b840"
-        : "background: #38bdf826; color: #38bdf8; border-color: #38bdf840",
+        ? "background: color-mix(in srgb, var(--color-fg-3) 15%, transparent); color: var(--color-fg-3); border-color: color-mix(in srgb, var(--color-fg-3) 25%, transparent)"
+        : "background: color-mix(in srgb, var(--color-info) 15%, transparent); color: var(--color-info); border-color: color-mix(in srgb, var(--color-info) 25%, transparent)",
   );
 
   let replyText = $state("");
@@ -201,11 +201,11 @@
 <div
   id="finding-{finding.id}"
   class="mx-4 my-3 border rounded-lg overflow-hidden font-sans scroll-mt-16 min-w-0 max-w-full"
-  style="border-color: {severityColor}4d; background: {severityColor}0a;"
+  style="border-color: color-mix(in srgb, {severityColor} 30%, transparent); background: color-mix(in srgb, {severityColor} 4%, transparent);"
 >
   <!-- Header -->
   <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs flex-wrap">
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={severityColor} stroke-width="2.5" class="shrink-0"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></svg>
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0" style="color: {severityColor}"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></svg>
     <span class="font-medium shrink-0" style="color: {severityColor}">{headerKind}</span>
     <span
       class="px-1.5 py-0.5 rounded-full text-[9px] font-medium border shrink-0"
@@ -213,7 +213,7 @@
       title="Review agent"
     >{agentLabel}</span>
     {#if !isProfessor}
-      <span class="px-1.5 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-medium shrink-0" style="background: {severityColor}26; color: {severityColor}">
+      <span class="px-1.5 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-medium shrink-0" style="background: color-mix(in srgb, {severityColor} 15%, transparent); color: {severityColor}">
         {finding.severity}
       </span>
     {/if}
@@ -277,7 +277,7 @@
     <div class="border-t border-hairline bg-surface">
       {#each mergedReplies as reply, i}
         <div class="px-3 py-2.5 flex gap-2.5 group/row {i > 0 ? 'border-t border-hairline' : ''}">
-          <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {reply.kind === 'ai' ? 'bg-ai/20' : 'bg-accent text-black'}">
+          <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {reply.kind === 'ai' ? 'bg-ai/20' : 'bg-accent text-on-accent'}">
             {#if reply.kind === "ai"}
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
             {:else}

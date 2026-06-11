@@ -87,15 +87,15 @@
   style={topPx !== undefined
     ? `position:absolute;top:${topPx}px;left:calc(${gutterInsetPx}px + 0.75rem);right:1rem;z-index:20`
     : undefined}
-  class="{topPx === undefined ? 'sticky bottom-0 left-0 right-0 mx-4 mb-4 mt-2' : 'mb-4 mt-2'} rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_rgba(255,255,255,0.04)]
+  class="{topPx === undefined ? 'sticky bottom-0 left-0 right-0 mx-4 mb-4 mt-2' : 'mb-4 mt-2'} rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_color-mix(in_srgb,var(--color-fg)_4%,transparent)]
          {diffSel.kind === 'question'
            ? 'border border-question/40 bg-card'
-           : 'border border-blue-500/40 bg-card'}"
+           : 'border border-action/40 bg-card'}"
 >
   <!-- Header -->
   <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs">
     {#if diffSel.kind === "comment"}
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.5"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-action"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
     {/if}
     <span class="text-fg-2 font-medium">{diffSel.rangeLabel()}</span>
 
@@ -103,7 +103,7 @@
       <button
         onclick={() => (diffSel.kind = "comment")}
         class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
-               {diffSel.kind === 'comment' ? 'bg-comment text-black font-medium' : 'text-fg-3 hover:text-fg-2'}"
+               {diffSel.kind === 'comment' ? 'bg-comment text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
       >
         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Comment
@@ -111,7 +111,7 @@
       <button
         onclick={() => (diffSel.kind = "question")}
         class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
-               {diffSel.kind === 'question' ? 'bg-question text-black font-medium' : 'text-fg-3 hover:text-fg-2'}"
+               {diffSel.kind === 'question' ? 'bg-question text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
       >
         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
         Question
@@ -148,8 +148,8 @@
       disabled={!canSubmit}
       class="px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5
              {diffSel.kind === 'question'
-               ? 'bg-question hover:bg-question/90 text-black'
-               : 'bg-comment hover:bg-comment/90 text-black'}"
+               ? 'bg-question hover:bg-question/90 text-on-accent'
+               : 'bg-comment hover:bg-comment/90 text-on-accent'}"
     >
       <span>{diffSel.kind === "question" ? "Save question" : "Add comment"}</span>
       <span class="opacity-60 mono">⌘⏎</span>

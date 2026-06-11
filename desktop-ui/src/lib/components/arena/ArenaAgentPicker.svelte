@@ -60,7 +60,7 @@
           class="mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded border
             {on ? 'border-transparent bg-[var(--arena-periwinkle)]' : 'border-[var(--arena-border-strong)]'}"
         >
-          {#if on}<span class="text-[10px] font-bold text-[#0e1420]">✓</span>{/if}
+          {#if on}<span class="text-[10px] font-bold text-[var(--arena-bg-0)]">✓</span>{/if}
         </span>
       </button>
 
@@ -86,7 +86,7 @@
           {/each}
         </div>
         {#if isSingleMode && models.size > 1}
-          <p class="mt-1 text-[9px] text-[var(--arena-warning,#f0c040)]">Single mode: one model only</p>
+          <p class="mt-1 text-[9px] text-[var(--arena-warn)]">Single mode: one model only</p>
         {/if}
       {/if}
     </div>

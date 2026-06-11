@@ -35,6 +35,7 @@
 ## Visual/Interaction Conventions
 
 - Preserve the established dark, dense review UI unless a task explicitly asks for a redesign.
+- All colors must flow through the design tokens in `src/app.css` (`@theme` block), which `src/lib/themes.ts` overrides per theme. Use the token-backed Tailwind utilities (`text-fg-3`, `bg-card`, `text-error`, `bg-success/10`, …) or `var(--color-*)` in inline styles — never raw hex/rgb values and never stock Tailwind palette classes (`text-amber-400`, `bg-black`, `text-white`), which resolve to Tailwind defaults and ignore the theme. For alpha tints use `color-mix(in srgb, var(--color-x) N%, transparent)`. SVG `stroke`/`fill` attributes can't hold `var()` — use `stroke="currentColor"` plus a text-* class, or a `style` attribute. Exceptions: the arena overlay's fixed `--arena-*` palette (self-contained by design, including agent identity colors in `arena/agents.ts`), `spanColorRemap.ts` (Shiki token-color transformation), and Storybook harnesses.
 - Prefer small shared primitives from `components/ui` over ad hoc styling for repeated card/button/pill patterns.
 - Keyboard shortcuts should be registered centrally in `keyboard.ts`, while component-local text inputs must stop propagation where needed.
 - Any command palette action should map to an existing Tauri command or a clearly documented frontend-only preference.

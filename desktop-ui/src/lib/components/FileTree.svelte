@@ -280,24 +280,24 @@
   function extChip(ext: string): ExtChip {
     switch (ext) {
       case "ts":
-      case "tsx":   return { label: ext === "tsx" ? "TSX" : "TS",  color: "#5db4ff" };
+      case "tsx":   return { label: ext === "tsx" ? "TSX" : "TS",  color: "var(--color-action)" };
       case "js":
-      case "jsx":   return { label: ext === "jsx" ? "JSX" : "JS",  color: "#ffce5b" };
-      case "svelte": return { label: "SV",  color: "#ff7a2b" };
+      case "jsx":   return { label: ext === "jsx" ? "JSX" : "JS",  color: "var(--color-warning)" };
+      case "svelte": return { label: "SV",  color: "var(--color-accent)" };
       case "css":
-      case "scss":  return { label: ext.toUpperCase().slice(0, 3), color: "#7f87ff" };
-      case "rs":    return { label: "RS",   color: "#f46623" };
-      case "md":    return { label: "MD",   color: "#aab0bd" };
-      case "json":  return { label: "JSON", color: "#aab0bd" };
-      case "toml":  return { label: "TOML", color: "#aab0bd" };
+      case "scss":  return { label: ext.toUpperCase().slice(0, 3), color: "var(--color-periwinkle)" };
+      case "rs":    return { label: "RS",   color: "var(--color-emphasis)" };
+      case "md":    return { label: "MD",   color: "var(--color-fg-3)" };
+      case "json":  return { label: "JSON", color: "var(--color-fg-3)" };
+      case "toml":  return { label: "TOML", color: "var(--color-fg-3)" };
       case "yaml":
-      case "yml":   return { label: "YML",  color: "#aab0bd" };
-      case "html":  return { label: "HTML", color: "#e67e22" };
-      case "py":    return { label: "PY",   color: "#4caf50" };
-      case "go":    return { label: "GO",   color: "#00acd7" };
+      case "yml":   return { label: "YML",  color: "var(--color-fg-3)" };
+      case "html":  return { label: "HTML", color: "var(--color-emphasis)" };
+      case "py":    return { label: "PY",   color: "var(--color-success)" };
+      case "go":    return { label: "GO",   color: "var(--color-info)" };
       case "sh":
-      case "bash":  return { label: "SH",   color: "#aab0bd" };
-      default:      return { label: ext ? ext.toUpperCase().slice(0, 3) : "·", color: "#6b6b6b" };
+      case "bash":  return { label: "SH",   color: "var(--color-fg-3)" };
+      default:      return { label: ext ? ext.toUpperCase().slice(0, 3) : "·", color: "var(--color-muted)" };
     }
   }
 
@@ -346,7 +346,7 @@
 >
   <div class="shrink-0 border-b border-hairline">
     <div class="flex items-center gap-2 px-3 py-2">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" class="shrink-0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-fg-3"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input
         bind:this={inputEl}
         class="flex-1 bg-transparent text-sm text-fg-2 placeholder:text-muted outline-none min-w-0"
@@ -399,7 +399,7 @@
   {#if !pickerMode && snapshot && snapshot.total_count > 0}
     <!-- Review progress meter: single fill (O(1) DOM regardless of file count) -->
     <div class="px-3 pb-1.5 shrink-0">
-      <div class="h-[3px] rounded-[2px] overflow-hidden" style="background: rgba(255,255,255,0.06)">
+      <div class="h-[3px] rounded-[2px] overflow-hidden" style="background: color-mix(in srgb, var(--color-fg) 6%, transparent)">
         <div
           class="h-full rounded-[2px] transition-[width] duration-150"
           style="width: {(snapshot.reviewed_count / snapshot.total_count) * 100}%; background: var(--color-periwinkle)"
@@ -499,7 +499,7 @@
               <!-- File-type chip -->
               <span
                 class="shrink-0 inline-flex items-center justify-center w-[14px] h-[14px] rounded-[3px] text-[7px] font-bold leading-none"
-                style="background: {chip.color}22; color: {chip.color}"
+                style="background: color-mix(in srgb, {chip.color} 13%, transparent); color: {chip.color}"
                 aria-hidden="true"
               >{chip.label}</span>
 
@@ -510,7 +510,7 @@
                 <span
                   title="{(file.comment_count + file.question_count)} comment{(file.comment_count + file.question_count) !== 1 ? 's' : ''}"
                   class="w-[13px] h-[13px] rounded-full shrink-0 flex items-center justify-center text-[9px] font-bold"
-                  style="background: rgba(34,211,238,0.15); color: var(--color-comment); border: 1px solid rgba(34,211,238,0.25);"
+                  style="background: color-mix(in srgb, var(--color-comment) 15%, transparent); color: var(--color-comment); border: 1px solid color-mix(in srgb, var(--color-comment) 25%, transparent);"
                 >?</span>
               {/if}
 

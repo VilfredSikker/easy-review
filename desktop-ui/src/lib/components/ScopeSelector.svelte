@@ -167,7 +167,7 @@
         <!-- git-commit glyph -->
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><circle cx="12" cy="12" r="3"/><line x1="3" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="21" y2="12"/></svg>
         <span>Commits</span>
-        <span class="px-[5px] py-0 rounded-full text-[9px] text-muted" style="background: rgba(255,255,255,0.06);">{commitsToShow.length}</span>
+        <span class="px-[5px] py-0 rounded-full text-[9px] text-muted" style="background: color-mix(in srgb, var(--color-fg) 6%, transparent);">{commitsToShow.length}</span>
         <div class="flex-1"></div>
         <svg
           width="10"
@@ -196,7 +196,7 @@
             {/if}
             <div class="flex items-center gap-2">
               <!-- Author initials avatar -->
-              <div class="w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 uppercase text-white" style="background: var(--color-accent);">
+              <div class="w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 uppercase text-on-accent" style="background: var(--color-accent);">
                 {commit.author.slice(0, 2)}
               </div>
               <!-- Message + meta row -->
@@ -207,7 +207,7 @@
                   <span
                     class="mono text-[10px] px-[5px] rounded leading-tight"
                     style="{isSelected
-                      ? 'color: var(--color-accent); background: rgba(255,106,61,0.1); border: 1px solid rgba(255,106,61,0.3);'
+                      ? 'color: var(--color-accent); background: var(--color-accent-soft); border: 1px solid var(--color-accent-border);'
                       : 'color: var(--color-muted); background: var(--color-card); border: 1px solid var(--color-hairline);'}"
                   >{commit.sha.slice(0, 7)}</span>
                   <span class="text-[10px] text-muted">{commit.age}</span>

@@ -833,14 +833,14 @@
     </button>
     {#if browser.annotateMode}
       <span
-        class="text-[10px] px-1.5 py-0.5 rounded font-mono {annotationReadiness === 'ready' ? 'text-green-400 bg-green-900/30' : annotationReadiness === 'unsupported' ? 'text-red-300 bg-red-900/30' : 'text-amber-400 bg-amber-900/30'}"
+        class="text-[10px] px-1.5 py-0.5 rounded font-mono {annotationReadiness === 'ready' ? 'text-success bg-success/15' : annotationReadiness === 'unsupported' ? 'text-error bg-error/15' : 'text-warning bg-warning/15'}"
       >
         {annotationReadiness === 'ready' ? 'annotation ready' : annotationReadiness}
       </span>
     {/if}
     <button
       type="button"
-      class="text-xs px-2 py-1 rounded {browser.annotateMode ? 'bg-accent text-white' : 'bg-hover'}"
+      class="text-xs px-2 py-1 rounded {browser.annotateMode ? 'bg-accent text-on-accent' : 'bg-hover'}"
       onclick={() => void browser.setAnnotateMode(!browser.annotateMode)}
       title="Click elements on the page to leave an annotation"
     >
@@ -857,7 +857,7 @@
     </button>
     <button
       type="button"
-      class="text-xs px-2 py-1 rounded hover:bg-red-900/30 text-muted hover:text-red-300 disabled:opacity-40"
+      class="text-xs px-2 py-1 rounded hover:bg-error/15 text-muted hover:text-error disabled:opacity-40"
       onclick={clearAnnotationsPage}
       disabled={!(app.snapshot?.ui_annotations ?? []).some((a) =>
         annotationMatchesPage(a.url, currentPageUrl()),
@@ -868,7 +868,7 @@
     </button>
     <button
       type="button"
-      class="text-xs px-2 py-1 rounded hover:bg-red-900/30 text-muted hover:text-red-300 disabled:opacity-40"
+      class="text-xs px-2 py-1 rounded hover:bg-error/15 text-muted hover:text-error disabled:opacity-40"
       onclick={clearAnnotationsAll}
       disabled={(app.snapshot?.ui_annotations?.length ?? 0) === 0}
       title="Clear all UI annotations on this review tab"
@@ -901,12 +901,12 @@
 
     {#if annotationReadiness === "unsupported" && browser.annotateMode}
       <div
-        class="absolute top-2 left-2 right-2 z-20 rounded border border-amber-700/50 bg-amber-950/90 px-3 py-2 text-xs text-amber-100 pointer-events-auto"
+        class="absolute top-2 left-2 right-2 z-20 rounded border border-warning/50 bg-[color-mix(in_srgb,var(--color-warning)_15%,var(--color-bg))] px-3 py-2 text-xs text-warning pointer-events-auto"
         role="status"
       >
         Annotations need the embedded browser — reload this page or restart Easy Review.
         {#if useProxyFallback}
-          <span class="block mt-1 text-amber-200/80">Using proxy fallback; native webview unavailable.</span>
+          <span class="block mt-1 text-warning/80">Using proxy fallback; native webview unavailable.</span>
         {/if}
       </div>
     {/if}

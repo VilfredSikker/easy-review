@@ -93,11 +93,11 @@
             onclick={() => focusPin(a.id, a.url)}
           >
             <div class="flex items-center gap-2">
-              <span class="rounded-full bg-orange-500 text-white text-[10px] w-5 h-5 inline-flex items-center justify-center font-bold shrink-0">
+              <span class="rounded-full bg-accent text-on-accent text-[10px] w-5 h-5 inline-flex items-center justify-center font-bold shrink-0">
                 {i + 1}
               </span>
               {#if a.stale}
-                <span class="text-[10px] text-amber-500">stale</span>
+                <span class="text-[10px] text-warning">stale</span>
               {/if}
             </div>
             {#if a.selector}

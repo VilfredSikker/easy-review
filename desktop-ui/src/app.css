@@ -28,6 +28,20 @@
   --color-accent:        #ff6a3d;
   --color-accent-soft:   rgba(255,106,61,0.12);
   --color-accent-border: rgba(255,106,61,0.30);
+  --color-accent-hover:  #ff7d54;
+  /* Text/icons rendered on top of accent/periwinkle/add/del-filled surfaces
+   * (near-black keeps ≥4.5:1 contrast on every theme's accent hues). */
+  --color-on-accent:     #0a0a0a;
+
+  /* Accent ladder (mirrors the TUI semantic accents; overridden per theme
+   * by themes.ts). Use these instead of stock Tailwind palette classes —
+   * `text-amber-400` etc. resolve to Tailwind defaults and ignore the theme. */
+  --color-action:   #60a5fa;  /* blue — primary actions, links */
+  --color-info:     #22d3ee;  /* cyan — informational accents */
+  --color-success:  #4ade80;  /* green — success states */
+  --color-warning:  #fbbf24;  /* yellow — warnings, pending states */
+  --color-error:    #ef4444;  /* red — errors, destructive */
+  --color-emphasis: #fb923c;  /* orange — emphasis, highlights */
 
   --color-periwinkle:      #7f87ff;
   --color-periwinkle-soft: rgba(127,135,255,0.14);
@@ -140,29 +154,29 @@
   white-space: nowrap;
 }
 .arena-pill--kept {
-  background: rgba(78, 201, 164, 0.12);
+  background: color-mix(in srgb, var(--arena-ok) 12%, transparent);
   color: var(--arena-ok);
-  border: 1px solid rgba(78, 201, 164, 0.3);
+  border: 1px solid color-mix(in srgb, var(--arena-ok) 30%, transparent);
 }
 .arena-pill--merged {
-  background: rgba(127, 135, 255, 0.14);
+  background: color-mix(in srgb, var(--arena-periwinkle) 14%, transparent);
   color: var(--arena-periwinkle);
-  border: 1px solid rgba(127, 135, 255, 0.3);
+  border: 1px solid color-mix(in srgb, var(--arena-periwinkle) 30%, transparent);
 }
 .arena-pill--err {
-  background: rgba(255, 107, 107, 0.12);
+  background: color-mix(in srgb, var(--arena-err) 12%, transparent);
   color: var(--arena-err);
-  border: 1px solid rgba(255, 107, 107, 0.3);
+  border: 1px solid color-mix(in srgb, var(--arena-err) 30%, transparent);
 }
 .arena-pill--muted {
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--arena-fg) 6%, transparent);
   color: var(--arena-fg-subtle);
   border: 1px solid var(--arena-border);
 }
 .arena-pill--pending {
-  background: rgba(255, 196, 87, 0.1);
+  background: color-mix(in srgb, var(--arena-warn) 10%, transparent);
   color: var(--arena-warn);
-  border: 1px solid rgba(255, 196, 87, 0.3);
+  border: 1px solid color-mix(in srgb, var(--arena-warn) 30%, transparent);
 }
 .arena-link-row {
   transition: background var(--arena-d-fast) var(--arena-ease);
@@ -373,9 +387,9 @@ body {
 /* Jump-to pulse animation (mock lines 35–43, build-plan §lookup-utilities). */
 .flash { animation: flash-pulse 1200ms ease-out; }
 @keyframes flash-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(255, 106, 61, 0.55), 0 0 0 0 rgba(255, 106, 61, 0.35); }
-  30%  { box-shadow: 0 0 0 3px rgba(255, 106, 61, 0.45), 0 0 22px 4px rgba(255, 106, 61, 0.35); }
-  100% { box-shadow: 0 0 0 0 rgba(255, 106, 61, 0),    0 0 0 0 rgba(255, 106, 61, 0); }
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 55%, transparent), 0 0 0 0 color-mix(in srgb, var(--color-accent) 35%, transparent); }
+  30%  { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 45%, transparent), 0 0 22px 4px color-mix(in srgb, var(--color-accent) 35%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
 }
 
 /* Toast slide-in animation — kept global so Tailwind's animate-[toast-in_...] references work. */

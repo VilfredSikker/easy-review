@@ -534,7 +534,7 @@
   {open}
   ariaLabel={isSingleMode ? "Start single AI review" : "Start AI Review Arena"}
   {onClose}
-  backdropClass="fixed inset-0 z-[250] bg-[rgba(8,12,20,0.66)]"
+  backdropClass="fixed inset-0 z-[250] bg-[color-mix(in_srgb,var(--arena-bg-app)_66%,transparent)]"
   backdropStyle="backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);"
   panelClass="left-1/2 top-1/2 w-full max-w-[720px] -translate-x-1/2 -translate-y-1/2"
 >
@@ -713,7 +713,7 @@
                   }}
                   class="h-6 w-7 rounded text-[11px] font-semibold mono transition-colors
                     {rounds === n
-                    ? 'bg-[var(--arena-periwinkle)] text-[#0e1420]'
+                    ? 'bg-[var(--arena-periwinkle)] text-[var(--arena-bg-0)]'
                     : 'text-[var(--arena-fg-muted)] hover:text-[var(--arena-fg)]'}"
                 >
                   {n}
@@ -806,7 +806,7 @@
                     }}
                     class="rounded px-2 py-1 text-[11px] font-medium transition-colors
                       {effortOverride === level
-                      ? 'bg-[var(--arena-periwinkle)] text-[#0e1420]'
+                      ? 'bg-[var(--arena-periwinkle)] text-[var(--arena-bg-0)]'
                       : 'text-[var(--arena-fg-muted)] hover:text-[var(--arena-fg)]'}"
                   >
                     {effortLabel(level)}
@@ -826,7 +826,7 @@
         <p class="text-[11px] text-[var(--arena-fg-subtle)]" title={estimateError ?? undefined}>
           {footerEstimate}
           {#if exceedsCostLimit && estimate}
-            <span class="text-[var(--arena-warning,#f0c040)]">
+            <span class="text-[var(--arena-warn)]">
               · over ${estimate.cost_limit_usd.toFixed(0)} limit
             </span>
           {/if}
@@ -834,7 +834,7 @@
         <div class="flex shrink-0 items-center gap-2">
           {#if exceedsCostLimit && estimate}
             <label
-              class="flex max-w-[220px] cursor-pointer items-start gap-2 rounded-md border border-[var(--arena-warning,#f0c040)]/40 bg-[rgba(240,192,64,0.08)] px-2.5 py-1.5"
+              class="flex max-w-[220px] cursor-pointer items-start gap-2 rounded-md border border-[var(--arena-warn)]/40 bg-[color-mix(in_srgb,var(--arena-warn)_8%,transparent)] px-2.5 py-1.5"
             >
               <input
                 type="checkbox"
@@ -854,7 +854,7 @@
             type="button"
             disabled={!canStart || estimateLoading}
             onclick={handleStart}
-            class="inline-flex h-9 items-center rounded-md bg-[var(--arena-periwinkle)] px-4 text-[12px] font-semibold text-white disabled:opacity-40"
+            class="inline-flex h-9 items-center rounded-md bg-[var(--arena-periwinkle)] px-4 text-[12px] font-semibold text-[var(--arena-bg-0)] disabled:opacity-40"
           >
             {arena.loading
               ? "Starting…"

@@ -312,8 +312,18 @@ export function cssVarsFor(t: AppTheme): Record<string, string> {
     "--color-accent": t.orange,
     "--color-accent-soft": alpha(t.orange, 0.12),
     "--color-accent-border": alpha(t.orange, 0.3),
+    "--color-accent-hover": mix(t.orange, t.light ? "#000000" : "#ffffff", 0.12),
+    "--color-on-accent": "#0a0a0a",
     "--color-periwinkle": t.purple,
     "--color-periwinkle-soft": alpha(t.purple, 0.14),
+
+    // Accent ladder (semantic accents shared with the TUI palette).
+    "--color-action": t.blue,
+    "--color-info": t.cyan,
+    "--color-success": t.green,
+    "--color-warning": t.yellow,
+    "--color-error": t.red,
+    "--color-emphasis": t.orange,
 
     "--color-add-bg": t.addBg,
     "--color-add-fg": t.addText,

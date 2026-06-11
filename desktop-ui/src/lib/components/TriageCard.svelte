@@ -107,7 +107,7 @@
     >
       <SectionLabel>Triage</SectionLabel>
       <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border
-        {triage.fresh ? 'text-cyan-400 border-cyan-400/30 bg-cyan-400/10' : 'text-amber-400 border-amber-400/30 bg-amber-400/10'}">
+        {triage.fresh ? 'text-info border-info/30 bg-info/10' : 'text-warning border-warning/30 bg-warning/10'}">
         {triage.fresh ? verdictLabel : "stale"}
       </span>
     </button>
@@ -132,7 +132,7 @@
         {/if}
       </div>
 
-      <div class="rounded-md border border-cyan-400/20 bg-cyan-400/5 px-3 py-2.5 space-y-1.5">
+      <div class="rounded-md border border-info/20 bg-info/5 px-3 py-2.5 space-y-1.5">
         <SectionLabel size="sm">Verdict</SectionLabel>
         <p class="text-fg-1 font-medium">{verdictSummary}</p>
         {#if triage.verdict_primary === "expert" && triage.experts.length > 0}

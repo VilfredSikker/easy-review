@@ -128,7 +128,7 @@
 >
   <span
     class="w-3.5 h-3.5 rounded-[3px] flex items-center justify-center border
-      {reviewed ? 'bg-periwinkle border-periwinkle text-white' : 'border-ink-500 text-transparent'}"
+      {reviewed ? 'bg-periwinkle border-periwinkle text-on-accent' : 'border-ink-500 text-transparent'}"
   >
     <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
       <polyline points="20 6 9 17 4 12" />
