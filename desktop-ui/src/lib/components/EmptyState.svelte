@@ -87,7 +87,7 @@
     data-tauri-drag-region
     onmousedown={startWindowDrag}
   >
-    <div class="w-5 h-5 rounded bg-accent flex items-center justify-center text-black text-[10px] font-bold">er</div>
+    <div class="w-5 h-5 rounded bg-accent flex items-center justify-center text-on-accent text-[10px] font-bold">er</div>
     <span class="text-sm">Easy Review</span>
     {#if hasActiveReview}
       <button
@@ -133,7 +133,7 @@
     <main class="flex-1 flex items-center justify-center p-8 overflow-y-auto">
       <div class="max-w-2xl w-full">
         <div class="mb-10">
-          <div class="w-12 h-12 rounded-xl bg-accent flex items-center justify-center text-black text-xl font-bold mb-5">er</div>
+          <div class="w-12 h-12 rounded-xl bg-accent flex items-center justify-center text-on-accent text-xl font-bold mb-5">er</div>
           <h1 class="text-3xl font-semibold tracking-tight mb-2">Review code, then your app.</h1>
           <p class="text-fg-3 text-lg">Diff review and live UI annotation in one workspace. Local-first.</p>
         </div>
@@ -142,7 +142,7 @@
           <button onclick={openWorktree} class="group text-left p-5 rounded-xl border border-border hover:border-accent hover:bg-card transition">
             <div class="flex items-center gap-3 mb-2">
               <div class="w-9 h-9 rounded-lg bg-hover border border-border flex items-center justify-center group-hover:border-accent">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#cccccc" stroke-width="2"><path d="M3 7l9-5 9 5v10l-9 5-9-5V7z"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-fg-2"><path d="M3 7l9-5 9 5v10l-9 5-9-5V7z"/></svg>
               </div>
               <div class="font-medium">Open a local repo</div>
             </div>
@@ -168,7 +168,7 @@
 
         <!-- Paste field -->
         <div class="rounded-xl border border-border bg-surface p-3 flex items-center gap-3 mb-8 min-w-0">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5e5e5e" stroke-width="2" class="shrink-0"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/></svg>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-muted"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/></svg>
           <input
             bind:this={prUrlInput}
             bind:value={prUrl}
@@ -183,7 +183,7 @@
             type="button"
             onclick={openPrUrl}
             disabled={!canSubmitPrUrl}
-            class="shrink-0 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-black text-xs font-medium"
+            class="shrink-0 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-on-accent text-xs font-medium"
           >
             Review
           </button>
@@ -194,7 +194,7 @@
           <div class="rounded-xl border border-border bg-surface p-4 mb-8">
             <div class="flex items-center gap-3 mb-3">
               <div class="w-9 h-9 rounded-lg bg-hover border border-border flex items-center justify-center">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#cccccc" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6"/><path d="M13 6h3a2 2 0 0 1 2 2v3"/><path d="m15 9 3 2 3-2"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-fg-2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6"/><path d="M13 6h3a2 2 0 0 1 2 2v3"/><path d="m15 9 3 2 3-2"/></svg>
               </div>
               <div>
                 <div class="font-medium">Open a specific branch</div>
@@ -219,7 +219,7 @@
               <button
                 onclick={openProjectBranch}
                 disabled={!branchName.trim()}
-                class="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-black text-xs font-medium"
+                class="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-on-accent text-xs font-medium"
               >Open</button>
             </div>
           </div>

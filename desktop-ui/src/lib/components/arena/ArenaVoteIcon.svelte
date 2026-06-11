@@ -12,19 +12,19 @@
 
   const tone = $derived(
     vote === "keep"
-      ? "text-[var(--arena-ok,#4ec9a4)]"
+      ? "text-[var(--arena-ok)]"
       : vote === "drop"
         ? "text-[var(--arena-fg-faint)]"
         : vote === "escalate"
-          ? "text-[var(--arena-err,#ff6b6b)]"
+          ? "text-[var(--arena-err)]"
           : vote === "merge"
-            ? "text-[var(--arena-periwinkle,#7f87ff)]"
+            ? "text-[var(--arena-periwinkle)]"
             : vote === "lower"
-              ? "text-[var(--arena-warn,#ffc457)]"
+              ? "text-[var(--arena-warn)]"
               : vote === "flag"
-                ? "text-[var(--arena-warn,#ffc457)]"
+                ? "text-[var(--arena-warn)]"
                 : vote === "propose"
-                  ? "text-[var(--arena-orange,#ff7a2b)]"
+                  ? "text-[var(--arena-orange)]"
                   : "text-[var(--arena-fg-muted)]",
   );
 </script>

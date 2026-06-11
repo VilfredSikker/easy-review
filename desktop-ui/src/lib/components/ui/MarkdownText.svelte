@@ -150,7 +150,7 @@
     font-weight: 600;
   }
   .markdown-text :global(ul), .markdown-text :global(ol) { margin: 0.3rem 0 0.45rem 1.1rem; }
-  .markdown-text :global(blockquote) { margin: 0.3rem 0; padding-left: 0.7rem; border-left: 2px solid rgba(148,163,184,.45); }
+  .markdown-text :global(blockquote) { margin: 0.3rem 0; padding-left: 0.7rem; border-left: 2px solid color-mix(in srgb, var(--color-fg-3) 45%, transparent); }
   .markdown-text :global(code) {
     font-family: "JetBrains Mono", monospace;
     font-size: .9em;
@@ -161,7 +161,7 @@
   .markdown-text :global(pre) {
     margin: 0.4rem 0;
     padding: 0.55rem;
-    border: 1px solid rgba(148,163,184,.25);
+    border: 1px solid color-mix(in srgb, var(--color-fg-3) 25%, transparent);
     border-radius: 6px;
     overflow-x: auto;
     max-width: 100%;

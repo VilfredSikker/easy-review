@@ -71,7 +71,7 @@
   onClose={onClose}
   onKeydown={handleKey}
   focusSelector="textarea"
-  backdropClass="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+  backdropClass="fixed inset-0 z-50 flex items-center justify-center bg-bg/60 p-6"
   panelClass="fixed left-1/2 top-1/2 z-[51] w-full max-w-xl -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface shadow-xl outline-none"
 >
       <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">

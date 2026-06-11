@@ -84,12 +84,12 @@ export function coerceAgentFilter(
 
 export function agentPillStyle(agentLabel: string): string {
   if (agentLabel === "Professor") {
-    return "background: #f9731626; color: #fb923c; border-color: #f9731640";
+    return "background: color-mix(in srgb, var(--color-emphasis) 15%, transparent); color: var(--color-emphasis); border-color: color-mix(in srgb, var(--color-emphasis) 25%, transparent)";
   }
   if (agentLabel === "General") {
-    return "background: #94a3b826; color: #94a3b8; border-color: #94a3b840";
+    return "background: color-mix(in srgb, var(--color-fg-3) 15%, transparent); color: var(--color-fg-3); border-color: color-mix(in srgb, var(--color-fg-3) 25%, transparent)";
   }
-  return "background: #38bdf826; color: #38bdf8; border-color: #38bdf840";
+  return "background: color-mix(in srgb, var(--color-info) 15%, transparent); color: var(--color-info); border-color: color-mix(in srgb, var(--color-info) 25%, transparent)";
 }
 
 export function findingAgentLabel(finding: FlatFinding): string {

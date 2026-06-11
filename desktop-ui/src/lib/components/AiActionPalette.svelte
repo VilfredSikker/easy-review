@@ -435,7 +435,7 @@
               onclick={() => setEffort(level)}
               class="rounded px-2 py-1 text-[11px] font-medium transition-colors
                 {activeEffort === level
-                ? 'bg-accent text-black'
+                ? 'bg-accent text-on-accent'
                 : 'bg-ink-700 text-ink-200 hover:bg-ink-650'}"
             >
               {effortLabel(level)}

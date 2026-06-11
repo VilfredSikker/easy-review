@@ -267,7 +267,7 @@
   }
   .export-preview :global(.export-preview-markdown code) {
     color: var(--color-add-fg);
-    background: rgba(34, 197, 94, 0.08);
+    background: color-mix(in srgb, var(--color-add-fg) 8%, transparent);
     padding: 0.05rem 0.25rem;
     border-radius: 3px;
   }

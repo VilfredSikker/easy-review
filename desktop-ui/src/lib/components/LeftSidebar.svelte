@@ -205,7 +205,7 @@
   }
 
   function prIconColor(pr: PrInfo): string {
-    if (pr.state === "MERGED") return "text-purple-400";
+    if (pr.state === "MERGED") return "text-periwinkle";
     if (pr.state === "CLOSED") return "text-del-fg";
     if (pr.review_decision === "CHANGES_REQUESTED") return "text-del-fg";
     if (pr.review_decision === "APPROVED") return "text-add-fg";
@@ -233,12 +233,12 @@
       case "comment":
         return { color: "text-comment", path: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" };
       case "mention":
-        return { color: "text-amber-300", path: "M16 8a6 6 0 0 1-12 0 6 6 0 0 1 12 0zM16 8c0 3.3 1.7 6 4 6M20 8v4M20 8a8 8 0 1 0-8 8" };
+        return { color: "text-warning", path: "M16 8a6 6 0 0 1-12 0 6 6 0 0 1 12 0zM16 8c0 3.3 1.7 6 4 6M20 8v4M20 8a8 8 0 1 0-8 8" };
     }
     // Fall back to severity
     switch (item.severity) {
       case "error":   return { color: "text-del-fg",    path: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM15 9l-6 6M9 9l6 6" };
-      case "warning": return { color: "text-amber-300", path: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" };
+      case "warning": return { color: "text-warning", path: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" };
       default:        return { color: "text-muted",     path: "M18 8h1a4 4 0 0 1 0 8h-1M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8zM6 1v3M10 1v3M14 1v3" };
     }
   }
@@ -634,7 +634,7 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
     </button>
     <div class="mt-auto">
-      <button title="Settings" aria-label="Settings" onclick={() => app.setMainView("settings")} class="w-7 h-7 rounded bg-accent flex items-center justify-center text-black text-[10px] font-bold">er</button>
+      <button title="Settings" aria-label="Settings" onclick={() => app.setMainView("settings")} class="w-7 h-7 rounded bg-accent flex items-center justify-center text-on-accent text-[10px] font-bold">er</button>
     </div>
   </aside>
 {:else}
@@ -882,11 +882,11 @@
       open={true}
       ariaLabel={selectedInboxMessage.title}
       onClose={closeInboxMessageModal}
-      backdropClass="fixed inset-0 z-[250] bg-black/60"
+      backdropClass="fixed inset-0 z-[250] bg-bg/60"
       panelClass="fixed left-1/2 top-1/2 z-[251] w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface shadow-xl outline-none"
     >
       <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
-        <span class={selectedInboxMessage.severity === "error" ? "text-del-fg" : selectedInboxMessage.severity === "warning" ? "text-amber-300" : "text-muted"}>●</span>
+        <span class={selectedInboxMessage.severity === "error" ? "text-del-fg" : selectedInboxMessage.severity === "warning" ? "text-warning" : "text-muted"}>●</span>
         <div class="text-sm text-fg-1 truncate">{selectedInboxMessage.title}</div>
         <button class="ml-auto text-muted hover:text-fg px-2" onclick={closeInboxMessageModal}>×</button>
       </div>
@@ -896,7 +896,7 @@
       <div class="px-4 py-3 border-t border-hairline flex items-center justify-end gap-2">
         <button class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
         <button
-          class="px-3 py-1.5 rounded bg-accent text-black text-sm hover:opacity-90"
+          class="px-3 py-1.5 rounded bg-accent text-on-accent text-sm hover:opacity-90"
           onclick={() => {
             if (!selectedInboxMessage) return;
             app.cmd("open_inbox_item", { id: selectedInboxMessage.id });
@@ -1085,7 +1085,7 @@
             <div class="ml-4 pl-3 border-l border-hairline space-y-0.5">
               {#if project.pr_cache_stale}
                 <div class="flex items-center gap-1.5 px-2 py-1">
-                  <span class="text-[9px] uppercase tracking-wider text-amber-400">Stale</span>
+                  <span class="text-[9px] uppercase tracking-wider text-warning">Stale</span>
                   {#if project.pr_cache_age_ms != null}
                     <span class="text-[9px] text-muted">{formatCacheAge(project.pr_cache_age_ms)} old</span>
                   {/if}
@@ -1114,9 +1114,9 @@
                       class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left pr-6 {(isActiveView || branchPending) ? 'bg-hover text-fg font-medium' : 'text-fg-3 hover:bg-hover'}"
                     >
                       {#if isActiveView}
-                        <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-purple-400' : 'bg-accent'} shrink-0"></span>
+                        <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-periwinkle' : 'bg-accent'} shrink-0"></span>
                       {:else}
-                        <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-purple-400' : 'bg-ink-500'} shrink-0"></span>
+                        <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-periwinkle' : 'bg-ink-500'} shrink-0"></span>
                       {/if}
                       <div class="flex flex-col min-w-0 flex-1">
                         <span class="truncate">{br.name}</span>
@@ -1139,7 +1139,7 @@
                           disabled={branchTriaging}
                           title="Run triage on this branch"
                           aria-label="Run triage on branch {br.name}"
-                          class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-cyan-400 hover:bg-ink-600 disabled:opacity-50"
+                          class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-info hover:bg-ink-600 disabled:opacity-50"
                         >
                           {#if branchTriaging}
                             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="animate-spin"><path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 7.8 4.5"/><polyline points="21 3 21 8 16 8"/></svg>
@@ -1202,7 +1202,7 @@
                         disabled={prTriaging}
                         title="Run triage on this PR"
                         aria-label="Run triage on PR #{pr.number}"
-                        class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-cyan-400 hover:bg-ink-600 disabled:opacity-50"
+                        class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-info hover:bg-ink-600 disabled:opacity-50"
                       >
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
                       </button>
@@ -1309,7 +1309,7 @@
     onclick={() => app.setMainView("settings")}
     class="border-t border-hairline p-3 flex items-center gap-2 text-[12px] text-fg-3 shrink-0 hover:bg-hover text-left"
   >
-    <div class="w-6 h-6 rounded-md bg-accent flex items-center justify-center text-black text-xs font-bold">er</div>
+    <div class="w-6 h-6 rounded-md bg-accent flex items-center justify-center text-on-accent text-xs font-bold">er</div>
     <span>Settings</span>
   </button>
 </aside>

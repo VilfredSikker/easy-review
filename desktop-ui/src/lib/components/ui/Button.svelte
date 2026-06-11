@@ -29,7 +29,7 @@
 
   const variantClass = $derived(
     variant === "primary"
-      ? "bg-accent text-black hover:bg-[#ff7d54]"
+      ? "bg-accent text-on-accent hover:bg-accent-hover"
       : variant === "ghost"
         ? "text-fg-3 hover:bg-hover"
         : "border border-border text-fg-2 hover:bg-hover"

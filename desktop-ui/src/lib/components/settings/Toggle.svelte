@@ -32,7 +32,7 @@
   >
     <span
       class="absolute top-0.5 left-0.5 w-4 h-4 rounded-full shadow transition-all duration-150 {checked
-        ? 'translate-x-4 bg-white'
+        ? 'translate-x-4 bg-fg'
         : 'bg-ink-200 group-hover:bg-ink-100'}"
     ></span>
   </button>

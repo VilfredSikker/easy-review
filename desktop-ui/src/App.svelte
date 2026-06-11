@@ -265,7 +265,7 @@
       data-tauri-drag-region
       onmousedown={startWindowDrag}
     >
-      <div class="w-5 h-5 rounded bg-accent flex items-center justify-center text-black text-[10px] font-bold">er</div>
+      <div class="w-5 h-5 rounded bg-accent flex items-center justify-center text-on-accent text-[10px] font-bold">er</div>
       <span class="text-sm">Easy Review</span>
     </div>
     <main class="flex-1 flex items-center justify-center p-8">
@@ -418,7 +418,7 @@
   />
   <Toast toasts={app.toasts} />
   {#if app.error}
-    <div class="fixed bottom-12 left-1/2 -translate-x-1/2 bg-[#3a1a1a] border border-[#f4a3a3] text-[#f4a3a3] text-xs font-mono px-4 py-2 rounded shadow-lg z-50 max-w-[80vw] truncate">
+    <div class="fixed bottom-12 left-1/2 -translate-x-1/2 bg-[color-mix(in_srgb,var(--color-error)_18%,var(--color-bg))] border border-error/70 text-error text-xs font-mono px-4 py-2 rounded shadow-lg z-50 max-w-[80vw] truncate">
       ⚠ {app.error}
     </div>
   {/if}

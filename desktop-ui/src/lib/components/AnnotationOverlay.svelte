@@ -290,13 +290,13 @@
       style:top="{hr.top}px"
       style:width="{hr.width}px"
       style:height="{hr.height}px"
-      style:border="2px solid rgb(99 179 237 / 0.9)"
-      style:background="rgb(99 179 237 / 0.08)"
-      style:outline="1px solid rgb(255 255 255 / 0.15)"
+      style:border="2px solid color-mix(in srgb, var(--color-action) 90%, transparent)"
+      style:background="color-mix(in srgb, var(--color-action) 8%, transparent)"
+      style:outline="1px solid color-mix(in srgb, var(--color-fg) 15%, transparent)"
     ></div>
     {#if hoveredEl?.selector}
       <div
-        class="absolute pointer-events-none bg-black/85 text-[10px] mono text-sky-300 px-1.5 py-0.5 rounded whitespace-nowrap max-w-xs truncate"
+        class="absolute pointer-events-none bg-bg/85 text-[10px] mono text-info px-1.5 py-0.5 rounded whitespace-nowrap max-w-xs truncate"
         style:left="{clampedLeft(hr.left, 260)}px"
         style:top="{clampedTop(hr.top - 22, 22)}px"
       >
@@ -312,9 +312,9 @@
       style:top="{hoveredBbox.top}px"
       style:width="{hoveredBbox.width}px"
       style:height="{hoveredBbox.height}px"
-      style:border="2px solid rgb(249 115 22 / 0.9)"
-      style:background="rgb(249 115 22 / 0.12)"
-      style:box-shadow="0 0 0 1px rgb(249 115 22 / 0.3)"
+      style:border="2px solid color-mix(in srgb, var(--color-accent) 90%, transparent)"
+      style:background="color-mix(in srgb, var(--color-accent) 12%, transparent)"
+      style:box-shadow="0 0 0 1px color-mix(in srgb, var(--color-accent) 30%, transparent)"
     ></div>
   {/if}
 
@@ -328,10 +328,10 @@
         style:top="{r.top}px"
         style:width="{r.width}px"
         style:height="{r.height}px"
-        style:border="1.5px dashed rgb(249 115 22 / 0.6)"
-        style:background="rgb(249 115 22 / 0.05)"
+        style:border="1.5px dashed color-mix(in srgb, var(--color-accent) 60%, transparent)"
+        style:background="color-mix(in srgb, var(--color-accent) 5%, transparent)"
       >
-        <span class="absolute top-0 left-0 text-[9px] font-bold text-orange-400 bg-black/60 px-1 leading-4 rounded-br">
+        <span class="absolute top-0 left-0 text-[9px] font-bold text-accent bg-bg/60 px-1 leading-4 rounded-br">
           {i + 1}
         </span>
       </div>
@@ -351,8 +351,8 @@
       <button
         type="button"
         class="rounded-full text-xs font-bold w-6 h-6 flex items-center justify-center shadow-md transition hover:scale-110 {a.stale
-          ? 'bg-transparent text-amber-300 border-2 border-dashed border-amber-400 ring-1 ring-amber-200/40'
-          : 'bg-orange-500 text-white ring-2 ring-white/80'}"
+          ? 'bg-transparent text-warning border-2 border-dashed border-warning ring-1 ring-warning/40'
+          : 'bg-accent text-on-accent ring-2 ring-fg/80'}"
         style:opacity={browser.highlightPinId === a.id ? 1 : 0.9}
         title={a.stale ? `stale — ${a.text}` : a.text}
         onmouseenter={() => { hoveredPinId = a.id; }}
@@ -366,7 +366,7 @@
       </button>
       {#if a.stale}
         <span
-          class="absolute -top-2 left-full ml-1 text-[9px] uppercase tracking-wide text-amber-300 bg-black/70 rounded px-1 opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap"
+          class="absolute -top-2 left-full ml-1 text-[9px] uppercase tracking-wide text-warning bg-bg/70 rounded px-1 opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap"
         >
           stale
         </span>
@@ -375,12 +375,12 @@
         <img
           src={pinThumbs[a.screenshot_path]}
           alt=""
-          class="absolute top-6 left-1/2 -translate-x-1/2 max-h-32 w-auto rounded border border-white/30 shadow-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity"
+          class="absolute top-6 left-1/2 -translate-x-1/2 max-h-32 w-auto rounded border border-fg/30 shadow-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity"
         />
       {/if}
       <button
         type="button"
-        class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/80 text-white text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-600"
+        class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-bg/80 text-fg text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-error"
         title="Delete annotation"
         aria-label="Delete annotation"
         onclick={(e) => deletePin(e, a)}
@@ -390,11 +390,11 @@
 
       {#if browser.showAnnotationTooltips && expandedPinId !== a.id}
         <div
-          class="absolute left-7 -top-1 w-64 max-w-[min(16rem,calc(100vw-2rem))] bg-black/85 text-white border border-white/20 rounded-md shadow-lg px-2 py-1.5 pointer-events-none z-10"
+          class="absolute left-7 -top-1 w-64 max-w-[min(16rem,calc(100vw-2rem))] bg-bg/85 text-fg border border-fg/20 rounded-md shadow-lg px-2 py-1.5 pointer-events-none z-10"
           style:left="{clampedLeft(c.left + 14, 256) - c.left}px"
           style:top="{clampedTop(c.top - 4, 84) - c.top}px"
         >
-          <div class="text-[10px] text-orange-200 mono truncate">
+          <div class="text-[10px] text-accent mono truncate">
             {a.element_context ?? a.selector ?? "Approximate location"}
           </div>
           <div class="mt-0.5 text-xs leading-snug line-clamp-3 whitespace-pre-wrap" title={annotationTooltipText(a)}>
@@ -422,7 +422,7 @@
             <span class="text-[10px] text-muted">{a.stale ? "⚠ stale" : a.url}</span>
             <button
               type="button"
-              class="text-[10px] text-muted hover:text-red-400"
+              class="text-[10px] text-muted hover:text-error"
               onclick={(e) => { expandedPinId = null; deletePin(e, a); }}
             >Delete</button>
           </div>

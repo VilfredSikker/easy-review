@@ -11,7 +11,7 @@ interface CacheEntry {
 }
 
 /** Bump when highlight stitch / span-mapping logic changes (invalidates stale entries). */
-const HIGHLIGHT_CACHE_VERSION = "v3";
+const HIGHLIGHT_CACHE_VERSION = "v4";
 
 /** LRU cache for file highlight results, keyed by "filePath::cacheKey::syntaxTheme". */
 class HighlightCache {

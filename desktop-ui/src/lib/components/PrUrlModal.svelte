@@ -46,7 +46,7 @@
   onKeydown={handleKeydown}
   focusSelector="input"
   dataModal="pr-url"
-  backdropClass="fixed inset-0 z-[9998] bg-black/55 pointer-events-auto"
+  backdropClass="fixed inset-0 z-[9998] bg-bg/55 pointer-events-auto"
   panelClass="fixed left-1/2 -translate-x-1/2 top-[16vh] z-[9999] w-[620px] max-w-[calc(100vw-2rem)] rounded-xl bg-card border border-border shadow-2xl overflow-hidden outline-none pointer-events-auto"
 >
     <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
@@ -76,7 +76,7 @@
           type="button"
           onclick={() => void submit()}
           disabled={prUrlModal.submitting}
-          class="shrink-0 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-black text-xs font-medium pointer-events-auto {canSubmit ? '' : 'opacity-60'}"
+          class="shrink-0 px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-on-accent text-xs font-medium pointer-events-auto {canSubmit ? '' : 'opacity-60'}"
         >
           {prUrlModal.submitting ? "Opening…" : "Review"}
         </button>

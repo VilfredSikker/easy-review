@@ -72,7 +72,7 @@
 
 {#if open}
   <div
-    class="fixed inset-0 z-[100] flex flex-col bg-[rgba(8,12,20,0.78)] backdrop-blur-[6px]"
+    class="fixed inset-0 z-[100] flex flex-col bg-[color-mix(in_srgb,var(--arena-bg-app)_78%,transparent)] backdrop-blur-[6px]"
     role="dialog"
     aria-modal="true"
     aria-label="AI Review Arena"
@@ -137,7 +137,7 @@
         {#if onNewRun}
           <button
             type="button"
-            class="inline-flex h-[30px] items-center gap-1.5 rounded-md bg-[var(--arena-periwinkle)] px-3 text-[11px] font-semibold text-white"
+            class="inline-flex h-[30px] items-center gap-1.5 rounded-md bg-[var(--arena-periwinkle)] px-3 text-[11px] font-semibold text-[var(--arena-bg-0)]"
             onclick={onNewRun}
           >
             <ArenaIcons name="plus" size={11} />
@@ -199,7 +199,7 @@
           </p>
           {#if showEmptyBanner}
           <div
-            class="mx-3 mt-3 shrink-0 rounded-lg border border-[var(--arena-warning,#f0c040)]/40 bg-[rgba(240,192,64,0.08)] px-4 py-3 text-[12px] text-[var(--arena-fg-muted)]"
+            class="mx-3 mt-3 shrink-0 rounded-lg border border-[var(--arena-warn)]/40 bg-[color-mix(in_srgb,var(--arena-warn)_8%,transparent)] px-4 py-3 text-[12px] text-[var(--arena-fg-muted)]"
           >
             {#if emptyDiff}
               <p class="font-medium text-[var(--arena-fg)]">No diff was captured for this run</p>
@@ -209,7 +209,7 @@
                 Start a new run from <strong>Unstaged</strong>, <strong>Staged</strong>, or selected files.
               </p>
             {:else if runFailed}
-              <p class="font-medium text-[var(--arena-err,#ff6b6b)]">Arena run failed</p>
+              <p class="font-medium text-[var(--arena-err)]">Arena run failed</p>
               {#if failedReviewers.length > 0}
                 <ul class="mt-2 space-y-1 text-[11px]">
                   {#each failedReviewers as line}
@@ -241,12 +241,12 @@
       {/if}
       {#if isSingleReview && showEmptyBanner}
         <div
-          class="mx-3 mt-3 shrink-0 rounded-lg border border-[var(--arena-warning,#f0c040)]/40 bg-[rgba(240,192,64,0.08)] px-4 py-3 text-[12px] text-[var(--arena-fg-muted)] lg:col-span-2"
+          class="mx-3 mt-3 shrink-0 rounded-lg border border-[var(--arena-warn)]/40 bg-[color-mix(in_srgb,var(--arena-warn)_8%,transparent)] px-4 py-3 text-[12px] text-[var(--arena-fg-muted)] lg:col-span-2"
         >
           {#if emptyDiff}
             <p class="font-medium text-[var(--arena-fg)]">No diff was captured for this run</p>
           {:else if runFailed}
-            <p class="font-medium text-[var(--arena-err,#ff6b6b)]">Review run failed</p>
+            <p class="font-medium text-[var(--arena-err)]">Review run failed</p>
           {:else}
             <p class="font-medium text-[var(--arena-fg)]">No issues reported</p>
           {/if}

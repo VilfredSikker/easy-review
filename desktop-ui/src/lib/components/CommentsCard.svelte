@@ -242,7 +242,7 @@
           <button
             onclick={submitReview}
             disabled={submitting}
-            class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium text-black disabled:opacity-50 disabled:cursor-not-allowed {decision === 'approve' ? 'bg-add-fg hover:opacity-90' : decision === 'changes' ? 'bg-del-fg hover:opacity-90' : 'bg-accent hover:opacity-90'}"
+            class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium text-on-accent disabled:opacity-50 disabled:cursor-not-allowed {decision === 'approve' ? 'bg-add-fg hover:opacity-90' : decision === 'changes' ? 'bg-del-fg hover:opacity-90' : 'bg-accent hover:opacity-90'}"
           >
             {#if submitting}Submitting…{:else}{decision === "approve" ? "Submit approval" : decision === "changes" ? "Submit changes request" : "Submit review"}{/if}
           </button>
@@ -258,7 +258,7 @@
         </div>
         <div class="flex items-center gap-2">
           <button onclick={() => pushMode = null} disabled={submitting} class="px-3 py-1.5 rounded-md text-xs text-fg-2 hover:bg-hover disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
-          <button onclick={submitIndividual} disabled={submitting} class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:opacity-90 text-black disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? "Pushing…" : "Push"}</button>
+          <button onclick={submitIndividual} disabled={submitting} class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:opacity-90 text-on-accent disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? "Pushing…" : "Push"}</button>
         </div>
       </div>
     {/if}

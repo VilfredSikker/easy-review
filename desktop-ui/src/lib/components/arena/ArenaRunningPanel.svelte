@@ -218,7 +218,7 @@
           onRestore();
         }
       }}
-      class="fixed bottom-20 right-6 z-[260] flex max-w-[320px] min-w-[240px] cursor-pointer items-center gap-2.5 rounded-full border border-[var(--arena-border)] bg-[var(--arena-bg-1)] px-3 py-2 shadow-[0_10px_28px_rgba(0,0,0,0.45),0_0_0_1px_rgba(127,135,255,0.18)] hover:border-[var(--arena-periwinkle)]"
+      class="fixed bottom-20 right-6 z-[260] flex max-w-[320px] min-w-[240px] cursor-pointer items-center gap-2.5 rounded-full border border-[var(--arena-border)] bg-[var(--arena-bg-1)] px-3 py-2 shadow-[0_10px_28px_rgba(0,0,0,0.45),0_0_0_1px_color-mix(in_srgb,var(--arena-periwinkle)_18%,transparent)] hover:border-[var(--arena-periwinkle)]"
       title="Open progress"
       aria-label="Open arena progress"
     >
@@ -238,10 +238,10 @@
           />
         </svg>
         <span
-          class="flex h-5 w-5 items-center justify-center rounded-md text-[#0e1420]"
+          class="flex h-5 w-5 items-center justify-center rounded-md text-[var(--arena-bg-0)]"
           style="background: {reviewers.find((r) => reviewerState(r) === 'thinking')?.color ?? 'var(--arena-periwinkle)'}"
         >
-          <ArenaIcons name="trophy" size={10} class="text-[#0e1420]" />
+          <ArenaIcons name="trophy" size={10} class="text-[var(--arena-bg-0)]" />
         </span>
       </span>
       <span class="min-w-0 flex-1 text-left">
@@ -264,22 +264,22 @@
     </div>
   {:else}
     <div
-      class="fixed inset-0 z-[260] flex items-center justify-center bg-[rgba(8,12,20,0.82)] backdrop-blur-[6px]"
+      class="fixed inset-0 z-[260] flex items-center justify-center bg-[color-mix(in_srgb,var(--arena-bg-app)_82%,transparent)] backdrop-blur-[6px]"
       role="dialog"
       aria-modal="true"
       aria-label="Review in progress"
     >
       <div
-        class="flex w-full max-w-[520px] flex-col gap-[18px] rounded-[14px] border border-[var(--arena-border)] bg-[var(--arena-bg-1)] p-6 shadow-[0_24px_64px_rgba(0,0,0,0.5),0_0_0_1px_rgba(127,135,255,0.2)]"
+        class="flex w-full max-w-[520px] flex-col gap-[18px] rounded-[14px] border border-[var(--arena-border)] bg-[var(--arena-bg-1)] p-6 shadow-[0_24px_64px_rgba(0,0,0,0.5),0_0_0_1px_color-mix(in_srgb,var(--arena-periwinkle)_20%,transparent)]"
       >
         <div class="flex items-center gap-2.5">
           <span class="relative inline-flex h-9 w-9 shrink-0 items-center justify-center">
             <span
-              class="arena-spin-ring absolute inset-0 rounded-full border-2 border-[rgba(127,135,255,0.2)] border-t-[var(--arena-periwinkle)]"
+              class="arena-spin-ring absolute inset-0 rounded-full border-2 border-[color-mix(in_srgb,var(--arena-periwinkle)_20%,transparent)] border-t-[var(--arena-periwinkle)]"
               aria-hidden="true"
             ></span>
             <span
-              class="relative inline-flex h-7 w-7 items-center justify-center rounded-full bg-[rgba(127,135,255,0.16)]"
+              class="relative inline-flex h-7 w-7 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--arena-periwinkle)_16%,transparent)]"
             >
               <ArenaIcons name="trophy" size={14} class="text-[var(--arena-periwinkle)]" />
             </span>
@@ -305,7 +305,7 @@
               <div
                 class="flex items-center gap-2 rounded-md border px-2.5 py-2
                   {active
-                  ? 'border-[var(--arena-periwinkle)] bg-[rgba(127,135,255,0.1)]'
+                  ? 'border-[var(--arena-periwinkle)] bg-[color-mix(in_srgb,var(--arena-periwinkle)_10%,transparent)]'
                   : 'border-[var(--arena-border)] bg-[var(--arena-bg-0)]'}"
               >
                 <span class="text-[12px]" aria-hidden="true">
@@ -327,11 +327,11 @@
             <div
               class="flex items-center gap-2.5 rounded-md border px-2.5 py-2 transition-colors
                 {state === 'thinking'
-                ? 'border-[var(--arena-periwinkle)] bg-[rgba(127,135,255,0.1)]'
+                ? 'border-[var(--arena-periwinkle)] bg-[color-mix(in_srgb,var(--arena-periwinkle)_10%,transparent)]'
                 : 'border-[var(--arena-border)] bg-[var(--arena-bg-0)]'}"
             >
               <span
-                class="inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[#0e1420]"
+                class="inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[var(--arena-bg-0)]"
                 style="background: {r.color}"
               >
                 <span class="text-[10px] font-bold">◆</span>
@@ -346,9 +346,9 @@
                   Thinking…
                 </span>
               {:else if state === "done"}
-                <span class="text-[12px] text-[var(--arena-ok,#4ec9a4)]">✓</span>
+                <span class="text-[12px] text-[var(--arena-ok)]">✓</span>
               {:else if state === "failed"}
-                <span class="text-[10px] text-[var(--arena-err,#ff6b6b)]">Failed</span>
+                <span class="text-[10px] text-[var(--arena-err)]">Failed</span>
               {:else}
                 <span class="text-[10px] text-[var(--arena-fg-subtle)]">Queued</span>
               {/if}
@@ -366,7 +366,7 @@
                   {i + 1 < runProgress.round
                   ? 'bg-[var(--arena-periwinkle)]'
                   : i + 1 === runProgress.round
-                    ? 'bg-[rgba(127,135,255,0.4)]'
+                    ? 'bg-[color-mix(in_srgb,var(--arena-periwinkle)_40%,transparent)]'
                     : 'bg-[var(--arena-bg-3)]'}"
               ></span>
             {/each}

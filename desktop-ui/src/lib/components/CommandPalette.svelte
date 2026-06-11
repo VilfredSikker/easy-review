@@ -286,11 +286,11 @@
   onKeydown={onModalKeydown}
   closeOnEscape={false}
   focusSelector="input"
-  backdropClass="fixed inset-0 z-[100] bg-black/50"
+  backdropClass="fixed inset-0 z-[100] bg-bg/50"
   panelClass="fixed left-1/2 -translate-x-1/2 top-[12vh] w-[640px] z-[101] rounded-xl bg-card border border-border shadow-2xl overflow-hidden outline-none"
 >
     <div class="flex items-center gap-3 px-4 py-3 border-b border-hairline">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5e5e5e" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-muted"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input
         bind:this={inputEl}
         bind:value={query}
@@ -312,7 +312,7 @@
             class="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors {isActive ? 'bg-hover' : 'hover:bg-hover'}"
           >
             {#if item.file}
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5e5e5e" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-muted"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
               <div class="flex-1 mono text-[13px] text-fg-2 truncate">{basename(item.file.path)}</div>
               {#if item.file.additions > 0}
                 <span class="text-[10px] text-add-fg mono">+{item.file.additions}</span>
@@ -321,7 +321,7 @@
                 <span class="text-[10px] text-del-fg mono">−{item.file.deletions}</span>
               {/if}
             {:else}
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={isActive ? "#ff6a3d" : "#999"} stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class={isActive ? "text-accent" : "text-fg-3"}><circle cx="12" cy="12" r="9"/></svg>
               <div class="flex-1">
                 <div class="text-sm {isActive ? 'text-fg' : 'text-fg-2'}">
                   {#each highlight(item.label, query) as part}{#if part.match}<span class="text-accent font-medium">{part.match}</span>{:else}{part.rest}{/if}{/each}

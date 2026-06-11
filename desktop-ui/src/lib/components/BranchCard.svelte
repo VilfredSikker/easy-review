@@ -408,7 +408,7 @@
             onclick={onOpenPr}
             aria-label="Open PR #{effectivePrNumber} on GitHub"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h9"/></svg>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-fg-3"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h9"/></svg>
             <span class="text-fg-2 text-[12px]">PR #{effectivePrNumber}</span>
             {#if pr?.state}
               <span class="ml-auto text-muted text-[11px]">{pr.state}</span>
@@ -416,7 +416,7 @@
           </button>
         {:else}
           <div class="flex items-center gap-2 px-1.5">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h9"/></svg>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-fg-3"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h9"/></svg>
             <span class="text-fg-2 text-[12px]">PR #{effectivePrNumber}</span>
             {#if pr?.state}
               <span class="ml-auto text-muted text-[11px]">{pr.state}</span>
@@ -426,7 +426,7 @@
       {/if}
       {#if checks_status === "success"}
         <div class="flex items-center gap-2 px-1.5">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7ee2a8" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-success"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
           <span class="text-fg-2 text-[12px]">Checks successful</span>
           {#if github_url}
             <button class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
@@ -436,7 +436,7 @@
         </div>
       {:else if checks_status === "pending"}
         <div class="flex items-center gap-2 px-1.5">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-warning"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
           <span class="text-fg-2 text-[12px]">Checks pending</span>
           {#if github_url}
             <button class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
@@ -446,7 +446,7 @@
         </div>
       {:else if checks_status === "failure"}
         <div class="flex items-center gap-2 px-1.5">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f4a3a3" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-error"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
           <span class="text-fg-2 text-[12px]">Checks failing</span>
           {#if github_url}
             <button class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
@@ -505,21 +505,21 @@
               type="button"
               onclick={() => submitAction("comment")}
               disabled={!canSubmit.comment}
-              class="px-2 py-1 rounded text-[11px] font-medium bg-accent text-black hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-2 py-1 rounded text-[11px] font-medium bg-accent text-on-accent hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               title="Post a PR-wide comment"
             >Comment</button>
             <button
               type="button"
               onclick={() => submitAction("approve")}
               disabled={!canSubmit.approve}
-              class="px-2 py-1 rounded text-[11px] font-medium bg-add-fg text-black hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-2 py-1 rounded text-[11px] font-medium bg-add-fg text-on-accent hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               title={ownPrApprovalBlocked ? "GitHub does not allow approving your own PR" : "Submit an approving review"}
             >Approve</button>
             <button
               type="button"
               onclick={() => submitAction("changes")}
               disabled={!canSubmit.changes}
-              class="px-2 py-1 rounded text-[11px] font-medium bg-del-fg text-black hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-2 py-1 rounded text-[11px] font-medium bg-del-fg text-on-accent hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               title="Submit a Request changes review"
             >Request changes</button>
             <button

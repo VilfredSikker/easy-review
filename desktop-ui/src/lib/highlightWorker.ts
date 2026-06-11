@@ -125,22 +125,31 @@ async function ensureLang(hl: WorkerHighlighter, lang: string): Promise<boolean>
   }
 }
 
-function tokensToSpans(
+/**
+ * Tokenize each line independently with fresh grammar state (mirrors the
+ * TUI's per-line syntect highlighting). The input is stitched diff hunks,
+ * not a contiguous source file: a multi-line construct whose opener lies
+ * outside the diff (e.g. the closing `"""` of a module docstring as hunk
+ * context) would otherwise flip the lexer into string/comment mode and
+ * poison every line after it.
+ */
+function tokenizeLinesStateless(
   hl: WorkerHighlighter,
-  code: string,
+  lines: string[],
   lang: BundledLangId,
   themeName: string,
 ): SpanSnapshot[][] {
-  const { tokens } = hl.codeToTokens(code, {
-    lang,
-    theme: themeName as BundledThemeId,
-  });
-  return tokens.map((line) =>
-    line.map((token) => ({
+  return lines.map((line) => {
+    if (line.length === 0) return [];
+    const { tokens } = hl.codeToTokens(line, {
+      lang,
+      theme: themeName as BundledThemeId,
+    });
+    return (tokens[0] ?? []).map((token) => ({
       text: token.content,
       color: token.color ?? "",
-    })),
-  );
+    }));
+  });
 }
 
 let workChain: Promise<void> = Promise.resolve();
@@ -178,8 +187,7 @@ self.onmessage = (event: MessageEvent<HighlightWorkerRequest>) => {
         return;
       }
 
-      const code = lines.join("\n");
-      const spans = tokensToSpans(hl, code, lang as BundledLangId, resolvedTheme);
+      const spans = tokenizeLinesStateless(hl, lines, lang as BundledLangId, resolvedTheme);
       self.postMessage({ kind: "highlight", id, spans } satisfies HighlightWorkerResponse);
     } catch (err) {
       console.error("[highlightWorker]", err);

@@ -78,8 +78,8 @@
 
   function avatarClass(kind: "you" | "human" | "ai"): string {
     if (kind === "ai") return "bg-ai/20";
-    if (kind === "you") return "bg-accent text-black";
-    return "bg-add-fg text-black";
+    if (kind === "you") return "bg-accent text-on-accent";
+    return "bg-add-fg text-on-accent";
   }
 
   async function deleteThread() {

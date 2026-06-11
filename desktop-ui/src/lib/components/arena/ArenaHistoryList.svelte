@@ -23,8 +23,8 @@
   }
 
   function statusClass(status: RunStatus): string {
-    if (status === "complete") return "text-[var(--arena-ok,#4ec9a4)]";
-    if (status === "failed") return "text-[var(--arena-err,#ff6b6b)]";
+    if (status === "complete") return "text-[var(--arena-ok)]";
+    if (status === "failed") return "text-[var(--arena-err)]";
     if (status === "cancelled") return "text-[var(--arena-fg-subtle)]";
     if (isArenaRunActive(status)) return "text-[var(--arena-periwinkle)]";
     return "text-[var(--arena-fg-muted)]";
@@ -84,7 +84,7 @@
           </button>
           <button
             type="button"
-            class="shrink-0 rounded p-1 text-[var(--arena-fg-faint)] opacity-0 transition-opacity hover:bg-[var(--arena-bg-3)] hover:text-[var(--arena-err,#ff6b6b)] group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+            class="shrink-0 rounded p-1 text-[var(--arena-fg-faint)] opacity-0 transition-opacity hover:bg-[var(--arena-bg-3)] hover:text-[var(--arena-err)] group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
             title={isArenaRunActive(run.status) ? "Cancel the run before deleting" : "Delete run"}
             disabled={isArenaRunActive(run.status)}
             aria-label="Delete run"
