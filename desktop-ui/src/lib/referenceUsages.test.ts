@@ -169,6 +169,21 @@ describe("usagePreview", () => {
     expect(p.suffix.endsWith("…")).toBe(true);
   });
 
+  it("keeps long suffixes under the default budget (popover scrolls horizontally)", () => {
+    // 150 chars past the match — wider than the popover, but well within the
+    // 240-char default budget, so nothing is cut (it scrolls into view).
+    const text = "foo" + "y".repeat(150);
+    expect(usagePreview(text, [0, 3])).toEqual({
+      prefix: "",
+      match: "foo",
+      suffix: "y".repeat(150),
+    });
+    // The default budget still cuts truly pathological lines.
+    const huge = usagePreview("foo" + "y".repeat(1000), [0, 3]);
+    expect(huge.suffix.length).toBe(237);
+    expect(huge.suffix.endsWith("…")).toBe(true);
+  });
+
   it("leaves short lines untouched", () => {
     expect(usagePreview("a foo b", [2, 5])).toEqual({ prefix: "a ", match: "foo", suffix: " b" });
   });
@@ -310,19 +325,47 @@ describe("buildRulerMarks", () => {
 });
 
 describe("clampPopoverPosition", () => {
+  // The usages popover's base size: w-[600px], 320px capped list (+ header).
+  const POPOVER_W = 600;
+  const POPOVER_H = 320;
+
   it("returns the anchor when the box fits", () => {
-    expect(clampPopoverPosition(100, 200, 300, 200, 1280, 800)).toEqual({ left: 100, top: 200 });
+    expect(clampPopoverPosition(100, 200, POPOVER_W, POPOVER_H, 1280, 800)).toEqual({
+      left: 100,
+      top: 200,
+    });
   });
 
   it("clamps against the right and bottom viewport edges", () => {
-    expect(clampPopoverPosition(1200, 750, 300, 200, 1280, 800)).toEqual({
-      left: 1280 - 300 - 8,
-      top: 800 - 200 - 8,
+    expect(clampPopoverPosition(1200, 750, POPOVER_W, POPOVER_H, 1280, 800)).toEqual({
+      left: 1280 - POPOVER_W - 8,
+      top: 800 - POPOVER_H - 8,
+    });
+  });
+
+  it("clamps the 600px-wide popover on a mid-size viewport", () => {
+    // Anchor near the right edge of a 1024px window: the box shifts left to
+    // keep all 600px visible.
+    expect(clampPopoverPosition(900, 100, POPOVER_W, POPOVER_H, 1024, 768)).toEqual({
+      left: 1024 - POPOVER_W - 8,
+      top: 100,
     });
   });
 
   it("never goes above the padding minimum", () => {
-    expect(clampPopoverPosition(-50, -50, 300, 200, 1280, 800)).toEqual({ left: 8, top: 8 });
+    expect(clampPopoverPosition(-50, -50, POPOVER_W, POPOVER_H, 1280, 800)).toEqual({
+      left: 8,
+      top: 8,
+    });
+  });
+
+  it("pins to the left edge when the viewport is narrower than the popover", () => {
+    // 500px viewport < 600px box: left edge wins so the (viewport-capped via
+    // max-w) content stays reachable.
+    expect(clampPopoverPosition(200, 100, POPOVER_W, POPOVER_H, 500, 800)).toEqual({
+      left: 8,
+      top: 100,
+    });
   });
 
   it("prefers the top-left edge when the box cannot fit", () => {

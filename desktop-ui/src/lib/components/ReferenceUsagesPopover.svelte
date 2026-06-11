@@ -1,11 +1,16 @@
 <script lang="ts">
   /**
-   * Cmd+click usages popover (issue #69) — a compact, fixed-position panel
-   * anchored near the clicked token, listing every word-boundary usage of
-   * the highlighted identifier across the rendered diff, grouped by file.
+   * Cmd+click usages popover (issue #69) — a fixed-position panel anchored
+   * near the clicked token, listing every word-boundary usage of the
+   * highlighted identifier across the rendered diff, grouped by file.
    *
-   * - Click a usage (or ArrowUp/Down + Enter) to jump: scroll to the row and
-   *   pulse it with the existing `.flash` animation, then close.
+   * - Click a usage (or ArrowUp/Down + Enter) to jump via `onJump` — the
+   *   exact same shared jump (`jumpToUsage` in FlatDiffView) a ruler-mark
+   *   click uses, so the scroll + `.flash` ring are identical — then close.
+   * - Long one-line content never truncates: the list scrolls vertically
+   *   (capped height) and horizontally (file-path headers and code previews
+   *   are unwrappable single lines; the `min-w-full w-max` inner wrapper
+   *   lets them extend past the popover width and scroll into view).
    * - Each row has a chevron that expands ~2 adjacent context lines inline
    *   under the row (match emphasized). Multiple rows can be expanded;
    *   expansion never affects keyboard navigation — arrows still move
@@ -68,7 +73,7 @@
     clampPopoverPosition(
       (anchor?.x ?? 0) + 10,
       (anchor?.y ?? 0) + 14,
-      popW || 400,
+      popW || 600,
       popH || 320,
       typeof window === "undefined" ? 1280 : window.innerWidth,
       typeof window === "undefined" ? 800 : window.innerHeight,
@@ -87,15 +92,23 @@
   function jump(i: number): void {
     const u = flat[i];
     if (!u) return;
-    onJump(u.rowIdx);
+    // Close FIRST so the popover unmount flushes with the jump's scroll in
+    // one render pass, exactly like a ruler-mark click (which has no popover
+    // to remove). The jump itself is the same shared call both entry points
+    // bind — identical scroll centering and `.flash` ring.
     refHighlight.closePopover();
+    onJump(u.rowIdx);
   }
 
   async function move(delta: number): Promise<void> {
     if (flat.length === 0) return;
     selectedIdx = Math.max(0, Math.min(flat.length - 1, selectedIdx + delta));
     await tick();
-    el?.querySelector(`[data-usage-idx="${selectedIdx}"]`)?.scrollIntoView({ block: "nearest" });
+    // `inline: "nearest"` keeps the user's horizontal scroll position: rows
+    // span the full content width, so an already-visible row never yanks
+    // scrollLeft back while arrowing through the list.
+    el?.querySelector(`[data-usage-idx="${selectedIdx}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
   /** Match emphasis for expanded context lines (popover = identifier mode). */
@@ -160,7 +173,7 @@
   bind:this={el}
   bind:clientWidth={popW}
   bind:clientHeight={popH}
-  class="fixed z-50 w-[400px] max-w-[calc(100vw-16px)] bg-card border border-border rounded-md shadow-2xl overflow-hidden flex flex-col"
+  class="fixed z-50 w-[600px] max-w-[calc(100vw-16px)] bg-card border border-border rounded-md shadow-2xl overflow-hidden flex flex-col"
   style="left:{pos.left}px; top:{pos.top}px"
   data-modal
   role="dialog"
@@ -173,13 +186,18 @@
     </span>
   </div>
 
-  <div class="overflow-y-auto max-h-[320px] py-1">
+  <!-- Both-axes scroll container: vertical for the capped list, horizontal for
+       unwrappable single-line content (file paths, code previews). The inner
+       `min-w-full w-max` wrapper sizes to the widest line so hover/selection
+       backgrounds span the full scrollable width instead of clipping. -->
+  <div class="overflow-auto max-h-[320px] py-1">
+    <div class="min-w-full w-max">
     {#if flat.length === 0}
       <div class="px-3 py-2 text-xs text-muted">No usages in the rendered diff</div>
     {/if}
     {#each flat as u, i (i)}
       {#if i === 0 || flat[i - 1].filePath !== u.filePath}
-        <div class="px-3 pt-1.5 pb-0.5 text-[11px] mono truncate" title={u.filePath}>
+        <div class="px-3 pt-1.5 pb-0.5 text-[11px] mono whitespace-nowrap" title={u.filePath}>
           <span class="text-muted">{fileDir(u.filePath)}</span><span class="text-fg-2">{fileName(u.filePath)}</span>
         </div>
       {/if}
@@ -216,11 +234,11 @@
         </button>
         <button
           type="button"
-          class="flex-1 min-w-0 flex items-baseline gap-2 pr-3 py-0.5 text-left mono text-xs"
+          class="flex-1 flex items-baseline gap-2 pr-3 py-0.5 text-left mono text-xs"
           onclick={() => jump(i)}
         >
           <span class="w-9 shrink-0 text-right text-muted tabular-nums">{u.lineNum ?? "·"}</span>
-          <span class="truncate whitespace-pre">
+          <span class="whitespace-pre">
             <span class="text-fg-3">{p.prefix}</span><span class="text-periwinkle font-medium">{p.match}</span><span class="text-fg-3">{p.suffix}</span>
           </span>
           {#if u.ranges.length > 1}
@@ -233,7 +251,7 @@
           {#each getContext(u) as cl, ci (ci)}
             <div class="flex items-baseline gap-2 pr-3 mono text-[11px] leading-[1.6]">
               <span class="w-9 shrink-0 text-right text-muted tabular-nums">{cl.lineNum ?? "·"}</span>
-              <span class="whitespace-pre overflow-hidden text-ellipsis {cl.isMatch ? 'text-fg' : 'text-fg-3'}">
+              <span class="whitespace-pre {cl.isMatch ? 'text-fg' : 'text-fg-3'}">
                 {#each segments(cl.text) as seg, si (si)}
                   {#if seg.match}<span class="text-periwinkle font-medium">{seg.text}</span>{:else}{seg.text}{/if}
                 {/each}
@@ -243,6 +261,7 @@
         </div>
       {/if}
     {/each}
+    </div>
   </div>
 
   {#if overflow > 0}

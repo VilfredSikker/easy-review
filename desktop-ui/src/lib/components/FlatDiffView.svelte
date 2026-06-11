@@ -974,10 +974,22 @@
     );
   });
 
-  /** Pulse a rendered row with the existing jump-to flash animation. */
-  function flashRowEl(rowIdx: number): void {
+  /**
+   * Pulse a rendered row with the existing jump-to flash ring. Retries across
+   * a few frames when the row element is not in the DOM yet: a far jump lands
+   * in freshly-virtualized rows, and entry points that flush extra DOM work in
+   * the same pass (the usages popover unmounting itself on click) could miss
+   * the single-rAF window and silently skip the ring. The retry makes the ring
+   * a guarantee of the jump, not a race — identical from every entry point.
+   */
+  function flashRowEl(rowIdx: number, attemptsLeft = 8): void {
     const rowEl = scrollEl?.querySelector<HTMLElement>(`[data-row-idx="${rowIdx}"]`);
-    if (!rowEl) return;
+    if (!rowEl) {
+      if (attemptsLeft > 0) {
+        requestAnimationFrame(() => flashRowEl(rowIdx, attemptsLeft - 1));
+      }
+      return;
+    }
     rowEl.classList.remove("flash");
     // Force a reflow so the animation restarts when jumping to the same row twice.
     void rowEl.offsetWidth;
@@ -985,7 +997,13 @@
     setTimeout(() => rowEl.classList.remove("flash"), 1300);
   }
 
-  /** Center a match row in the viewport and pulse it (ruler mark / popover entry). */
+  /**
+   * THE shared reference jump: center the match row in the viewport and pulse
+   * it with the `.flash` ring. Every reference entry point routes through this
+   * one call — ruler-mark clicks, usages-popover rows (click and Enter), and
+   * Cmd+F match navigation — so the scroll + ring treatment is identical
+   * everywhere. Do not add a second jump/flash variant.
+   */
   async function jumpToUsage(rowIdx: number): Promise<void> {
     const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
     applyScrollTop(Math.max(0, top - viewportHeightPx / 2));

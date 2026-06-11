@@ -138,14 +138,17 @@ export interface UsagePreview {
 /**
  * Build a trimmed single-line preview around the first match range.
  * Leading indentation is dropped; a long prefix is left-truncated with an
- * ellipsis so the match stays visible; the suffix is cut to keep the whole
- * preview within `maxTotal` characters.
+ * ellipsis so the match stays visible without scrolling; the suffix is cut
+ * to keep the whole preview within `maxTotal` characters. The total budget
+ * intentionally exceeds the popover's visible width — overflow scrolls
+ * horizontally instead of truncating, so the budget only guards against
+ * pathological lines (minified bundles), not normal code.
  */
 export function usagePreview(
   text: string,
   range: [number, number],
   maxPrefix = 24,
-  maxTotal = 72,
+  maxTotal = 240,
 ): UsagePreview {
   const [start, end] = range;
   // Drop leading whitespace (indentation carries no information in a list).
