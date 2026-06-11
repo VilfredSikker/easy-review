@@ -4125,18 +4125,6 @@ fn spawn_remote_pr_overview_backfill(state: &AppState, owner: String, repo: Stri
     });
 }
 
-fn normalize_remote_slug(remote: &str) -> String {
-    let trimmed = remote.trim();
-    let without_scheme = trimmed
-        .strip_prefix("https://github.com/")
-        .or_else(|| trimmed.strip_prefix("http://github.com/"))
-        .unwrap_or(trimmed);
-    without_scheme
-        .trim_end_matches(".git")
-        .trim_matches('/')
-        .to_ascii_lowercase()
-}
-
 fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) -> Option<String> {
     let target = normalize_remote_slug(remote_slug);
     file.projects.iter().find_map(|p| {
