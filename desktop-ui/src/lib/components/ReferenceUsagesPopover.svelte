@@ -115,8 +115,17 @@
 
   // Keyboard navigation while open. The global capture handler in keyboard.ts
   // owns Esc (popover-close precedence); arrows/Enter are unclaimed there.
+  // Keys typed into an input (e.g. the Cmd+F search bar, which can be open at
+  // the same time as the popover) belong to that field, not to popover nav.
   $effect(() => {
     function onKeydown(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.isContentEditable)
+      ) {
+        return;
+      }
       if (e.key === "ArrowDown") {
         e.preventDefault();
         e.stopPropagation();

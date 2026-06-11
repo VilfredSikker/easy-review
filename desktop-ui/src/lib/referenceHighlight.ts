@@ -98,6 +98,44 @@ export function searchPrefillFromSelection(
 }
 
 /**
+ * What a click on the diff text does to the reference-highlight state
+ * (pure routing — applied by the store's `toggle` / `openUsages`).
+ */
+export type IdentifierClickAction =
+  | { kind: "noop" }
+  | { kind: "clear" }
+  | { kind: "set-query"; ident: string }
+  | { kind: "toggle"; ident: string }
+  | { kind: "open-popover"; ident: string };
+
+/**
+ * Route a diff click to a highlight action.
+ *
+ * - Cmd/Ctrl+click on an identifier ALWAYS opens the usages popover — the
+ *   popover is the point of the gesture. This holds whether or not the Cmd+F
+ *   search bar is open (when it is, the bar's query syncs to the clicked
+ *   identifier as a side effect of the highlight changing).
+ * - Plain click while the bar is open routes to the search query instead of
+ *   toggling; non-identifier clicks are then no-ops so diff clicks never
+ *   close or clear the bar.
+ * - With the bar closed, plain clicks toggle the highlight and clicks that
+ *   do not resolve to an identifier clear it.
+ */
+export function identifierClickAction(
+  ident: string | null,
+  opts: { cmd: boolean; searchOpen: boolean },
+): IdentifierClickAction {
+  if (opts.cmd) {
+    if (ident !== null) return { kind: "open-popover", ident };
+    return opts.searchOpen ? { kind: "noop" } : { kind: "clear" };
+  }
+  if (opts.searchOpen) {
+    return ident !== null ? { kind: "set-query", ident } : { kind: "noop" };
+  }
+  return ident !== null ? { kind: "toggle", ident } : { kind: "clear" };
+}
+
+/**
  * Find all occurrences of `query` in `text` under `opts`.
  * Returns sorted, non-overlapping `[start, end)` ranges (in `text` offsets).
  */

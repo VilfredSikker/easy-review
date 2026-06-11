@@ -31,7 +31,8 @@
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Re-sync the input when the store query changes from outside — clicking an
-  // identifier in the diff while the bar is open routes through setQuery().
+  // identifier in the diff while the bar is open routes through setQuery(),
+  // and a Cmd+click (usages popover) re-targets the highlight directly.
   $effect(() => {
     const q = refHighlight.identifier ?? "";
     if (q === lastStoreQuery) return;
@@ -83,9 +84,18 @@
     }
   }
 
-  onMount(() => {
+  // Focus + select whenever the bar is (re)opened: the epoch bumps on every
+  // openSearch() call, so Cmd+F focuses the input even when the bar is
+  // already mounted but focus has moved elsewhere. Runs on mount too (the
+  // first epoch bump happens before the bar renders), covering all three
+  // open paths: empty, identifier prefill, selection prefill.
+  $effect(() => {
+    void refHighlight.searchFocusEpoch;
     inputEl?.focus();
     inputEl?.select();
+  });
+
+  onMount(() => {
     return () => {
       if (debounceTimer) clearTimeout(debounceTimer);
     };

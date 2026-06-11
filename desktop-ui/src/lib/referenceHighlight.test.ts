@@ -3,6 +3,7 @@ import {
   findIdentifierRanges,
   findMatchRanges,
   identifierAt,
+  identifierClickAction,
   searchPrefillFromSelection,
   SEARCH_PREFILL_MAX_LEN,
   smartCaseSensitive,
@@ -38,6 +39,59 @@ describe("searchPrefillFromSelection", () => {
   it("honors a custom cap", () => {
     expect(searchPrefillFromSelection("abcdef", 5)).toBeNull();
     expect(searchPrefillFromSelection("abcde", 5)).toBe("abcde");
+  });
+});
+
+describe("identifierClickAction", () => {
+  it("Cmd+click on an identifier opens the popover when the search bar is closed", () => {
+    expect(identifierClickAction("foo", { cmd: true, searchOpen: false })).toEqual({
+      kind: "open-popover",
+      ident: "foo",
+    });
+  });
+
+  it("REGRESSION: Cmd+click on an identifier opens the popover even while the search bar is open", () => {
+    // The popover is the point of the gesture — it must never be rerouted to
+    // a plain query update just because the Cmd+F bar is open.
+    expect(identifierClickAction("foo", { cmd: true, searchOpen: true })).toEqual({
+      kind: "open-popover",
+      ident: "foo",
+    });
+  });
+
+  it("Cmd+click off an identifier clears the highlight (bar closed)", () => {
+    expect(identifierClickAction(null, { cmd: true, searchOpen: false })).toEqual({
+      kind: "clear",
+    });
+  });
+
+  it("Cmd+click off an identifier is a no-op while the bar is open (never clears the bar)", () => {
+    expect(identifierClickAction(null, { cmd: true, searchOpen: true })).toEqual({
+      kind: "noop",
+    });
+  });
+
+  it("plain click while the bar is open updates the query", () => {
+    expect(identifierClickAction("foo", { cmd: false, searchOpen: true })).toEqual({
+      kind: "set-query",
+      ident: "foo",
+    });
+  });
+
+  it("plain click off an identifier is a no-op while the bar is open", () => {
+    expect(identifierClickAction(null, { cmd: false, searchOpen: true })).toEqual({
+      kind: "noop",
+    });
+  });
+
+  it("plain click toggles / clears with the bar closed", () => {
+    expect(identifierClickAction("foo", { cmd: false, searchOpen: false })).toEqual({
+      kind: "toggle",
+      ident: "foo",
+    });
+    expect(identifierClickAction(null, { cmd: false, searchOpen: false })).toEqual({
+      kind: "clear",
+    });
   });
 });
 

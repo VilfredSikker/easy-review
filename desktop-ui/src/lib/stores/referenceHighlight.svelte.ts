@@ -13,15 +13,23 @@
  * One global instance, like `diffSel`: the highlight spans every file in the
  * rendered diff, not just the clicked one.
  *
- * Cmd/Ctrl+click additionally opens the usages popover (anchored at the click
- * point), listing every match for jump-to navigation. While the search bar is
- * open, clicking an identifier in the diff updates the search query instead
- * of toggling/clearing — the bar and the highlight never go out of sync.
+ * Cmd/Ctrl+click opens the usages popover (anchored at the click point),
+ * listing every match for jump-to navigation — ALWAYS, whether or not the
+ * search bar is open (the popover is the point of the gesture; an open bar
+ * just gets its query synced to the clicked identifier). A plain click while
+ * the search bar is open updates the search query instead of toggling — the
+ * bar and the highlight never go out of sync. Routing lives in the pure
+ * `identifierClickAction` helper (unit-tested in referenceHighlight.test.ts).
  * Esc precedence (see `keyboard.ts`): popover → search bar → selection →
  * highlight.
  */
 
-import { smartCaseSensitive, type MatchOptions } from "$lib/referenceHighlight";
+import {
+  identifierClickAction,
+  smartCaseSensitive,
+  type IdentifierClickAction,
+  type MatchOptions,
+} from "$lib/referenceHighlight";
 
 export type HighlightMode = "identifier" | "query";
 
@@ -34,6 +42,12 @@ class ReferenceHighlight {
   searchOpen = $state(false);
   /** Index into the flat match list while navigating; −1 = no current match. */
   searchActiveIdx = $state(-1);
+  /**
+   * Bumped on every `openSearch()` call. The search bar focuses + selects its
+   * input in response, so Cmd+F focuses the field even when the bar is
+   * already mounted (a plain `onMount` focus only runs once).
+   */
+  searchFocusEpoch = $state(0);
 
   /** Matching semantics for the active mode. */
   get matchOptions(): MatchOptions {
@@ -55,38 +69,50 @@ class ReferenceHighlight {
    * a no-op (diff clicks never close or clear the bar).
    */
   toggle(ident: string | null): void {
-    if (this.searchOpen) {
-      if (ident !== null) this.setQuery(ident);
-      return;
-    }
-    this.identifier = ident !== null && ident !== this.identifier ? ident : null;
-    this.mode = "identifier";
-    this.searchActiveIdx = -1;
-    this.popoverOpen = false;
-    this.popoverAnchor = null;
+    this.applyClick(identifierClickAction(ident, { cmd: false, searchOpen: this.searchOpen }), null);
   }
 
   /**
    * Cmd/Ctrl+click semantics: highlight the identifier (even when it is
-   * already the active one) and open the usages popover at the click point.
-   * A Cmd/Ctrl+click that does not resolve to an identifier clears
-   * everything, mirroring plain-click behavior. While the search bar is
-   * open, routes to `setQuery` like a plain click (no popover).
+   * already the active one) and open the usages popover at the click point —
+   * ALWAYS, including while the search bar is open (the bar stays open and
+   * its query syncs to the identifier). A Cmd/Ctrl+click that does not
+   * resolve to an identifier clears everything, mirroring plain-click
+   * behavior (no-op while the bar is open, so it is never cleared by a
+   * stray click).
    */
   openUsages(ident: string | null, anchor: { x: number; y: number }): void {
-    if (this.searchOpen) {
-      if (ident !== null) this.setQuery(ident);
-      return;
+    this.applyClick(identifierClickAction(ident, { cmd: true, searchOpen: this.searchOpen }), anchor);
+  }
+
+  private applyClick(
+    action: IdentifierClickAction,
+    anchor: { x: number; y: number } | null,
+  ): void {
+    switch (action.kind) {
+      case "noop":
+        return;
+      case "clear":
+        this.clear();
+        return;
+      case "set-query":
+        this.setQuery(action.ident);
+        return;
+      case "toggle":
+        this.identifier = action.ident !== this.identifier ? action.ident : null;
+        this.mode = "identifier";
+        this.searchActiveIdx = -1;
+        this.popoverOpen = false;
+        this.popoverAnchor = null;
+        return;
+      case "open-popover":
+        this.identifier = action.ident;
+        this.mode = "identifier";
+        this.searchActiveIdx = -1;
+        this.popoverAnchor = anchor;
+        this.popoverOpen = true;
+        return;
     }
-    if (ident === null) {
-      this.clear();
-      return;
-    }
-    this.identifier = ident;
-    this.mode = "identifier";
-    this.searchActiveIdx = -1;
-    this.popoverAnchor = anchor;
-    this.popoverOpen = true;
   }
 
   /** Set the Cmd+F search query (empty string clears the highlight). */
@@ -101,11 +127,13 @@ class ReferenceHighlight {
   /**
    * Open the Cmd+F search bar. `prefill` (the diff's active text selection,
    * when there is one) takes priority as the initial query; otherwise an
-   * active identifier highlight is kept as the prefilled query. Either way
-   * the query switches to substring/smart-case semantics.
+   * active identifier highlight is kept as the prefilled query; with neither,
+   * the bar opens empty. Always bumps `searchFocusEpoch` so the input is
+   * focused and selected, even when the bar was already open.
    */
   openSearch(prefill: string | null = null): void {
     this.searchOpen = true;
+    this.searchFocusEpoch += 1;
     this.popoverOpen = false;
     this.popoverAnchor = null;
     if (prefill !== null && prefill.length > 0) {
