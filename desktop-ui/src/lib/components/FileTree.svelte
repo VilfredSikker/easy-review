@@ -429,7 +429,7 @@
               aria-expanded={!folderCollapsed}
               aria-selected={false}
               tabindex="-1"
-              class="flex items-center gap-1.5 pr-2 text-[11px] text-fg-3 cursor-pointer hover:bg-card"
+              class="flex items-center gap-1.5 pr-2 text-[11px] text-fg-3 cursor-pointer transition-colors duration-75 hover:bg-hover"
               style="padding-top: 4px; padding-bottom: 4px; padding-left: {indentPx(node.depth)};"
               onclick={(e) => {
                 if (pickerMode && (e.target as HTMLElement).closest("input[type=checkbox]")) return;
@@ -474,7 +474,7 @@
               aria-level={node.depth + 1}
               aria-selected={pickerMode ? checked : selected}
               tabindex={selected ? 0 : -1}
-              class="flex items-center gap-1.5 pr-2 cursor-pointer border-l-2 {pickerFocused ? 'bg-ink-700 border-accent/60' : selected ? 'bg-tree-selected border-accent' : inViewport ? 'border-accent/40 bg-card/60' : checked ? 'bg-card/40 border-transparent' : 'border-transparent hover:bg-card'}"
+              class="flex items-center gap-1.5 pr-2 cursor-pointer border-l-2 transition-colors duration-75 {pickerFocused ? 'bg-ink-700 border-accent/60' : selected ? 'bg-tree-selected border-accent' : inViewport ? 'border-accent/40 bg-card/60 hover:bg-hover' : checked ? 'bg-card/40 border-transparent hover:bg-hover' : 'border-transparent hover:bg-hover'}"
               style="padding-top: 4px; padding-bottom: 4px; padding-left: {indentPx(node.depth)};"
               onclick={() =>
                 pickerMode
