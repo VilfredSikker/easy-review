@@ -312,6 +312,7 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
         }
     }
 
+    #[cfg(feature = "ui")]
     if let Some(arena_mtime) = crate::arena::latest_arena_mtime(er_dir) {
         latest = Some(match latest {
             Some(prev) => prev.max(arena_mtime),

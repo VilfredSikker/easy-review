@@ -88,6 +88,8 @@ The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks 
 
 Workspace layout: `crates/er-engine/` (UI-agnostic core, `er_engine` crate) and `crates/er-tui/` (terminal UI, `er` binary).
 
+er-engine Cargo features (all default-on): `ui` (App/TabState/arena, tui-textarea), `watch` (notify watcher), `highlight` (syntect/two-face). Headless consumers build with `default-features = false`; always-on modules (`git`, `ai`, `github`, `sync`, `config`, `paths`, `storage`, `cache`) must not depend on feature-gated ones.
+
 ```
 crates/er-tui/src/main.rs              Event loop, CLI parsing (clap), input routing, debounced watch refresh
 crates/er-engine/src/config.rs         ErConfig, FeatureFlags, load/save, settings items
@@ -96,6 +98,7 @@ crates/er-engine/src/app/filter.rs     Composable filter system (glob, status, s
 crates/er-engine/src/git/diff.rs       parse_diff(), parse_diff_headers(), compact_files(), expand_compacted_file()
 crates/er-engine/src/git/status.rs     detect_base_branch(), git_diff_raw(), git_diff_raw_file(), staging, worktrees, git_log_branch(), git_diff_commit(), watched file ops
 crates/er-engine/src/github.rs         GitHub PR URL parsing, gh CLI wrapper, comment sync (pull/push/reply/delete), PR base hint
+crates/er-engine/src/sync.rs           Pure sync core (no App dependency): comment merge + anchor resolution, remote diff fetch, chrono_now — App wrappers in app/state/{github_sync,remote_diff_sync}.rs; also for headless consumers (er-api)
 crates/er-engine/src/ai/review.rs      AI data model (AiState, ErReview, Finding, InlineLayers, PanelContent, CommentRef, ReviewQuestion, GitHubReviewComment, CommentIndexData)
 crates/er-engine/src/ai/loader.rs      .er/ directory loading, SHA-256 + fast diff hashing, mtime polling, mtime cache
 crates/er-engine/src/watch/mod.rs      FileWatcher — debounced notify watcher
