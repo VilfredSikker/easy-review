@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -236,6 +236,27 @@ pub(crate) fn persist_nearest_prs(remote: &str, prs: &[PrInfo], gh_user: &GhUser
     if let Err(e) = er_engine::pr_cache::save(remote, &updated) {
         log::warn!("nearest-PR cache save failed for {remote}: {e}");
     }
+
+    // Persistent diff store lifecycle: evict diffs for PRs that left the
+    // nearest lists this cycle (merged/closed/TTL/out-of-top-10), then enforce
+    // the per-remote cap. Review sidecars in the PR buckets are untouched.
+    let member_numbers = |c: &er_engine::pr_cache::NearestPrCache| -> HashSet<u64> {
+        c.my_prs
+            .iter()
+            .chain(c.to_review.iter())
+            .map(|pr| pr.number)
+            .collect()
+    };
+    let old_numbers = old.as_ref().map(member_numbers).unwrap_or_default();
+    let new_numbers = member_numbers(&updated);
+    for number in old_numbers.difference(&new_numbers) {
+        if let Err(e) = er_engine::diff_store::evict_pr_diff(remote, *number) {
+            log::warn!("PR diff eviction failed for {remote}#{number}: {e}");
+        }
+    }
+    if let Err(e) = er_engine::diff_store::prune_remote(remote, &new_numbers) {
+        log::warn!("PR diff prune failed for {remote}: {e}");
+    }
 }
 
 /// Serve the persisted nearest-PR lists for a remote (stale-while-revalidate
@@ -267,6 +288,12 @@ pub(crate) fn nearest_prs_fallback(
 /// Compute missing diff hashes for a remote's nearest PRs, bounded per cycle.
 /// A hash is only recomputed when `update_cache` cleared it — i.e. the head
 /// SHA changed (or it was never computed) and the PR is still top-10 recent.
+///
+/// The downloaded diff is no longer discarded: when `record_diff_hash`
+/// confirms the PR is still cached with this head SHA, the diff is written
+/// through to the persistent diff store — so after a few cycles the top-10
+/// PRs' diffs are prefetched and the green dot genuinely means "opens
+/// instantly".
 async fn backfill_missing_diff_hashes(remote: &str) {
     let Ok(Some(cache)) = er_engine::pr_cache::load(remote) else {
         return;
@@ -282,12 +309,12 @@ async fn backfill_missing_diff_hashes(remote: &str) {
         let (owner, repo) = (owner.to_string(), repo.to_string());
         let number = pr.number;
         let t = std::time::Instant::now();
-        let hash = tokio::task::spawn_blocking(move || {
-            er_engine::github::gh_pr_diff_hash_remote(&owner, &repo, number)
+        let fetched = tokio::task::spawn_blocking(move || {
+            er_engine::github::gh_pr_diff_with_hash_remote(&owner, &repo, number)
         })
         .await;
-        match hash {
-            Ok(Ok(hash)) => {
+        match fetched {
+            Ok(Ok((raw_diff, hash))) => {
                 crate::profile_log::profile_log(
                     "pr_diff_hash_backfill",
                     &[
@@ -296,11 +323,29 @@ async fn backfill_missing_diff_hashes(remote: &str) {
                         ("ms", t.elapsed().as_millis().to_string()),
                     ],
                 );
-                // Ignored when newer commits landed mid-fetch (head_oid moved).
-                if let Err(e) =
-                    er_engine::pr_cache::record_diff_hash(remote, number, &pr.head_oid, &hash)
-                {
-                    log::warn!("recording diff hash for {remote}#{number} failed: {e}");
+                // Record the hash FIRST: `true` means the PR is still cached
+                // with this head SHA, so the diff we just downloaded is safe
+                // to persist. `false` ⇒ newer commits landed mid-fetch (or the
+                // PR dropped out of the top-N) — skip the known-stale save.
+                match er_engine::pr_cache::record_diff_hash(remote, number, &pr.head_oid, &hash) {
+                    Ok(true) => {
+                        let meta = er_engine::diff_store::DiffMeta::new(
+                            number,
+                            pr.head_oid.clone(),
+                            pr.base_ref.clone(),
+                            pr.head_ref.clone(),
+                            pr.updated_at.clone(),
+                            None,
+                        );
+                        if let Err(e) = er_engine::diff_store::save_diff(remote, &meta, &raw_diff)
+                        {
+                            log::warn!("PR diff persist failed for {remote}#{number}: {e}");
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        log::warn!("recording diff hash for {remote}#{number} failed: {e}");
+                    }
                 }
             }
             Ok(Err(e)) => {
@@ -312,6 +357,12 @@ async fn backfill_missing_diff_hashes(remote: &str) {
         }
     }
 }
+
+/// Shared mutex for er-desktop tests that mutate `ER_STORAGE_ROOT` — the env
+/// var is process-wide, so every test module in this crate must serialize on
+/// the same lock (mirrors `er_engine::storage::STORAGE_TEST_ENV_LOCK`).
+#[cfg(test)]
+pub(crate) static STORAGE_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Whether the startup full PR sweep should run (any configured remote missing
 /// or older than [`PR_CACHE_STARTUP_MAX_AGE_MS`]).
@@ -699,12 +750,11 @@ mod tests {
         assert!(back.cached, "fallback rows come from the cache itself");
     }
 
-    /// Serializes tests that mutate the process-wide `ER_STORAGE_ROOT` env var.
-    static STORAGE_ENV_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn cached_head_oids_maps_number_to_head_sha() {
-        let _guard = STORAGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
 
@@ -728,6 +778,60 @@ mod tests {
             let oids = cached_head_oids(remote);
             assert_eq!(oids.get(&7).map(String::as_str), Some("sha7"));
             assert_eq!(oids.len(), 1);
+        });
+        std::env::remove_var("ER_STORAGE_ROOT");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    #[test]
+    fn persist_nearest_prs_evicts_departed_pr_diffs() {
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let result = std::panic::catch_unwind(|| {
+            let remote = "org/repo";
+            let gh_user: GhUser = Arc::new(Mutex::new(Some("alice".to_string())));
+            let mk = |n: u64| {
+                let mut pr = make_pr(n, &format!("feature/{n}"));
+                pr.head_oid = format!("sha{n}");
+                pr
+            };
+
+            // Cycle 1: PRs 1 and 2 are nearest; both have persisted diffs.
+            persist_nearest_prs(remote, &[mk(1), mk(2)], &gh_user);
+            let meta = |n: u64| {
+                er_engine::diff_store::DiffMeta::new(
+                    n,
+                    format!("sha{n}"),
+                    "main",
+                    format!("feature/{n}"),
+                    "",
+                    None,
+                )
+            };
+            er_engine::diff_store::save_diff(remote, &meta(1), "diff one\n").unwrap();
+            er_engine::diff_store::save_diff(remote, &meta(2), "diff two\n").unwrap();
+
+            // Cycle 2: PR 1 merged/closed (absent from the fresh fetch) —
+            // its persisted diff must be evicted; PR 2's must survive.
+            persist_nearest_prs(remote, &[mk(2)], &gh_user);
+            assert!(
+                er_engine::diff_store::load_diff(remote, 1, "sha1", "main")
+                    .unwrap()
+                    .is_none(),
+                "departed PR's diff should be evicted"
+            );
+            assert!(
+                er_engine::diff_store::load_diff(remote, 2, "sha2", "main")
+                    .unwrap()
+                    .is_some(),
+                "still-nearest PR's diff should survive"
+            );
         });
         std::env::remove_var("ER_STORAGE_ROOT");
         if let Err(e) = result {

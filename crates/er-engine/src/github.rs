@@ -1085,13 +1085,20 @@ pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String>
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Fetch a PR's diff and return its SHA-256 hash (the staleness key used by
-/// `.er/review.json` and the nearest-PR cache). Expensive — fetches the full
-/// diff; callers should consult `pr_cache::CachedPr::diff_hash` first and only
-/// recompute when the head SHA changed.
-pub fn gh_pr_diff_hash_remote(owner: &str, repo: &str, number: u64) -> Result<String> {
+/// Fetch a PR's diff and return it along with its SHA-256 hash (the staleness
+/// key used by `.er/review.json` and the nearest-PR cache). Expensive —
+/// fetches the full diff; callers should consult
+/// `pr_cache::CachedPr::diff_hash` first and only recompute when the head SHA
+/// changed. Returning the raw diff lets callers write it through to the
+/// persistent diff store instead of discarding the download.
+pub fn gh_pr_diff_with_hash_remote(
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Result<(String, String)> {
     let raw = gh_pr_diff_remote(owner, repo, number)?;
-    Ok(crate::ai::compute_diff_hash(&raw))
+    let hash = crate::ai::compute_diff_hash(&raw);
+    Ok((raw, hash))
 }
 
 /// Get raw unified diff for a PR using the local repo context.
@@ -1234,9 +1241,13 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
     Ok(String::from_utf8_lossy(&diff.stdout).to_string())
 }
 
-/// Get PR metadata (base branch, head branch) via `gh pr view --repo`.
-/// Returns (base_ref_name, head_ref_name).
-pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(String, String)> {
+/// Get PR metadata (base branch, head branch, head commit SHA) via
+/// `gh pr view --repo`. Returns (base_ref_name, head_ref_name, head_ref_oid).
+pub fn gh_pr_metadata_remote(
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Result<(String, String, String)> {
     let repo_slug = format!("{}/{}", owner, repo);
     let output = Command::new("gh")
         .args([
@@ -1246,9 +1257,9 @@ pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(St
             "--repo",
             &repo_slug,
             "--json",
-            "baseRefName,headRefName",
+            "baseRefName,headRefName,headRefOid",
             "--jq",
-            r#"[.baseRefName, .headRefName] | @tsv"#,
+            r#"[.baseRefName, .headRefName, .headRefOid] | @tsv"#,
         ])
         .output()
         .context("Failed to get PR metadata")?;
@@ -1260,11 +1271,14 @@ pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(St
 
     let text = String::from_utf8_lossy(&output.stdout);
     let text = text.trim();
-    let (base, head) = text
-        .split_once('\t')
-        .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {}", text))?;
+    let mut parts = text.split('\t');
+    let (base, head) = match (parts.next(), parts.next()) {
+        (Some(base), Some(head)) => (base, head),
+        _ => anyhow::bail!("Unexpected gh pr view output: {}", text),
+    };
+    let head_oid = parts.next().unwrap_or_default();
 
-    Ok((base.to_string(), head.to_string()))
+    Ok((base.to_string(), head.to_string(), head_oid.to_string()))
 }
 
 /// Fetch PR overview data for a remote repo (no local clone needed).

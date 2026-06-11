@@ -4013,12 +4013,20 @@ pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: b
 
 /// Internal helper: open a remote PR view. If the same PR is already open,
 /// just focus it. Otherwise place it via `replace` semantics.
+///
+/// `fresh` is the PR metadata the caller already fetched pre-lock
+/// (`fetch_single_pr_for_remote`) — its authoritative head_oid/base_ref key
+/// the persistent diff store. On a disk hit the tab is seeded without
+/// `gh pr view` / `gh pr diff`; overview + commits are backfilled by a
+/// background thread.
 fn do_open_remote_pr(
     app: &mut App,
+    state: &AppState,
     owner: &str,
     repo: &str,
     number: u64,
     replace: bool,
+    fresh: Option<&PrInfo>,
 ) -> Result<(), String> {
     let slug = format!("{owner}/{repo}");
     for (i, t) in app.tabs.iter().enumerate() {
@@ -4032,6 +4040,41 @@ fn do_open_remote_pr(
         repo: repo.to_string(),
         number,
     };
+
+    // ── Disk-cache fast path: seed the tab from the persistent diff store ──
+    if let Some(pr) = fresh.filter(|p| !p.head_oid.is_empty() && !p.base_ref.is_empty()) {
+        match er_engine::diff_store::load_diff(&slug, number, &pr.head_oid, &pr.base_ref) {
+            Ok(Some(raw_diff)) => {
+                let seed = er_engine::app::RemotePrDiffSeed {
+                    base_branch: pr.base_ref.clone(),
+                    head_branch: pr.head_ref.clone(),
+                    head_oid: pr.head_oid.clone(),
+                    raw_diff,
+                };
+                match er_engine::app::TabState::new_remote_seeded(&pr_ref, seed) {
+                    Ok(mut tab) => {
+                        log::info!("remote_pr_open remote={slug} pr={number} cache=hit_disk");
+                        tab.reload_remote_comments();
+                        place_tab(app, tab, replace);
+                        spawn_remote_pr_overview_backfill(
+                            state,
+                            owner.to_string(),
+                            repo.to_string(),
+                            number,
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => log::warn!(
+                        "seeded remote PR open failed for {slug}#{number}, \
+                         falling back to network: {e}"
+                    ),
+                }
+            }
+            Ok(None) => {}
+            Err(e) => log::warn!("PR diff cache read failed for {slug}#{number}: {e}"),
+        }
+    }
+
     let mut tab = er_engine::app::TabState::new_remote(&pr_ref).map_err(|e| e.to_string())?;
     let pr_data = er_engine::github::gh_pr_overview_remote(owner, repo, number);
     if let Some(data) = pr_data {
@@ -4040,6 +4083,53 @@ fn do_open_remote_pr(
     tab.reload_remote_comments();
     place_tab(app, tab, replace);
     Ok(())
+}
+
+/// Backfill overview + commits for a remote PR tab that was seeded from the
+/// persistent diff store. Three-phase pattern: identity is captured before the
+/// spawn, the network fetches run without the App lock, and a brief lock
+/// applies the result to the tab (if it is still open).
+fn spawn_remote_pr_overview_backfill(state: &AppState, owner: String, repo: String, number: u64) {
+    let app = Arc::clone(&state.app);
+    let desktop_revision = Arc::clone(&state.desktop_revision);
+    std::thread::spawn(move || {
+        // Phase 2 (no lock): network fetches.
+        let overview = er_engine::github::gh_pr_overview_remote(&owner, &repo, number);
+        let commits =
+            er_engine::github::gh_pr_commits_remote(&owner, &repo, number, PR_COMMIT_CACHE_LIMIT);
+        if overview.is_none() && commits.is_empty() {
+            return;
+        }
+        // Phase 3 (brief lock): apply to the tab if it is still open.
+        let slug = format!("{owner}/{repo}");
+        {
+            let Ok(mut guard) = app.lock() else { return };
+            let Some(tab) = guard.tabs.iter_mut().find(|t| {
+                t.remote_repo.as_deref() == Some(slug.as_str()) && t.pr_number == Some(number)
+            }) else {
+                return;
+            };
+            if let Some(data) = overview {
+                tab.pr_data = Some(data);
+            }
+            if !commits.is_empty() {
+                tab.pr_commits = commits;
+            }
+        }
+        crate::profile_log::bump_desktop_revision(&desktop_revision, "remote_pr_overview_backfill");
+    });
+}
+
+fn normalize_remote_slug(remote: &str) -> String {
+    let trimmed = remote.trim();
+    let without_scheme = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+        .unwrap_or(trimmed);
+    without_scheme
+        .trim_end_matches(".git")
+        .trim_matches('/')
+        .to_ascii_lowercase()
 }
 
 fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) -> Option<String> {
@@ -4182,16 +4272,18 @@ fn cache_single_pr_for_remote(
     Ok(fetched_pr)
 }
 
+/// Returns the remote project id plus the freshly fetched PR metadata (whose
+/// head_oid/base_ref key the persistent diff store on the open path).
 fn record_remote_recent_pr(
     state: &AppState,
     remote: &str,
     pr_number: u64,
-) -> Result<String, String> {
+) -> Result<(String, PrInfo), String> {
     let fetched_pr = cache_single_pr_for_remote(state, remote, pr_number)?;
     let project_id = projects::ensure_remote_project(remote).map_err(|e| e.to_string())?;
     projects::record_recent_pr(&project_id, pr_number, &fetched_pr.title)
         .map_err(|e| e.to_string())?;
-    Ok(project_id)
+    Ok((project_id, fetched_pr))
 }
 
 #[tauri::command]
@@ -4214,10 +4306,18 @@ fn open_remote_pr_impl(
     state: &AppState,
 ) -> Result<AppSnapshot, String> {
     let remote = format!("{owner}/{repo}");
-    let _project_id = record_remote_recent_pr(state, &remote, number)?;
+    let (_project_id, fresh_pr) = record_remote_recent_pr(&state, &remote, number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    do_open_remote_pr(&mut app, &owner, &repo, number, replace.unwrap_or(false))?;
-    kick_meta_refresh(state, app.tab().repo_root.clone());
+    do_open_remote_pr(
+        &mut app,
+        &state,
+        &owner,
+        &repo,
+        number,
+        replace.unwrap_or(false),
+        Some(&fresh_pr),
+    )?;
+    kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
         Arc::clone(&state.gh_status_in_flight),
@@ -4264,14 +4364,16 @@ fn open_pr_url_impl(
         return open_pr_review_impl(project_id, pr_ref.number, replace, None, state);
     }
 
-    let _project_id = record_remote_recent_pr(state, &remote, pr_ref.number)?;
+    let (_project_id, fresh_pr) = record_remote_recent_pr(&state, &remote, pr_ref.number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(
         &mut app,
+        &state,
         &pr_ref.owner,
         &pr_ref.repo,
         pr_ref.number,
         replace.unwrap_or(false),
+        Some(&fresh_pr),
     )?;
     kick_meta_refresh(state, app.tab().repo_root.clone());
     kick_github_status_refresh(
@@ -4746,6 +4848,139 @@ fn pr_open_hint_is_complete(hint: &PrOpenHint) -> bool {
         && !hint.head_oid.trim().is_empty()
 }
 
+/// Best-effort write-through of a freshly downloaded PR diff to the
+/// persistent diff store (issue #70). Cache errors are logged and never fail
+/// the open; callers already run on worker threads.
+fn persist_pr_diff_to_disk(
+    repo_slug: Option<&str>,
+    pr_number: u64,
+    freshness: &PrOpenFreshness,
+    raw_diff: &str,
+) {
+    let Some(remote) = repo_slug else { return };
+    let meta = er_engine::diff_store::DiffMeta::new(
+        pr_number,
+        freshness.head_oid.clone(),
+        freshness.base_branch.clone(),
+        freshness.head_branch.clone(),
+        freshness.updated_at.clone(),
+        None,
+    );
+    if let Err(e) = er_engine::diff_store::save_diff(remote, &meta, raw_diff) {
+        log::warn!("PR diff persist failed for {remote}#{pr_number}: {e}");
+    }
+}
+
+/// Disk-cache lookup for a PR open: the persisted raw diff when it matches
+/// the expected freshness (head_oid + base_branch). Cache errors are logged
+/// and treated as a miss — never fail an open.
+fn load_pr_diff_from_disk(
+    repo_slug: Option<&str>,
+    pr_number: u64,
+    freshness: &PrOpenFreshness,
+) -> Option<String> {
+    let remote = repo_slug?;
+    match er_engine::diff_store::load_diff(
+        remote,
+        pr_number,
+        &freshness.head_oid,
+        &freshness.base_branch,
+    ) {
+        Ok(hit) => hit,
+        Err(e) => {
+            log::warn!("PR diff cache read failed for {remote}#{pr_number}: {e}");
+            None
+        }
+    }
+}
+
+/// Maximum age of the persisted nearest-PR cache when synthesizing a hint for
+/// a cold open. Matches the 10-minute `gh pr list` refresh cadence — the same
+/// trust window as the sidebar rows that feed the regular hint path.
+const NEAREST_PR_HINT_MAX_AGE_MS: u64 = 10 * 60 * 1000;
+
+/// Cold opens have no sidebar hint; synthesize one from the persisted
+/// nearest-PR cache (issue #70) so the disk-cached diff can be served without
+/// any network round-trip.
+fn synthesize_hint_from_nearest_cache(
+    repo_slug: Option<&str>,
+    pr_number: u64,
+) -> Option<PrOpenHint> {
+    let remote = repo_slug?;
+    let cache = er_engine::pr_cache::load(remote).ok().flatten()?;
+    let now_ms = er_engine::pr_cache::now_epoch_ms();
+    if now_ms.saturating_sub(cache.fetched_at_epoch_ms) > NEAREST_PR_HINT_MAX_AGE_MS {
+        return None;
+    }
+    let pr = cache
+        .my_prs
+        .iter()
+        .chain(cache.to_review.iter())
+        .find(|p| p.number == pr_number)?;
+    let hint = PrOpenHint {
+        base_ref: pr.base_ref.clone(),
+        head_ref: pr.head_ref.clone(),
+        head_oid: pr.head_oid.clone(),
+        updated_at: pr.updated_at.clone(),
+        title: pr.title.clone(),
+        author: pr.author.clone(),
+    };
+    pr_open_hint_is_complete(&hint).then_some(hint)
+}
+
+/// Serve a PR open from the persistent diff store after an in-memory cache
+/// miss. `None` = disk miss (the caller continues to the network path).
+/// Base-ref resolution and the commits backfill run exactly like on a memory
+/// hit, and the in-memory LRU is hydrated so the next open is a memory hit.
+/// The GitHub status refresh kick in the caller is unchanged — CI, comments,
+/// and merge status stay live on their own loops.
+fn serve_pr_open_from_disk(
+    project_id: &str,
+    repo_root: &str,
+    repo_slug: Option<&str>,
+    pr_number: u64,
+    hint: &PrOpenHint,
+    key: &PrOpenCacheKey,
+    state: &AppState,
+) -> Option<Result<PrOpenInputs, String>> {
+    let freshness = freshness_from_hint(hint);
+    let raw_diff = load_pr_diff_from_disk(repo_slug, pr_number, &freshness)?;
+    let branch_label = format!("pr-{pr_number}");
+    log::info!(
+        "branch_open project={} branch={} phase=gh_pr_diff ms=0 cache=hit_disk",
+        project_id,
+        branch_label
+    );
+    let t_base = std::time::Instant::now();
+    let resolved_base =
+        match er_engine::github::ensure_base_ref_available(repo_root, &freshness.base_branch) {
+            Ok(base) => base,
+            Err(e) => return Some(Err(e.to_string())),
+        };
+    log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
+    let pr_data = pr_overview_from_hint(hint, pr_number, repo_slug);
+    let pr_commits = run_gh_pr_commits_for_open(repo_root, pr_number);
+    remember_pr_open_entry(
+        &state.pr_open_cache,
+        key.clone(),
+        freshness.clone(),
+        raw_diff.clone(),
+        None, // pr_data is a hint-derived placeholder; the full view fills it later
+        Some(pr_commits.clone()),
+    );
+    Some(Ok(PrOpenInputs {
+        repo_root: repo_root.to_string(),
+        metadata: PrOpenMetadata {
+            freshness,
+            pr_data,
+            pr_commits,
+        },
+        resolved_base,
+        raw_diff,
+        cache_hit: true,
+    }))
+}
+
 fn load_pr_open_inputs(
     project_id: &str,
     pr_number: u64,
@@ -4809,6 +5044,20 @@ fn load_pr_open_inputs(
             });
         }
 
+        // Memory miss → persistent diff store, keyed by the hint's freshness
+        // (head_oid + base_branch). Hit ⇒ no `gh pr diff` at all.
+        if let Some(result) = serve_pr_open_from_disk(
+            project_id,
+            &repo_root,
+            repo_slug.as_deref(),
+            pr_number,
+            hint,
+            &key,
+            state,
+        ) {
+            return result;
+        }
+
         // Cache miss with hint: run `gh pr diff` and `ensure_base_ref_available`
         // in parallel. Skip `gh pr view` — overview is rendered from the hint
         // and a background refresh can fill in body/reviews later.
@@ -4852,6 +5101,7 @@ fn load_pr_open_inputs(
         );
         let raw_diff = diff_res?;
         let resolved_base = base_res?;
+        persist_pr_diff_to_disk(repo_slug.as_deref(), pr_number, &freshness, &raw_diff);
         let pr_data = pr_overview_from_hint(hint, pr_number, repo_slug.as_deref());
         remember_pr_open_entry(
             &state.pr_open_cache,
@@ -4921,6 +5171,39 @@ fn load_pr_open_inputs(
                 cache_hit: true,
             });
         }
+        // Memory stale → persistent diff store, keyed by the *fresh* oid the
+        // probe just returned (zero staleness risk).
+        if let Some(raw_diff) =
+            load_pr_diff_from_disk(repo_slug.as_deref(), pr_number, &metadata.freshness)
+        {
+            log::info!(
+                "branch_open project={} branch={} phase=gh_pr_diff ms=0 cache=hit_disk",
+                project_id,
+                branch_label
+            );
+            let t_base = std::time::Instant::now();
+            let resolved_base = er_engine::github::ensure_base_ref_available(
+                &repo_root,
+                &metadata.freshness.base_branch,
+            )
+            .map_err(|e| e.to_string())?;
+            log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
+            remember_pr_open_entry(
+                &state.pr_open_cache,
+                key,
+                metadata.freshness.clone(),
+                raw_diff.clone(),
+                Some(metadata.pr_data.clone()),
+                Some(metadata.pr_commits.clone()),
+            );
+            return Ok(PrOpenInputs {
+                repo_root,
+                metadata,
+                resolved_base,
+                raw_diff,
+                cache_hit: true,
+            });
+        }
         log::info!(
             "branch_open project={} branch={} phase=gh_pr_diff cache=stale",
             project_id,
@@ -4963,6 +5246,12 @@ fn load_pr_open_inputs(
         );
         let raw_diff = diff_res?;
         let resolved_base = base_res?;
+        persist_pr_diff_to_disk(
+            repo_slug.as_deref(),
+            pr_number,
+            &metadata.freshness,
+            &raw_diff,
+        );
         remember_pr_open_entry(
             &state.pr_open_cache,
             key,
@@ -4978,6 +5267,23 @@ fn load_pr_open_inputs(
             raw_diff,
             cache_hit: false,
         });
+    }
+
+    // ── Cold path (no hint, no memory entry): synthesize a hint from the
+    // persisted nearest-PR cache (≤10 min old — same trust as the sidebar
+    // hint path) and try the persistent diff store before any network fetch.
+    if let Some(synth) = synthesize_hint_from_nearest_cache(repo_slug.as_deref(), pr_number) {
+        if let Some(result) = serve_pr_open_from_disk(
+            project_id,
+            &repo_root,
+            repo_slug.as_deref(),
+            pr_number,
+            &synth,
+            &key,
+            state,
+        ) {
+            return result;
+        }
     }
 
     let (metadata_res, diff_res, view_ms, diff_ms) = std::thread::scope(|s| {
@@ -5015,6 +5321,12 @@ fn load_pr_open_inputs(
     );
     let metadata = metadata_res?;
     let raw_diff = diff_res?;
+    persist_pr_diff_to_disk(
+        repo_slug.as_deref(),
+        pr_number,
+        &metadata.freshness,
+        &raw_diff,
+    );
     let t_base = std::time::Instant::now();
     let resolved_base =
         er_engine::github::ensure_base_ref_available(&repo_root, &metadata.freshness.base_branch)
@@ -5143,6 +5455,7 @@ pub fn prefetch_pr_open(
         return Ok(());
     };
     let repo_root = proj.root_path;
+    let repo_slug = proj.remote.clone();
     let key = pr_open_cache_key(&project_id, &repo_root, pr_number);
     let freshness = freshness_from_hint(&hint);
 
@@ -5191,6 +5504,7 @@ pub fn prefetch_pr_open(
         });
         match (diff_res, base_res) {
             (Ok(raw_diff), Ok(_)) => {
+                persist_pr_diff_to_disk(repo_slug.as_deref(), pr_number, &freshness, &raw_diff);
                 remember_pr_open_entry(
                     &cache,
                     key,
@@ -7272,6 +7586,49 @@ mod tests {
         assert_eq!(resolve_review_scope("branch", &tab).unwrap(), "branch");
         assert_eq!(resolve_review_scope("current", &tab).unwrap(), "branch");
         assert_eq!(resolve_review_scope("pr", &tab).unwrap(), "branch");
+    }
+
+    #[test]
+    fn pr_diff_disk_cache_hits_on_matching_freshness_only() {
+        let _guard = crate::pr_cache::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let result = std::panic::catch_unwind(|| {
+            let freshness = PrOpenFreshness {
+                base_branch: "main".into(),
+                head_branch: "feature".into(),
+                head_oid: "abc123def456".into(),
+                updated_at: "2026-06-09T00:00:00Z".into(),
+            };
+            // Cold disk → miss.
+            assert!(load_pr_diff_from_disk(Some("org/repo"), 7, &freshness).is_none());
+
+            persist_pr_diff_to_disk(Some("org/repo"), 7, &freshness, "diff --git a/x b/x\n");
+            assert_eq!(
+                load_pr_diff_from_disk(Some("org/repo"), 7, &freshness).as_deref(),
+                Some("diff --git a/x b/x\n")
+            );
+
+            // Head moved → miss.
+            let mut moved = freshness.clone();
+            moved.head_oid = "other-sha".into();
+            assert!(load_pr_diff_from_disk(Some("org/repo"), 7, &moved).is_none());
+
+            // PR retargeted → miss.
+            let mut retargeted = freshness.clone();
+            retargeted.base_branch = "develop".into();
+            assert!(load_pr_diff_from_disk(Some("org/repo"), 7, &retargeted).is_none());
+
+            // No remote slug (project without a remote) → never hits.
+            assert!(load_pr_diff_from_disk(None, 7, &freshness).is_none());
+        });
+        std::env::remove_var("ER_STORAGE_ROOT");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]

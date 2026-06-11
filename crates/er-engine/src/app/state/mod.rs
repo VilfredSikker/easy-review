@@ -913,6 +913,17 @@ pub struct MemoryBudget {
     pub compacted_files: usize,
 }
 
+/// Inputs for [`TabState::new_remote_seeded`]: a PR diff already in hand
+/// (typically loaded from the persistent diff store) plus the freshness
+/// metadata it was validated against.
+#[derive(Debug, Clone)]
+pub struct RemotePrDiffSeed {
+    pub base_branch: String,
+    pub head_branch: String,
+    pub head_oid: String,
+    pub raw_diff: String,
+}
+
 impl TabState {
     /// Get the comment text from the textarea, joined and trimmed
     pub fn comment_text(&self) -> String {
@@ -1071,15 +1082,77 @@ impl TabState {
     /// Create a TabState for remote PR review (no local git repo needed).
     /// Uses `gh pr diff --repo` instead of local git operations.
     pub fn new_remote(pr_ref: &crate::github::PrRef) -> Result<Self> {
-        let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
-        let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
-
-        // Get metadata (base/head branch names)
-        let (base_branch, head_branch) =
+        // Get metadata (base/head branch names + head commit SHA)
+        let (base_branch, head_branch, head_oid) =
             crate::github::gh_pr_metadata_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
 
         // Get the diff from GitHub
         let raw = crate::github::gh_pr_diff_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
+
+        // Write-through: persist the freshly downloaded diff so the next open
+        // of this PR is a disk read. Cache errors never fail the open.
+        let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
+        let meta = crate::diff_store::DiffMeta::new(
+            pr_ref.number,
+            head_oid.clone(),
+            base_branch.clone(),
+            head_branch.clone(),
+            String::new(),
+            None,
+        );
+        if let Err(e) = crate::diff_store::save_diff(&repo_slug, &meta, &raw) {
+            log::warn!(
+                "PR diff persist failed for {repo_slug}#{}: {e}",
+                pr_ref.number
+            );
+        }
+
+        let pr_commits =
+            crate::github::gh_pr_commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250);
+        Self::new_remote_from_parts(
+            pr_ref,
+            base_branch,
+            head_branch,
+            Some(head_oid).filter(|s| !s.is_empty()),
+            raw,
+            pr_commits,
+        )
+    }
+
+    /// Create a remote-PR TabState from a diff already in hand (the persistent
+    /// diff store) — no `gh pr view` / `gh pr diff` round-trips. Overview and
+    /// commits start empty; the desktop backfills them on a background thread.
+    pub fn new_remote_seeded(pr_ref: &crate::github::PrRef, seed: RemotePrDiffSeed) -> Result<Self> {
+        let RemotePrDiffSeed {
+            base_branch,
+            head_branch,
+            head_oid,
+            raw_diff,
+        } = seed;
+        Self::new_remote_from_parts(
+            pr_ref,
+            base_branch,
+            head_branch,
+            Some(head_oid).filter(|s| !s.is_empty()),
+            raw_diff,
+            Vec::new(),
+        )
+    }
+
+    /// Shared remote-PR tab construction: parse the raw diff (lazy mode +
+    /// compaction for large diffs) and assemble the TabState. `new_remote`
+    /// (network) and `new_remote_seeded` (disk cache) both funnel through here
+    /// so the two paths can never diverge in parsing behavior.
+    fn new_remote_from_parts(
+        pr_ref: &crate::github::PrRef,
+        base_branch: String,
+        head_branch: String,
+        head_oid: Option<String>,
+        raw: String,
+        pr_commits: Vec<crate::git::CommitInfo>,
+    ) -> Result<Self> {
+        let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
+        let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
 
         // Parse the diff
         let compaction_config = crate::git::CompactionConfig::default();
@@ -1093,8 +1166,6 @@ impl TabState {
         };
 
         let diff_hash = crate::ai::compute_diff_hash(&raw);
-        let pr_commits =
-            crate::github::gh_pr_commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250);
         let lazy_mode = raw.len() > 200_000;
         let file_headers = if lazy_mode {
             let headers = crate::git::parse_diff_headers(&raw);
@@ -1215,7 +1286,7 @@ impl TabState {
             browser_show_tooltips: false,
             needs_initial_refresh: false,
             storage_notice: None,
-            last_diff_head_oid: None,
+            last_diff_head_oid: head_oid,
             pr_refs_fetched: false,
         };
 
@@ -8372,6 +8443,64 @@ mod tests {
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("owner/repo".to_string());
         assert!(tab.is_remote());
+    }
+
+    #[test]
+    fn new_remote_seeded_parses_like_a_fresh_remote_tab() {
+        // Seeded construction touches managed storage (finish_storage_setup) —
+        // isolate under a temp ER_STORAGE_ROOT like the other storage tests.
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let result = std::panic::catch_unwind(|| {
+            let raw = "diff --git a/src/lib.rs b/src/lib.rs\n\
+                       index 1111111..2222222 100644\n\
+                       --- a/src/lib.rs\n\
+                       +++ b/src/lib.rs\n\
+                       @@ -1,2 +1,3 @@\n \
+                       fn main() {\n\
+                       +    println!(\"hi\");\n \
+                       }\n";
+            let pr_ref = crate::github::PrRef {
+                owner: "org".to_string(),
+                repo: "repo".to_string(),
+                number: 7,
+            };
+            let seed = RemotePrDiffSeed {
+                base_branch: "main".to_string(),
+                head_branch: "feature/x".to_string(),
+                head_oid: "abc123def456".to_string(),
+                raw_diff: raw.to_string(),
+            };
+            let tab = TabState::new_remote_seeded(&pr_ref, seed).unwrap();
+
+            // Parse-equivalence with the network constructor's pipeline
+            // (both funnel through `new_remote_from_parts`).
+            let mut expected = crate::git::parse_diff(raw);
+            crate::git::compact_files(&mut expected, &crate::git::CompactionConfig::default());
+            assert_eq!(tab.files.len(), expected.len());
+            assert_eq!(tab.files[0].path, expected[0].path);
+            assert_eq!(tab.files[0].hunks.len(), expected[0].hunks.len());
+            assert_eq!(tab.diff_hash, crate::ai::compute_diff_hash(raw));
+            assert_eq!(tab.branch_diff_hash, tab.diff_hash);
+
+            // Remote-tab identity, no network fields filled in.
+            assert!(matches!(tab.mode, DiffMode::PrDiff));
+            assert_eq!(tab.base_branch, "main");
+            assert_eq!(tab.current_branch, "feature/x");
+            assert_eq!(tab.remote_repo.as_deref(), Some("org/repo"));
+            assert_eq!(tab.pr_number, Some(7));
+            assert_eq!(tab.last_diff_head_oid.as_deref(), Some("abc123def456"));
+            assert!(!tab.lazy_mode);
+            assert!(tab.pr_commits.is_empty(), "commits are backfilled later");
+            assert!(tab.pr_data.is_none(), "overview is backfilled later");
+        });
+        std::env::remove_var("ER_STORAGE_ROOT");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]

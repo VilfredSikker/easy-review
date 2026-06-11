@@ -1366,6 +1366,7 @@ dependencies = [
  "anyhow",
  "dirs",
  "glob",
+ "log",
  "notify",
  "notify-debouncer-mini",
  "serde",

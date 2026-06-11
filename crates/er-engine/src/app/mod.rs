@@ -17,5 +17,5 @@ pub use state::{
     cleanup_question_answers, cleanup_questions, cleanup_review_artifacts, cleanup_reviews,
     cleanup_triage, AgentLogEntry, AgentLogSource, AiActionKind, App, BrowserLayout, CommandStatus,
     ConfigEditState, ConfirmAction, DiffMode, DirEntry, HubAction, HubItem, HubKind, InputMode,
-    OverlayData, PanelsVisible, SplitSide, TabState,
+    OverlayData, PanelsVisible, RemotePrDiffSeed, SplitSide, TabState,
 };

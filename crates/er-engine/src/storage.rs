@@ -87,6 +87,15 @@ pub fn slug_branch(branch: &str) -> String {
     slugify(&branch.replace('/', "-"))
 }
 
+/// Directory-name slug for a remote `"owner/repo"` string.
+///
+/// Shared by the nearest-PR cache (`pr_cache::cache_path`) and the persistent
+/// diff store (`diff_store`) so the two can never drift apart on disk layout
+/// (`<storage_root>/repos/<slug>/…`).
+pub fn remote_repo_dir_slug(remote: &str) -> String {
+    slugify(&remote.replace('/', "-"))
+}
+
 /// Directory for a specific branch under the managed storage root.
 pub fn branch_dir(repo_slug: &str, branch_slug: &str) -> PathBuf {
     storage_root()

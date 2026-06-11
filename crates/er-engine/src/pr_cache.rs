@@ -85,10 +85,9 @@ pub fn now_epoch_ms() -> u64 {
 
 /// Path of the nearest-PR cache for a remote ("owner/repo").
 pub fn cache_path(remote: &str) -> PathBuf {
-    let slug = storage::slugify(&remote.replace('/', "-"));
     storage::storage_root()
         .join("repos")
-        .join(slug)
+        .join(storage::remote_repo_dir_slug(remote))
         .join("pr-cache.json")
 }
 

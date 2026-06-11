@@ -12,6 +12,7 @@ pub use config::{
     ConfigHubFieldDto, DesktopSettingsSnapshot, SettingsScope,
 };
 pub mod dev_log;
+pub mod diff_store;
 pub mod env_path;
 pub mod git;
 pub mod github;

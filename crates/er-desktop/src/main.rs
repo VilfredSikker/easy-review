@@ -707,27 +707,35 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_secs(interval_secs));
 
             // Phase 1: brief lock — snapshot identity + last_head_oid.
-            let ctx = {
+            // `persist_meta` carries (base_ref, head_ref, updated_at) from the
+            // same pr_cache entry so a fetched diff can be written through to
+            // the persistent diff store in Phase 2.
+            let (ctx, persist_meta) = {
                 let guard = match remote_app.try_lock() {
                     Ok(g) => g,
                     Err(_) => continue,
                 };
                 let mut ctx = guard.snapshot_for_remote_diff_refresh();
                 drop(guard);
+                let mut persist_meta: Option<(String, String, String)> = None;
                 if let Some(ref mut c) = ctx {
                     // Look up the expected head_oid from pr_cache. None ⇒ fetch
                     // anyway (no cache entry yet means we have no comparison
                     // point and shouldn't suppress the refresh).
                     if let Ok(cache) = remote_pr_cache.lock() {
                         let slug = format!("{}/{}", c.owner, c.repo);
-                        c.expected_head_oid = cache
+                        let info = cache
                             .get(&slug)
-                            .and_then(|prs| prs.iter().find(|p| p.number == c.pr_number))
+                            .and_then(|prs| prs.iter().find(|p| p.number == c.pr_number));
+                        c.expected_head_oid = info
                             .map(|p| p.head_oid.clone())
                             .filter(|s| !s.is_empty());
+                        persist_meta = info
+                            .map(|p| (p.base_ref.clone(), p.head_ref.clone(), p.updated_at.clone()))
+                            .filter(|(base_ref, _, _)| !base_ref.is_empty());
                     }
                 }
-                ctx
+                (ctx, persist_meta)
             };
 
             let Some(ctx) = ctx else {
@@ -762,6 +770,28 @@ fn main() {
                                 "nearest-PR diff hash record failed for {slug}#{}: {e}",
                                 ctx.pr_number
                             );
+                        }
+                        // Write-through to the persistent diff store (issue
+                        // #70): the diff was just downloaded anyway, so the
+                        // next open of this PR becomes a disk read. Cache
+                        // errors never disturb the refresh.
+                        if let Some((base_ref, head_ref, updated_at)) = persist_meta.clone() {
+                            let meta = er_engine::diff_store::DiffMeta::new(
+                                ctx.pr_number,
+                                oid,
+                                base_ref,
+                                head_ref,
+                                updated_at,
+                                None,
+                            );
+                            if let Err(e) =
+                                er_engine::diff_store::save_diff(&slug, &meta, &r.raw_diff)
+                            {
+                                log::warn!(
+                                    "PR diff persist failed for {slug}#{}: {e}",
+                                    ctx.pr_number
+                                );
+                            }
                         }
                     }
                     // Phase 3: brief lock — apply.

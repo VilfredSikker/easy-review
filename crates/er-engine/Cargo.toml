@@ -17,6 +17,7 @@ highlight = ["dep:syntect", "dep:two-face"]
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+log = "0.4"
 sha2.workspace = true
 sha1.workspace = true
 glob.workspace = true
