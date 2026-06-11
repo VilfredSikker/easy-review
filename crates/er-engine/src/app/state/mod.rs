@@ -994,6 +994,11 @@ impl TabState {
     /// Create a local PR review tab from data already loaded by the desktop
     /// backend. This keeps the first-render source as `gh pr diff` while letting
     /// desktop overlap/cache the independent GitHub calls.
+    ///
+    /// The tab starts in `DiffMode::PrDiff`: the seeded diff is authoritative, so
+    /// callers must NOT run `enter_pr_diff()`/`refresh_diff()` afterwards — that
+    /// would discard the seeded parse and re-fetch the diff over the network. The
+    /// local-branch diff is computed only if the user toggles to Local Branch view.
     pub fn new_local_pr_from_github_diff(
         repo_root: String,
         pr_number: u64,
@@ -1013,7 +1018,12 @@ impl TabState {
         tab.pr_number = Some(pr_number);
         tab.pr_data = pr_data;
         tab.pr_commits = pr_commits;
-        tab.mode = DiffMode::Branch;
+        // Open directly in PR Diff view: the raw diff passed in IS the PR diff
+        // (from `gh pr diff`, often served from the desktop's disk cache), so no
+        // follow-up `enter_pr_diff()` refresh is needed. `pr_refs_fetched` stays
+        // false — the head/base refs are fetched lazily on the first explicit
+        // re-entry (Local Branch → PR Diff toggle) or refresh.
+        tab.mode = DiffMode::PrDiff;
 
         let compaction_config = tab.compaction_config.clone();
         let t_parse = Instant::now();

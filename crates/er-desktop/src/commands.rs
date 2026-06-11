@@ -5412,9 +5412,13 @@ fn open_pr_review_impl(
     let t_place_tab = std::time::Instant::now();
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
-    let t_pr_diff = std::time::Instant::now();
-    app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
-    log_branch_open_phase(&project_id, &branch_label, "pr_diff_enter", t_pr_diff);
+    // The tab is constructed directly in PrDiff mode from the seeded diff —
+    // do NOT call enter_pr_diff() here. It would fetch the PR head/base refs
+    // (network) and run refresh_diff(), re-fetching the diff we just loaded
+    // from cache and discarding the seeded parse (500-700ms wasted per open).
+    // The local-branch diff is only computed if the user toggles to Local
+    // Branch view (set_mode "branch"); toggling back re-enters PrDiff via
+    // set_mode "pr_diff", which fetches refs on first entry.
     let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
     kick_meta_refresh(state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
