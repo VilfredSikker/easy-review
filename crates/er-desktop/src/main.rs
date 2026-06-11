@@ -804,7 +804,25 @@ fn main() {
                     );
                 }
                 Ok(None) => {
-                    // head_oid unchanged — nothing to do.
+                    // head_oid unchanged — the rendered diff is confirmed
+                    // current. Stamp the freshness clock so the Branch-panel
+                    // pill's "synced Xm ago" reflects this validation.
+                    let mut stamped = false;
+                    if let Ok(mut g) = remote_app.lock() {
+                        let target_key = (ctx.repo_root.clone(), Some(ctx.pr_number), true);
+                        if let Some(tab) = g.tabs.iter_mut().find(|t| {
+                            (t.repo_root.clone(), t.pr_number, t.is_remote()) == target_key
+                        }) {
+                            tab.mark_diff_synced();
+                            stamped = true;
+                        }
+                    }
+                    if stamped {
+                        profile_log::bump_desktop_revision(
+                            &remote_desktop_rev,
+                            "remote_pr_diff_confirmed",
+                        );
+                    }
                 }
                 Err(e) => log::error!("remote PR diff refresh failed: {e}"),
             }
@@ -1458,6 +1476,7 @@ fn main() {
             commands::force_refresh_diff,
             commands::refresh_github_status,
             commands::resync_github_status,
+            commands::resync_tab_diff,
             commands::pull_github_comments,
             commands::push_github_comments,
             commands::push_github_comment_thread,

@@ -24,6 +24,14 @@ use tui_textarea::TextArea;
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Current wall-clock time in epoch milliseconds (0 on clock errors).
+fn epoch_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn profile_branch_enabled() -> bool {
     std::env::var("ER_DESKTOP_PROFILE_BRANCH").as_deref() == Ok("1")
 }
@@ -695,11 +703,20 @@ pub struct TabState {
     /// go straight to apply_managed_root + reload + refresh.
     pub pr_refs_fetched: bool,
 
-    /// For remote PR tabs: the head_oid the current `files`/`raw_diff` were
-    /// fetched against. The background remote-PR refresh loop compares this
-    /// against the latest head_oid in pr_cache; equal ⇒ skip the network
-    /// round-trip. Set by `apply_remote_diff_result`. None means "force fetch".
+    /// The head_oid the current `files`/`raw_diff` were computed from.
+    /// Remote PR tabs: the background refresh loop compares this against the
+    /// latest head_oid in pr_cache; equal ⇒ skip the network round-trip. Set
+    /// by `apply_remote_diff_result`. None means "force fetch". Local PR and
+    /// committed branch views also record it so the desktop freshness pill
+    /// can detect when the rendered diff lags the latest known head.
     pub last_diff_head_oid: Option<String>,
+
+    /// Epoch ms of the last time this tab's rendered diff was fetched or
+    /// validated against the freshest known refs (a git/gh diff ran, a remote
+    /// diff result was applied, or a cache hit was keyed by the current head
+    /// oid). Drives the desktop Branch-panel freshness pill. None = never
+    /// confirmed (e.g. a stale SWR serve still awaiting revalidation).
+    pub diff_synced_at_epoch_ms: Option<u64>,
 
     // ── Agent log state (per-tab) ──
     /// Receivers for running background commands (keyed by command name)
@@ -928,6 +945,12 @@ impl TabState {
     /// Get the comment text from the textarea, joined and trimmed
     pub fn comment_text(&self) -> String {
         self.comment_textarea.lines().join("\n").trim().to_string()
+    }
+
+    /// Record that this tab's rendered diff was just fetched or validated
+    /// against the freshest known refs. Drives the desktop freshness pill.
+    pub fn mark_diff_synced(&mut self) {
+        self.diff_synced_at_epoch_ms = Some(epoch_ms_now());
     }
 
     /// Create a new tab for a given repo root
@@ -1300,6 +1323,10 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: head_oid,
+            // Both feeders are fresh at construction time: `new_remote`
+            // downloaded the diff just now, and `new_remote_seeded` is keyed
+            // by the head oid of a just-fetched PR row.
+            diff_synced_at_epoch_ms: Some(epoch_ms_now()),
             pr_refs_fetched: false,
         };
 
@@ -1418,6 +1445,7 @@ impl TabState {
             needs_initial_refresh: true,
             storage_notice: None,
             last_diff_head_oid: None,
+            diff_synced_at_epoch_ms: None,
             pr_refs_fetched: false,
         };
         tab.finish_storage_setup();
@@ -1532,6 +1560,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            diff_synced_at_epoch_ms: None,
             pr_refs_fetched: false,
         };
 
@@ -1646,6 +1675,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            diff_synced_at_epoch_ms: None,
             pr_refs_fetched: false,
         }
     }
@@ -2270,10 +2300,34 @@ impl TabState {
             let raw = self.fetch_tab_raw_diff(scope)?;
             log_branch_profile_phase(self, "local_branch_raw_diff", t_raw_diff);
             self.apply_local_branch_raw_diff(raw, recompute_branch_hash);
+            // Record the head oid the diff was computed from (pure committed
+            // branch views only — PR tabs get theirs from the PR open /
+            // revalidate paths) so freshness checks can later compare it
+            // against the moved ref.
+            if self.pr_number.is_none()
+                && self.pr_head_ref.is_none()
+                && self.local_branch_checkout_root.is_none()
+            {
+                if let Some(branch) = self.local_branch_view.clone() {
+                    self.last_diff_head_oid = git::rev_parse_commit_in(&self.repo_root, &branch);
+                }
+            } else if self.pr_number.is_some() && self.pr_head_ref.is_some() {
+                // The PR diff was just refetched from GitHub (`gh pr diff`) —
+                // the previously recorded head oid no longer describes it.
+                // None = "unknown but fresh"; the next open/revalidate records
+                // the real oid.
+                self.last_diff_head_oid = None;
+            }
+            self.mark_diff_synced();
             log_branch_profile_phase(self, "refresh_diff_impl_total", t_total);
             return Ok(());
         }
-        self.refresh_diff_impl_rest(recompute_branch_hash, auto_unmark, t_total)
+        let res = self.refresh_diff_impl_rest(recompute_branch_hash, auto_unmark, t_total);
+        if res.is_ok() {
+            // The diff was just recomputed from the freshest refs git/gh see.
+            self.mark_diff_synced();
+        }
+        res
     }
 
     /// Seed this local-branch tab from an already-available raw diff (the
@@ -6703,6 +6757,7 @@ mod tests {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            diff_synced_at_epoch_ms: None,
             pr_refs_fetched: false,
         }
     }

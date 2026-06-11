@@ -320,6 +320,23 @@ pub struct AppSnapshot {
     /// the Local|PR Diff toggle.
     #[serde(default)]
     pub detected_pr_number: Option<u64>,
+    /// Epoch ms when the active tab's rendered diff was last fetched or
+    /// validated against the freshest known refs. None = not yet confirmed
+    /// (e.g. a stale cached diff is rendering while SWR revalidates). Drives
+    /// the Branch-panel freshness pill.
+    #[serde(default)]
+    pub diff_synced_at_epoch_ms: Option<u64>,
+    /// Head commit SHA the active tab's rendered diff was computed from.
+    #[serde(default)]
+    pub diff_head_oid: Option<String>,
+    /// Latest known head SHA for the same target (PR-list cache for PR tabs,
+    /// current local ref for committed branch views), when resolvable.
+    #[serde(default)]
+    pub diff_latest_head_oid: Option<String>,
+    /// True when the rendered diff's head no longer matches the latest known
+    /// head — the freshness pill renders "May be outdated".
+    #[serde(default)]
+    pub diff_outdated: bool,
     /// Which background fetches are currently in-flight.
     pub bg_loading: LoadingFlags,
     /// Running/done/failed background AI commands for the active tab.
@@ -1035,6 +1052,87 @@ fn build_replies(
     replies
 }
 
+// ── Diff freshness (Branch-panel pill) ───────────────────────────────────────
+
+/// TTL-cached `git rev-parse` for the freshness check that runs on every
+/// poll. Refs move rarely; a short TTL bounds subprocess spawns without
+/// letting the pill lag noticeably.
+fn rev_parse_commit_cached(repo_root: &str, refname: &str) -> Option<String> {
+    use std::time::{Duration, Instant};
+    const TTL: Duration = Duration::from_secs(20);
+    const MAX_ENTRIES: usize = 256;
+    type RevCache = HashMap<(String, String), (Instant, Option<String>)>;
+    static CACHE: std::sync::LazyLock<Mutex<RevCache>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let key = (repo_root.to_string(), refname.to_string());
+    if let Ok(guard) = CACHE.lock() {
+        if let Some((at, oid)) = guard.get(&key) {
+            if at.elapsed() < TTL {
+                return oid.clone();
+            }
+        }
+    }
+    let oid = er_engine::git::rev_parse_commit_in(repo_root, refname);
+    if let Ok(mut guard) = CACHE.lock() {
+        if guard.len() >= MAX_ENTRIES {
+            guard.clear();
+        }
+        guard.insert(key, (Instant::now(), oid.clone()));
+    }
+    oid
+}
+
+/// Latest known head oid for the active tab's diff target, when resolvable
+/// out-of-band: PR tabs read the PR-list cache (kept fresh by the `gh pr
+/// list` loops); committed branch views rev-parse the local ref (TTL-cached).
+/// Working-tree tabs return None — the watcher keeps them current.
+fn latest_known_head_oid(tab: &TabState, pr_cache: Option<&PrCache>) -> Option<String> {
+    if let (Some(slug), Some(number)) = (tab.remote_repo.as_deref(), tab.pr_number) {
+        return pr_cache
+            .and_then(|pc| pc.lock().ok())
+            .and_then(|cache| {
+                cache
+                    .get(slug)?
+                    .iter()
+                    .find(|p| p.number == number)
+                    .map(|p| p.head_oid.clone())
+            })
+            .filter(|s| !s.is_empty());
+    }
+    if let Some(number) = tab.pr_number {
+        // Local PR tab — match number + head branch across cached remotes to
+        // avoid cross-project PR-number collisions.
+        let branch = tab.local_branch_view.clone()?;
+        return pr_cache
+            .and_then(|pc| pc.lock().ok())
+            .and_then(|cache| {
+                cache
+                    .values()
+                    .flat_map(|prs| prs.iter())
+                    .find(|p| p.number == number && p.head_ref == branch)
+                    .map(|p| p.head_oid.clone())
+            })
+            .filter(|s| !s.is_empty());
+    }
+    if let Some(branch) = tab.local_branch_view.as_deref() {
+        if tab.local_branch_checkout_root.is_none() && tab.pr_head_ref.is_none() {
+            return rev_parse_commit_cached(&tab.repo_root, branch);
+        }
+    }
+    None
+}
+
+/// Rendered-vs-latest head comparison. Only a definitive mismatch flags the
+/// diff as outdated — an unknown side stays "not outdated" (the frontend's
+/// last-synced age threshold covers that case).
+fn diff_heads_mismatch(rendered: Option<&str>, latest: Option<&str>) -> bool {
+    matches!(
+        (rendered, latest),
+        (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() && a != b
+    )
+}
+
 // ── Builder ──────────────────────────────────────────────────────────────────
 
 pub type PrCache = Arc<Mutex<HashMap<String, Vec<PrInfo>>>>;
@@ -1639,6 +1737,14 @@ fn build_snapshot_inner(
         (ScopeStat::default(), ScopeStat::default())
     };
 
+    // Freshness fields for the Branch-panel pill: which head the rendered
+    // diff belongs to, the latest head we know about out-of-band, and whether
+    // they definitively disagree.
+    let diff_head_oid = tab.last_diff_head_oid.clone().filter(|s| !s.is_empty());
+    let diff_latest_head_oid = latest_known_head_oid(tab, pr_cache);
+    let diff_outdated =
+        diff_heads_mismatch(diff_head_oid.as_deref(), diff_latest_head_oid.as_deref());
+
     let out = AppSnapshot {
         mode: mode.to_string(),
         branch: tab
@@ -1689,6 +1795,10 @@ fn build_snapshot_inner(
         browser: browser_snapshot_from_tab(tab),
         github,
         detected_pr_number,
+        diff_synced_at_epoch_ms: tab.diff_synced_at_epoch_ms,
+        diff_head_oid,
+        diff_latest_head_oid,
+        diff_outdated,
         bg_loading: loading
             .and_then(|l| l.lock().ok().map(|g| g.clone()))
             .unwrap_or_default(),
@@ -3083,6 +3193,22 @@ fn status_str(status: &FileStatus) -> String {
 mod tests {
     use super::*;
     use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+
+    #[test]
+    fn diff_heads_mismatch_requires_both_sides() {
+        // Definitive mismatch → outdated.
+        assert!(diff_heads_mismatch(Some("abc"), Some("def")));
+        // Equal heads → fresh.
+        assert!(!diff_heads_mismatch(Some("abc"), Some("abc")));
+        // Unknown on either side never flags outdated (the synced-age
+        // threshold covers it instead).
+        assert!(!diff_heads_mismatch(None, Some("abc")));
+        assert!(!diff_heads_mismatch(Some("abc"), None));
+        assert!(!diff_heads_mismatch(None, None));
+        // Empty strings are treated as unknown.
+        assert!(!diff_heads_mismatch(Some(""), Some("abc")));
+        assert!(!diff_heads_mismatch(Some("abc"), Some("")));
+    }
 
     fn commit_info(hash: &str, subject: &str) -> er_engine::git::CommitInfo {
         er_engine::git::CommitInfo {

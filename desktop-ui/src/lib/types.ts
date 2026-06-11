@@ -350,6 +350,14 @@ export interface AppSnapshot {
   staged_stat?: { additions: number; deletions: number };
   /** PR detected for the active branch (PR-list cache). Drives the Local|PR Diff toggle. */
   detected_pr_number?: number | null;
+  /** Epoch ms when the active tab's diff was last fetched/validated. None = unconfirmed (stale SWR serve). */
+  diff_synced_at_epoch_ms?: number | null;
+  /** Head SHA the rendered diff was computed from. */
+  diff_head_oid?: string | null;
+  /** Latest known head SHA for the same target (PR cache / local refs), when resolvable. */
+  diff_latest_head_oid?: string | null;
+  /** True when the rendered diff's head no longer matches the latest known head. */
+  diff_outdated?: boolean;
   branch: string;
   base: string;
   input_mode: "normal" | "search" | "comment" | "filter" | "commit" | "confirm";

@@ -4,6 +4,7 @@
   import Card from "$lib/components/ui/Card.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { openExternalUrl } from "$lib/openExternalUrl";
+  import { diffFreshState, diffFreshTooltip, relativeSyncTime } from "$lib/diffFreshness";
 
   interface Props {
     branch: string;
@@ -137,6 +138,53 @@
     return { text: m.toLowerCase(), colorClass: "text-muted" };
   }
 
+  // ── Diff freshness pill + tab-level resync (issue #70 cache-state) ────────
+  // One indicator: refreshing (any diff fetch in flight — absorbs the old
+  // "Updating…" pill), stale (head moved or sync unconfirmed/old), fresh.
+  let nowMs = $state(Date.now());
+  $effect(() => {
+    const id = setInterval(() => {
+      nowMs = Date.now();
+    }, 30_000);
+    return () => clearInterval(id);
+  });
+  const diffRefreshing = $derived(
+    (app.snapshot?.bg_loading?.remote_pr_diff ?? false) ||
+      (app.snapshot?.bg_loading?.tab_diff ?? false),
+  );
+  const diffSyncedAt = $derived(app.snapshot?.diff_synced_at_epoch_ms ?? null);
+  const freshState = $derived(
+    diffFreshState({
+      refreshing: diffRefreshing,
+      outdated: app.snapshot?.diff_outdated ?? false,
+      syncedAtMs: diffSyncedAt,
+      nowMs,
+    }),
+  );
+  const freshSyncDetail = $derived(relativeSyncTime(diffSyncedAt, nowMs));
+  const freshTooltip = $derived(
+    diffFreshTooltip({
+      state: freshState,
+      headOid: app.snapshot?.diff_head_oid,
+      latestOid: app.snapshot?.diff_latest_head_oid,
+      syncedAtMs: diffSyncedAt,
+      nowMs,
+    }),
+  );
+  let resyncing = $state(false);
+  // Tab-level full resync: diff refetch for the latest head + GitHub status
+  // & comments. Backend spawns the diff work; failures toast via app.cmd or
+  // the snapshot notification.
+  async function onResyncTab() {
+    if (resyncing || diffRefreshing) return;
+    resyncing = true;
+    try {
+      await app.cmd("resync_tab_diff");
+    } finally {
+      resyncing = false;
+    }
+  }
+
   // Status-only resync: GitHub comments + CI checks + merge status. Never
   // touches the diff. Failures surface as an error toast via app.cmd.
   async function onRefresh() {
@@ -223,6 +271,46 @@
           </button>
         {/if}
       </div>
+    </div>
+
+    <!-- ── (a2) Diff freshness pill + tab-level resync ─────────────────────── -->
+    <div class="flex items-center gap-1.5 text-[11px] min-w-0" data-testid="diff-freshness">
+      <span class="inline-flex items-center gap-1.5 min-w-0 truncate" title={freshTooltip}>
+        {#if freshState === "refreshing"}
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="animate-spin text-muted shrink-0">
+            <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
+            <path d="M21 3v5h-5"/>
+          </svg>
+          <span class="text-muted whitespace-nowrap">Refreshing…</span>
+        {:else if freshState === "stale"}
+          <span class="w-1.5 h-1.5 rounded-full bg-risk-med shrink-0"></span>
+          <span class="text-risk-med whitespace-nowrap">May be outdated</span>
+        {:else}
+          <span class="w-1.5 h-1.5 rounded-full bg-add-fg shrink-0"></span>
+          <span class="text-fg-3 whitespace-nowrap">Up to date</span>
+        {/if}
+        {#if freshSyncDetail}
+          <span class="text-muted truncate">· synced {freshSyncDetail}</span>
+        {/if}
+      </span>
+      <span class="flex-1 min-w-0"></span>
+      <button
+        type="button"
+        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-hairline text-[10px] font-medium transition-colors shrink-0 {diffRefreshing || resyncing
+          ? 'text-muted opacity-50 cursor-not-allowed'
+          : 'text-fg-3 hover:text-fg hover:bg-hover'}"
+        onclick={onResyncTab}
+        disabled={diffRefreshing || resyncing}
+        title="Resync this tab: refetch the diff for the latest head and refresh GitHub status & comments"
+        aria-label="Resync tab diff and GitHub status"
+        data-testid="resync-tab"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:animate-spin={diffRefreshing || resyncing}>
+          <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
+          <path d="M21 3v5h-5"/>
+        </svg>
+        Resync
+      </button>
     </div>
 
     <!-- ── (b) Base ref row ───────────────────────────────────────────────── -->

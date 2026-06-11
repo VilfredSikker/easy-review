@@ -56,6 +56,7 @@ impl App {
         tab.branch_diff_hash = result.branch_diff_hash;
         tab.diff_hash = result.diff_hash;
         tab.last_diff_head_oid = result.head_oid;
+        tab.mark_diff_synced();
         // Rebuild precomputed scroll offsets for the new file list.
         tab.rebuild_hunk_offsets();
         tab.reload_ai_state();

@@ -2599,6 +2599,253 @@ pub async fn resync_github_status(state: State<'_, AppState>) -> Result<AppSnaps
     .await
 }
 
+/// What kind of diff the active tab renders — captured under a brief lock so
+/// `resync_tab_diff` can dispatch the right background revalidation.
+enum DiffResyncTarget {
+    RemotePr {
+        owner: String,
+        repo: String,
+        number: u64,
+        repo_root: String,
+    },
+    LocalPr {
+        repo_root: String,
+        number: u64,
+    },
+    LocalBranch {
+        repo_root: String,
+        branch: String,
+        base: String,
+    },
+    Working {
+        repo_root: String,
+    },
+}
+
+/// Tab-level full resync behind the Branch-panel "Resync" button: refetch the
+/// active tab's diff for the freshest head on a worker thread (spinner =
+/// `loading.remote_pr_diff`, the same flag the SWR opens use, so the freshness
+/// pill shows a single "Refreshing" state) PLUS the status-only resync
+/// (GitHub comments + CI checks + merge status). Nothing here blocks on the
+/// network while holding the App lock. Diff-refresh failures keep the
+/// previous diff and surface a toast.
+#[tauri::command]
+pub async fn resync_tab_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || resync_tab_diff_impl(&state)).await
+}
+
+fn resync_tab_diff_impl(state: &AppState) -> Result<AppSnapshot, String> {
+    // Phase 1 (brief lock): capture the active tab's identity.
+    let (target, gh_key) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab = app.tab();
+        let target = if tab.is_remote() {
+            match (
+                tab.remote_repo.as_deref().and_then(|s| s.split_once('/')),
+                tab.pr_number,
+            ) {
+                (Some((o, r)), Some(n)) => DiffResyncTarget::RemotePr {
+                    owner: o.to_string(),
+                    repo: r.to_string(),
+                    number: n,
+                    repo_root: tab.repo_root.clone(),
+                },
+                _ => return Err("Remote tab is missing its PR identity".to_string()),
+            }
+        } else if let Some(n) = tab.pr_number {
+            DiffResyncTarget::LocalPr {
+                repo_root: tab.repo_root.clone(),
+                number: n,
+            }
+        } else if let Some(branch) = tab.local_branch_view.clone() {
+            DiffResyncTarget::LocalBranch {
+                repo_root: tab.repo_root.clone(),
+                branch,
+                base: tab.base_branch.clone(),
+            }
+        } else {
+            DiffResyncTarget::Working {
+                repo_root: tab.repo_root.clone(),
+            }
+        };
+        (target, active_github_key(&app, state))
+    };
+
+    // Claim the diff-refresh spinner atomically — if an SWR revalidate or
+    // background refresh is already in flight, don't stack another fetch.
+    let already_running = {
+        let mut flags = state.loading.lock().map_err(|e| e.to_string())?;
+        if flags.remote_pr_diff || flags.tab_diff {
+            true
+        } else {
+            flags.remote_pr_diff = true;
+            false
+        }
+    };
+    if !already_running {
+        match target {
+            DiffResyncTarget::RemotePr {
+                owner,
+                repo,
+                number,
+                repo_root,
+            } => spawn_remote_pr_diff_resync(state, owner, repo, number, repo_root),
+            DiffResyncTarget::LocalPr { repo_root, number } => {
+                // Reuse the SWR revalidate path: fresh `gh pr view` + diff,
+                // write-through to the diff store + open cache, apply via
+                // apply_remote_diff_result. It clears the spinner when done.
+                let file = projects::load();
+                let proj = file.projects.iter().find(|p| p.root_path == repo_root);
+                let project_id = proj.map(|p| p.id.clone()).unwrap_or_default();
+                let repo_slug = proj.and_then(|p| p.remote.clone());
+                spawn_stale_pr_revalidate(state, project_id, repo_root, repo_slug, number, true);
+            }
+            DiffResyncTarget::LocalBranch {
+                repo_root,
+                branch,
+                base,
+            } => {
+                // Background base fetch + committed-diff recompute, with
+                // write-through to the branch diff store; `true` clears the
+                // spinner when the refresh lands.
+                kick_background_branch_refresh(state, repo_root, branch, base, true);
+            }
+            DiffResyncTarget::Working { repo_root } => {
+                spawn_working_diff_resync(state, repo_root);
+            }
+        }
+    }
+
+    // Status-only resync (CI + merge status) for PR-associated tabs — same
+    // deduplicated background fetcher the PR card's refresh icon uses.
+    if let Some((owner, repo, number)) = gh_key {
+        kick_github_status_refresh(
+            state.gh_status_cache.clone(),
+            Arc::clone(&state.gh_status_in_flight),
+            Arc::clone(&state.desktop_revision),
+            Some(Arc::clone(&state.loading)),
+            owner,
+            repo,
+            number,
+        );
+    }
+    // Comment pull runs three-phase in this worker; tabs without a PR
+    // soft-fail inside (notify, not error).
+    pull_github_comments_impl(state)
+}
+
+/// Forced diff refetch for a remote PR tab (manual resync). Refreshes the PR
+/// metadata first so the diff is keyed to the latest head, writes through to
+/// the persistent diff store, then applies via `apply_remote_diff_result`.
+/// Clears `loading.remote_pr_diff` (set by the caller) when done.
+fn spawn_remote_pr_diff_resync(
+    state: &AppState,
+    owner: String,
+    repo: String,
+    number: u64,
+    repo_root: String,
+) {
+    let state = state.clone();
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        let slug = format!("{owner}/{repo}");
+        // Phase 2 (no lock): metadata + diff from the network. The metadata
+        // refresh also updates the sidebar row caches (trust dot).
+        let fresh = cache_single_pr_for_remote(&state, &slug, number).ok();
+        let ctx = er_engine::app::RemoteDiffContext {
+            owner,
+            repo,
+            pr_number: number,
+            repo_root,
+            last_head_oid: None, // force the fetch — this is a manual resync
+            expected_head_oid: fresh
+                .as_ref()
+                .map(|p| p.head_oid.clone())
+                .filter(|s| !s.is_empty()),
+        };
+        match er_engine::app::fetch_remote_diff_data(&ctx) {
+            Ok(Some(r)) => {
+                // Write-through to the persistent diff store when the fresh
+                // metadata carries a usable key.
+                if let (Some(pr), Some(oid)) = (fresh.as_ref(), r.head_oid.clone()) {
+                    if !pr.base_ref.is_empty() {
+                        let meta = er_engine::diff_store::DiffMeta::new(
+                            number,
+                            oid,
+                            pr.base_ref.clone(),
+                            pr.head_ref.clone(),
+                            pr.updated_at.clone(),
+                            None,
+                        );
+                        if let Err(e) = er_engine::diff_store::save_diff(&slug, &meta, &r.raw_diff)
+                        {
+                            log::warn!("PR diff persist failed for {slug}#{number}: {e}");
+                        }
+                    }
+                }
+                // Phase 3 (brief lock): apply to the tab if it is still open.
+                if let Ok(mut guard) = state.app.lock() {
+                    guard.apply_remote_diff_result(r);
+                }
+                log::info!(
+                    "resync_tab_diff remote={slug} pr={number} ok ms={}",
+                    t.elapsed().as_millis()
+                );
+            }
+            // Unreachable with last_head_oid = None, but harmless.
+            Ok(None) => {}
+            Err(e) => {
+                log::warn!("resync_tab_diff remote={slug} pr={number} failed: {e}");
+                if let Ok(mut guard) = state.app.lock() {
+                    guard.notify(&format!("Resync failed: {e}"));
+                }
+            }
+        }
+        if let Ok(mut f) = state.loading.lock() {
+            f.remote_pr_diff = false;
+        }
+        crate::profile_log::bump_desktop_revision(
+            &state.desktop_revision,
+            "resync_tab_diff_remote",
+        );
+    });
+}
+
+/// Manual diff refresh for a plain working-tree tab. Mirrors the deferred tab
+/// refresh: re-runs `refresh_diff()` on a worker thread, clears the spinner,
+/// bumps the revision. Failures keep the previous diff and toast.
+fn spawn_working_diff_resync(state: &AppState, repo_root: String) {
+    let state = state.clone();
+    std::thread::spawn(move || {
+        if let Ok(mut app) = state.app.lock() {
+            let active = app.active_tab;
+            let mut err = None;
+            if let Some(tab) = app.tabs.get_mut(active).filter(|t| {
+                t.repo_root == repo_root
+                    && !t.is_remote()
+                    && t.pr_number.is_none()
+                    && t.local_branch_view.is_none()
+            }) {
+                if let Err(e) = tab.refresh_diff() {
+                    err = Some(e.to_string());
+                }
+            }
+            if let Some(e) = err {
+                log::warn!("resync_tab_diff working root={repo_root} failed: {e}");
+                app.notify(&format!("Resync failed: {e}"));
+            }
+        }
+        if let Ok(mut f) = state.loading.lock() {
+            f.remote_pr_diff = false;
+        }
+        crate::profile_log::bump_desktop_revision(
+            &state.desktop_revision,
+            "resync_tab_diff_working",
+        );
+    });
+}
+
 /// Submit pending local comments as a GitHub PR review with an explicit decision.
 /// `mode` must be "COMMENT", "APPROVE", or "REQUEST_CHANGES".
 /// `summary` is the top-level review body sent to GitHub.
@@ -4881,12 +5128,21 @@ fn build_local_branch_tab(
             match er_engine::diff_store::load_branch_diff(&repo_slug, &name, &head, &base) {
                 Ok(Some(raw)) => {
                     new_tab.seed_local_branch_diff(raw);
+                    // Exact (head oid, base oid) match against current refs —
+                    // the cached diff is confirmed fresh as of right now.
+                    new_tab.last_diff_head_oid = Some(head.clone());
+                    new_tab.mark_diff_synced();
                     LocalBranchOpenPath::CacheHit
                 }
                 Ok(None) | Err(_) => {
                     match er_engine::diff_store::load_branch_diff_any(&repo_slug, &name) {
-                        Ok(Some((raw, _meta))) => {
+                        Ok(Some((raw, meta))) => {
                             new_tab.seed_local_branch_diff(raw);
+                            // Stale serve: record the head the cached diff was
+                            // computed from; `diff_synced_at_epoch_ms` stays
+                            // None until the SWR revalidate lands.
+                            new_tab.last_diff_head_oid =
+                                Some(meta.head_oid).filter(|s| !s.is_empty());
                             LocalBranchOpenPath::StaleRevalidate
                         }
                         _ => {
@@ -5546,12 +5802,15 @@ fn serve_pr_open_stale(
 /// the first frame); this thread clears it and bumps the revision when done.
 ///
 /// On any failure the stale view is kept and the spinner is cleared.
+/// `notify_failure` additionally surfaces the error as a toast (used by the
+/// manual Branch-panel resync; automatic SWR opens stay silent).
 fn spawn_stale_pr_revalidate(
     state: &AppState,
     project_id: String,
     repo_root: String,
     repo_slug: Option<String>,
     pr_number: u64,
+    notify_failure: bool,
 ) {
     let app = Arc::clone(&state.app);
     let loading = Arc::clone(&state.loading);
@@ -5627,13 +5886,24 @@ fn spawn_stale_pr_revalidate(
             ),
             // Keep the stale view — better than a blank tab; the user can
             // force-refresh or the next open retries.
-            Err(e) => log::warn!(
-                "stale_pr_revalidate project={} pr={} failed ms={} err={} (keeping stale view)",
-                project_id,
-                pr_number,
-                t.elapsed().as_millis(),
-                e
-            ),
+            Err(e) => {
+                log::warn!(
+                    "stale_pr_revalidate project={} pr={} failed ms={} err={} (keeping stale view)",
+                    project_id,
+                    pr_number,
+                    t.elapsed().as_millis(),
+                    e
+                );
+                if notify_failure {
+                    if let Ok(mut guard) = app.lock() {
+                        guard.notify(&format!("Resync failed: {e}"));
+                    }
+                    crate::profile_log::bump_desktop_revision(
+                        &desktop_revision,
+                        "stale_pr_revalidate_failed",
+                    );
+                }
+            }
         }
     });
 }
@@ -6093,7 +6363,7 @@ fn open_pr_review_impl(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .unwrap_or_else(|| inputs.metadata.pr_data.title.clone());
-    let new_tab = er_engine::app::TabState::new_local_pr_from_github_diff(
+    let mut new_tab = er_engine::app::TabState::new_local_pr_from_github_diff(
         inputs.repo_root,
         pr_number,
         inputs.resolved_base,
@@ -6106,6 +6376,15 @@ fn open_pr_review_impl(
         log::error!("open_pr_review: pr=#{pr_number} project_id={project_id} err={e}");
         e.to_string()
     })?;
+    // Freshness bookkeeping for the Branch-panel pill: record which head the
+    // rendered diff belongs to. Non-stale opens (fresh fetch, or cache keyed
+    // by the latest known head) count as validated right now; stale SWR
+    // serves stay unconfirmed until the background revalidate applies.
+    new_tab.last_diff_head_oid =
+        Some(freshness_for_backfill.head_oid.clone()).filter(|s| !s.is_empty());
+    if !served_stale {
+        new_tab.mark_diff_synced();
+    }
     log_branch_open_phase(&project_id, &branch_label, "pr_tab_build", t_tab_build);
     log::info!(
         "branch_open project={} branch={} phase=pr_open_cache hit={}",
@@ -6158,6 +6437,7 @@ fn open_pr_review_impl(
             stale_repo_root,
             repo_slug,
             pr_number,
+            false,
         );
     }
     let t_snapshot = std::time::Instant::now();

@@ -34,10 +34,6 @@
 
   const mode = $derived(snapshot?.mode ?? "branch");
   const prActive = $derived(mode === "pr");
-  /** Background diff refresh in flight (the 60s PR loop, or a
-   *  stale-while-revalidate PR/branch open that served an older cached diff
-   *  and is recomputing the fresh one). */
-  const prDiffUpdating = $derived(snapshot?.bg_loading?.remote_pr_diff ?? false);
   /** Show the [Local Branch | PR Diff] toggle when the branch has a PR and the
    *  tab is local (remote-only tabs are implicitly PR Diff). */
   const showSourceToggle = $derived(prNumber != null && activeTab?.kind !== "remote_pr");
@@ -91,17 +87,8 @@
       <span class="font-mono text-[10px] text-add-fg">+{additions}</span>
       <span class="font-mono text-[10px] text-del-fg">−{deletions}</span>
     {/if}
-    {#if prDiffUpdating}
-      <!-- Small non-blocking indicator: the rendered diff may be stale while a
-           background refetch updates it in place. -->
-      <span class="flex items-center gap-1 text-[10px] text-muted whitespace-nowrap" title="Refreshing diff in the background">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="animate-spin shrink-0">
-          <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
-          <path d="M21 3v5h-5"/>
-        </svg>
-        Updating…
-      </span>
-    {/if}
+    <!-- The "Updating…" diff-refresh pill moved into the Branch panel's
+         freshness indicator (BranchCard) — one indicator, not two. -->
   </div>
 
   <!-- Quick-action icon row -->
