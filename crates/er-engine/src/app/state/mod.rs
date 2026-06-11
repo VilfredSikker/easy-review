@@ -6396,77 +6396,9 @@ fn truncate_str(s: &str, max: usize) -> String {
 
 // ── Helpers ──
 
-/// Simple ISO 8601 UTC timestamp (no external crate needed).
-/// Kept in ISO format so .er-feedback.json timestamps are human-readable.
-pub fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-
-    let days = secs / 86400;
-    let remaining = secs % 86400;
-    let hours = remaining / 3600;
-    let minutes = (remaining % 3600) / 60;
-    let seconds = remaining % 60;
-
-    // Walk years from epoch, subtracting days per year (handles leap years via Gregorian rule)
-    let mut y = 1970i64;
-    let mut d = i64::try_from(days).unwrap_or(i64::MAX);
-    loop {
-        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if d < days_in_year {
-            break;
-        }
-        d -= days_in_year;
-        y += 1;
-    }
-
-    // Walk months within the year (m is 0-indexed, d ends as 0-indexed day-of-month)
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days: [i64; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 0usize;
-    for md in &month_days {
-        if d < *md {
-            break;
-        }
-        d -= *md;
-        m += 1;
-    }
-    // Guard against overflow past December (shouldn't happen, but be safe)
-    if m >= 12 {
-        m = 11;
-        d = 0;
-    }
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        y,
-        m + 1,
-        d + 1,
-        hours,
-        minutes,
-        seconds
-    )
-}
+// chrono_now moved to the always-on sync module; re-exported so existing
+// `crate::app::chrono_now` / `super::chrono_now` paths keep working.
+pub use crate::sync::chrono_now;
 
 /// Delete personal questions sidecar files. Errors are ignored (files may not exist).
 pub fn cleanup_questions(er_dir: &str) {

@@ -14,6 +14,7 @@ to the consuming crates.
 | `arena/` | Multi-reviewer "arena" runs (orchestrator + registry) | `orchestrator.rs` |
 | `watch/` | Debounced file system watcher | `mod.rs` |
 | `github.rs` | GitHub CLI (`gh`) integration: PRs, comment sync, status | — |
+| `sync.rs` | Pure sync core (no `App` dependency): comment merge + anchor resolution, remote diff fetch | — |
 | `config.rs` | `ErConfig`, feature flags, settings items, TOML load/save | — |
 | `storage.rs` | Managed review storage paths (repo/branch/view-bucket slugs) | — |
 | `highlight.rs` | Syntect highlighter core (TUI wraps this; desktop uses Shiki) | — |
