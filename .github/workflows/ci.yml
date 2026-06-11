@@ -96,3 +96,15 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  headless:
+    name: Engine (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # No Tauri system deps on purpose: er-engine without UI features must
+      # build in a bare container.
+      - run: cargo build -p er-engine --no-default-features
+      - run: cargo build -p er-engine --no-default-features --features highlight
