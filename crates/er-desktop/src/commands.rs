@@ -4300,18 +4300,18 @@ fn open_remote_pr_impl(
     state: &AppState,
 ) -> Result<AppSnapshot, String> {
     let remote = format!("{owner}/{repo}");
-    let (_project_id, fresh_pr) = record_remote_recent_pr(&state, &remote, number)?;
+    let (_project_id, fresh_pr) = record_remote_recent_pr(state, &remote, number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(
         &mut app,
-        &state,
+        state,
         &owner,
         &repo,
         number,
         replace.unwrap_or(false),
         Some(&fresh_pr),
     )?;
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    kick_meta_refresh(state, app.tab().repo_root.clone());
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
         Arc::clone(&state.gh_status_in_flight),
@@ -4358,11 +4358,11 @@ fn open_pr_url_impl(
         return open_pr_review_impl(project_id, pr_ref.number, replace, None, state);
     }
 
-    let (_project_id, fresh_pr) = record_remote_recent_pr(&state, &remote, pr_ref.number)?;
+    let (_project_id, fresh_pr) = record_remote_recent_pr(state, &remote, pr_ref.number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(
         &mut app,
-        &state,
+        state,
         &pr_ref.owner,
         &pr_ref.repo,
         pr_ref.number,
@@ -5647,7 +5647,7 @@ fn open_pr_review_impl(
     // Branch view (set_mode "branch"); toggling back re-enters PrDiff via
     // set_mode "pr_diff", which fetches refs on first entry.
     let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    kick_meta_refresh(state, app.tab().repo_root.clone());
     if served_stale {
         // Stale-while-revalidate: the tab just rendered an older head's diff.
         // Flag the spinner before building the snapshot (first frame shows
@@ -5661,7 +5661,7 @@ fn open_pr_review_impl(
             .find(|p| p.id == project_id)
             .and_then(|p| p.remote.clone());
         spawn_stale_pr_revalidate(
-            &state,
+            state,
             project_id.clone(),
             stale_repo_root,
             repo_slug,
