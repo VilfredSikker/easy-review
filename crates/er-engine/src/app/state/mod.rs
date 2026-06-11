@@ -158,15 +158,10 @@ impl DiffCache {
     }
 
     pub fn get(&mut self, hash: &str) -> Option<&Vec<DiffFile>> {
-        // TODO(risk:minor): remove(pos).unwrap() is safe only because position() just confirmed the index exists,
-        // but if VecDeque ever changes contract this is a hidden panic. Consider using swap_remove_back or expect().
-        if let Some(pos) = self.entries.iter().position(|(h, _)| h == hash) {
-            let entry = self.entries.remove(pos).unwrap();
-            self.entries.push_back(entry);
-            self.entries.back().map(|(_, f)| f)
-        } else {
-            None
-        }
+        let pos = self.entries.iter().position(|(h, _)| h == hash)?;
+        let entry = self.entries.remove(pos)?;
+        self.entries.push_back(entry);
+        self.entries.back().map(|(_, f)| f)
     }
 
     pub fn insert(&mut self, hash: String, files: Vec<DiffFile>) {
@@ -640,9 +635,6 @@ pub struct TabState {
     /// Precomputed hunk offsets for O(1) scroll position lookup
     pub hunk_offsets: Option<HunkOffsets>,
 
-    /// Cached visible file indices (invalidated on search/filter/file list change)
-    pub file_tree_cache: Option<FileTreeCache>,
-
     /// Memory budget tracking
     pub mem_budget: MemoryBudget,
 
@@ -897,9 +889,6 @@ impl SessionState {
 pub struct HunkOffsets {
     /// offsets[i] = logical line number where hunk i starts
     pub offsets: Vec<usize>,
-    /// Total logical lines for this file
-    #[allow(dead_code)]
-    pub total: usize,
 }
 
 impl HunkOffsets {
@@ -912,24 +901,8 @@ impl HunkOffsets {
             cursor += hunk.lines.len();
             cursor += 1; // blank line between hunks
         }
-        Self {
-            offsets,
-            total: cursor,
-        }
+        Self { offsets }
     }
-}
-
-/// Cached visible file indices for file tree rendering
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct FileTreeCache {
-    /// Indices into the files array that pass filters
-    pub visible: Vec<usize>,
-    /// Inputs that produced this cache
-    search_query: String,
-    show_unreviewed_only: bool,
-    file_count: usize,
-    reviewed_count: usize,
 }
 
 /// Lightweight memory tracking
@@ -1082,7 +1055,6 @@ impl TabState {
         tab.clamp_hunk();
         tab.ensure_file_parsed();
         tab.rebuild_hunk_offsets();
-        tab.file_tree_cache = None;
         tab.mtime_cache.clear();
         tab.update_mem_budget();
         let t_ai_reload = Instant::now();
@@ -1218,7 +1190,6 @@ impl TabState {
             unresolved_count: 0,
             compaction_config,
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode,
             file_headers,
@@ -1337,7 +1308,6 @@ impl TabState {
             unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode: false,
             file_headers: Vec::new(),
@@ -1452,7 +1422,6 @@ impl TabState {
             unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode: false,
             file_headers: Vec::new(),
@@ -1567,7 +1536,6 @@ impl TabState {
             unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode: false,
             file_headers: Vec::new(),
@@ -2055,7 +2023,6 @@ impl TabState {
         self.diff_scroll = 0;
         self.h_scroll = 0;
         self.rebuild_hunk_offsets();
-        self.file_tree_cache = None;
     }
 
     /// Whether `raw_diff` (if present) matches the review `scope` for this tab.
@@ -2271,7 +2238,6 @@ impl TabState {
             self.clamp_hunk();
             self.ensure_file_parsed();
             self.rebuild_hunk_offsets();
-            self.file_tree_cache = None;
             self.mtime_cache.clear();
             self.update_mem_budget();
             // Reload AI sidecar for this branch's comment directory
@@ -2341,7 +2307,6 @@ impl TabState {
                 self.clamp_hunk();
                 self.ensure_file_parsed();
                 self.rebuild_hunk_offsets();
-                self.file_tree_cache = None;
                 self.update_mem_budget();
 
                 if recompute_branch_hash {
@@ -2403,8 +2368,8 @@ impl TabState {
             self.lazy_mode = true;
 
             // Apply compaction to the stub files (pattern-based only, since hunks are empty)
-            // TODO(risk:medium): zip() silently stops at the shorter iterator. If file_headers and files ever
-            // diverge in length (e.g. a parsing bug), some files will be skipped without any indication.
+            // zip() stops at the shorter iterator; files and file_headers are built from
+            // the same header scan, so their lengths stay in sync.
             for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
                 if self.user_expanded.contains(&file.path) {
                     continue;
@@ -2577,9 +2542,6 @@ impl TabState {
         // Rebuild hunk offsets for the new selection
         self.rebuild_hunk_offsets();
 
-        // Invalidate file tree cache
-        self.file_tree_cache = None;
-
         log_branch_profile_phase(self, "refresh_diff_impl_total", t_total);
         Ok(())
     }
@@ -2601,9 +2563,8 @@ impl TabState {
             ReviewFocus::Files => self.ai.review_file_count(),
             ReviewFocus::Checklist => self.ai.review_checklist_count(),
         };
-        // TODO(risk:minor): when item_count == 0, max_cursor is set to 0 and review_cursor is clamped to 0.
-        // Any code that then indexes into the list at review_cursor (e.g., checklist items) must
-        // separately guard against the empty-list case, or it will index position 0 of an empty Vec.
+        // review_cursor stays 0 for an empty list; consumers must still guard
+        // item_count == 0 before indexing.
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
         self.review_cursor = self.review_cursor.min(max_cursor);
         self.last_ai_check = ai::latest_er_mtime(&er_dir);
@@ -2776,11 +2737,8 @@ impl TabState {
             false
         };
 
-        // TODO(risk:medium): write errors are silently discarded here (let _ = ...). If the disk is full
-        // or the directory is read-only, the relocation update is lost without any user notification.
-        // The next refresh will re-relocate the same comments, but any intermediate "relocated" state is
-        // dropped, and the user has no idea the write failed.
-        // Write back to disk if anything changed
+        // Write back to disk if anything changed. Write failures are ignored — the
+        // next refresh re-relocates the same comments from scratch.
         if questions_changed {
             if let Some(ref qs) = self.ai.questions {
                 let path = format!("{}/questions.json", self.er_dir());
@@ -2868,84 +2826,56 @@ impl TabState {
         self.layers.show_ai_findings = !self.layers.show_ai_findings;
     }
 
+    /// Forward cycle order for the side panel. `FileDetail` and `AgentLog` are
+    /// always available; the others are skipped when their data is absent.
+    const PANEL_CYCLE: [PanelContent; 5] = [
+        PanelContent::FileDetail,
+        PanelContent::AiSummary,
+        PanelContent::PrOverview,
+        PanelContent::SymbolRefs,
+        PanelContent::AgentLog,
+    ];
+
+    fn panel_available(&self, panel: PanelContent) -> bool {
+        match panel {
+            PanelContent::FileDetail | PanelContent::AgentLog => true,
+            PanelContent::AiSummary => self.layers.show_ai_findings && self.ai.has_data(),
+            PanelContent::PrOverview => self.pr_data.is_some(),
+            PanelContent::SymbolRefs => self.symbol_refs.is_some(),
+        }
+    }
+
     /// Cycle panel: None → FileDetail → AiSummary (if AI data) → PrOverview (if PR live) → SymbolRefs (if symbols) → AgentLog → None
     pub fn toggle_panel(&mut self) {
-        let has_ai = self.layers.show_ai_findings && self.ai.has_data();
-        let has_pr = self.pr_data.is_some();
-        self.panel = match self.panel {
-            None => Some(PanelContent::FileDetail),
-            Some(PanelContent::FileDetail) => {
-                if has_ai {
-                    Some(PanelContent::AiSummary)
-                } else if has_pr {
-                    Some(PanelContent::PrOverview)
-                } else if self.symbol_refs.is_some() {
-                    Some(PanelContent::SymbolRefs)
-                } else {
-                    Some(PanelContent::AgentLog)
-                }
-            }
-            Some(PanelContent::AiSummary) => {
-                if has_pr {
-                    Some(PanelContent::PrOverview)
-                } else if self.symbol_refs.is_some() {
-                    Some(PanelContent::SymbolRefs)
-                } else {
-                    Some(PanelContent::AgentLog)
-                }
-            }
-            Some(PanelContent::PrOverview) => {
-                if self.symbol_refs.is_some() {
-                    Some(PanelContent::SymbolRefs)
-                } else {
-                    Some(PanelContent::AgentLog)
-                }
-            }
-            Some(PanelContent::SymbolRefs) => Some(PanelContent::AgentLog),
-            Some(PanelContent::AgentLog) => None,
-        };
-        self.panel_scroll = 0;
-        if self.panel.is_none() {
-            self.panel_focus = false;
-        }
+        self.cycle_panel(true);
     }
 
     /// Cycle panel in reverse: None → AgentLog → SymbolRefs → PrOverview → AiSummary → FileDetail → None
     pub fn toggle_panel_reverse(&mut self) {
-        let has_ai = self.layers.show_ai_findings && self.ai.has_data();
-        let has_pr = self.pr_data.is_some();
-        let has_sym = self.symbol_refs.is_some();
-        self.panel = match self.panel {
-            None => Some(PanelContent::AgentLog),
-            Some(PanelContent::AgentLog) => {
-                if has_sym {
-                    Some(PanelContent::SymbolRefs)
-                } else if has_pr {
-                    Some(PanelContent::PrOverview)
-                } else if has_ai {
-                    Some(PanelContent::AiSummary)
-                } else {
-                    Some(PanelContent::FileDetail)
-                }
-            }
-            Some(PanelContent::SymbolRefs) => {
-                if has_pr {
-                    Some(PanelContent::PrOverview)
-                } else if has_ai {
-                    Some(PanelContent::AiSummary)
-                } else {
-                    Some(PanelContent::FileDetail)
-                }
-            }
-            Some(PanelContent::PrOverview) => {
-                if has_ai {
-                    Some(PanelContent::AiSummary)
-                } else {
-                    Some(PanelContent::FileDetail)
-                }
-            }
-            Some(PanelContent::AiSummary) => Some(PanelContent::FileDetail),
-            Some(PanelContent::FileDetail) => None,
+        self.cycle_panel(false);
+    }
+
+    /// Move to the next available panel in the cycle direction, closing the
+    /// panel after the last one.
+    fn cycle_panel(&mut self, forward: bool) {
+        let cycle = &Self::PANEL_CYCLE;
+        let pos = self.panel.and_then(|p| cycle.iter().position(|&c| c == p));
+        self.panel = match (forward, pos) {
+            (true, None) => cycle.iter().copied().find(|&p| self.panel_available(p)),
+            (true, Some(i)) => cycle[i + 1..]
+                .iter()
+                .copied()
+                .find(|&p| self.panel_available(p)),
+            (false, None) => cycle
+                .iter()
+                .rev()
+                .copied()
+                .find(|&p| self.panel_available(p)),
+            (false, Some(i)) => cycle[..i]
+                .iter()
+                .rev()
+                .copied()
+                .find(|&p| self.panel_available(p)),
         };
         self.panel_scroll = 0;
         if self.panel.is_none() {
@@ -3013,9 +2943,6 @@ impl TabState {
                 } else {
                     // Approximate word_wrap: each ~70 chars = 1 line (rough estimate)
                     let chars = text_line.len();
-                    // TODO(risk:medium): (chars / 70 + 1) as u16 overflows if a single summary line
-                    // exceeds ~4.5 MB (u16::MAX * 70). The cast wraps silently, producing a small offset
-                    // and misaligning the scroll target. Use saturating arithmetic here.
                     line += ((chars / 70) + 1) as u16;
                 }
             }
@@ -3032,8 +2959,6 @@ impl TabState {
 
         // File entries
         if let Some(ref review) = self.ai.review {
-            // TODO(risk:minor): review.files.len() as u16 truncates silently if there are more than
-            // 65535 files in the review. Unlikely but adding .min(u16::MAX as usize) as u16 is safer.
             line += review.files.len() as u16;
             if self.ai.total_findings() > 0 {
                 line += 2; // total findings + blank
@@ -3395,10 +3320,8 @@ impl TabState {
         use std::fs;
         use std::time::SystemTime;
 
-        // TODO(risk:medium): sort_by_mtime is applied after lazy parsing sets up file_headers with indices
-        // matching self.files positions. After sorting, self.files[i] no longer corresponds to
-        // self.file_headers[i], breaking ensure_file_parsed(). This is the same bug as noted above —
-        // lazy mode + mtime sort together produce wrong on-demand parses.
+        // In lazy mode this breaks the index correspondence between self.files and
+        // self.file_headers that ensure_file_parsed() relies on.
         let repo_root = self.repo_root.clone();
         self.files.sort_by(|a, b| {
             let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
@@ -3915,10 +3838,8 @@ impl App {
             tabs
         };
 
-        // TODO(risk:minor): config is loaded from the first tab's repo root but the App is shared across
-        // all tabs. If a second tab's .er-config.toml has different feature flags, those settings are
-        // ignored — the first tab's config wins for everything (display, features, agents).
-        // Load config from the first tab's repo root
+        // Config comes from the first tab's repo root and applies to all tabs —
+        // other tabs' .er-config.toml files are ignored.
         let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
         let er_config = config::load_config(repo_root);
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
@@ -4245,11 +4166,6 @@ impl App {
 
     // ── Tab Accessors ──
 
-    /// Get a reference to the active tab
-    // TODO(risk:high): tab() and tab_mut() index self.tabs[self.active_tab] directly. If active_tab
-    // ever exceeds tabs.len() (e.g., after close_tab() removes the last non-first tab and the index
-    // is not decremented correctly, or if tabs is somehow emptied), this panics. All callers assume
-    // tabs is non-empty; that invariant is enforced only by close_tab's guard but not at the type level.
     pub fn toggle_panel(&mut self, name: &str) {
         match name {
             "left" => self.panels_visible.left = !self.panels_visible.left,
@@ -4259,13 +4175,18 @@ impl App {
         }
     }
 
+    /// Get a reference to the active tab. `App` always holds at least one tab
+    /// (`close_tab` refuses to remove the last one); the index is clamped so a
+    /// stale `active_tab` can't read out of bounds.
     pub fn tab(&self) -> &TabState {
-        &self.tabs[self.active_tab]
+        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        &self.tabs[idx]
     }
 
     /// Get a mutable reference to the active tab
     pub fn tab_mut(&mut self) -> &mut TabState {
-        &mut self.tabs[self.active_tab]
+        let idx = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        &mut self.tabs[idx]
     }
 
     /// Returns true when split diff rendering should be active.
@@ -6711,7 +6632,6 @@ mod tests {
             unresolved_count: 0,
             compaction_config: CompactionConfig::default(),
             hunk_offsets: None,
-            file_tree_cache: None,
             mem_budget: MemoryBudget::default(),
             lazy_mode: false,
             file_headers: Vec::new(),

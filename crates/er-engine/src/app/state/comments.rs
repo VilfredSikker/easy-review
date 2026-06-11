@@ -5,7 +5,7 @@ impl App {
 
     /// Enter comment mode for the current file + hunk (and optionally line)
     pub fn start_comment(&mut self, comment_type: CommentType) {
-        let split_active = self.split_diff_active(&self.config.clone());
+        let split_active = self.split_diff_active(&self.config);
         let split_focus = self.tab().split_focus;
         let tab = self.tab_mut();
         let file_path = match tab.selected_diff_file() {

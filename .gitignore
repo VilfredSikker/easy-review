@@ -4,6 +4,7 @@ node_modules/
 .work/
 desktop-ui/storybook-static/
 .playwright-mcp/
+.cursor/
 
 # Override global gitignore for project-level Claude Code commands
 !.claude/

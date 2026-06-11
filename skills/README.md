@@ -12,17 +12,10 @@ All skills follow a shared severity model and "what not to flag" list. See `skil
 
 Skills are auto-discovered from `.claude/commands/` in the repo root — no manual installation needed. Anyone who clones the repo and uses Claude Code gets all skills automatically.
 
-The source of truth for skill prompts is this `skills/` directory. The files in `.claude/commands/` are copies. To update a skill:
+The source of truth for skill prompts is this `skills/` directory. The files in `.claude/commands/` are symlinks to `skills/<name>/SKILL.md`, so editing a skill here updates the command automatically. When adding a new skill, create the matching symlink:
 
-1. Edit the `SKILL.md` in `skills/<name>/`
-2. Copy it: `cp skills/<name>/SKILL.md .claude/commands/<name>.md`
-
-Or re-copy all at once:
 ```bash
-for skill in skills/*/SKILL.md; do
-  name=$(basename $(dirname "$skill"))
-  cp "$skill" ".claude/commands/${name}.md"
-done
+ln -s ../../skills/<name>/SKILL.md .claude/commands/<name>.md
 ```
 
 ## Workflow

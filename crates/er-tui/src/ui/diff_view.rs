@@ -826,11 +826,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     } else {
         tab.h_scroll
     };
-    // TODO(risk:medium): scroll.saturating_sub(render_start) is a usize value cast
-    // directly to u16. For viewport-mode diffs with large scroll offsets (> 65535 lines
-    // rendered before the viewport window), this overflows silently. In practice diffs
-    // that large are auto-compacted, but the cast should use min(u16::MAX) or be
-    // validated to match the actual rendered buffer height.
     let visible_scroll = if use_viewport {
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
         (scroll_into_rendered, effective_h_scroll)
@@ -902,9 +897,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
     // Render hunk indicator overlay in top-right corner
     if total_hunks > 0 {
         let indicator_text = format!("Hunk {}/{}", tab.active_current_hunk() + 1, total_hunks);
-        // TODO(risk:minor): indicator_width is usize cast to u16. If total_hunks is very
-        // large (> 9999) the formatted string can exceed u16::MAX chars — harmless in
-        // practice but the cast is silent. saturating_as or a length cap would be safer.
         let indicator_width = indicator_text.len() + 3;
         let indicator_area = Rect {
             x: area.x + area.width.saturating_sub(indicator_width as u16 + 1),
@@ -1616,8 +1608,6 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
     } else {
         h_scroll
     };
-    // TODO(risk:medium): same silent usize→u16 truncation as in the unified render path.
-    // scroll.saturating_sub(render_start) can exceed u16::MAX on pathologically large diffs.
     let visible_scroll = if use_viewport {
         let scroll_into_rendered = scroll.saturating_sub(render_start) as u16;
         (scroll_into_rendered, effective_h_scroll)
@@ -1721,18 +1711,53 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
     let title = format!(" {} · {} ", commit.short_hash, commit.subject);
     let total_files = history.commit_files.len();
 
-    // TODO(risk:medium): render_history_diff builds the entire multi-file diff as an
-    // unbounded Vec<Line> with no viewport culling. A commit touching hundreds of large
-    // files can produce tens of thousands of Line objects, all allocated every frame.
-    // This function bypasses the VIRTUALIZE_THRESHOLD guard used in the normal diff path.
-    // Apply the same viewport-based rendering used in render() and render_split_side().
-    let mut lines: Vec<Line> = Vec::new();
-    // Track the line index where each file header starts (for sticky header)
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            ratatui::style::Style::default().fg(styles::BRIGHT()),
+        ))
+        .title_alignment(ratatui::layout::Alignment::Left)
+        .borders(Borders::NONE)
+        .style(ratatui::style::Style::default().bg(styles::BG()))
+        .padding(Padding::new(0, 1, 0, 0));
+
+    // Viewport-based rendering, same idea as the unified render path: line
+    // positions are computed arithmetically and only the visible window is
+    // materialized, so a commit touching hundreds of files doesn't allocate
+    // (or syntax-highlight) thousands of Lines per frame.
+    let inner_height = block.inner(area).height as usize;
+    let scroll_y = history.diff_scroll as usize;
+    let render_end = scroll_y + inner_height;
+
+    let mut visible_lines: Vec<Line> = Vec::with_capacity(inner_height);
+    // Absolute index of the next logical line; only lines whose index falls
+    // inside [scroll_y, render_end) are built.
+    let mut cursor: usize = 0;
+    // Track the absolute line index where each file header starts (for the
+    // sticky header below).
     let mut file_header_line_indices: Vec<usize> = Vec::new();
+
+    macro_rules! emit {
+        ($line:expr $(,)?) => {{
+            if cursor >= scroll_y && cursor < render_end {
+                visible_lines.push($line);
+            }
+            cursor += 1;
+        }};
+    }
 
     // Render each file as a section
     for (file_idx, file) in history.commit_files.iter().enumerate() {
         let is_current_file = file_idx == history.selected_file;
+
+        // Each file occupies: header + blank, then per hunk: header + lines + gap/blank.
+        let file_line_count: usize =
+            2 + file.hunks.iter().map(|h| 2 + h.lines.len()).sum::<usize>();
+        if cursor + file_line_count <= scroll_y || cursor >= render_end {
+            file_header_line_indices.push(cursor);
+            cursor += file_line_count;
+            continue;
+        }
 
         // File header
         let file_header_bg = if is_current_file {
@@ -1792,41 +1817,49 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
             ratatui::style::Style::default().bg(file_header_bg),
         ));
 
-        file_header_line_indices.push(lines.len());
-        lines.push(Line::from(header_spans));
-        lines.push(Line::from(""));
+        file_header_line_indices.push(cursor);
+        emit!(Line::from(header_spans));
+        emit!(Line::from(""));
 
         // Render hunks for this file
         for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+            let hunk_line_count = 2 + hunk.lines.len();
+            if cursor + hunk_line_count <= scroll_y || cursor >= render_end {
+                cursor += hunk_line_count;
+                continue;
+            }
             let is_current_hunk = is_current_file && hunk_idx == history.current_hunk;
 
             // Hunk header
             let marker = if is_current_hunk { "▶" } else { " " };
-            lines.push(
-                Line::from(vec![
-                    Span::styled(
-                        format!(" {} ", marker),
-                        if is_current_hunk {
-                            ratatui::style::Style::default()
-                                .fg(styles::CYAN())
-                                .bg(styles::HUNK_BG())
-                        } else {
-                            ratatui::style::Style::default()
-                                .fg(styles::DIM())
-                                .bg(styles::HUNK_BG())
-                        },
-                    ),
-                    Span::styled(&hunk.header, styles::hunk_header_style()),
-                ])
-                .style(styles::hunk_header_style()),
-            );
+            emit!(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", marker),
+                    if is_current_hunk {
+                        ratatui::style::Style::default()
+                            .fg(styles::CYAN())
+                            .bg(styles::HUNK_BG())
+                    } else {
+                        ratatui::style::Style::default()
+                            .fg(styles::DIM())
+                            .bg(styles::HUNK_BG())
+                    },
+                ),
+                Span::styled(&hunk.header, styles::hunk_header_style()),
+            ])
+            .style(styles::hunk_header_style()),);
 
             // Hunk lines
             for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+                // Skip per-line formatting and highlighting outside the window.
+                if cursor < scroll_y || cursor >= render_end {
+                    cursor += 1;
+                    continue;
+                }
                 if let LineType::Fold(hidden) = diff_line.line_type {
                     let fold_text = format!(" ··· {} lines ···", hidden);
                     let fold_style = ratatui::style::Style::default().fg(styles::MUTED());
-                    lines.push(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                    emit!(Line::from(vec![Span::styled(fold_text, fold_style)]));
                     continue;
                 }
 
@@ -1891,7 +1924,7 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                     spans.extend(highlighted);
                 }
 
-                lines.push(Line::from(spans).style(base_style));
+                emit!(Line::from(spans).style(base_style));
             }
 
             // Gap indicator or blank line between hunks
@@ -1903,35 +1936,16 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
                 0
             };
             if gap > 0 {
-                lines.push(Line::from(Span::styled(
+                emit!(Line::from(Span::styled(
                     format!("  ··· {} lines hidden ···", gap),
                     ratatui::style::Style::default().fg(styles::MUTED()),
                 )));
             } else {
-                lines.push(Line::from(""));
+                emit!(Line::from(""));
             }
         }
     }
 
-    let block = Block::default()
-        .title(Span::styled(
-            title,
-            ratatui::style::Style::default().fg(styles::BRIGHT()),
-        ))
-        .title_alignment(ratatui::layout::Alignment::Left)
-        .borders(Borders::NONE)
-        .style(ratatui::style::Style::default().bg(styles::BG()))
-        .padding(Padding::new(0, 1, 0, 0));
-
-    // Pre-slice to visible rows — same fix as unified render path.
-    let inner_height = block.inner(area).height as usize;
-    let scroll_y = history.diff_scroll as usize;
-    let visible_end = (scroll_y + inner_height).min(lines.len());
-    let mut visible_lines: Vec<Line> = if scroll_y < lines.len() {
-        lines.drain(scroll_y..visible_end).collect()
-    } else {
-        Vec::new()
-    };
     let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG()));
     while visible_lines.len() < inner_height {
         visible_lines.push(bg_line.clone());
@@ -1956,17 +1970,15 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
             .unwrap_or(0);
 
         // Only show the sticky header if the file's header has scrolled off-screen
-        // (i.e., the scroll position is past the header line itself).
-        // TODO(risk:high): file_header_line_indices[topmost_file_idx] and
-        // history.commit_files[topmost_file_idx] are both unchecked index accesses.
-        // rposition() returns an index into file_header_line_indices which was built in
-        // the same loop as the files, so lengths should match — but if commit_files was
-        // mutated between the build and this read (concurrent watch refresh) they can
-        // diverge and both accesses panic. Take a snapshot of commit_files at the top of
-        // render_history_diff and use it throughout.
+        // (i.e., the scroll position is past the header line itself). The bounds
+        // check guards against commit_files changing length between the header
+        // index build and this read.
         let header_line = file_header_line_indices[topmost_file_idx];
-        if scroll > header_line {
-            let file = &history.commit_files[topmost_file_idx];
+        if let Some(file) = history
+            .commit_files
+            .get(topmost_file_idx)
+            .filter(|_| scroll > header_line)
+        {
             let sticky_bg = styles::PANEL();
 
             let mut sticky_spans = vec![

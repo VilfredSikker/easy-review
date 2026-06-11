@@ -2,13 +2,13 @@
 
 Debounced file watching using `notify` + `notify-debouncer-mini`. Single file module.
 
-## mod.rs (~60 lines)
+## mod.rs
 
 **`FileWatcher`** — wraps a `Debouncer<RecommendedWatcher>`. Created with `FileWatcher::new(root, debounce_ms, tx)`.
 
 - Watches the repo root recursively
 - 500ms debounce (configurable)
-- Filters out `.git/` directory changes
+- Lets `.git/index` (staging) and `.git/refs/` (commits) through, skips other `.git/` noise and `.er/` (written by `er` itself)
 - Sends `WatchEvent::FilesChanged(Vec<String>)` over the provided `mpsc::Sender`
 
 ## Lifecycle

@@ -11,6 +11,11 @@ pub mod normal;
 
 pub use normal::handle_normal_input;
 
+/// Byte index of the char boundary immediately before `pos` (0 if at start).
+fn prev_char_boundary(s: &str, pos: usize) -> usize {
+    s[..pos].char_indices().last().map(|(i, _)| i).unwrap_or(0)
+}
+
 pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     // Config hub overlay — handles inline string editing
     if matches!(app.overlay, Some(app::OverlayData::ConfigHub { .. })) {
@@ -24,72 +29,37 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
 
         if is_editing {
             match key.code {
-                KeyCode::Char(c) => {
+                KeyCode::Enter => app.config_hub_confirm_edit(),
+                KeyCode::Esc => app.config_hub_cancel_edit(),
+                code => {
                     if let Some(app::OverlayData::ConfigHub {
                         editing: Some(ref mut edit),
                         ..
                     }) = &mut app.overlay
                     {
-                        edit.buffer.insert(edit.cursor_pos, c);
-                        edit.cursor_pos += c.len_utf8();
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let Some(app::OverlayData::ConfigHub {
-                        editing: Some(ref mut edit),
-                        ..
-                    }) = &mut app.overlay
-                    {
-                        if edit.cursor_pos > 0 {
-                            // Find the char boundary before cursor_pos
-                            let prev_boundary = edit.buffer[..edit.cursor_pos]
-                                .char_indices()
-                                .last()
-                                .map(|(i, _)| i)
-                                .unwrap_or(0);
-                            edit.cursor_pos = prev_boundary;
-                            edit.buffer.remove(edit.cursor_pos);
+                        match code {
+                            KeyCode::Char(c) => {
+                                edit.buffer.insert(edit.cursor_pos, c);
+                                edit.cursor_pos += c.len_utf8();
+                            }
+                            KeyCode::Backspace if edit.cursor_pos > 0 => {
+                                edit.cursor_pos = prev_char_boundary(&edit.buffer, edit.cursor_pos);
+                                edit.buffer.remove(edit.cursor_pos);
+                            }
+                            KeyCode::Left if edit.cursor_pos > 0 => {
+                                edit.cursor_pos = prev_char_boundary(&edit.buffer, edit.cursor_pos);
+                            }
+                            KeyCode::Right if edit.cursor_pos < edit.buffer.len() => {
+                                let next_char = edit.buffer[edit.cursor_pos..]
+                                    .chars()
+                                    .next()
+                                    .unwrap_or('\0');
+                                edit.cursor_pos += next_char.len_utf8();
+                            }
+                            _ => {}
                         }
                     }
                 }
-                KeyCode::Left => {
-                    if let Some(app::OverlayData::ConfigHub {
-                        editing: Some(ref mut edit),
-                        ..
-                    }) = &mut app.overlay
-                    {
-                        if edit.cursor_pos > 0 {
-                            let prev_boundary = edit.buffer[..edit.cursor_pos]
-                                .char_indices()
-                                .last()
-                                .map(|(i, _)| i)
-                                .unwrap_or(0);
-                            edit.cursor_pos = prev_boundary;
-                        }
-                    }
-                }
-                KeyCode::Right => {
-                    if let Some(app::OverlayData::ConfigHub {
-                        editing: Some(ref mut edit),
-                        ..
-                    }) = &mut app.overlay
-                    {
-                        if edit.cursor_pos < edit.buffer.len() {
-                            let next_char = edit.buffer[edit.cursor_pos..]
-                                .chars()
-                                .next()
-                                .unwrap_or('\0');
-                            edit.cursor_pos += next_char.len_utf8();
-                        }
-                    }
-                }
-                KeyCode::Enter => {
-                    app.config_hub_confirm_edit();
-                }
-                KeyCode::Esc => {
-                    app.config_hub_cancel_edit();
-                }
-                _ => {}
             }
         } else {
             match key.code {
@@ -1292,9 +1262,6 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
     }
     let json = serde_json::to_string_pretty(&gc)?;
     let tmp_path = format!("{}.tmp", comments_path);
-    // TODO(risk:medium): if fs::write succeeds but fs::rename fails (e.g. permissions error),
-    // the .tmp file is left behind and the comments file is not updated. The orphaned .tmp
-    // will be picked up or confused on the next sync. Clean up the tmp file on rename failure.
     std::fs::write(&tmp_path, &json)?;
     std::fs::rename(&tmp_path, &comments_path)?;
 
@@ -1418,14 +1385,10 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
             }
 
             let path = &comment.file;
-            // TODO(risk:medium): a comment with no line_start (hunk-level comment) falls back
-            // to line 1, silently attributing the GitHub comment to the wrong location. GitHub
-            // will accept it but reviewers will see it anchored to the wrong line. Use the
-            // GitHub PR review API for hunk/file-level comments instead of line-level push.
+            // Hunk-level comments have no line_start; the line-level push API requires a
+            // line, so they get anchored to line 1 on GitHub.
             let line = comment.line_start.unwrap_or(1);
-            // TODO(risk:minor): push errors are counted but the error message is discarded.
-            // The user sees "N failed" with no indication of which comments failed or why
-            // (e.g. outdated commit SHA, deleted file, rate limit). Retain errors for display.
+            // Push failures are only counted — individual error messages are not surfaced.
             let start = comment.line_start.unwrap_or(line);
             let end = comment.line_end.unwrap_or(start);
             let side = comment.side.as_str();

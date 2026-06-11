@@ -133,7 +133,7 @@
 
   const annotationIndex = $derived.by(() =>
     buildAnnotationIndex(
-      snapshot?.ai ?? { threads: [], findings: [] } as any,
+      snapshot?.ai ?? { threads: [], findings: [] },
       files,
       mode,
       app.commentVisibility,

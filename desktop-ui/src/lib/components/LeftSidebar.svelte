@@ -597,37 +597,12 @@
     }
   }
 
-  function visibleRevealCount(map: Record<string, number>, projectId: string): number {
+  function revealCount(map: Record<string, number>, projectId: string): number {
     return map[projectId] ?? 5;
   }
 
   function revealMore(map: Record<string, number>, projectId: string): Record<string, number> {
-    const next = visibleRevealCount(map, projectId) + 5;
-    return { ...map, [projectId]: next };
-  }
-
-  function visibleToReviewCount(projectId: string): number {
-    return visibleRevealCount(prRevealCountByProject, projectId);
-  }
-
-  function revealMoreToReview(projectId: string) {
-    prRevealCountByProject = revealMore(prRevealCountByProject, projectId);
-  }
-
-  function visibleSavedCount(projectId: string): number {
-    return visibleRevealCount(prSavedRevealCountByProject, projectId);
-  }
-
-  function revealMoreSaved(projectId: string) {
-    prSavedRevealCountByProject = revealMore(prSavedRevealCountByProject, projectId);
-  }
-
-  function visibleRecentCount(projectId: string): number {
-    return visibleRevealCount(prRecentRevealCountByProject, projectId);
-  }
-
-  function revealMoreRecent(projectId: string) {
-    prRecentRevealCountByProject = revealMore(prRecentRevealCountByProject, projectId);
+    return { ...map, [projectId]: revealCount(map, projectId) + 5 };
   }
 
 </script>
@@ -1248,14 +1223,14 @@
 
               {#if visibleSavedPrs(project).length > 0}
                 {@render prSectionLabel("Saved")}
-                {@const savedVisible = visibleSavedPrs(project).slice(0, visibleSavedCount(project.id))}
+                {@const savedVisible = visibleSavedPrs(project).slice(0, revealCount(prSavedRevealCountByProject, project.id))}
                 {#each savedVisible as pr (pr.number)}
                   {@render prRow(pr)}
                 {/each}
                 {#if visibleSavedPrs(project).length > savedVisible.length}
                   <button
                     type="button"
-                    onclick={() => revealMoreSaved(project.id)}
+                    onclick={() => (prSavedRevealCountByProject = revealMore(prSavedRevealCountByProject, project.id))}
                     class="w-full text-left px-2 py-1 rounded-md text-[12px] text-fg-3 hover:bg-hover"
                   >
                     Show more
@@ -1272,14 +1247,14 @@
 
               {#if visibleToReviewPrs(project).length > 0 || (loadingPrList && project.prs_to_review?.length === 0 && !searchActive)}
                 {@render prSectionLabel("To Review")}
-                {@const toReviewVisible = visibleToReviewPrs(project).slice(0, visibleToReviewCount(project.id))}
+                {@const toReviewVisible = visibleToReviewPrs(project).slice(0, revealCount(prRevealCountByProject, project.id))}
                 {#each toReviewVisible as pr (pr.number)}
                   {@render prRow(pr)}
                 {/each}
                 {#if visibleToReviewPrs(project).length > toReviewVisible.length}
                   <button
                     type="button"
-                    onclick={() => revealMoreToReview(project.id)}
+                    onclick={() => (prRevealCountByProject = revealMore(prRevealCountByProject, project.id))}
                     class="w-full text-left px-2 py-1 rounded-md text-[12px] text-fg-3 hover:bg-hover"
                   >
                     Show more
@@ -1289,14 +1264,14 @@
 
               {#if visibleRecentPrs(project).length > 0}
                 {@render prSectionLabel("Recent")}
-                {@const recentVisible = visibleRecentPrs(project).slice(0, visibleRecentCount(project.id))}
+                {@const recentVisible = visibleRecentPrs(project).slice(0, revealCount(prRecentRevealCountByProject, project.id))}
                 {#each recentVisible as pr (pr.number)}
                   {@render prRow(pr)}
                 {/each}
                 {#if visibleRecentPrs(project).length > recentVisible.length}
                   <button
                     type="button"
-                    onclick={() => revealMoreRecent(project.id)}
+                    onclick={() => (prRecentRevealCountByProject = revealMore(prRecentRevealCountByProject, project.id))}
                     class="w-full text-left px-2 py-1 rounded-md text-[12px] text-fg-3 hover:bg-hover"
                   >
                     Show more

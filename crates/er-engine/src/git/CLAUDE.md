@@ -4,11 +4,11 @@ Pure diff parsing + shelling out to git. No application state, no UI.
 
 ## Files
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `mod.rs` | ~14 | Re-exports public types and functions |
-| `diff.rs` | ~717 | `parse_diff()` — unified diff text to structured data |
-| `status.rs` | ~650 | All git commands (diff, staging, branches, worktrees, watched files) |
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Re-exports public types and functions |
+| `diff.rs` | `parse_diff()` — unified diff text to structured data; header-only lazy scan; compaction |
+| `status.rs` | All git commands (diff, staging, branches, worktrees, commit log, watched files) |
 
 ## diff.rs — Parser
 

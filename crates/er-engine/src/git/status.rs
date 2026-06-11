@@ -155,12 +155,6 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         }
     };
 
-    // TODO(risk:medium): if `git rev-parse --abbrev-ref HEAD` fails (e.g., empty repo with
-    // no commits), unwrap_or_default() returns "". Then `branch != current` is trivially true
-    // for any branch, and the code may select an upstream ref that is also empty (""), which
-    // passes the `!branch.is_empty()` guard only by accident. In a totally empty repo the
-    // function falls through to returning "main" as a hard-coded guess, which is fine — but
-    // the failure to read HEAD is silently swallowed without any log or warning.
     let current = run(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
     // Try upstream tracking branch
@@ -310,11 +304,6 @@ pub fn git_diff_raw_file(
         ],
         _ => anyhow::bail!("Unknown diff mode: {}", mode),
     };
-    // TODO(risk:medium): `path` comes from DiffFile.path which is parsed from git diff output
-    // and not re-validated. The "--" separator protects against path values starting with "-"
-    // being interpreted as flags, but a path containing null bytes could cause unexpected
-    // behavior depending on OS behavior for Command::arg(). This is low-likelihood but
-    // worth auditing if file paths are ever sourced from external input.
     args.push(path);
 
     let output = Command::new("git")
@@ -369,19 +358,10 @@ fn synthetic_new_file_diff(path: &str, content: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let count = lines.len();
     let mut diff = String::new();
-    // TODO(risk:medium): `path` is an untracked file path from `git ls-files --others`.
-    // If the path contains a newline character (unusual but possible on some filesystems),
-    // it would break the synthetic diff format and corrupt parse_diff()'s state machine,
-    // potentially causing the wrong file to be shown or a panic on subsequent byte-offset slicing.
     diff.push_str(&format!("diff --git a/{path} b/{path}\n"));
     diff.push_str("new file mode 100644\n");
     diff.push_str("--- /dev/null\n");
     diff.push_str(&format!("+++ b/{path}\n"));
-    // TODO(risk:minor): if `content` has no trailing newline, .lines() drops the last implicit
-    // empty line and `count` underreports by zero lines — correct. However, if content ends with
-    // "\n\n", the last empty line IS counted by .lines() in some Rust versions. The hunk header
-    // count will then match, but the final diff line will be an empty "+\n" which is valid.
-    // Harmless but worth being aware of if the diff is later round-tripped through a strict parser.
     diff.push_str(&format!("@@ -0,0 +1,{count} @@\n"));
     for line in &lines {
         diff.push_str(&format!("+{line}\n"));
@@ -704,10 +684,6 @@ pub fn git_diff_against_branch(root: &str, base: &str, branch: &str) -> Result<S
 
 /// Commit staged changes with the given message
 pub fn git_commit(repo_root: &str, message: &str) -> Result<()> {
-    // TODO(risk:minor): `message` is passed as a separate argument to Command::args, so shell
-    // injection is not possible. However, a message containing only whitespace or starting with
-    // "#" will cause git to reject the commit with a cryptic error. Consider validating that
-    // message is non-empty and non-whitespace before invoking git.
     let output = Command::new("git")
         .args(["commit", "-m", message])
         .current_dir(repo_root)
@@ -730,10 +706,8 @@ pub fn git_log_branch(
     limit: usize,
     skip: usize,
 ) -> Result<Vec<CommitInfo>> {
-    // TODO(risk:medium): if the first `git log` call fails (non-zero exit), the code silently
-    // falls back to `git log` without the range — logging all commits in the repo rather than
-    // just branch commits. The failure is swallowed and the caller receives a full repo history
-    // with no indication that the range was ignored. This can be very misleading in History mode.
+    // If the ranged `git log` fails (e.g. unknown base ref), this falls back to an
+    // unranged log — the caller gets full repo history instead of branch commits.
     let range = format!("{}..HEAD", base);
     let format_str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
     let limit_str = format!("--max-count={}", limit);
@@ -934,12 +908,8 @@ fn parse_shortstat(line: &str) -> (usize, usize, usize) {
 
 /// Get the diff for a single commit, handling merge commits and root commits
 pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String> {
-    // TODO(risk:medium): `hash` comes from CommitInfo.hash which is parsed from git log output.
-    // While git log output is trusted, if a short hash is used and later passed here in an
-    // ambiguous state (multiple objects share the prefix), git may print a disambiguation error
-    // to stderr and fail. The fallback to diff-tree also takes hash directly. Ensure only full
-    // 40-character hashes are stored in CommitInfo.hash (the format string uses %H, so this
-    // should be safe, but the short_hash field must never be used here).
+    // `hash` must be the full %H hash from CommitInfo.hash, never short_hash —
+    // ambiguous short prefixes make git fail.
     let unified_arg = format!("--unified={}", super::DEFAULT_CONTEXT_LINES);
     // Try diff against first parent
     let output = Command::new("git")
@@ -991,15 +961,27 @@ pub struct WatchedFile {
     pub size: u64,
 }
 
+/// Join a watched-file relative path onto a root directory, rejecting paths
+/// that would escape it (absolute paths or `..` components). `rel_path` comes
+/// from user-configured glob patterns in `.er-config.toml`, so it is not
+/// trusted to stay inside the repository.
+fn join_within(root: &str, rel_path: &str) -> Result<std::path::PathBuf> {
+    use std::path::Component;
+    let rel = Path::new(rel_path);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+    {
+        anyhow::bail!("Watched file path escapes its root: {rel_path}");
+    }
+    Ok(Path::new(root).join(rel))
+}
+
 /// Discover watched files matching glob patterns relative to repo root
 pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Vec<WatchedFile>> {
     let mut files = Vec::new();
     for pattern in patterns {
-        // TODO(risk:high): `pattern` comes directly from .er-config.toml without validation.
-        // A pattern containing ".." components (e.g., "../../etc/*") will expand to paths
-        // outside the repository root. The glob crate does not restrict matches to a subtree.
-        // After glob expansion, each matched path should be checked to confirm it is still
-        // beneath `repo_root` using `path.starts_with(repo_root)` after canonicalization.
         // Normalize patterns so they match files recursively:
         // - "dir/**" → "dir/**/*" (glob's ** alone yields directories)
         // - "dir/*"  → "dir/**/*" (user likely wants all files under dir)
@@ -1021,18 +1003,22 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
                 Err(_) => continue,
             };
             if path.is_file() {
-                let rel_path = path
-                    .strip_prefix(repo_root)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                // Only include files inside the repo — a pattern containing
+                // `..` would otherwise expand to paths outside the root.
+                let rel_path = match path.strip_prefix(repo_root) {
+                    Ok(p)
+                        if !p
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir)) =>
+                    {
+                        p.to_string_lossy().to_string()
+                    }
+                    _ => continue,
+                };
                 let metadata = match std::fs::metadata(&path) {
                     Ok(m) => m,
                     Err(_) => continue,
                 };
-                // TODO(risk:minor): metadata.modified() returns Err on platforms that don't
-                // support mtime (e.g., some WASM/embedded targets). unwrap_or(UNIX_EPOCH)
-                // silently makes all files appear equally old, defeating the recency sort.
-                // On supported platforms (macOS/Linux) this is fine in practice.
                 let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
                 let size = metadata.len();
                 files.push(WatchedFile {
@@ -1063,30 +1049,22 @@ pub fn verify_gitignored(repo_root: &str, path: &str) -> bool {
 /// `tab.er_root.snapshots_dir()`). This allows the caller to redirect storage
 /// away from `<repo_root>/.er/snapshots` in managed (desktop) mode.
 pub fn save_snapshot(repo_root: &str, rel_path: &str, snapshots_dir: &str) -> Result<()> {
-    let src = Path::new(repo_root).join(rel_path);
-    // TODO(risk:high): `rel_path` comes from glob expansion of user-configured patterns.
-    // A pattern like "../../../etc/passwd" or a symlink pointing outside the repo root
-    // would cause the join to escape the repo directory. `Path::join` does not sanitize
-    // ".." components. Validate that the resolved canonical path of `dst` still starts
-    // with `repo_root` before writing.
-    let dst = Path::new(snapshots_dir).join(rel_path);
+    let src = join_within(repo_root, rel_path)?;
+    let dst = join_within(snapshots_dir, rel_path)?;
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // TODO(risk:medium): the copy is not atomic — a crash or signal between create_dir_all
-    // and fs::copy leaves a partial or missing snapshot. On the next diff_watched_file_snapshot
-    // call the snapshot will exist but be empty/truncated, producing a misleading diff.
-    // Write to a temp file and rename into place for atomicity.
-    std::fs::copy(src, dst)?;
+    // Copy via tmp + rename so a crash mid-copy can't leave a truncated
+    // snapshot that would later produce a misleading diff.
+    let tmp = dst.with_extension("tmp-snapshot");
+    std::fs::copy(src, &tmp)?;
+    std::fs::rename(&tmp, dst)?;
     Ok(())
 }
 
 /// Read the content of a watched file, returning None if binary
 pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Option<String>> {
-    // TODO(risk:high): same path traversal risk as save_snapshot — `rel_path` is not validated
-    // to stay within repo_root. A malicious glob pattern in .er-config.toml (e.g., "../../../etc/shadow")
-    // would cause this function to read arbitrary files on the filesystem.
-    let full_path = Path::new(repo_root).join(rel_path);
+    let full_path = join_within(repo_root, rel_path)?;
     let bytes = std::fs::read(&full_path)
         .with_context(|| format!("Failed to read watched file: {}", rel_path))?;
 
@@ -1112,9 +1090,8 @@ pub fn diff_watched_file_snapshot(
     rel_path: &str,
     snapshots_dir: &str,
 ) -> Result<Option<String>> {
-    // TODO(risk:high): same path traversal risk — `rel_path` is not canonicalized before joining.
-    let current_path = Path::new(repo_root).join(rel_path);
-    let snapshot_path = Path::new(snapshots_dir).join(rel_path);
+    let current_path = join_within(repo_root, rel_path)?;
+    let snapshot_path = join_within(snapshots_dir, rel_path)?;
 
     if !snapshot_path.exists() {
         // First time seeing this file — save snapshot, signal "new file"
