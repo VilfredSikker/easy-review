@@ -142,7 +142,7 @@ pub(crate) fn pr_needs_my_review(pr: &PrInfo, me: &str) -> bool {
             .any(|(l, s)| l == me && (s == "APPROVED" || s == "CHANGES_REQUESTED"))
 }
 
-fn cached_pr_from_info(pr: &PrInfo, remote: &str) -> er_engine::pr_cache::CachedPr {
+pub(crate) fn cached_pr_from_info(pr: &PrInfo, remote: &str) -> er_engine::pr_cache::CachedPr {
     er_engine::pr_cache::CachedPr {
         number: pr.number,
         title: pr.title.clone(),
@@ -176,6 +176,8 @@ fn pr_info_from_cached(pr: &er_engine::pr_cache::CachedPr) -> PrInfo {
         updated_at: pr.updated_at.clone(),
         // Served straight from the persistent cache — checkout-ready by definition.
         cached: true,
+        // Filled by `build_projects_from_file` via the diff-store probe.
+        diff_cached: false,
         latest_reviewer_states: Vec::new(),
     }
 }
@@ -616,6 +618,7 @@ pub(crate) async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
                     head_oid: r.head_ref_oid,
                     updated_at: r.updated_at,
                     cached: false, // marked in build_projects() from the persisted cache
+                    diff_cached: false, // probed in build_projects() against the diff store
                     latest_reviewer_states,
                 }
             })
@@ -645,6 +648,7 @@ mod tests {
             head_oid: String::new(),
             updated_at: String::new(),
             cached: false,
+            diff_cached: false,
             latest_reviewer_states: vec![],
         }
     }

@@ -1,3 +1,12 @@
+<script lang="ts" module>
+  // ── PR hover-prefetch bookkeeping (module-level: survives remounts) ──
+  /** Pending hover timers keyed `${projectId}:${prNumber}` (cancel on mouseleave). */
+  const prPrefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Heads already prefetched (or in flight) keyed `${prNumber}:${headOid}` —
+   *  re-hovering the same row at the same head never re-invokes the backend. */
+  const prPrefetchStarted = new Set<string>();
+</script>
+
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
@@ -436,6 +445,7 @@
 
   function openProjectMenu(projectId: string, e: MouseEvent) {
     e.stopPropagation();
+    closePrRowMenu();
     if (projectMenuOpen === projectId) {
       closeProjectMenu();
       return;
@@ -450,6 +460,60 @@
   function closeProjectMenu() {
     projectMenuOpen = null;
     projectMenuAnchor = null;
+  }
+
+  // ── Per-PR-row "⋯" menu ──
+  // One menu open at a time (keyed `${projectId}:${prNumber}`); click-outside
+  // and Esc close it.
+  let prMenuOpen = $state<string | null>(null);
+  let prMenuAnchor = $state<MenuAnchor | null>(null);
+  let prMenuFlip = $state(false);
+  let syncingPrKey = $state<string | null>(null);
+  const PR_MENU_EST_HEIGHT = 110;
+
+  function openPrRowMenu(project: ProjectSnapshot, pr: PrInfo, e: MouseEvent) {
+    e.stopPropagation();
+    closeProjectMenu();
+    const key = `${project.id}:${pr.number}`;
+    if (prMenuOpen === key) {
+      closePrRowMenu();
+      return;
+    }
+    const btn = e.currentTarget as HTMLElement;
+    const { anchor, flip } = anchorFromButton(btn, PR_MENU_EST_HEIGHT);
+    prMenuAnchor = anchor;
+    prMenuFlip = flip;
+    prMenuOpen = key;
+  }
+
+  function closePrRowMenu() {
+    prMenuOpen = null;
+    prMenuAnchor = null;
+  }
+
+  /** Re-sync one PR: metadata refresh + nearest-cache update + diff fetch/persist. */
+  async function syncPrRow(project: ProjectSnapshot, pr: PrInfo) {
+    closePrRowMenu();
+    const key = `${project.id}:${pr.number}`;
+    if (syncingPrKey === key) return;
+    syncingPrKey = key;
+    try {
+      await app.cmd("sync_pr_row", { projectId: project.id, prNumber: pr.number });
+    } finally {
+      if (syncingPrKey === key) syncingPrKey = null;
+    }
+  }
+
+  /** Pin the PR's head branch via the existing tracked-branches mechanism. */
+  async function pinPrBranch(project: ProjectSnapshot, pr: PrInfo) {
+    closePrRowMenu();
+    await app.cmd("add_tracked_branch", { projectId: project.id, name: pr.head_ref });
+  }
+
+  function handleSidebarKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape" && prMenuOpen !== null) {
+      closePrRowMenu();
+    }
   }
 
   function branchRowAction(projectId: string, name: string, e: MouseEvent) {
@@ -541,9 +605,10 @@
   // ── PR hover-prefetch ──
   // After a short debounce on hover, kick a background `prefetch_pr_open` to
   // warm the diff cache so the click feels instant. If the cursor leaves
-  // before the debounce fires, the timer is cleared and no fetch starts.
-  const PR_HOVER_PREFETCH_DELAY_MS = 150;
-  const prPrefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // before the debounce fires (cursor sweep), the timer is cleared and no
+  // fetch starts. Rows whose diff is already on disk (`diff_cached`) are
+  // skipped, and each `${number}:${head_oid}` is only ever prefetched once.
+  const PR_HOVER_PREFETCH_DELAY_MS = 200;
 
   function buildPrHint(pr: PrInfo): {
     baseRef: string;
@@ -570,10 +635,15 @@
     // No useful hint to send → skip; the open path falls back to the slow
     // synchronous gh-pr-view round-trip anyway.
     if (!pr.head_oid || !pr.base_ref) return;
+    // Diff already persisted for this head — opening is a disk read.
+    if (pr.diff_cached) return;
+    const startedKey = `${pr.number}:${pr.head_oid}`;
+    if (prPrefetchStarted.has(startedKey)) return;
     const key = `${projectId}:${pr.number}`;
     if (prPrefetchTimers.has(key)) return;
     const timer = setTimeout(() => {
       prPrefetchTimers.delete(key);
+      prPrefetchStarted.add(startedKey);
       // Bypass app.cmd() — that assigns the return value to app.snapshot, and
       // prefetch_pr_open returns () which would null out the snapshot and
       // render the empty page. Fire-and-forget invoke is correct here.
@@ -582,7 +652,8 @@
         prNumber: pr.number,
         hint: buildPrHint(pr),
       }).catch(() => {
-        // Background fetch — failure is logged in Rust, nothing to do here.
+        // Silent failure (logged in Rust) — let a later hover retry this head.
+        prPrefetchStarted.delete(startedKey);
       });
     }, PR_HOVER_PREFETCH_DELAY_MS);
     prPrefetchTimers.set(key, timer);
@@ -606,6 +677,8 @@
   }
 
 </script>
+
+<svelte:window onkeydown={handleSidebarKeydown} />
 
 {#if collapsed}
   <!-- Collapsed rail -->
@@ -1167,14 +1240,25 @@
               {#snippet prRow(pr: PrInfo)}
                 {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number && project.is_active) ||
                   (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
-                {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
-                {@const prTriaging = triagingPrKey === `${project.id}:${pr.number}` || isPrTriageRunning(project, pr.number)}
+                {@const prKey = `${project.id}:${pr.number}`}
+                {@const prPending = pendingPrKey === prKey}
+                {@const prTriaging = triagingPrKey === prKey || isPrTriageRunning(project, pr.number)}
+                {@const prSyncing = syncingPrKey === prKey}
                 <div class="group relative flex items-center">
-                  {#if pr.cached}
-                    <!-- Sits in the button's left padding — no layout shift for uncached rows. -->
+                  <!-- Trust-level dot. Sits in the button's left padding — no layout
+                       shift for uncached rows. Green: diff persisted for the current
+                       head (instant open). Amber: metadata cached only — opening hits
+                       the network, OR the disk diff is for an older head (opens
+                       instantly from the stale diff, then revalidates). -->
+                  {#if pr.diff_cached}
                     <span
                       class="absolute left-0.5 top-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-add-fg z-10"
-                      title="Cached — instant checkout"
+                      title="Diff cached — opens instantly"
+                    ></span>
+                  {:else if pr.cached}
+                    <span
+                      class="absolute left-0.5 top-1/2 -translate-y-1/2 w-1 h-1 rounded-full bg-risk-med z-10"
+                      title="Metadata cached — diff not fetched yet (hover or Sync to warm)"
                     ></span>
                   {/if}
                   <button
@@ -1193,7 +1277,7 @@
                       <path d="M18 9a9 9 0 0 1-9 9"/>
                     </svg>
                     <span class="truncate text-[12px]">{pr.title}</span>
-                    {#if prPending || prTriaging}
+                    {#if prPending || prTriaging || prSyncing}
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0">
                         <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
                         <path d="M21 3v5h-5"/>
@@ -1202,18 +1286,65 @@
                     <span class="shrink-0 text-[10px] mono text-muted">#{pr.number}</span>
                   </button>
                   {#if project.remote}
-                    <span class="absolute right-1 flex items-center {isActivePr ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity">
+                    <span class="absolute right-1 flex items-center {isActivePr || prMenuOpen === prKey ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity">
                       <button
                         type="button"
-                        onclick={(e) => runPrTriage(project, pr, e)}
-                        disabled={prTriaging}
-                        title="Run triage on this PR"
-                        aria-label="Run triage on PR #{pr.number}"
-                        class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-cyan-400 hover:bg-ink-600 disabled:opacity-50"
+                        onclick={(e) => openPrRowMenu(project, pr, e)}
+                        title="More actions"
+                        aria-label="More actions for PR #{pr.number}"
+                        class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-fg hover:bg-ink-600"
                       >
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" class="shrink-0">
+                          <circle cx="5" cy="12" r="1.5"/>
+                          <circle cx="12" cy="12" r="1.5"/>
+                          <circle cx="19" cy="12" r="1.5"/>
+                        </svg>
                       </button>
                     </span>
+                  {/if}
+
+                  <!-- PR-row "⋯" dropdown — compact, matches the project menu pattern -->
+                  {#if prMenuOpen === prKey && prMenuAnchor}
+                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div class="fixed inset-0 z-40" onclick={closePrRowMenu}></div>
+                    <div
+                      class="fixed z-50 bg-card border border-hairline rounded-md shadow-xl w-36 py-1"
+                      style={floatingMenuStyle(prMenuAnchor, prMenuFlip)}
+                    >
+                      <button
+                        type="button"
+                        onclick={() => syncPrRow(project, pr)}
+                        disabled={prSyncing}
+                        class="w-full text-left px-3 py-1 text-[12px] text-fg-2 hover:bg-hover flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {#if prSyncing}
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 text-muted animate-spin"><path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 7.8 4.5"/><polyline points="21 3 21 8 16 8"/></svg>
+                        {:else}
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-muted"><path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 7.8 4.5"/><polyline points="21 3 21 8 16 8"/></svg>
+                        {/if}
+                        Sync
+                      </button>
+                      <button
+                        type="button"
+                        onclick={(e) => { closePrRowMenu(); runPrTriage(project, pr, e); }}
+                        disabled={prTriaging}
+                        class="w-full text-left px-3 py-1 text-[12px] text-fg-2 hover:bg-hover flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-muted"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                        Run triage
+                      </button>
+                      {#if !project.remote_only && pr.head_ref}
+                        <button
+                          type="button"
+                          onclick={() => pinPrBranch(project, pr)}
+                          class="w-full text-left px-3 py-1 text-[12px] text-fg-2 hover:bg-hover flex items-center gap-2"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-muted"><path d="M12 17v5M9 10.76V19l3 2 3-2v-8.24"/><path d="M3 7l9-5 9 5"/></svg>
+                          Pin branch
+                        </button>
+                      {/if}
+                    </div>
                   {/if}
                 </div>
               {/snippet}

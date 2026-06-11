@@ -578,9 +578,14 @@ pub struct PrInfo {
     pub updated_at: String,
     /// True when this PR is in the persistent nearest-PR cache with the same
     /// head SHA — its branch can be checked out instantly, without waiting on
-    /// `gh` (issue #70). Drives the green dot on sidebar PR rows.
+    /// `gh` (issue #70). Drives the amber dot on sidebar PR rows.
     #[serde(default)]
     pub cached: bool,
+    /// True when the PR's diff is persisted on disk for the current head SHA
+    /// (`er_engine::diff_store`) — opening is a disk read, no network. Drives
+    /// the green dot on sidebar PR rows.
+    #[serde(default)]
+    pub diff_cached: bool,
     /// Transient: latest review per reviewer (login, state). Not serialized to frontend.
     #[serde(skip)]
     pub latest_reviewer_states: Vec<(String, String)>,
@@ -2135,6 +2140,7 @@ fn minimal_pr_info(number: u64, title: &str) -> PrInfo {
         head_oid: String::new(),
         updated_at: String::new(),
         cached: false,
+        diff_cached: false,
         latest_reviewer_states: Vec::new(),
     }
 }
@@ -2214,6 +2220,9 @@ struct ProjectsCacheKey {
     projects_mtime_ns: u128,
     pr_cache_fingerprint: u64,
     meta_cache_fingerprint: u64,
+    /// Diff-store mutations (hover prefetch, sync, eviction) must re-derive
+    /// `PrInfo.diff_cached` even though no other input changed.
+    diff_store_revision: u64,
     active_root: String,
     active_remote: Option<String>,
     viewed_branch: String,
@@ -2285,6 +2294,7 @@ fn build_projects_cache_key(
         projects_mtime_ns,
         pr_cache_fingerprint,
         meta_cache_fingerprint,
+        diff_store_revision: er_engine::diff_store::store_revision(),
         active_root: tab.repo_root.clone(),
         active_remote: tab.remote_repo.clone(),
         viewed_branch,
@@ -2293,6 +2303,45 @@ fn build_projects_cache_key(
 }
 
 static PROJECTS_CACHE: Mutex<Option<(ProjectsCacheKey, Vec<ProjectSnapshot>)>> = Mutex::new(None);
+
+/// Memoized [`er_engine::diff_store::has_diff`] probe results, keyed by
+/// `(remote, pr_number, head_oid)` and stamped with the diff-store revision
+/// they were computed at. `build_projects_from_file` can run on snapshot
+/// rebuilds; without the memo every rebuild would re-`stat` + re-parse one
+/// meta file per visible PR row. Entries are re-probed only after the store
+/// actually mutated (revision bump) or the head SHA changed (new key).
+type DiffProbeKey = (String, u64, String);
+/// Probe value: (diff-store revision at probe time, probe result).
+type DiffProbeCacheMap = HashMap<DiffProbeKey, (u64, bool)>;
+static DIFF_PROBE_CACHE: Mutex<Option<DiffProbeCacheMap>> = Mutex::new(None);
+
+/// Bound on memoized probe entries — stale `(number, head_oid)` keys accrue
+/// slowly as heads move; reset wholesale rather than tracking LRU order.
+const DIFF_PROBE_CACHE_MAX_ENTRIES: usize = 4096;
+
+fn diff_cached_probe(remote: &str, pr_number: u64, head_oid: &str) -> bool {
+    if head_oid.trim().is_empty() {
+        return false;
+    }
+    let revision = er_engine::diff_store::store_revision();
+    let key = (remote.to_string(), pr_number, head_oid.to_string());
+    if let Ok(guard) = DIFF_PROBE_CACHE.lock() {
+        if let Some((stamped, hit)) = guard.as_ref().and_then(|m| m.get(&key)) {
+            if *stamped == revision {
+                return *hit;
+            }
+        }
+    }
+    let hit = er_engine::diff_store::has_diff(remote, pr_number, head_oid);
+    if let Ok(mut guard) = DIFF_PROBE_CACHE.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        if map.len() >= DIFF_PROBE_CACHE_MAX_ENTRIES {
+            map.clear();
+        }
+        map.insert(key, (revision, hit));
+    }
+    hit
+}
 
 fn projects_cache_lookup(key: &ProjectsCacheKey) -> Option<Vec<ProjectSnapshot>> {
     let guard = PROJECTS_CACHE.lock().ok()?;
@@ -2452,6 +2501,10 @@ fn build_projects_from_file(
                             || cached_oids
                                 .get(&pr.number)
                                 .is_some_and(|oid| !oid.is_empty() && *oid == pr.head_oid);
+                        // Trust level for the sidebar dot: green when the diff
+                        // itself is on disk for this head (instant open),
+                        // amber when only the metadata is cached.
+                        pr.diff_cached = diff_cached_probe(remote, pr.number, &pr.head_oid);
                     }
 
                     all.retain(|pr| pr.state == "MERGED");
@@ -3291,6 +3344,7 @@ mod tests {
             head_oid: "abc123".to_string(),
             updated_at: "2026-05-22T00:00:00Z".to_string(),
             cached: false,
+            diff_cached: false,
             latest_reviewer_states: Vec::new(),
         };
         let pr_cache = Arc::new(Mutex::new(HashMap::from([(

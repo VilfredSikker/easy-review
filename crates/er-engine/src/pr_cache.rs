@@ -278,6 +278,39 @@ pub fn record_diff_hash(
     Ok(changed)
 }
 
+/// Refresh the metadata of a single cached PR in place (single-PR sync from
+/// the sidebar). Updates every occurrence of `fresh.number` in both lists;
+/// `diff_hash` is preserved only while the head SHA is unchanged — a moved
+/// head clears it so callers recompute. PRs not currently cached are left
+/// alone (list membership is the full refresh's job).
+/// Returns `true` when the cache changed and was saved.
+pub fn update_pr_metadata(remote: &str, fresh: &CachedPr) -> Result<bool> {
+    let Some(mut cache) = load(remote)? else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for pr in cache.my_prs.iter_mut().chain(cache.to_review.iter_mut()) {
+        if pr.number != fresh.number {
+            continue;
+        }
+        let head_moved = pr.head_oid != fresh.head_oid;
+        let mut updated = fresh.clone();
+        updated.diff_hash = if head_moved {
+            fresh.diff_hash.clone()
+        } else {
+            fresh.diff_hash.clone().or_else(|| pr.diff_hash.clone())
+        };
+        if *pr != updated {
+            *pr = updated;
+            changed = true;
+        }
+    }
+    if changed {
+        save(remote, &cache)?;
+    }
+    Ok(changed)
+}
+
 /// Convert a TTL in days (from config) to milliseconds.
 pub fn ttl_ms_from_days(days: u64) -> u64 {
     days.saturating_mul(DAY_MS)
@@ -460,6 +493,54 @@ mod tests {
 
             // Unknown PR number (not in top-N) is ignored.
             assert!(!record_diff_hash(remote, 999, "sha", "ffff").unwrap());
+        });
+        std::env::remove_var("ER_STORAGE_ROOT");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    #[test]
+    fn update_pr_metadata_refreshes_entry_and_diff_hash_rules() {
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let result = std::panic::catch_unwind(|| {
+            let remote = "org/repo";
+            let mut entry = pr(7, "2026-06-09T00:00:00Z", "sha7");
+            entry.diff_hash = Some("hash7".to_string());
+            let cache = NearestPrCache {
+                version: PR_CACHE_SCHEMA_VERSION,
+                fetched_at_epoch_ms: NOW,
+                my_prs: vec![entry.clone()],
+                to_review: vec![entry],
+            };
+            save(remote, &cache).unwrap();
+
+            // Same head, newer metadata — diff_hash carried forward; both
+            // lists updated.
+            let mut fresh = pr(7, "2026-06-09T12:00:00Z", "sha7");
+            fresh.title = "Renamed".to_string();
+            assert!(update_pr_metadata(remote, &fresh).unwrap());
+            let loaded = load(remote).unwrap().unwrap();
+            assert_eq!(loaded.my_prs[0].title, "Renamed");
+            assert_eq!(loaded.my_prs[0].diff_hash.as_deref(), Some("hash7"));
+            assert_eq!(loaded.to_review[0].title, "Renamed");
+
+            // Head moved — diff_hash cleared for recompute.
+            let fresh = pr(7, "2026-06-09T13:00:00Z", "new-sha");
+            assert!(update_pr_metadata(remote, &fresh).unwrap());
+            let loaded = load(remote).unwrap().unwrap();
+            assert_eq!(loaded.my_prs[0].head_oid, "new-sha");
+            assert_eq!(loaded.my_prs[0].diff_hash, None);
+
+            // Identical metadata — no change, no save.
+            assert!(!update_pr_metadata(remote, &fresh).unwrap());
+            // Unknown PR — membership is the full refresh's job.
+            assert!(!update_pr_metadata(remote, &pr(99, "2026-06-09T13:00:00Z", "x")).unwrap());
         });
         std::env::remove_var("ER_STORAGE_ROOT");
         if let Err(e) = result {

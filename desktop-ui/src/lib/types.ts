@@ -229,6 +229,8 @@ export interface PrInfo {
   updated_at: string;
   /** True when this PR is in the persistent nearest-PR cache (instant checkout). */
   cached?: boolean;
+  /** True when the PR's diff is persisted on disk for the current head (instant open). */
+  diff_cached?: boolean;
 }
 
 export interface ProjectSnapshot {
@@ -459,6 +461,8 @@ export interface LoadingFlags {
   gh_comments: boolean;
   /** First diff load of a freshly-selected stub tab (background refresh running). */
   tab_diff?: boolean;
+  /** Background PR-diff refresh for the active tab (60s loop or stale-while-revalidate open). */
+  remote_pr_diff?: boolean;
 }
 
 export interface AgentCommandStatus {

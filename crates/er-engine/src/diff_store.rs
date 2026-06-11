@@ -45,6 +45,21 @@ const META_FILE: &str = "diff-meta.json";
 /// the open write-through and the hash backfill can race on the same PR).
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Process-wide revision counter, bumped on every store mutation (save /
+/// evict / self-heal delete). Lets callers cache [`has_diff`] probe results
+/// and invalidate them only when the store actually changed.
+static STORE_REVISION: AtomicU64 = AtomicU64::new(0);
+
+/// Current diff-store revision. Changes whenever a diff is saved or evicted
+/// in this process — cheap cache key for [`has_diff`] memoization.
+pub fn store_revision() -> u64 {
+    STORE_REVISION.load(Ordering::Relaxed)
+}
+
+fn bump_store_revision() {
+    STORE_REVISION.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Sidecar metadata for a persisted PR diff.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffMeta {
@@ -183,7 +198,36 @@ pub fn save_diff(remote: &str, meta: &DiffMeta, raw: &str) -> Result<()> {
             }
         }
     }
+    bump_store_revision();
     Ok(())
+}
+
+/// Cheap probe: is a diff persisted for this PR at this head SHA?
+///
+/// Reads only the small meta sidecar and `stat`s the patch file (byte-length
+/// check) — it never reads the patch body or recomputes the SHA-256, so it is
+/// safe to call from snapshot building. The full corrupt-check still runs on
+/// [`load_diff`] at open time.
+pub fn has_diff(remote: &str, pr_number: u64, expected_head_oid: &str) -> bool {
+    if expected_head_oid.trim().is_empty() {
+        return false;
+    }
+    let dir = pr_diff_dir(remote, pr_number);
+    let Ok(content) = fs::read_to_string(dir.join(META_FILE)) else {
+        return false;
+    };
+    let Ok(meta) = serde_json::from_str::<DiffMeta>(&content) else {
+        return false;
+    };
+    if meta.version != DIFF_STORE_SCHEMA_VERSION
+        || meta.pr_number != pr_number
+        || meta.head_oid != expected_head_oid
+    {
+        return false;
+    }
+    fs::metadata(dir.join(patch_file_name(&meta.head_oid)))
+        .map(|m| m.len() == meta.size_bytes)
+        .unwrap_or(false)
 }
 
 /// Delete all diff-store files for one PR (review sidecars are untouched).
@@ -200,6 +244,7 @@ fn delete_diff_files(dir: &Path) {
     }
     // Tidy up the bucket dir when nothing else (sidecars) lives there.
     let _ = fs::remove_dir(dir);
+    bump_store_revision();
 }
 
 /// Load the persisted diff for a PR when it matches the expected freshness.
@@ -253,6 +298,49 @@ pub fn load_diff(
         return Ok(None);
     }
     Ok(Some(raw))
+}
+
+/// Stale-tolerant read: load the persisted diff for a PR regardless of which
+/// head SHA / base branch it was downloaded at (stale-while-revalidate open
+/// path). Integrity checks still apply — corrupt meta, missing/truncated
+/// patch, or size/sha mismatch self-heal exactly like [`load_diff`]. Returns
+/// the raw diff together with its meta so the caller can see how stale it is
+/// (and which base/head branches the diff is self-consistent with).
+///
+/// Callers MUST treat a hit whose `head_oid` doesn't match the live PR as
+/// stale: render it, then kick a background refetch — never serve it as final.
+pub fn load_diff_any(remote: &str, pr_number: u64) -> Result<Option<(String, DiffMeta)>> {
+    let dir = pr_diff_dir(remote, pr_number);
+    let meta_path = dir.join(META_FILE);
+    let content = match fs::read_to_string(&meta_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", meta_path.display())),
+    };
+    let meta: DiffMeta = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(_) => {
+            delete_diff_files(&dir);
+            return Ok(None);
+        }
+    };
+    if meta.version != DIFF_STORE_SCHEMA_VERSION || meta.pr_number != pr_number {
+        delete_diff_files(&dir);
+        return Ok(None);
+    }
+    let patch_path = dir.join(patch_file_name(&meta.head_oid));
+    let raw = match fs::read_to_string(&patch_path) {
+        Ok(r) => r,
+        Err(_) => {
+            delete_diff_files(&dir);
+            return Ok(None);
+        }
+    };
+    if raw.len() as u64 != meta.size_bytes || crate::ai::compute_diff_hash(&raw) != meta.sha256 {
+        delete_diff_files(&dir);
+        return Ok(None);
+    }
+    Ok(Some((raw, meta)))
 }
 
 /// Evict the persisted diff for one PR (merged/closed/out-of-top-N). Review
@@ -470,6 +558,105 @@ mod tests {
                     .as_deref(),
                 Some("new diff\n")
             );
+        });
+    }
+
+    #[test]
+    fn has_diff_probe_matches_load_semantics() {
+        with_temp_storage(|| {
+            let raw = "diff --git a/foo b/foo\n+hello\n";
+            // Nothing persisted yet — probe misses.
+            assert!(!has_diff(REMOTE, 7, "abcdef1234567890"));
+            save_diff(REMOTE, &meta(7, "abcdef1234567890"), raw).unwrap();
+            // Hit on the saved head; miss on a moved head or empty oid.
+            assert!(has_diff(REMOTE, 7, "abcdef1234567890"));
+            assert!(!has_diff(REMOTE, 7, "other-sha"));
+            assert!(!has_diff(REMOTE, 7, ""));
+            assert!(!has_diff(REMOTE, 404, "abcdef1234567890"));
+        });
+    }
+
+    #[test]
+    fn has_diff_misses_on_truncated_patch_without_deleting() {
+        with_temp_storage(|| {
+            let raw = "diff --git a/foo b/foo\n+hello\n";
+            save_diff(REMOTE, &meta(7, "abcdef1234567890"), raw).unwrap();
+            let dir = pr_diff_dir(REMOTE, 7);
+            // Truncate the patch — byte-length check must fail the probe.
+            std::fs::write(dir.join(patch_file_name("abcdef1234567890")), "diff").unwrap();
+            assert!(!has_diff(REMOTE, 7, "abcdef1234567890"));
+            // The cheap probe never deletes — self-heal is load_diff's job.
+            assert!(dir.join(META_FILE).exists());
+        });
+    }
+
+    #[test]
+    fn has_diff_misses_after_evict() {
+        with_temp_storage(|| {
+            save_diff(REMOTE, &meta(7, "abcdef1234567890"), "diff\n").unwrap();
+            assert!(has_diff(REMOTE, 7, "abcdef1234567890"));
+            evict_pr_diff(REMOTE, 7).unwrap();
+            assert!(!has_diff(REMOTE, 7, "abcdef1234567890"));
+        });
+    }
+
+    #[test]
+    fn store_revision_bumps_on_save_and_evict() {
+        with_temp_storage(|| {
+            let r0 = store_revision();
+            save_diff(REMOTE, &meta(7, "abcdef1234567890"), "diff\n").unwrap();
+            let r1 = store_revision();
+            assert!(r1 > r0, "save must bump the revision");
+            evict_pr_diff(REMOTE, 7).unwrap();
+            assert!(store_revision() > r1, "evict must bump the revision");
+        });
+    }
+
+    #[test]
+    fn load_diff_any_returns_stale_entry_with_meta() {
+        with_temp_storage(|| {
+            let raw = "diff --git a/foo b/foo\n+hello\n";
+            // Missing entry → None.
+            assert!(load_diff_any(REMOTE, 7).unwrap().is_none());
+            save_diff(REMOTE, &meta(7, "abcdef1234567890"), raw).unwrap();
+            // The strict read misses once the head moves…
+            assert!(load_diff(REMOTE, 7, "new-head-sha", "main")
+                .unwrap()
+                .is_none());
+            // …but the stale-tolerant read still serves the stored diff + meta.
+            let (loaded, m) = load_diff_any(REMOTE, 7).unwrap().expect("stale hit");
+            assert_eq!(loaded, raw);
+            assert_eq!(m.head_oid, "abcdef1234567890");
+            assert_eq!(m.base_branch, "main");
+            assert_eq!(m.head_branch, "feature/x");
+            // Nothing was deleted by either read.
+            assert!(load_diff(REMOTE, 7, "abcdef1234567890", "main")
+                .unwrap()
+                .is_some());
+        });
+    }
+
+    #[test]
+    fn load_diff_any_self_heals_on_truncated_patch() {
+        with_temp_storage(|| {
+            let raw = "diff --git a/foo b/foo\n+hello\n";
+            save_diff(REMOTE, &meta(7, "abcdef1234567890"), raw).unwrap();
+            let dir = pr_diff_dir(REMOTE, 7);
+            std::fs::write(dir.join(patch_file_name("abcdef1234567890")), "diff --g").unwrap();
+            assert!(load_diff_any(REMOTE, 7).unwrap().is_none());
+            // Integrity checks behave like load_diff: corrupt entry is deleted.
+            assert!(!dir.join(META_FILE).exists());
+        });
+    }
+
+    #[test]
+    fn load_diff_any_self_heals_on_corrupt_meta() {
+        with_temp_storage(|| {
+            save_diff(REMOTE, &meta(7, "abcdef1234567890"), "diff\n").unwrap();
+            let dir = pr_diff_dir(REMOTE, 7);
+            std::fs::write(dir.join(META_FILE), "not json {").unwrap();
+            assert!(load_diff_any(REMOTE, 7).unwrap().is_none());
+            assert!(!dir.join(patch_file_name("abcdef1234567890")).exists());
         });
     }
 

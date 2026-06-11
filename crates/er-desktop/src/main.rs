@@ -1523,6 +1523,7 @@ fn main() {
             commands::open_pr_branch,
             commands::open_pr_review,
             commands::prefetch_pr_open,
+            commands::sync_pr_row,
             commands::refresh_pr_list,
             commands::refresh_project_pr_list,
             commands::open_inbox_item,

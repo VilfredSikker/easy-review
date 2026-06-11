@@ -332,6 +332,7 @@ mod tests {
             head_oid: head_oid.to_string(),
             updated_at: String::new(),
             cached: false,
+            diff_cached: false,
             latest_reviewer_states: Vec::new(),
         }
     }
