@@ -727,9 +727,8 @@ fn main() {
                         let info = cache
                             .get(&slug)
                             .and_then(|prs| prs.iter().find(|p| p.number == c.pr_number));
-                        c.expected_head_oid = info
-                            .map(|p| p.head_oid.clone())
-                            .filter(|s| !s.is_empty());
+                        c.expected_head_oid =
+                            info.map(|p| p.head_oid.clone()).filter(|s| !s.is_empty());
                         persist_meta = info
                             .map(|p| (p.base_ref.clone(), p.head_ref.clone(), p.updated_at.clone()))
                             .filter(|(base_ref, _, _)| !base_ref.is_empty());

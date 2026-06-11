@@ -337,8 +337,7 @@ async fn backfill_missing_diff_hashes(remote: &str) {
                             pr.updated_at.clone(),
                             None,
                         );
-                        if let Err(e) = er_engine::diff_store::save_diff(remote, &meta, &raw_diff)
-                        {
+                        if let Err(e) = er_engine::diff_store::save_diff(remote, &meta, &raw_diff) {
                             log::warn!("PR diff persist failed for {remote}#{number}: {e}");
                         }
                     }

@@ -1122,7 +1122,10 @@ impl TabState {
     /// Create a remote-PR TabState from a diff already in hand (the persistent
     /// diff store) — no `gh pr view` / `gh pr diff` round-trips. Overview and
     /// commits start empty; the desktop backfills them on a background thread.
-    pub fn new_remote_seeded(pr_ref: &crate::github::PrRef, seed: RemotePrDiffSeed) -> Result<Self> {
+    pub fn new_remote_seeded(
+        pr_ref: &crate::github::PrRef,
+        seed: RemotePrDiffSeed,
+    ) -> Result<Self> {
         let RemotePrDiffSeed {
             base_branch,
             head_branch,

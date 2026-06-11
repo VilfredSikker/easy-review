@@ -223,9 +223,7 @@ pub fn load_diff(
     let content = match fs::read_to_string(&meta_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to read {}", meta_path.display()))
-        }
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", meta_path.display())),
     };
     let meta: DiffMeta = match serde_json::from_str(&content) {
         Ok(m) => m,
@@ -508,9 +506,11 @@ mod tests {
             let keep: HashSet<u64> = [1, 2].into_iter().collect();
             prune_remote(REMOTE, &keep).unwrap();
 
-            let has_diff = |n: u64| load_diff(REMOTE, n, "abcdef1234567890", "main")
-                .unwrap()
-                .is_some();
+            let has_diff = |n: u64| {
+                load_diff(REMOTE, n, "abcdef1234567890", "main")
+                    .unwrap()
+                    .is_some()
+            };
             assert!(has_diff(1) && has_diff(2), "keep-set entries survive");
             // 2 protected + the 22 newest non-keep entries (30 down to 9) fill
             // the cap of 24.
