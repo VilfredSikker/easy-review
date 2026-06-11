@@ -3580,6 +3580,30 @@ mod tests {
     }
 
     #[test]
+    fn differential_snapshot_reset_forces_full_resend_after_tab_replacement() {
+        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let app = er_engine::app::App::new_for_test(files);
+        let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
+
+        let s1 = delta_snap(&app, &sent);
+        assert!(!s1.files[0].hunks_omitted);
+        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+
+        // Replacing a tab in place can produce an identical view token (same
+        // index/repo/branch/PR), so the open commands reset the sent-files
+        // map before placing the tab: the rebuilt tab's content must be sent
+        // in full — `hunks_omitted` must never reference content recorded
+        // for a previous tab instance.
+        sent.lock().unwrap_or_else(|e| e.into_inner()).reset();
+        let s3 = delta_snap(&app, &sent);
+        assert!(
+            !s3.files[0].hunks_omitted,
+            "post-reset snapshot must carry full hunks"
+        );
+        assert!(!s3.files[0].hunks.is_empty());
+    }
+
+    #[test]
     fn differential_snapshot_resends_on_content_change() {
         let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
         let mut app = er_engine::app::App::new_for_test(files);

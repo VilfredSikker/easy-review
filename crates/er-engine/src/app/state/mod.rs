@@ -1048,44 +1048,6 @@ impl TabState {
         // re-entry (Local Branch → PR Diff toggle) or refresh.
         tab.mode = DiffMode::PrDiff;
 
-        let compaction_config = tab.compaction_config.clone();
-        let t_parse = Instant::now();
-        if raw.len() > 200_000 {
-            let headers = crate::git::parse_diff_headers(&raw);
-            tab.files = headers.iter().map(crate::git::header_to_stub).collect();
-            tab.file_headers = headers;
-            tab.raw_diff = Some(raw.clone());
-            tab.lazy_mode = true;
-            for (file, header) in tab.files.iter_mut().zip(tab.file_headers.iter()) {
-                if tab.user_expanded.contains(&file.path) {
-                    continue;
-                }
-                let total_lines = header.adds + header.dels;
-                let should_compact = compaction_config.enabled
-                    && (compaction_config
-                        .patterns
-                        .iter()
-                        .any(|p| crate::git::compact_files_match(p, &file.path))
-                        || total_lines > compaction_config.max_lines_before_compact);
-                if should_compact {
-                    file.compacted = true;
-                    file.raw_hunk_count = header.hunk_count;
-                }
-            }
-        } else {
-            tab.file_headers = crate::git::parse_diff_headers(&raw);
-            tab.raw_diff = Some(raw.clone());
-            tab.files = crate::git::parse_diff(&raw);
-            tab.lazy_mode = false;
-            crate::git::compact_files(&mut tab.files, &tab.compaction_config);
-        }
-        eprintln!(
-            "pr_open repo={} pr={} phase=parse ms={}",
-            tab.repo_root,
-            pr_number,
-            t_parse.elapsed().as_millis()
-        );
-
         let t_diff_hash = Instant::now();
         tab.diff_hash = crate::ai::compute_diff_hash(&raw);
         tab.branch_diff_hash = tab.diff_hash.clone();
@@ -1095,12 +1057,17 @@ impl TabState {
             pr_number,
             t_diff_hash.elapsed().as_millis()
         );
-        tab.selected_file = 0;
-        tab.clamp_hunk();
-        tab.ensure_file_parsed();
-        tab.rebuild_hunk_offsets();
+
+        let t_parse = Instant::now();
+        tab.install_raw_diff(raw);
+        eprintln!(
+            "pr_open repo={} pr={} phase=parse ms={}",
+            tab.repo_root,
+            pr_number,
+            t_parse.elapsed().as_millis()
+        );
+        tab.restore_selection_after_diff_swap(None);
         tab.mtime_cache.clear();
-        tab.update_mem_budget();
         let t_ai_reload = Instant::now();
         tab.sync_managed_storage();
         eprintln!(
@@ -1190,40 +1157,8 @@ impl TabState {
         let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
 
-        // Parse the diff
         let compaction_config = crate::git::CompactionConfig::default();
-        let mut files = if raw.len() > 200_000 {
-            let headers = crate::git::parse_diff_headers(&raw);
-            headers.iter().map(crate::git::header_to_stub).collect()
-        } else {
-            let mut f = crate::git::parse_diff(&raw);
-            crate::git::compact_files(&mut f, &compaction_config);
-            f
-        };
-
         let diff_hash = crate::ai::compute_diff_hash(&raw);
-        let lazy_mode = raw.len() > 200_000;
-        let file_headers = if lazy_mode {
-            let headers = crate::git::parse_diff_headers(&raw);
-            // Apply compaction to stubs in lazy mode
-            for (file, header) in files.iter_mut().zip(headers.iter()) {
-                let total_lines = header.adds + header.dels;
-                let should_compact = compaction_config.enabled
-                    && (compaction_config
-                        .patterns
-                        .iter()
-                        .any(|p| crate::git::compact_files_match(p, &file.path))
-                        || total_lines > compaction_config.max_lines_before_compact);
-                if should_compact {
-                    file.compacted = true;
-                    file.raw_hunk_count = header.hunk_count;
-                }
-            }
-            headers
-        } else {
-            Vec::new()
-        };
-
         let er_config = crate::config::ErConfig::default();
 
         let repo_root_remote = std::env::current_dir()
@@ -1235,7 +1170,7 @@ impl TabState {
             current_branch: head_branch,
             er_root: ErRoot::RepoLocal(repo_root_remote.clone()),
             repo_root: repo_root_remote,
-            files,
+            files: Vec::new(),
             selected_file: 0,
             current_hunk: 0,
             current_line: None,
@@ -1298,9 +1233,9 @@ impl TabState {
             compaction_config,
             hunk_offsets: None,
             mem_budget: MemoryBudget::default(),
-            lazy_mode,
-            file_headers,
-            raw_diff: if lazy_mode { Some(raw) } else { None },
+            lazy_mode: false,
+            file_headers: Vec::new(),
+            raw_diff: None,
             symbol_refs: None,
             pending_unmark_count: 0,
             reviewed_revision: 0,
@@ -1329,6 +1264,10 @@ impl TabState {
             diff_synced_at_epoch_ms: Some(epoch_ms_now()),
             pr_refs_fetched: false,
         };
+
+        // Parse the diff (lazy + compaction for large diffs) through the
+        // shared installer so this path can never diverge from refreshes.
+        tab.install_raw_diff(raw);
 
         tab.finish_storage_setup();
         tab.reload_ai_state();
@@ -2338,19 +2277,23 @@ impl TabState {
         self.apply_local_branch_raw_diff(raw, true);
     }
 
-    /// Shared tail of the local-branch refresh: parse (lazy for big diffs),
-    /// hash, restore selection, rebuild offsets, reload AI sidecars.
-    fn apply_local_branch_raw_diff(&mut self, raw: String, recompute_branch_hash: bool) {
-        let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
-
-        let t_parse = Instant::now();
+    /// Install a raw diff into this tab: header-only lazy parse for large
+    /// diffs (> 200 KB) with per-file compaction flags, eager parse +
+    /// compaction otherwise. The raw string and its byte-offset headers are
+    /// always kept together so `ensure_file_parsed_at` / `toggle_compacted`
+    /// can re-parse any file on demand.
+    ///
+    /// Every path that swaps a tab's diff in place (fresh fetch, disk-cache
+    /// seed, SWR revalidate) MUST funnel through here — installing `files`
+    /// without the matching `raw_diff`/`file_headers`/`lazy_mode` bookkeeping
+    /// leaves lazy stubs that can never be filled, which the desktop renders
+    /// as permanently empty diff bodies.
+    pub(crate) fn install_raw_diff(&mut self, raw: String) {
         if raw.len() > 200_000 {
             let headers = crate::git::parse_diff_headers(&raw);
             self.files = headers.iter().map(crate::git::header_to_stub).collect();
-            self.file_headers = headers;
-            self.raw_diff = Some(raw.clone());
             self.lazy_mode = true;
-            for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
+            for (file, header) in self.files.iter_mut().zip(headers.iter()) {
                 if self.user_expanded.contains(&file.path) {
                     continue;
                 }
@@ -2367,14 +2310,20 @@ impl TabState {
                     file.raw_hunk_count = header.hunk_count;
                 }
             }
+            self.file_headers = headers;
         } else {
             self.file_headers = crate::git::parse_diff_headers(&raw);
-            self.raw_diff = Some(raw.clone());
             self.files = crate::git::parse_diff(&raw);
             self.lazy_mode = false;
             crate::git::compact_files(&mut self.files, &self.compaction_config);
         }
-        log_branch_profile_phase(self, "local_branch_parse", t_parse);
+        self.raw_diff = Some(raw);
+    }
+
+    /// Shared tail of the local-branch refresh: parse (lazy for big diffs),
+    /// hash, restore selection, rebuild offsets, reload AI sidecars.
+    fn apply_local_branch_raw_diff(&mut self, raw: String, recompute_branch_hash: bool) {
+        let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
 
         let t_diff_hash = Instant::now();
         if recompute_branch_hash {
@@ -2385,7 +2334,22 @@ impl TabState {
         }
         log_branch_profile_phase(self, "local_branch_diff_hash", t_diff_hash);
 
-        // Restore selection
+        let t_parse = Instant::now();
+        self.install_raw_diff(raw);
+        log_branch_profile_phase(self, "local_branch_parse", t_parse);
+
+        self.restore_selection_after_diff_swap(prev_path);
+        self.mtime_cache.clear();
+        // Reload AI sidecar for this branch's comment directory
+        let t_ai_reload = Instant::now();
+        self.reload_ai_state();
+        log_branch_profile_phase(self, "local_branch_ai_reload", t_ai_reload);
+    }
+
+    /// Re-point selection at the previously selected path (indices may have
+    /// shifted), parse the selected stub, and rebuild offsets + memory budget.
+    /// Shared tail of every in-place diff swap.
+    pub(crate) fn restore_selection_after_diff_swap(&mut self, prev_path: Option<String>) {
         if let Some(ref path) = prev_path {
             if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
                 self.selected_file = idx;
@@ -2398,12 +2362,7 @@ impl TabState {
         self.clamp_hunk();
         self.ensure_file_parsed();
         self.rebuild_hunk_offsets();
-        self.mtime_cache.clear();
         self.update_mem_budget();
-        // Reload AI sidecar for this branch's comment directory
-        let t_ai_reload = Instant::now();
-        self.reload_ai_state();
-        log_branch_profile_phase(self, "local_branch_ai_reload", t_ai_reload);
     }
 
     /// Non-local-branch remainder of `refresh_diff_impl` (remote PR tabs and
@@ -2422,37 +2381,6 @@ impl TabState {
 
                 let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
 
-                if raw.len() > 200_000 {
-                    let headers = crate::git::parse_diff_headers(&raw);
-                    self.files = headers.iter().map(crate::git::header_to_stub).collect();
-                    self.file_headers = headers;
-                    self.raw_diff = Some(raw.clone());
-                    self.lazy_mode = true;
-                    for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
-                        if self.user_expanded.contains(&file.path) {
-                            continue;
-                        }
-                        let total_lines = header.adds + header.dels;
-                        let should_compact = self.compaction_config.enabled
-                            && (self
-                                .compaction_config
-                                .patterns
-                                .iter()
-                                .any(|p| crate::git::compact_files_match(p, &file.path))
-                                || total_lines > self.compaction_config.max_lines_before_compact);
-                        if should_compact {
-                            file.compacted = true;
-                            file.raw_hunk_count = header.hunk_count;
-                        }
-                    }
-                } else {
-                    self.files = crate::git::parse_diff(&raw);
-                    self.file_headers.clear();
-                    self.raw_diff = None;
-                    self.lazy_mode = false;
-                    crate::git::compact_files(&mut self.files, &self.compaction_config);
-                }
-
                 if recompute_branch_hash {
                     self.diff_hash = crate::ai::compute_diff_hash(&raw);
                     self.branch_diff_hash = self.diff_hash.clone();
@@ -2460,21 +2388,8 @@ impl TabState {
                     self.diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
                 }
 
-                // Restore selection
-                if let Some(ref path) = prev_path {
-                    if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
-                        self.selected_file = idx;
-                    } else {
-                        self.selected_file =
-                            self.files.len().saturating_sub(1).min(self.selected_file);
-                    }
-                } else {
-                    self.selected_file = 0;
-                }
-                self.clamp_hunk();
-                self.ensure_file_parsed();
-                self.rebuild_hunk_offsets();
-                self.update_mem_budget();
+                self.install_raw_diff(raw.clone());
+                self.restore_selection_after_diff_swap(prev_path);
 
                 if recompute_branch_hash {
                     self.reload_ai_state();
@@ -2523,47 +2438,14 @@ impl TabState {
             self.fetch_tab_raw_diff(self.mode.fetch_scope())?
         };
 
-        // Decide parsing strategy based on diff size.
-        // Use byte-length heuristic (O(1)) instead of counting newlines (O(n)).
-        // 200_000 bytes ≈ ~5000 lines (at ~40 bytes/line), equivalent to LAZY_PARSE_THRESHOLD.
-        if raw.len() > 200_000 {
-            // Lazy mode: header-only parse, files get hunks on demand
-            let headers = git::parse_diff_headers(&raw);
-            self.files = headers.iter().map(git::header_to_stub).collect();
-            self.file_headers = headers;
-            self.raw_diff = Some(raw.clone());
-            self.lazy_mode = true;
+        // Parse through the shared installer: header-only lazy parse for large
+        // diffs (> 200 KB ≈ ~5000 lines at ~40 bytes/line, equivalent to
+        // LAZY_PARSE_THRESHOLD), eager parse + compaction otherwise. The
+        // installer keeps `raw_diff`/`file_headers`/`lazy_mode` consistent so
+        // on-demand stub parsing always works.
+        self.install_raw_diff(raw.clone());
 
-            // Apply compaction to the stub files (pattern-based only, since hunks are empty)
-            // zip() stops at the shorter iterator; files and file_headers are built from
-            // the same header scan, so their lengths stay in sync.
-            for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
-                if self.user_expanded.contains(&file.path) {
-                    continue;
-                }
-                let total_lines = header.adds + header.dels;
-                let should_compact = self.compaction_config.enabled
-                    && (self
-                        .compaction_config
-                        .patterns
-                        .iter()
-                        .any(|p| git::compact_files_match(p, &file.path))
-                        || total_lines > self.compaction_config.max_lines_before_compact);
-                if should_compact {
-                    file.compacted = true;
-                    file.raw_hunk_count = header.hunk_count;
-                }
-            }
-        } else {
-            // Eager mode: full parse (fast enough for smaller diffs)
-            self.files = git::parse_diff(&raw);
-            self.file_headers.clear();
-            self.raw_diff = None;
-            self.lazy_mode = false;
-
-            // Apply auto-compaction to low-value files
-            git::compact_files(&mut self.files, &self.compaction_config);
-
+        if !self.lazy_mode {
             // Re-expand any files the user explicitly opened (fresh parse means hunks are available)
             let to_expand: Vec<String> = self
                 .files
@@ -8593,6 +8475,214 @@ mod tests {
             assert!(!tab.lazy_mode);
             assert!(tab.pr_commits.is_empty(), "commits are backfilled later");
             assert!(tab.pr_data.is_none(), "overview is backfilled later");
+        });
+        std::env::remove_var("ER_STORAGE_ROOT");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    // ── lazy-mode invariants across cache/seed construction paths ──
+    //
+    // Every path that installs a raw diff into a tab (fresh fetch, disk-cache
+    // seed, SWR swap) must leave the lazy-parse bookkeeping self-consistent:
+    // `lazy_mode`/`file_headers`/`raw_diff` describe the SAME raw string, so
+    // `ensure_file_parsed_at` (the desktop `request_file_content` heal path)
+    // and `toggle_compacted` can always re-parse stubs from byte offsets.
+    // Regression tests for issue #70 / PR #74 "empty diff body" bug.
+
+    /// Synthetic raw diff big enough (> 200 KB) to trip two-phase lazy
+    /// parsing: one 1200-line file (auto-compacted, > the 1000-line default
+    /// threshold) + 80 small files (lazy stubs). `marker` varies content;
+    /// `extra_files` varies structure so two diffs have incompatible byte
+    /// offsets.
+    fn synth_large_raw_diff(marker: &str, extra_files: usize) -> String {
+        let mut raw = String::new();
+        raw.push_str("diff --git a/big/data.sql b/big/data.sql\n");
+        raw.push_str("new file mode 100644\nindex 0000000..1111111\n");
+        raw.push_str("--- /dev/null\n+++ b/big/data.sql\n");
+        raw.push_str("@@ -0,0 +1,1200 @@\n");
+        for i in 0..1200 {
+            raw.push_str(&format!(
+                "+INSERT INTO t VALUES ({i}, '{marker}-pad-pad-pad-pad-pad-pad-pad-pad-pad');\n"
+            ));
+        }
+        for f in 0..(80 + extra_files) {
+            raw.push_str(&format!("diff --git a/src/file{f}.rs b/src/file{f}.rs\n"));
+            raw.push_str("index 1111111..2222222 100644\n");
+            raw.push_str(&format!("--- a/src/file{f}.rs\n+++ b/src/file{f}.rs\n"));
+            raw.push_str("@@ -1,2 +1,42 @@\n ctx\n");
+            for i in 0..40 {
+                raw.push_str(&format!(
+                    "+let v_{f}_{i} = \"{marker}-pad-pad-pad-pad-pad-pad-pad\";\n"
+                ));
+            }
+            raw.push_str(" ctx\n");
+        }
+        assert!(
+            raw.len() > 200_000,
+            "synthetic diff must trip lazy mode (len={})",
+            raw.len()
+        );
+        raw
+    }
+
+    /// Assert the tab can serve every file: lazy stubs fill from `raw_diff`
+    /// byte offsets and (when `check_expand`) the auto-compacted file expands.
+    /// This is exactly what the desktop viewport loader relies on — a stub
+    /// that fails to fill renders as a permanently empty diff body.
+    fn assert_lazy_stubs_fill(tab: &mut TabState, total_files: usize, check_expand: bool) {
+        assert!(tab.lazy_mode, "large diff must enter lazy mode");
+        assert_eq!(tab.files.len(), total_files);
+        assert!(
+            tab.files[0].compacted,
+            "1200-line file should be auto-compacted"
+        );
+        for idx in 1..tab.files.len() {
+            assert!(!tab.files[idx].compacted, "small file {idx} compacted");
+            tab.ensure_file_parsed_at(idx);
+            assert!(
+                !tab.files[idx].hunks.is_empty(),
+                "lazy stub {idx} ({}) did not fill from raw_diff — desktop \
+                 request_file_content would render an empty diff body",
+                tab.files[idx].path
+            );
+        }
+        if check_expand {
+            tab.selected_file = 0;
+            tab.toggle_compacted().unwrap();
+            assert!(
+                !tab.files[0].compacted && !tab.files[0].hunks.is_empty(),
+                "compacted file failed to expand from raw_diff"
+            );
+        }
+    }
+
+    #[test]
+    fn new_remote_seeded_large_diff_fills_lazy_stubs_on_demand() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let result = std::panic::catch_unwind(|| {
+            let raw = synth_large_raw_diff("seed", 0);
+            let pr_ref = crate::github::PrRef {
+                owner: "org".to_string(),
+                repo: "repo".to_string(),
+                number: 7,
+            };
+            let seed = RemotePrDiffSeed {
+                base_branch: "main".to_string(),
+                head_branch: "feature/x".to_string(),
+                head_oid: "abc123".to_string(),
+                raw_diff: raw,
+            };
+            let mut tab = TabState::new_remote_seeded(&pr_ref, seed).unwrap();
+            assert_lazy_stubs_fill(&mut tab, 81, true);
+        });
+        std::env::remove_var("ER_STORAGE_ROOT");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    #[test]
+    fn new_local_pr_from_github_diff_large_diff_fills_lazy_stubs_on_demand() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let result = std::panic::catch_unwind(|| {
+            // Minimal git repo so new_with_base_unloaded can resolve a branch.
+            let repo = tempfile::TempDir::new().unwrap();
+            let root = repo.path();
+            for args in [
+                vec!["init", "-b", "main"],
+                vec!["config", "user.email", "t@example.com"],
+                vec!["config", "user.name", "t"],
+                vec!["config", "commit.gpgsign", "false"],
+                vec!["commit", "--allow-empty", "-m", "base"],
+            ] {
+                let out = std::process::Command::new("git")
+                    .args(&args)
+                    .current_dir(root)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "git {args:?} failed");
+            }
+            let raw = synth_large_raw_diff("lpr", 0);
+            let mut tab = TabState::new_local_pr_from_github_diff(
+                root.to_string_lossy().into_owned(),
+                42,
+                "main".to_string(),
+                "feature/x".to_string(),
+                raw,
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+            assert_lazy_stubs_fill(&mut tab, 81, true);
+        });
+        std::env::remove_var("ER_STORAGE_ROOT");
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    #[test]
+    fn seed_local_branch_diff_large_diff_fills_lazy_stubs_on_demand() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some("feature/x".to_string());
+        tab.seed_local_branch_diff(synth_large_raw_diff("br", 0));
+        // Branch tabs expand compacted files via git (works against a real
+        // repo) — only the offset-based stub fill is asserted here.
+        assert_lazy_stubs_fill(&mut tab, 81, false);
+    }
+
+    #[test]
+    fn apply_remote_diff_result_keeps_lazy_bookkeeping_consistent() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let result = std::panic::catch_unwind(|| {
+            // Tab opened from a stale cached diff (lazy mode, offsets into A)…
+            let raw_a = synth_large_raw_diff("aaaa", 3);
+            let pr_ref = crate::github::PrRef {
+                owner: "org".to_string(),
+                repo: "repo".to_string(),
+                number: 7,
+            };
+            let seed = RemotePrDiffSeed {
+                base_branch: "main".to_string(),
+                head_branch: "feature/x".to_string(),
+                head_oid: "old-oid".to_string(),
+                raw_diff: raw_a,
+            };
+            let tab = TabState::new_remote_seeded(&pr_ref, seed).unwrap();
+            let repo_root = tab.repo_root.clone();
+            let mut app = App::new_for_test(vec![]);
+            app.tabs[0] = tab;
+
+            // …then the SWR revalidate swaps in fresh diff B with different
+            // structure (different byte offsets).
+            let raw_b = synth_large_raw_diff("bbbb", 0);
+            let result = crate::app::RemoteDiffResult {
+                branch_diff_hash: crate::ai::compute_diff_hash(&raw_b),
+                diff_hash: format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw_b)),
+                head_oid: Some("new-oid".to_string()),
+                tab_key: (repo_root, Some(7), true),
+                raw_diff: raw_b,
+            };
+            app.apply_remote_diff_result(result);
+
+            let tab = &mut app.tabs[0];
+            // The swap must re-establish the same invariants as a fresh open:
+            // lazy mode + headers/offsets for the NEW raw, compaction applied.
+            assert_lazy_stubs_fill(tab, 81, true);
         });
         std::env::remove_var("ER_STORAGE_ROOT");
         if let Err(e) = result {

@@ -4656,6 +4656,17 @@ pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: b
     projects::sync_projects_from_tabs(&app.tabs);
 }
 
+/// Forget differential-snapshot bookkeeping when a tab is placed into the
+/// app. A replace at the same index can produce an identical view token
+/// (same repo/branch/PR), and the freshly built tab's content must then be
+/// sent in full — `hunks_omitted` must never reference content recorded for
+/// a previous tab instance.
+fn reset_sent_files(state: &AppState) {
+    if let Ok(mut sent) = state.sent_files.lock() {
+        sent.reset();
+    }
+}
+
 /// Internal helper: open a remote PR view. If the same PR is already open,
 /// just focus it. Otherwise place it via `replace` semantics.
 ///
@@ -4700,6 +4711,7 @@ fn do_open_remote_pr(
                     Ok(mut tab) => {
                         log::info!("remote_pr_open remote={slug} pr={number} cache=hit_disk");
                         tab.reload_remote_comments();
+                        reset_sent_files(state);
                         place_tab(app, tab, replace);
                         spawn_remote_pr_overview_backfill(
                             state,
@@ -4726,6 +4738,7 @@ fn do_open_remote_pr(
         tab.pr_data = Some(data);
     }
     tab.reload_remote_comments();
+    reset_sent_files(state);
     place_tab(app, tab, replace);
     Ok(())
 }
@@ -5307,6 +5320,7 @@ fn open_local_branch_impl(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     log_branch_open_phase(&project_id, &branch_name, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
+    reset_sent_files(state);
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     log_branch_open_phase(&project_id, &branch_name, "tab_place", t_place_tab);
     if matches!(open_path, LocalBranchOpenPath::Deferred) {
@@ -5843,12 +5857,10 @@ fn spawn_stale_pr_revalidate(
                 Some(metadata.pr_data.clone()),
                 Some(metadata.pr_commits.clone()),
             );
-            let files = er_engine::git::parse_diff(&raw_diff);
             let branch_diff_hash = er_engine::ai::compute_diff_hash(&raw_diff);
             let diff_hash = format!("{:016x}", er_engine::ai::compute_diff_hash_fast(&raw_diff));
             let result = er_engine::app::RemoteDiffResult {
                 raw_diff,
-                files,
                 branch_diff_hash,
                 diff_hash,
                 head_oid: Some(metadata.freshness.head_oid.clone()),
@@ -6396,6 +6408,7 @@ fn open_pr_review_impl(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     log_branch_open_phase(&project_id, &branch_label, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
+    reset_sent_files(state);
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
     // The tab is constructed directly in PrDiff mode from the seeded diff —
@@ -7069,6 +7082,7 @@ pub fn open_project_branch(
     refresh_branch_open_diff(&mut new_tab)?;
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    reset_sent_files(&state);
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     projects::set_active(&project_id);
     kick_meta_refresh(&state, app.tab().repo_root.clone());

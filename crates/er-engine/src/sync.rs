@@ -804,10 +804,14 @@ pub struct RemoteDiffContext {
 }
 
 /// Output of one refresh cycle. Applied via `apply_remote_diff_result`.
+///
+/// Carries the raw diff only — `apply_remote_diff_result` runs it through
+/// `TabState::install_raw_diff` so the swap uses the exact same lazy-parse +
+/// compaction pipeline as a fresh open. (A pre-parsed `files` field here
+/// previously bypassed that pipeline and left stale lazy bookkeeping.)
 #[derive(Debug, Clone)]
 pub struct RemoteDiffResult {
     pub raw_diff: String,
-    pub files: Vec<git::DiffFile>,
     pub branch_diff_hash: String,
     pub diff_hash: String,
     pub head_oid: Option<String>,
@@ -815,7 +819,7 @@ pub struct RemoteDiffResult {
     pub tab_key: (String, Option<u64>, bool),
 }
 
-/// Run the network fetch + parse + hash for a remote-PR diff refresh.
+/// Run the network fetch + hash for a remote-PR diff refresh.
 /// Returns `Ok(None)` when the expected head_oid matches the last fetched
 /// one (no work needed).
 pub fn fetch_remote_diff_data(ctx: &RemoteDiffContext) -> Result<Option<RemoteDiffResult>> {
@@ -829,13 +833,11 @@ pub fn fetch_remote_diff_data(ctx: &RemoteDiffContext) -> Result<Option<RemoteDi
     }
 
     let raw = github::gh_pr_diff_remote(&ctx.owner, &ctx.repo, ctx.pr_number)?;
-    let files = git::parse_diff(&raw);
     let branch_diff_hash = crate::ai::compute_diff_hash(&raw);
     let diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
 
     Ok(Some(RemoteDiffResult {
         raw_diff: raw,
-        files,
         branch_diff_hash,
         diff_hash,
         head_oid: ctx.expected_head_oid.clone(),
