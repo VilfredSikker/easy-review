@@ -12,6 +12,21 @@ export const SYNTAX_THEMES: SyntaxTheme[] = [
     label: "One Dark Pro",
     shikiName: "one-dark-pro",
   },
+  {
+    id: "one-light",
+    label: "One Light",
+    shikiName: "one-light",
+  },
+  {
+    id: "tokyo-night",
+    label: "Tokyo Night",
+    shikiName: "tokyo-night",
+  },
+  {
+    id: "github-dark-high-contrast",
+    label: "GitHub Dark High Contrast",
+    shikiName: "github-dark-high-contrast",
+  },
 ];
 
 export const DEFAULT_SYNTAX_THEME_ID = "one-dark-pro";

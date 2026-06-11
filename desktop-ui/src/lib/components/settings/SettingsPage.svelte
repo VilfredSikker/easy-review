@@ -51,6 +51,33 @@
   const selectedProvider = $derived(providers.find((p) => p.is_selected) ?? null);
   const selectedModels = $derived(selectedProvider?.models ?? []);
 
+  interface FieldSection {
+    title: string | null;
+    fields: ConfigHubField[];
+  }
+
+  const sections = $derived.by<FieldSection[]>(() => {
+    const out: FieldSection[] = [];
+    let current: FieldSection = { title: null, fields: [] };
+    for (const field of fields) {
+      if (field.kind === "section") {
+        if (current.fields.length > 0) out.push(current);
+        current = { title: field.title, fields: [] };
+      } else {
+        current.fields.push(field);
+      }
+    }
+    if (current.fields.length > 0) out.push(current);
+    return out;
+  });
+
+  function fieldKey(field: ConfigHubField, i: number): string {
+    if (field.kind === "bool" || field.kind === "cycle" || field.kind === "text") return field.key;
+    if (field.kind === "listEntry") return field.key + "-" + field.index;
+    if (field.kind === "section") return "section-" + field.title;
+    return "field-" + i;
+  }
+
   function applySettings(res: GetConfigHubResponse) {
     generalFields = res.settings.general;
     terminalFields = res.settings.terminal;
@@ -182,197 +209,241 @@
 </script>
 
 <div class="flex flex-col flex-1 w-full min-w-0 h-full min-h-0 bg-bg text-fg">
-  <header class="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-hairline">
+  <header class="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-hairline bg-surface/60">
     <button
       type="button"
-      class="text-sm text-fg-3 hover:text-fg"
+      class="inline-flex items-center gap-1.5 px-2 py-1 -ml-2 text-sm text-fg-3 hover:text-fg hover:bg-hover rounded-md transition-colors"
       onclick={onBack}
     >
-      ← Back
+      <span aria-hidden="true">←</span>
+      Back
     </button>
-    <h1 class="text-base font-semibold">Settings</h1>
-    <span class="text-xs text-muted truncate ml-auto font-mono" title={repoRoot}>
+    <div class="w-px h-4 bg-hairline" aria-hidden="true"></div>
+    <h1 class="text-base font-semibold tracking-tight">Settings</h1>
+    <span
+      class="ml-auto inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ink-650 border border-border text-[10px] font-mono text-muted truncate"
+      title={repoRoot}
+    >
+      <span
+        class="w-1.5 h-1.5 rounded-full shrink-0 {hasLocalConfig ? 'bg-accent' : 'bg-ink-300'}"
+        aria-hidden="true"
+      ></span>
       {hasLocalConfig ? ".er-config.toml" : "global defaults"}
     </span>
   </header>
 
   {#if loading}
-    <div class="flex-1 flex items-center justify-center text-sm text-muted">Loading…</div>
-  {:else}
-    <div
-      class="shrink-0 flex gap-1 px-4 pt-3 border-b border-hairline"
-      role="tablist"
-      aria-label="Settings sections"
-    >
-      {#each TABS as tab (tab.id)}
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === tab.id}
-          class="px-3 py-1.5 text-sm rounded-t-md border-b-2 transition-colors {activeTab === tab.id
-            ? 'border-accent text-fg font-medium'
-            : 'border-transparent text-fg-3 hover:text-fg hover:bg-hover'}"
-          onclick={() => (activeTab = tab.id)}
-        >
-          {tab.label}
-        </button>
-      {/each}
+    <div class="flex-1 overflow-hidden px-6 py-6">
+      <div class="max-w-2xl mx-auto space-y-4 animate-pulse" aria-label="Loading settings">
+        <div class="h-7 w-64 bg-ink-700 rounded-lg"></div>
+        <div class="h-3 w-80 bg-ink-750 rounded"></div>
+        <div class="h-40 bg-ink-800 border border-hairline rounded-xl"></div>
+        <div class="h-40 bg-ink-800 border border-hairline rounded-xl"></div>
+      </div>
     </div>
-
-    <div class="flex-1 overflow-y-auto w-full px-6 py-4">
-      <p class="text-xs text-muted mb-4">{tabBlurb}</p>
-      {#if activeTab === "terminal" && localThemeOverride}
-        <p class="text-xs text-yellow-400/90 mb-4 border border-yellow-400/30 rounded-md px-3 py-2 bg-yellow-400/5">
-          This repo’s <code class="font-mono">.er-config.toml</code> sets theme to
-          <code class="font-mono">{localThemeOverride}</code>, which overrides your global config when you run
-          <code class="font-mono">er</code> here. Use “Save to repo” after changing theme, or remove
-          <code class="font-mono">[display].theme</code> from the repo file to follow global only.
-        </p>
-      {/if}
-
-      {#if activeTab === "projects"}
-        {#if projects.length === 0}
-          <p class="text-sm text-muted">No projects registered yet. Open a repo from the sidebar first.</p>
-        {:else}
-          {#each projects as project (project.id)}
-            <ProjectSettingsCard
-              {project}
-              onpatch={(patch) => patchProjectReviewSettings(project.id, patch)}
-            />
-          {/each}
-        {/if}
-      {:else}
-      {#each fields as field, i (field.kind === "section" ? field.title : "field-" + i + (field.kind === "bool" || field.kind === "cycle" || field.kind === "text" ? field.key : field.kind === "listEntry" ? field.key : field.label))}
-        {#if field.kind === "section"}
-          <h2 class="text-xs uppercase tracking-wider text-muted font-semibold mt-6 mb-2 first:mt-0">
-            {field.title}
-          </h2>
-        {:else if field.kind === "bool"}
-          <Toggle
-            label={field.label}
-            description={field.description}
-            checked={field.value}
-            onchange={(v) => patch(field.key, v)}
-          />
-        {:else if field.kind === "cycle"}
-          <OptionGroup
-            label={field.label}
-            description={field.description}
-            options={field.options}
-            value={field.value}
-            onchange={(v) => patch(field.key, v)}
-          />
-        {:else if field.kind === "text"}
-          <SettingsTextField
-            label={field.label}
-            description={field.description}
-            placeholder={field.placeholder}
-            value={field.value}
-            strict={field.strict}
-            warning={textWarnings[field.key] ?? null}
-            oncommit={(v) => {
-              validateText(field.key, v);
-              void patch(field.key, v);
-            }}
-          />
-        {:else if field.kind === "listEntry"}
-          <div class="flex items-center gap-2 py-1.5 font-mono text-xs text-fg-2">
-            <span class="flex-1 truncate">{field.label}</span>
+  {:else}
+    <div class="flex-1 overflow-y-auto w-full min-h-0">
+      <div class="max-w-2xl mx-auto px-6 py-5 pb-8">
+        <div
+          class="inline-flex p-0.5 gap-0.5 bg-surface border border-hairline rounded-lg"
+          role="tablist"
+          aria-label="Settings sections"
+        >
+          {#each TABS as tab (tab.id)}
             <button
               type="button"
-              class="text-muted hover:text-red-400 px-2"
-              title="Remove"
-              onclick={() => patch("watched.paths.remove", field.index)}
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              class="px-3.5 py-1 text-xs rounded-md transition-colors {activeTab === tab.id
+                ? 'bg-hover text-fg font-medium shadow-sm'
+                : 'text-fg-3 hover:text-fg'}"
+              onclick={() => (activeTab = tab.id)}
             >
-              ×
+              {tab.label}
             </button>
-          </div>
-        {:else if field.kind === "listAdd"}
-          <div class="py-2 flex gap-2">
-            <input
-              type="text"
-              class="flex-1 bg-surface border border-hairline rounded-md px-2 py-1.5 text-sm font-mono"
-              placeholder="Glob pattern, e.g. .work/**"
-              bind:value={addPattern}
-            />
-            <Button
-              onclick={() => {
-                const p = addPattern.trim();
-                if (!p) return;
-                void patch("watched.paths.add", p).then(() => {
-                  addPattern = "";
-                });
-              }}
-            >
-              Add
-            </Button>
+          {/each}
+        </div>
+        <p class="text-xs text-muted mt-3 mb-5">{tabBlurb}</p>
+
+        {#if activeTab === "general" && localThemeOverride}
+          <div
+            class="flex gap-2.5 text-xs text-question/90 mb-5 border border-question-border rounded-lg px-3.5 py-2.5 bg-question-surface"
+          >
+            <span aria-hidden="true" class="shrink-0">⚠</span>
+            <p>
+              This repo’s <code class="font-mono">.er-config.toml</code> sets theme to
+              <code class="font-mono">{localThemeOverride}</code>, which overrides your global config for this repo
+              (app and <code class="font-mono">er</code>). Use “Save to repo” after changing theme, or remove
+              <code class="font-mono">[display].theme</code> from the repo file to follow global only.
+            </p>
           </div>
         {/if}
-      {/each}
-      {/if}
 
-      {#if activeTab === "general"}
-        {#if providers.length > 0}
-          <h2 class="text-xs uppercase tracking-wider text-muted font-semibold mt-8 mb-2">AI Hub</h2>
-          <p class="text-xs text-muted mb-3">Session selection. Save defaults writes to config TOML.</p>
-          <div class="py-2">
-            <div class="text-sm text-fg mb-1.5">Provider</div>
-            <div class="flex flex-wrap gap-1">
-              {#each providers as p (p.id)}
-                <button
-                  type="button"
-                  class="px-2.5 py-1 text-xs rounded-md border transition-colors {p.is_selected
-                    ? 'bg-accent text-black border-accent'
-                    : 'bg-surface text-fg-2 border-hairline hover:bg-hover'}"
-                  onclick={() => void selectProvider(p.id)}
-                >
-                  {p.label}
-                </button>
+        {#if activeTab === "projects"}
+          {#if projects.length === 0}
+            <div class="border border-dashed border-border rounded-xl px-6 py-10 text-center">
+              <p class="text-sm text-fg-3 mb-1">No projects registered yet</p>
+              <p class="text-xs text-muted">Open a repo from the sidebar first.</p>
+            </div>
+          {:else}
+            {#each projects as project (project.id)}
+              <ProjectSettingsCard
+                {project}
+                onpatch={(patch) => patchProjectReviewSettings(project.id, patch)}
+              />
+            {/each}
+          {/if}
+        {:else}
+          {#each sections as section, si (section.title ?? "untitled-" + si)}
+            {#if section.title}
+              <h2 class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5 first:mt-0">
+                <span class="w-1 h-3 rounded-full bg-accent/70" aria-hidden="true"></span>
+                {section.title}
+              </h2>
+            {/if}
+            <div class="bg-card border border-hairline rounded-xl divide-y divide-hairline/60">
+              {#each section.fields as field, i (fieldKey(field, i))}
+                {#if field.kind === "bool"}
+                  <div class="px-4">
+                    <Toggle
+                      label={field.label}
+                      description={field.description}
+                      checked={field.value}
+                      onchange={(v) => patch(field.key, v)}
+                    />
+                  </div>
+                {:else if field.kind === "cycle"}
+                  <div class="px-4">
+                    <OptionGroup
+                      label={field.label}
+                      description={field.description}
+                      options={field.options}
+                      value={field.value}
+                      onchange={(v) => patch(field.key, v)}
+                    />
+                  </div>
+                {:else if field.kind === "text"}
+                  <div class="px-4">
+                    <SettingsTextField
+                      label={field.label}
+                      description={field.description}
+                      placeholder={field.placeholder}
+                      value={field.value}
+                      strict={field.strict}
+                      warning={textWarnings[field.key] ?? null}
+                      oncommit={(v) => {
+                        validateText(field.key, v);
+                        void patch(field.key, v);
+                      }}
+                    />
+                  </div>
+                {:else if field.kind === "listEntry"}
+                  <div class="flex items-center gap-2 px-4 py-2 font-mono text-xs text-fg-2 group">
+                    <span class="flex-1 truncate" title={field.label}>{field.label}</span>
+                    <button
+                      type="button"
+                      class="text-muted opacity-60 group-hover:opacity-100 hover:text-risk-high px-2 py-0.5 rounded transition-colors"
+                      title="Remove"
+                      onclick={() => patch("watched.paths.remove", field.index)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                {:else if field.kind === "listAdd"}
+                  <div class="px-4 py-3 flex gap-2">
+                    <input
+                      type="text"
+                      class="flex-1 bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm font-mono outline-none transition-colors focus:border-accent/60 placeholder:text-ink-300"
+                      placeholder="Glob pattern, e.g. .work/**"
+                      bind:value={addPattern}
+                    />
+                    <Button
+                      onclick={() => {
+                        const p = addPattern.trim();
+                        if (!p) return;
+                        void patch("watched.paths.add", p).then(() => {
+                          addPattern = "";
+                        });
+                      }}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                {/if}
               {/each}
             </div>
-          </div>
-          {#if selectedModels.length > 0}
-            <div class="py-2">
-              <div class="text-sm text-fg mb-1.5">Model</div>
-              <div class="flex flex-wrap gap-1">
-                {#each selectedModels as m (m.id)}
-                  <button
-                    type="button"
-                    class="px-2.5 py-1 text-xs rounded-md border transition-colors {m.is_selected
-                      ? 'bg-accent text-black border-accent'
-                      : 'bg-surface text-fg-2 border-hairline hover:bg-hover'}"
-                    onclick={() => void selectModel(m.id)}
-                  >
-                    {m.label}
-                  </button>
-                {/each}
+          {/each}
+        {/if}
+
+        {#if activeTab === "general"}
+          <h2 class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5">
+            <span class="w-1 h-3 rounded-full bg-accent/70" aria-hidden="true"></span>
+            AI Hub
+          </h2>
+          {#if providers.length > 0}
+            <div class="bg-card border border-hairline rounded-xl px-4 py-3">
+              <p class="text-xs text-muted mb-3">
+                Session selection. “Save as default” writes to config TOML.
+              </p>
+              <div class="py-1">
+                <div class="text-sm text-fg mb-1.5">Provider</div>
+                <div class="flex flex-wrap gap-1.5">
+                  {#each providers as p (p.id)}
+                    <button
+                      type="button"
+                      class="px-2.5 py-1 text-xs rounded-md border transition-colors {p.is_selected
+                        ? 'bg-accent-soft text-accent border-accent-border font-medium'
+                        : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
+                      onclick={() => void selectProvider(p.id)}
+                    >
+                      {p.label}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+              {#if selectedModels.length > 0}
+                <div class="py-2 mt-1">
+                  <div class="text-sm text-fg mb-1.5">Model</div>
+                  <div class="flex flex-wrap gap-1.5">
+                    {#each selectedModels as m (m.id)}
+                      <button
+                        type="button"
+                        class="px-2.5 py-1 text-xs rounded-md border transition-colors {m.is_selected
+                          ? 'bg-accent-soft text-accent border-accent-border font-medium'
+                          : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
+                        onclick={() => void selectModel(m.id)}
+                      >
+                        {m.label}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+              <div class="mt-2 pt-2 border-t border-hairline/60">
+                <Button onclick={() => void saveDefaults()}>Save as default</Button>
               </div>
             </div>
+          {:else}
+            <div class="border border-dashed border-border rounded-xl px-6 py-8 text-center">
+              <p class="text-xs text-muted">
+                No <code class="font-mono">[ai_hub]</code> providers in config. Add providers in
+                <code class="font-mono">.er-config.toml</code>.
+              </p>
+            </div>
           {/if}
-          <div class="mt-2">
-            <Button onclick={() => void saveDefaults()}>Save as default</Button>
-          </div>
-        {:else}
-          <h2 class="text-xs uppercase tracking-wider text-muted font-semibold mt-8 mb-2">AI Hub</h2>
-          <p class="text-xs text-muted">
-            No <code class="font-mono">[ai_hub]</code> providers in config. Add providers in
-            <code class="font-mono">.er-config.toml</code>.
-          </p>
         {/if}
-      {/if}
-
+      </div>
     </div>
 
-    <footer class="shrink-0 flex flex-wrap gap-2 px-4 py-3 border-t border-hairline bg-surface">
-      <Button onclick={() => void saveLocal()}>Save to repo</Button>
-      <Button onclick={() => void saveGlobal()}>Save globally</Button>
-      <button
-        type="button"
-        class="px-3 py-1.5 text-sm text-fg-3 hover:text-fg rounded-md hover:bg-hover"
-        onclick={() => void revert()}
-      >
-        Revert
-      </button>
+    <footer class="shrink-0 flex flex-wrap items-center gap-2 px-5 py-3 border-t border-hairline bg-surface">
+      <div class="flex gap-2 max-w-2xl mx-auto w-full items-center px-1">
+        <Button variant="primary" onclick={() => void saveLocal()}>Save to repo</Button>
+        <Button onclick={() => void saveGlobal()}>Save globally</Button>
+        <Button variant="ghost" onclick={() => void revert()}>Revert</Button>
+        <span class="ml-auto text-[10px] font-mono text-muted hidden sm:block">
+          {hasLocalConfig ? ".er-config.toml" : "~/.config/er/config.toml"}
+        </span>
+      </div>
     </footer>
   {/if}
 </div>

@@ -3,7 +3,7 @@ import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import type { HighlighterGeneric, ThemeInput } from "shiki";
 import type { SpanSnapshot } from "./types";
 
-const THEME_NAME = "one-dark-pro";
+const DEFAULT_THEME = "one-dark-pro";
 
 const bundledLangs = {
   typescript: () => import("@shikijs/langs/typescript"),
@@ -28,10 +28,15 @@ const bundledLangs = {
 } as const;
 
 const bundledThemes = {
-  [THEME_NAME]: () => import("@shikijs/themes/one-dark-pro"),
+  "one-dark-pro": () => import("@shikijs/themes/one-dark-pro"),
+  "one-light": () => import("@shikijs/themes/one-light"),
+  "tokyo-night": () => import("@shikijs/themes/tokyo-night"),
+  "github-dark-high-contrast": () =>
+    import("@shikijs/themes/github-dark-high-contrast"),
 } as const;
 
 type BundledLangId = keyof typeof bundledLangs;
+type BundledThemeId = keyof typeof bundledThemes;
 
 const createHighlighter = createBundledHighlighter({
   langs: bundledLangs,
@@ -39,7 +44,7 @@ const createHighlighter = createBundledHighlighter({
   engine: () => createJavaScriptRegexEngine(),
 });
 
-type WorkerHighlighter = HighlighterGeneric<BundledLangId, typeof THEME_NAME>;
+type WorkerHighlighter = HighlighterGeneric<BundledLangId, BundledThemeId>;
 
 export type HighlightWorkerRequest =
   | {
@@ -70,30 +75,38 @@ async function ensureHighlighter(): Promise<WorkerHighlighter> {
   if (highlighter) return highlighter;
   if (!initPromise) {
     initPromise = createHighlighter({
-      themes: [THEME_NAME],
+      themes: [DEFAULT_THEME],
       langs: [],
     }).then((hl) => {
       highlighter = hl;
-      loadedThemes.add(THEME_NAME);
+      loadedThemes.add(DEFAULT_THEME);
       return hl;
     });
   }
   return initPromise;
 }
 
+/** Load the requested theme and return the name to tokenize with (falls back to the default). */
 async function ensureTheme(
   hl: WorkerHighlighter,
   themeName: string,
   themeJson?: Record<string, unknown>,
-) {
-  const key = themeJson ? `custom:${themeName}` : themeName;
-  if (loadedThemes.has(key)) return;
+): Promise<string> {
   if (themeJson) {
-    await hl.loadTheme(themeJson as ThemeInput);
-  } else if (themeName !== THEME_NAME) {
-    await hl.loadTheme(themeName as typeof THEME_NAME);
+    const key = `custom:${themeName}`;
+    if (!loadedThemes.has(key)) {
+      await hl.loadTheme(themeJson as ThemeInput);
+      loadedThemes.add(key);
+    }
+    return (themeJson.name as string | undefined) ?? themeName;
   }
-  loadedThemes.add(key);
+  const name: BundledThemeId =
+    themeName in bundledThemes ? (themeName as BundledThemeId) : DEFAULT_THEME;
+  if (!loadedThemes.has(name)) {
+    await hl.loadTheme(name);
+    loadedThemes.add(name);
+  }
+  return name;
 }
 
 async function ensureLang(hl: WorkerHighlighter, lang: string): Promise<boolean> {
@@ -116,9 +129,12 @@ function tokensToSpans(
   hl: WorkerHighlighter,
   code: string,
   lang: BundledLangId,
-  themeName: typeof THEME_NAME,
+  themeName: string,
 ): SpanSnapshot[][] {
-  const { tokens } = hl.codeToTokens(code, { lang, theme: themeName });
+  const { tokens } = hl.codeToTokens(code, {
+    lang,
+    theme: themeName as BundledThemeId,
+  });
   return tokens.map((line) =>
     line.map((token) => ({
       text: token.content,
@@ -154,7 +170,7 @@ self.onmessage = (event: MessageEvent<HighlightWorkerRequest>) => {
       }
 
       const hl = await ensureHighlighter();
-      await ensureTheme(hl, themeName, themeJson);
+      const resolvedTheme = await ensureTheme(hl, themeName, themeJson);
       const langReady = await ensureLang(hl, lang);
       if (!langReady || !loadedLangs.has(lang as BundledLangId)) {
         const empty = lines.map(() => [] as SpanSnapshot[]);
@@ -163,7 +179,7 @@ self.onmessage = (event: MessageEvent<HighlightWorkerRequest>) => {
       }
 
       const code = lines.join("\n");
-      const spans = tokensToSpans(hl, code, lang as BundledLangId, THEME_NAME);
+      const spans = tokensToSpans(hl, code, lang as BundledLangId, resolvedTheme);
       self.postMessage({ kind: "highlight", id, spans } satisfies HighlightWorkerResponse);
     } catch (err) {
       console.error("[highlightWorker]", err);

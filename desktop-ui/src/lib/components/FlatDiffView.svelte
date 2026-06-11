@@ -358,8 +358,11 @@
    *  hunks: binary, mode-only, rename-without-content, empty). Re-requesting can't
    *  produce hunks, so we never ask again — this avoids wasted IPC on every scroll
    *  re-run and closes a latent spin if a perpetual stub's cache_key ever churned.
-   *  Cleared on context change (tab/branch/mode) alongside _spansAppliedKeys. */
-  const _deadStubs = new Set<number>();
+   *  Cleared on context change (tab/branch/mode) alongside _spansAppliedKeys.
+   *  Keyed by `sourceIndex:path` — indices can shift on a watch refresh within
+   *  the same view, and a stale index-only entry would silently block another
+   *  file's lazy load. */
+  const _deadStubs = new Set<string>();
   /** Max distinct lazy files fetched per round-trip (bounds how long the backend
    *  holds the app mutex for one call). */
   const REQUEST_FILE_BATCH = 12;
@@ -400,9 +403,12 @@
         oldFile.additions = newFile.additions;
         oldFile.deletions = newFile.deletions;
         oldFile.cache_key = newFile.cache_key;
+        // Keep delta_key in sync so later differential snapshots can omit
+        // this file's hunks against the content we just received.
+        oldFile.delta_key = newFile.delta_key;
         // Parsed but still a stub → no hunks will ever come from this file; don't
         // ask again until the context changes.
-        if (newFile.is_lazy_stub) _deadStubs.add(newFile.source_index);
+        if (newFile.is_lazy_stub) _deadStubs.add(`${newFile.source_index}:${newFile.path}`);
         // Only evict highlight spans when the hunks actually changed (cache_key
         // changed) — skipping eviction on unchanged hunks avoids a redundant flush.
         if (prevCacheKey !== newFile.cache_key) {
@@ -439,7 +445,7 @@
       if (row.type !== "lazy-stub") continue;
       if (
         _requestingFiles.has(row.sourceIndex) ||
-        _deadStubs.has(row.sourceIndex) ||
+        _deadStubs.has(`${row.sourceIndex}:${row.filePath ?? ""}`) ||
         seen.has(row.sourceIndex)
       )
         continue;
@@ -1433,6 +1439,13 @@
   >
     {#if !snapshot}
       <div class="flex items-center justify-center h-full text-muted">Loading…</div>
+    {:else if files.length === 0 && snapshot.bg_loading?.tab_diff}
+      <!-- First diff load of a stub tab runs on a background thread — show a
+           loading state instead of flashing "No changes". -->
+      <div class="flex items-center justify-center h-full text-muted text-sm gap-2">
+        <span class="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse"></span>
+        Loading diff…
+      </div>
     {:else if files.length === 0}
       <div class="flex items-center justify-center h-full text-muted text-sm">No changes</div>
     {:else}

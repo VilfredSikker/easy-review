@@ -21,15 +21,15 @@
 
 </script>
 
-<section class="border border-hairline rounded-lg px-4 py-3 mb-3 bg-surface/40">
-  <div class="flex items-baseline justify-between gap-2 mb-1">
-    <h3 class="text-sm font-medium text-fg">{project.name}</h3>
+<section class="bg-card border border-hairline rounded-xl px-4 py-3.5 mb-4">
+  <div class="flex items-baseline justify-between gap-2">
+    <h3 class="text-sm font-semibold text-fg tracking-tight">{project.name}</h3>
     {#if project.remote}
       <span class="text-[10px] font-mono text-muted truncate">{project.remote}</span>
     {/if}
   </div>
   {#if project.root_path}
-    <p class="text-[10px] font-mono text-muted truncate mb-2" title={project.root_path}>
+    <p class="text-[10px] font-mono text-muted truncate mt-0.5 mb-2" title={project.root_path}>
       {project.root_path}
     </p>
   {/if}
@@ -39,7 +39,7 @@
       Run triage from the sidebar — hover a branch or PR row and click the scan icon.
     </p>
     <div class="py-2">
-      <div class="text-sm text-fg mb-1">Max diff size (KB)</div>
+      <div class="text-sm text-fg mb-0.5">Max diff size (KB)</div>
       <div class="text-xs text-muted mb-1.5">
         Skip sidebar triage when the filtered diff exceeds this size. Leave empty for no limit.
       </div>
@@ -48,7 +48,7 @@
           type="number"
           min="0"
           step="1"
-          class="flex-1 bg-surface border border-hairline rounded-md px-2 py-1.5 text-sm font-mono"
+          class="flex-1 bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm font-mono outline-none transition-colors placeholder:text-ink-300 hover:border-border focus:border-accent/60"
           placeholder="No limit"
           bind:value={maxDiffInput}
           onchange={() => {
@@ -62,31 +62,33 @@
   {/if}
 
   <div class="mt-3 pt-3 border-t border-hairline/60">
-    <div class="text-sm text-fg mb-1">Ignore in AI reviews</div>
+    <div class="text-sm text-fg mb-0.5">Ignore in AI reviews</div>
     <div class="text-xs text-muted mb-2">
       Glob patterns excluded from triage and full-review diffs (e.g. <code class="font-mono">**/*.lock</code>).
     </div>
     {#if ignoreGlobs.length === 0}
-      <p class="text-xs text-muted mb-2">No ignore patterns.</p>
+      <p class="text-xs text-muted/80 italic mb-2">No ignore patterns.</p>
     {:else}
-      {#each ignoreGlobs as glob, index (glob + index)}
-        <div class="flex items-center gap-2 py-1 font-mono text-xs text-fg-2">
-          <span class="flex-1 truncate" title={glob}>{glob}</span>
-          <button
-            type="button"
-            class="text-muted hover:text-red-400 px-2"
-            title="Remove"
-            onclick={() => onpatch({ reviewIgnoreGlobRemove: index })}
-          >
-            ×
-          </button>
-        </div>
-      {/each}
+      <div class="divide-y divide-hairline/40 mb-1">
+        {#each ignoreGlobs as glob, index (glob + index)}
+          <div class="flex items-center gap-2 py-1.5 font-mono text-xs text-fg-2 group">
+            <span class="flex-1 truncate" title={glob}>{glob}</span>
+            <button
+              type="button"
+              class="text-muted opacity-60 group-hover:opacity-100 hover:text-risk-high px-2 py-0.5 rounded transition-colors"
+              title="Remove"
+              onclick={() => onpatch({ reviewIgnoreGlobRemove: index })}
+            >
+              ×
+            </button>
+          </div>
+        {/each}
+      </div>
     {/if}
     <div class="flex gap-2 mt-1">
       <input
         type="text"
-        class="flex-1 bg-surface border border-hairline rounded-md px-2 py-1.5 text-sm font-mono"
+        class="flex-1 bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm font-mono outline-none transition-colors placeholder:text-ink-300 hover:border-border focus:border-accent/60"
         placeholder="Glob pattern, e.g. package-lock.json"
         bind:value={addGlob}
       />

@@ -15,7 +15,7 @@ pub use config_settings::{
     settings_fields_grouped, SettingsFieldsGrouped, SettingsScope, THEME_OPTIONS,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ErConfig {
@@ -160,6 +160,25 @@ pub struct AiHubConfig {
     pub reviewer_models: BTreeMap<String, String>,
     #[serde(default)]
     pub providers: BTreeMap<String, AiProviderConfig>,
+    /// Max agent processes running at once (background reviews + arena
+    /// reviewers). Extra requests queue and start as slots free up.
+    /// 0 means "use the default".
+    #[serde(default)]
+    pub max_concurrent_reviews: usize,
+}
+
+/// Default cap on concurrently running agent processes.
+pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
+
+impl AiHubConfig {
+    /// Effective concurrency cap — configured value, or the default when unset.
+    pub fn effective_max_concurrent_reviews(&self) -> usize {
+        if self.max_concurrent_reviews == 0 {
+            DEFAULT_MAX_CONCURRENT_REVIEWS
+        } else {
+            self.max_concurrent_reviews
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -398,6 +417,44 @@ impl AiHubConfig {
     }
 }
 
+#[derive(Deserialize)]
+struct AiHubCatalogFile {
+    ai_hub: AiHubConfig,
+}
+
+/// Built-in `[ai_hub]` presets shipped with `er` (see `ai_hub_catalog.toml`).
+fn ai_hub_catalog() -> AiHubConfig {
+    toml::from_str::<AiHubCatalogFile>(include_str!("ai_hub_catalog.toml"))
+        .map(|f| f.ai_hub)
+        .unwrap_or_default()
+}
+
+/// Merge missing catalog providers/models into `hub` (in-memory only; does not write config files).
+pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
+    let catalog = ai_hub_catalog();
+    if hub.providers.is_empty() {
+        *hub = catalog;
+        return;
+    }
+
+    for (id, catalog_provider) in catalog.providers {
+        match hub.providers.get_mut(&id) {
+            Some(existing) => {
+                let existing_ids: HashSet<String> =
+                    existing.models.iter().map(|m| m.id.clone()).collect();
+                for model in catalog_provider.models {
+                    if !existing_ids.contains(&model.id) {
+                        existing.models.push(model);
+                    }
+                }
+            }
+            None => {
+                hub.providers.insert(id, catalog_provider);
+            }
+        }
+    }
+}
+
 impl AiProviderConfig {
     pub fn display_name(&self, provider_id: &str) -> String {
         self.label
@@ -579,12 +636,18 @@ pub fn load_config(repo_root: &str) -> ErConfig {
         }
         (Some(global), None) => global,
         (None, Some(local)) => local,
-        (None, None) => return ErConfig::default(),
+        (None, None) => {
+            let mut config = ErConfig::default();
+            supplement_ai_hub(&mut config.ai_hub);
+            return config;
+        }
     };
 
-    toml::Value::Table(user_table)
+    let mut config: ErConfig = toml::Value::Table(user_table)
         .try_into()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    supplement_ai_hub(&mut config.ai_hub);
+    config
 }
 
 /// Split a string into args respecting single and double quotes.
@@ -668,10 +731,12 @@ pub fn load_global_config() -> ErConfig {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|c| c.parse::<toml::Table>().ok());
 
-    match global_table {
+    let mut config: ErConfig = match global_table {
         Some(table) => toml::Value::Table(table).try_into().unwrap_or_default(),
         None => ErConfig::default(),
-    }
+    };
+    supplement_ai_hub(&mut config.ai_hub);
+    config
 }
 
 /// Save config to the global config dir (~/.config/er/config.toml).
@@ -1194,8 +1259,17 @@ args = ["--model", "gpt-5.4"]
         assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.4"));
         let codex = config.ai_hub.providers.get("codex").unwrap();
         assert_eq!(codex.command, "codex");
-        assert_eq!(codex.models.len(), 1);
+        // The user-defined model comes first and is NOT overwritten by the
+        // built-in catalog entry of the same id (the user's definition has no
+        // description; the catalog's does).
         assert_eq!(codex.models[0].id, "gpt-5.4");
+        assert!(codex.models[0].description.is_none());
+        // `supplement_ai_hub` adds the catalog's remaining codex models
+        // in-memory, so the picker shows them alongside the user's.
+        assert!(
+            codex.models.iter().any(|m| m.id == "gpt-5.3-codex"),
+            "catalog models should supplement user-defined providers"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1623,6 +1697,73 @@ args = ["--model", "gpt-5.4"]
         assert!(!effort_levels_for_hub_model("opus-4.6").contains(&"xhigh"));
         assert!(effort_levels_for_hub_model("sonnet-4.6").contains(&"max"));
         assert!(effort_levels_for_hub_model("haiku-4.5").is_empty());
+    }
+
+    #[test]
+    fn supplement_ai_hub_adds_missing_catalog_models() {
+        let mut hub = AiHubConfig {
+            providers: BTreeMap::from([(
+                "claude".into(),
+                AiProviderConfig {
+                    models: vec![
+                        AiModelConfig {
+                            id: "sonnet-4.6".into(),
+                            label: Some("Sonnet 4.6".into()),
+                            ..Default::default()
+                        },
+                        AiModelConfig {
+                            id: "opus-4.6".into(),
+                            label: Some("Opus 4.6".into()),
+                            ..Default::default()
+                        },
+                        AiModelConfig {
+                            id: "opus-4.7".into(),
+                            label: Some("Opus 4.7".into()),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        supplement_ai_hub(&mut hub);
+
+        let claude = hub.providers.get("claude").expect("claude provider");
+        let ids: Vec<&str> = claude.models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"opus-4.8"), "missing opus-4.8: {ids:?}");
+        assert!(ids.contains(&"haiku-4.5"), "missing haiku-4.5: {ids:?}");
+
+        let opus_48 = claude
+            .models
+            .iter()
+            .find(|m| m.id == "opus-4.8")
+            .expect("opus-4.8 entry");
+        assert_eq!(opus_48.label.as_deref(), Some("Opus 4.8"));
+        assert_eq!(
+            opus_48.args,
+            vec!["--model".to_string(), "claude-opus-4-8".to_string()]
+        );
+
+        // User-defined models and order are preserved.
+        assert_eq!(claude.models[0].id, "sonnet-4.6");
+        assert_eq!(claude.models[1].id, "opus-4.6");
+        assert_eq!(claude.models[2].id, "opus-4.7");
+    }
+
+    #[test]
+    fn supplement_ai_hub_seeds_empty_providers() {
+        let mut hub = AiHubConfig::default();
+        supplement_ai_hub(&mut hub);
+        assert!(hub.providers.contains_key("claude"));
+        assert!(hub.providers.contains_key("codex"));
+        assert!(hub.providers.contains_key("cursor"));
+        let claude = hub.providers.get("claude").unwrap();
+        assert!(
+            claude.models.iter().any(|m| m.id == "opus-4.8"),
+            "catalog should include opus-4.8"
+        );
     }
 
     #[test]

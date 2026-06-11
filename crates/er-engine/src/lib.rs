@@ -1,3 +1,4 @@
+pub mod agent_slots;
 pub mod ai;
 pub mod app;
 pub mod arena;

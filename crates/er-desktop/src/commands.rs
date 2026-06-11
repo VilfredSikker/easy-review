@@ -19,9 +19,9 @@ use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects;
 use crate::snapshot::{
-    build_chrome_snapshot, build_file_snapshot, build_snapshot, AgentLogSnapshot, AppSnapshot,
-    CheckSummary, FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser,
-    GithubStatusSnapshot, LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
+    build_chrome_snapshot, build_file_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary,
+    FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot,
+    LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
 };
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
@@ -87,6 +87,7 @@ pub struct OpenSourceResult {
     pub target: String,
 }
 
+#[derive(Clone)]
 pub struct AppState {
     pub app: Arc<Mutex<App>>,
     pub config_edit_baseline: Arc<Mutex<Option<ErConfig>>>,
@@ -128,6 +129,9 @@ pub struct AppState {
     pub tauri_app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
     /// Dedupes concurrent auto-triage workers per remote/pr/head.
     pub auto_triage_in_flight: crate::auto_triage::AutoTriageInFlight,
+    /// Differential snapshots: per-file content keys the frontend currently
+    /// holds, so unchanged hunks can be omitted from later snapshots.
+    pub sent_files: crate::snapshot::SentFilesHandle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -192,27 +196,35 @@ pub fn start_window_drag(window: tauri::Window) -> Result<(), String> {
     window.start_dragging().map_err(|e| e.to_string())
 }
 
+/// Run a blocking command body on the async runtime's blocking pool.
+///
+/// Sync Tauri commands execute on the main thread — any command that waits
+/// on the `App` mutex or shells out to git can freeze the window while it
+/// runs. Heavy commands are declared `async` and wrap their original body
+/// with this helper so the main thread stays responsive; the bodies remain
+/// plain blocking code (`AppState` is all `Arc`s, so it is cloned into the
+/// closure).
+pub(crate) async fn run_blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("blocking task failed: {e}"))?
+}
+
 macro_rules! snap {
     ($state:expr) => {{
         let app = $state.app.lock().map_err(|e| e.to_string())?;
-        Ok(build_snapshot(
-            &app,
-            Some(&$state.pr_cache),
-            Some(&$state.pr_cache_fetched_at),
-            Some(&$state.meta_cache),
-            Some(&$state.gh_user),
-            Some(&$state.pending_ai_replies),
-            Some(&$state.gh_status_cache),
-            Some(&$state.loading),
-            Some(&$state.watch_status),
-            Some(&$state.inbox),
-        ))
+        Ok(snap_from(&app, &$state))
     }};
 }
 
 /// Build a snapshot using the lock guards directly (when callers already hold them).
+/// Differential: hunks the frontend already holds are omitted (`hunks_omitted`).
 pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
-    build_snapshot(
+    crate::snapshot::build_snapshot_with_delta(
         app,
         Some(&state.pr_cache),
         Some(&state.pr_cache_fetched_at),
@@ -223,6 +235,7 @@ pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
         Some(&state.loading),
         Some(&state.watch_status),
         Some(&state.inbox),
+        Some(&state.sent_files),
     )
 }
 
@@ -459,10 +472,8 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
         .clone()
         .unwrap_or_else(|| tab.current_branch.clone());
 
-    let project_id = projects::resolve_project_id_for_inbox(
-        Some(repo_root.as_str()),
-        remote.as_deref(),
-    );
+    let project_id =
+        projects::resolve_project_id_for_inbox(Some(repo_root.as_str()), remote.as_deref());
 
     let mut emitted_any = false;
     let mut just_added: Vec<InboxItem> = Vec::new();
@@ -664,18 +675,27 @@ fn kick_meta_refresh(state: &AppState, root: String) {
 }
 
 #[tauri::command]
-pub fn get_snapshot(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let t0 = std::time::Instant::now();
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let snap = snap_from(&app, &state);
-    crate::profile_log::profile_log(
-        "get_snapshot",
-        &[
-            ("build_ms", t0.elapsed().as_millis().to_string()),
-            ("files", snap.files.len().to_string()),
-        ],
-    );
-    Ok(snap)
+pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let t0 = std::time::Instant::now();
+        // Full fetch — the frontend is (re)building its state from scratch,
+        // so forget what was previously sent and serialize everything.
+        if let Ok(mut sent) = state.sent_files.lock() {
+            sent.reset();
+        }
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let snap = snap_from(&app, &state);
+        crate::profile_log::profile_log(
+            "get_snapshot",
+            &[
+                ("build_ms", t0.elapsed().as_millis().to_string()),
+                ("files", snap.files.len().to_string()),
+            ],
+        );
+        Ok(snap)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -696,53 +716,66 @@ pub fn toggle_panel(panel: String, state: State<AppState>) -> Result<AppSnapshot
 /// a fast-scroll burst that reveals several stubs is one call, not N full
 /// snapshots. History mode has no lazy stubs, so it returns an empty vec.
 #[tauri::command]
-pub fn request_file_content(
+pub async fn request_file_content(
     source_indices: Vec<usize>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<FileSnapshot>, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if app.tab().mode == er_engine::app::DiffMode::History {
-        return Ok(vec![]);
-    }
-    {
-        let tab = app.tab_mut();
-        for &source_index in &source_indices {
-            if source_index < tab.files.len() {
-                tab.ensure_file_parsed_at(source_index);
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if app.tab().mode == er_engine::app::DiffMode::History {
+            return Ok(vec![]);
+        }
+        {
+            let tab = app.tab_mut();
+            for &source_index in &source_indices {
+                if source_index < tab.files.len() {
+                    tab.ensure_file_parsed_at(source_index);
+                }
             }
         }
-    }
-    let tab = app.tab();
-    let pending_ai = Some(&state.pending_ai_replies);
-    let out = source_indices
-        .iter()
-        .filter_map(|&source_index| {
-            tab.files
-                .get(source_index)
-                .map(|f| build_file_snapshot(source_index, f, tab, pending_ai, true))
-        })
-        .collect();
-    Ok(out)
+        let tab = app.tab();
+        let pending_ai = Some(&state.pending_ai_replies);
+        let out: Vec<FileSnapshot> = source_indices
+            .iter()
+            .filter_map(|&source_index| {
+                tab.files
+                    .get(source_index)
+                    .map(|f| build_file_snapshot(source_index, f, tab, pending_ai, true))
+            })
+            .collect();
+        // These hunks bypass build_snapshot — record them so later polls can
+        // omit the same content.
+        for snap in &out {
+            crate::snapshot::record_sent_file(&app, tab, snap, &state.sent_files);
+        }
+        Ok(out)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn select_file(idx: usize, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    {
-        let tab = app.tab_mut();
-        if tab.mode == er_engine::app::DiffMode::History {
-            tab.history_select_file(idx);
-        } else if idx < tab.files.len() {
-            tab.selected_file = idx;
-            tab.current_hunk = 0;
-            tab.current_line = None;
-            tab.diff_scroll = 0;
-            tab.h_scroll = 0;
-            tab.ensure_file_parsed();
-            tab.rebuild_hunk_offsets();
+pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        {
+            let tab = app.tab_mut();
+            if tab.mode == er_engine::app::DiffMode::History {
+                tab.history_select_file(idx);
+            } else if idx < tab.files.len() {
+                tab.selected_file = idx;
+                tab.current_hunk = 0;
+                tab.current_line = None;
+                tab.diff_scroll = 0;
+                tab.h_scroll = 0;
+                tab.ensure_file_parsed();
+                tab.rebuild_hunk_offsets();
+            }
         }
-    }
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -823,41 +856,45 @@ fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &st
 }
 
 #[tauri::command]
-pub fn set_mode(
+pub async fn set_mode(
     mode: String,
     pr_number: Option<u64>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
-        return Err(format!("'{mode}' view is disabled in settings"));
-    }
-    if matches!(mode.as_str(), "pr" | "pr_diff") {
-        // Only enter PrDiff when not already there (avoids re-fetching refs
-        // on a tab that is already in PrDiff from construction).
-        if app.tab().mode != DiffMode::PrDiff {
-            // Seed a detected PR number (from the header toggle) onto a local
-            // branch tab that wasn't opened via --pr, so enter_pr_diff can fetch
-            // the head and resolve the shared `pr` bucket.
-            if app.tab().pr_number.is_none() {
-                if let Some(n) = pr_number {
-                    app.tab_mut().pr_number = Some(n);
-                }
-            }
-            app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
+            return Err(format!("'{mode}' view is disabled in settings"));
         }
-        return Ok(snap_from(&app, &state));
-    }
-    let diff_mode = match mode.as_str() {
-        "unstaged" => DiffMode::Unstaged,
-        "staged" => DiffMode::Staged,
-        "history" => DiffMode::History,
-        "conflicts" => DiffMode::Conflicts,
-        "hidden" => DiffMode::Hidden,
-        _ => DiffMode::Branch,
-    };
-    app.tab_mut().set_mode(diff_mode);
-    Ok(snap_from(&app, &state))
+        if matches!(mode.as_str(), "pr" | "pr_diff") {
+            // Only enter PrDiff when not already there (avoids re-fetching refs
+            // on a tab that is already in PrDiff from construction).
+            if app.tab().mode != DiffMode::PrDiff {
+                // Seed a detected PR number (from the header toggle) onto a local
+                // branch tab that wasn't opened via --pr, so enter_pr_diff can fetch
+                // the head and resolve the shared `pr` bucket.
+                if app.tab().pr_number.is_none() {
+                    if let Some(n) = pr_number {
+                        app.tab_mut().pr_number = Some(n);
+                    }
+                }
+                app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
+            }
+            return Ok(snap_from(&app, &state));
+        }
+        let diff_mode = match mode.as_str() {
+            "unstaged" => DiffMode::Unstaged,
+            "staged" => DiffMode::Staged,
+            "history" => DiffMode::History,
+            "conflicts" => DiffMode::Conflicts,
+            "hidden" => DiffMode::Hidden,
+            _ => DiffMode::Branch,
+        };
+        app.tab_mut().set_mode(diff_mode);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Reviewed state ────────────────────────────────────────────────────────────
@@ -1595,14 +1632,11 @@ fn pr_from_cache(
     remote: &str,
     pr_number: u64,
 ) -> Option<crate::snapshot::PrInfo> {
-    pr_cache
-        .lock()
-        .ok()
-        .and_then(|cache| {
-            cache
-                .get(remote)
-                .and_then(|prs| prs.iter().find(|p| p.number == pr_number).cloned())
-        })
+    pr_cache.lock().ok().and_then(|cache| {
+        cache
+            .get(remote)
+            .and_then(|prs| prs.iter().find(|p| p.number == pr_number).cloned())
+    })
 }
 
 fn open_pr_for_branch(
@@ -1701,6 +1735,18 @@ pub fn run_branch_triage(
         &project.review_ignore_globs,
     );
     let app = state.app.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &state))
+}
+
+/// Remove a queued (not yet started) review from the AI review queue.
+/// Running reviews are unaffected.
+#[tauri::command]
+pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if !app.cancel_queued_background_task(&id) {
+        return Err("Queued review not found (it may have started)".to_string());
+    }
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     Ok(snap_from(&app, &state))
 }
 
@@ -3188,7 +3234,8 @@ pub struct AiModelInfo {
 
 #[tauri::command]
 pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    app.sync_config_from_active_tab();
     let hub = &app.config.ai_hub;
     let current_provider = app.current_ai_provider.as_deref();
     let current_model = app.current_ai_model.as_deref();
@@ -3425,7 +3472,8 @@ pub fn validate_with_ai(
     if let Some(fid) = resolved_finding {
         return ask_ai_for_finding(fid, VALIDATE_CARD_AI_PROMPT.to_string(), state);
     }
-    let resolved_thread = thread_id.ok_or_else(|| "thread_id or finding_id is required".to_string())?;
+    let resolved_thread =
+        thread_id.ok_or_else(|| "thread_id or finding_id is required".to_string())?;
     ask_ai(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), state)
 }
 
@@ -4113,7 +4161,7 @@ fn fetch_single_pr_for_remote(remote: &str, pr_number: u64) -> Result<PrInfo, St
 }
 
 fn cache_single_pr_for_remote(
-    state: &State<AppState>,
+    state: &AppState,
     remote: &str,
     pr_number: u64,
 ) -> Result<PrInfo, String> {
@@ -4134,7 +4182,7 @@ fn cache_single_pr_for_remote(
 }
 
 fn record_remote_recent_pr(
-    state: &State<AppState>,
+    state: &AppState,
     remote: &str,
     pr_number: u64,
 ) -> Result<String, String> {
@@ -4146,18 +4194,29 @@ fn record_remote_recent_pr(
 }
 
 #[tauri::command]
-pub fn open_remote_pr(
+pub async fn open_remote_pr(
     owner: String,
     repo: String,
     number: u64,
     replace: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || open_remote_pr_impl(owner, repo, number, replace, &state)).await
+}
+
+fn open_remote_pr_impl(
+    owner: String,
+    repo: String,
+    number: u64,
+    replace: Option<bool>,
+    state: &AppState,
 ) -> Result<AppSnapshot, String> {
     let remote = format!("{owner}/{repo}");
-    let _project_id = record_remote_recent_pr(&state, &remote, number)?;
+    let _project_id = record_remote_recent_pr(state, &remote, number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(&mut app, &owner, &repo, number, replace.unwrap_or(false))?;
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    kick_meta_refresh(state, app.tab().repo_root.clone());
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
         Arc::clone(&state.gh_status_in_flight),
@@ -4167,14 +4226,23 @@ pub fn open_remote_pr(
         repo,
         number,
     );
-    Ok(snap_from(&app, &state))
+    Ok(snap_from(&app, state))
 }
 
 #[tauri::command]
-pub fn open_pr_url(
+pub async fn open_pr_url(
     url: String,
     replace: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || open_pr_url_impl(url, replace, &state)).await
+}
+
+fn open_pr_url_impl(
+    url: String,
+    replace: Option<bool>,
+    state: &AppState,
 ) -> Result<AppSnapshot, String> {
     let pr_ref = er_engine::github::parse_github_pr_url(&url)
         .ok_or_else(|| format!("Not a valid GitHub PR URL: {url}"))?;
@@ -4189,13 +4257,13 @@ pub fn open_pr_url(
                 .unwrap_or(false);
         }
         if !has_cached {
-            cache_single_pr_for_remote(&state, &remote, pr_ref.number)?;
+            cache_single_pr_for_remote(state, &remote, pr_ref.number)?;
         }
         projects::track_pr(&project_id, pr_ref.number).map_err(|e| e.to_string())?;
-        return open_pr_review(project_id, pr_ref.number, replace, None, state);
+        return open_pr_review_impl(project_id, pr_ref.number, replace, None, state);
     }
 
-    let _project_id = record_remote_recent_pr(&state, &remote, pr_ref.number)?;
+    let _project_id = record_remote_recent_pr(state, &remote, pr_ref.number)?;
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     do_open_remote_pr(
         &mut app,
@@ -4204,7 +4272,7 @@ pub fn open_pr_url(
         pr_ref.number,
         replace.unwrap_or(false),
     )?;
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    kick_meta_refresh(state, app.tab().repo_root.clone());
     kick_github_status_refresh(
         state.gh_status_cache.clone(),
         Arc::clone(&state.gh_status_in_flight),
@@ -4214,7 +4282,7 @@ pub fn open_pr_url(
         pr_ref.repo,
         pr_ref.number,
     );
-    Ok(snap_from(&app, &state))
+    Ok(snap_from(&app, state))
 }
 
 // ── Worktree picker (stub — no dialog dep) ──────────────────────────────────
@@ -4390,11 +4458,21 @@ fn refresh_active_branch_after_background_miss(
 }
 
 #[tauri::command]
-pub fn open_local_branch(
+pub async fn open_local_branch(
     project_id: String,
     name: String,
     replace: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || open_local_branch_impl(project_id, name, replace, &state)).await
+}
+
+fn open_local_branch_impl(
+    project_id: String,
+    name: String,
+    replace: Option<bool>,
+    state: &AppState,
 ) -> Result<AppSnapshot, String> {
     let t_total = std::time::Instant::now();
     let branch_name = name.clone();
@@ -4417,12 +4495,12 @@ pub fn open_local_branch(
         branch_name,
         open_path_label
     );
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
-    kick_active_gh_status(&app, &state);
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    kick_active_gh_status(&app, state);
     let repo_root = app.tab().repo_root.clone();
     let base_branch = app.tab().base_branch.clone();
     let t_snapshot = std::time::Instant::now();
-    let snapshot = snap_from(&app, &state);
+    let snapshot = snap_from(&app, state);
     log_branch_open_phase(&project_id, &branch_name, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_name, "total", t_total);
     drop(app);
@@ -4962,18 +5040,29 @@ fn load_pr_open_inputs(
 /// running `gh pr checkout` and without touching the working tree or requiring
 /// the repo to be clean.
 #[tauri::command]
-pub fn open_pr_review(
+pub async fn open_pr_review(
     project_id: String,
     pr_number: u64,
     replace: Option<bool>,
     hint: Option<PrOpenHint>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, hint, &state)).await
+}
+
+fn open_pr_review_impl(
+    project_id: String,
+    pr_number: u64,
+    replace: Option<bool>,
+    hint: Option<PrOpenHint>,
+    state: &AppState,
 ) -> Result<AppSnapshot, String> {
     let t_total = std::time::Instant::now();
     let branch_label = format!("pr-{}", pr_number);
     let t_tab_build = std::time::Instant::now();
     let inputs =
-        load_pr_open_inputs(&project_id, pr_number, hint.as_ref(), &state).map_err(|e| {
+        load_pr_open_inputs(&project_id, pr_number, hint.as_ref(), state).map_err(|e| {
             log::error!("open_pr_review: pr=#{pr_number} project_id={project_id} err={e}");
             e
         })?;
@@ -5011,31 +5100,30 @@ pub fn open_pr_review(
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
     let t_pr_diff = std::time::Instant::now();
-    app.tab_mut()
-        .enter_pr_diff()
-        .map_err(|e| e.to_string())?;
+    app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
     log_branch_open_phase(&project_id, &branch_label, "pr_diff_enter", t_pr_diff);
     let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
+    kick_meta_refresh(state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
-    let snapshot = snap_from(&app, &state);
+    let snapshot = snap_from(&app, state);
     log_branch_open_phase(&project_id, &branch_label, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_label, "total", t_total);
-    kick_active_gh_status(&app, &state);
+    kick_active_gh_status(&app, state);
     Ok(snapshot)
 }
 
 /// Kept for backwards compatibility — delegates to the no-checkout PR review flow.
 #[tauri::command]
-pub fn open_pr_branch(
+pub async fn open_pr_branch(
     project_id: String,
     pr_number: u64,
     head_ref: String,
     replace: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let _ = head_ref; // ignored; PR head is fetched directly from origin
-    open_pr_review(project_id, pr_number, replace, None, state)
+    let state = state.inner().clone();
+    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, None, &state)).await
 }
 
 /// Fire-and-forget background warmup of the PR-open cache. Invoked from the
@@ -5316,7 +5404,15 @@ pub fn refresh_notifications(state: State<AppState>) -> Result<AppSnapshot, Stri
 }
 
 #[tauri::command]
-pub fn open_inbox_item(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+pub async fn open_inbox_item(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || open_inbox_item_impl(id, &state)).await
+}
+
+fn open_inbox_item_impl(id: String, state: &AppState) -> Result<AppSnapshot, String> {
     let now = now_ms();
     let mut target = {
         let mut inbox = state.inbox.lock().map_err(|e| e.to_string())?;
@@ -5339,10 +5435,10 @@ pub fn open_inbox_item(id: String, state: State<AppState>) -> Result<AppSnapshot
             );
         }
         if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
-            return open_pr_review(project_id, pr_number, Some(true), None, state);
+            return open_pr_review_impl(project_id, pr_number, Some(true), None, state);
         }
         if let (Some(project_id), Some(branch)) = (target.project_id, target.branch) {
-            return open_local_branch(project_id, branch, Some(true), state);
+            return open_local_branch_impl(project_id, branch, Some(true), state);
         }
     }
 
@@ -6165,7 +6261,7 @@ pub fn close_tab(
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.close_tab_at(idx);
-    ensure_active_tab_loaded(&mut app);
+    kick_deferred_tab_refresh(&mut app, &state);
     crate::browser_webview::reset_all_tab_webviews(&app_handle, &browser_state)?;
     let active = app.active_tab;
     crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, active)?;
@@ -6175,44 +6271,73 @@ pub fn close_tab(
 }
 
 #[tauri::command]
-pub fn select_tab(
+pub async fn select_tab(
     idx: usize,
     app_handle: tauri::AppHandle,
-    state: State<AppState>,
-    browser_state: State<'_, crate::browser_webview::BrowserWebviewState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.select_tab(idx);
-    ensure_active_tab_loaded(&mut app);
-    kick_active_gh_status(&app, &state);
-    crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, idx)?;
-    crate::tabs::persist_app_tabs(&app);
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        use tauri::Manager;
+        let browser_state = app_handle.state::<crate::browser_webview::BrowserWebviewState>();
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.select_tab(idx);
+        kick_deferred_tab_refresh(&mut app, &state);
+        kick_active_gh_status(&app, &state);
+        crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, idx)?;
+        crate::tabs::persist_app_tabs(&app);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
-/// If the active tab was restored as a lazy stub, run its first `refresh_diff()`
-/// now and clear the flag. No-op for tabs that already have their diff loaded.
-pub(crate) fn ensure_active_tab_loaded(app: &mut App) {
+/// If the active tab was restored as a lazy stub, kick its first
+/// `refresh_diff()` to a background thread and return immediately. The
+/// caller's snapshot shows the stub with `loading.tab_diff = true`; the
+/// loaded diff arrives via the revision-event poll when the worker finishes.
+/// (This used to run inline while holding the App lock — a tab switch onto a
+/// large stub tab serialized every other command behind a multi-second git
+/// diff + parse.)
+pub(crate) fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
+    let idx = app.active_tab;
     let tab = app.tab_mut();
     if !tab.needs_initial_refresh {
         return;
     }
     tab.needs_initial_refresh = false;
-    let t = std::time::Instant::now();
-    let is_local_pr = tab.pr_number.is_some() && !tab.is_remote();
-    let result = if is_local_pr {
-        tab.refetch_and_refresh_diff()
-    } else {
-        tab.refresh_diff()
-    };
-    if let Err(e) = result {
-        log::error!("er-desktop: lazy tab refresh failed: {e}");
-    } else {
+    let expect_root = tab.repo_root.clone();
+    if let Ok(mut l) = state.loading.lock() {
+        l.tab_diff = true;
+    }
+    let app_arc = Arc::clone(&state.app);
+    let loading = Arc::clone(&state.loading);
+    let desktop_revision = Arc::clone(&state.desktop_revision);
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        if let Ok(mut app) = app_arc.lock() {
+            // Re-resolve the tab by index + repo_root in case tabs changed
+            // while this worker waited for the lock.
+            if let Some(tab) = app.tabs.get_mut(idx).filter(|t| t.repo_root == expect_root) {
+                let is_local_pr = tab.pr_number.is_some() && !tab.is_remote();
+                let result = if is_local_pr {
+                    tab.refetch_and_refresh_diff()
+                } else {
+                    tab.refresh_diff()
+                };
+                if let Err(e) = result {
+                    log::error!("er-desktop: deferred tab refresh failed: {e}");
+                }
+            }
+        }
+        if let Ok(mut l) = loading.lock() {
+            l.tab_diff = false;
+        }
+        desktop_revision.fetch_add(1, Ordering::Relaxed);
         crate::profile_log::profile_log(
             "lazy_tab_refresh",
             &[("ms", t.elapsed().as_millis().to_string())],
         );
-    }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6579,7 +6704,12 @@ fn chrono_like_timestamp() -> String {
 }
 
 #[tauri::command]
-pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
+pub async fn poll(state: State<'_, AppState>) -> Result<PollResponse, String> {
+    let state = state.inner().clone();
+    run_blocking(move || poll_impl(&state)).await
+}
+
+fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     let t0 = std::time::Instant::now();
     let lock_t0 = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -6603,7 +6733,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
         eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
     }
-    process_ai_task_inbox(&app, &state);
+    process_ai_task_inbox(&app, state);
     // Drain again so completion/failure log entries are visible in this poll.
     app.drain_agent_log();
     // Check if .er/ AI files changed — cheap mtime check, reloads AI state if yes
@@ -6611,7 +6741,7 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
 
     let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
     let content_revision = compute_content_revision(&app);
-    let chrome_revision = compute_chrome_revision(&state);
+    let chrome_revision = compute_chrome_revision(state);
     let reviewed_revision = app.tab().reviewed_revision;
     let revision = content_revision.max(chrome_revision);
     let last_content = state.last_sent_content_revision.load(Ordering::Relaxed);
@@ -6698,9 +6828,9 @@ pub fn poll(state: State<AppState>) -> Result<PollResponse, String> {
     );
 
     let snapshot = if chrome_only {
-        chrome_snap_from(&app, &state)
+        chrome_snap_from(&app, state)
     } else {
-        snap_from(&app, &state)
+        snap_from(&app, state)
     };
     state
         .last_sent_content_revision

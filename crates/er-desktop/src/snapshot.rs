@@ -10,6 +10,172 @@ use serde::Serialize;
 use crate::inbox::InboxHandle;
 use crate::projects;
 
+/// Mtime/size-cached wrapper around `load_ui_annotations`. `build_snapshot`
+/// runs on every poll; the annotations file rarely changes, so skip the disk
+/// read + JSON parse unless the file's metadata moved. Writes go through
+/// `save_ui_annotations` (tmp+rename), which always bumps the mtime.
+fn load_ui_annotations_cached(comments_dir: &str) -> Vec<er_engine::ai::UiAnnotation> {
+    type Key = Option<(std::time::SystemTime, u64)>;
+    type AnnCache = HashMap<String, (Key, Vec<er_engine::ai::UiAnnotation>)>;
+    static CACHE: std::sync::LazyLock<Mutex<AnnCache>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let path = std::path::Path::new(comments_dir).join("ui-annotations.json");
+    let key: Key = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+
+    let mut cache = match CACHE.lock() {
+        Ok(g) => g,
+        Err(_) => return er_engine::ai::load_ui_annotations(comments_dir),
+    };
+    if let Some((cached_key, anns)) = cache.get(comments_dir) {
+        if *cached_key == key {
+            return anns.clone();
+        }
+    }
+    let anns = er_engine::ai::load_ui_annotations(comments_dir);
+    // Bounded: one entry per comments_dir; drop everything if it somehow grows.
+    if cache.len() > 64 {
+        cache.clear();
+    }
+    cache.insert(comments_dir.to_string(), (key, anns.clone()));
+    anns
+}
+
+// ── Differential snapshots ──────────────────────────────────────────────────
+//
+// Hunk lines dominate snapshot payloads. The backend remembers, per visible
+// file path, the `delta_key` of the hunk content most recently delivered to
+// the frontend; when a later snapshot would resend identical content the
+// hunks are omitted (`FileSnapshot.hunks_omitted = true`) and the frontend
+// splices in the hunks it already holds (keyed by the same `delta_key`). If
+// the frontend can't match the key it downgrades the file to a lazy stub and
+// re-fetches via `request_file_content` — the protocol self-heals.
+
+/// Per-view memory of what file content the frontend currently holds.
+#[derive(Default)]
+pub struct SentFilesState {
+    /// Identifies the (tab, mode, branch, filter…) the keys belong to.
+    /// A mismatch clears the map — never omit across view switches.
+    view_token: u64,
+    /// path → `delta_key` of the full hunks last sent for that path.
+    keys: HashMap<String, u64>,
+}
+
+impl SentFilesState {
+    /// Forget everything — next snapshot sends full content (used when the
+    /// frontend re-fetches from scratch via `get_snapshot`).
+    pub fn reset(&mut self) {
+        self.view_token = 0;
+        self.keys.clear();
+    }
+}
+
+pub type SentFilesHandle = Arc<Mutex<SentFilesState>>;
+
+/// Stable content hash over exactly what `build_hunks` serializes for a file
+/// (headers, line kinds/numbers, text). Per-file — unlike the old
+/// whole-diff-hash-based `cache_key`, editing one file does not re-key the
+/// others, so highlight caches and differential snapshots survive watch
+/// refreshes.
+fn file_lines_key(f: &DiffFile) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    f.path.hash(&mut h);
+    f.compacted.hash(&mut h);
+    f.hunks.len().hash(&mut h);
+    for hunk in &f.hunks {
+        hunk.header.hash(&mut h);
+        hunk.old_start.hash(&mut h);
+        hunk.new_start.hash(&mut h);
+        hunk.lines.len().hash(&mut h);
+        for line in &hunk.lines {
+            match line.line_type {
+                LineType::Add => 1u8.hash(&mut h),
+                LineType::Delete => 2u8.hash(&mut h),
+                LineType::Context => 3u8.hash(&mut h),
+                LineType::Fold(hidden) => {
+                    4u8.hash(&mut h);
+                    hidden.hash(&mut h);
+                }
+            }
+            line.old_num.hash(&mut h);
+            line.new_num.hash(&mut h);
+            line.content.hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// Fingerprint of the full hunk payload: lines + inline threads. Threads are
+/// hashed via their serialized form so any visible change (new reply,
+/// resolved toggle, synthetic "thinking" reply) re-sends the file.
+fn file_delta_key(lines_key: u64, threads_by_hunk: &[Vec<ThreadSnapshot>]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    lines_key.hash(&mut h);
+    if threads_by_hunk.iter().any(|t| !t.is_empty()) {
+        if let Ok(json) = serde_json::to_string(threads_by_hunk) {
+            json.hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+fn mode_str(mode: DiffMode) -> &'static str {
+    match mode {
+        DiffMode::Branch => "branch",
+        DiffMode::Unstaged => "unstaged",
+        DiffMode::Staged => "staged",
+        DiffMode::History => "history",
+        DiffMode::Conflicts => "conflicts",
+        DiffMode::Hidden => "hidden",
+        DiffMode::PrDiff => "pr",
+    }
+}
+
+/// Record that the frontend now holds full hunks for `snap` (viewport-driven
+/// lazy loads bypass `build_snapshot`, so `request_file_content` calls this).
+/// No-op when the sent-files map belongs to a different view.
+pub(crate) fn record_sent_file(
+    app: &App,
+    tab: &TabState,
+    snap: &FileSnapshot,
+    sent_files: &SentFilesHandle,
+) {
+    if matches!(tab.mode, DiffMode::History) || snap.hunks.is_empty() {
+        return;
+    }
+    let Ok(mut guard) = sent_files.lock() else {
+        return;
+    };
+    if guard.view_token != snapshot_view_token(app, tab, mode_str(tab.mode)) {
+        return;
+    }
+    if let Ok(key) = u64::from_str_radix(&snap.delta_key, 16) {
+        guard.keys.insert(snap.path.clone(), key);
+    }
+}
+
+/// Identity of the current view — anything that changes which files the
+/// frontend displays (or their meaning) must be included so the sent-files
+/// map is cleared instead of wrongly omitting content across view switches.
+fn snapshot_view_token(app: &App, tab: &TabState, mode: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    app.active_tab.hash(&mut h);
+    tab.repo_root.hash(&mut h);
+    mode.hash(&mut h);
+    tab.current_branch.hash(&mut h);
+    tab.base_branch.hash(&mut h);
+    tab.pr_number.hash(&mut h);
+    tab.local_branch_view.hash(&mut h);
+    tab.filter_expr.hash(&mut h);
+    tab.show_unreviewed_only.hash(&mut h);
+    h.finish()
+}
+
 // ── Wire types ──────────────────────────────────────────────────────────────
 
 /// Full arena run + projections (`arena_get` / `arena_override`).
@@ -31,6 +197,10 @@ pub struct LoadingFlags {
     /// Background remote-PR diff refresh for the active tab.
     #[serde(default)]
     pub remote_pr_diff: bool,
+    /// First diff load of a freshly-selected stub tab (deferred to a
+    /// background thread so tab switches return instantly).
+    #[serde(default)]
+    pub tab_diff: bool,
 }
 
 pub type LoadingState = Arc<Mutex<LoadingFlags>>;
@@ -441,7 +611,16 @@ pub struct FileSnapshot {
     pub source_index: usize,
     /// Stable content hash for the desktop highlight cache. Advances when the
     /// diff changes. Frontend uses this to detect stale highlight responses.
+    /// Per-file: editing one file does not re-key unchanged files.
     pub cache_key: String,
+    /// Fingerprint of the full hunk payload (lines + inline threads). The
+    /// frontend keeps it alongside hunks so a later `hunks_omitted` snapshot
+    /// can verify it still holds matching content before reusing it.
+    pub delta_key: String,
+    /// Differential snapshot: hunks omitted because the frontend already
+    /// holds identical content for `delta_key`. Reuse prior hunks, or fall
+    /// back to the lazy-stub fetch when no match is found.
+    pub hunks_omitted: bool,
 }
 
 /// Lightweight commit metadata for the file viewer's history scroller.
@@ -1065,6 +1244,9 @@ pub(crate) fn build_file_snapshot(
         .and_then(|r| r.files.get(&f.path))
         .map(|fr| severity_str(&fr.risk).to_string());
 
+    let lines_key = file_lines_key(f);
+    let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
+
     FileSnapshot {
         path: f.path.clone(),
         status: status_str(&f.status),
@@ -1079,12 +1261,17 @@ pub(crate) fn build_file_snapshot(
         is_lazy_stub: (tab.lazy_mode && f.hunks.is_empty() && !f.compacted) || budget_omitted,
         hunks,
         source_index,
-        cache_key: er_engine::cache::file_cache_key(&tab.branch_diff_hash, &f.path),
+        cache_key: format!("{lines_key:016x}"),
+        delta_key: format!("{delta_key:016x}"),
+        hunks_omitted: false,
     }
 }
 
+/// Build a full snapshot, with differential-snapshot support: when
+/// `sent_files` is provided, files whose hunk content the frontend already
+/// holds are sent with `hunks_omitted = true` and no hunk payload.
 #[allow(clippy::too_many_arguments)]
-pub fn build_snapshot(
+pub fn build_snapshot_with_delta(
     app: &App,
     pr_cache: Option<&PrCache>,
     pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
@@ -1095,6 +1282,7 @@ pub fn build_snapshot(
     loading: Option<&LoadingState>,
     watch_status: Option<&WatchStatusState>,
     inbox: Option<&InboxHandle>,
+    sent_files: Option<&SentFilesHandle>,
 ) -> AppSnapshot {
     build_snapshot_inner(
         app,
@@ -1108,6 +1296,7 @@ pub fn build_snapshot(
         watch_status,
         inbox,
         false,
+        sent_files,
     )
 }
 
@@ -1136,6 +1325,7 @@ pub fn build_chrome_snapshot(
         watch_status,
         inbox,
         true,
+        None,
     )
 }
 
@@ -1152,19 +1342,12 @@ fn build_snapshot_inner(
     watch_status: Option<&WatchStatusState>,
     inbox: Option<&InboxHandle>,
     chrome_only: bool,
+    sent_files: Option<&SentFilesHandle>,
 ) -> AppSnapshot {
     let t0 = std::time::Instant::now();
     let tab = app.tab();
 
-    let mode = match tab.mode {
-        DiffMode::Branch => "branch",
-        DiffMode::Unstaged => "unstaged",
-        DiffMode::Staged => "staged",
-        DiffMode::History => "history",
-        DiffMode::Conflicts => "conflicts",
-        DiffMode::Hidden => "hidden",
-        DiffMode::PrDiff => "pr",
-    };
+    let mode = mode_str(tab.mode);
 
     let input_mode = match &app.input_mode {
         InputMode::Normal => "normal",
@@ -1184,6 +1367,21 @@ fn build_snapshot_inner(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(SNAPSHOT_DIFF_LINE_BUDGET);
+    // Differential snapshots: lock the sent-files map for the duration of the
+    // file loop. History mode rebuilds files per commit selection — skip
+    // omission there (per-commit diffs are small anyway).
+    let mut sent_guard = if chrome_only || matches!(tab.mode, DiffMode::History) {
+        None
+    } else {
+        sent_files.and_then(|h| h.lock().ok())
+    };
+    if let Some(guard) = sent_guard.as_mut() {
+        let token = snapshot_view_token(app, tab, mode);
+        if guard.view_token != token {
+            guard.keys.clear();
+            guard.view_token = token;
+        }
+    }
     let files: Vec<FileSnapshot> = if chrome_only {
         Vec::new()
     } else {
@@ -1191,13 +1389,43 @@ fn build_snapshot_inner(
             .iter()
             .map(|(source_index, f)| {
                 let source_index = *source_index;
+
+                // Omit hunks when the frontend already holds this exact
+                // content. Omitted files don't consume the line budget, so
+                // the budget only throttles *changed* files.
+                if let Some(guard) = sent_guard.as_mut() {
+                    if !f.compacted && !f.hunks.is_empty() {
+                        let lines_key = file_lines_key(f);
+                        let delta_key =
+                            file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
+                        if guard.keys.get(&f.path) == Some(&delta_key) {
+                            let mut snap =
+                                build_file_snapshot(source_index, f, tab, pending_ai, false);
+                            snap.is_lazy_stub = false;
+                            snap.hunks_omitted = true;
+                            return snap;
+                        }
+                    }
+                }
+
                 let line_count = f.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
                 let include_hunks =
                     !f.compacted && (source_index == active_selected || diff_line_budget > 0);
                 if include_hunks {
                     diff_line_budget = diff_line_budget.saturating_sub(line_count);
                 }
-                build_file_snapshot(source_index, f, tab, pending_ai, include_hunks)
+                let snap = build_file_snapshot(source_index, f, tab, pending_ai, include_hunks);
+                if let Some(guard) = sent_guard.as_mut() {
+                    // Track only paths the frontend now holds full hunks for.
+                    if include_hunks && !snap.hunks.is_empty() {
+                        if let Ok(key) = u64::from_str_radix(&snap.delta_key, 16) {
+                            guard.keys.insert(snap.path.clone(), key);
+                        }
+                    } else {
+                        guard.keys.remove(&snap.path);
+                    }
+                }
+                snap
             })
             .collect()
     };
@@ -1285,12 +1513,13 @@ fn build_snapshot_inner(
         Some(tab.filter_expr.clone())
     };
 
-    // Browser-view UI annotations — read freshly from the active tab's
-    // comments_dir so writes flow back to the UI on the next snapshot.
+    // Browser-view UI annotations — read from the active tab's comments_dir
+    // (mtime-cached: build_snapshot runs on every poll, and the annotations
+    // file rarely changes; saves a disk read + JSON parse per poll).
     let ui_annotations: Vec<UiAnnotationSnapshot> = if chrome_only {
         Vec::new()
     } else {
-        er_engine::ai::load_ui_annotations(&tab.comments_dir())
+        load_ui_annotations_cached(&tab.comments_dir())
             .into_iter()
             .map(|a| UiAnnotationSnapshot {
                 id: a.id,
@@ -2307,15 +2536,66 @@ fn detect_base_branch(repo_root: &str) -> String {
     String::new()
 }
 
+/// Per-hunk old/new line counts (cheap; no allocation).
+fn hunk_line_counts(hunk: &er_engine::git::DiffHunk) -> (usize, usize) {
+    let old_count = hunk
+        .lines
+        .iter()
+        .filter(|l| matches!(l.line_type, LineType::Context | LineType::Delete))
+        .count();
+    let new_count = hunk
+        .lines
+        .iter()
+        .filter(|l| matches!(l.line_type, LineType::Context | LineType::Add))
+        .count();
+    (old_count, new_count)
+}
+
+/// Build the comment/question threads for every hunk of a file — the cheap
+/// part of `build_hunks`, split out so the differential-snapshot path can
+/// fingerprint a file's wire content without serializing its lines.
+fn build_hunk_threads(
+    file: &DiffFile,
+    tab: &TabState,
+    pending: Option<&PendingAiReplies>,
+) -> Vec<Vec<ThreadSnapshot>> {
+    file.hunks
+        .iter()
+        .enumerate()
+        .map(|(hunk_idx, hunk)| {
+            let (old_count, new_count) = hunk_line_counts(hunk);
+            // Collect threads for this hunk (also matches comments whose hunk_index is
+            // missing or stale, by falling back to line-range matching)
+            tab.ai
+                .comments_for_hunk_or_line_range(
+                    &file.path,
+                    hunk_idx,
+                    hunk.new_start,
+                    new_count,
+                    hunk.old_start,
+                    old_count,
+                )
+                .iter()
+                .filter(|c| {
+                    c.in_reply_to().is_none()
+                        && !(matches!(c, CommentRef::Question(_)) && c.is_resolved())
+                })
+                .map(|c| comment_ref_to_thread(c, &file.path, hunk_idx, tab, pending))
+                .collect()
+        })
+        .collect()
+}
+
 fn build_hunks(
     file: &DiffFile,
     tab: &TabState,
     pending: Option<&PendingAiReplies>,
 ) -> Vec<HunkSnapshot> {
+    let threads_by_hunk = build_hunk_threads(file, tab, pending);
     file.hunks
         .iter()
-        .enumerate()
-        .map(|(hunk_idx, hunk)| {
+        .zip(threads_by_hunk)
+        .map(|(hunk, threads)| {
             let lines = hunk
                 .lines
                 .iter()
@@ -2337,36 +2617,7 @@ fn build_hunks(
                 })
                 .collect();
 
-            let old_count = hunk
-                .lines
-                .iter()
-                .filter(|l| matches!(l.line_type, LineType::Context | LineType::Delete))
-                .count();
-            let new_count = hunk
-                .lines
-                .iter()
-                .filter(|l| matches!(l.line_type, LineType::Context | LineType::Add))
-                .count();
-
-            // Collect threads for this hunk (also matches comments whose hunk_index is
-            // missing or stale, by falling back to line-range matching)
-            let threads: Vec<ThreadSnapshot> = tab
-                .ai
-                .comments_for_hunk_or_line_range(
-                    &file.path,
-                    hunk_idx,
-                    hunk.new_start,
-                    new_count,
-                    hunk.old_start,
-                    old_count,
-                )
-                .iter()
-                .filter(|c| {
-                    c.in_reply_to().is_none()
-                        && !(matches!(c, CommentRef::Question(_)) && c.is_resolved())
-                })
-                .map(|c| comment_ref_to_thread(c, &file.path, hunk_idx, tab, pending))
-                .collect();
+            let (old_count, new_count) = hunk_line_counts(hunk);
 
             HunkSnapshot {
                 header: hunk.header.clone(),
@@ -3087,5 +3338,124 @@ mod tests {
             p.review_ignore_globs,
             vec!["**/*.lock".to_string(), "dist/**".to_string()]
         );
+    }
+
+    fn delta_snap(app: &App, sent: &SentFilesHandle) -> AppSnapshot {
+        build_snapshot_with_delta(
+            app,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(sent),
+        )
+    }
+
+    const DELTA_FIXTURE_DIFF: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n fn baz() {}\n";
+    const DELTA_FIXTURE_DIFF_V2: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..2222222 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,4 @@\n fn foo() {}\n+fn bar() {}\n+fn qux() {}\n fn baz() {}\n";
+
+    #[test]
+    fn differential_snapshot_omits_unchanged_hunks() {
+        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let app = er_engine::app::App::new_for_test(files);
+        let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
+
+        // First snapshot sends full hunks.
+        let s1 = delta_snap(&app, &sent);
+        let f1 = &s1.files[0];
+        assert!(!f1.hunks_omitted, "first send must carry hunks");
+        assert!(!f1.hunks.is_empty());
+
+        // Unchanged content → hunks omitted, metadata + delta_key still present.
+        let s2 = delta_snap(&app, &sent);
+        let f2 = &s2.files[0];
+        assert!(f2.hunks_omitted, "second send should omit unchanged hunks");
+        assert!(f2.hunks.is_empty());
+        assert!(!f2.is_lazy_stub, "omitted is not a lazy stub");
+        assert_eq!(f2.delta_key, f1.delta_key);
+        assert_eq!(f2.additions, f1.additions);
+        assert_eq!(f2.cache_key, f1.cache_key);
+    }
+
+    #[test]
+    fn differential_snapshot_resends_on_content_change() {
+        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let mut app = er_engine::app::App::new_for_test(files);
+        let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
+
+        let s1 = delta_snap(&app, &sent);
+        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+
+        // Diff content changed → full resend with a new delta_key, and the
+        // per-file cache_key advances (highlights re-run for this file only).
+        app.tab_mut().files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF_V2);
+        let s3 = delta_snap(&app, &sent);
+        let f3 = &s3.files[0];
+        assert!(!f3.hunks_omitted, "changed file must be resent");
+        assert!(!f3.hunks.is_empty());
+        assert_ne!(f3.delta_key, s1.files[0].delta_key);
+        assert_ne!(f3.cache_key, s1.files[0].cache_key);
+
+        // And the new content is omitted again on the next poll.
+        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+    }
+
+    #[test]
+    fn differential_snapshot_resends_when_threads_change() {
+        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let mut app = er_engine::app::App::new_for_test(files);
+        let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
+
+        let s1 = delta_snap(&app, &sent);
+        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+
+        // A new comment thread inside the hunk changes the wire payload even
+        // though diff lines are identical — must be resent, not omitted.
+        let mut comment = github_comment(false, false);
+        comment.file = "src/foo.rs".to_string();
+        comment.hunk_index = Some(0);
+        comment.line_start = Some(2);
+        app.tab_mut().ai.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            github: None,
+            comments: vec![comment],
+        });
+
+        let s3 = delta_snap(&app, &sent);
+        let f3 = &s3.files[0];
+        assert!(!f3.hunks_omitted, "thread change must resend hunks");
+        assert!(
+            f3.hunks.iter().any(|h| !h.threads.is_empty()),
+            "resent hunks should carry the new thread"
+        );
+        assert_ne!(f3.delta_key, s1.files[0].delta_key);
+        // Lines are unchanged, so the highlight cache key must NOT move.
+        assert_eq!(f3.cache_key, s1.files[0].cache_key);
+    }
+
+    #[test]
+    fn differential_snapshot_clears_on_view_change_and_reset() {
+        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let mut app = er_engine::app::App::new_for_test(files);
+        let sent: SentFilesHandle = Arc::new(Mutex::new(Default::default()));
+
+        let _ = delta_snap(&app, &sent);
+        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+
+        // View switch (mode change) busts the view token — full resend.
+        app.tab_mut().mode = DiffMode::Unstaged;
+        let s3 = delta_snap(&app, &sent);
+        assert!(!s3.files[0].hunks_omitted, "view switch must resend hunks");
+        assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+
+        // Reset (frontend re-fetches from scratch) — full resend.
+        sent.lock().unwrap().reset();
+        assert!(!delta_snap(&app, &sent).files[0].hunks_omitted);
     }
 }

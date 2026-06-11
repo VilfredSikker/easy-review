@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
 import { tick } from "svelte";
 import { profileLog } from "../profileLog";
+import { resolveOmittedHunks } from "../snapshotDelta";
 import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
 import type { AppSnapshot, PollResponse } from "../types";
 
@@ -276,7 +277,9 @@ class AppStore {
   async load() {
     this.loading = true;
     try {
-      this.snapshot = await invoke<AppSnapshot>("get_snapshot");
+      const snap = await invoke<AppSnapshot>("get_snapshot");
+      resolveOmittedHunks(this.snapshot, snap);
+      this.snapshot = snap;
       this.syncSnapshotToast(this.snapshot);
       this.lastPollRevision = null;
       this.lastPollContentRevision = null;
@@ -333,11 +336,14 @@ class AppStore {
                 trigger,
               });
             } else {
+              const delta = resolveOmittedHunks(this.snapshot, next.snapshot);
               this.snapshot = next.snapshot;
               profileLog("snapshot_replace", {
                 invoke_ms: invokeMs,
                 revision: next.revision,
                 files: next.snapshot.files.length,
+                delta_reused: delta.reused,
+                delta_refetch: delta.refetch,
                 trigger,
               });
             }
@@ -391,7 +397,9 @@ class AppStore {
 
   async togglePanel(panel: "left" | "tree" | "right") {
     try {
-      this.snapshot = await invoke<AppSnapshot>("toggle_panel", { panel });
+      const snap = await invoke<AppSnapshot>("toggle_panel", { panel });
+      resolveOmittedHunks(this.snapshot, snap);
+      this.snapshot = snap;
       this.syncSnapshotToast(this.snapshot);
     } catch (e) {
       console.error("togglePanel failed:", e);
@@ -406,6 +414,7 @@ class AppStore {
 
   /** Apply snapshot from a Tauri command and show `notification` once (deduped). */
   ingestCommandSnapshot(snapshot: AppSnapshot) {
+    resolveOmittedHunks(this.snapshot, snapshot);
     this.snapshot = snapshot;
     this.initialLoadDone = true;
     this.syncSnapshotToast(snapshot);

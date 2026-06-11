@@ -96,6 +96,16 @@ pub fn desktop_settings_fields_flat(config: &ErConfig) -> Vec<ConfigHubFieldDto>
 fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
     let mut fields: Vec<ConfigHubFieldDto> = vec![
         ConfigHubFieldDto::Section {
+            title: "Appearance".into(),
+        },
+        ConfigHubFieldDto::Cycle {
+            key: "display.theme".into(),
+            label: "Theme".into(),
+            description: "Color theme for the desktop app and TUI".into(),
+            options: THEME_OPTIONS.iter().map(|s| s.to_string()).collect(),
+            value: config.display.theme.clone(),
+        },
+        ConfigHubFieldDto::Section {
             title: "Commands".into(),
         },
         ConfigHubFieldDto::Text {
@@ -170,6 +180,13 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
             options: AGENT_EFFORT_OPTIONS.iter().map(|s| s.to_string()).collect(),
             value: agent_effort_label(&config.agent.effort),
         },
+        ConfigHubFieldDto::Cycle {
+            key: "ai_hub.max_concurrent_reviews".into(),
+            label: "Max parallel reviews".into(),
+            description: "AI review agents running at once; extra reviews queue".into(),
+            options: (1..=6).map(|n| n.to_string()).collect(),
+            value: config.ai_hub.effective_max_concurrent_reviews().to_string(),
+        },
         ConfigHubFieldDto::Section {
             title: "Watched Paths".into(),
         },
@@ -241,13 +258,6 @@ fn terminal_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
         },
         ConfigHubFieldDto::Section {
             title: "Display".into(),
-        },
-        ConfigHubFieldDto::Cycle {
-            key: "display.theme".into(),
-            label: "Theme".into(),
-            description: "TUI color theme".into(),
-            options: THEME_OPTIONS.iter().map(|s| s.to_string()).collect(),
-            value: config.display.theme.clone(),
         },
         ConfigHubFieldDto::Bool {
             key: "display.line_numbers".into(),

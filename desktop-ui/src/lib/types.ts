@@ -82,8 +82,16 @@ export interface FileSnapshot {
   is_lazy_stub?: boolean;
   /** Index into the backend's full file list — pass to `select_file`. */
   source_index: number;
-  /** Stable hash for the frontend highlight cache. Changes when the diff changes. */
+  /** Stable per-file content hash for the frontend highlight cache. */
   cache_key: string;
+  /** Fingerprint of the full hunk payload (lines + inline threads). */
+  delta_key?: string;
+  /**
+   * Differential snapshot: hunks omitted because we already hold identical
+   * content for `delta_key`. Resolved by `resolveOmittedHunks` before the
+   * snapshot is stored; never true on stored snapshots.
+   */
+  hunks_omitted?: boolean;
 }
 
 export interface FilterSuggestionSnapshot {
@@ -425,7 +433,7 @@ export interface BackgroundTaskSnapshot {
   branch_label: string;
   pr_number?: number | null;
   remote_repo?: string | null;
-  /** "running" | "done" | "failed" */
+  /** "queued" | "running" | "done" | "failed" */
   status: string;
   error?: string | null;
   started_at_ms: number;
@@ -447,6 +455,8 @@ export interface LoadingFlags {
   pr_list: boolean;
   gh_status: boolean;
   gh_comments: boolean;
+  /** First diff load of a freshly-selected stub tab (background refresh running). */
+  tab_diff?: boolean;
 }
 
 export interface AgentCommandStatus {

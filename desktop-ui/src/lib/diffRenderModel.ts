@@ -329,16 +329,33 @@ export function filesRenderFingerprint(files: FileSnapshot[]): string {
     .join("|");
 }
 
-const _blockCache = new WeakMap<FileSnapshot, Map<string, FileBlock>>();
+// Per-file block cache keyed by path (NOT by FileSnapshot object identity —
+// every poll deserializes fresh objects, so a WeakMap key would miss on every
+// snapshot and rebuild all blocks whenever any one file changed). The inner
+// modelKey carries the content hash + render inputs, so a stale entry can
+// never be returned; pruned against the current file list in
+// getCrossFileModel.
+const _blockCache = new Map<string, Map<string, FileBlock>>();
+const BLOCK_CACHE_PER_PATH = 3;
+
+/** Drop cached blocks for files no longer present (cache only grows while
+ * the file list does). */
+function pruneBlockCache(files: FileSnapshot[]): void {
+  if (_blockCache.size <= files.length) return;
+  const live = new Set(files.map((f) => f.path));
+  for (const path of _blockCache.keys()) {
+    if (!live.has(path)) _blockCache.delete(path);
+  }
+}
 
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
-  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}`;
+  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}`;
 
-  let perFile = _blockCache.get(file);
+  let perFile = _blockCache.get(file.path);
   if (!perFile) {
     perFile = new Map<string, FileBlock>();
-    _blockCache.set(file, perFile);
+    _blockCache.set(file.path, perFile);
   }
   const cached = perFile.get(modelKey);
   if (cached) return cached;
@@ -616,6 +633,13 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
     unifiedPairsByHunk,
     splitRowsByHunk,
   };
+  // Insertion-order eviction: oldest render variant goes first (typically a
+  // stale annotation version or the other view mode).
+  while (perFile.size >= BLOCK_CACHE_PER_PATH) {
+    const oldest = perFile.keys().next().value;
+    if (oldest === undefined) break;
+    perFile.delete(oldest);
+  }
   perFile.set(modelKey, block);
   return block;
 }
@@ -683,6 +707,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
     return model;
   }
 
+  pruneBlockCache(files);
   const blocks: FileBlock[] = new Array(files.length);
   let totalRowCount = 0;
   for (let i = 0; i < files.length; i++) {

@@ -230,6 +230,16 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
                 }
             }
         }
+        "ai_hub.max_concurrent_reviews" => {
+            let parsed = match value {
+                ConfigFieldValue::Number(n) => Some(n as usize),
+                ConfigFieldValue::String(v) => v.parse::<usize>().ok(),
+                ConfigFieldValue::Bool(_) => None,
+            };
+            if let Some(n) = parsed.filter(|n| (1..=16).contains(n)) {
+                config.ai_hub.max_concurrent_reviews = n;
+            }
+        }
         "watched.diff_mode" => {
             if let ConfigFieldValue::String(v) = value {
                 if v == "content" || v == "snapshot" {
@@ -293,8 +303,11 @@ mod tests {
         assert!(!general.iter().any(|k| k == "features.arena"));
         assert!(app.is_empty());
 
+        // Theme is shared — the desktop app follows it too.
+        assert!(general.iter().any(|k| k == "display.theme"));
+        assert!(!terminal.iter().any(|k| k == "display.theme"));
+
         assert!(terminal.iter().any(|k| k == "features.view_branch"));
-        assert!(terminal.iter().any(|k| k == "display.theme"));
         assert!(terminal.iter().any(|k| k == "display.line_numbers"));
 
         assert_eq!(

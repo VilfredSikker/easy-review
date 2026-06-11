@@ -4,6 +4,7 @@
   import "@xterm/xterm/css/xterm.css";
   import { app } from "$lib/stores/app.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
+  import { themeByName, xtermThemeFor } from "$lib/themes";
 
   interface Props {
     sessionId: string;
@@ -16,6 +17,12 @@
   const { sessionId, cwd, visible, refitToken = 0 }: Props = $props();
 
   const branch = $derived(app.snapshot?.branch ?? "");
+
+  const xtermTheme = $derived(xtermThemeFor(themeByName(app.snapshot?.theme)));
+  // Re-theme a live terminal when the app theme changes.
+  $effect(() => {
+    if (term) term.options.theme = xtermTheme;
+  });
 
   async function insertCheckoutCommand() {
     if (!branch) return;
@@ -55,29 +62,7 @@
       lineHeight: 1.2,
       cursorBlink: true,
       scrollback: 10000,
-      theme: {
-        background: "#0e0e0e",
-        foreground: "#e6e6e6",
-        cursor: "#ff6a3d",
-        cursorAccent: "#0e0e0e",
-        selectionBackground: "#3a3a3a",
-        black: "#1a1a1a",
-        red: "#f4a3a3",
-        green: "#9ad79a",
-        yellow: "#e6c87a",
-        blue: "#7aa8e6",
-        magenta: "#c89af0",
-        cyan: "#7ad7d7",
-        white: "#e6e6e6",
-        brightBlack: "#5e5e5e",
-        brightRed: "#ffb3b3",
-        brightGreen: "#aae8aa",
-        brightYellow: "#ffd98a",
-        brightBlue: "#9abdf2",
-        brightMagenta: "#d8aaf8",
-        brightCyan: "#9ae8e8",
-        brightWhite: "#ffffff",
-      },
+      theme: xtermTheme,
     });
 
     term.open(containerEl);

@@ -483,6 +483,12 @@ bash /path/to/easy-review/scripts/generate-test-fixtures
 - **Rust 1.85+** (build only) — workspace needs a recent stable toolchain; not needed if using the install script
 - **Node.js** (desktop UI only) — for `desktop-ui` and Tauri dev
 
+## AI providers & your data
+
+`er` is a **viewer and orchestrator** for code reviews — it does not run AI models, and it does not transmit your code anywhere. There is no telemetry, no analytics, and no backend: `er` shells out to your local `git` (and optionally `gh`), and reads review artifacts that AI tools you run yourself write into `.er/`.
+
+You bring your own AI tools and credentials (Claude Code, OpenAI Codex, Cursor, etc.). When you use them to generate reviews, **you** are the customer of those providers and are responsible for complying with each provider's terms of service and usage policies. `er` simply renders what they produce.
+
 ## License
 
 MIT
