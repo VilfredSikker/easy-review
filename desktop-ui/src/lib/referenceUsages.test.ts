@@ -2,12 +2,14 @@ import { describe, expect, it } from "bun:test";
 import {
   buildRulerMarks,
   clampPopoverPosition,
+  collectMatches,
   collectUsageLines,
   groupUsagesByFile,
   usagePreview,
   type UsageLine,
   type UsageSource,
 } from "./referenceUsages";
+import { IDENTIFIER_MATCH_OPTIONS } from "./referenceHighlight";
 
 const src = (rowIdx: number, filePath: string, lineNum: number | null, text: string): UsageSource => ({
   rowIdx,
@@ -38,6 +40,76 @@ describe("collectUsageLines", () => {
   it("returns empty for an empty identifier or no matches", () => {
     expect(collectUsageLines([src(0, "a.ts", 1, "foo")], "")).toEqual([]);
     expect(collectUsageLines([src(0, "a.ts", 1, "bar")], "foo")).toEqual([]);
+  });
+});
+
+describe("collectMatches", () => {
+  const substring = { wordBoundary: false, caseSensitive: false };
+
+  it("counts individual ranges across lines", () => {
+    const sources = [
+      src(0, "a.ts", 1, "foo(foo)"), // 2 ranges
+      src(1, "a.ts", 2, "no match"),
+      src(2, "b.ts", 3, "foobar"), // 1 range (substring mode)
+    ];
+    const out = collectMatches(sources, "foo", substring);
+    expect(out.lines.map((l) => l.rowIdx)).toEqual([0, 2]);
+    expect(out.total).toBe(3);
+    expect(out.capped).toBe(false);
+  });
+
+  it("matches a full path query in substring mode", () => {
+    const sources = [
+      src(0, "api.ts", 1, 'route("/experiments/{experiment_id}/quality-control/wells")'),
+      src(1, "api.ts", 2, "unrelated line"),
+    ];
+    const out = collectMatches(
+      sources,
+      "/experiments/{experiment_id}/quality-control/wells",
+      substring,
+    );
+    expect(out.lines.map((l) => l.rowIdx)).toEqual([0]);
+    expect(out.total).toBe(1);
+  });
+
+  it("stops at the cap, reports capped, and total equals the cap", () => {
+    const sources = Array.from({ length: 10 }, (_, i) => src(i, "a.ts", i + 1, "x x x"));
+    // 10 lines × 3 ranges = 30 potential matches; cap at 7 (mid-line).
+    const out = collectMatches(sources, "x", substring, 7);
+    expect(out.capped).toBe(true);
+    expect(out.total).toBe(7);
+    const ranges = out.lines.reduce((n, l) => n + l.ranges.length, 0);
+    expect(ranges).toBe(7);
+    // Collection stopped: only 3 lines were materialized (2 full + 1 trimmed).
+    expect(out.lines.length).toBe(3);
+    expect(out.lines[2].ranges.length).toBe(1);
+  });
+
+  it("does not report capped when matches exactly exhaust the sources", () => {
+    const sources = [src(0, "a.ts", 1, "x x")];
+    const out = collectMatches(sources, "x", substring, 2);
+    expect(out.total).toBe(2);
+    expect(out.capped).toBe(false);
+  });
+
+  it("matches collectUsageLines in identifier mode without a cap", () => {
+    const sources = [
+      src(0, "a.ts", 1, "const foo = 1;"),
+      src(1, "a.ts", 2, "const foobar = foo;"),
+      src(3, "b.ts", 6, "foo(foo)"),
+    ];
+    const viaMatches = collectMatches(sources, "foo", IDENTIFIER_MATCH_OPTIONS, Infinity);
+    expect(viaMatches.lines).toEqual(collectUsageLines(sources, "foo"));
+    expect(viaMatches.total).toBe(4);
+    expect(viaMatches.capped).toBe(false);
+  });
+
+  it("returns empty for an empty query", () => {
+    expect(collectMatches([src(0, "a.ts", 1, "foo")], "", substring)).toEqual({
+      lines: [],
+      total: 0,
+      capped: false,
+    });
   });
 });
 

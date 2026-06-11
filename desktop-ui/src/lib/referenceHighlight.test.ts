@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import {
   findIdentifierRanges,
+  findMatchRanges,
   identifierAt,
+  smartCaseSensitive,
   splitSegmentsByIdentifier,
   type RefSegment,
 } from "./referenceHighlight";
@@ -70,6 +72,77 @@ describe("findIdentifierRanges", () => {
   });
 });
 
+describe("smartCaseSensitive", () => {
+  it("is case-sensitive when the query contains an uppercase letter", () => {
+    expect(smartCaseSensitive("QcWells")).toBe(true);
+    expect(smartCaseSensitive("A")).toBe(true);
+  });
+
+  it("is case-insensitive for all-lowercase queries", () => {
+    expect(smartCaseSensitive("qcwells")).toBe(false);
+    expect(smartCaseSensitive("foo_bar.ts")).toBe(false);
+    expect(smartCaseSensitive("")).toBe(false);
+  });
+});
+
+describe("findMatchRanges (substring mode)", () => {
+  const substring = { wordBoundary: false, caseSensitive: true };
+  const substringCi = { wordBoundary: false, caseSensitive: false };
+
+  it("matches partial words (no boundary requirement)", () => {
+    expect(findMatchRanges("foobar foo", "foo", substring)).toEqual([
+      [0, 3],
+      [7, 10],
+    ]);
+  });
+
+  it("matches a full path query inside a line", () => {
+    const line =
+      '  await fetch(`/experiments/${experimentId}/quality-control/wells`);';
+    const query = "/quality-control/wells";
+    const start = line.indexOf(query);
+    expect(findMatchRanges(line, query, substring)).toEqual([
+      [start, start + query.length],
+    ]);
+    // A route-template query with braces is plain text too.
+    const tmpl = 'path: "/experiments/{experiment_id}/quality-control/wells"';
+    const q2 = "/experiments/{experiment_id}/quality-control/wells";
+    const s2 = tmpl.indexOf(q2);
+    expect(findMatchRanges(tmpl, q2, substring)).toEqual([[s2, s2 + q2.length]]);
+  });
+
+  it("matches case-insensitively with a lowercase query", () => {
+    expect(findMatchRanges("ExperimentQcWells", "qcwells", substringCi)).toEqual([
+      [10, 17],
+    ]);
+  });
+
+  it("is case-sensitive when requested (smart-case: uppercase query)", () => {
+    expect(findMatchRanges("foo Foo FOO", "Foo", substring)).toEqual([[4, 7]]);
+    expect(findMatchRanges("foo bar", "Foo", substring)).toEqual([]);
+  });
+
+  it("advances past each match (non-overlapping)", () => {
+    expect(findMatchRanges("aaaa", "aa", substring)).toEqual([
+      [0, 2],
+      [2, 4],
+    ]);
+  });
+
+  it("returns empty for an empty query", () => {
+    expect(findMatchRanges("abc", "", substring)).toEqual([]);
+  });
+
+  it("word-boundary + case-insensitive composes", () => {
+    expect(
+      findMatchRanges("Foo foobar FOO", "foo", { wordBoundary: true, caseSensitive: false }),
+    ).toEqual([
+      [0, 3],
+      [11, 14],
+    ]);
+  });
+});
+
 describe("splitSegmentsByIdentifier", () => {
   const seg = (text: string, color?: string, changed = false): RenderSegment => ({
     text,
@@ -112,6 +185,32 @@ describe("splitSegmentsByIdentifier", () => {
     expect(out).toEqual([
       { text: "foobar ", changed: false, color: undefined },
       { text: "foo", changed: false, color: undefined, ref: true },
+    ]);
+  });
+
+  it("marks partial-word occurrences with substring options (Cmd+F mode)", () => {
+    const segs = [seg("foobar foo")];
+    const out = splitSegmentsByIdentifier(segs, "foo", {
+      wordBoundary: false,
+      caseSensitive: true,
+    }) as RefSegment[];
+    expect(out).toEqual([
+      { text: "foo", changed: false, color: undefined, ref: true },
+      { text: "bar ", changed: false, color: undefined },
+      { text: "foo", changed: false, color: undefined, ref: true },
+    ]);
+  });
+
+  it("marks case-insensitive substring matches across segment boundaries", () => {
+    const segs = [seg("Experiment", "#aaa"), seg("QcWells.ts", "#bbb")];
+    const out = splitSegmentsByIdentifier(segs, "experimentqc", {
+      wordBoundary: false,
+      caseSensitive: false,
+    }) as RefSegment[];
+    expect(out).toEqual([
+      { text: "Experiment", color: "#aaa", changed: false, ref: true },
+      { text: "Qc", color: "#bbb", changed: false, ref: true },
+      { text: "Wells.ts", color: "#bbb", changed: false },
     ]);
   });
 });

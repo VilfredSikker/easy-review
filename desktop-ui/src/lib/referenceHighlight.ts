@@ -50,21 +50,61 @@ export function identifierAt(text: string, offset: number): string | null {
   return word;
 }
 
+/** How a query is matched against line text (see `findMatchRanges`). */
+export interface MatchOptions {
+  /** Require non-word characters (or string edges) around each match. */
+  wordBoundary: boolean;
+  caseSensitive: boolean;
+}
+
+/** Identifier-click semantics: whole-word, exact case. */
+export const IDENTIFIER_MATCH_OPTIONS: MatchOptions = {
+  wordBoundary: true,
+  caseSensitive: true,
+};
+
 /**
- * Find all word-boundary occurrences of `identifier` in `text`.
- * Returns sorted, non-overlapping `[start, end)` ranges.
+ * Smart-case rule for the Cmd+F diff search: a query containing any uppercase
+ * letter is matched case-sensitively; an all-lowercase query matches
+ * case-insensitively.
  */
-export function findIdentifierRanges(
+export function smartCaseSensitive(query: string): boolean {
+  return /[A-Z]/.test(query);
+}
+
+/**
+ * Find all occurrences of `query` in `text` under `opts`.
+ * Returns sorted, non-overlapping `[start, end)` ranges (in `text` offsets).
+ */
+export function findMatchRanges(
   text: string,
-  identifier: string,
+  query: string,
+  opts: MatchOptions,
 ): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
-  if (identifier.length === 0) return ranges;
+  if (query.length === 0) return ranges;
+  let haystack = text;
+  let needle = query;
+  if (!opts.caseSensitive) {
+    const lower = text.toLowerCase();
+    // Rare Unicode case mappings change string length; offsets into the
+    // lowercased haystack would then be invalid in `text` coordinates — fall
+    // back to a case-sensitive scan so ranges stay correct.
+    if (lower.length === text.length) {
+      haystack = lower;
+      needle = query.toLowerCase();
+    }
+  }
   let from = 0;
-  while (from <= text.length - identifier.length) {
-    const i = text.indexOf(identifier, from);
+  while (from <= haystack.length - needle.length) {
+    const i = haystack.indexOf(needle, from);
     if (i === -1) break;
-    const end = i + identifier.length;
+    const end = i + needle.length;
+    if (!opts.wordBoundary) {
+      ranges.push([i, end]);
+      from = end;
+      continue;
+    }
     const boundaryBefore = i === 0 || !isWordChar(text[i - 1]);
     const boundaryAfter = end >= text.length || !isWordChar(text[end]);
     if (boundaryBefore && boundaryAfter) {
@@ -78,19 +118,34 @@ export function findIdentifierRanges(
 }
 
 /**
+ * Find all word-boundary occurrences of `identifier` in `text`.
+ * Returns sorted, non-overlapping `[start, end)` ranges.
+ */
+export function findIdentifierRanges(
+  text: string,
+  identifier: string,
+): Array<[number, number]> {
+  return findMatchRanges(text, identifier, IDENTIFIER_MATCH_OPTIONS);
+}
+
+/**
  * Split render segments at the boundaries of `identifier` matches over the
  * concatenated line text, marking matched slices with `ref: true`. Existing
  * word-diff / syntax-color attributes are preserved on each slice, so the
  * reference highlight composes with intra-line change backgrounds and token
  * colors. Returns the input array unchanged when there is no match (cheap
  * common case for non-matching lines).
+ *
+ * `opts` defaults to identifier semantics (whole-word, exact case); the
+ * Cmd+F search passes substring / smart-case options instead.
  */
 export function splitSegmentsByIdentifier(
   segments: RenderSegment[],
   identifier: string,
+  opts: MatchOptions = IDENTIFIER_MATCH_OPTIONS,
 ): RefSegment[] {
   const full = segments.map((s) => s.text).join("");
-  const ranges = findIdentifierRanges(full, identifier);
+  const ranges = findMatchRanges(full, identifier, opts);
   if (ranges.length === 0) return segments;
 
   const out: RefSegment[] = [];

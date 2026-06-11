@@ -22,10 +22,12 @@
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
   import ReferenceRuler from "./ReferenceRuler.svelte";
   import ReferenceUsagesPopover from "./ReferenceUsagesPopover.svelte";
+  import DiffSearchBar from "./DiffSearchBar.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import {
     buildRulerMarks,
-    collectUsageLines,
+    collectMatches,
+    type MatchResult,
     type UsageSource,
   } from "$lib/referenceUsages";
   import {
@@ -916,11 +918,23 @@
     return out;
   }
 
-  const usageLines = $derived.by(() => {
+  /** Upper bound on collected matches — a one-letter Cmd+F query over a huge
+   *  diff must not build an unbounded match list. */
+  const SEARCH_MATCH_CAP = 5000;
+
+  // Identifier highlights and Cmd+F queries share this pipeline; the store's
+  // matchOptions switch between whole-word and substring/smart-case matching.
+  const usageResult = $derived.by((): MatchResult => {
     const ident = refHighlight.identifier;
-    if (!ident) return [];
-    return collectUsageLines(collectUsageSources(), ident);
+    if (!ident) return { lines: [], total: 0, capped: false };
+    return collectMatches(
+      collectUsageSources(),
+      ident,
+      refHighlight.matchOptions,
+      SEARCH_MATCH_CAP,
+    );
   });
+  const usageLines = $derived(usageResult.lines);
 
   const usageMarks = $derived.by(() => {
     if (usageLines.length === 0 || viewportHeightPx <= 0) return [];
@@ -956,6 +970,41 @@
     await tick();
     requestAnimationFrame(() => flashRowEl(rowIdx));
   }
+
+  // ── Cmd+F search navigation (PR #73) ──────────────────────────────────────
+  // Flat list of match row indices, one entry per range (a line with three
+  // matches contributes three stops). Only materialized while the bar is open.
+  const searchMatches = $derived.by((): number[] => {
+    if (!refHighlight.searchOpen) return [];
+    const out: number[] = [];
+    for (const u of usageLines) {
+      for (let i = 0; i < u.ranges.length; i++) out.push(u.rowIdx);
+    }
+    return out;
+  });
+
+  /** Enter/arrows: step through matches with wrap-around and flash the row. */
+  function navigateSearch(dir: 1 | -1): void {
+    const matches = searchMatches;
+    if (matches.length === 0) return;
+    const cur = refHighlight.searchActiveIdx;
+    let next: number;
+    if (cur < 0 || cur >= matches.length) {
+      next = dir === 1 ? 0 : matches.length - 1;
+    } else {
+      next = (cur + dir + matches.length) % matches.length;
+    }
+    refHighlight.searchActiveIdx = next;
+    void jumpToUsage(matches[next]);
+  }
+
+  // Clamp the active index when the match list shrinks (query edits, diff refresh).
+  $effect(() => {
+    const len = searchMatches.length;
+    if (refHighlight.searchActiveIdx >= len) {
+      refHighlight.searchActiveIdx = len === 0 ? -1 : len - 1;
+    }
+  });
 
   function scrollToFileHeader(path: string): boolean {
     const rowIdx = crossFileModel.fileStartRow.get(path);
@@ -1527,6 +1576,14 @@
     {/if}
   </div>
 
+  {#if refHighlight.searchOpen}
+    <DiffSearchBar
+      total={usageResult.total}
+      capped={usageResult.capped}
+      activeIdx={refHighlight.searchActiveIdx}
+      onNavigate={navigateSearch}
+    />
+  {/if}
   {#if usageMarks.length > 0}
     <ReferenceRuler marks={usageMarks} onJump={jumpToUsage} />
   {/if}

@@ -149,10 +149,15 @@ export function initKeyboard(): () => void {
         return;
       }
       closeAiActionPalette();
-      // Usages popover closes before anything else; a second Esc then clears
-      // the highlight itself (next branch below).
+      // Esc precedence: usages popover → Cmd+F search bar → diff selection →
+      // identifier highlight.
       if (refHighlight.popoverOpen) {
         refHighlight.closePopover();
+        e.preventDefault();
+        return;
+      }
+      if (refHighlight.searchOpen) {
+        refHighlight.closeSearch();
         e.preventDefault();
         return;
       }
@@ -187,6 +192,15 @@ export function initKeyboard(): () => void {
       e.preventDefault();
       e.stopPropagation();
       openAiPaletteCallback?.();
+      return;
+    }
+    // Cmd/Ctrl+F opens the diff search bar. preventDefault suppresses the
+    // webview's native find UI; works even when focus is in an input (the bar
+    // refocuses its own field on open).
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "f" || e.key === "F")) {
+      e.preventDefault();
+      e.stopPropagation();
+      refHighlight.openSearch();
       return;
     }
     if (

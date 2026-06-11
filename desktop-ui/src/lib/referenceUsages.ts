@@ -9,7 +9,11 @@
  * testable without a DOM.
  */
 
-import { findIdentifierRanges } from "./referenceHighlight";
+import {
+  findMatchRanges,
+  IDENTIFIER_MATCH_OPTIONS,
+  type MatchOptions,
+} from "./referenceHighlight";
 
 /** A diff line that may contain identifier matches, in flat-row coordinates. */
 export interface UsageSource {
@@ -27,6 +31,51 @@ export interface UsageLine extends UsageSource {
   ranges: Array<[number, number]>;
 }
 
+/** Result of `collectMatches`: matched lines plus range-level totals. */
+export interface MatchResult {
+  lines: UsageLine[];
+  /** Individual match ranges collected (≤ `maxMatches`). */
+  total: number;
+  /** True when collection stopped at `maxMatches` before exhausting sources. */
+  capped: boolean;
+}
+
+/**
+ * Filter `sources` down to lines matching `query` under `opts`, counting
+ * individual ranges. Input order is preserved (callers supply rows in render
+ * order, so results stay grouped by file). Collection stops once `maxMatches`
+ * ranges have been gathered — a one-letter Cmd+F query over a huge diff must
+ * not build an unbounded match list.
+ */
+export function collectMatches(
+  sources: Iterable<UsageSource>,
+  query: string,
+  opts: MatchOptions,
+  maxMatches = 5000,
+): MatchResult {
+  const lines: UsageLine[] = [];
+  let total = 0;
+  let capped = false;
+  if (query.length === 0) return { lines, total, capped };
+  for (const s of sources) {
+    if (total >= maxMatches) {
+      capped = true;
+      break;
+    }
+    const ranges = findMatchRanges(s.text, query, opts);
+    if (ranges.length === 0) continue;
+    let kept = ranges;
+    if (total + ranges.length > maxMatches) {
+      kept = ranges.slice(0, maxMatches - total);
+      capped = true;
+    }
+    lines.push({ ...s, ranges: kept });
+    total += kept.length;
+    if (capped) break;
+  }
+  return { lines, total, capped };
+}
+
 /**
  * Filter `sources` down to lines containing whole-word occurrences of
  * `identifier`. Input order is preserved (callers supply rows in render
@@ -36,13 +85,7 @@ export function collectUsageLines(
   sources: Iterable<UsageSource>,
   identifier: string,
 ): UsageLine[] {
-  const out: UsageLine[] = [];
-  if (identifier.length === 0) return out;
-  for (const s of sources) {
-    const ranges = findIdentifierRanges(s.text, identifier);
-    if (ranges.length > 0) out.push({ ...s, ranges });
-  }
-  return out;
+  return collectMatches(sources, identifier, IDENTIFIER_MATCH_OPTIONS, Infinity).lines;
 }
 
 export interface UsageGroup {

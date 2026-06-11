@@ -32,11 +32,14 @@
   });
 
   // Reference highlight (issue #69): when an identifier is selected, split
-  // segments at word-boundary matches and mark them. No-op (same array back)
-  // for lines without a match.
+  // segments at matches and mark them. The store's matchOptions select
+  // word-boundary (identifier click) vs substring/smart-case (Cmd+F search)
+  // semantics. No-op (same array back) for lines without a match.
   const segments = $derived.by((): RefSegment[] => {
     const ident = refHighlight.identifier;
-    return ident ? splitSegmentsByIdentifier(baseSegments, ident) : baseSegments;
+    return ident
+      ? splitSegmentsByIdentifier(baseSegments, ident, refHighlight.matchOptions)
+      : baseSegments;
   });
 </script>
 
