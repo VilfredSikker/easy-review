@@ -344,7 +344,7 @@
     ? 'flex flex-col flex-1 min-h-0 overflow-hidden bg-surface'
     : 'w-64 border-r border-hairline bg-surface flex flex-col overflow-hidden transition-[width] duration-200'}"
 >
-  <div class="relative shrink-0 border-b border-hairline">
+  <div class="shrink-0 border-b border-hairline">
     <div class="flex items-center gap-2 px-3 py-2">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" class="shrink-0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input
@@ -359,13 +359,17 @@
       />
       <span class="kbd">/</span>
     </div>
-    {#if !pickerMode && inputFocused && (snapshot?.filter_suggestions?.length ?? 0) > 0}
-      <div class="absolute left-0 right-0 top-full z-10 bg-surface border border-hairline border-t-0 max-h-64 overflow-y-auto shadow-lg">
+    <!-- Preset/recent suggestions render in normal flow ABOVE the results and
+         only while the query is empty — once the user types, they collapse so
+         the live matching files below stay visible (they used to be covered
+         by an absolutely-positioned dropdown). -->
+    {#if !pickerMode && inputFocused && filterDraft.trim().length === 0 && (snapshot?.filter_suggestions?.length ?? 0) > 0}
+      <div class="border-t border-hairline max-h-40 overflow-y-auto">
         {#each snapshot?.filter_suggestions ?? [] as sug}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
-            class="flex items-center gap-2 px-3 py-1.5 text-[12px] cursor-pointer hover:bg-hover"
+            class="flex items-center gap-2 px-3 py-1 text-[12px] cursor-pointer hover:bg-hover"
             onmousedown={(e) => { e.preventDefault(); pickSuggestion(sug.expr); }}
           >
             <span class="text-[10px] mono uppercase shrink-0 {sug.kind === 'preset' ? 'text-accent' : 'text-muted'}">{sug.kind === 'preset' ? 'preset' : 'recent'}</span>

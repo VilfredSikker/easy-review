@@ -3,11 +3,43 @@ import {
   findIdentifierRanges,
   findMatchRanges,
   identifierAt,
+  searchPrefillFromSelection,
+  SEARCH_PREFILL_MAX_LEN,
   smartCaseSensitive,
   splitSegmentsByIdentifier,
   type RefSegment,
 } from "./referenceHighlight";
 import type { RenderSegment } from "./mergeWordDiffWithSyntax";
+
+describe("searchPrefillFromSelection", () => {
+  it("returns the trimmed selection", () => {
+    expect(searchPrefillFromSelection("  fooBar(baz) ")).toBe("fooBar(baz)");
+  });
+
+  it("uses only the first line of a multi-line selection", () => {
+    expect(searchPrefillFromSelection("const a = 1;\nconst b = 2;\n")).toBe("const a = 1;");
+  });
+
+  it("rejects empty and whitespace-only selections", () => {
+    expect(searchPrefillFromSelection("")).toBeNull();
+    expect(searchPrefillFromSelection("   \t ")).toBeNull();
+    // Multi-line selection whose first line is blank is rejected too —
+    // the selection visibly starts on the blank line.
+    expect(searchPrefillFromSelection("\nconst b = 2;")).toBeNull();
+  });
+
+  it("rejects selections longer than the cap instead of truncating", () => {
+    const long = "x".repeat(SEARCH_PREFILL_MAX_LEN + 1);
+    expect(searchPrefillFromSelection(long)).toBeNull();
+    const exact = "x".repeat(SEARCH_PREFILL_MAX_LEN);
+    expect(searchPrefillFromSelection(exact)).toBe(exact);
+  });
+
+  it("honors a custom cap", () => {
+    expect(searchPrefillFromSelection("abcdef", 5)).toBeNull();
+    expect(searchPrefillFromSelection("abcde", 5)).toBe("abcde");
+  });
+});
 
 describe("identifierAt", () => {
   it("extracts the identifier under the offset", () => {

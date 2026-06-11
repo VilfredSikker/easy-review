@@ -5,6 +5,7 @@ import {
   collectMatches,
   collectUsageLines,
   groupUsagesByFile,
+  usageContext,
   usagePreview,
   type UsageLine,
   type UsageSource,
@@ -173,6 +174,93 @@ describe("usagePreview", () => {
   });
 });
 
+describe("usageContext", () => {
+  const hsrc = (
+    rowIdx: number,
+    filePath: string,
+    lineNum: number,
+    text: string,
+    hunkIdx: number,
+  ): UsageSource => ({ rowIdx, filePath, lineNum, text, hunkIdx });
+
+  // a.ts: hunk 0 (lines 1–5), hunk 1 (lines 20–21); b.ts: hunk 0 (line 1).
+  const sources: UsageSource[] = [
+    hsrc(0, "a.ts", 1, "line one", 0),
+    hsrc(1, "a.ts", 2, "line two", 0),
+    hsrc(2, "a.ts", 3, "foo here", 0),
+    hsrc(3, "a.ts", 4, "line four", 0),
+    hsrc(4, "a.ts", 5, "line five", 0),
+    hsrc(6, "a.ts", 20, "foo again", 1),
+    hsrc(7, "a.ts", 21, "tail line", 1),
+    hsrc(9, "b.ts", 1, "other file foo", 0),
+  ];
+
+  it("returns the match plus two lines above and below within the hunk", () => {
+    const out = usageContext(sources, sources[2]);
+    expect(out.map((l) => l.lineNum)).toEqual([1, 2, 3, 4, 5]);
+    expect(out.map((l) => l.isMatch)).toEqual([false, false, true, false, false]);
+    expect(out[2].text).toBe("foo here");
+  });
+
+  it("does not cross hunk boundaries", () => {
+    const out = usageContext(sources, sources[5]);
+    // Hunk 1 has only two lines; nothing from hunk 0 leaks in above.
+    expect(out.map((l) => l.lineNum)).toEqual([20, 21]);
+    expect(out.map((l) => l.isMatch)).toEqual([true, false]);
+  });
+
+  it("does not cross file boundaries", () => {
+    const out = usageContext(sources, sources[7]);
+    expect(out).toEqual([
+      { rowIdx: 9, lineNum: 1, text: "other file foo", isMatch: true },
+    ]);
+  });
+
+  it("truncates context at the first line of the list", () => {
+    const out = usageContext(sources, sources[0]);
+    expect(out.map((l) => l.lineNum)).toEqual([1, 2, 3]);
+    expect(out[0].isMatch).toBe(true);
+  });
+
+  it("truncates context at the last line of the list", () => {
+    const trimmed = sources.slice(0, 7); // ends at a.ts line 21
+    const out = usageContext(trimmed, trimmed[6]);
+    expect(out.map((l) => l.lineNum)).toEqual([20, 21]);
+    expect(out[1].isMatch).toBe(true);
+  });
+
+  it("honors a custom contextLines count", () => {
+    const out = usageContext(sources, sources[2], 1);
+    expect(out.map((l) => l.lineNum)).toEqual([2, 3, 4]);
+  });
+
+  it("treats undefined hunkIdx as a single run per file", () => {
+    const flat = [
+      src(0, "a.ts", 1, "one"),
+      src(1, "a.ts", 2, "two"),
+      src(2, "a.ts", 3, "three"),
+    ];
+    const out = usageContext(flat, flat[1], 2);
+    expect(out.map((l) => l.lineNum)).toEqual([1, 2, 3]);
+  });
+
+  it("falls back to the usage line alone when it is not in the sources", () => {
+    const out = usageContext(sources, { rowIdx: 99, filePath: "z.ts", lineNum: 7, text: "gone" });
+    expect(out).toEqual([{ rowIdx: 99, lineNum: 7, text: "gone", isMatch: true }]);
+  });
+
+  it("distinguishes split-row sides sharing a rowIdx by text and lineNum", () => {
+    const split = [
+      hsrc(0, "a.ts", 9, "old side foo", 0),
+      { rowIdx: 0, filePath: "a.ts", lineNum: 10, text: "new side foo", hunkIdx: 0 },
+      hsrc(1, "a.ts", 11, "after", 0),
+    ];
+    const out = usageContext(split, split[1], 1);
+    expect(out.map((l) => l.text)).toEqual(["old side foo", "new side foo", "after"]);
+    expect(out.map((l) => l.isMatch)).toEqual([false, true, false]);
+  });
+});
+
 describe("buildRulerMarks", () => {
   it("maps content offsets to ruler pixels proportionally", () => {
     const marks = buildRulerMarks(
@@ -184,17 +272,17 @@ describe("buildRulerMarks", () => {
       500,
     );
     expect(marks).toEqual([
-      { rowIdx: 0, topPx: 0 },
-      { rowIdx: 10, topPx: 250 },
+      { rowIdx: 0, topPx: 0, count: 1 },
+      { rowIdx: 10, topPx: 250, count: 1 },
     ]);
   });
 
   it("clamps the last mark inside the ruler", () => {
     const marks = buildRulerMarks([{ rowIdx: 9, offsetPx: 10000 }], 10000, 500, 3);
-    expect(marks).toEqual([{ rowIdx: 9, topPx: 497 }]);
+    expect(marks).toEqual([{ rowIdx: 9, topPx: 497, count: 1 }]);
   });
 
-  it("merges marks that would overlap", () => {
+  it("merges marks that would overlap and accumulates the cluster count", () => {
     const marks = buildRulerMarks(
       [
         { rowIdx: 0, offsetPx: 0 },
@@ -206,6 +294,13 @@ describe("buildRulerMarks", () => {
       3,
     );
     expect(marks.map((m) => m.rowIdx)).toEqual([0, 2]);
+    expect(marks.map((m) => m.count)).toEqual([2, 1]);
+  });
+
+  it("counts every row merged into a dense cluster", () => {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ rowIdx: i, offsetPx: i * 10 }));
+    const marks = buildRulerMarks(rows, 10000, 500, 3);
+    expect(marks).toEqual([{ rowIdx: 0, topPx: 0, count: 5 }]);
   });
 
   it("returns empty for degenerate geometry", () => {

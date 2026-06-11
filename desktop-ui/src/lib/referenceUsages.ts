@@ -23,6 +23,12 @@ export interface UsageSource {
   /** Display line number (new side preferred, old side for deletions). */
   lineNum: number | null;
   text: string;
+  /**
+   * Hunk index within the file, when known. `usageContext` refuses to cross
+   * hunk boundaries — adjacent hunks are adjacent in render order but not in
+   * the underlying file, so their lines are not real context for each other.
+   */
+  hunkIdx?: number;
 }
 
 /** A line with at least one word-boundary match of the active identifier. */
@@ -158,11 +164,61 @@ export function usagePreview(
   return { prefix, match, suffix };
 }
 
+/** One line of surrounding context for a reference usage. */
+export interface UsageContextLine {
+  rowIdx: number;
+  lineNum: number | null;
+  text: string;
+  /** True for the usage line itself (the one carrying the match). */
+  isMatch: boolean;
+}
+
+/**
+ * Surrounding context for `usage`: up to `contextLines` lines above and below
+ * it, taken from `sources` (the flat render-order line list the usage was
+ * collected from). Context never crosses file boundaries, and never crosses
+ * hunk boundaries when sources carry `hunkIdx` — adjacent hunks are adjacent
+ * on screen but not in the file. At the first/last line of a hunk or of the
+ * whole list, fewer lines are returned.
+ *
+ * The usage is located by `rowIdx` + `text` + `lineNum` (split rows can share
+ * a `rowIdx` between their left and right sides). When it cannot be found
+ * (e.g. the diff refreshed underneath a stale reference), the usage line
+ * itself is returned alone so callers always have something to render.
+ */
+export function usageContext(
+  sources: UsageSource[],
+  usage: Pick<UsageSource, "rowIdx" | "filePath" | "lineNum" | "text">,
+  contextLines = 2,
+): UsageContextLine[] {
+  const idx = sources.findIndex(
+    (s) => s.rowIdx === usage.rowIdx && s.text === usage.text && s.lineNum === usage.lineNum,
+  );
+  if (idx === -1) {
+    return [{ rowIdx: usage.rowIdx, lineNum: usage.lineNum, text: usage.text, isMatch: true }];
+  }
+  const anchor = sources[idx];
+  const sameRun = (s: UsageSource): boolean =>
+    s.filePath === anchor.filePath && s.hunkIdx === anchor.hunkIdx;
+  let start = idx;
+  while (start > 0 && idx - start < contextLines && sameRun(sources[start - 1])) start--;
+  let end = idx;
+  while (end < sources.length - 1 && end - idx < contextLines && sameRun(sources[end + 1])) end++;
+  const out: UsageContextLine[] = [];
+  for (let i = start; i <= end; i++) {
+    const s = sources[i];
+    out.push({ rowIdx: s.rowIdx, lineNum: s.lineNum, text: s.text, isMatch: i === idx });
+  }
+  return out;
+}
+
 /** One mark on the overview ruler, in ruler-local pixels. */
 export interface RulerMark {
   /** Flat row index of the (first) match this mark represents. */
   rowIdx: number;
   topPx: number;
+  /** Matched rows merged into this mark (≥ 1; > 1 for a dense cluster). */
+  count: number;
 }
 
 /**
@@ -172,8 +228,8 @@ export interface RulerMark {
  * scrollable content, whose full height is `totalContentPx`) maps to
  * `offsetPx / totalContentPx * rulerPx`, clamped so the mark stays inside the
  * ruler. Marks that would overlap (closer than `markHeightPx`) are merged
- * into the earlier mark, so a dense cluster renders as one solid block
- * instead of thousands of DOM nodes.
+ * into the earlier mark (its `count` accumulates the cluster size), so a
+ * dense cluster renders as one solid block instead of thousands of DOM nodes.
  *
  * `rows` must be sorted by `offsetPx` ascending (callers iterate flat rows in
  * order, which guarantees this).
@@ -193,8 +249,12 @@ export function buildRulerMarks(
       maxTop,
       Math.max(0, Math.round((row.offsetPx / totalContentPx) * rulerPx)),
     );
-    if (top - lastTop < markHeightPx) continue;
-    marks.push({ rowIdx: row.rowIdx, topPx: top });
+    if (top - lastTop < markHeightPx) {
+      const last = marks[marks.length - 1];
+      if (last) last.count++;
+      continue;
+    }
+    marks.push({ rowIdx: row.rowIdx, topPx: top, count: 1 });
     lastTop = top;
   }
   return marks;

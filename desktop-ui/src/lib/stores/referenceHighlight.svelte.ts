@@ -99,14 +99,20 @@ class ReferenceHighlight {
   }
 
   /**
-   * Open the Cmd+F search bar. An active identifier highlight is kept as the
-   * prefilled query (switching it to substring/smart-case semantics).
+   * Open the Cmd+F search bar. `prefill` (the diff's active text selection,
+   * when there is one) takes priority as the initial query; otherwise an
+   * active identifier highlight is kept as the prefilled query. Either way
+   * the query switches to substring/smart-case semantics.
    */
-  openSearch(): void {
+  openSearch(prefill: string | null = null): void {
     this.searchOpen = true;
     this.popoverOpen = false;
     this.popoverAnchor = null;
-    if (this.identifier !== null) {
+    if (prefill !== null && prefill.length > 0) {
+      this.identifier = prefill;
+      this.mode = "query";
+      this.searchActiveIdx = -1;
+    } else if (this.identifier !== null) {
       this.mode = "query";
       this.searchActiveIdx = -1;
     }

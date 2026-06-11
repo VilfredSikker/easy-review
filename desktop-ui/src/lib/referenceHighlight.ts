@@ -73,6 +73,31 @@ export function smartCaseSensitive(query: string): boolean {
 }
 
 /**
+ * Maximum length of a text selection accepted as a Cmd+F prefill. Longer
+ * selections are almost certainly accidental whole-block sweeps, and a
+ * truncated query would silently search for a different string — reject
+ * instead and fall back to the active identifier highlight.
+ */
+export const SEARCH_PREFILL_MAX_LEN = 200;
+
+/**
+ * Derive a Cmd+F prefill from raw selected text (`window.getSelection()`
+ * stringified). Multi-line selections contribute only their first line.
+ * Returns null when the (trimmed) first line is empty or exceeds
+ * `maxLen` — callers then fall back to the active identifier highlight.
+ */
+export function searchPrefillFromSelection(
+  raw: string,
+  maxLen = SEARCH_PREFILL_MAX_LEN,
+): string | null {
+  const newline = raw.indexOf("\n");
+  const firstLine = newline === -1 ? raw : raw.slice(0, newline);
+  const trimmed = firstLine.trim();
+  if (trimmed.length === 0 || trimmed.length > maxLen) return null;
+  return trimmed;
+}
+
+/**
  * Find all occurrences of `query` in `text` under `opts`.
  * Returns sorted, non-overlapping `[start, end)` ranges (in `text` offsets).
  */

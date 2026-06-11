@@ -27,7 +27,10 @@
   import {
     buildRulerMarks,
     collectMatches,
+    usageContext,
     type MatchResult,
+    type UsageContextLine,
+    type UsageLine,
     type UsageSource,
   } from "$lib/referenceUsages";
   import {
@@ -889,6 +892,7 @@
             filePath: row.filePath,
             lineNum: line.new_num ?? line.old_num,
             text: line.text,
+            hunkIdx: row.hunkIdx,
           });
         }
       } else if (row.type === "content-split") {
@@ -902,6 +906,7 @@
             filePath: row.filePath,
             lineNum: left.new_num ?? left.old_num,
             text: left.text,
+            hunkIdx: row.hunkIdx,
           });
         }
         // Context rows reuse the same LineSnapshot on both sides — count once.
@@ -911,6 +916,7 @@
             filePath: row.filePath,
             lineNum: right.new_num ?? right.old_num,
             text: right.text,
+            hunkIdx: row.hunkIdx,
           });
         }
       }
@@ -922,19 +928,35 @@
    *  diff must not build an unbounded match list. */
   const SEARCH_MATCH_CAP = 5000;
 
+  // Flat line list in render order — shared by match collection and the
+  // context previews (ruler hover popover, popover row expansion). Only
+  // materialized while a highlight is active.
+  const usageSources = $derived.by((): UsageSource[] =>
+    refHighlight.identifier ? collectUsageSources() : [],
+  );
+
   // Identifier highlights and Cmd+F queries share this pipeline; the store's
   // matchOptions switch between whole-word and substring/smart-case matching.
   const usageResult = $derived.by((): MatchResult => {
     const ident = refHighlight.identifier;
     if (!ident) return { lines: [], total: 0, capped: false };
-    return collectMatches(
-      collectUsageSources(),
-      ident,
-      refHighlight.matchOptions,
-      SEARCH_MATCH_CAP,
-    );
+    return collectMatches(usageSources, ident, refHighlight.matchOptions, SEARCH_MATCH_CAP);
   });
   const usageLines = $derived(usageResult.lines);
+
+  /** Context lines around a usage (ruler hover popover, popover expansion). */
+  function contextForUsage(u: UsageLine): UsageContextLine[] {
+    return usageContext(usageSources, u);
+  }
+
+  /** First matched line at a ruler mark's row, with its surrounding context. */
+  function previewForMarkRow(
+    rowIdx: number,
+  ): { usage: UsageLine; lines: UsageContextLine[] } | null {
+    const usage = usageLines.find((u) => u.rowIdx === rowIdx);
+    if (!usage) return null;
+    return { usage, lines: contextForUsage(usage) };
+  }
 
   const usageMarks = $derived.by(() => {
     if (usageLines.length === 0 || viewportHeightPx <= 0) return [];
@@ -1585,7 +1607,13 @@
     />
   {/if}
   {#if usageMarks.length > 0}
-    <ReferenceRuler marks={usageMarks} onJump={jumpToUsage} />
+    <ReferenceRuler
+      marks={usageMarks}
+      onJump={jumpToUsage}
+      getPreview={previewForMarkRow}
+      query={refHighlight.identifier ?? ""}
+      matchOpts={refHighlight.matchOptions}
+    />
   {/if}
   {#if refHighlight.popoverOpen && refHighlight.identifier !== null}
     <ReferenceUsagesPopover
@@ -1593,6 +1621,7 @@
       usages={usageLines}
       anchor={refHighlight.popoverAnchor}
       onJump={jumpToUsage}
+      getContext={contextForUsage}
     />
   {/if}
   </div>
