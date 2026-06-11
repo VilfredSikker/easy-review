@@ -768,8 +768,12 @@ mod tests {
     fn substring_matches_mid_basename() {
         let rules = parse_filter_expr("QcWells");
         let qc_wells = make_file("src/ExperimentQcWells.ts", FileStatus::Modified, 5, 3);
-        let qc_wells_view =
-            make_file("src/ExperimentQcWellsView.svelte", FileStatus::Modified, 5, 3);
+        let qc_wells_view = make_file(
+            "src/ExperimentQcWellsView.svelte",
+            FileStatus::Modified,
+            5,
+            3,
+        );
         let other = make_file("src/ExperimentList.svelte", FileStatus::Modified, 1, 0);
         assert!(apply_filter(&rules, &qc_wells));
         assert!(apply_filter(&rules, &qc_wells_view));
