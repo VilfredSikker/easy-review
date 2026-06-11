@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "UI-agnostic engine for easy-review (git diffs, watching, AI sidecars, GitHub)"
 
+[features]
+# Headless consumers (er-api) build with:
+#   default-features = false, features = ["highlight"]
+default = ["ui", "watch", "highlight"]
+ui = ["dep:tui-textarea-2"]
+watch = ["dep:notify", "dep:notify-debouncer-mini"]
+highlight = ["dep:syntect", "dep:two-face"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -14,11 +22,11 @@ sha1.workspace = true
 glob.workspace = true
 toml.workspace = true
 dirs.workspace = true
-notify.workspace = true
-notify-debouncer-mini.workspace = true
-tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["crossterm"] }
-syntect = "5"
-two-face = "0.5.1"
+notify = { workspace = true, optional = true }
+notify-debouncer-mini = { workspace = true, optional = true }
+tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["crossterm"], optional = true }
+syntect = { version = "5", optional = true }
+two-face = { version = "0.5.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
