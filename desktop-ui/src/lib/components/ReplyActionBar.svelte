@@ -93,7 +93,7 @@
   }
 </script>
 
-<div class="self-start shrink-0 flex flex-wrap gap-0.5 opacity-0 group-hover/row:opacity-100 text-[10px]">
+<div class="mt-1 -ml-1 flex flex-wrap gap-0.5 opacity-0 group-hover/row:opacity-100 text-[10px]">
   {#if showAskAi}
     <button type="button" onclick={() => void askAi()} title="Ask AI about this reply" class="px-1 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI</button>
   {/if}

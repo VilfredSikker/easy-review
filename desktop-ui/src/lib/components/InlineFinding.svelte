@@ -296,19 +296,19 @@
                 <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
               </div>
             {/if}
+            {#if reply.id && reply.body_markdown !== "…thinking"}
+              <ReplyActionBar
+                {reply}
+                rootThreadId={thread?.id ?? null}
+                findingId={finding.id}
+                isQuestion={thread?.kind === "question"}
+                parentSynced={thread?.synced ?? false}
+                threadResolved={thread?.resolved ?? false}
+                onEdit={reply.editable ? () => openEdit(reply) : undefined}
+                onDelete={() => deleteReply(reply.id, reply.origin)}
+              />
+            {/if}
           </div>
-          {#if reply.id && reply.body_markdown !== "…thinking"}
-            <ReplyActionBar
-              {reply}
-              rootThreadId={thread?.id ?? null}
-              findingId={finding.id}
-              isQuestion={thread?.kind === "question"}
-              parentSynced={thread?.synced ?? false}
-              threadResolved={thread?.resolved ?? false}
-              onEdit={reply.editable ? () => openEdit(reply) : undefined}
-              onDelete={() => deleteReply(reply.id, reply.origin)}
-            />
-          {/if}
         </div>
       {/each}
     </div>
