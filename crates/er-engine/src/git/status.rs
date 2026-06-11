@@ -115,6 +115,23 @@ pub fn get_current_branch_in(repo_root: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Resolve a ref name to its commit OID (`git rev-parse --verify <ref>^{commit}`).
+/// Returns `None` when the ref does not resolve. Cheap (~5ms) and read-only —
+/// used to key the persistent branch-diff cache.
+pub fn rev_parse_commit_in(repo_root: &str, refname: &str) -> Option<String> {
+    let spec = format!("{refname}^{{commit}}");
+    let out = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &spec])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!oid.is_empty()).then_some(oid)
+}
+
 /// Auto-detect the base branch by checking upstream tracking, then falling
 /// back to common names (main, master, develop).
 #[allow(dead_code)]

@@ -96,7 +96,11 @@
       : "Watching",
   );
   let manualRefreshing = $state(false);
-  const refreshing = $derived(manualRefreshing || (app.snapshot?.bg_loading?.gh_status ?? false));
+  const refreshing = $derived(
+    manualRefreshing ||
+      (app.snapshot?.bg_loading?.gh_status ?? false) ||
+      (app.snapshot?.bg_loading?.gh_comments ?? false),
+  );
 
   const checkStats = $derived.by(() => {
     if (!github) return { pass: 0, fail: 0, pending: 0, total: 0 };
@@ -133,10 +137,12 @@
     return { text: m.toLowerCase(), colorClass: "text-muted" };
   }
 
+  // Status-only resync: GitHub comments + CI checks + merge status. Never
+  // touches the diff. Failures surface as an error toast via app.cmd.
   async function onRefresh() {
     manualRefreshing = true;
     try {
-      await app.cmd("refresh_github_status");
+      await app.cmd("resync_github_status");
     } finally {
       manualRefreshing = false;
     }
@@ -272,8 +278,8 @@
             class={`p-1 rounded transition-colors ${refreshing ? "text-muted opacity-50 cursor-not-allowed" : "text-muted hover:text-fg-2 hover:bg-fg-3/10"}`}
             onclick={onRefresh}
             disabled={refreshing}
-            title="Refresh GitHub status"
-            aria-label="Refresh GitHub status"
+            title="Resync GitHub status & comments (diff untouched)"
+            aria-label="Resync GitHub status and comments"
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
               class:animate-spin={refreshing}>

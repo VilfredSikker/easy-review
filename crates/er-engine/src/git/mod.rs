@@ -34,6 +34,6 @@ pub use status::{
     git_diff_checkout_against_base, git_diff_commit, git_diff_conflicts, git_diff_raw,
     git_diff_raw_file, git_diff_raw_range, git_log_branch, git_log_head, git_log_range, git_push,
     git_stage_all, git_stage_file, git_unstage_file, is_merge_in_progress, list_worktrees,
-    read_watched_file_content, save_snapshot, unmerged_files, verify_gitignored, CommitInfo,
-    FileStatus, WatchedFile, Worktree,
+    read_watched_file_content, rev_parse_commit_in, save_snapshot, unmerged_files,
+    verify_gitignored, CommitInfo, FileStatus, WatchedFile, Worktree,
 };

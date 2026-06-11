@@ -484,6 +484,306 @@ pub fn local_pr_target(
     github::get_pr_info(repo_root)
 }
 
+// ── Comment push cores ────────────────────────────────────────────────────────
+//
+// Pure push logic (no `App` dependency): everything needed comes from
+// `CommentPushTarget`, captured under a brief App lock by the callers. The
+// `gh` network calls and the comments-JSON rewrite run without holding any
+// lock; callers re-lock briefly afterwards to reload tab state.
+
+/// Identity + file path for a comment push, captured from the active tab.
+#[derive(Debug, Clone)]
+pub struct CommentPushTarget {
+    pub owner: String,
+    pub repo_name: String,
+    pub pr_number: u64,
+    pub is_remote: bool,
+    pub repo_root: String,
+    pub comments_path: String,
+}
+
+/// Result of [`push_all_comments_data`].
+#[derive(Debug, Clone, Copy)]
+pub struct PushAllOutcome {
+    pub pushed: u32,
+    pub failed: u32,
+}
+
+fn read_comments_file(comments_path: &str) -> Option<ai::ErGitHubComments> {
+    let content = std::fs::read_to_string(comments_path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn write_comments_file(comments_path: &str, gc: &ai::ErGitHubComments) -> Result<()> {
+    let json = serde_json::to_string_pretty(gc)?;
+    let tmp_path = format!("{}.tmp", comments_path);
+    std::fs::write(&tmp_path, &json)?;
+    std::fs::rename(&tmp_path, comments_path)?;
+    Ok(())
+}
+
+/// Push one parent comment (general or line-anchored) to GitHub.
+fn push_parent_comment(
+    target: &CommentPushTarget,
+    comment: &ai::GitHubReviewComment,
+) -> Result<u64> {
+    if comment.file.is_empty() {
+        // General comments (empty file) route to the issues API.
+        return if target.is_remote {
+            github::gh_pr_general_comment_remote(
+                &target.owner,
+                &target.repo_name,
+                target.pr_number,
+                &comment.comment,
+            )
+        } else {
+            github::gh_pr_general_comment(
+                &target.owner,
+                &target.repo_name,
+                target.pr_number,
+                &comment.comment,
+                &target.repo_root,
+            )
+        };
+    }
+    // Hunk-level comments have no line_start; the line-level push API requires
+    // a line, so they get anchored to line 1 on GitHub.
+    let start = comment.line_start.unwrap_or(1);
+    let end = comment.line_end.unwrap_or(start);
+    let side = comment.side.as_str();
+    if target.is_remote {
+        github::gh_pr_push_comment_remote(
+            &target.owner,
+            &target.repo_name,
+            target.pr_number,
+            &comment.file,
+            start,
+            Some(end),
+            &comment.comment,
+            side,
+        )
+    } else {
+        github::gh_pr_push_comment(
+            &target.owner,
+            &target.repo_name,
+            target.pr_number,
+            &comment.file,
+            start,
+            Some(end),
+            &comment.comment,
+            side,
+            &target.repo_root,
+        )
+    }
+}
+
+fn push_reply_comment(target: &CommentPushTarget, parent_gh_id: u64, body: &str) -> Result<u64> {
+    if target.is_remote {
+        github::gh_pr_reply_comment_remote(
+            &target.owner,
+            &target.repo_name,
+            target.pr_number,
+            parent_gh_id,
+            body,
+        )
+    } else {
+        github::gh_pr_reply_comment(
+            &target.owner,
+            &target.repo_name,
+            target.pr_number,
+            parent_gh_id,
+            body,
+            &target.repo_root,
+        )
+    }
+}
+
+/// Push all unpushed local comments (parents first, then replies) to GitHub.
+/// Reads and rewrites the comments JSON file; never touches App state.
+pub fn push_all_comments_data(target: &CommentPushTarget) -> Result<PushAllOutcome> {
+    let Some(mut gc) = read_comments_file(&target.comments_path) else {
+        return Ok(PushAllOutcome {
+            pushed: 0,
+            failed: 0,
+        });
+    };
+
+    let mut pushed = 0u32;
+    let mut failed = 0u32;
+
+    // Push parents first
+    let comment_ids: Vec<String> = gc
+        .comments
+        .iter()
+        .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.is_none())
+        .map(|c| c.id.clone())
+        .collect();
+
+    for cid in &comment_ids {
+        let Some(comment) = gc.comments.iter().find(|c| c.id == *cid).cloned() else {
+            continue;
+        };
+        match push_parent_comment(target, &comment) {
+            Ok(github_id) => {
+                if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                    c.github_id = Some(github_id);
+                    c.synced = true;
+                }
+                pushed += 1;
+            }
+            Err(_) => {
+                failed += 1;
+            }
+        }
+    }
+
+    // Then push replies
+    let reply_ids: Vec<String> = gc
+        .comments
+        .iter()
+        .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.is_some())
+        .map(|c| c.id.clone())
+        .collect();
+
+    for cid in &reply_ids {
+        let Some(comment) = gc.comments.iter().find(|c| c.id == *cid).cloned() else {
+            continue;
+        };
+        let parent_gh_id = comment
+            .in_reply_to
+            .as_ref()
+            .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
+            .and_then(|c| c.github_id);
+        let Some(parent_gh_id) = parent_gh_id else {
+            failed += 1;
+            continue;
+        };
+        match push_reply_comment(target, parent_gh_id, &comment.comment) {
+            Ok(github_id) => {
+                if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                    c.github_id = Some(github_id);
+                    c.synced = true;
+                }
+                pushed += 1;
+            }
+            Err(_) => {
+                failed += 1;
+            }
+        }
+    }
+
+    write_comments_file(&target.comments_path, &gc)?;
+    Ok(PushAllOutcome { pushed, failed })
+}
+
+/// Push one local comment thread (root + unsynced replies) to GitHub.
+/// Returns the number of replies that failed to push.
+pub fn push_comment_thread_data(target: &CommentPushTarget, thread_id: &str) -> Result<u32> {
+    let mut gc = match read_comments_file(&target.comments_path) {
+        Some(gc) => gc,
+        None => anyhow::bail!("No github-comments.json found"),
+    };
+
+    let parent_idx = gc
+        .comments
+        .iter()
+        .position(|c| c.id == thread_id)
+        .ok_or_else(|| anyhow::anyhow!("Comment not found: {thread_id}"))?;
+    let parent = &gc.comments[parent_idx];
+    if parent.source != "local" {
+        anyhow::bail!("Only local comments can be pushed");
+    }
+    if parent.synced {
+        anyhow::bail!("Comment already pushed");
+    }
+    if parent.in_reply_to.is_some() {
+        anyhow::bail!("Use Push only this on the thread root, not a reply");
+    }
+    if !parent.file.is_empty() && parent.line_start.is_none() {
+        anyhow::bail!("Comment has no line anchor; add it on a diff line before pushing");
+    }
+
+    let github_id = push_parent_comment(target, &gc.comments[parent_idx])
+        .map_err(|e| anyhow::anyhow!("Failed to push comment: {e}"))?;
+    gc.comments[parent_idx].github_id = Some(github_id);
+    gc.comments[parent_idx].synced = true;
+
+    let reply_ids: Vec<String> = gc
+        .comments
+        .iter()
+        .filter(|c| c.source == "local" && !c.synced && c.in_reply_to.as_deref() == Some(thread_id))
+        .map(|c| c.id.clone())
+        .collect();
+
+    let mut reply_failed = 0u32;
+    for rid in reply_ids {
+        let Some(comment) = gc.comments.iter().find(|c| c.id == rid).cloned() else {
+            continue;
+        };
+        match push_reply_comment(target, github_id, &comment.comment) {
+            Ok(reply_gh_id) => {
+                if let Some(c) = gc.comments.iter_mut().find(|c| c.id == rid) {
+                    c.github_id = Some(reply_gh_id);
+                    c.synced = true;
+                }
+            }
+            Err(_) => reply_failed += 1,
+        }
+    }
+
+    write_comments_file(&target.comments_path, &gc)?;
+    Ok(reply_failed)
+}
+
+/// Push one unsynced local reply whose parent comment is already on GitHub.
+pub fn push_comment_reply_data(target: &CommentPushTarget, reply_id: &str) -> Result<()> {
+    if reply_id.starts_with("fr-") {
+        anyhow::bail!("Finding validation replies cannot be pushed individually");
+    }
+    let mut gc = match read_comments_file(&target.comments_path) {
+        Some(gc) => gc,
+        None => anyhow::bail!("No github-comments.json found"),
+    };
+
+    let reply = gc
+        .comments
+        .iter()
+        .find(|c| c.id == reply_id)
+        .ok_or_else(|| anyhow::anyhow!("Comment not found: {reply_id}"))?;
+    if reply.source != "local" {
+        anyhow::bail!("Only local comments can be pushed");
+    }
+    if reply.synced {
+        anyhow::bail!("Reply already pushed");
+    }
+    let parent_id = reply
+        .in_reply_to
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Push only works on replies, not thread roots"))?;
+    let parent = gc
+        .comments
+        .iter()
+        .find(|c| c.id == parent_id)
+        .ok_or_else(|| anyhow::anyhow!("Parent comment not found"))?;
+    if !parent.synced {
+        anyhow::bail!("Push the thread root to GitHub first");
+    }
+    let parent_github_id = parent
+        .github_id
+        .ok_or_else(|| anyhow::anyhow!("Parent comment has no GitHub id"))?;
+
+    let reply_body = reply.comment.clone();
+    let github_id = push_reply_comment(target, parent_github_id, &reply_body)
+        .map_err(|e| anyhow::anyhow!("Failed to push reply: {e}"))?;
+
+    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == reply_id) {
+        c.github_id = Some(github_id);
+        c.synced = true;
+    }
+    write_comments_file(&target.comments_path, &gc)?;
+    Ok(())
+}
+
 // ── Remote diff refresh ───────────────────────────────────────────────────────
 
 /// Inputs for one remote-PR diff refresh cycle. Built while holding the App

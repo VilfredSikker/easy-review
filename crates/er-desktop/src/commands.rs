@@ -178,6 +178,10 @@ struct PrOpenInputs {
     /// caller MUST kick a background revalidation that refetches the fresh
     /// diff and applies it to the open tab.
     served_stale: bool,
+    /// True when the synchronous `gh pr commits` fetch was skipped to keep the
+    /// open fast (cache/disk hit with no cached commits). The caller spawns
+    /// `spawn_local_pr_commits_backfill` after placing the tab.
+    commits_pending: bool,
 }
 
 /// Hint passed from the frontend sidebar when opening or prefetching a PR.
@@ -278,6 +282,204 @@ fn log_branch_open_phase(
 
 fn now_ms() -> u64 {
     crate::inbox::now_epoch_ms()
+}
+
+// ── Fast base-ref resolution (issue #70) ─────────────────────────────────────
+
+/// Process-wide TTL cache of resolved base refs + dedupe set for background
+/// base fetches. Function-scoped statics so the cache stays an implementation
+/// detail of `resolve_base_ref_nonblocking`.
+static BASE_REF_CACHE: std::sync::LazyLock<Mutex<er_engine::github::BaseRefCache>> =
+    std::sync::LazyLock::new(|| Mutex::new(er_engine::github::BaseRefCache::default()));
+static BASE_REF_FETCH_IN_FLIGHT: std::sync::LazyLock<Mutex<HashSet<(String, String)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Resolve the base ref for a PR/branch open without ever fetching on the
+/// critical path:
+/// - TTL-cached resolution → instant.
+/// - Local ref (`<base>` or `origin/<base>`) resolves → instant (~10ms of
+///   `git rev-parse`), cached for [`er_engine::github::BASE_REF_CACHE_TTL_MS`].
+/// - Neither resolves → kick ONE deduplicated background `git fetch` and
+///   return the best-effort `origin/<base>` name immediately. Anything that
+///   later needs the ref (context expansion, diff refresh) shells out to git
+///   and finds it once the fetch lands.
+fn resolve_base_ref_nonblocking(repo_root: &str, base_branch: &str) -> Result<String, String> {
+    use er_engine::github::BASE_REF_CACHE_TTL_MS;
+
+    let now = now_ms();
+    if let Ok(cache) = BASE_REF_CACHE.lock() {
+        if let Some(hit) = cache.get(repo_root, base_branch, now, BASE_REF_CACHE_TTL_MS) {
+            return Ok(hit.to_string());
+        }
+    }
+
+    let (base_name, resolved) = er_engine::github::resolve_base_ref_local(repo_root, base_branch)
+        .map_err(|e| e.to_string())?;
+    if let Some(resolved) = resolved {
+        if let Ok(mut cache) = BASE_REF_CACHE.lock() {
+            cache.put(repo_root, base_branch, resolved.clone(), now);
+        }
+        return Ok(resolved);
+    }
+
+    // Not available locally — fetch in the background (deduped per
+    // (repo_root, base)) and hand back the name the fetch will create.
+    let claim = (repo_root.to_string(), base_name.clone());
+    let should_spawn = BASE_REF_FETCH_IN_FLIGHT
+        .lock()
+        .map(|mut guard| guard.insert(claim.clone()))
+        .unwrap_or(false);
+    if should_spawn {
+        let cache_key = base_branch.to_string();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            let (repo_root, base_name) = &claim;
+            match er_engine::github::ensure_base_ref_available(repo_root, base_name) {
+                Ok(resolved) => {
+                    if let Ok(mut cache) = BASE_REF_CACHE.lock() {
+                        cache.put(repo_root, &cache_key, resolved, now_ms());
+                    }
+                    log::info!(
+                        "base_ref_bg_fetch repo={repo_root} base={base_name} ok ms={}",
+                        t.elapsed().as_millis()
+                    );
+                }
+                Err(e) => log::warn!(
+                    "base_ref_bg_fetch repo={repo_root} base={base_name} failed ms={} err={e}",
+                    t.elapsed().as_millis()
+                ),
+            }
+            if let Ok(mut guard) = BASE_REF_FETCH_IN_FLIGHT.lock() {
+                guard.remove(&claim);
+            }
+        });
+    }
+    Ok(format!("origin/{base_name}"))
+}
+
+/// Backfill PR commits for a local-PR tab whose open skipped the synchronous
+/// `gh pr commits` call (disk/cache hit). Three-phase: the `gh` call runs on
+/// a worker thread; a brief lock applies the commits to the still-open tab
+/// (and write-through to the in-memory open cache) before a revision bump.
+fn spawn_local_pr_commits_backfill(
+    state: &AppState,
+    project_id: String,
+    repo_root: String,
+    pr_number: u64,
+    key: PrOpenCacheKey,
+    freshness: PrOpenFreshness,
+) {
+    static IN_FLIGHT: std::sync::LazyLock<Mutex<HashSet<(String, u64)>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+    let claim = (repo_root.clone(), pr_number);
+    let claimed = IN_FLIGHT
+        .lock()
+        .map(|mut guard| guard.insert(claim.clone()))
+        .unwrap_or(false);
+    if !claimed {
+        return;
+    }
+
+    let app = Arc::clone(&state.app);
+    let cache = Arc::clone(&state.pr_open_cache);
+    let desktop_revision = Arc::clone(&state.desktop_revision);
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        // Phase 2 (no lock): network fetch.
+        let commits = run_gh_pr_commits_for_open(&repo_root, pr_number);
+        let mut applied = false;
+        if !commits.is_empty() {
+            // Write-through to the in-memory open cache (same freshness only).
+            if let Ok(mut guard) = cache.lock() {
+                if let Some(entry) = guard.get_mut(&key) {
+                    if entry.freshness == freshness {
+                        entry.pr_commits = Some(commits.clone());
+                    }
+                }
+            }
+            // Phase 3 (brief lock): apply to the tab if it is still open.
+            if let Ok(mut guard) = app.lock() {
+                if let Some(tab) = guard.tabs.iter_mut().find(|t| {
+                    t.repo_root == repo_root && t.pr_number == Some(pr_number) && !t.is_remote()
+                }) {
+                    if tab.pr_commits.is_empty() {
+                        tab.pr_commits = commits;
+                        applied = true;
+                    }
+                }
+            }
+        }
+        if applied {
+            crate::profile_log::bump_desktop_revision(&desktop_revision, "pr_commits_backfill");
+        }
+        log::info!(
+            "branch_open project={} branch=pr-{} phase=commits_backfill ms={} applied={}",
+            project_id,
+            pr_number,
+            t.elapsed().as_millis(),
+            applied
+        );
+        if let Ok(mut guard) = IN_FLIGHT.lock() {
+            guard.remove(&claim);
+        }
+    });
+}
+
+// ── Branch diff persistence (issue #70 — branch rows) ────────────────────────
+
+/// Inputs for a branch-diff write-through, captured under the App lock so the
+/// rev-parses + disk write can run after the lock is released.
+struct BranchDiffPersistInputs {
+    repo_root: String,
+    branch: String,
+    base_ref: String,
+    raw_diff: String,
+}
+
+/// Capture write-through inputs from a freshly refreshed tab — only for pure
+/// committed-state branch views (not PR tabs, checkouts, or remote tabs).
+fn capture_branch_diff_persist_inputs(
+    tab: &er_engine::app::TabState,
+) -> Option<BranchDiffPersistInputs> {
+    if tab.mode != DiffMode::Branch
+        || tab.pr_number.is_some()
+        || tab.is_remote()
+        || tab.pr_head_ref.is_some()
+        || tab.local_branch_checkout_root.is_some()
+    {
+        return None;
+    }
+    let branch = tab.local_branch_view.clone()?;
+    let raw_diff = tab.cached_raw_diff()?.to_string();
+    Some(BranchDiffPersistInputs {
+        repo_root: tab.repo_root.clone(),
+        branch,
+        base_ref: tab.base_branch.clone(),
+        raw_diff,
+    })
+}
+
+/// Best-effort write-through of a freshly computed branch diff to the
+/// persistent store, keyed by (head oid, base oid). Never fails the caller.
+fn persist_branch_diff(inputs: &BranchDiffPersistInputs) {
+    let Some(head_oid) = er_engine::git::rev_parse_commit_in(&inputs.repo_root, &inputs.branch)
+    else {
+        return;
+    };
+    let Some(base_oid) = er_engine::git::rev_parse_commit_in(&inputs.repo_root, &inputs.base_ref)
+    else {
+        return;
+    };
+    let repo_slug = er_engine::storage::slug_repo(&inputs.repo_root);
+    let meta = er_engine::diff_store::BranchDiffMeta::new(
+        &inputs.branch,
+        head_oid,
+        base_oid,
+        &inputs.base_ref,
+    );
+    if let Err(e) = er_engine::diff_store::save_branch_diff(&repo_slug, &meta, &inputs.raw_diff) {
+        log::warn!("branch diff persist failed for {}: {e}", inputs.branch);
+    }
 }
 
 /// Show native notifications for inbox items that were created before the Tauri
@@ -2171,48 +2373,230 @@ pub fn refresh_github_status(state: State<AppState>) -> Result<AppSnapshot, Stri
     snap!(state)
 }
 
+/// Pull GitHub PR comments for the active tab. Async + three-phase: the `gh`
+/// network calls never run on the main thread and never hold the App mutex
+/// (Phase 1 brief lock captures identity/files, Phase 2 fetches + writes the
+/// comments JSON, Phase 3 briefly locks to apply).
 #[tauri::command]
-pub fn pull_github_comments(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.sync_github_comments().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+pub async fn pull_github_comments(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || pull_github_comments_impl(&state)).await
 }
 
-#[tauri::command]
-pub fn push_github_comments(state: State<AppState>) -> Result<AppSnapshot, String> {
+fn pull_github_comments_impl(state: &AppState) -> Result<AppSnapshot, String> {
+    // Phase 1a (brief lock): capture tab identity inputs.
+    let (repo_root, pr_number, is_remote, remote_repo) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab = app.tab();
+        (
+            tab.repo_root.clone(),
+            tab.pr_number,
+            tab.is_remote(),
+            tab.remote_repo.clone(),
+        )
+    };
+
+    // Identity resolution — may shell out to `gh` for branch tabs without an
+    // explicit PR number. No lock held.
+    let identity: Result<(String, String, u64), String> = if is_remote {
+        let parts: Option<Vec<&str>> = remote_repo.as_deref().map(|s| s.split('/').collect());
+        match (parts, pr_number) {
+            (Some(p), Some(n)) if p.len() == 2 => Ok((p[0].to_string(), p[1].to_string(), n)),
+            (Some(_), Some(_)) => Err("Invalid remote repo slug".to_string()),
+            _ => Err("No PR info for remote mode".to_string()),
+        }
+    } else {
+        er_engine::sync::local_pr_target(&repo_root, pr_number)
+            .map_err(|_| "No PR found for current branch".to_string())
+    };
+    let (owner, repo_name, number) = match identity {
+        Ok(id) => id,
+        Err(msg) => {
+            // Soft failure (matches the old notify-based behavior): the tab
+            // simply has no PR to sync against.
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            app.notify(&msg);
+            return Ok(snap_from(&app, state));
+        }
+    };
+
+    // Phase 1b (brief lock): snapshot files + paths for the fetch; bail out
+    // quietly if the active tab changed while identity was resolving.
+    let ctx = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab = app.tab();
+        if tab.repo_root != repo_root || tab.pr_number != pr_number || tab.is_remote() != is_remote
+        {
+            return Ok(snap_from(&app, state));
+        }
+        app.snapshot_for_comment_sync(owner, repo_name, number)
+    };
+
+    // Phase 2 (no lock): network fetch + merge + atomic disk write.
+    if let Ok(mut flags) = state.loading.lock() {
+        flags.gh_comments = true;
+    }
+    let fetched = er_engine::app::fetch_comment_sync_data(&ctx);
+    if let Ok(mut flags) = state.loading.lock() {
+        flags.gh_comments = false;
+    }
+    let result = fetched.map_err(|e| format!("GitHub sync error: {e}"))?;
+
+    // Phase 3 (brief lock): apply to the matching tab + snapshot.
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.push_all_comments_to_github()
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    app.apply_comment_sync_result(result);
+    Ok(snap_from(&app, state))
+}
+
+/// Capture comment-push identity with only a brief App lock; the possible
+/// `gh` resolution for branch tabs runs after the lock is released.
+fn capture_comment_push_target(
+    state: &AppState,
+    pr_number_hint: Option<u64>,
+) -> Result<er_engine::sync::CommentPushTarget, String> {
+    let (repo_root, pr_number, is_remote, remote_repo, comments_path) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab = app.tab();
+        (
+            tab.repo_root.clone(),
+            tab.pr_number.or(pr_number_hint),
+            tab.is_remote(),
+            tab.remote_repo.clone(),
+            tab.github_comments_path(),
+        )
+    };
+    let (owner, repo_name, pr_number_resolved) = if is_remote {
+        let parts: Option<Vec<&str>> = remote_repo.as_deref().map(|s| s.split('/').collect());
+        match (parts, pr_number) {
+            (Some(p), Some(n)) if p.len() == 2 => (p[0].to_string(), p[1].to_string(), n),
+            (Some(_), Some(_)) => return Err("Invalid remote repo slug".to_string()),
+            _ => return Err("No PR info for remote mode".to_string()),
+        }
+    } else {
+        er_engine::sync::local_pr_target(&repo_root, pr_number)
+            .map_err(|_| "No PR found for current branch".to_string())?
+    };
+    Ok(er_engine::sync::CommentPushTarget {
+        owner,
+        repo_name,
+        pr_number: pr_number_resolved,
+        is_remote,
+        repo_root,
+        comments_path,
+    })
+}
+
+/// Push all unpushed local comments. Async + three-phase (see
+/// `pull_github_comments`) so the `gh` calls never block the webview or
+/// starve the poll loop behind the App mutex.
+#[tauri::command]
+pub async fn push_github_comments(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let target = match capture_comment_push_target(&state, None) {
+            Ok(target) => target,
+            Err(msg) => {
+                // Soft failure, matching the engine's notify-based behavior.
+                let mut app = state.app.lock().map_err(|e| e.to_string())?;
+                app.notify(&msg);
+                return Ok(snap_from(&app, &state));
+            }
+        };
+        let outcome =
+            er_engine::sync::push_all_comments_data(&target).map_err(|e| e.to_string())?;
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.reload_comments_after_push(target.is_remote);
+        if outcome.failed > 0 {
+            app.notify(&format!(
+                "Pushed {} comments ({} failed)",
+                outcome.pushed, outcome.failed
+            ));
+        } else {
+            app.notify(&format!("Pushed {} comments", outcome.pushed));
+        }
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Push a single local comment thread (root + replies) to GitHub.
+/// Async + three-phase — network without the App lock.
 #[tauri::command]
-pub fn push_github_comment_thread(
+pub async fn push_github_comment_thread(
     id: String,
     pr_number: Option<u64>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.push_github_comment_thread(&id, pr_number)
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let target = capture_comment_push_target(&state, pr_number)?;
+        let reply_failed =
+            er_engine::sync::push_comment_thread_data(&target, &id).map_err(|e| e.to_string())?;
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.reload_comments_after_push(target.is_remote);
+        if reply_failed > 0 {
+            app.notify(&format!(
+                "Comment pushed; {reply_failed} repl{} failed",
+                if reply_failed == 1 { "y" } else { "ies" }
+            ));
+        } else {
+            app.notify("Comment pushed to GitHub");
+        }
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Push a single unsynced local GitHub comment reply (parent must already be on GitHub).
+/// Async + three-phase — network without the App lock.
 #[tauri::command]
-pub fn push_github_comment_reply(
+pub async fn push_github_comment_reply(
     reply_id: String,
     pr_number: Option<u64>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     if reply_id.starts_with("fr-") {
         return Err("Finding validation replies cannot be pushed individually — promote the finding instead.".to_string());
     }
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.push_github_comment_reply(&reply_id, pr_number)
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let target = capture_comment_push_target(&state, pr_number)?;
+        er_engine::sync::push_comment_reply_data(&target, &reply_id).map_err(|e| e.to_string())?;
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.reload_comments_after_push(target.is_remote);
+        app.notify("Reply pushed to GitHub");
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Status-only resync for the PR overview card: refresh GitHub inline
+/// comments + CI checks + merge status WITHOUT touching the diff. The status
+/// fetch is kicked to the shared deduplicated background fetcher
+/// (`loading.gh_status` spinner); the comment pull runs three-phase in this
+/// worker so failures surface as an error toast.
+#[tauri::command]
+pub async fn resync_github_status(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let key = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            active_github_key(&app, &state)
+        };
+        if let Some((owner, repo, number)) = key {
+            kick_github_status_refresh(
+                state.gh_status_cache.clone(),
+                Arc::clone(&state.gh_status_in_flight),
+                Arc::clone(&state.desktop_revision),
+                Some(Arc::clone(&state.loading)),
+                owner,
+                repo,
+                number,
+            );
+        }
+        pull_github_comments_impl(&state)
+    })
+    .await
 }
 
 /// Submit pending local comments as a GitHub PR review with an explicit decision.
@@ -2245,10 +2629,19 @@ fn is_gh_review_422(err: &anyhow::Error) -> bool {
 }
 
 #[tauri::command]
-pub fn submit_github_review(
+pub async fn submit_github_review(
     mode: String,
     summary: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || submit_github_review_impl(mode, summary, &state)).await
+}
+
+fn submit_github_review_impl(
+    mode: String,
+    summary: String,
+    state: &AppState,
 ) -> Result<AppSnapshot, String> {
     use er_engine::ai::ErGitHubComments;
     use er_engine::github;
@@ -2267,10 +2660,10 @@ pub fn submit_github_review(
     // GitHub only to get the known own-PR approval rejection.
     if event == "APPROVE" {
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some((owner, repo, number)) = active_github_key(&app, &state) {
+        if let Some((owner, repo, number)) = active_github_key(&app, state) {
             let me = state.gh_user.lock().ok().and_then(|login| login.clone());
             if let (Some(me), Some(author)) =
-                (me, active_pr_author(&app, &state, &owner, &repo, number))
+                (me, active_pr_author(&app, state, &owner, &repo, number))
             {
                 if author.eq_ignore_ascii_case(&me) {
                     return Err(own_pr_approval_error());
@@ -2340,7 +2733,7 @@ pub fn submit_github_review(
             let me = state.gh_user.lock().ok().and_then(|login| login.clone());
             if let (Some(me), Some(author)) = (
                 me,
-                active_pr_author(&app, &state, &owner, &repo_name, pr_number),
+                active_pr_author(&app, state, &owner, &repo_name, pr_number),
             ) {
                 if author.eq_ignore_ascii_case(&me) {
                     return Err(own_pr_approval_error());
@@ -2555,7 +2948,7 @@ pub fn submit_github_review(
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.tab_mut().reload_ai_state();
-    Ok(snap_from(&app, &state))
+    Ok(snap_from(&app, state))
 }
 
 /// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
@@ -4411,11 +4804,24 @@ pub fn open_worktree(state: State<AppState>) -> Result<AppSnapshot, String> {
 
 // ── Project commands ─────────────────────────────────────────────────────────
 
+/// How `open_local_branch` got its first paint (issue #70 branch rows).
 enum LocalBranchOpenPath {
-    LocalFirst,
-    LocalOnlyFallback,
+    /// Persistent branch-diff cache matched (head oid, base oid) — instant.
+    CacheHit,
+    /// A stale cached diff was served; a background recompute swaps in the
+    /// fresh diff (SWR — `loading.remote_pr_diff` drives the "Updating…" pill).
+    StaleRevalidate,
+    /// No cache to serve — the tab opens as a stub with `loading.tab_diff`
+    /// ("Loading diff…") and the first diff loads on a worker thread.
+    Deferred,
+    /// The branch/base ref didn't resolve locally — the old synchronous
+    /// refresh ran so invalid branches still error out of the open.
+    SyncFallback,
 }
 
+/// Build a local-branch tab WITHOUT running `git diff` synchronously: seed it
+/// from the persistent branch-diff cache when possible, otherwise mark it for
+/// a deferred first refresh.
 fn build_local_branch_tab(
     project_id: &str,
     name: String,
@@ -4429,48 +4835,81 @@ fn build_local_branch_tab(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {project_id}"))?
         .clone();
+    let repo_root = proj.root_path.clone();
     log_branch_open_phase(project_id, &branch_name, "project_lookup", t_project);
 
     let t_base = std::time::Instant::now();
     let base_branch =
-        er_engine::git::detect_base_branch_in(&proj.root_path).map_err(|e| e.to_string())?;
+        er_engine::git::detect_base_branch_in(&repo_root).map_err(|e| e.to_string())?;
     log_branch_open_phase(project_id, &branch_name, "base_detect", t_base);
 
     let t_tab_init = std::time::Instant::now();
     let mut new_tab =
-        er_engine::app::TabState::new_with_base_unloaded(proj.root_path.clone(), base_branch)
+        er_engine::app::TabState::new_with_base_unloaded(repo_root.clone(), base_branch.clone())
             .map_err(|e| e.to_string())?;
     log_branch_open_phase(project_id, &branch_name, "tab_init", t_tab_init);
 
-    new_tab.local_branch_view = Some(name);
+    new_tab.local_branch_view = Some(name.clone());
     new_tab.mode = er_engine::app::DiffMode::Branch;
     new_tab.sync_managed_storage();
-    let t_local_refresh = std::time::Instant::now();
-    match new_tab.refresh_diff_without_remote_fetch_quick() {
-        Ok(()) => {
-            log_branch_open_phase(
-                project_id,
-                &branch_name,
-                "local_first_refresh",
-                t_local_refresh,
-            );
-            Ok((new_tab, LocalBranchOpenPath::LocalFirst))
-        }
-        Err(local_err) => {
-            log::info!(
-                "branch open local-first miss; falling back to local branch diff: {local_err}"
-            );
-            let t_local_fallback = std::time::Instant::now();
-            new_tab.refresh_diff_quick().map_err(|e| e.to_string())?;
-            log_branch_open_phase(
-                project_id,
-                &branch_name,
-                "local_fallback_refresh",
-                t_local_fallback,
-            );
-            Ok((new_tab, LocalBranchOpenPath::LocalOnlyFallback))
-        }
+
+    // Prefer origin/<base> over the local base branch (matches the old
+    // local-first refresh) — both are cheap local rev-parse probes.
+    let base_short = base_branch
+        .strip_prefix("origin/")
+        .unwrap_or(&base_branch)
+        .to_string();
+    let resolved_base = [format!("origin/{base_short}"), base_short.clone()]
+        .into_iter()
+        .find(|candidate| er_engine::github::ref_exists_locally(&repo_root, candidate));
+    if let Some(ref rb) = resolved_base {
+        new_tab.base_branch = rb.clone();
     }
+
+    // Committed-state branch diffs are deterministic in (head oid, base oid)
+    // — exact key match serves the persisted diff instantly; a stale entry
+    // renders now and revalidates in the background; no entry defers the
+    // first `git diff` to a worker thread.
+    let t_cache = std::time::Instant::now();
+    let head_oid = er_engine::git::rev_parse_commit_in(&repo_root, &name);
+    let base_oid = resolved_base
+        .as_deref()
+        .and_then(|rb| er_engine::git::rev_parse_commit_in(&repo_root, rb));
+    let repo_slug = er_engine::storage::slug_repo(&repo_root);
+    let open_path = match (head_oid, base_oid) {
+        (Some(head), Some(base)) => {
+            match er_engine::diff_store::load_branch_diff(&repo_slug, &name, &head, &base) {
+                Ok(Some(raw)) => {
+                    new_tab.seed_local_branch_diff(raw);
+                    LocalBranchOpenPath::CacheHit
+                }
+                Ok(None) | Err(_) => {
+                    match er_engine::diff_store::load_branch_diff_any(&repo_slug, &name) {
+                        Ok(Some((raw, _meta))) => {
+                            new_tab.seed_local_branch_diff(raw);
+                            LocalBranchOpenPath::StaleRevalidate
+                        }
+                        _ => {
+                            new_tab.needs_initial_refresh = true;
+                            LocalBranchOpenPath::Deferred
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            // The branch (or base) ref doesn't resolve locally — deleted or
+            // remote-only. Run the old synchronous refresh so a genuinely
+            // invalid branch surfaces a real error to the caller instead of
+            // an empty deferred tab.
+            let t_sync = std::time::Instant::now();
+            new_tab.refresh_diff_quick().map_err(|e| e.to_string())?;
+            log_branch_open_phase(project_id, &branch_name, "sync_fallback_refresh", t_sync);
+            LocalBranchOpenPath::SyncFallback
+        }
+    };
+    log_branch_open_phase(project_id, &branch_name, "branch_diff_cache", t_cache);
+    Ok((new_tab, open_path))
 }
 
 fn refresh_branch_open_diff(tab: &mut er_engine::app::TabState) -> Result<(), String> {
@@ -4484,16 +4923,24 @@ fn refresh_branch_open_diff(tab: &mut er_engine::app::TabState) -> Result<(), St
     }
 }
 
+/// Background revalidation for a freshly opened branch tab: fetch the base
+/// branch from origin, refresh the committed diff, write the result through
+/// to the persistent branch-diff cache, and (when the open served a stale
+/// cached diff) clear the `loading.remote_pr_diff` SWR spinner.
 fn kick_background_branch_refresh(
-    app_state: Arc<Mutex<App>>,
-    desktop_revision: Arc<AtomicU64>,
+    state: &AppState,
     repo_root: String,
     branch_name: String,
     base_branch: String,
+    clear_diff_spinner: bool,
 ) {
+    let app_state = Arc::clone(&state.app);
+    let desktop_revision = Arc::clone(&state.desktop_revision);
+    let loading = Arc::clone(&state.loading);
     std::thread::spawn(move || {
         // Fetch the base branch from origin so the local diff is up-to-date.
         let base_strip = base_branch.strip_prefix("origin/").unwrap_or(&base_branch);
+        let mut persist_inputs = None;
         match er_engine::github::fetch_base_branch_ref(&repo_root, base_strip) {
             Ok(base_ref) => {
                 let mut refreshed_active_tab = false;
@@ -4510,6 +4957,7 @@ fn kick_background_branch_refresh(
                             );
                         } else {
                             refreshed_active_tab = true;
+                            persist_inputs = capture_branch_diff_persist_inputs(tab);
                         }
                     }
                 }
@@ -4519,7 +4967,7 @@ fn kick_background_branch_refresh(
             }
             Err(err) => {
                 log::warn!("background branch base refresh failed for {branch_name}: {err}");
-                refresh_active_branch_after_background_miss(
+                persist_inputs = refresh_active_branch_after_background_miss(
                     &app_state,
                     &desktop_revision,
                     &repo_root,
@@ -4527,16 +4975,29 @@ fn kick_background_branch_refresh(
                 );
             }
         }
+        if clear_diff_spinner {
+            if let Ok(mut flags) = loading.lock() {
+                flags.remote_pr_diff = false;
+            }
+            crate::profile_log::bump_desktop_revision(&desktop_revision, "branch_swr_revalidate");
+        }
+        // Disk write after every lock is released.
+        if let Some(inputs) = persist_inputs {
+            persist_branch_diff(&inputs);
+        }
     });
 }
 
+/// Returns persist inputs when the refresh succeeded (caller writes through
+/// after releasing all locks).
 fn refresh_active_branch_after_background_miss(
     app_state: &Arc<Mutex<App>>,
     desktop_revision: &Arc<AtomicU64>,
     repo_root: &str,
     branch_name: &str,
-) {
+) -> Option<BranchDiffPersistInputs> {
     let mut refreshed_active_tab = false;
+    let mut persist_inputs = None;
     if let Ok(mut app) = app_state.lock() {
         let active_tab = app.active_tab;
         if let Some(tab) = app.tabs.get_mut(active_tab).filter(|tab| {
@@ -4546,12 +5007,14 @@ fn refresh_active_branch_after_background_miss(
                 log::warn!("background branch local full refresh failed for {branch_name}: {err}");
             } else {
                 refreshed_active_tab = true;
+                persist_inputs = capture_branch_diff_persist_inputs(tab);
             }
         }
     }
     if refreshed_active_tab {
         desktop_revision.fetch_add(1, Ordering::Relaxed);
     }
+    persist_inputs
 }
 
 #[tauri::command]
@@ -4576,15 +5039,30 @@ fn open_local_branch_impl(
     let t_tab_build = std::time::Instant::now();
     let (new_tab, open_path) = build_local_branch_tab(&project_id, name)?;
     log_branch_open_phase(&project_id, &branch_name, "tab_build", t_tab_build);
+    let served_stale = matches!(open_path, LocalBranchOpenPath::StaleRevalidate);
+    if served_stale {
+        // SWR: flag the spinner before building the snapshot so the first
+        // frame shows "Updating…"; the background refresh clears it.
+        if let Ok(mut flags) = state.loading.lock() {
+            flags.remote_pr_diff = true;
+        }
+    }
     let t_app_lock = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     log_branch_open_phase(&project_id, &branch_name, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
     log_branch_open_phase(&project_id, &branch_name, "tab_place", t_place_tab);
+    if matches!(open_path, LocalBranchOpenPath::Deferred) {
+        // No cached diff to serve — load the first diff on a worker thread;
+        // the snapshot below renders the stub with "Loading diff…".
+        kick_deferred_tab_refresh(&mut app, state);
+    }
     let open_path_label = match open_path {
-        LocalBranchOpenPath::LocalFirst => "local_first",
-        LocalBranchOpenPath::LocalOnlyFallback => "local_only_fallback",
+        LocalBranchOpenPath::CacheHit => "cache_hit",
+        LocalBranchOpenPath::StaleRevalidate => "stale_revalidate",
+        LocalBranchOpenPath::Deferred => "deferred",
+        LocalBranchOpenPath::SyncFallback => "sync_fallback",
     };
     log::info!(
         "branch_open project={} branch={} phase=initial_path mode={}",
@@ -4602,11 +5080,11 @@ fn open_local_branch_impl(
     log_branch_open_phase(&project_id, &branch_name, "total", t_total);
     drop(app);
     kick_background_branch_refresh(
-        Arc::clone(&state.app),
-        Arc::clone(&state.desktop_revision),
+        state,
         repo_root,
         branch_name.clone(),
         base_branch,
+        served_stale,
     );
     Ok(snapshot)
 }
@@ -4924,10 +5402,12 @@ fn synthesize_hint_from_nearest_cache(
 
 /// Serve a PR open from the persistent diff store after an in-memory cache
 /// miss. `None` = disk miss (the caller continues to the network path).
-/// Base-ref resolution and the commits backfill run exactly like on a memory
-/// hit, and the in-memory LRU is hydrated so the next open is a memory hit.
-/// The GitHub status refresh kick in the caller is unchanged — CI, comments,
-/// and merge status stay live on their own loops.
+/// Nothing on this path blocks on the network: base-ref resolution is
+/// local-or-background (`resolve_base_ref_nonblocking`) and commits are
+/// backfilled by the caller (`commits_pending`). The in-memory LRU is
+/// hydrated so the next open is a memory hit. The GitHub status refresh kick
+/// in the caller is unchanged — CI, comments, and merge status stay live on
+/// their own loops.
 fn serve_pr_open_from_disk(
     project_id: &str,
     repo_root: &str,
@@ -4946,33 +5426,32 @@ fn serve_pr_open_from_disk(
         branch_label
     );
     let t_base = std::time::Instant::now();
-    let resolved_base =
-        match er_engine::github::ensure_base_ref_available(repo_root, &freshness.base_branch) {
-            Ok(base) => base,
-            Err(e) => return Some(Err(e.to_string())),
-        };
+    let resolved_base = match resolve_base_ref_nonblocking(repo_root, &freshness.base_branch) {
+        Ok(base) => base,
+        Err(e) => return Some(Err(e)),
+    };
     log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
     let pr_data = pr_overview_from_hint(hint, pr_number, repo_slug);
-    let pr_commits = run_gh_pr_commits_for_open(repo_root, pr_number);
     remember_pr_open_entry(
         &state.pr_open_cache,
         key.clone(),
         freshness.clone(),
         raw_diff.clone(),
         None, // pr_data is a hint-derived placeholder; the full view fills it later
-        Some(pr_commits.clone()),
+        None, // commits arrive via the caller's background backfill
     );
     Some(Ok(PrOpenInputs {
         repo_root: repo_root.to_string(),
         metadata: PrOpenMetadata {
             freshness,
             pr_data,
-            pr_commits,
+            pr_commits: Vec::new(),
         },
         resolved_base,
         raw_diff,
         cache_hit: true,
         served_stale: false,
+        commits_pending: true,
     }))
 }
 
@@ -5021,11 +5500,10 @@ fn serve_pr_open_stale(
         updated_at: meta.updated_at.clone(),
     };
     let t_base = std::time::Instant::now();
-    let resolved_base =
-        match er_engine::github::ensure_base_ref_available(repo_root, &freshness.base_branch) {
-            Ok(base) => base,
-            Err(e) => return Some(Err(e.to_string())),
-        };
+    let resolved_base = match resolve_base_ref_nonblocking(repo_root, &freshness.base_branch) {
+        Ok(base) => base,
+        Err(e) => return Some(Err(e)),
+    };
     log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
     let pr_data = pr_data.unwrap_or_else(|| {
         // No sidebar hint and no fresh `gh pr view` — render a minimal overview
@@ -5040,7 +5518,9 @@ fn serve_pr_open_stale(
         };
         pr_overview_from_hint(&synthetic, pr_number, repo_slug)
     });
-    let pr_commits = pr_commits.unwrap_or_else(|| run_gh_pr_commits_for_open(repo_root, pr_number));
+    // Missing commits arrive with the stale revalidation's fresh `gh pr view`
+    // — never block the open on a synchronous commits fetch.
+    let pr_commits = pr_commits.unwrap_or_default();
     Some(Ok(PrOpenInputs {
         repo_root: repo_root.to_string(),
         metadata: PrOpenMetadata {
@@ -5052,6 +5532,7 @@ fn serve_pr_open_stale(
         raw_diff,
         cache_hit: true,
         served_stale: true,
+        commits_pending: false,
     }))
 }
 
@@ -5180,8 +5661,9 @@ fn load_pr_open_inputs(
     if let Some(hint) = hint {
         let freshness = freshness_from_hint(hint);
 
-        // Cache hit on the hint's freshness key → reuse diff; backfill commits
-        // only if this older cache entry does not have them yet.
+        // Cache hit on the hint's freshness key → reuse diff. Commits missing
+        // from this older cache entry are backfilled on a background thread by
+        // the caller (`commits_pending`) — never block the open on `gh`.
         if let Some((raw_diff, cached_pr_data, cached_pr_commits)) =
             cached_pr_open_entry(&state.pr_open_cache, &key, &freshness)
         {
@@ -5191,21 +5673,19 @@ fn load_pr_open_inputs(
                 branch_label
             );
             let t_base = std::time::Instant::now();
-            let resolved_base =
-                er_engine::github::ensure_base_ref_available(&repo_root, &freshness.base_branch)
-                    .map_err(|e| e.to_string())?;
+            let resolved_base = resolve_base_ref_nonblocking(&repo_root, &freshness.base_branch)?;
             log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
             let pr_data = cached_pr_data
                 .unwrap_or_else(|| pr_overview_from_hint(hint, pr_number, repo_slug.as_deref()));
-            let pr_commits = cached_pr_commits
-                .unwrap_or_else(|| run_gh_pr_commits_for_open(&repo_root, pr_number));
+            let pr_commits = cached_pr_commits.unwrap_or_default();
+            let commits_pending = pr_commits.is_empty();
             remember_pr_open_entry(
                 &state.pr_open_cache,
                 key,
                 freshness.clone(),
                 raw_diff.clone(),
                 None,
-                Some(pr_commits.clone()),
+                (!commits_pending).then(|| pr_commits.clone()),
             );
             return Ok(PrOpenInputs {
                 repo_root,
@@ -5218,6 +5698,7 @@ fn load_pr_open_inputs(
                 raw_diff,
                 cache_hit: true,
                 served_stale: false,
+                commits_pending,
             });
         }
 
@@ -5313,6 +5794,7 @@ fn load_pr_open_inputs(
             raw_diff,
             cache_hit: false,
             served_stale: false,
+            commits_pending: false,
         });
     }
 
@@ -5340,11 +5822,8 @@ fn load_pr_open_inputs(
                 branch_label
             );
             let t_base = std::time::Instant::now();
-            let resolved_base = er_engine::github::ensure_base_ref_available(
-                &repo_root,
-                &metadata.freshness.base_branch,
-            )
-            .map_err(|e| e.to_string())?;
+            let resolved_base =
+                resolve_base_ref_nonblocking(&repo_root, &metadata.freshness.base_branch)?;
             log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
             // Refresh cached pr_data with the freshly-fetched overview.
             remember_pr_open_entry(
@@ -5362,6 +5841,7 @@ fn load_pr_open_inputs(
                 raw_diff,
                 cache_hit: true,
                 served_stale: false,
+                commits_pending: false,
             });
         }
         // Memory stale → persistent diff store, keyed by the *fresh* oid the
@@ -5375,11 +5855,8 @@ fn load_pr_open_inputs(
                 branch_label
             );
             let t_base = std::time::Instant::now();
-            let resolved_base = er_engine::github::ensure_base_ref_available(
-                &repo_root,
-                &metadata.freshness.base_branch,
-            )
-            .map_err(|e| e.to_string())?;
+            let resolved_base =
+                resolve_base_ref_nonblocking(&repo_root, &metadata.freshness.base_branch)?;
             log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
             remember_pr_open_entry(
                 &state.pr_open_cache,
@@ -5396,6 +5873,7 @@ fn load_pr_open_inputs(
                 raw_diff,
                 cache_hit: true,
                 served_stale: false,
+                commits_pending: false,
             });
         }
         // Fresh disk miss → stale-while-revalidate: serve the older persisted
@@ -5474,6 +5952,7 @@ fn load_pr_open_inputs(
             raw_diff,
             cache_hit: false,
             served_stale: false,
+            commits_pending: false,
         });
     }
 
@@ -5552,9 +6031,7 @@ fn load_pr_open_inputs(
         &raw_diff,
     );
     let t_base = std::time::Instant::now();
-    let resolved_base =
-        er_engine::github::ensure_base_ref_available(&repo_root, &metadata.freshness.base_branch)
-            .map_err(|e| e.to_string())?;
+    let resolved_base = resolve_base_ref_nonblocking(&repo_root, &metadata.freshness.base_branch)?;
     log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
     remember_pr_open_entry(
         &state.pr_open_cache,
@@ -5571,6 +6048,7 @@ fn load_pr_open_inputs(
         raw_diff,
         cache_hit: false,
         served_stale: false,
+        commits_pending: false,
     })
 }
 
@@ -5606,6 +6084,8 @@ fn open_pr_review_impl(
         })?;
     let cache_hit = inputs.cache_hit;
     let served_stale = inputs.served_stale;
+    let commits_pending = inputs.commits_pending;
+    let freshness_for_backfill = inputs.metadata.freshness.clone();
     let stale_repo_root = inputs.repo_root.clone();
     let recent_title = hint
         .as_ref()
@@ -5648,6 +6128,18 @@ fn open_pr_review_impl(
     // set_mode "pr_diff", which fetches refs on first entry.
     let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
     kick_meta_refresh(state, app.tab().repo_root.clone());
+    if commits_pending {
+        // The open skipped the synchronous `gh pr commits` call — backfill on
+        // a worker thread now that the tab is placed (brief lock on apply).
+        spawn_local_pr_commits_backfill(
+            state,
+            project_id.clone(),
+            stale_repo_root.clone(),
+            pr_number,
+            pr_open_cache_key(&project_id, &stale_repo_root, pr_number),
+            freshness_for_backfill,
+        );
+    }
     if served_stale {
         // Stale-while-revalidate: the tab just rendered an older head's diff.
         // Flag the spinner before building the snapshot (first frame shows
@@ -6976,6 +7468,7 @@ pub(crate) fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
     let desktop_revision = Arc::clone(&state.desktop_revision);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
+        let mut persist_inputs = None;
         if let Ok(mut app) = app_arc.lock() {
             // Re-resolve the tab by index + repo_root in case tabs changed
             // while this worker waited for the lock.
@@ -6986,8 +7479,11 @@ pub(crate) fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
                 } else {
                     tab.refresh_diff()
                 };
-                if let Err(e) = result {
-                    log::error!("er-desktop: deferred tab refresh failed: {e}");
+                match result {
+                    Err(e) => log::error!("er-desktop: deferred tab refresh failed: {e}"),
+                    // Branch views write the freshly computed diff through to
+                    // the persistent branch-diff cache (after unlock).
+                    Ok(()) => persist_inputs = capture_branch_diff_persist_inputs(tab),
                 }
             }
         }
@@ -6999,6 +7495,9 @@ pub(crate) fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
             "lazy_tab_refresh",
             &[("ms", t.elapsed().as_millis().to_string())],
         );
+        if let Some(inputs) = persist_inputs {
+            persist_branch_diff(&inputs);
+        }
     });
 }
 

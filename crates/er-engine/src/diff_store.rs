@@ -408,6 +408,225 @@ pub fn prune_remote(remote: &str, keep_numbers: &HashSet<u64>) -> Result<()> {
     Ok(())
 }
 
+// ── Local branch diffs ────────────────────────────────────────────────────────
+//
+// Committed-state branch diffs (`git diff <base>...<branch>`) are deterministic
+// given `(branch head oid, resolved base oid)` — git derives the merge base
+// from the two commits. The same SWR open flow as PRs applies: exact key match
+// serves instantly, a stale entry renders while a background recompute swaps in
+// the fresh diff.
+//
+// Layout (one diff per branch, replaced atomically on head/base move):
+// `<storage_root>/repos/<repo_slug>/branch-diffs/<branch_slug>/diff-<head12>-<base12>.patch`
+// + `diff-meta.json`, where `<repo_slug>` comes from [`storage::slug_repo`]
+// (same slug as the managed review storage for local repos).
+
+/// Cap on persisted branch-diff entries per repo (one per branch).
+pub const MAX_CACHED_BRANCH_DIFFS_PER_REPO: usize = 24;
+
+/// Sidecar metadata for a persisted local branch diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchDiffMeta {
+    pub version: u32,
+    /// Branch name the diff was computed for (informational; the slug keys the dir).
+    pub branch: String,
+    /// Branch head commit SHA — primary validity key.
+    pub head_oid: String,
+    /// Resolved base commit SHA — second validity key (catches base moves).
+    pub base_oid: String,
+    /// Base ref name the diff was computed against (e.g. `origin/main`).
+    pub base_ref: String,
+    /// Byte length of the patch file — integrity check on load.
+    pub size_bytes: u64,
+    /// SHA-256 of the patch contents — integrity check on load.
+    pub sha256: String,
+    /// Epoch ms of the save — LRU key for [`prune_branch_diffs`].
+    pub saved_at_epoch_ms: u64,
+}
+
+impl BranchDiffMeta {
+    /// Descriptor for a branch diff about to be saved; derived fields are
+    /// filled by [`save_branch_diff`].
+    pub fn new(
+        branch: impl Into<String>,
+        head_oid: impl Into<String>,
+        base_oid: impl Into<String>,
+        base_ref: impl Into<String>,
+    ) -> Self {
+        BranchDiffMeta {
+            version: DIFF_STORE_SCHEMA_VERSION,
+            branch: branch.into(),
+            head_oid: head_oid.into(),
+            base_oid: base_oid.into(),
+            base_ref: base_ref.into(),
+            size_bytes: 0,
+            sha256: String::new(),
+            saved_at_epoch_ms: 0,
+        }
+    }
+}
+
+/// Patch file name keyed by both commit OIDs. Pure — unit-tested.
+pub fn branch_patch_file_name(head_oid: &str, base_oid: &str) -> String {
+    let head12: String = head_oid.chars().take(12).collect();
+    let base12: String = base_oid.chars().take(12).collect();
+    format!("diff-{head12}-{base12}.patch")
+}
+
+/// `branch-diffs/` directory for a repo slug.
+fn branch_diffs_dir(repo_slug: &str) -> PathBuf {
+    storage::storage_root()
+        .join("repos")
+        .join(repo_slug)
+        .join("branch-diffs")
+}
+
+/// Bucket directory for one branch's persisted diff.
+fn branch_diff_dir(repo_slug: &str, branch: &str) -> PathBuf {
+    branch_diffs_dir(repo_slug).join(storage::slug_branch(branch))
+}
+
+/// Persist a committed-state branch diff for later instant opens. No-op for
+/// empty OIDs and diffs above [`MAX_PERSISTED_DIFF_BYTES`]. Mirrors
+/// [`save_diff`]: patch first, then meta, then older `diff-*` files dropped.
+pub fn save_branch_diff(repo_slug: &str, meta: &BranchDiffMeta, raw: &str) -> Result<()> {
+    if meta.head_oid.trim().is_empty() || meta.base_oid.trim().is_empty() {
+        return Ok(());
+    }
+    if raw.len() > MAX_PERSISTED_DIFF_BYTES {
+        return Ok(());
+    }
+    let dir = branch_diff_dir(repo_slug, &meta.branch);
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+
+    let patch_name = branch_patch_file_name(&meta.head_oid, &meta.base_oid);
+    write_atomic_unique(&dir.join(&patch_name), raw.as_bytes())?;
+
+    let mut full = meta.clone();
+    full.version = DIFF_STORE_SCHEMA_VERSION;
+    full.size_bytes = raw.len() as u64;
+    full.sha256 = crate::ai::compute_diff_hash(raw);
+    if full.saved_at_epoch_ms == 0 {
+        full.saved_at_epoch_ms = crate::pr_cache::now_epoch_ms();
+    }
+    let json =
+        serde_json::to_string_pretty(&full).context("failed to serialize branch diff meta")?;
+    write_atomic_unique(&dir.join(META_FILE), json.as_bytes())?;
+
+    // Single-file invariant: drop patches for older keys (and orphaned tmps).
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if is_diff_store_file(name) && name != patch_name && name != META_FILE {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    bump_store_revision();
+    prune_branch_diffs(repo_slug)?;
+    Ok(())
+}
+
+/// Read + integrity-check the meta/patch pair for one branch. Self-heals
+/// (deletes diff files) on corruption, exactly like the PR-diff loads.
+fn load_branch_diff_entry(dir: &Path) -> Result<Option<(String, BranchDiffMeta)>> {
+    let meta_path = dir.join(META_FILE);
+    let content = match fs::read_to_string(&meta_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", meta_path.display())),
+    };
+    let meta: BranchDiffMeta = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(_) => {
+            delete_diff_files(dir);
+            return Ok(None);
+        }
+    };
+    if meta.version != DIFF_STORE_SCHEMA_VERSION {
+        delete_diff_files(dir);
+        return Ok(None);
+    }
+    let patch_path = dir.join(branch_patch_file_name(&meta.head_oid, &meta.base_oid));
+    let raw = match fs::read_to_string(&patch_path) {
+        Ok(r) => r,
+        Err(_) => {
+            delete_diff_files(dir);
+            return Ok(None);
+        }
+    };
+    if raw.len() as u64 != meta.size_bytes || crate::ai::compute_diff_hash(&raw) != meta.sha256 {
+        delete_diff_files(dir);
+        return Ok(None);
+    }
+    Ok(Some((raw, meta)))
+}
+
+/// Load the persisted branch diff when it matches `(head_oid, base_oid)`.
+/// Key mismatch → `Ok(None)` without deleting (next write-through replaces it).
+pub fn load_branch_diff(
+    repo_slug: &str,
+    branch: &str,
+    expected_head_oid: &str,
+    expected_base_oid: &str,
+) -> Result<Option<String>> {
+    if expected_head_oid.trim().is_empty() || expected_base_oid.trim().is_empty() {
+        return Ok(None);
+    }
+    let dir = branch_diff_dir(repo_slug, branch);
+    let Some((raw, meta)) = load_branch_diff_entry(&dir)? else {
+        return Ok(None);
+    };
+    if meta.head_oid != expected_head_oid || meta.base_oid != expected_base_oid {
+        return Ok(None);
+    }
+    Ok(Some(raw))
+}
+
+/// Stale-tolerant read for the SWR open path: the persisted diff regardless of
+/// which head/base it was computed at, together with its meta. Callers MUST
+/// treat a key mismatch as stale — render, then recompute in the background.
+pub fn load_branch_diff_any(
+    repo_slug: &str,
+    branch: &str,
+) -> Result<Option<(String, BranchDiffMeta)>> {
+    load_branch_diff_entry(&branch_diff_dir(repo_slug, branch))
+}
+
+/// Enforce the per-repo cap on persisted branch diffs (least recently saved
+/// evicted first). Review sidecars don't live in `branch-diffs/`, so empty
+/// bucket dirs are removed wholesale.
+pub fn prune_branch_diffs(repo_slug: &str) -> Result<()> {
+    let root = branch_diffs_dir(repo_slug);
+    let entries = match fs::read_dir(&root) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", root.display())),
+    };
+    let mut cached: Vec<(PathBuf, u64)> = Vec::new();
+    for entry in entries.flatten() {
+        let meta_path = entry.path().join(META_FILE);
+        if !meta_path.is_file() {
+            continue;
+        }
+        let saved_at = fs::read_to_string(&meta_path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<BranchDiffMeta>(&c).ok())
+            .map(|m| m.saved_at_epoch_ms)
+            .unwrap_or(0);
+        cached.push((entry.path(), saved_at));
+    }
+    if cached.len() <= MAX_CACHED_BRANCH_DIFFS_PER_REPO {
+        return Ok(());
+    }
+    cached.sort_by_key(|c| std::cmp::Reverse(c.1));
+    for (dir, _) in cached.iter().skip(MAX_CACHED_BRANCH_DIFFS_PER_REPO) {
+        delete_diff_files(dir);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,6 +936,174 @@ mod tests {
             assert!(load_diff(REMOTE, 1, "abcdef1234567890", "main")
                 .unwrap()
                 .is_some());
+        });
+    }
+
+    fn branch_meta(branch: &str, head: &str, base: &str) -> BranchDiffMeta {
+        BranchDiffMeta::new(branch, head, base, "origin/main")
+    }
+
+    #[test]
+    fn branch_patch_file_name_keys_on_both_oids() {
+        assert_eq!(
+            branch_patch_file_name("aaaabbbbccccdddd", "1111222233334444"),
+            "diff-aaaabbbbcccc-111122223333.patch"
+        );
+        // Short OIDs are used as-is (no panic, deterministic).
+        assert_eq!(branch_patch_file_name("ab", "cd"), "diff-ab-cd.patch");
+    }
+
+    #[test]
+    fn branch_diff_save_load_roundtrip() {
+        with_temp_storage(|| {
+            let raw = "diff --git a/foo b/foo\n+hello\n";
+            save_branch_diff(
+                "my-repo",
+                &branch_meta("feature/x", "headoid12345", "baseoid12345"),
+                raw,
+            )
+            .unwrap();
+            let loaded =
+                load_branch_diff("my-repo", "feature/x", "headoid12345", "baseoid12345").unwrap();
+            assert_eq!(loaded.as_deref(), Some(raw));
+        });
+    }
+
+    #[test]
+    fn branch_diff_misses_on_moved_head_or_base_without_delete() {
+        with_temp_storage(|| {
+            let raw = "diff --git a/foo b/foo\n+hello\n";
+            save_branch_diff(
+                "my-repo",
+                &branch_meta("feature/x", "headoid12345", "baseoid12345"),
+                raw,
+            )
+            .unwrap();
+            // Head moved → miss; base moved → miss; files untouched.
+            assert!(
+                load_branch_diff("my-repo", "feature/x", "other-head", "baseoid12345")
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                load_branch_diff("my-repo", "feature/x", "headoid12345", "other-base")
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                load_branch_diff("my-repo", "feature/x", "headoid12345", "baseoid12345")
+                    .unwrap()
+                    .is_some()
+            );
+            // Empty expected OIDs never match.
+            assert!(load_branch_diff("my-repo", "feature/x", "", "baseoid12345")
+                .unwrap()
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn branch_diff_any_returns_stale_entry_with_meta() {
+        with_temp_storage(|| {
+            let raw = "diff --git a/foo b/foo\n+hello\n";
+            assert!(load_branch_diff_any("my-repo", "feature/x")
+                .unwrap()
+                .is_none());
+            save_branch_diff(
+                "my-repo",
+                &branch_meta("feature/x", "headoid12345", "baseoid12345"),
+                raw,
+            )
+            .unwrap();
+            let (loaded, meta) = load_branch_diff_any("my-repo", "feature/x")
+                .unwrap()
+                .expect("stale hit");
+            assert_eq!(loaded, raw);
+            assert_eq!(meta.head_oid, "headoid12345");
+            assert_eq!(meta.base_oid, "baseoid12345");
+            assert_eq!(meta.base_ref, "origin/main");
+        });
+    }
+
+    #[test]
+    fn branch_diff_truncated_patch_self_heals() {
+        with_temp_storage(|| {
+            let raw = "diff --git a/foo b/foo\n+hello\n";
+            save_branch_diff(
+                "my-repo",
+                &branch_meta("feature/x", "headoid12345", "baseoid12345"),
+                raw,
+            )
+            .unwrap();
+            let dir = branch_diff_dir("my-repo", "feature/x");
+            std::fs::write(
+                dir.join(branch_patch_file_name("headoid12345", "baseoid12345")),
+                "diff --g",
+            )
+            .unwrap();
+            assert!(load_branch_diff_any("my-repo", "feature/x")
+                .unwrap()
+                .is_none());
+            assert!(!dir.join(META_FILE).exists());
+        });
+    }
+
+    #[test]
+    fn branch_diff_key_move_keeps_single_patch_file() {
+        with_temp_storage(|| {
+            save_branch_diff(
+                "my-repo",
+                &branch_meta("feature/x", "aaaaaaaaaaaa", "bbbbbbbbbbbb"),
+                "old\n",
+            )
+            .unwrap();
+            save_branch_diff(
+                "my-repo",
+                &branch_meta("feature/x", "cccccccccccc", "bbbbbbbbbbbb"),
+                "new\n",
+            )
+            .unwrap();
+            let dir = branch_diff_dir("my-repo", "feature/x");
+            let patches: Vec<String> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(String::from))
+                .filter(|n| n.ends_with(".patch"))
+                .collect();
+            assert_eq!(
+                patches,
+                vec![branch_patch_file_name("cccccccccccc", "bbbbbbbbbbbb")]
+            );
+            assert_eq!(
+                load_branch_diff("my-repo", "feature/x", "cccccccccccc", "bbbbbbbbbbbb")
+                    .unwrap()
+                    .as_deref(),
+                Some("new\n")
+            );
+        });
+    }
+
+    #[test]
+    fn branch_diff_prune_evicts_least_recent() {
+        with_temp_storage(|| {
+            for n in 1..=(MAX_CACHED_BRANCH_DIFFS_PER_REPO as u64 + 3) {
+                let mut m = branch_meta(&format!("branch-{n}"), "headoid12345", "baseoid12345");
+                m.saved_at_epoch_ms = 1_000 + n;
+                save_branch_diff("my-repo", &m, "diff\n").unwrap();
+            }
+            let has = |n: u64| {
+                load_branch_diff(
+                    "my-repo",
+                    &format!("branch-{n}"),
+                    "headoid12345",
+                    "baseoid12345",
+                )
+                .unwrap()
+                .is_some()
+            };
+            // Oldest three evicted; newest survive.
+            assert!(!has(1) && !has(2) && !has(3), "oldest entries pruned");
+            assert!(has(4) && has(MAX_CACHED_BRANCH_DIFFS_PER_REPO as u64 + 3));
         });
     }
 

@@ -443,10 +443,17 @@ pub fn verify_remote_matches(repo_root: &str, pr_ref: &PrRef) -> Result<()> {
     Ok(())
 }
 
-/// Ensure a remote ref is available locally by fetching if needed.
-/// Returns the ref name that actually resolves — may be `origin/<base>` if
-/// no local branch exists.
-pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<String> {
+/// Resolve a base ref using only refs already present in the local clone —
+/// never fetches. Returns `(base_branch_name, resolved_ref)` where
+/// `base_branch_name` is the (possibly auto-detected) base branch and
+/// `resolved_ref` is `Some` when a local or remote-tracking ref already
+/// resolves. `None` means a fetch is required (see
+/// [`ensure_base_ref_available`]); callers on a latency-critical path can use
+/// `origin/<base>` as a best-effort name and fetch in the background.
+pub fn resolve_base_ref_local(
+    repo_root: &str,
+    base_branch: &str,
+) -> Result<(String, Option<String>)> {
     let base_branch = base_branch.trim();
     let base_branch = if base_branch.is_empty() {
         crate::git::detect_base_branch_in(repo_root)
@@ -454,6 +461,30 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
     } else {
         base_branch.to_string()
     };
+
+    // Local branch exists — use it directly
+    if ref_exists_locally(repo_root, &base_branch) {
+        let resolved = base_branch.clone();
+        return Ok((base_branch, Some(resolved)));
+    }
+
+    // Remote-tracking ref exists — use it (no fetch needed)
+    let remote_ref = format!("origin/{}", base_branch);
+    if ref_exists_locally(repo_root, &remote_ref) {
+        return Ok((base_branch, Some(remote_ref)));
+    }
+
+    Ok((base_branch, None))
+}
+
+/// Ensure a remote ref is available locally by fetching if needed.
+/// Returns the ref name that actually resolves — may be `origin/<base>` if
+/// no local branch exists.
+pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<String> {
+    let (base_branch, resolved) = resolve_base_ref_local(repo_root, base_branch)?;
+    if let Some(resolved) = resolved {
+        return Ok(resolved);
+    }
 
     let rev_parse_ok = |refname: &str| -> Result<bool> {
         let out = Command::new("git")
@@ -464,16 +495,7 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
         Ok(out.status.success())
     };
 
-    // Local branch exists — use it directly
-    if rev_parse_ok(&base_branch)? {
-        return Ok(base_branch.clone());
-    }
-
-    // Remote-tracking ref exists — use it (no fetch needed)
     let remote_ref = format!("origin/{}", base_branch);
-    if rev_parse_ok(&remote_ref)? {
-        return Ok(remote_ref);
-    }
 
     // Fetch from origin
     let fetch = Command::new("git")
@@ -2218,6 +2240,55 @@ pub fn gh_pr_reply_comment_remote(
     Ok(resp.id)
 }
 
+// ── Base-ref resolution cache ─────────────────────────────────────────────────
+
+/// TTL cache for resolved base ref names, keyed by `(repo_root, base_branch)`.
+///
+/// Pure data structure — callers inject `now_ms` so the expiry logic is
+/// deterministic and testable. Used by the desktop's PR-open hot path to skip
+/// repeated `git rev-parse` probes (and to remember background-fetch results)
+/// without ever blocking an open on a `git fetch`.
+#[derive(Debug, Default)]
+pub struct BaseRefCache {
+    entries: std::collections::HashMap<(String, String), (String, u64)>,
+}
+
+/// Default TTL for [`BaseRefCache`] entries. Short on purpose: a resolved ref
+/// can disappear (e.g. `git remote prune`), and re-probing is cheap.
+pub const BASE_REF_CACHE_TTL_MS: u64 = 60_000;
+
+impl BaseRefCache {
+    /// Resolved ref for `(repo_root, base_branch)` if cached within `ttl_ms`.
+    pub fn get(
+        &self,
+        repo_root: &str,
+        base_branch: &str,
+        now_ms: u64,
+        ttl_ms: u64,
+    ) -> Option<&str> {
+        let key = (repo_root.to_string(), base_branch.to_string());
+        self.entries
+            .get(&key)
+            .filter(|(_, stored_at)| now_ms.saturating_sub(*stored_at) <= ttl_ms)
+            .map(|(resolved, _)| resolved.as_str())
+    }
+
+    /// Remember a resolved ref at `now_ms` (replaces any older entry).
+    pub fn put(&mut self, repo_root: &str, base_branch: &str, resolved: String, now_ms: u64) {
+        // Opportunistic bound: drop expired entries when the map grows. The key
+        // space is (repo, base) pairs, so this stays tiny in practice.
+        if self.entries.len() >= 64 {
+            self.entries.retain(|_, (_, stored_at)| {
+                now_ms.saturating_sub(*stored_at) <= BASE_REF_CACHE_TTL_MS
+            });
+        }
+        self.entries.insert(
+            (repo_root.to_string(), base_branch.to_string()),
+            (resolved, now_ms),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2814,5 +2885,62 @@ mod tests {
         assert_eq!(checks[0].conclusion, Some("pass".to_string()));
         assert_eq!(checks[1].conclusion, Some("fail".to_string()));
         assert!(checks[2].conclusion.is_none()); // pending — no bucket yet
+    }
+
+    #[test]
+    fn base_ref_cache_hits_within_ttl() {
+        let mut cache = BaseRefCache::default();
+        cache.put("/repo", "main", "origin/main".to_string(), 1_000);
+        assert_eq!(
+            cache.get(
+                "/repo",
+                "main",
+                1_000 + BASE_REF_CACHE_TTL_MS,
+                BASE_REF_CACHE_TTL_MS
+            ),
+            Some("origin/main")
+        );
+    }
+
+    #[test]
+    fn base_ref_cache_expires_after_ttl() {
+        let mut cache = BaseRefCache::default();
+        cache.put("/repo", "main", "origin/main".to_string(), 1_000);
+        assert_eq!(
+            cache.get(
+                "/repo",
+                "main",
+                1_000 + BASE_REF_CACHE_TTL_MS + 1,
+                BASE_REF_CACHE_TTL_MS
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn base_ref_cache_keys_are_per_repo_and_base() {
+        let mut cache = BaseRefCache::default();
+        cache.put("/repo-a", "main", "main".to_string(), 0);
+        cache.put("/repo-a", "develop", "origin/develop".to_string(), 0);
+        assert_eq!(
+            cache.get("/repo-a", "main", 1, BASE_REF_CACHE_TTL_MS),
+            Some("main")
+        );
+        assert_eq!(
+            cache.get("/repo-a", "develop", 1, BASE_REF_CACHE_TTL_MS),
+            Some("origin/develop")
+        );
+        assert_eq!(cache.get("/repo-b", "main", 1, BASE_REF_CACHE_TTL_MS), None);
+    }
+
+    #[test]
+    fn base_ref_cache_put_replaces_older_entry() {
+        let mut cache = BaseRefCache::default();
+        cache.put("/repo", "main", "origin/main".to_string(), 0);
+        cache.put("/repo", "main", "main".to_string(), 10);
+        assert_eq!(
+            cache.get("/repo", "main", 11, BASE_REF_CACHE_TTL_MS),
+            Some("main")
+        );
     }
 }

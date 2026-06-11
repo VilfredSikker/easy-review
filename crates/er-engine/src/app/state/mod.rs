@@ -2220,6 +2220,11 @@ impl TabState {
         )
     }
 
+    /// Raw diff currently held in memory for this tab, if any. Never runs git.
+    pub fn cached_raw_diff(&self) -> Option<&str> {
+        self.raw_diff.as_deref()
+    }
+
     /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.
     pub fn raw_diff_for_review(&self, scope: &str) -> Result<String> {
         if let Some(raw) = self.raw_diff.as_ref() {
@@ -2264,74 +2269,98 @@ impl TabState {
             };
             let raw = self.fetch_tab_raw_diff(scope)?;
             log_branch_profile_phase(self, "local_branch_raw_diff", t_raw_diff);
-
-            let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
-
-            let t_parse = Instant::now();
-            if raw.len() > 200_000 {
-                let headers = crate::git::parse_diff_headers(&raw);
-                self.files = headers.iter().map(crate::git::header_to_stub).collect();
-                self.file_headers = headers;
-                self.raw_diff = Some(raw.clone());
-                self.lazy_mode = true;
-                for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
-                    if self.user_expanded.contains(&file.path) {
-                        continue;
-                    }
-                    let total_lines = header.adds + header.dels;
-                    let should_compact = self.compaction_config.enabled
-                        && (self
-                            .compaction_config
-                            .patterns
-                            .iter()
-                            .any(|p| crate::git::compact_files_match(p, &file.path))
-                            || total_lines > self.compaction_config.max_lines_before_compact);
-                    if should_compact {
-                        file.compacted = true;
-                        file.raw_hunk_count = header.hunk_count;
-                    }
-                }
-            } else {
-                self.file_headers = crate::git::parse_diff_headers(&raw);
-                self.raw_diff = Some(raw.clone());
-                self.files = crate::git::parse_diff(&raw);
-                self.lazy_mode = false;
-                crate::git::compact_files(&mut self.files, &self.compaction_config);
-            }
-            log_branch_profile_phase(self, "local_branch_parse", t_parse);
-
-            let t_diff_hash = Instant::now();
-            if recompute_branch_hash {
-                self.diff_hash = crate::ai::compute_diff_hash(&raw);
-                self.branch_diff_hash = self.diff_hash.clone();
-            } else {
-                self.diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
-            }
-            log_branch_profile_phase(self, "local_branch_diff_hash", t_diff_hash);
-
-            // Restore selection
-            if let Some(ref path) = prev_path {
-                if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
-                    self.selected_file = idx;
-                } else {
-                    self.selected_file = self.files.len().saturating_sub(1).min(self.selected_file);
-                }
-            } else {
-                self.selected_file = 0;
-            }
-            self.clamp_hunk();
-            self.ensure_file_parsed();
-            self.rebuild_hunk_offsets();
-            self.mtime_cache.clear();
-            self.update_mem_budget();
-            // Reload AI sidecar for this branch's comment directory
-            let t_ai_reload = Instant::now();
-            self.reload_ai_state();
-            log_branch_profile_phase(self, "local_branch_ai_reload", t_ai_reload);
+            self.apply_local_branch_raw_diff(raw, recompute_branch_hash);
             log_branch_profile_phase(self, "refresh_diff_impl_total", t_total);
             return Ok(());
         }
+        self.refresh_diff_impl_rest(recompute_branch_hash, auto_unmark, t_total)
+    }
 
+    /// Seed this local-branch tab from an already-available raw diff (the
+    /// persistent branch-diff cache) — no `git diff` subprocess. Runs the same
+    /// parse/hash/selection/AI-reload pipeline as a refresh, so the tab is
+    /// indistinguishable from one loaded via git.
+    pub fn seed_local_branch_diff(&mut self, raw: String) {
+        self.apply_local_branch_raw_diff(raw, true);
+    }
+
+    /// Shared tail of the local-branch refresh: parse (lazy for big diffs),
+    /// hash, restore selection, rebuild offsets, reload AI sidecars.
+    fn apply_local_branch_raw_diff(&mut self, raw: String, recompute_branch_hash: bool) {
+        let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
+
+        let t_parse = Instant::now();
+        if raw.len() > 200_000 {
+            let headers = crate::git::parse_diff_headers(&raw);
+            self.files = headers.iter().map(crate::git::header_to_stub).collect();
+            self.file_headers = headers;
+            self.raw_diff = Some(raw.clone());
+            self.lazy_mode = true;
+            for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
+                if self.user_expanded.contains(&file.path) {
+                    continue;
+                }
+                let total_lines = header.adds + header.dels;
+                let should_compact = self.compaction_config.enabled
+                    && (self
+                        .compaction_config
+                        .patterns
+                        .iter()
+                        .any(|p| crate::git::compact_files_match(p, &file.path))
+                        || total_lines > self.compaction_config.max_lines_before_compact);
+                if should_compact {
+                    file.compacted = true;
+                    file.raw_hunk_count = header.hunk_count;
+                }
+            }
+        } else {
+            self.file_headers = crate::git::parse_diff_headers(&raw);
+            self.raw_diff = Some(raw.clone());
+            self.files = crate::git::parse_diff(&raw);
+            self.lazy_mode = false;
+            crate::git::compact_files(&mut self.files, &self.compaction_config);
+        }
+        log_branch_profile_phase(self, "local_branch_parse", t_parse);
+
+        let t_diff_hash = Instant::now();
+        if recompute_branch_hash {
+            self.diff_hash = crate::ai::compute_diff_hash(&raw);
+            self.branch_diff_hash = self.diff_hash.clone();
+        } else {
+            self.diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
+        }
+        log_branch_profile_phase(self, "local_branch_diff_hash", t_diff_hash);
+
+        // Restore selection
+        if let Some(ref path) = prev_path {
+            if let Some(idx) = self.files.iter().position(|f| f.path == *path) {
+                self.selected_file = idx;
+            } else {
+                self.selected_file = self.files.len().saturating_sub(1).min(self.selected_file);
+            }
+        } else {
+            self.selected_file = 0;
+        }
+        self.clamp_hunk();
+        self.ensure_file_parsed();
+        self.rebuild_hunk_offsets();
+        self.mtime_cache.clear();
+        self.update_mem_budget();
+        // Reload AI sidecar for this branch's comment directory
+        let t_ai_reload = Instant::now();
+        self.reload_ai_state();
+        log_branch_profile_phase(self, "local_branch_ai_reload", t_ai_reload);
+    }
+
+    /// Non-local-branch remainder of `refresh_diff_impl` (remote PR tabs and
+    /// working-tree modes). Split out so the local-branch parse pipeline above
+    /// can be reused by `seed_local_branch_diff`.
+    fn refresh_diff_impl_rest(
+        &mut self,
+        recompute_branch_hash: bool,
+        auto_unmark: bool,
+        t_total: Instant,
+    ) -> Result<()> {
         // Remote mode: fetch diff from GitHub API instead of local git
         if let (Some(repo_slug), Some(_pr_number)) = (&self.remote_repo, self.pr_number) {
             if repo_slug.split('/').count() == 2 {
