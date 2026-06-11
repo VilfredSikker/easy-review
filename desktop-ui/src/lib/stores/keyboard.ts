@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { app } from "./app.svelte";
 import { diffSel } from "./diffSelection.svelte";
+import { refHighlight } from "./referenceHighlight.svelte";
+import { searchPrefillFromSelection } from "$lib/referenceHighlight";
 import { terminal } from "./terminal.svelte";
 import { browser } from "./browser.svelte";
 import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
@@ -55,6 +57,21 @@ function blurActiveField(): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * Cmd+F prefill: the diff's active text selection (first line, trimmed,
+ * length-capped — see `searchPrefillFromSelection`). Only selections inside
+ * the diff scroll viewport (`.vscroll`) qualify; selections in side panels,
+ * comments, or inputs fall back to the identifier-highlight prefill.
+ */
+function diffSelectionPrefill(): string | null {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+  const node = sel.getRangeAt(0).commonAncestorContainer;
+  const el = node instanceof Element ? node : node.parentElement;
+  if (!el?.closest(".vscroll")) return null;
+  return searchPrefillFromSelection(sel.toString());
 }
 
 function focusInput(selector: string) {
@@ -148,8 +165,25 @@ export function initKeyboard(): () => void {
         return;
       }
       closeAiActionPalette();
+      // Esc precedence: usages popover → Cmd+F search bar → diff selection →
+      // identifier highlight.
+      if (refHighlight.popoverOpen) {
+        refHighlight.closePopover();
+        e.preventDefault();
+        return;
+      }
+      if (refHighlight.searchOpen) {
+        refHighlight.closeSearch();
+        e.preventDefault();
+        return;
+      }
       if (diffSel.active) {
         diffSel.clear();
+        e.preventDefault();
+        return;
+      }
+      if (refHighlight.active) {
+        refHighlight.clear();
         e.preventDefault();
         return;
       }
@@ -174,6 +208,16 @@ export function initKeyboard(): () => void {
       e.preventDefault();
       e.stopPropagation();
       openAiPaletteCallback?.();
+      return;
+    }
+    // Cmd/Ctrl+F opens the diff search bar. preventDefault suppresses the
+    // webview's native find UI; works even when focus is in an input (the bar
+    // refocuses its own field on open). An active text selection in the diff
+    // prefills the query (priority over the identifier-highlight fallback).
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "f" || e.key === "F")) {
+      e.preventDefault();
+      e.stopPropagation();
+      refHighlight.openSearch(diffSelectionPrefill());
       return;
     }
     if (

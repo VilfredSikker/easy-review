@@ -20,6 +20,19 @@
   import ThreadRow from "./diff-rows/ThreadRow.svelte";
   import FindingRow from "./diff-rows/FindingRow.svelte";
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
+  import ReferenceRuler from "./ReferenceRuler.svelte";
+  import ReferenceUsagesPopover from "./ReferenceUsagesPopover.svelte";
+  import DiffSearchBar from "./DiffSearchBar.svelte";
+  import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
+  import {
+    buildRulerMarks,
+    collectMatches,
+    usageContext,
+    type MatchResult,
+    type UsageContextLine,
+    type UsageLine,
+    type UsageSource,
+  } from "$lib/referenceUsages";
   import {
     applyCollapsedFiles,
     computeUnifiedPairs,
@@ -859,6 +872,180 @@
     diffNav.pendingScrollPx = nextTop;
   }
 
+  // ── Reference-highlight usages: overview ruler + Cmd+click popover ───────
+  // (issue #69). Collected over ALL model rows (not just the viewport): the
+  // ruler shows where every match lives in the scrollable content, and the
+  // popover lists them. Only computed while a highlight is active.
+  const RULER_MARK_HEIGHT_PX = 3;
+
+  function collectUsageSources(): UsageSource[] {
+    const rows = crossFileModel.rows;
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    const out: UsageSource[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (row.type === "content-unified") {
+        const line = byPath.get(row.filePath)?.hunks[row.hunkIdx]?.lines[row.lineIdx];
+        if (line && line.kind !== "fold") {
+          out.push({
+            rowIdx: i,
+            filePath: row.filePath,
+            lineNum: line.new_num ?? line.old_num,
+            text: line.text,
+            hunkIdx: row.hunkIdx,
+          });
+        }
+      } else if (row.type === "content-split") {
+        const sr =
+          crossFileModel.splitRowsByFile.get(row.filePath)?.[row.hunkIdx]?.[row.splitRowIdx];
+        if (!sr) continue;
+        const { left, right } = sr;
+        if (left && left.kind !== "fold") {
+          out.push({
+            rowIdx: i,
+            filePath: row.filePath,
+            lineNum: left.new_num ?? left.old_num,
+            text: left.text,
+            hunkIdx: row.hunkIdx,
+          });
+        }
+        // Context rows reuse the same LineSnapshot on both sides — count once.
+        if (right && right !== left && right.kind !== "fold") {
+          out.push({
+            rowIdx: i,
+            filePath: row.filePath,
+            lineNum: right.new_num ?? right.old_num,
+            text: right.text,
+            hunkIdx: row.hunkIdx,
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Upper bound on collected matches — a one-letter Cmd+F query over a huge
+   *  diff must not build an unbounded match list. */
+  const SEARCH_MATCH_CAP = 5000;
+
+  // Flat line list in render order — shared by match collection and the
+  // context previews (ruler hover popover, popover row expansion). Only
+  // materialized while a highlight is active.
+  const usageSources = $derived.by((): UsageSource[] =>
+    refHighlight.identifier ? collectUsageSources() : [],
+  );
+
+  // Identifier highlights and Cmd+F queries share this pipeline; the store's
+  // matchOptions switch between whole-word and substring/smart-case matching.
+  const usageResult = $derived.by((): MatchResult => {
+    const ident = refHighlight.identifier;
+    if (!ident) return { lines: [], total: 0, capped: false };
+    return collectMatches(usageSources, ident, refHighlight.matchOptions, SEARCH_MATCH_CAP);
+  });
+  const usageLines = $derived(usageResult.lines);
+
+  /** Context lines around a usage (ruler hover popover, popover expansion). */
+  function contextForUsage(u: UsageLine): UsageContextLine[] {
+    return usageContext(usageSources, u);
+  }
+
+  /** First matched line at a ruler mark's row, with its surrounding context. */
+  function previewForMarkRow(
+    rowIdx: number,
+  ): { usage: UsageLine; lines: UsageContextLine[] } | null {
+    const usage = usageLines.find((u) => u.rowIdx === rowIdx);
+    if (!usage) return null;
+    return { usage, lines: contextForUsage(usage) };
+  }
+
+  const usageMarks = $derived.by(() => {
+    if (usageLines.length === 0 || viewportHeightPx <= 0) return [];
+    const offsets = effectiveGeometry.cumulativeOffsets;
+    // Row offsets live below the in-flow sticky header band; the scrollable
+    // content height is that band plus all rows.
+    return buildRulerMarks(
+      usageLines.map((u) => ({
+        rowIdx: u.rowIdx,
+        offsetPx: (offsets[u.rowIdx] ?? 0) + STICKY_HEADER_PX,
+      })),
+      effectiveGeometry.totalHeight + STICKY_HEADER_PX,
+      viewportHeightPx,
+      RULER_MARK_HEIGHT_PX,
+    );
+  });
+
+  /**
+   * Pulse a rendered row with the existing jump-to flash ring. Retries across
+   * a few frames when the row element is not in the DOM yet: a far jump lands
+   * in freshly-virtualized rows, and entry points that flush extra DOM work in
+   * the same pass (the usages popover unmounting itself on click) could miss
+   * the single-rAF window and silently skip the ring. The retry makes the ring
+   * a guarantee of the jump, not a race — identical from every entry point.
+   */
+  function flashRowEl(rowIdx: number, attemptsLeft = 8): void {
+    const rowEl = scrollEl?.querySelector<HTMLElement>(`[data-row-idx="${rowIdx}"]`);
+    if (!rowEl) {
+      if (attemptsLeft > 0) {
+        requestAnimationFrame(() => flashRowEl(rowIdx, attemptsLeft - 1));
+      }
+      return;
+    }
+    rowEl.classList.remove("flash");
+    // Force a reflow so the animation restarts when jumping to the same row twice.
+    void rowEl.offsetWidth;
+    rowEl.classList.add("flash");
+    setTimeout(() => rowEl.classList.remove("flash"), 1300);
+  }
+
+  /**
+   * THE shared reference jump: center the match row in the viewport and pulse
+   * it with the `.flash` ring. Every reference entry point routes through this
+   * one call — ruler-mark clicks, usages-popover rows (click and Enter), and
+   * Cmd+F match navigation — so the scroll + ring treatment is identical
+   * everywhere. Do not add a second jump/flash variant.
+   */
+  async function jumpToUsage(rowIdx: number): Promise<void> {
+    const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
+    applyScrollTop(Math.max(0, top - viewportHeightPx / 2));
+    await tick();
+    requestAnimationFrame(() => flashRowEl(rowIdx));
+  }
+
+  // ── Cmd+F search navigation (PR #73) ──────────────────────────────────────
+  // Flat list of match row indices, one entry per range (a line with three
+  // matches contributes three stops). Only materialized while the bar is open.
+  const searchMatches = $derived.by((): number[] => {
+    if (!refHighlight.searchOpen) return [];
+    const out: number[] = [];
+    for (const u of usageLines) {
+      for (let i = 0; i < u.ranges.length; i++) out.push(u.rowIdx);
+    }
+    return out;
+  });
+
+  /** Enter/arrows: step through matches with wrap-around and flash the row. */
+  function navigateSearch(dir: 1 | -1): void {
+    const matches = searchMatches;
+    if (matches.length === 0) return;
+    const cur = refHighlight.searchActiveIdx;
+    let next: number;
+    if (cur < 0 || cur >= matches.length) {
+      next = dir === 1 ? 0 : matches.length - 1;
+    } else {
+      next = (cur + dir + matches.length) % matches.length;
+    }
+    refHighlight.searchActiveIdx = next;
+    void jumpToUsage(matches[next]);
+  }
+
+  // Clamp the active index when the match list shrinks (query edits, diff refresh).
+  $effect(() => {
+    const len = searchMatches.length;
+    if (refHighlight.searchActiveIdx >= len) {
+      refHighlight.searchActiveIdx = len === 0 ? -1 : len - 1;
+    }
+  });
+
   function scrollToFileHeader(path: string): boolean {
     const rowIdx = crossFileModel.fileStartRow.get(path);
     if (rowIdx === undefined) return false;
@@ -1329,7 +1516,10 @@
     </div>
   {/if}
 
-  <!-- D11 three-layer scroll DOM -->
+  <!-- D11 three-layer scroll DOM. Wrapped so the reference-highlight overview
+       ruler and usages popover can overlay the scroll viewport (instead of
+       scrolling away with the content). -->
+  <div class="flex-1 min-h-0 relative flex flex-col">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={scrollEl}
@@ -1424,6 +1614,34 @@
         <DiffComposer topPx={composerTopPx} {viewMode} />
       {/if}
     {/if}
+  </div>
+
+  {#if refHighlight.searchOpen}
+    <DiffSearchBar
+      total={usageResult.total}
+      capped={usageResult.capped}
+      activeIdx={refHighlight.searchActiveIdx}
+      onNavigate={navigateSearch}
+    />
+  {/if}
+  {#if usageMarks.length > 0}
+    <ReferenceRuler
+      marks={usageMarks}
+      onJump={jumpToUsage}
+      getPreview={previewForMarkRow}
+      query={refHighlight.identifier ?? ""}
+      matchOpts={refHighlight.matchOptions}
+    />
+  {/if}
+  {#if refHighlight.popoverOpen && refHighlight.identifier !== null}
+    <ReferenceUsagesPopover
+      identifier={refHighlight.identifier}
+      usages={usageLines}
+      anchor={refHighlight.popoverAnchor}
+      onJump={jumpToUsage}
+      getContext={contextForUsage}
+    />
+  {/if}
   </div>
 
   {#if showGoBackToComment}

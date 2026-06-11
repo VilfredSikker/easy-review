@@ -1843,18 +1843,30 @@ pub fn read_review_json(
 
 // ── Filter / search ───────────────────────────────────────────────────────────
 
+// The file-tree filter applies live while the user types (debounced in
+// FileTree.svelte). Sync commands run on the main thread, and re-filtering +
+// rebuilding the snapshot on a large diff is heavy enough to visibly freeze
+// the window per apply — so both commands run via `run_blocking`.
 #[tauri::command]
-pub fn set_filter(query: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.tab_mut().apply_filter_expr(&query);
-    Ok(snap_from(&app, &state))
+pub async fn set_filter(query: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().apply_filter_expr(&query);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn clear_filter(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.tab_mut().apply_filter_expr("");
-    Ok(snap_from(&app, &state))
+pub async fn clear_filter(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().apply_filter_expr("");
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Threads ───────────────────────────────────────────────────────────────────

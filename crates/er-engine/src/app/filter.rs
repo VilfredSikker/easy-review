@@ -24,6 +24,14 @@ pub enum FilterRule {
         include: bool,
         pattern: Pattern,
     },
+    /// Case-insensitive substring match against the full path. Plain segments
+    /// without glob metacharacters parse to this, so typing `Regi` matches
+    /// `src/registry.ts` without needing `*Regi*`.
+    Substring {
+        include: bool,
+        /// Stored lowercased; matched against the lowercased path.
+        needle: String,
+    },
     Status {
         include: bool,
         status: StatusKind,
@@ -71,6 +79,7 @@ impl FilterRule {
     fn is_include(&self) -> bool {
         match self {
             FilterRule::Glob { include, .. } => *include,
+            FilterRule::Substring { include, .. } => *include,
             FilterRule::Status { include, .. } => *include,
             FilterRule::Size { include, .. } => *include,
             FilterRule::Risk { include, .. } => *include,
@@ -118,6 +127,17 @@ pub fn parse_filter_expr(expr: &str) -> Vec<FilterRule> {
         // Try status keywords
         if let Some(rule) = try_parse_status(include, body) {
             rules.push(rule);
+            continue;
+        }
+
+        // Plain text without glob metacharacters → case-insensitive substring
+        // match on the full path. (Status/size/risk keywords already parsed
+        // above keep their existing semantics.)
+        if !body.contains(['*', '?', '[']) {
+            rules.push(FilterRule::Substring {
+                include,
+                needle: body.to_lowercase(),
+            });
             continue;
         }
 
@@ -270,6 +290,9 @@ fn matches_rule_with_review(rule: &FilterRule, file: &DiffFile, review: Option<&
 fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
     match rule {
         FilterRule::Glob { pattern, .. } => pattern.matches_with(&file.path, MATCH_OPTIONS),
+        // Full-path substring subsumes a basename check — the basename is
+        // itself a substring of the path.
+        FilterRule::Substring { needle, .. } => file.path.to_lowercase().contains(needle),
         FilterRule::Status { status, .. } => matches_status(*status, &file.status),
         FilterRule::Size { op, threshold, .. } => {
             let changed = file.adds + file.dels;
@@ -702,6 +725,113 @@ mod tests {
         for rule in &rules {
             assert!(matches!(rule, FilterRule::Risk { include: true, .. }));
         }
+    }
+
+    // ── Substring filter tests ──
+
+    #[test]
+    fn parse_plain_text_becomes_substring() {
+        let rules = parse_filter_expr("Regi");
+        assert_eq!(rules.len(), 1);
+        match &rules[0] {
+            FilterRule::Substring { include, needle } => {
+                assert!(*include);
+                assert_eq!(needle, "regi"); // stored lowercased
+            }
+            _ => panic!("expected Substring rule"),
+        }
+    }
+
+    #[test]
+    fn substring_matches_case_insensitive_prefix_of_basename() {
+        let rules = parse_filter_expr("Regi");
+        let registry = make_file("src/registry.ts", FileStatus::Modified, 5, 3);
+        let registry_test = make_file("src/registry.test.ts", FileStatus::Modified, 5, 3);
+        let other = make_file("src/main.rs", FileStatus::Modified, 1, 0);
+        assert!(apply_filter(&rules, &registry));
+        assert!(apply_filter(&rules, &registry_test));
+        assert!(!apply_filter(&rules, &other));
+    }
+
+    #[test]
+    fn substring_matches_uppercase_component_files() {
+        let rules = parse_filter_expr("Exp");
+        let qc_wells = make_file("src/ExperimentQcWells.ts", FileStatus::Modified, 5, 3);
+        let list = make_file("src/ExperimentList.svelte", FileStatus::Modified, 5, 3);
+        let other = make_file("src/registry.ts", FileStatus::Modified, 1, 0);
+        assert!(apply_filter(&rules, &qc_wells));
+        assert!(apply_filter(&rules, &list));
+        assert!(!apply_filter(&rules, &other));
+    }
+
+    #[test]
+    fn substring_matches_mid_basename() {
+        let rules = parse_filter_expr("QcWells");
+        let qc_wells = make_file("src/ExperimentQcWells.ts", FileStatus::Modified, 5, 3);
+        let qc_wells_view = make_file(
+            "src/ExperimentQcWellsView.svelte",
+            FileStatus::Modified,
+            5,
+            3,
+        );
+        let other = make_file("src/ExperimentList.svelte", FileStatus::Modified, 1, 0);
+        assert!(apply_filter(&rules, &qc_wells));
+        assert!(apply_filter(&rules, &qc_wells_view));
+        assert!(!apply_filter(&rules, &other));
+    }
+
+    #[test]
+    fn substring_matches_exact_basename() {
+        let rules = parse_filter_expr("registry.ts");
+        let registry = make_file("src/registry.ts", FileStatus::Modified, 5, 3);
+        assert!(apply_filter(&rules, &registry));
+    }
+
+    #[test]
+    fn glob_with_metachars_keeps_glob_semantics() {
+        // `*.ts` stays a glob: it matches `a.ts` but NOT `a.tsx` — a substring
+        // rule would match both, so this proves the glob path is preserved.
+        let rules = parse_filter_expr("*.ts");
+        assert!(matches!(&rules[0], FilterRule::Glob { .. }));
+        let ts = make_file("src/a.ts", FileStatus::Modified, 1, 0);
+        let tsx = make_file("src/a.tsx", FileStatus::Modified, 1, 0);
+        assert!(apply_filter(&rules, &ts));
+        assert!(!apply_filter(&rules, &tsx));
+    }
+
+    #[test]
+    fn substring_exclude_filters() {
+        let rules = parse_filter_expr("-lock");
+        let lock = make_file("Cargo.lock", FileStatus::Modified, 100, 50);
+        let rs = make_file("src/main.rs", FileStatus::Modified, 5, 3);
+        assert!(!apply_filter(&rules, &lock));
+        assert!(apply_filter(&rules, &rs));
+    }
+
+    #[test]
+    fn substring_composes_with_other_rules() {
+        let rules = parse_filter_expr("+Exp, -*.svelte");
+        let ts = make_file("src/ExperimentQcWells.ts", FileStatus::Modified, 5, 3);
+        let svelte = make_file("src/ExperimentList.svelte", FileStatus::Modified, 5, 3);
+        let other = make_file("src/registry.ts", FileStatus::Modified, 1, 0);
+        assert!(apply_filter(&rules, &ts));
+        assert!(!apply_filter(&rules, &svelte)); // included by Exp, excluded by glob
+        assert!(!apply_filter(&rules, &other)); // no include rule matches
+    }
+
+    #[test]
+    fn substring_matches_directory_component() {
+        // Full-path matching: a needle can hit a directory name too.
+        let rules = parse_filter_expr("experiments/");
+        let nested = make_file(
+            "src/experiments/quality-control/wells.ts",
+            FileStatus::Modified,
+            1,
+            0,
+        );
+        let other = make_file("src/registry.ts", FileStatus::Modified, 1, 0);
+        assert!(apply_filter(&rules, &nested));
+        assert!(!apply_filter(&rules, &other));
     }
 
     #[test]

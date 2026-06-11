@@ -1,6 +1,8 @@
 <script lang="ts">
   import { hasColoredSyntaxSpans } from "$lib/highlightPlan";
-  import { mergeWordDiffWithSyntax } from "$lib/mergeWordDiffWithSyntax";
+  import { mergeWordDiffWithSyntax, type RenderSegment } from "$lib/mergeWordDiffWithSyntax";
+  import { splitSegmentsByIdentifier, type RefSegment } from "$lib/referenceHighlight";
+  import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import { remapSpanColor } from "$lib/spanColorRemap";
   import type { SpanSnapshot } from "$lib/types";
   import type { Span as WordSpan } from "$lib/wordDiff";
@@ -17,35 +19,35 @@
     hasColoredSyntaxSpans(syntaxSpans) ? syntaxSpans : undefined,
   );
 
-  const segments = $derived(
-    wordSpans ? mergeWordDiffWithSyntax(wordSpans, coloredSyntaxSpans) : null,
-  );
+  const baseSegments = $derived.by((): RenderSegment[] => {
+    if (wordSpans) return mergeWordDiffWithSyntax(wordSpans, coloredSyntaxSpans);
+    if (coloredSyntaxSpans) {
+      return coloredSyntaxSpans.map((s) => ({
+        text: s.text,
+        color: s.color || undefined,
+        changed: false,
+      }));
+    }
+    return [{ text, changed: false }];
+  });
+
+  // Reference highlight (issue #69): when an identifier is selected, split
+  // segments at matches and mark them. The store's matchOptions select
+  // word-boundary (identifier click) vs substring/smart-case (Cmd+F search)
+  // semantics. No-op (same array back) for lines without a match.
+  const segments = $derived.by((): RefSegment[] => {
+    const ident = refHighlight.identifier;
+    return ident
+      ? splitSegmentsByIdentifier(baseSegments, ident, refHighlight.matchOptions)
+      : baseSegments;
+  });
 </script>
 
-{#if segments}
-  {#each segments as seg, i (i)}
-    {#if seg.changed}
-      <span class={changedBgClass}>
-        {#if seg.color}
-          <span style="color: {remapSpanColor(seg.color)}">{seg.text}</span>
-        {:else}
-          {seg.text}
-        {/if}
-      </span>
-    {:else if seg.color}
-      <span style="color: {remapSpanColor(seg.color)}">{seg.text}</span>
-    {:else}
-      {seg.text}
-    {/if}
-  {/each}
-{:else if coloredSyntaxSpans}
-  {#each coloredSyntaxSpans as span, i (i)}
-    {#if span.color}
-      <span style="color: {remapSpanColor(span.color)}">{span.text}</span>
-    {:else}
-      {span.text}
-    {/if}
-  {/each}
-{:else}
-  {text}
-{/if}
+{#each segments as seg, i (i)}
+  {#if seg.changed || seg.ref || seg.color}
+    <span
+      class="{seg.changed ? changedBgClass : ''}{seg.ref ? ' ref-highlight' : ''}"
+      style={seg.color ? `color: ${remapSpanColor(seg.color)}` : undefined}
+    >{seg.text}</span>
+  {:else}{seg.text}{/if}
+{/each}
