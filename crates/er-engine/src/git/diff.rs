@@ -224,6 +224,54 @@ pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
     }
 }
 
+/// Above this file count, lazy mode keeps small files as on-demand stubs
+/// instead of eager-parsing them. Protects the pathological case (a codemod /
+/// formatting sweep touching thousands of small files) from parsing the whole
+/// diff up front — exactly what lazy mode exists to defer. Ordinary review
+/// diffs are far below this, so small files there parse eagerly and render
+/// immediately.
+const MAX_EAGER_LAZY_PARSE_FILES: usize = 500;
+
+/// Build the file list for lazy mode (raw diff > 200KB): large files (≥ size
+/// threshold or matching a compaction pattern) become compacted stubs to expand
+/// on demand; everything else is parsed eagerly so small files render without a
+/// lazy round-trip. `is_user_expanded` returns true for paths the user has
+/// explicitly expanded this session (those are parsed, never re-compacted).
+pub fn lazy_files_with_compaction(
+    raw: &str,
+    headers: &[DiffFileHeader],
+    config: &CompactionConfig,
+    is_user_expanded: impl Fn(&str) -> bool,
+) -> Vec<DiffFile> {
+    // Skip eager parsing of small files when there are too many of them; they
+    // fall back to header-only stubs parsed on demand (the prior lazy behavior).
+    let eager_parse_small = headers.len() <= MAX_EAGER_LAZY_PARSE_FILES;
+    headers
+        .iter()
+        .map(|h| {
+            let mut file = header_to_stub(h);
+            let total_lines = h.adds + h.dels;
+            let should_compact = config.enabled
+                && (config
+                    .patterns
+                    .iter()
+                    .any(|p| compact_files_match(p, &file.path))
+                    || total_lines > config.max_lines_before_compact);
+
+            if !is_user_expanded(&file.path) && should_compact {
+                file.compacted = true;
+                file.raw_hunk_count = h.hunk_count;
+            } else if eager_parse_small || is_user_expanded(&file.path) {
+                let parsed = parse_file_at_offset(raw, h);
+                file.hunks = parsed.hunks;
+                file.adds = parsed.adds;
+                file.dels = parsed.dels;
+            }
+            file
+        })
+        .collect()
+}
+
 /// Convert a DiffFileHeader to a DiffFile with no hunks (for display in file tree)
 pub fn header_to_stub(header: &DiffFileHeader) -> DiffFile {
     DiffFile {
@@ -537,7 +585,7 @@ impl Default for CompactionConfig {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            max_lines_before_compact: 1000,
+            max_lines_before_compact: 2000,
         }
     }
 }
@@ -1217,7 +1265,8 @@ index aaa..bbb 100644
 
     #[test]
     fn compact_files_by_size_threshold() {
-        let many_lines: Vec<DiffLine> = (0..1100)
+        // threshold is 2000; use 2100 to confirm compaction kicks in above it
+        let many_lines: Vec<DiffLine> = (0..2100)
             .map(|i| DiffLine {
                 line_type: LineType::Add,
                 content: format!("line {}", i),
@@ -1229,14 +1278,14 @@ index aaa..bbb 100644
             path: "src/big_file.rs".to_string(),
             status: FileStatus::Modified,
             hunks: vec![DiffHunk {
-                header: "@@ -1,1 +1,1100 @@".to_string(),
+                header: "@@ -1,1 +1,2100 @@".to_string(),
                 old_start: 1,
                 old_count: 1,
                 new_start: 1,
-                new_count: 1100,
+                new_count: 2100,
                 lines: many_lines,
             }],
-            adds: 1100,
+            adds: 2100,
             dels: 0,
             compacted: false,
             raw_hunk_count: 0,
@@ -1489,5 +1538,132 @@ index aaa..bbb 100644
         fold_context_lines(&mut lines, 3);
         assert_eq!(lines.len(), 7); // 3 + fold(1) + 3
         assert_eq!(lines[3].line_type, LineType::Fold(1));
+    }
+
+    // ── lazy_files_with_compaction ──
+
+    /// Build a realistic unified-diff section for `n` added lines in `path`.
+    fn make_file_diff(path: &str, n_adds: usize) -> String {
+        let mut s = format!(
+            "diff --git a/{path} b/{path}\nindex 000000..aaaaaa 100644\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,{n_adds} @@\n",
+        );
+        for i in 1..=n_adds {
+            s.push('+');
+            s.push_str(&format!("line {}\n", i));
+        }
+        s
+    }
+
+    #[test]
+    fn lazy_compaction_large_file_becomes_stub() {
+        // A file with 2500 added lines must be compacted (threshold = 2000).
+        let raw = make_file_diff("src/large.rs", 2500);
+        let headers = parse_diff_headers(&raw);
+        let config = CompactionConfig::default();
+        let files = lazy_files_with_compaction(&raw, &headers, &config, |_| false);
+        assert_eq!(files.len(), 1, "expected exactly one file");
+        let f = &files[0];
+        assert!(f.compacted, "large file must be compacted");
+        assert!(f.hunks.is_empty(), "compacted file must have no hunks");
+    }
+
+    #[test]
+    fn lazy_compaction_small_file_is_parsed_eagerly() {
+        // A file with 10 added lines must be parsed (threshold = 2000).
+        let raw = make_file_diff("src/small.rs", 10);
+        let headers = parse_diff_headers(&raw);
+        let config = CompactionConfig::default();
+        let files = lazy_files_with_compaction(&raw, &headers, &config, |_| false);
+        assert_eq!(files.len(), 1);
+        let f = &files[0];
+        assert!(!f.compacted, "small file must not be compacted");
+        assert!(!f.hunks.is_empty(), "small file must have hunks");
+        // Verify a real hunk line, not just existence
+        let first_line = &f.hunks[0].lines[0];
+        assert_eq!(first_line.line_type, LineType::Add);
+        assert_eq!(first_line.content, "line 1");
+    }
+
+    #[test]
+    fn lazy_compaction_lock_file_pattern_hit() {
+        // Cargo.lock (small) must be compacted via pattern, regardless of line count.
+        let raw = make_file_diff("Cargo.lock", 5);
+        let headers = parse_diff_headers(&raw);
+        let config = CompactionConfig::default();
+        let files = lazy_files_with_compaction(&raw, &headers, &config, |_| false);
+        assert_eq!(files.len(), 1);
+        let f = &files[0];
+        assert!(f.compacted, "Cargo.lock must be compacted by pattern");
+        assert!(f.hunks.is_empty());
+    }
+
+    #[test]
+    fn lazy_compaction_below_threshold_is_not_compacted() {
+        // NEGATIVE: a ~1500-line file must NOT be compacted (threshold is 2000, not 1000).
+        let raw = make_file_diff("src/medium.rs", 1500);
+        let headers = parse_diff_headers(&raw);
+        let config = CompactionConfig::default();
+        let files = lazy_files_with_compaction(&raw, &headers, &config, |_| false);
+        assert_eq!(files.len(), 1);
+        let f = &files[0];
+        assert!(
+            !f.compacted,
+            "1500-line file must not be compacted (threshold is 2000)"
+        );
+        assert!(!f.hunks.is_empty(), "1500-line file must have hunks");
+        assert_eq!(f.adds, 1500, "adds must match line count");
+    }
+
+    #[test]
+    fn lazy_compaction_user_expanded_large_file_is_parsed() {
+        // A large file the user has explicitly expanded must be parsed, not compacted.
+        let raw = make_file_diff("src/large.rs", 2500);
+        let headers = parse_diff_headers(&raw);
+        let config = CompactionConfig::default();
+        let files =
+            lazy_files_with_compaction(&raw, &headers, &config, |p| p == "src/large.rs");
+        assert_eq!(files.len(), 1);
+        let f = &files[0];
+        assert!(!f.compacted, "user-expanded file must not be compacted");
+        assert!(!f.hunks.is_empty(), "user-expanded file must have hunks");
+        assert_eq!(f.adds, 2500);
+    }
+
+    #[test]
+    fn lazy_compaction_many_files_keeps_small_files_as_stubs() {
+        // Above MAX_EAGER_LAZY_PARSE_FILES, small files stay on-demand stubs
+        // (empty hunks) instead of being eager-parsed, while compaction and
+        // user-expand still apply per file.
+        let mut raw = String::new();
+        for i in 0..(MAX_EAGER_LAZY_PARSE_FILES + 1) {
+            raw.push_str(&make_file_diff(&format!("src/small_{i}.rs"), 3));
+        }
+        raw.push_str(&make_file_diff("src/huge.rs", 2500));
+        raw.push_str(&make_file_diff("src/expanded.rs", 4));
+
+        let headers = parse_diff_headers(&raw);
+        let config = CompactionConfig::default();
+        let files =
+            lazy_files_with_compaction(&raw, &headers, &config, |p| p == "src/expanded.rs");
+
+        let small = files
+            .iter()
+            .find(|f| f.path == "src/small_0.rs")
+            .expect("small file present");
+        assert!(!small.compacted, "small file must not be compacted");
+        assert!(
+            small.hunks.is_empty(),
+            "small file must stay a stub when file count exceeds the eager limit"
+        );
+        assert_eq!(small.adds, 3, "stub still reports header counts");
+
+        let huge = files.iter().find(|f| f.path == "src/huge.rs").unwrap();
+        assert!(huge.compacted, "large file is still compacted");
+
+        let expanded = files.iter().find(|f| f.path == "src/expanded.rs").unwrap();
+        assert!(
+            !expanded.hunks.is_empty(),
+            "user-expanded file is parsed even above the eager limit"
+        );
     }
 }

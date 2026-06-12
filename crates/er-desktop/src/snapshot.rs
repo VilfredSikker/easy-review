@@ -1407,9 +1407,10 @@ fn build_snapshot_inner(
                 }
 
                 let line_count = f.hunks.iter().map(|h| h.lines.len()).sum::<usize>();
+                let is_large = f.adds + f.dels > tab.compaction_config.max_lines_before_compact;
                 let include_hunks =
-                    !f.compacted && (source_index == active_selected || diff_line_budget > 0);
-                if include_hunks {
+                    !f.compacted && (!is_large || source_index == active_selected || diff_line_budget > 0);
+                if include_hunks && is_large {
                     diff_line_budget = diff_line_budget.saturating_sub(line_count);
                 }
                 let snap = build_file_snapshot(source_index, f, tab, pending_ai, include_hunks);

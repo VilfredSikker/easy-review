@@ -823,10 +823,6 @@ pub struct SessionState {
     #[serde(default)]
     pub diff_mode: String,
 
-    /// File paths the user explicitly expanded
-    #[serde(default)]
-    pub user_expanded: Vec<String>,
-
     /// Active filter expression
     #[serde(default)]
     pub filter_expr: String,
@@ -1008,26 +1004,16 @@ impl TabState {
         let t_parse = Instant::now();
         if raw.len() > 200_000 {
             let headers = crate::git::parse_diff_headers(&raw);
-            tab.files = headers.iter().map(crate::git::header_to_stub).collect();
+            let files = crate::git::lazy_files_with_compaction(
+                &raw,
+                &headers,
+                &compaction_config,
+                |p| tab.user_expanded.contains(p),
+            );
+            tab.files = files;
             tab.file_headers = headers;
             tab.raw_diff = Some(raw.clone());
             tab.lazy_mode = true;
-            for (file, header) in tab.files.iter_mut().zip(tab.file_headers.iter()) {
-                if tab.user_expanded.contains(&file.path) {
-                    continue;
-                }
-                let total_lines = header.adds + header.dels;
-                let should_compact = compaction_config.enabled
-                    && (compaction_config
-                        .patterns
-                        .iter()
-                        .any(|p| crate::git::compact_files_match(p, &file.path))
-                        || total_lines > compaction_config.max_lines_before_compact);
-                if should_compact {
-                    file.compacted = true;
-                    file.raw_hunk_count = header.hunk_count;
-                }
-            }
         } else {
             tab.file_headers = crate::git::parse_diff_headers(&raw);
             tab.raw_diff = Some(raw.clone());
@@ -2186,27 +2172,17 @@ impl TabState {
             let t_parse = Instant::now();
             if raw.len() > 200_000 {
                 let headers = crate::git::parse_diff_headers(&raw);
-                self.files = headers.iter().map(crate::git::header_to_stub).collect();
+                let compaction_config = self.compaction_config.clone();
+                let files = crate::git::lazy_files_with_compaction(
+                    &raw,
+                    &headers,
+                    &compaction_config,
+                    |p| self.user_expanded.contains(p),
+                );
+                self.files = files;
                 self.file_headers = headers;
                 self.raw_diff = Some(raw.clone());
                 self.lazy_mode = true;
-                for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
-                    if self.user_expanded.contains(&file.path) {
-                        continue;
-                    }
-                    let total_lines = header.adds + header.dels;
-                    let should_compact = self.compaction_config.enabled
-                        && (self
-                            .compaction_config
-                            .patterns
-                            .iter()
-                            .any(|p| crate::git::compact_files_match(p, &file.path))
-                            || total_lines > self.compaction_config.max_lines_before_compact);
-                    if should_compact {
-                        file.compacted = true;
-                        file.raw_hunk_count = header.hunk_count;
-                    }
-                }
             } else {
                 self.file_headers = crate::git::parse_diff_headers(&raw);
                 self.raw_diff = Some(raw.clone());
@@ -2257,27 +2233,17 @@ impl TabState {
 
                 if raw.len() > 200_000 {
                     let headers = crate::git::parse_diff_headers(&raw);
-                    self.files = headers.iter().map(crate::git::header_to_stub).collect();
+                    let compaction_config = self.compaction_config.clone();
+                    let files = crate::git::lazy_files_with_compaction(
+                        &raw,
+                        &headers,
+                        &compaction_config,
+                        |p| self.user_expanded.contains(p),
+                    );
+                    self.files = files;
                     self.file_headers = headers;
                     self.raw_diff = Some(raw.clone());
                     self.lazy_mode = true;
-                    for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
-                        if self.user_expanded.contains(&file.path) {
-                            continue;
-                        }
-                        let total_lines = header.adds + header.dels;
-                        let should_compact = self.compaction_config.enabled
-                            && (self
-                                .compaction_config
-                                .patterns
-                                .iter()
-                                .any(|p| crate::git::compact_files_match(p, &file.path))
-                                || total_lines > self.compaction_config.max_lines_before_compact);
-                        if should_compact {
-                            file.compacted = true;
-                            file.raw_hunk_count = header.hunk_count;
-                        }
-                    }
                 } else {
                     self.files = crate::git::parse_diff(&raw);
                     self.file_headers.clear();
@@ -2360,33 +2326,20 @@ impl TabState {
         // Use byte-length heuristic (O(1)) instead of counting newlines (O(n)).
         // 200_000 bytes ≈ ~5000 lines (at ~40 bytes/line), equivalent to LAZY_PARSE_THRESHOLD.
         if raw.len() > 200_000 {
-            // Lazy mode: header-only parse, files get hunks on demand
+            // Lazy mode: header-only parse; large/pattern files become compacted stubs,
+            // small files are parsed eagerly so they render without a lazy round-trip.
             let headers = git::parse_diff_headers(&raw);
-            self.files = headers.iter().map(git::header_to_stub).collect();
+            let compaction_config = self.compaction_config.clone();
+            let files = crate::git::lazy_files_with_compaction(
+                &raw,
+                &headers,
+                &compaction_config,
+                |p| self.user_expanded.contains(p),
+            );
+            self.files = files;
             self.file_headers = headers;
             self.raw_diff = Some(raw.clone());
             self.lazy_mode = true;
-
-            // Apply compaction to the stub files (pattern-based only, since hunks are empty)
-            // zip() stops at the shorter iterator; files and file_headers are built from
-            // the same header scan, so their lengths stay in sync.
-            for (file, header) in self.files.iter_mut().zip(self.file_headers.iter()) {
-                if self.user_expanded.contains(&file.path) {
-                    continue;
-                }
-                let total_lines = header.adds + header.dels;
-                let should_compact = self.compaction_config.enabled
-                    && (self
-                        .compaction_config
-                        .patterns
-                        .iter()
-                        .any(|p| git::compact_files_match(p, &file.path))
-                        || total_lines > self.compaction_config.max_lines_before_compact);
-                if should_compact {
-                    file.compacted = true;
-                    file.raw_hunk_count = header.hunk_count;
-                }
-            }
         } else {
             // Eager mode: full parse (fast enough for smaller diffs)
             self.files = git::parse_diff(&raw);
@@ -3546,7 +3499,6 @@ impl TabState {
             diff_scroll: self.diff_scroll,
             h_scroll: self.h_scroll,
             diff_mode: self.mode.git_mode().to_string(),
-            user_expanded: self.user_expanded.iter().cloned().collect(),
             filter_expr: self.filter_expr.clone(),
             filter_history: self.filter_history.clone(),
             show_unreviewed_only: self.show_unreviewed_only,
@@ -3607,9 +3559,6 @@ impl TabState {
             }
             self.current_line = session.current_line;
         }
-
-        // Restore expanded files
-        self.user_expanded = session.user_expanded.into_iter().collect();
 
         // Restore filter
         if !session.filter_expr.is_empty() {
