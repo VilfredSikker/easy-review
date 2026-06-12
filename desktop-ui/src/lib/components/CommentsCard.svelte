@@ -1,3 +1,7 @@
+<script module lang="ts">
+  const autoPulledKeys = new Set<string>();
+</script>
+
 <script lang="ts">
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
@@ -35,14 +39,34 @@
     manualRefreshing || (app.snapshot?.bg_loading?.gh_comments ?? false),
   );
 
+  function currentAutoPullKey(): string | null {
+    const snapshot = app.snapshot;
+    if (!snapshot) return null;
+    const pr = snapshot.github?.number ?? snapshot.pr?.number ?? null;
+    if (!pr || !snapshot.branch) return null;
+
+    const activeTab = snapshot.tabs?.find((t) => t.is_active || t.idx === snapshot.active_tab);
+    const repoKey = snapshot.github
+      ? `${snapshot.github.owner}/${snapshot.github.repo}`
+      : (activeTab?.repo_root ?? "unknown");
+    return `${repoKey}:${snapshot.branch}:${pr}`;
+  }
+
+  function rememberAutoPull(key: string) {
+    autoPulledKeys.add(key);
+    if (autoPulledKeys.size > 128) {
+      const oldest = autoPulledKeys.values().next().value;
+      if (oldest) autoPulledKeys.delete(oldest);
+    }
+  }
+
   $effect(() => {
     if (!active) return;
-    const pr = app.snapshot?.github?.number ?? app.snapshot?.pr?.number ?? null;
-    const branch = app.snapshot?.branch;
-    if (!pr || !branch) return;
-    const key = `${branch}:${pr}`;
-    if (autoPulledFor === key) return;
+    const key = currentAutoPullKey();
+    if (!key) return;
+    if (autoPulledFor === key || autoPulledKeys.has(key)) return;
     autoPulledFor = key;
+    rememberAutoPull(key);
     void app.cmd("pull_github_comments");
   });
 

@@ -1,3 +1,8 @@
+<script module lang="ts">
+  const thumbnailCache = new Map<string, string>();
+  const requestedScreenshots = new Set<string>();
+</script>
+
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
@@ -22,14 +27,22 @@
 
   /** Lazy-loaded thumbnails keyed by screenshot_path. */
   let thumbs = $state<Record<string, string>>({});
-  const requested = new Set<string>();
 
   function ensureThumb(path: string | null) {
-    if (!path || thumbs[path] || requested.has(path)) return;
-    requested.add(path);
+    if (!path || thumbs[path]) return;
+    const cached = thumbnailCache.get(path);
+    if (cached) {
+      thumbs[path] = cached;
+      return;
+    }
+    if (requestedScreenshots.has(path)) return;
+    requestedScreenshots.add(path);
     invoke<string>("read_annotation_screenshot", { path })
       .then((dataUrl) => {
-        if (dataUrl) thumbs[path] = dataUrl;
+        if (dataUrl) {
+          thumbnailCache.set(path, dataUrl);
+          thumbs[path] = dataUrl;
+        }
       })
       .catch(() => {});
   }
