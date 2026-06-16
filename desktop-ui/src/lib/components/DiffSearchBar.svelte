@@ -1,7 +1,8 @@
 <script lang="ts">
   /**
    * Cmd+F lexical search bar for the diff view (PR #73). A dense single-row
-   * overlay in the top-right of the diff viewport. Typing drives the shared
+   * overlay in the top-right of the diff viewport, positioned just below the
+   * 40px sticky file-path header (`top-12`) so the two don't overlap. Typing drives the shared
    * reference-highlight store in "query" mode (substring + smart-case), so
    * matches render with the same inline highlight, ruler marks, and
    * jump-to-flash as identifier clicks. Enter/Shift+Enter and the arrow keys
@@ -110,7 +111,7 @@
 </script>
 
 <div
-  class="absolute top-2 right-4 z-40 flex items-center gap-2 bg-card border border-hairline rounded-md px-2 py-1 shadow-lg"
+  class="absolute top-12 right-4 z-40 flex items-center gap-2 bg-card border border-hairline rounded-md px-2 py-1 shadow-lg"
   data-diff-search-bar
 >
   <input
