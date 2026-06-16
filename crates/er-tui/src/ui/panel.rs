@@ -441,18 +441,26 @@ fn render_file_detail<'a>(
         .iter()
         .filter(|c| c.comment_type() == CommentType::Question)
         .count();
+    let note_count = file_comments
+        .iter()
+        .filter(|c| c.comment_type() == CommentType::Note)
+        .count();
     let gh_count = file_comments
         .iter()
         .filter(|c| c.comment_type() == CommentType::GitHubComment)
         .count();
 
-    let header = if q_count > 0 && gh_count > 0 {
-        format!(" Questions ({}) + Comments ({})", q_count, gh_count)
-    } else if q_count > 0 {
-        format!(" Questions ({})", q_count)
-    } else {
-        format!(" Comments ({})", gh_count)
-    };
+    let mut parts: Vec<String> = Vec::new();
+    if note_count > 0 {
+        parts.push(format!("Notes ({note_count})"));
+    }
+    if q_count > 0 {
+        parts.push(format!("Questions ({q_count})"));
+    }
+    if gh_count > 0 {
+        parts.push(format!("Comments ({gh_count})"));
+    }
+    let header = format!(" {}", parts.join(" + "));
 
     lines.push(Line::from(vec![Span::styled(
         header,
@@ -465,15 +473,18 @@ fn render_file_detail<'a>(
     let max_w = area.width.saturating_sub(5) as usize;
 
     for comment in &file_comments {
-        let is_question = comment.comment_type() == CommentType::Question;
+        let ctype = comment.comment_type();
+        let is_question = ctype == CommentType::Question;
+        let is_note = ctype == CommentType::Note;
         let accent = if comment.is_stale() {
             styles::STALE()
-        } else if is_question {
+        } else if is_question || is_note {
             styles::YELLOW()
         } else {
             styles::CYAN()
         };
-        let bullet = "◆";
+        // Notes get a distinct bullet so they read apart from questions/comments.
+        let bullet = if is_note { "▪" } else { "◆" };
 
         let target = comment
             .hunk_index()

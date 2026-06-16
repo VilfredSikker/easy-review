@@ -47,7 +47,12 @@
 
   async function submit() {
     if (!canSubmit || diffSel.file === null || diffSel.start === null) return;
-    const command = diffSel.kind === "comment" ? "add_comment" : "add_question";
+    const command =
+      diffSel.kind === "comment"
+        ? "add_comment"
+        : diffSel.kind === "note"
+          ? "add_note"
+          : "add_question";
     const lineStart = diffSel.first();
     const lineEnd = diffSel.last();
     const cmdArgs: Record<string, unknown> = {
@@ -70,7 +75,13 @@
       diffSel.clear();
     } else if (e.ctrlKey && (e.key === "t" || e.key === "T")) {
       e.preventDefault();
-      diffSel.kind = diffSel.kind === "comment" ? "question" : "comment";
+      // Cycle comment → question → note → comment
+      diffSel.kind =
+        diffSel.kind === "comment"
+          ? "question"
+          : diffSel.kind === "question"
+            ? "note"
+            : "comment";
     } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       submit();
@@ -88,7 +99,7 @@
     ? `position:absolute;top:${topPx}px;left:calc(${gutterInsetPx}px + 0.75rem);right:1rem;z-index:20`
     : undefined}
   class="{topPx === undefined ? 'sticky bottom-0 left-0 right-0 mx-4 mb-4 mt-2' : 'mb-4 mt-2'} rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_color-mix(in_srgb,var(--color-fg)_4%,transparent)]
-         {diffSel.kind === 'question'
+         {diffSel.kind === 'question' || diffSel.kind === 'note'
            ? 'border border-question/40 bg-card'
            : 'border border-action/40 bg-card'}"
 >
@@ -116,10 +127,18 @@
         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
         Question
       </button>
+      <button
+        onclick={() => (diffSel.kind = "note")}
+        class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
+               {diffSel.kind === 'note' ? 'bg-question text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
+      >
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
+        Note
+      </button>
     </div>
 
     <span class="ml-auto text-[10px] mono text-muted">
-      {diffSel.kind === "question" ? "private · won't push" : "will sync to GitHub"}
+      {diffSel.kind === "comment" ? "will sync to GitHub" : "private · won't push"}
     </span>
     <button onclick={() => diffSel.clear()} aria-label="Cancel" class="ml-2 text-muted hover:text-fg-2">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -133,7 +152,9 @@
     rows="3"
     placeholder={diffSel.kind === "question"
       ? "Ask a question about these lines… (only you see this)"
-      : "Add a review comment…"}
+      : diffSel.kind === "note"
+        ? "Write a note / instruction for an agent… (only you see this)"
+        : "Add a review comment…"}
     class="w-full bg-transparent text-sm px-3 py-2.5 outline-none resize-none font-sans placeholder:text-muted leading-relaxed"
   ></textarea>
 
@@ -147,11 +168,11 @@
       onclick={submit}
       disabled={!canSubmit}
       class="px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5
-             {diffSel.kind === 'question'
+             {diffSel.kind === 'question' || diffSel.kind === 'note'
                ? 'bg-question hover:bg-question/90 text-on-accent'
                : 'bg-comment hover:bg-comment/90 text-on-accent'}"
     >
-      <span>{diffSel.kind === "question" ? "Save question" : "Add comment"}</span>
+      <span>{diffSel.kind === "question" ? "Save question" : diffSel.kind === "note" ? "Save note" : "Add comment"}</span>
       <span class="opacity-60 mono">⌘⏎</span>
     </button>
   </div>

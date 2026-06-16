@@ -231,6 +231,7 @@ export const aiWithFindings: AiSnapshot = {
   github_comment_count: 0,
   comments: 1,
   questions: 1,
+  notes: 0,
   unpushed: 1,
   threads: [commentThread, questionThread],
   findings: [
@@ -304,6 +305,7 @@ export const aiEmpty: AiSnapshot = {
   github_comment_count: 0,
   comments: 0,
   questions: 0,
+  notes: 0,
   unpushed: 0,
   threads: [],
   findings: [],
@@ -344,6 +346,7 @@ export const aiProfessorOnly: AiSnapshot = {
   github_comment_count: 0,
   comments: 0,
   questions: 0,
+  notes: 0,
   unpushed: 0,
   threads: [],
   findings: [

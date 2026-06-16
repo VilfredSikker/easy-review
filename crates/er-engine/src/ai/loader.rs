@@ -1,4 +1,4 @@
-use super::comments::{ErFeedback, ErGitHubComments, ErQuestions};
+use super::comments::{ErFeedback, ErGitHubComments, ErNotes, ErQuestions};
 use super::experts::{
     expert_by_id, load_expert_reviews, merge_experts_into_review, synthesize_review_from_experts,
 };
@@ -197,6 +197,14 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
     if let Ok(content) = read_sidecar(&questions_path) {
         if let Ok(questions) = serde_json::from_str::<ErQuestions>(&content) {
             state.questions = Some(questions);
+        }
+    }
+
+    // Load .er/notes.json (local actionable notes)
+    let notes_path = Path::new(er_dir).join("notes.json");
+    if let Ok(content) = read_sidecar(&notes_path) {
+        if let Ok(notes) = serde_json::from_str::<ErNotes>(&content) {
+            state.notes = Some(notes);
         }
     }
 

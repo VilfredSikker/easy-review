@@ -4,7 +4,7 @@
 
   interface Props {
     open: boolean;
-    kind: "question" | "finding";
+    kind: "question" | "note" | "finding";
     sourceId: string;
     initialBody: string;
     targetLineLabel: string;
@@ -44,7 +44,11 @@
   });
 
   const title = $derived(
-    kind === "question" ? "Promote question to comment" : "Promote AI finding to comment",
+    kind === "question"
+      ? "Promote question to comment"
+      : kind === "note"
+        ? "Promote note to comment"
+        : "Promote AI finding to comment",
   );
 
   async function submit() {

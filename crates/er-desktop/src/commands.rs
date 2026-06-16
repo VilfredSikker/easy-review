@@ -37,6 +37,21 @@ Reply in markdown with:
 3. **Recommendation**: What the reviewer should do next
 
 Be concise. If the concern is already addressed in the current diff, say so clearly."#;
+
+/// Per-question elaboration: answer / expand on a reviewer's question by reading
+/// the surrounding code. Used by the `elaborate_with_ai` command (questions),
+/// where "validate" doesn't fit — there is nothing to confirm/refute, the
+/// reviewer wants the AI to investigate and explain.
+const ELABORATE_CARD_AI_PROMPT: &str = r#"Answer and elaborate on this review question against the current code.
+
+Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before answering. Up to ~10 reads; cite file:line evidence.
+
+Reply in markdown with:
+1. **Answer**: A direct answer to the question.
+2. **Details**: Relevant context from the code (cite file:line when possible).
+3. **Follow-ups**: Anything the reviewer should double-check or decide.
+
+Be concise and concrete."#;
 const REQUESTED_KINDS: &[&str] = &[
     "ai_review_done",
     "ai_review_failed",
@@ -1925,6 +1940,30 @@ pub fn add_question(
 }
 
 #[tauri::command]
+pub fn add_note(
+    file: String,
+    hunk_idx: usize,
+    line_num: Option<usize>,
+    line_num_end: Option<usize>,
+    text: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    app.submit_comment_text(
+        file,
+        hunk_idx,
+        line_num,
+        line_num_end,
+        text,
+        CommentType::Note,
+        None,
+        None,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(snap_from(&app, &state))
+}
+
+#[tauri::command]
 pub fn reply_to_thread(
     parent_id: String,
     text: String,
@@ -1948,6 +1987,21 @@ pub fn reply_to_thread(
                     )
                 });
             q.ok_or_else(|| "Question not found".to_string())?
+        } else if parent_id.starts_with("n-") {
+            let n = tab
+                .ai
+                .notes
+                .as_ref()
+                .and_then(|ns| ns.notes.iter().find(|n| n.id == parent_id))
+                .map(|n| {
+                    (
+                        n.file.clone(),
+                        n.hunk_index.unwrap_or(0),
+                        n.line_start,
+                        CommentType::Note,
+                    )
+                });
+            n.ok_or_else(|| "Note not found".to_string())?
         } else {
             let c = tab
                 .ai
@@ -2047,14 +2101,31 @@ fn write_json_atomic<T: serde::Serialize>(path: &str, value: &T) -> Result<(), S
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
-fn mark_thread_resolved_in_files(id: &str, q_path: &str, gc_path: &str) -> Result<bool, String> {
-    use er_engine::ai::{ErGitHubComments, ErQuestions};
+fn mark_thread_resolved_in_files(
+    id: &str,
+    q_path: &str,
+    notes_path: &str,
+    gc_path: &str,
+) -> Result<bool, String> {
+    use er_engine::ai::{ErGitHubComments, ErNotes, ErQuestions};
     if let Ok(text) = std::fs::read_to_string(q_path) {
         if let Ok(mut qs) = serde_json::from_str::<ErQuestions>(&text) {
             if let Some(q) = qs.questions.iter_mut().find(|q| q.id == id) {
                 if !q.resolved {
                     q.resolved = true;
                     write_json_atomic(q_path, &qs)?;
+                }
+                return Ok(true);
+            }
+        }
+    }
+
+    if let Ok(text) = std::fs::read_to_string(notes_path) {
+        if let Ok(mut ns) = serde_json::from_str::<ErNotes>(&text) {
+            if let Some(n) = ns.notes.iter_mut().find(|n| n.id == id) {
+                if !n.resolved {
+                    n.resolved = true;
+                    write_json_atomic(notes_path, &ns)?;
                 }
                 return Ok(true);
             }
@@ -2081,8 +2152,9 @@ pub fn resolve_thread(id: String, state: State<AppState>) -> Result<AppSnapshot,
 
     let tab = app.tab();
     let q_path = format!("{}/questions.json", tab.er_dir());
+    let notes_path = format!("{}/notes.json", tab.er_dir());
     let gc_path = tab.github_comments_path();
-    let changed = mark_thread_resolved_in_files(&id, &q_path, &gc_path)?;
+    let changed = mark_thread_resolved_in_files(&id, &q_path, &notes_path, &gc_path)?;
     if !changed {
         return Err(format!("Thread not found or already resolved: {id}"));
     }
@@ -3361,32 +3433,49 @@ pub fn promote_to_comment(
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
 
-    // 1. Resolve the source question + already-promoted guard.
+    // 1. Resolve the source question or note + already-promoted guard.
     let (file, hunk_idx, line_start, default_body) = {
         let tab = app.tab();
-        let qs = tab
-            .ai
-            .questions
-            .as_ref()
-            .ok_or_else(|| "No questions loaded".to_string())?;
-        let q = qs
-            .questions
-            .iter()
-            .find(|q| q.id == id)
-            .ok_or_else(|| format!("Question not found: {id}"))?;
+        // Both questions and notes use the `ReviewQuestion` shape; pick the
+        // collection by id prefix so notes can be promoted too.
+        let (items, item): (&[er_engine::ai::ReviewQuestion], &er_engine::ai::ReviewQuestion) =
+            if id.starts_with("n-") {
+                let ns = tab
+                    .ai
+                    .notes
+                    .as_ref()
+                    .ok_or_else(|| "No notes loaded".to_string())?;
+                let n = ns
+                    .notes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .ok_or_else(|| format!("Note not found: {id}"))?;
+                (ns.notes.as_slice(), n)
+            } else {
+                let qs = tab
+                    .ai
+                    .questions
+                    .as_ref()
+                    .ok_or_else(|| "No questions loaded".to_string())?;
+                let q = qs
+                    .questions
+                    .iter()
+                    .find(|q| q.id == id)
+                    .ok_or_else(|| format!("Question not found: {id}"))?;
+                (qs.questions.as_slice(), q)
+            };
 
-        let replies: Vec<(&str, &str)> = qs
-            .questions
+        let replies: Vec<(&str, &str)> = items
             .iter()
             .filter(|r| r.in_reply_to.as_deref() == Some(&id))
             .map(|r| (r.author.as_str(), r.text.as_str()))
             .collect();
-        let default = build_promoted_body(&q.text, &replies);
+        let default = build_promoted_body(&item.text, &replies);
 
         (
-            q.file.clone(),
-            q.hunk_index.unwrap_or(0),
-            q.line_start,
+            item.file.clone(),
+            item.hunk_index.unwrap_or(0),
+            item.line_start,
             default,
         )
     };
@@ -3428,6 +3517,84 @@ pub fn promote_to_comment(
     };
 
     // 5. Remove the source question thread (replaced by the new GitHub comment).
+    if new_id.is_some() {
+        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+    }
+
+    Ok(snap_from(&app, &state))
+}
+
+/// Promote a question to a local note. Notes are still private but framed as
+/// actionable hand-offs to a coding agent. Mirrors `promote_to_comment` but the
+/// target is `notes.json`. The source question (and its replies) is removed.
+#[tauri::command]
+pub fn promote_to_note(
+    id: String,
+    body: Option<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+
+    let (file, hunk_idx, line_start, default_body) = {
+        let tab = app.tab();
+        let qs = tab
+            .ai
+            .questions
+            .as_ref()
+            .ok_or_else(|| "No questions loaded".to_string())?;
+        let q = qs
+            .questions
+            .iter()
+            .find(|q| q.id == id)
+            .ok_or_else(|| format!("Question not found: {id}"))?;
+        let replies: Vec<(&str, &str)> = qs
+            .questions
+            .iter()
+            .filter(|r| r.in_reply_to.as_deref() == Some(&id))
+            .map(|r| (r.author.as_str(), r.text.as_str()))
+            .collect();
+        let default = build_promoted_body(&q.text, &replies);
+        (
+            q.file.clone(),
+            q.hunk_index.unwrap_or(0),
+            q.line_start,
+            default,
+        )
+    };
+
+    let text = body.unwrap_or(default_body);
+
+    let existing_ids: std::collections::HashSet<String> = {
+        let tab = app.tab();
+        tab.ai
+            .notes
+            .as_ref()
+            .map(|ns| ns.notes.iter().map(|n| n.id.clone()).collect())
+            .unwrap_or_default()
+    };
+
+    app.submit_comment_text(
+        file,
+        hunk_idx,
+        line_start,
+        None,
+        text,
+        CommentType::Note,
+        None,
+        None,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let new_id: Option<String> = {
+        let tab = app.tab();
+        tab.ai.notes.as_ref().and_then(|ns| {
+            ns.notes
+                .iter()
+                .find(|n| !existing_ids.contains(&n.id))
+                .map(|n| n.id.clone())
+        })
+    };
+
     if new_id.is_some() {
         app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
     }
@@ -3489,6 +3656,17 @@ pub fn validate_with_ai(
     ask_ai(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), state)
 }
 
+/// Ask AI to elaborate on / answer a question thread — adds a local reply.
+/// This is the question-flavored counterpart to `validate_with_ai`: questions
+/// get "Elaborate" (investigate + answer) rather than "Validate" (confirm/refute).
+#[tauri::command]
+pub fn elaborate_with_ai(
+    thread_id: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    ask_ai(thread_id, ELABORATE_CARD_AI_PROMPT.to_string(), state)
+}
+
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
 /// comment thread. The subprocess runs on a background thread so this command
 /// returns immediately — the reply is added asynchronously and picked up by
@@ -3537,24 +3715,36 @@ pub fn ask_ai(
             tab.repo_root.clone()
         };
 
-        if thread_id.starts_with("q-") {
-            let q = tab
-                .ai
-                .questions
-                .as_ref()
-                .and_then(|qs| qs.questions.iter().find(|q| q.id == thread_id))
-                .ok_or_else(|| "Question not found".to_string())?;
+        if thread_id.starts_with("q-") || thread_id.starts_with("n-") {
+            // Questions and notes share the `ReviewQuestion` shape; pick the
+            // collection (and resulting CommentType) by id prefix.
+            let is_note = thread_id.starts_with("n-");
+            let items: &[er_engine::ai::ReviewQuestion] = if is_note {
+                tab.ai
+                    .notes
+                    .as_ref()
+                    .map(|ns| ns.notes.as_slice())
+                    .unwrap_or(&[])
+            } else {
+                tab.ai
+                    .questions
+                    .as_ref()
+                    .map(|qs| qs.questions.as_slice())
+                    .unwrap_or(&[])
+            };
+            let q = items
+                .iter()
+                .find(|q| q.id == thread_id)
+                .ok_or_else(|| if is_note { "Note not found" } else { "Question not found" })
+                .map_err(|e| e.to_string())?;
             let mut thread_body = String::new();
             thread_body.push_str(&format!("{}:{}\n", q.file, q.line_start.unwrap_or(0)));
             thread_body.push_str(&q.text);
-            if let Some(qs) = &tab.ai.questions {
-                for r in qs
-                    .questions
-                    .iter()
-                    .filter(|r| r.in_reply_to.as_deref() == Some(thread_id.as_str()))
-                {
-                    thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
-                }
+            for r in items
+                .iter()
+                .filter(|r| r.in_reply_to.as_deref() == Some(thread_id.as_str()))
+            {
+                thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
             }
             let (finding_title, finding_description) =
                 finding_fields_for_ref(tab, q.finding_ref.as_deref());
@@ -3567,7 +3757,11 @@ pub fn ask_ai(
                 q.file.clone(),
                 q.hunk_index.unwrap_or(0),
                 q.line_start,
-                CommentType::Question,
+                if is_note {
+                    CommentType::Note
+                } else {
+                    CommentType::Question
+                },
                 thread_body,
                 tab.repo_root.clone(),
                 tab.base_branch.clone(),
@@ -3733,6 +3927,12 @@ fn finding_id_for_thread(tab: &er_engine::app::TabState, thread_id: &str) -> Opt
             .as_ref()
             .and_then(|qs| qs.questions.iter().find(|q| q.id == thread_id))
             .and_then(|q| q.finding_ref.clone())
+    } else if thread_id.starts_with("n-") {
+        tab.ai
+            .notes
+            .as_ref()
+            .and_then(|ns| ns.notes.iter().find(|n| n.id == thread_id))
+            .and_then(|n| n.finding_ref.clone())
     } else {
         tab.ai
             .github_comments

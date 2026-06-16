@@ -33,6 +33,7 @@ paths below use the repo-local `.er/` names, which are identical.
 | `professor.json` | — | Teaching insights |
 | `experts/*.json` | — | Domain-specific expert findings |
 | `questions.json` | `ErQuestions` | Personal review questions (written by `er`) |
+| `notes.json` | `ErNotes` | Local actionable notes — private, agent hand-off oriented (written by `er`) |
 | `github-comments.json` | `ErGitHubComments` | GitHub PR comments, two-way sync (written by `er`) |
 
 ## Key Types (review.rs)
@@ -55,8 +56,9 @@ suggestion, hunk references.
 
 **`RiskLevel`** — `High | Medium | Low | Info` with display helpers.
 
-**`CommentRef`** — unified query enum wrapping `ReviewQuestion`,
-`GitHubReviewComment`, or legacy `FeedbackComment`.
+**`CommentRef`** — unified query enum wrapping `ReviewQuestion` (as either a
+`Question` or `Note` — notes reuse the `ReviewQuestion` shape and live in
+`notes.json`), `GitHubReviewComment`, or legacy `FeedbackComment`.
 
 ## Loader (loader.rs)
 

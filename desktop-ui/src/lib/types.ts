@@ -39,7 +39,7 @@ export interface FindingResponseSnapshot {
 
 export interface ThreadSnapshot {
   id: string;
-  kind: "comment" | "question";
+  kind: "comment" | "question" | "note";
   file: string;
   line: number;
   /** Inclusive end line when the thread spans multiple diff lines. */
@@ -164,6 +164,7 @@ export interface AiSnapshot {
   github_comment_count: number;
   comments: number;
   questions: number;
+  notes: number;
   unpushed: number;
   threads: ThreadSnapshot[];
   findings: FlatFinding[];

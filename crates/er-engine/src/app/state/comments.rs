@@ -45,10 +45,20 @@ impl App {
     pub fn start_edit_comment(&mut self, comment_id: &str) {
         let tab = self.tab();
         // Find the comment text and type
-        let (text, is_question) = if comment_id.starts_with("q-") {
+        let (text, comment_type) = if comment_id.starts_with("q-") {
             if let Some(qs) = &tab.ai.questions {
                 if let Some(q) = qs.questions.iter().find(|q| q.id == comment_id) {
-                    (q.text.clone(), true)
+                    (q.text.clone(), CommentType::Question)
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        } else if comment_id.starts_with("n-") {
+            if let Some(ns) = &tab.ai.notes {
+                if let Some(n) = ns.notes.iter().find(|n| n.id == comment_id) {
+                    (n.text.clone(), CommentType::Note)
                 } else {
                     return;
                 }
@@ -57,7 +67,7 @@ impl App {
             }
         } else if let Some(gc) = &tab.ai.github_comments {
             if let Some(c) = gc.comments.iter().find(|c| c.id == comment_id) {
-                (c.comment.clone(), false)
+                (c.comment.clone(), CommentType::GitHubComment)
             } else {
                 return;
             }
@@ -75,11 +85,7 @@ impl App {
         tab.comment_hunk = tab.current_hunk;
         tab.comment_line_num = tab.current_line_number();
         tab.comment_reply_to = None;
-        tab.comment_type = if is_question {
-            CommentType::Question
-        } else {
-            CommentType::GitHubComment
-        };
+        tab.comment_type = comment_type;
         tab.comment_edit_id = Some(comment_id.to_string());
         self.input_mode = InputMode::Comment;
     }
@@ -88,14 +94,29 @@ impl App {
     pub fn start_reply_comment(&mut self, comment_id: &str) {
         let tab = self.tab();
         // Determine type from ID prefix and find the parent comment's location
-        let (file, hunk_index, line_start, is_question) = if comment_id.starts_with("q-") {
+        let (file, hunk_index, line_start, comment_type) = if comment_id.starts_with("q-") {
             if let Some(qs) = &tab.ai.questions {
                 if let Some(q) = qs.questions.iter().find(|q| q.id == comment_id) {
                     (
                         q.file.clone(),
                         q.hunk_index.unwrap_or(0),
                         q.line_start,
-                        true,
+                        CommentType::Question,
+                    )
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        } else if comment_id.starts_with("n-") {
+            if let Some(ns) = &tab.ai.notes {
+                if let Some(n) = ns.notes.iter().find(|n| n.id == comment_id) {
+                    (
+                        n.file.clone(),
+                        n.hunk_index.unwrap_or(0),
+                        n.line_start,
+                        CommentType::Note,
                     )
                 } else {
                     return;
@@ -109,7 +130,7 @@ impl App {
                     c.file.clone(),
                     c.hunk_index.unwrap_or(0),
                     c.line_start,
-                    false,
+                    CommentType::GitHubComment,
                 )
             } else {
                 return;
@@ -125,11 +146,7 @@ impl App {
         tab.comment_line_num = line_start;
         tab.comment_reply_to = Some(comment_id.to_string());
         tab.comment_finding_ref = None;
-        tab.comment_type = if is_question {
-            CommentType::Question
-        } else {
-            CommentType::GitHubComment
-        };
+        tab.comment_type = comment_type;
         tab.comment_edit_id = None;
         self.input_mode = InputMode::Comment;
     }
@@ -196,6 +213,7 @@ impl App {
         let comment_type = tab.comment_type;
         match comment_type {
             CommentType::Question => self.submit_question(text),
+            CommentType::Note => self.submit_note(text),
             CommentType::GitHubComment => self.submit_github_comment(text),
         }
     }
@@ -309,6 +327,115 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.tab_mut().reload_ai_state();
         let label = if is_reply { "Reply" } else { "Question" };
+        self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
+        Ok(())
+    }
+
+    /// Submit a local note to notes.json. Mirrors `submit_question` but writes to
+    /// the separate notes sidecar and uses an `n-` id prefix.
+    fn submit_note(&mut self, text: String) -> Result<()> {
+        let tab = self.tab();
+        let er_dir = tab.er_dir();
+        let repo_root = tab.repo_root.clone();
+        let mut diff_hash = tab.branch_diff_hash.clone();
+        let base_branch = tab.base_branch.clone();
+        let file_path = tab.comment_file.clone();
+        let hunk_index = tab.comment_hunk;
+        let comment_line_num = tab.comment_line_num;
+        let comment_line_end = tab.comment_line_end;
+        let reply_to = tab.comment_reply_to.clone();
+        let pr_head_ref_owned = tab.pr_head_ref.clone();
+
+        if diff_hash.is_empty() && !self.tab().is_remote() {
+            if let Ok(br) = git::git_diff_raw(
+                "branch",
+                &base_branch,
+                &repo_root,
+                pr_head_ref_owned.as_deref(),
+            ) {
+                diff_hash = ai::compute_diff_hash(&br);
+                self.tab_mut().branch_diff_hash = diff_hash.clone();
+            }
+        }
+
+        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
+
+        // Load or create notes.json
+        let notes_path = format!("{}/notes.json", er_dir);
+        let mut notes: ai::ErNotes = match std::fs::read_to_string(&notes_path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(ns) => ns,
+                Err(_) => {
+                    self.notify("Warning: .er/notes.json is invalid JSON — starting fresh");
+                    ai::ErNotes {
+                        version: 1,
+                        diff_hash: diff_hash.clone(),
+                        notes: Vec::new(),
+                    }
+                }
+            },
+            Err(_) => ai::ErNotes {
+                version: 1,
+                diff_hash: diff_hash.clone(),
+                notes: Vec::new(),
+            },
+        };
+
+        if notes.diff_hash != diff_hash {
+            notes.diff_hash = diff_hash;
+        }
+
+        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
+        let id = format!(
+            "n-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            seq
+        );
+
+        let is_reply = reply_to.is_some();
+        let finding_ref = self.tab().comment_finding_ref.clone();
+        let author = self
+            .tab_mut()
+            .comment_author_override
+            .take()
+            .unwrap_or_else(|| "You".to_string());
+        notes.notes.push(ai::ReviewQuestion {
+            id,
+            timestamp: chrono_now(),
+            file: file_path,
+            hunk_index: Some(hunk_index),
+            line_start: anchor.line_start,
+            line_end: Self::normalize_line_end(anchor.line_start, comment_line_end),
+            line_content: anchor.line_content,
+            text: text.clone(),
+            resolved: false,
+            stale: false,
+            context_before: anchor.context_before,
+            context_after: anchor.context_after,
+            old_line_start: anchor.old_line_start,
+            hunk_header: anchor.hunk_header,
+            anchor_status: "original".to_string(),
+            relocated_at_hash: self.tab().branch_diff_hash.clone(),
+            in_reply_to: reply_to,
+            author,
+            promoted_to: None,
+            finding_ref,
+        });
+
+        // Write atomically
+        std::fs::create_dir_all(&er_dir)?;
+        let json = serde_json::to_string_pretty(&notes)?;
+        let tmp_path = format!("{}.tmp", notes_path);
+        std::fs::write(&tmp_path, json)?;
+        std::fs::rename(&tmp_path, &notes_path)?;
+
+        self.tab_mut().comment_textarea = TextArea::default();
+        self.input_mode = InputMode::Normal;
+        self.tab_mut().reload_ai_state();
+        let label = if is_reply { "Reply" } else { "Note" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
     }
@@ -652,6 +779,25 @@ impl App {
             let tmp = format!("{path}.tmp");
             std::fs::write(&tmp, json)?;
             std::fs::rename(&tmp, &path)?;
+        } else if comment_id.starts_with("n-") {
+            let path = format!("{}/notes.json", er_dir);
+            let content =
+                std::fs::read_to_string(&path).with_context(|| format!("Failed to read {path}"))?;
+            let mut ns: ai::ErNotes =
+                serde_json::from_str(&content).context("Failed to parse notes.json")?;
+            let n = ns
+                .notes
+                .iter_mut()
+                .find(|n| n.id == comment_id)
+                .context("Note not found")?;
+            if n.author == "ai" {
+                anyhow::bail!("Cannot edit AI-generated text");
+            }
+            n.text = new_text.to_string();
+            let json = serde_json::to_string_pretty(&ns)?;
+            let tmp = format!("{path}.tmp");
+            std::fs::write(&tmp, json)?;
+            std::fs::rename(&tmp, &path)?;
         } else {
             let path = self.tab().github_comments_path();
             let content =
@@ -731,6 +877,9 @@ impl App {
         tab.comment_type = match tab.comment_type {
             CommentType::Question => CommentType::GitHubComment,
             CommentType::GitHubComment => CommentType::Question,
+            // Notes are a desktop-composer concept; the TUI question/comment
+            // toggle leaves them unchanged.
+            CommentType::Note => CommentType::Note,
         };
     }
 
@@ -762,6 +911,29 @@ impl App {
                         q.stale = false;
                     }
                     let json = serde_json::to_string_pretty(&qs)?;
+                    let tmp = format!("{}.tmp", path);
+                    std::fs::write(&tmp, json)?;
+                    std::fs::rename(&tmp, &path)?;
+                }
+            }
+        } else if comment_id.starts_with("n-") {
+            let path = format!("{}/notes.json", er_dir);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut ns) = serde_json::from_str::<ai::ErNotes>(&content) {
+                    if let Some(n) = ns.notes.iter_mut().find(|n| n.id == comment_id) {
+                        n.text = new_text.clone();
+                        n.line_start = anchor.line_start;
+                        n.line_content = anchor.line_content.clone();
+                        n.context_before = anchor.context_before.clone();
+                        n.context_after = anchor.context_after.clone();
+                        n.old_line_start = anchor.old_line_start;
+                        n.hunk_header = anchor.hunk_header.clone();
+                        n.hunk_index = Some(hunk_index);
+                        n.anchor_status = "original".to_string();
+                        n.relocated_at_hash = diff_hash;
+                        n.stale = false;
+                    }
+                    let json = serde_json::to_string_pretty(&ns)?;
                     let tmp = format!("{}.tmp", path);
                     std::fs::write(&tmp, json)?;
                     std::fs::rename(&tmp, &path)?;
@@ -1241,7 +1413,7 @@ impl App {
 
         // Set the appropriate focus ID based on hint type
         match hint_type {
-            HintType::Question | HintType::GitHubComment => {
+            HintType::Question | HintType::Note | HintType::GitHubComment => {
                 tab.focused_comment_id = Some(id.clone());
                 tab.focused_finding_id = None;
             }
@@ -1280,10 +1452,8 @@ impl App {
         let er_dir = self.tab().er_dir();
         let repo_root = self.tab().repo_root.clone();
 
-        // Determine which file this comment lives in
-        let is_question = comment_id.starts_with("q-");
-
-        if is_question {
+        // Determine which file this comment lives in (by id prefix)
+        if comment_id.starts_with("q-") {
             // Delete from questions.json
             let path = format!("{}/questions.json", er_dir);
             if let Ok(content) = std::fs::read_to_string(&path) {
@@ -1292,6 +1462,20 @@ impl App {
                         q.id != comment_id && q.in_reply_to.as_deref() != Some(comment_id)
                     });
                     let json = serde_json::to_string_pretty(&qs)?;
+                    let tmp_path = format!("{}.tmp", path);
+                    std::fs::write(&tmp_path, &json)?;
+                    std::fs::rename(&tmp_path, &path)?;
+                }
+            }
+        } else if comment_id.starts_with("n-") {
+            // Delete from notes.json (cascade replies)
+            let path = format!("{}/notes.json", er_dir);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(mut ns) = serde_json::from_str::<ai::ErNotes>(&content) {
+                    ns.notes.retain(|n| {
+                        n.id != comment_id && n.in_reply_to.as_deref() != Some(comment_id)
+                    });
+                    let json = serde_json::to_string_pretty(&ns)?;
                     let tmp_path = format!("{}.tmp", path);
                     std::fs::write(&tmp_path, &json)?;
                     std::fs::rename(&tmp_path, &path)?;

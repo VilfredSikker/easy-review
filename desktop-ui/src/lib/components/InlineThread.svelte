@@ -17,6 +17,9 @@
   const { thread, variant = "inline" }: Props = $props();
 
   const isQuestion = $derived(thread.kind === "question");
+  const isNote = $derived(thread.kind === "note");
+  // Questions and notes are private, local-only, yellow-accented.
+  const isLocal = $derived(isQuestion || isNote);
   const isPromoted = $derived(thread.promoted_to != null);
 
   let replyText = $state("");
@@ -121,6 +124,10 @@
     showPromote = false;
   }
 
+  async function promoteToNote() {
+    await app.cmd("promote_to_note", { id: thread.id, body: buildPromoteBody() });
+  }
+
   async function submitAskAi() {
     const prompt = askAiText.trim();
     showAskAi = false;
@@ -132,6 +139,10 @@
     await app.cmd("validate_with_ai", { threadId: thread.id, findingId: null });
   }
 
+  async function elaborateWithAi() {
+    await app.cmd("elaborate_with_ai", { threadId: thread.id });
+  }
+
   async function copyThread() {
     const header = thread.line > 0 ? `${thread.file}:${thread.line}` : thread.file;
     const text = `**${header}**\n\n${buildPromoteBody()}`;
@@ -141,7 +152,7 @@
   }
 
   async function pushOnlyThis() {
-    if (pushing || thread.synced || isQuestion) return;
+    if (pushing || thread.synced || isLocal) return;
     pushing = true;
     try {
       const activeTab = app.snapshot?.tabs?.find((t) => t.is_active) ?? null;
@@ -177,11 +188,14 @@
 
 <div
   id={thread.id}
-  class="{variant === 'panel' ? '' : 'mx-4 my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 min-w-0 max-w-full {thread.stale ? 'opacity-60' : ''} {isQuestion ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
+  class="{variant === 'panel' ? '' : 'mx-4 my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 min-w-0 max-w-full {thread.stale ? 'opacity-60' : ''} {isLocal ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
 >
   <!-- Header -->
   <div class="px-3 py-2 border-b border-hairline flex items-center gap-2">
-    {#if isQuestion}
+    {#if isNote}
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-question"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
+      <span class="text-question text-sm font-medium">Note</span>
+    {:else if isQuestion}
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-question"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
       <span class="text-question text-sm font-medium">Local question</span>
     {:else}
@@ -192,7 +206,7 @@
       <span class="text-[10px] font-mono text-muted">· line {thread.line}</span>
     {/if}
 
-    {#if isQuestion}
+    {#if isLocal}
       <span class="ml-auto text-[10px] font-mono text-muted">private · won't push</span>
     {:else if !thread.synced && thread.source === "local"}
       <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-hover border border-border font-mono text-[10px] text-ai ml-auto">
@@ -289,7 +303,7 @@
               <ReplyActionBar
                 reply={{ ...reply, origin: reply.origin ?? "thread_reply" }}
                 rootThreadId={thread.id}
-                {isQuestion}
+                isQuestion={isLocal}
                 parentSynced={thread.synced}
                 threadResolved={thread.resolved}
                 onEdit={reply.kind === "you" ? () => openEdit(reply.id, reply.body_markdown) : undefined}
@@ -376,15 +390,27 @@
     {#if !showAskAi}
       <button onclick={openAskAi} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI…</button>
     {/if}
-    <button
-      type="button"
-      onclick={() => void validateWithAi()}
-      title="Check this note against the current code (local reply, not posted to GitHub)"
-      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
-    >
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
-      Validate with AI
-    </button>
+    {#if isQuestion}
+      <button
+        type="button"
+        onclick={() => void elaborateWithAi()}
+        title="Ask AI to answer / elaborate on this question (local reply, not posted to GitHub)"
+        class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
+        Elaborate
+      </button>
+    {:else}
+      <button
+        type="button"
+        onclick={() => void validateWithAi()}
+        title="Check this against the current code (local reply, not posted to GitHub)"
+        class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
+        Validate with AI
+      </button>
+    {/if}
     <button
       onclick={copyThread}
       title="Copy thread as markdown"
@@ -401,7 +427,7 @@
     {#if !thread.resolved}
       <button onclick={resolveThread} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Resolve</button>
     {/if}
-    {#if !isQuestion && !thread.synced}
+    {#if !isLocal && !thread.synced}
       <button
         type="button"
         onclick={() => void pushOnlyThis()}
@@ -413,7 +439,17 @@
         {pushing ? "Pushing…" : "Push only this"}
       </button>
     {/if}
-    {#if isQuestion && !isPromoted}
+    {#if isQuestion}
+      <button
+        onclick={() => void promoteToNote()}
+        title="Turn this question into a local actionable note"
+        class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
+        Promote to note
+      </button>
+    {/if}
+    {#if (isQuestion || isNote) && !isPromoted}
       <button
         onclick={() => (showPromote = true)}
         class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1"
@@ -443,7 +479,7 @@
 
 <PromoteModal
   open={showPromote}
-  kind="question"
+  kind={isNote ? "note" : "question"}
   sourceId={thread.id}
   initialBody={buildPromoteBody()}
   targetLineLabel={targetLineLabel}
