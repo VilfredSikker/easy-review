@@ -257,13 +257,23 @@ pub fn available_themes() -> Vec<&'static str> {
 pub fn graphite() -> Theme {
     build(&Tokens {
         name: "graphite",
-        bg: "#0b0b0d", bg1: "#16161a", bg2: "#1d1d22", bg3: "#28282f",
+        bg: "#0b0b0d",
+        bg1: "#16161a",
+        bg2: "#1d1d22",
+        bg3: "#28282f",
         line2: "#ffffff26",
-        tx: "#ededf0", tx2: "#a1a1ab", tx3: "#6b6b75",
+        tx: "#ededf0",
+        tx2: "#a1a1ab",
+        tx3: "#6b6b75",
         accent: "#f2843c",
-        red: "#ef5f5b", amber: "#e3b341", blue: "#5f9cea",
-        cyan: "#4cc4e0", purple: "#a78bf6", green: "#46bd6c",
-        add: "#46bd6c", del: "#ef5f5b",
+        red: "#ef5f5b",
+        amber: "#e3b341",
+        blue: "#5f9cea",
+        cyan: "#4cc4e0",
+        purple: "#a78bf6",
+        green: "#46bd6c",
+        add: "#46bd6c",
+        del: "#ef5f5b",
         syntect: "OneHalfDark",
     })
 }
@@ -272,13 +282,23 @@ pub fn graphite() -> Theme {
 pub fn slate() -> Theme {
     build(&Tokens {
         name: "slate",
-        bg: "#0c1118", bg1: "#131b25", bg2: "#1a2431", bg3: "#243140",
+        bg: "#0c1118",
+        bg1: "#131b25",
+        bg2: "#1a2431",
+        bg3: "#243140",
         line2: "#9fc0ff2e",
-        tx: "#e9eef5", tx2: "#9aa9bb", tx3: "#647588",
+        tx: "#e9eef5",
+        tx2: "#9aa9bb",
+        tx3: "#647588",
         accent: "#f2843c",
-        red: "#f0635f", amber: "#e6b84a", blue: "#6aa6f5",
-        cyan: "#43c8e2", purple: "#ab92f7", green: "#4ec977",
-        add: "#4ec977", del: "#f0635f",
+        red: "#f0635f",
+        amber: "#e6b84a",
+        blue: "#6aa6f5",
+        cyan: "#43c8e2",
+        purple: "#ab92f7",
+        green: "#4ec977",
+        add: "#4ec977",
+        del: "#f0635f",
         syntect: "OneHalfDark",
     })
 }
@@ -287,13 +307,23 @@ pub fn slate() -> Theme {
 pub fn midnight() -> Theme {
     build(&Tokens {
         name: "midnight",
-        bg: "#0e0f1a", bg1: "#171829", bg2: "#1e2036", bg3: "#292c48",
+        bg: "#0e0f1a",
+        bg1: "#171829",
+        bg2: "#1e2036",
+        bg3: "#292c48",
         line2: "#a9b8ff2e",
-        tx: "#e6e8f5", tx2: "#9aa0c4", tx3: "#666c90",
+        tx: "#e6e8f5",
+        tx2: "#9aa0c4",
+        tx3: "#666c90",
         accent: "#f2843c",
-        red: "#f7768e", amber: "#e0af68", blue: "#7aa2f7",
-        cyan: "#7dcfff", purple: "#bb9af7", green: "#9ece6a",
-        add: "#9ece6a", del: "#f7768e",
+        red: "#f7768e",
+        amber: "#e0af68",
+        blue: "#7aa2f7",
+        cyan: "#7dcfff",
+        purple: "#bb9af7",
+        green: "#9ece6a",
+        add: "#9ece6a",
+        del: "#f7768e",
         syntect: "OneHalfDark",
     })
 }
@@ -302,13 +332,23 @@ pub fn midnight() -> Theme {
 pub fn ember() -> Theme {
     build(&Tokens {
         name: "ember",
-        bg: "#100c0a", bg1: "#1b1512", bg2: "#241c17", bg3: "#312620",
+        bg: "#100c0a",
+        bg1: "#1b1512",
+        bg2: "#241c17",
+        bg3: "#312620",
         line2: "#ffd9b82b",
-        tx: "#f1e9e2", tx2: "#b09c8d", tx3: "#75665c",
+        tx: "#f1e9e2",
+        tx2: "#b09c8d",
+        tx3: "#75665c",
         accent: "#f2843c",
-        red: "#ef6151", amber: "#e7b24a", blue: "#7aa6dd",
-        cyan: "#56bfc0", purple: "#c193e8", green: "#76b95f",
-        add: "#76b95f", del: "#ef6151",
+        red: "#ef6151",
+        amber: "#e7b24a",
+        blue: "#7aa6dd",
+        cyan: "#56bfc0",
+        purple: "#c193e8",
+        green: "#76b95f",
+        add: "#76b95f",
+        del: "#ef6151",
         syntect: "OneHalfDark",
     })
 }
@@ -319,13 +359,23 @@ pub fn ember() -> Theme {
 pub fn paper() -> Theme {
     build(&Tokens {
         name: "paper",
-        bg: "#faf8f4", bg1: "#ffffff", bg2: "#f3efe8", bg3: "#e9e3d8",
+        bg: "#faf8f4",
+        bg1: "#ffffff",
+        bg2: "#f3efe8",
+        bg3: "#e9e3d8",
         line2: "#3a2a1a2b",
-        tx: "#211d18", tx2: "#6b6258", tx3: "#9a9085",
+        tx: "#211d18",
+        tx2: "#6b6258",
+        tx3: "#9a9085",
         accent: "#cf5f17",
-        red: "#cc3b39", amber: "#a9740f", blue: "#2f6fd0",
-        cyan: "#0e87a3", purple: "#7a4fd0", green: "#1c854b",
-        add: "#1c854b", del: "#cc3b39",
+        red: "#cc3b39",
+        amber: "#a9740f",
+        blue: "#2f6fd0",
+        cyan: "#0e87a3",
+        purple: "#7a4fd0",
+        green: "#1c854b",
+        add: "#1c854b",
+        del: "#cc3b39",
         syntect: "base16-ocean.light",
     })
 }
@@ -334,13 +384,23 @@ pub fn paper() -> Theme {
 pub fn daylight() -> Theme {
     build(&Tokens {
         name: "daylight",
-        bg: "#f6f7f9", bg1: "#ffffff", bg2: "#eef0f3", bg3: "#e3e7ec",
+        bg: "#f6f7f9",
+        bg1: "#ffffff",
+        bg2: "#eef0f3",
+        bg3: "#e3e7ec",
         line2: "#0b1b3a29",
-        tx: "#161a21", tx2: "#5b6573", tx3: "#8b95a3",
+        tx: "#161a21",
+        tx2: "#5b6573",
+        tx3: "#8b95a3",
         accent: "#cf5f17",
-        red: "#cc3b39", amber: "#9a6b12", blue: "#2563cf",
-        cyan: "#0b7e9c", purple: "#6f45cc", green: "#168049",
-        add: "#168049", del: "#cc3b39",
+        red: "#cc3b39",
+        amber: "#9a6b12",
+        blue: "#2563cf",
+        cyan: "#0b7e9c",
+        purple: "#6f45cc",
+        green: "#168049",
+        add: "#168049",
+        del: "#cc3b39",
         syntect: "base16-ocean.light",
     })
 }
@@ -351,13 +411,23 @@ pub fn daylight() -> Theme {
 pub fn contrast_dark() -> Theme {
     build(&Tokens {
         name: "contrast-dark",
-        bg: "#000000", bg1: "#0a0a0b", bg2: "#151517", bg3: "#202024",
+        bg: "#000000",
+        bg1: "#0a0a0b",
+        bg2: "#151517",
+        bg3: "#202024",
         line2: "#ffffff5c",
-        tx: "#ffffff", tx2: "#d4d4da", tx3: "#9a9aa2",
+        tx: "#ffffff",
+        tx2: "#d4d4da",
+        tx3: "#9a9aa2",
         accent: "#ff9a4d",
-        red: "#ff6b66", amber: "#ffcf4d", blue: "#7fb4ff",
-        cyan: "#5fd6f0", purple: "#cbabff", green: "#5fe08a",
-        add: "#5fe08a", del: "#ff6b66",
+        red: "#ff6b66",
+        amber: "#ffcf4d",
+        blue: "#7fb4ff",
+        cyan: "#5fd6f0",
+        purple: "#cbabff",
+        green: "#5fe08a",
+        add: "#5fe08a",
+        del: "#ff6b66",
         syntect: "OneHalfDark",
     })
 }
@@ -366,13 +436,23 @@ pub fn contrast_dark() -> Theme {
 pub fn contrast_light() -> Theme {
     build(&Tokens {
         name: "contrast-light",
-        bg: "#ffffff", bg1: "#ffffff", bg2: "#f2f2f4", bg3: "#e6e6ea",
+        bg: "#ffffff",
+        bg1: "#ffffff",
+        bg2: "#f2f2f4",
+        bg3: "#e6e6ea",
         line2: "#0000005c",
-        tx: "#000000", tx2: "#2e2e33", tx3: "#5a5a61",
+        tx: "#000000",
+        tx2: "#2e2e33",
+        tx3: "#5a5a61",
         accent: "#b8530c",
-        red: "#bf1b1b", amber: "#7a5300", blue: "#1551c4",
-        cyan: "#056b85", purple: "#6321c0", green: "#0c7a3f",
-        add: "#0c7a3f", del: "#bf1b1b",
+        red: "#bf1b1b",
+        amber: "#7a5300",
+        blue: "#1551c4",
+        cyan: "#056b85",
+        purple: "#6321c0",
+        green: "#0c7a3f",
+        add: "#0c7a3f",
+        del: "#bf1b1b",
         syntect: "base16-ocean.light",
     })
 }
@@ -440,7 +520,10 @@ mod tests {
         // Old config values must keep resolving after the rebrand.
         assert_eq!(theme_by_name("ocean-depth").unwrap().name, "graphite");
         assert_eq!(theme_by_name("moonlight").unwrap().name, "slate");
-        assert_eq!(theme_by_name("high-contrast").unwrap().name, "contrast-dark");
+        assert_eq!(
+            theme_by_name("high-contrast").unwrap().name,
+            "contrast-dark"
+        );
         assert_eq!(theme_by_name("daybreak").unwrap().name, "daylight");
         assert_eq!(theme_by_name("tokyo-night").unwrap().name, "midnight");
         assert_eq!(theme_by_name("tokyo-night-day").unwrap().name, "paper");
