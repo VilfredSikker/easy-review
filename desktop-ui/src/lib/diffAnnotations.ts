@@ -70,7 +70,23 @@ export interface CommentVisibility {
   hideAll: boolean;
   hideResolved: boolean;
   hideOutdated: boolean;
+  /** Hide GitHub comment threads (kind === "comment"). */
+  hideComments: boolean;
+  /** Hide AI findings. */
+  hideFindings: boolean;
+  /** Hide personal question threads (kind === "question"). */
+  hideQuestions: boolean;
 }
+
+/** All annotations visible — the default visibility used as a fallback. */
+export const ALL_VISIBLE: CommentVisibility = {
+  hideAll: false,
+  hideResolved: false,
+  hideOutdated: false,
+  hideComments: false,
+  hideFindings: false,
+  hideQuestions: false,
+};
 
 /** Minimal AiSnapshot subset used by the helpers. */
 type AiInput = Pick<AiSnapshot, "threads" | "findings">;
@@ -107,7 +123,15 @@ export function annotationVersion(
       for (const t of hunk.threads) h = (h * 31 + hashStr(t.id) + (t.resolved ? 1 : 0)) | 0;
     }
   }
-  h = (h * 31 + (vis.hideAll ? 1 : 0) + (vis.hideResolved ? 2 : 0) + (vis.hideOutdated ? 4 : 0)) | 0;
+  h =
+    (h * 31 +
+      (vis.hideAll ? 1 : 0) +
+      (vis.hideResolved ? 2 : 0) +
+      (vis.hideOutdated ? 4 : 0) +
+      (vis.hideComments ? 8 : 0) +
+      (vis.hideFindings ? 16 : 0) +
+      (vis.hideQuestions ? 32 : 0)) |
+    0;
   h = (h * 31 + hashStr(mode)) | 0;
   h = (h * 31 + hashStr(agentFilter)) | 0;
   h = (h * 31 + hashStr(severityFilter)) | 0;
@@ -122,9 +146,11 @@ export function buildAnnotationIndex(
   agentFilter: AgentFilter = ALL_REVIEWERS,
   severityFilter: FindingSeverityFilter = "all",
 ): AnnotationIndex {
-  const visibleFindings = filterByAgent(ai.findings, agentFilter).filter(
-    (f) => severityFilter === "all" || f.severity === severityFilter,
-  );
+  const visibleFindings = visibility.hideFindings
+    ? []
+    : filterByAgent(ai.findings, agentFilter).filter(
+        (f) => severityFilter === "all" || f.severity === severityFilter,
+      );
   const findingsByFileLine = new Map<string, FlatFinding[]>();
   const findingsByFile = new Map<string, FlatFinding[]>();
   for (const f of visibleFindings) {
@@ -311,6 +337,8 @@ function visibleThreads(
   return threads.filter(
     (t) =>
       !findingThreadIds.has(t.id) &&
+      !(vis.hideComments && t.kind === "comment") &&
+      !(vis.hideQuestions && t.kind === "question") &&
       !(vis.hideResolved && t.resolved) &&
       !(vis.hideOutdated && t.stale),
   );
@@ -322,7 +350,7 @@ export function threadsForLine(
   hunkIndex: number,
   line: number,
   _hunkLines: LineSnapshot[],
-  vis: CommentVisibility = { hideAll: false, hideResolved: false, hideOutdated: false },
+  vis: CommentVisibility = ALL_VISIBLE,
 ): ThreadSnapshot[] {
   const threads = idx.threadsByHunk.get(`${filePath}#${hunkIndex}`) ?? [];
   return visibleThreads(threads, idx.findingThreadIds, vis).filter(
@@ -335,7 +363,7 @@ export function lineHasAnchorRangeHighlight(
   filePath: string,
   line: number,
   side: "old" | "new" | null,
-  vis: CommentVisibility = { hideAll: false, hideResolved: false, hideOutdated: false },
+  vis: CommentVisibility = ALL_VISIBLE,
 ): boolean {
   const ranges = idx.threadRangesByFile.get(filePath);
   if (!ranges) return false;
@@ -356,7 +384,7 @@ export function fallbackThreadsForHunk(
   hunkIndex: number,
   _hunk: { new_start: number; new_count: number },
   renderedLineNums: Set<number>,
-  vis: CommentVisibility = { hideAll: false, hideResolved: false, hideOutdated: false },
+  vis: CommentVisibility = ALL_VISIBLE,
 ): ThreadSnapshot[] {
   const threads = idx.threadsByHunk.get(`${filePath}#${hunkIndex}`) ?? [];
   return visibleThreads(threads, idx.findingThreadIds, vis).filter((t) => {

@@ -16,7 +16,14 @@ import {
 } from "./diffAnnotations";
 import type { FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "./types";
 
-const VIS_OFF: CommentVisibility = { hideAll: false, hideResolved: false, hideOutdated: false };
+const VIS_OFF: CommentVisibility = {
+  hideAll: false,
+  hideResolved: false,
+  hideOutdated: false,
+  hideComments: false,
+  hideFindings: false,
+  hideQuestions: false,
+};
 
 function mkLine(opts: Partial<LineSnapshot> & Pick<LineSnapshot, "kind">): LineSnapshot {
   return {
@@ -316,17 +323,17 @@ describe("threadsForLine", () => {
     const { ai, files } = buildFixture();
     const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF);
 
-    const all = threadsForLine(idx, FILE, 0, 13, hunkLines, { hideAll: false, hideResolved: false, hideOutdated: false });
+    const all = threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF);
     // baseThread (t1), resolvedThread (t2), staleThread (t3); tOwned excluded.
     expect(all.map((t) => t.id).sort()).toEqual(["t1", "t2", "t3"]);
 
-    const hideResolved = threadsForLine(idx, FILE, 0, 13, hunkLines, { hideAll: false, hideResolved: true, hideOutdated: false });
+    const hideResolved = threadsForLine(idx, FILE, 0, 13, hunkLines, { ...VIS_OFF, hideResolved: true });
     expect(hideResolved.map((t) => t.id).sort()).toEqual(["t1", "t3"]);
 
-    const hideOutdated = threadsForLine(idx, FILE, 0, 13, hunkLines, { hideAll: false, hideResolved: false, hideOutdated: true });
+    const hideOutdated = threadsForLine(idx, FILE, 0, 13, hunkLines, { ...VIS_OFF, hideOutdated: true });
     expect(hideOutdated.map((t) => t.id).sort()).toEqual(["t1", "t2"]);
 
-    const hideAll = threadsForLine(idx, FILE, 0, 13, hunkLines, { hideAll: true, hideResolved: false, hideOutdated: false });
+    const hideAll = threadsForLine(idx, FILE, 0, 13, hunkLines, { ...VIS_OFF, hideAll: true });
     expect(hideAll.length).toBe(0);
   });
 

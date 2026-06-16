@@ -138,6 +138,9 @@ const VIS_DEFAULT: CommentVisibility = {
   hideAll: false,
   hideResolved: false,
   hideOutdated: false,
+  hideComments: false,
+  hideFindings: false,
+  hideQuestions: false,
 };
 
 function mkInputs(
@@ -477,7 +480,7 @@ describe("getFileBlock — caching", () => {
     });
     const f = file({ path: "a.ts", hunks: [h1] });
     const a = getFileBlock(mkInputs(f, [f], emptyAi(), "unified", VIS_DEFAULT));
-    const visHide: CommentVisibility = { hideAll: true, hideResolved: false, hideOutdated: false };
+    const visHide: CommentVisibility = { ...VIS_DEFAULT, hideAll: true };
     const b = getFileBlock(mkInputs(f, [f], emptyAi(), "unified", visHide));
     expect(a).not.toBe(b);
     expect(a.modelKey).not.toBe(b.modelKey);
@@ -615,7 +618,7 @@ describe("getCrossFileModel — identity & cache invalidation", () => {
     const a = mkCross([f0], emptyAi(), { snapshotKey: "vis" });
     const b = mkCross([f0], emptyAi(), {
       snapshotKey: "vis",
-      vis: { hideAll: false, hideResolved: true, hideOutdated: false },
+      vis: { ...VIS_DEFAULT, hideResolved: true },
     });
     expect(a.identity).not.toBe(b.identity);
   });
