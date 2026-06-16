@@ -3741,12 +3741,10 @@ pub fn ask_ai(
             let q = items
                 .iter()
                 .find(|q| q.id == thread_id)
-                .ok_or_else(|| {
-                    if is_note {
-                        "Note not found"
-                    } else {
-                        "Question not found"
-                    }
+                .ok_or(if is_note {
+                    "Note not found"
+                } else {
+                    "Question not found"
                 })
                 .map_err(|e| e.to_string())?;
             let mut thread_body = String::new();
@@ -7659,6 +7657,7 @@ mod tests {
         let changed = mark_thread_resolved_in_files(
             "q-1",
             &q_path.to_string_lossy(),
+            &tmp.path().join("notes.json").to_string_lossy(),
             &gc_path.to_string_lossy(),
         )
         .unwrap();
@@ -7710,6 +7709,7 @@ mod tests {
         let changed = mark_thread_resolved_in_files(
             "c-1",
             &q_path.to_string_lossy(),
+            &tmp.path().join("notes.json").to_string_lossy(),
             &gc_path.to_string_lossy(),
         )
         .unwrap();
