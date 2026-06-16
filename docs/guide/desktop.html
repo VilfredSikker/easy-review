@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Desktop App Overview — easy-review docs</title>
+  <meta name="description" content="The easy-review desktop app: a Tauri + Svelte review application with a multi-panel layout, embedded terminal and browser, multi-model review arena, and a settings GUI.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Desktop App</p>
+    <h1>Desktop App Overview</h1>
+    <p class="lead">
+      The desktop app is a graphical front end for the same review engine the terminal uses. It trades the terminal's
+      instant, minimal feel for a richer surface: split diffs, an embedded terminal and browser, a multi-model review
+      “arena”, point-and-click settings, and persistent tabs. Everything shared with the terminal is covered under
+      <a href="concepts.html">Core Concepts</a>; this section is the desktop-specific parts.
+    </p>
+
+    <div class="callout warn">
+      <span class="ico">▲</span>
+      <div><p>The desktop app is in <strong>active development</strong>. It is built from source today (it is not part of
+      the published releases yet), and details such as exact keyboard shortcuts may change. See
+      <a href="installation.html#desktop-app">Installation</a> for build steps.</p></div>
+    </div>
+
+    <h2>How it relates to the terminal app</h2>
+    <p>
+      Same engine, same data. The desktop app reads and writes the same review files per repository, branch, and view, so
+      a review started in the terminal continues in the desktop app and vice versa. The mental model — diff modes, watch
+      mode, reviewed marks, questions vs GitHub comments, AI sidecars and staleness — is identical. What differs is the
+      presentation and a set of features only a GUI can offer.
+    </p>
+
+    <h2>The layout</h2>
+    <p>The window is organized into several regions:</p>
+    <table>
+      <thead><tr><th>Region</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Tab strip</strong> (top)</td><td>Open repos, branches, and PRs as tabs. Drag to reorder, middle-click to close, jump with <kbd>Cmd</kbd>+<kbd>1…9</kbd>.</td></tr>
+        <tr><td><strong>Branch context bar</strong></td><td>Current branch, base comparison, PR number, change summary, and a Local&nbsp;Branch ↔ PR&nbsp;Diff toggle.</td></tr>
+        <tr><td><strong>Left sidebar</strong></td><td>Collapsible file tree with search, plus a project / branch / PR picker for switching context.</td></tr>
+        <tr><td><strong>Diff view</strong> (center)</td><td>Unified or split diff with inline threads, AI findings, and intra-line word-diff highlighting.</td></tr>
+        <tr><td><strong>Right panel</strong></td><td>Three tabs — Branch (git/PR status), Review (AI findings, summary, arena history), and Notes (questions &amp; GitHub comments).</td></tr>
+        <tr><td><strong>Browser</strong> (optional)</td><td>An embedded webview for docs, design systems, or APIs, with an annotation mode.</td></tr>
+        <tr><td><strong>Terminal drawer</strong> (bottom)</td><td>A resizable embedded shell for running commands without leaving the app.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Command surfaces</h2>
+    <p>Two palettes make everything reachable without hunting through menus:</p>
+    <ul>
+      <li><strong>Command palette</strong> (<kbd>Cmd</kbd>+<kbd>K</kbd>) — a searchable list of actions, navigation, and
+      files in the current diff.</li>
+      <li><strong>AI action palette / AI Hub</strong> (<kbd>Cmd</kbd>+<kbd>A</kbd>) — run a review, launch the arena,
+      pick a provider and model, choose specialized reviewers, export, and more.</li>
+    </ul>
+
+    <h2>What the desktop adds over the terminal</h2>
+    <table>
+      <thead><tr><th>Capability</th><th>Desktop</th><th>Terminal</th></tr></thead>
+      <tbody>
+        <tr><td>Split-mode (side-by-side) diff</td><td>Yes</td><td>—</td></tr>
+        <tr><td>Intra-line word-diff highlighting</td><td>Yes</td><td>—</td></tr>
+        <tr><td>Embedded terminal drawer</td><td>Yes</td><td>—</td></tr>
+        <tr><td>Embedded browser + page annotations</td><td>Yes</td><td>—</td></tr>
+        <tr><td>Multi-model review arena</td><td>Full UI (bracket / matrix / funnel)</td><td>CLI output</td></tr>
+        <tr><td>Settings as a GUI</td><td>Yes</td><td>Overlay + TOML</td></tr>
+        <tr><td>Persistent, drag-to-reorder tabs</td><td>Yes</td><td>Session tabs</td></tr>
+        <tr><td>Reference “find usages” popover</td><td>Yes</td><td>—</td></tr>
+        <tr><td>Export review to markdown</td><td>Preview + copy/save</td><td>—</td></tr>
+        <tr><td>Keyboard-driven, zero-dependency, instant start</td><td>—</td><td>Yes</td></tr>
+      </tbody>
+    </table>
+    <p>Each of these is covered in depth on the next page.</p>
+
+    <h2>Running it</h2>
+    <pre><code><span class="cmt"># development shell with hot reload</span>
+./scripts/tauri-dev.sh
+
+<span class="cmt"># with extra logging (e.g. the review arena)</span>
+./scripts/tauri-dev.sh --logs arena
+
+<span class="cmt"># build a release bundle (.app + .dmg on macOS)</span>
+./scripts/tauri-build.sh</code></pre>
+
+    <div class="callout tip">
+      <span class="ico">✦</span>
+      <div><p><strong>Next:</strong> <a href="desktop-features.html">Features in Depth</a> walks through the arena,
+      browser annotations, terminal drawer, export, references, and the desktop keyboard shortcuts.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How er Works — easy-review docs</title>
+  <meta name="description" content="The mental model behind easy-review: base branch detection, watch mode, review tracking, the AI sidecar loop, and how the terminal and desktop apps share state.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Core Concepts</p>
+    <h1>How <code>er</code> Works</h1>
+    <p class="lead">
+      Everything in this section applies to both the terminal and desktop apps — they share one review engine. This
+      page is the mental model; the pages that follow drill into each piece.
+    </p>
+
+    <h2>The core idea</h2>
+    <p>
+      Most diff tools assume <em>you</em> wrote the code and just want to look at it before committing. <code>er</code>
+      assumes an AI assistant may have written a lot of it, that the diff keeps changing while you read, and that
+      review is now the bottleneck. So it optimizes for three things: <strong>speed</strong> (instant startup, keyboard
+      navigation), <strong>liveness</strong> (the diff updates itself as code changes), and a <strong>feedback loop</strong>
+      with whatever AI tools you already use.
+    </p>
+
+    <h2>It shells out to git</h2>
+    <p>
+      <code>er</code> does not reimplement git. It runs <code>git diff</code> and friends and parses the unified diff
+      output into a structured model: each <strong>file</strong> contains <strong>hunks</strong>, and each hunk contains
+      <strong>lines</strong>. Every git invocation passes <code>--no-color</code> and <code>--no-ext-diff</code>, so
+      external diff tools like difftastic or delta never interfere. Because git is always installed and battle-tested,
+      this handles every edge case for free.
+    </p>
+
+    <h2>Base branch is detected for you</h2>
+    <p>
+      When you open the branch diff, <code>er</code> needs to know what to compare against. It works down a fallback chain:
+    </p>
+    <ol>
+      <li>Your branch's <strong>upstream tracking branch</strong>, if set.</li>
+      <li><code>main</code></li>
+      <li><code>master</code></li>
+      <li><code>develop</code></li>
+      <li><code>dev</code></li>
+    </ol>
+    <p>
+      You never have to pass a base branch. When the <code>gh</code> CLI is available and your branch has an open pull
+      request that targets a <em>different</em> base, <code>er</code> shows a hint — it does not silently switch on you.
+    </p>
+
+    <h2>Watch mode keeps the diff live</h2>
+    <p>
+      A file-system watcher runs from launch. It monitors three things at once: your working tree (edits),
+      <code>.git/index</code> (staging), and <code>.git/refs/</code> (commits). Changes are debounced — roughly half a
+      second — so a burst of saves becomes a single refresh. The result: leave <code>er</code> open beside your AI
+      assistant and the diff simply follows along. This is a core feature, not a toggle you have to discover; it is on
+      by default.
+    </p>
+    <p>One consequence worth knowing: when a file's diff content actually changes, <code>er</code>
+    <strong>auto-unmarks</strong> it as reviewed. Stale “reviewed” state can never hide new changes from you.</p>
+
+    <h2>Review tracking is first-class</h2>
+    <p>
+      A review is a stateful activity, not a one-shot glance. <code>er</code> remembers which files you have marked
+      reviewed, lets you filter to what remains, and can jump you to the next unreviewed file. That state persists
+      between sessions, keyed to the repository and branch, so a long review survives closing the app. See
+      <a href="reviewing.html">Reviewing &amp; Navigation</a>.
+    </p>
+
+    <h2>Two kinds of notes</h2>
+    <p>
+      <code>er</code> deliberately separates <strong>private questions</strong> (notes to yourself or to your AI, kept
+      local) from <strong>GitHub comments</strong> (PR discussion that syncs upstream). They use different keys and
+      different colors so you never accidentally publish a private thought. Both anchor to an exact line and follow it
+      as the code shifts. Details in <a href="comments.html">Comments &amp; Questions</a>.
+    </p>
+
+    <h2>The AI loop reads sidecar files</h2>
+    <p>
+      This is the part that makes <code>er</code> more than a diff viewer, so it is worth being precise:
+      <strong><code>er</code> does not run any AI model.</strong> Instead, AI tools you run (via the included Claude Code
+      skills, or the desktop app's built-in agent spawns) write structured <strong>sidecar files</strong> — risk levels,
+      findings, a checklist, a summary. <code>er</code> reads those files and renders them inline. The loop looks like this:
+    </p>
+    <pre><code>  you / your AI tool                 er
+  ──────────────────                 ──
+  /er-review            ──writes──&gt;  review.json, checklist.json, …
+                                     reads &amp; renders findings inline
+  press q to ask        ──writes──&gt;  questions.json
+  /er-questions         ──reads───&gt;  responds, updates files
+                                     refreshes, shows answers inline
+  /er-publish           ──reads───&gt;  posts review to your GitHub PR</code></pre>
+    <p>
+      Each sidecar records a SHA-256 hash of the diff it was generated against. When the underlying diff changes, that
+      AI data is dimmed with a <strong>stale</strong> warning, so you always know whether the analysis still matches the
+      code. Full details in <a href="ai-review.html">AI Review</a> and <a href="storage.html">Review Storage</a>.
+    </p>
+
+    <h2>The terminal and desktop apps share everything</h2>
+    <p>
+      Both front ends are thin shells over the same engine (<code>er-engine</code>). They read and write the same review
+      data, keyed per repository, branch, and view. You can run a review in the desktop app and pick it up in the
+      terminal, or vice versa — the reviewed marks, questions, comments, and AI artifacts are the same files underneath.
+      By default those files live in managed application data, <em>not</em> in your repository; see
+      <a href="storage.html">Review Storage</a>.
+    </p>
+
+    <h2>No backend, no telemetry</h2>
+    <p>
+      There is no server, no database, and no network calls of <code>er</code>'s own. It talks to your local
+      <code>git</code>, optionally to <code>gh</code> for pull request features, and reads files written by AI tools you
+      control. Your code never leaves your machine because of <code>er</code>.
+    </p>
+
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>With the model in hand, the rest of Core Concepts is a tour of each capability. Start with
+      <a href="diff-modes.html">Diff Modes</a>.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

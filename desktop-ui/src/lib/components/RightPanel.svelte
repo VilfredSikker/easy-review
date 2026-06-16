@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import type { AiSnapshot, PrSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { copyToClipboard } from "$lib/clipboard";
   import { resolveActivePrUrl } from "$lib/prUrl";
   import BranchCard from "./BranchCard.svelte";
   import AiReviewCard from "./AiReviewCard.svelte";
@@ -125,6 +127,63 @@
     { id: "review", label: "Review", badge: totalFindings > 0 ? totalFindings : null },
     { id: "notes",  label: "Notes",  badge: noteCount + questionCount > 0 ? noteCount + questionCount : null },
   ]);
+
+  // ── Per-tab export ───────────────────────────────────────────────────────────
+  // The shared `export_review` backend command renders selected sections to
+  // markdown. Each tab exports only the sections it shows, so the clipboard
+  // content lands ready to paste into a coding agent.
+  //
+  // NOTE: This mirrors the Rust `ExportOpts` struct in
+  // `crates/er-desktop/src/export.rs` (camelCase over IPC). There are no
+  // generated Tauri bindings, so keep these fields in sync with that struct —
+  // `ExportReviewView.svelte` keeps its own copy for the same reason.
+  type ExportOpts = {
+    includeComments: boolean;
+    includeQuestions: boolean;
+    includeFindings: boolean;
+    includeAnnotations: boolean;
+    onlyUnresolved: boolean;
+  };
+
+  const NO_SECTIONS: ExportOpts = {
+    includeComments: false,
+    includeQuestions: false,
+    includeFindings: false,
+    includeAnnotations: false,
+    onlyUnresolved: false,
+  };
+
+  function exportOptsForTab(t: Tab): ExportOpts {
+    switch (t) {
+      case "branch":
+        return { ...NO_SECTIONS, includeComments: true };
+      case "review":
+        return { ...NO_SECTIONS, includeFindings: true };
+      case "notes":
+        return { ...NO_SECTIONS, includeQuestions: true, includeAnnotations: true };
+    }
+  }
+
+  let copying = $state(false);
+
+  async function copyTabToClipboard() {
+    if (copying) return;
+    copying = true;
+    const label = tabs.find((t) => t.id === activeTab)?.label ?? "section";
+    try {
+      const body = await invoke<string>("export_review", { opts: exportOptsForTab(activeTab) });
+      if (!body.trim()) {
+        app.showToast("info", `Nothing to export from the ${label} tab`);
+        return;
+      }
+      await copyToClipboard(body);
+      app.showToast("success", `Copied ${label} to clipboard (${body.length} chars)`);
+    } catch (e) {
+      app.showToast("error", `Export failed: ${e}`);
+    } finally {
+      copying = false;
+    }
+  }
 </script>
 
 <aside
@@ -206,7 +265,8 @@
   </div>
 
   <!-- ── Tab content ─────────────────────────────────────────────────────── -->
-  <div class="flex-1 overflow-y-auto">
+  <!-- pb-14 clears the absolutely-positioned export action bar below. -->
+  <div class="flex-1 overflow-y-auto pb-14">
     <!-- Branch tab -->
     {#if activeTab === "branch"}
       <div class="p-4 space-y-4 pb-8">
@@ -299,5 +359,34 @@
         </div>
       </div>
     {/if}
+  </div>
+
+  <!-- ── Per-tab export actions (pinned to panel bottom) ──────────────────── -->
+  <div class="absolute inset-x-0 bottom-0 flex items-center gap-2 px-3 py-2 border-t border-hairline bg-surface">
+    <button
+      type="button"
+      onclick={copyTabToClipboard}
+      disabled={copying}
+      title="Copy this section as markdown, ready to paste into a coding agent"
+      class="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium rounded border border-border text-fg-2 hover:bg-hover hover:text-fg transition-colors disabled:opacity-50 disabled:cursor-default"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="9" y="9" width="13" height="13" rx="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </svg>
+      <span>{copying ? "Copying…" : "Export to clipboard"}</span>
+    </button>
+    <button
+      type="button"
+      onclick={() => app.setMainView("export-review")}
+      title="Open the full export panel"
+      class="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium rounded border border-border text-fg-2 hover:bg-hover hover:text-fg transition-colors"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+        <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+      </svg>
+      <span>Open export panel</span>
+    </button>
   </div>
 </aside>

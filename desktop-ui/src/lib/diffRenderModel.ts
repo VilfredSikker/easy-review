@@ -310,7 +310,14 @@ function lineNumOf(line: LineSnapshot): number | null {
 }
 
 function visBits(v: CommentVisibility): number {
-  return (v.hideAll ? 1 : 0) | (v.hideResolved ? 2 : 0) | (v.hideOutdated ? 4 : 0);
+  return (
+    (v.hideAll ? 1 : 0) |
+    (v.hideResolved ? 2 : 0) |
+    (v.hideOutdated ? 4 : 0) |
+    (v.hideComments ? 8 : 0) |
+    (v.hideFindings ? 16 : 0) |
+    (v.hideQuestions ? 32 : 0)
+  );
 }
 
 /** Line count for cache invalidation when hunks grow (lazy load, poll refresh). */

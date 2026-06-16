@@ -308,7 +308,7 @@
   </div>
 
   {#if open}
-    <div class="mt-4 pt-3 border-t border-hairline space-y-1.5 mb-3">
+    <div class="mt-4 pt-3 border-t border-hairline mb-3">
       <div class="flex items-center gap-1.5 mb-2 text-[10px] mono">
         <button onclick={() => filter = "all"} class="px-2 py-0.5 rounded {filter === 'all' ? 'bg-hairline text-fg' : 'text-fg-3 hover:bg-hover'}">all</button>
         <button onclick={() => filter = "high"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'high' ? 'bg-hairline text-risk-high' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>high</button>
@@ -316,6 +316,7 @@
         <button onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
       </div>
 
+      <div class="findings-list space-y-1.5">
       {#each filtered as finding (finding.id)}
         {@const dotClass = finding.severity === "high" ? "bg-risk-high" : finding.severity === "med" ? "bg-risk-med" : "bg-risk-low"}
         {@const label = findingAgentLabel(finding)}
@@ -350,6 +351,7 @@
           </button>
         </div>
       {/each}
+      </div>
     </div>
   {/if}
 
@@ -404,6 +406,11 @@
 
   .summary-expanded {
     max-height: 20rem;
+    overflow-y: auto;
+  }
+
+  .findings-list {
+    max-height: 22rem;
     overflow-y: auto;
   }
 </style>

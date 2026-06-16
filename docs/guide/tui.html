@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terminal UI Overview — easy-review docs</title>
+  <meta name="description" content="The er terminal UI: launching, command-line flags, the three-panel layout, AI view modes, watch mode, and how it fits beside an AI coding assistant.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Terminal UI</p>
+    <h1>The <code>er</code> Terminal UI</h1>
+    <p class="lead">
+      <code>er</code> is a single, dependency-free binary that renders a fast, keyboard-driven review UI in your
+      terminal. It starts in under a second and is designed to sit in a split pane next to an AI coding assistant. This
+      page covers what is specific to the terminal app; the shared concepts live under
+      <a href="concepts.html">Core Concepts</a>.
+    </p>
+
+    <h2>Launching</h2>
+    <p>Run <code>er</code> from inside any git repository. Common invocations:</p>
+    <pre><code>er                                        <span class="cmt"># review the current branch diff</span>
+er --pr 42                                <span class="cmt"># open a GitHub PR by number</span>
+er https://github.com/owner/repo/pull/42  <span class="cmt"># open a PR by URL</span>
+er ~/projects/api ~/projects/frontend     <span class="cmt"># open multiple repos as tabs</span>
+er --filter '*.rs'                        <span class="cmt"># pre-filter the file list</span></code></pre>
+    <table>
+      <thead><tr><th>Flag / argument</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td><code>--pr &lt;n&gt;</code></td><td>Open pull request <em>n</em> in the current repo</td></tr>
+        <tr><td>a PR URL</td><td>Open that pull request (any repo)</td></tr>
+        <tr><td>one or more paths</td><td>Open each repository / worktree as a tab</td></tr>
+        <tr><td><code>--filter &lt;expr&gt;</code></td><td>Apply a <a href="reviewing.html#filtering">filter</a> at startup</td></tr>
+        <tr><td><code>--help</code></td><td>Show all options</td></tr>
+      </tbody>
+    </table>
+    <div class="callout warn">
+      <span class="ico">▲</span>
+      <div><p><code>er</code> renders via crossterm/ratatui and needs a <strong>real terminal</strong> (such as a tmux
+      pane), not a headless pipe.</p></div>
+    </div>
+
+    <h2>The layout</h2>
+    <p>The screen has a top bar, three columns, and a bottom bar.</p>
+    <table>
+      <thead><tr><th>Region</th><th>Shows</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Top bar</strong></td><td>The diff modes (with the active one highlighted), any detected PR with its CI summary, comment and finding counts, and the watch indicator.</td></tr>
+        <tr><td><strong>Left — file list</strong></td><td>Every changed file with a status dot, AI risk indicator, and comment/finding badges. In history mode this becomes the commit list.</td></tr>
+        <tr><td><strong>Center — diff</strong></td><td>The unified diff with syntax highlighting, inline comments and findings, and a sticky file-path header.</td></tr>
+        <tr><td><strong>Right — context panel</strong></td><td>File details, the AI summary, or the PR overview depending on context.</td></tr>
+        <tr><td><strong>Bottom bar</strong></td><td>Key hints (configurable) and comment input when you are typing a note.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Working beside an AI assistant</h2>
+    <p>
+      The intended workflow is a split terminal: Claude Code (or your tool of choice) on one side, <code>er</code> on the
+      other, in tmux, Ghostty, or any terminal that splits panes. As the assistant edits, stages, and commits,
+      <code>er</code>'s <a href="concepts.html#watch-mode-keeps-the-diff-live">watch mode</a> keeps the diff live. Run
+      <code>/er-review</code> in the assistant and the findings appear in <code>er</code> automatically.
+    </p>
+
+    <h2>AI view modes</h2>
+    <p>
+      Press <kbd>v</kbd> (forward) or <kbd>V</kbd> (backward) to cycle how much AI context is shown — from a plain diff,
+      through inline findings, to a side panel with the summary and risk breakdown, to a dedicated AI review layout. This
+      is the terminal's way of dialing AI density up and down. See <a href="ai-review.html">AI Review</a>.
+    </p>
+
+    <h2>Syntax highlighting</h2>
+    <p>
+      The terminal uses <code>syntect</code> for highlighting, with a content-hash cache so unchanged lines are never
+      re-highlighted between frames. The active theme (set in <a href="configuration.html">configuration</a>) selects a
+      matching highlight palette.
+    </p>
+
+    <h2>Debug mode</h2>
+    <p>Run with <code>ER_DEBUG=1</code> to write a debug log and show the memory budget in the status bar:</p>
+    <pre><code>ER_DEBUG=1 er   <span class="cmt"># writes /tmp/er_debug.log (overwritten each git diff)</span></code></pre>
+
+    <div class="callout tip">
+      <span class="ico">✦</span>
+      <div><p>Ready to memorize the keyboard? The <a href="tui-keybindings.html">Keybinding Reference</a> is the complete,
+      grouped list of every key.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

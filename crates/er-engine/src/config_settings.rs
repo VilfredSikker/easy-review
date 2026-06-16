@@ -4,14 +4,14 @@ use super::config_desktop_settings::ConfigHubFieldDto;
 use super::{ErConfig, AGENT_EFFORT_OPTIONS};
 
 pub const THEME_OPTIONS: &[&str] = &[
-    "ocean-depth",
-    "moonlight",
-    "daybreak",
-    "high-contrast",
-    "tokyo-night",
-    "tokyo-night-storm",
-    "tokyo-night-moon",
-    "tokyo-night-day",
+    "graphite",
+    "slate",
+    "midnight",
+    "ember",
+    "paper",
+    "daylight",
+    "contrast-dark",
+    "contrast-light",
 ];
 
 /// Which settings surface a field belongs to.
