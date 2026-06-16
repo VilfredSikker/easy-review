@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Code Skills — easy-review docs</title>
+  <meta name="description" content="The /er-* Claude Code skills that power easy-review's AI loop: review, experts, professor, triage, questions, publish, quiz, and the review philosophy behind them.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Core Concepts</p>
+    <h1>Claude Code Skills</h1>
+    <p class="lead">
+      The AI half of <code>er</code>'s feedback loop is a set of Claude Code skills — slash commands like
+      <code>/er-review</code>. Each generates sidecar files that <code>er</code> reads and renders. This page is the full
+      catalog and how the skills fit together.
+    </p>
+
+    <h2>Setup</h2>
+    <p>
+      Skills are auto-discovered from <code>.claude/commands/</code> in the repository root, so anyone who clones the repo
+      and uses Claude Code gets them with no installation. The source of truth is the <code>skills/</code> directory;
+      the files in <code>.claude/commands/</code> are symlinks to each <code>skills/&lt;name&gt;/SKILL.md</code>.
+    </p>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>The skills document their output as <code>.er/&lt;file&gt;</code> relative to the repo. With default
+      managed storage, run reviews through <code>er</code>'s own agent commands, or set <code>ER_REPO_LOCAL=1</code> so
+      skill output lands where <code>er</code> reads it. See <a href="storage.html">Review Storage</a>.</p></div>
+    </div>
+
+    <h2>The standard loop</h2>
+    <table>
+      <thead><tr><th>Step</th><th>Where</th><th>Command</th><th>What happens</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Claude Code</td><td><code>/er-review</code></td><td>Writes the review sidecar files</td></tr>
+        <tr><td>2</td><td><code>er</code></td><td><kbd>v</kbd></td><td>Detects new files; shows findings inline</td></tr>
+        <tr><td>3</td><td><code>er</code></td><td><kbd>q</kbd> / <kbd>c</kbd></td><td>Leave questions and comments</td></tr>
+        <tr><td>4</td><td>Claude Code</td><td><code>/er-questions</code></td><td>Reads feedback, responds, archives</td></tr>
+        <tr><td>5</td><td><code>er</code></td><td>—</td><td>Auto-refreshes; AI responses appear inline</td></tr>
+        <tr><td>6</td><td>Claude Code</td><td><code>/er-publish</code></td><td>Validates freshness, posts to the GitHub PR</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Full catalog</h2>
+    <h3>Core review</h3>
+    <table>
+      <thead><tr><th>Skill</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><code>/er-triage</code></td><td>Fast branch scan: first impression, routing verdict, priority files → <code>triage.json</code></td></tr>
+        <tr><td><code>/er-review</code></td><td>Full review: risk levels, findings, order, checklist, summary</td></tr>
+        <tr><td><code>/er-questions</code></td><td>Process human feedback, respond to comments, add new findings</td></tr>
+        <tr><td><code>/er-publish</code></td><td>Publish review findings to a GitHub PR as inline comments</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Expert reviews</h3>
+    <p>Each expert looks at a single dimension and writes only to <code>experts/&lt;id&gt;.json</code>.</p>
+    <table>
+      <thead><tr><th>Skill</th><th>Focus</th></tr></thead>
+      <tbody>
+        <tr><td><code>/er-review-security</code></td><td>Security findings</td></tr>
+        <tr><td><code>/er-review-performance</code></td><td>Performance</td></tr>
+        <tr><td><code>/er-review-reliability</code></td><td>Reliability</td></tr>
+        <tr><td><code>/er-review-testing</code></td><td>Testing</td></tr>
+        <tr><td><code>/er-review-api</code></td><td>API / contracts</td></tr>
+        <tr><td><code>/er-review-patterns</code></td><td>Pattern consistency</td></tr>
+        <tr><td><code>/er-review-simplifying</code></td><td>Readability / complexity</td></tr>
+        <tr><td><code>/er-review-mentorship</code></td><td>Exemplary patterns to foster</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Learning &amp; housekeeping</h3>
+    <table>
+      <thead><tr><th>Skill</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><code>/er-professor</code></td><td>Learning agent: teaching insights → <code>professor.json</code></td></tr>
+        <tr><td><code>/er-risk-sort</code></td><td>Re-sort the file review order by P0 → P1 → P2, cosmetic files last</td></tr>
+        <tr><td><code>/er-summary</code></td><td>Regenerate the markdown summary (P0/P1 focus, no cosmetic noise)</td></tr>
+        <tr><td><code>/er-checklist</code></td><td>Regenerate the review checklist (P0/P1 only, includes test-quality items)</td></tr>
+        <tr><td><code>/er-refresh</code></td><td>Refresh review artifacts against the current diff</td></tr>
+        <tr><td><code>/er-wizard</code></td><td>Guided setup / workflow helper</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Comprehension quiz (optional)</h3>
+    <p>A workflow for checking that you actually understood a change before approving it.</p>
+    <table>
+      <thead><tr><th>Skill</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><code>/er-quiz</code></td><td>Generate comprehension questions about the P0/P1 changes → <code>quiz.json</code></td></tr>
+        <tr><td><code>/er-quiz-review</code></td><td>Evaluate your answers and write teaching feedback → <code>quiz-feedback.json</code></td></tr>
+      </tbody>
+    </table>
+    <p>
+      In the terminal, press <kbd>8</kbd> for quiz mode, answer the questions, then run <code>/er-quiz-review</code>.
+      Feedback appears inline after the next refresh.
+    </p>
+
+    <h2>Review philosophy</h2>
+    <p>
+      Every skill shares one severity model and a “what not to flag” list, documented in
+      <code>skills/REVIEW_PHILOSOPHY.md</code> and <code>skills/REVIEW_RULES.md</code>:
+    </p>
+    <ul>
+      <li><strong>P0 (high)</strong> = must fix · <strong>P1 (medium)</strong> = should fix · <strong>P2 (low)</strong> = nice to fix.</li>
+      <li>Never flag naming, formatting, style, or file moves.</li>
+    </ul>
+    <p>The professor follows a separate <code>skills/PROFESSOR_PHILOSOPHY.md</code> — it teaches rather than critiques.</p>
+
+    <h2>Multi-reviewer runs</h2>
+    <p>
+      You can run the general review, any experts, and the professor concurrently. <code>er</code> merges each fresh
+      sidecar (matching the current diff hash) into the in-memory review, and every finding carries an <strong>agent
+      pill</strong> — <code>General</code>, <code>Security</code>, <code>Professor</code>, and so on — so you can tell at a
+      glance which agent raised it. The desktop app makes this a first-class flow with its multi-model
+      <a href="desktop-features.html#arena">review arena</a>.
+    </p>
+
+    <h2>Testing without running skills</h2>
+    <p>To see the overlays without invoking an AI tool, generate fixtures with a matching diff hash:</p>
+    <pre><code>cd your-repo
+bash /path/to/easy-review/scripts/generate-test-fixtures.sh</code></pre>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

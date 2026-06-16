@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Comments &amp; Questions — easy-review docs</title>
+  <meta name="description" content="Two comment types in easy-review: private questions answered by AI, and GitHub comments that sync to a PR. Replies, deletion, staleness, and comment focus mode.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Core Concepts</p>
+    <h1>Comments &amp; Questions</h1>
+    <p class="lead">
+      <code>er</code> keeps two separate streams of inline notes: <strong>questions</strong> you keep to yourself (and
+      hand to your AI), and <strong>GitHub comments</strong> that sync to a pull request. They look different, use
+      different keys, and never get confused with one another — so a private thought can't accidentally end up on a PR.
+    </p>
+
+    <h2>Why two kinds?</h2>
+    <table>
+      <thead><tr><th></th><th>Questions <span style="color:var(--yellow)">●</span></th><th>GitHub comments <span style="color:var(--cyan)">●</span></th></tr></thead>
+      <tbody>
+        <tr><td>Color</td><td>Yellow</td><td>Cyan</td></tr>
+        <tr><td>Keys</td><td><kbd>q</kbd> line · <kbd>Q</kbd> hunk</td><td><kbd>c</kbd> line · <kbd>C</kbd> hunk</td></tr>
+        <tr><td>Audience</td><td>You and your AI tools</td><td>Your PR reviewers</td></tr>
+        <tr><td>Stored in</td><td><code>questions.json</code></td><td><code>github-comments.json</code></td></tr>
+        <tr><td>Replies?</td><td>No (use AI to answer)</td><td>Yes — single-level threads</td></tr>
+        <tr><td>Synced upstream?</td><td>Never — stays local</td><td>Yes, two-way via <code>gh</code></td></tr>
+      </tbody>
+    </table>
+    <p>
+      Questions are your scratchpad: “why is this here?”, “does this handle the empty case?”. The
+      <code>/er-questions</code> skill reads them, answers, and updates the file in place. GitHub comments are the things
+      you actually want your team to see on the PR.
+    </p>
+
+    <h2>Leaving a note</h2>
+    <p>
+      Navigate to a line (with the arrow keys) or sit on a hunk, then press the matching key. <strong>Lowercase targets
+      the current line; uppercase targets the whole hunk.</strong>
+    </p>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>q</kbd></td><td>Add a question on the current line</td></tr>
+        <tr><td><kbd>Q</kbd></td><td>Add a question on the current hunk</td></tr>
+        <tr><td><kbd>c</kbd></td><td>Add a GitHub comment on the current line</td></tr>
+        <tr><td><kbd>C</kbd></td><td>Add a GitHub comment on the current hunk</td></tr>
+      </tbody>
+    </table>
+    <p>
+      A small input opens at the bottom; type your note and confirm. The note then renders <strong>inline</strong>,
+      right after its target line in the diff — not bundled at the end of the hunk — so the conversation sits exactly
+      where the code is.
+    </p>
+
+    <h2>Comment focus mode</h2>
+    <p>
+      To act on existing notes rather than the diff, enter <strong>comment focus mode</strong> with <kbd>Tab</kbd>. Now
+      the arrow keys move between comments instead of lines, and these actions apply to the focused comment:
+    </p>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Tab</kbd></td><td>Enter / leave comment focus mode</td></tr>
+        <tr><td><kbd>↓</kbd> / <kbd>↑</kbd></td><td>Move between comments</td></tr>
+        <tr><td><kbd>r</kbd></td><td>Reply to the focused comment (GitHub comments only)</td></tr>
+        <tr><td><kbd>d</kbd></td><td>Delete the focused comment</td></tr>
+        <tr><td><kbd>R</kbd></td><td>Toggle resolved</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Replies are single-level</h2>
+    <p>
+      GitHub comments support a reply thread: a parent comment plus any number of replies. Replies cannot themselves
+      have replies — the model is intentionally flat (parent + children, no recursive nesting) to keep it simple and to
+      match how GitHub PR review threads behave. Questions do not have replies; the way you “answer” a question is to run
+      <code>/er-questions</code> and let the AI respond.
+    </p>
+
+    <h2>Comments follow the code (and warn when stale)</h2>
+    <p>
+      Each note stores the <em>content</em> of the line it was attached to. When the diff changes, <code>er</code> tries
+      to re-anchor the note to that same line even if it moved. If the target line disappears entirely, the note is
+      marked <strong>stale</strong>: it renders dimmed with a warning indicator so you know it may be misplaced and
+      should be revisited. This staleness is tracked per comment, independently of the file-level AI staleness described
+      in <a href="ai-review.html">AI Review</a>.
+    </p>
+
+    <h2>Syncing GitHub comments</h2>
+    <p>With the <code>gh</code> CLI configured and a pull request in view, comments sync both directions:</p>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>G</kbd></td><td>Pull review comments <em>from</em> GitHub into your diff</td></tr>
+        <tr><td><kbd>P</kbd></td><td>Push your local comments <em>to</em> GitHub</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Each GitHub comment records its <code>source</code> (local or github), the upstream <code>github_id</code>, the
+      <code>author</code>, and whether it has been <code>synced</code>. Pulling deduplicates on the GitHub id, so you can
+      pull repeatedly without creating copies. The full sync flow lives in
+      <a href="github.html">GitHub &amp; Pull Requests</a>.
+    </p>
+
+    <div class="callout tip">
+      <span class="ico">✦</span>
+      <div><p>Rule of thumb: use <kbd>q</kbd> while you are still figuring out whether something is a problem, and
+      <kbd>c</kbd> once you are ready to say it out loud on the PR. <code>/er-publish</code> includes your GitHub comments
+      when it posts the review.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

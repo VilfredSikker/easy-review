@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Review Storage — easy-review docs</title>
+  <meta name="description" content="Where easy-review keeps review data: managed app-data storage shared by the TUI and desktop, view buckets, PR keys, the sidecar file list, and repo-local mode.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Core Concepts</p>
+    <h1>Review Storage</h1>
+    <p class="lead">
+      Reviewed marks, comments, questions, AI artifacts, and session state are stored as files on disk. By default they
+      live in <strong>managed application data</strong> — not in your repository — and are shared between the terminal
+      and desktop apps per repo, branch, and view.
+    </p>
+
+    <h2>Why managed storage?</h2>
+    <p>
+      Keeping review sidecars out of your working tree means they never clutter <code>git status</code>, never need a
+      <code>.gitignore</code> entry, and never risk being committed by accident. Both front ends resolve the same path
+      for a given tab, so a review you start in the desktop app continues seamlessly in the terminal.
+    </p>
+
+    <h2>Where the root is</h2>
+    <table>
+      <thead><tr><th>Platform</th><th>Storage root</th></tr></thead>
+      <tbody>
+        <tr><td>Linux</td><td><code>~/.local/share/easy-review/</code></td></tr>
+        <tr><td>macOS</td><td><code>~/Library/Application Support/easy-review/</code></td></tr>
+        <tr><td>Windows</td><td><code>%APPDATA%\easy-review\</code></td></tr>
+      </tbody>
+    </table>
+
+    <h2>Layout for local diff modes</h2>
+    <p>
+      Branch (<kbd>1</kbd>), unstaged (<kbd>2</kbd>), staged (<kbd>3</kbd>), and history (<kbd>4</kbd>) each get their own
+      <em>view bucket</em> directory under the repo and branch:
+    </p>
+    <pre><code>&lt;root&gt;/repos/&lt;repo-slug&gt;/branches/&lt;branch-slug&gt;/view-buckets/&lt;bucket&gt;/</code></pre>
+    <p>where <code>&lt;bucket&gt;</code> is <code>branch</code>, <code>unstaged</code>, <code>staged</code>, or
+    <code>history</code>. For example, on Linux for the <code>easy-review</code> repo on <code>main</code>, branch diff:</p>
+    <pre><code>~/.local/share/easy-review/repos/easy-review/branches/main/view-buckets/branch/</code></pre>
+
+    <h2>Layout for PR diff mode</h2>
+    <p>Pull request reviews are keyed by <code>owner/repo</code> and PR number, so a local clone and a remote PR tab share one location:</p>
+    <pre><code>&lt;root&gt;/repos/&lt;owner-repo-slug&gt;/prs/pr-&lt;N&gt;/</code></pre>
+    <p>
+      The <code>&lt;repo-slug&gt;</code> comes from the <code>origin</code> remote name (falling back to the repo folder
+      name). Slashes in branch names become <code>-</code>.
+    </p>
+
+    <h2>The sidecar files</h2>
+    <p>The filenames are identical in managed storage and in repo-local mode:</p>
+    <table>
+      <thead><tr><th>File</th><th>Written by</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>review.json</code></td><td><code>/er-review</code></td><td>Per-file risk levels and inline findings</td></tr>
+        <tr><td><code>order.json</code></td><td><code>/er-review</code></td><td>Suggested review order</td></tr>
+        <tr><td><code>checklist.json</code></td><td><code>/er-review</code></td><td>Review checklist items</td></tr>
+        <tr><td><code>summary.md</code></td><td><code>/er-summary</code></td><td>Markdown summary of changes</td></tr>
+        <tr><td><code>triage.json</code></td><td><code>/er-triage</code></td><td>Fast branch scan / routing</td></tr>
+        <tr><td><code>professor.json</code></td><td><code>/er-professor</code></td><td>Teaching / learning insights</td></tr>
+        <tr><td><code>experts/*.json</code></td><td><code>/er-review-*</code></td><td>Domain-specific expert findings</td></tr>
+        <tr><td><code>questions.json</code></td><td><code>er</code> (<kbd>q</kbd>/<kbd>Q</kbd>)</td><td>Personal review questions</td></tr>
+        <tr><td><code>github-comments.json</code></td><td><code>er</code> (<kbd>c</kbd>/<kbd>C</kbd>)</td><td>GitHub PR comments</td></tr>
+        <tr><td><code>session.json</code></td><td><code>er</code></td><td>Session metadata</td></tr>
+        <tr><td><code>reviewed</code></td><td><code>er</code></td><td>Per-file reviewed markers</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Each JSON sidecar stores a SHA-256 <code>diff_hash</code> of the diff it was generated against. When the diff
+      changes, the matching AI data is dimmed with a stale warning. Writes are atomic (write to a temp file, then rename),
+      so a crash mid-write never corrupts your data.
+    </p>
+
+    <h2>Repo-local mode</h2>
+    <p>
+      Set <code>ER_REPO_LOCAL=1</code> to read and write a <code>.er/</code> directory inside the repository instead of
+      managed storage. This is useful for debugging, or to line up with Claude Code skills that document their output as
+      <code>.er/&lt;file&gt;</code> relative to the repo.
+    </p>
+    <pre><code>ER_REPO_LOCAL=1 er</code></pre>
+    <div class="callout warn">
+      <span class="ico">▲</span>
+      <div><p>In repo-local mode, add <code>.er/</code> to your <code>.gitignore</code> so review artifacts are not committed.</p></div>
+    </div>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>With default managed storage, run reviews through <code>er</code>'s own agent commands (in the desktop app
+      or TUI), or use <code>ER_REPO_LOCAL=1</code> so that skills run in Claude Code write where <code>er</code> reads.</p></div>
+    </div>
+
+    <h2>Migration from older versions</h2>
+    <p>
+      Earlier versions scattered sidecar dotfiles in the repo root, then consolidated them into a repo <code>.er/</code>
+      directory. Legacy repo <code>.er/</code> and <code>~/.cache/er/</code> data is migrated once, automatically, the
+      first time you open a repo with a current build.
+    </p>
+
+    <h2>Tests &amp; overrides</h2>
+    <p>Set <code>ER_STORAGE_ROOT=/tmp/...</code> to redirect managed storage — primarily used by the test suite.</p>
+
+    <h2>Cleaning up</h2>
+    <p>From the terminal you can remove artifacts for the current file (<kbd>z</kbd>) or all of them (<kbd>Z</kbd>). The
+    repository also ships helper scripts:</p>
+    <pre><code>scripts/er-cleanup-reviews.sh     <span class="cmt"># remove review.json, checklist, summary, …</span>
+scripts/er-cleanup-questions.sh   <span class="cmt"># remove questions.json</span></code></pre>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

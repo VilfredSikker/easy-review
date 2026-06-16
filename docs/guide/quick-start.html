@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quick Start — easy-review docs</title>
+  <meta name="description" content="Run your first review with easy-review: open a diff, navigate, mark files reviewed, leave comments, and layer in AI analysis.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Getting Started</p>
+    <h1>Quick Start</h1>
+    <p class="lead">
+      This walkthrough takes you from “installed” to a complete review loop in a few minutes. It uses the terminal
+      app, but every concept maps directly onto the desktop app — see <a href="desktop.html">Desktop Overview</a> for
+      its equivalents.
+    </p>
+
+    <h2>1. Open a diff</h2>
+    <p>From inside any git repository, run:</p>
+    <pre><code>er</code></pre>
+    <p>
+      <code>er</code> opens on the <strong>branch diff</strong> — everything that differs between your current branch
+      and its base. The base branch is detected automatically from your upstream tracking branch, falling back to
+      <code>main</code>, <code>master</code>, <code>develop</code>, then <code>dev</code>. You did not have to specify it.
+    </p>
+    <p>You will see three regions: a file list on the left, the diff in the center, and a context panel on the right.
+    The top bar shows the available diff modes and any detected pull request; the bottom bar shows key hints.</p>
+
+    <h2>2. Move around</h2>
+    <p>Everything is keyboard-driven. The essentials:</p>
+    <table>
+      <thead><tr><th>Keys</th><th>Move</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>Next / previous file</td></tr>
+        <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>Next / previous hunk</td></tr>
+        <tr><td><kbd>↓</kbd> / <kbd>↑</kbd></td><td>Next / previous line within hunks</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>d</kbd> / <kbd>Ctrl</kbd>+<kbd>u</kbd></td><td>Half page down / up</td></tr>
+        <tr><td><kbd>/</kbd></td><td>Search files by name</td></tr>
+      </tbody>
+    </table>
+    <p>The full map is on the <a href="tui-keybindings.html">Keybinding Reference</a> page.</p>
+
+    <h2>3. Switch diff modes</h2>
+    <p>Press a number key to change what you are looking at:</p>
+    <pre><code><span class="cmt"># 1  branch diff (vs base)     4  commit history</span>
+<span class="cmt"># 2  unstaged changes          5  merge conflicts</span>
+<span class="cmt"># 3  staged changes            6  hidden / ignored files</span></code></pre>
+    <p>See <a href="diff-modes.html">Diff Modes</a> for what each one shows and when to reach for it.</p>
+
+    <h2>4. Track your progress</h2>
+    <p>As you finish a file, mark it reviewed:</p>
+    <ul>
+      <li><kbd>Space</kbd> — toggle the current file as reviewed.</li>
+      <li><kbd>u</kbd> — filter the list down to files you have <em>not</em> reviewed.</li>
+      <li><kbd>U</kbd> — jump straight to the next unreviewed file.</li>
+    </ul>
+    <p>If a file's diff changes underneath you (because watch mode picked up an edit), its reviewed mark clears
+    automatically so you never miss new changes.</p>
+
+    <h2>5. Leave notes</h2>
+    <p><code>er</code> has two kinds of inline notes, on two different keys:</p>
+    <table>
+      <thead><tr><th>Key</th><th>Note type</th><th>Goes to</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>q</kbd> / <kbd>Q</kbd></td><td>Private <strong>question</strong> (yellow)</td><td>Stays local; read by your AI tools</td></tr>
+        <tr><td><kbd>c</kbd> / <kbd>C</kbd></td><td><strong>GitHub comment</strong> (cyan)</td><td>Syncs to a pull request</td></tr>
+      </tbody>
+    </table>
+    <p>Lowercase targets the current line; uppercase targets the whole hunk. Read more in
+    <a href="comments.html">Comments &amp; Questions</a>.</p>
+
+    <h2>6. Add AI analysis (optional)</h2>
+    <p>This is where <code>er</code> earns its name. The recommended setup is a split screen: your AI coding tool on
+    one side, <code>er</code> on the other.</p>
+    <ol>
+      <li>In Claude Code (or your tool of choice), run <code>/er-review</code>. It writes review artifacts to disk.</li>
+      <li><code>er</code> notices the new data automatically. Press <kbd>v</kbd> to cycle through the AI view modes —
+      findings appear inline in the diff, with per-file risk levels in the file list.</li>
+      <li>Leave questions with <kbd>q</kbd>; run <code>/er-questions</code> to have the AI respond.</li>
+      <li>When you are happy, run <code>/er-publish</code> to post the review to your GitHub PR.</li>
+    </ol>
+    <p>The whole loop is described in <a href="ai-review.html">AI Review</a> and the
+    <a href="skills.html">Claude Code Skills</a> catalog.</p>
+
+    <h2>7. Watch it stay live</h2>
+    <p>
+      Watch mode is on by default. Leave <code>er</code> open while your AI assistant edits code: every save, stage,
+      and commit refreshes the diff within a fraction of a second. The <span style="color:var(--green)">● WATCH</span>
+      indicator in the top bar shows it is active; toggle it with <kbd>w</kbd>.
+    </p>
+
+    <h2>8. Quit</h2>
+    <p>Press <kbd>Ctrl</kbd>+<kbd>q</kbd> to exit. Your reviewed marks, comments, and questions are persisted, so you
+    can pick the review back up exactly where you left off.</p>
+
+    <div class="callout tip">
+      <span class="ico">✦</span>
+      <div><p><strong>Next:</strong> read <a href="concepts.html">How er Works</a> to understand the model behind all
+      of this, or skip to <a href="github.html">GitHub &amp; Pull Requests</a> if you are reviewing a PR.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

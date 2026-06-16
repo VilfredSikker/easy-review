@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Review — easy-review docs</title>
+  <meta name="description" content="How easy-review's AI review loop works: sidecar artifacts, risk levels, inline findings, expert agents, the professor, view modes, staleness, and the AI Hub.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Core Concepts</p>
+    <h1>AI Review</h1>
+    <p class="lead">
+      This is what <code>er</code> is named for. It does not run AI itself — it <strong>reads</strong> structured review
+      artifacts that AI tools you run write to disk, and renders them inline against the diff. This page explains the
+      loop, the artifacts, and the agents that produce them.
+    </p>
+
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p><strong><code>er</code> is a viewer and orchestrator, not a model.</strong> No code is sent anywhere by
+      <code>er</code>. You bring your own AI tool (Claude Code, Codex, Cursor, …) and credentials; you are the customer of
+      those providers and responsible for their terms of use.</p></div>
+    </div>
+
+    <h2>The loop</h2>
+    <p>The recommended setup is a split screen — your AI tool on one side, <code>er</code> on the other.</p>
+    <table>
+      <thead><tr><th>Step</th><th>Where</th><th>What happens</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Claude Code</td><td><code>/er-review</code> analyzes the diff and writes sidecar files.</td></tr>
+        <tr><td>2</td><td><code>er</code></td><td>Detects the new files automatically; press <kbd>v</kbd> to show findings inline.</td></tr>
+        <tr><td>3</td><td><code>er</code></td><td>You read findings, leave questions with <kbd>q</kbd>, comments with <kbd>c</kbd>.</td></tr>
+        <tr><td>4</td><td>Claude Code</td><td><code>/er-questions</code> reads your feedback, responds, and updates the files.</td></tr>
+        <tr><td>5</td><td><code>er</code></td><td>Auto-refreshes; AI responses appear inline. Continue reviewing.</td></tr>
+        <tr><td>6</td><td>Claude Code</td><td><code>/er-publish</code> validates freshness and posts to your GitHub PR.</td></tr>
+      </tbody>
+    </table>
+    <p>The desktop app can spawn these same agents itself from its AI Hub, so you do not strictly need a second terminal
+    — see <a href="desktop-features.html">Desktop Features</a>.</p>
+
+    <h2>What a review produces</h2>
+    <p>A full review (<code>/er-review</code>) writes several sidecar files. <code>er</code> reads them and turns them into UI:</p>
+    <table>
+      <thead><tr><th>File</th><th>Becomes</th></tr></thead>
+      <tbody>
+        <tr><td><code>review.json</code></td><td>Per-file <strong>risk levels</strong> (high / medium / low) in the file list, plus <strong>inline findings</strong> in the diff.</td></tr>
+        <tr><td><code>order.json</code></td><td>A suggested <strong>review order</strong>.</td></tr>
+        <tr><td><code>checklist.json</code></td><td>A <strong>verification checklist</strong> of things to confirm.</td></tr>
+        <tr><td><code>summary.md</code></td><td>A markdown <strong>summary</strong> of the change.</td></tr>
+      </tbody>
+    </table>
+    <p>Findings render as inline banners attached to the relevant lines, color-coded by the agent that produced them.
+    See <a href="storage.html">Review Storage</a> for the complete file list and where it lives on disk.</p>
+
+    <h2>Severity model</h2>
+    <p>All the review skills share one severity scale and a “what not to flag” list:</p>
+    <table>
+      <thead><tr><th>Level</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><strong>P0 — high</strong></td><td>Must fix.</td></tr>
+        <tr><td><strong>P1 — medium</strong></td><td>Should fix.</td></tr>
+        <tr><td><strong>P2 — low</strong></td><td>Nice to fix.</td></tr>
+      </tbody>
+    </table>
+    <p>By design the agents <strong>never</strong> flag naming, formatting, style, or pure file moves — that noise is
+    what makes AI review tiring. Summaries and checklists focus on P0/P1.</p>
+
+    <h2>Expert agents</h2>
+    <p>
+      Beyond the general review, specialized <strong>expert</strong> agents look at one dimension each and write only to
+      <code>experts/&lt;id&gt;.json</code> — they never overwrite the general artifacts. When their output matches the
+      current diff hash, <code>er</code> merges their findings in as additional inline banners, each labeled with the
+      expert's name.
+    </p>
+    <table>
+      <thead><tr><th>Expert</th><th>Focus</th></tr></thead>
+      <tbody>
+        <tr><td><code>security</code></td><td>Security issues</td></tr>
+        <tr><td><code>performance</code></td><td>Performance</td></tr>
+        <tr><td><code>reliability</code></td><td>Reliability / robustness</td></tr>
+        <tr><td><code>testing</code></td><td>Test coverage and quality</td></tr>
+        <tr><td><code>api</code></td><td>API design and contracts</td></tr>
+        <tr><td><code>patterns</code></td><td>Pattern consistency with the codebase</td></tr>
+        <tr><td><code>simplifying</code></td><td>Readability and complexity</td></tr>
+        <tr><td><code>mentorship</code></td><td>Exemplary patterns worth reinforcing</td></tr>
+      </tbody>
+    </table>
+
+    <h2>The professor</h2>
+    <p>
+      <code>/er-professor</code> is not a code review — it is a learning agent. It writes teaching insights to
+      <code>professor.json</code>, merged inline and labeled with a <strong>Professor</strong> pill. Use it to understand
+      <em>why</em> a change is shaped the way it is, rather than to find defects.
+    </p>
+
+    <h2>Triage</h2>
+    <p>
+      <code>/er-triage</code> is a fast first pass: a quick branch scan that produces a first impression, a routing
+      verdict (run a general review? an expert? skip deep review?), and a priority file list, written to
+      <code>triage.json</code>. It is the cheapest way to decide how much review a branch actually warrants.
+    </p>
+
+    <h2>AI view modes <span class="pill tui">terminal</span></h2>
+    <p>
+      In the terminal, press <kbd>v</kbd> (or <kbd>V</kbd> to cycle backward) to move through the AI presentation modes —
+      from a plain diff, to findings overlaid inline, to a side panel with the summary and risk breakdown, to a
+      dedicated AI review layout. Cycling lets you dial the amount of AI context up or down without leaving the diff.
+    </p>
+
+    <h2>Staleness</h2>
+    <p>
+      Every sidecar records the SHA-256 hash of the diff it was generated against. When the diff changes — which happens
+      constantly in watch mode — any AI data whose hash no longer matches is dimmed with a <strong>stale</strong>
+      warning. You are never misled into trusting analysis of code that has since changed. Re-run the relevant skill to
+      refresh it.
+    </p>
+
+    <h2>Choosing a model: the AI Hub</h2>
+    <p>
+      <code>er</code> can drive different providers and models. The <code>[agent]</code> config sets a single default
+      command; the optional <code>[ai_hub]</code> config defines presets (Claude, Codex, Cursor and their models) you can
+      switch between at runtime without editing config mid-session. You can even pin specific reviewer kinds to specific
+      models — for example, run cheap, fast triage on a smaller model. The full schema is in
+      <a href="configuration.html#ai-hub">Configuration → AI Hub</a>.
+    </p>
+
+    <h2>Trying it without an AI tool</h2>
+    <p>To explore how the overlays render without running a real review, generate sample artifacts:</p>
+    <pre><code>cd your-repo
+bash /path/to/easy-review/scripts/generate-test-fixtures.sh</code></pre>
+    <p>This writes <code>.er/</code> files with a matching diff hash so the AI views light up against your current diff.</p>
+
+    <div class="callout tip">
+      <span class="ico">✦</span>
+      <div><p>The agents themselves are the <a href="skills.html">Claude Code Skills</a>. That page is the full catalog
+      of <code>/er-*</code> commands and what each one writes.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

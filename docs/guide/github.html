@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub &amp; Pull Requests — easy-review docs</title>
+  <meta name="description" content="Open and review GitHub pull requests in easy-review: PR by number or URL, CI and reviewer status, two-way comment sync, and pushing from the TUI.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Core Concepts</p>
+    <h1>GitHub &amp; Pull Requests</h1>
+    <p class="lead">
+      <code>er</code> integrates with GitHub through the <code>gh</code> CLI — no API tokens to manage. Open a pull
+      request, see its CI and reviewer status, sync comments both ways, and push your work, all without opening a browser.
+    </p>
+
+    <h2>Prerequisites</h2>
+    <p>
+      Install the <a href="https://cli.github.com" target="_blank" rel="noopener">GitHub CLI</a> and authenticate once:
+    </p>
+    <pre><code>gh auth login</code></pre>
+    <p>
+      <code>er</code> shells out to <code>gh</code> and reuses that authentication. There is no separate token to
+      configure, and GitHub features simply stay hidden if <code>gh</code> is not available.
+    </p>
+
+    <h2>Opening a pull request</h2>
+    <p>From the terminal, open a PR by number or by URL:</p>
+    <pre><code><span class="cmt"># by number, in the current repo</span>
+er --pr 42
+
+<span class="cmt"># by full URL (any repo)</span>
+er https://github.com/owner/repo/pull/42</code></pre>
+    <p>
+      The desktop app offers a “PR Diff” toggle in the branch context bar and a paste-a-URL modal
+      (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>). PR review works against remote refs, so you can review a pull
+      request <strong>without checking out</strong> its branch into your working tree.
+    </p>
+
+    <h2>Automatic base detection &amp; the PR hint</h2>
+    <p>
+      When you are on a branch that has an open PR, <code>er</code> notices it. If the PR targets a base branch different
+      from the one <code>er</code> auto-detected, it shows a <strong>hint</strong> rather than switching silently — you
+      stay in control of what you are comparing against. The PR base check runs on a background thread so it never slows
+      startup.
+    </p>
+
+    <h2>The PR context panel</h2>
+    <p>In PR mode the right-hand panel summarizes the pull request without a browser round-trip:</p>
+    <ul>
+      <li><strong>CI checks</strong> — build, tests, and other checks with pass/fail/running status.</li>
+      <li><strong>Reviewers</strong> — who approved, who requested changes, who is still pending.</li>
+      <li><strong>Labels</strong> — the PR's labels.</li>
+      <li><strong>Title &amp; base</strong> — e.g. <code>feat/auth-refactor → main</code>.</li>
+    </ul>
+
+    <h2>Two-way comment sync</h2>
+    <p>GitHub comments (the cyan <kbd>c</kbd>/<kbd>C</kbd> notes) sync in both directions:</p>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>G</kbd></td><td><strong>Pull</strong> review comments from the PR into your diff view</td></tr>
+        <tr><td><kbd>P</kbd></td><td><strong>Push</strong> your local comments up to the PR</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Pulled comments appear inline, anchored to their lines, alongside your own. Each comment tracks its
+      <code>source</code>, GitHub <code>id</code>, <code>author</code>, and <code>synced</code> flag. Because
+      deduplication keys on the GitHub id, pulling repeatedly is safe — you will not get duplicates. Pushing marks your
+      comments as synced. Replies are single-level threads, matching GitHub's PR review model (see
+      <a href="comments.html">Comments &amp; Questions</a>).
+    </p>
+
+    <h2>Publishing an AI review to a PR</h2>
+    <p>
+      The <code>/er-publish</code> skill takes your review — AI findings plus your GitHub comments — validates that it is
+      still fresh against the current diff, and posts it to the pull request as inline review comments. This is the
+      bridge from a local <code>er</code> session to a review your team sees on GitHub. See
+      <a href="skills.html">Claude Code Skills</a>.
+    </p>
+
+    <h2>Staging, committing, and pushing <span class="pill tui">terminal</span></h2>
+    <p>You can move work along without leaving <code>er</code>:</p>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>s</kbd></td><td>Stage / unstage the current file</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td>Git push (from staged mode)</td></tr>
+      </tbody>
+    </table>
+    <p>
+      After you commit, <code>er</code> switches to a view of exactly what was committed so you can confirm it. Staging
+      is file-level. For richer git operations, drop to your shell — <code>er</code> is a review tool, not a full git client.
+    </p>
+
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>The desktop app surfaces the same GitHub data through cards (branch status, checks, comments) and can
+      submit reviews from its UI. See <a href="desktop-features.html">Desktop Features</a>.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

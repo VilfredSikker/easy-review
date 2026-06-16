@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Installation — easy-review docs</title>
+  <meta name="description" content="Install the easy-review terminal UI and build the desktop app. Requirements, quick install script, and building from source.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Getting Started</p>
+    <h1>Installation</h1>
+    <p class="lead">
+      The terminal app (<code>er</code>) is a single binary you can install in seconds. The desktop app is
+      currently built from source. Both need <code>git</code>; everything else is optional.
+    </p>
+
+    <h2>Requirements</h2>
+    <table>
+      <thead><tr><th>Dependency</th><th>Needed for</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><strong>git</strong></td><td>Everything</td><td>Required. <code>er</code> shells out to git for all diff operations.</td></tr>
+        <tr><td><strong>gh</strong> (GitHub CLI)</td><td>Pull request features</td><td>Optional. Used for PR metadata and two-way comment sync. Install from <a href="https://cli.github.com" target="_blank" rel="noopener">cli.github.com</a> and run <code>gh auth login</code>. No API token to manage.</td></tr>
+        <tr><td>An AI coding tool</td><td>AI review</td><td>Optional. e.g. Claude Code, Codex, or Cursor. You bring your own tool and credentials.</td></tr>
+        <tr><td><strong>Rust 1.85+</strong></td><td>Building from source</td><td>Not needed if you use the install script. The workspace uses the 2024 edition.</td></tr>
+        <tr><td><strong>Node.js / Bun</strong></td><td>Desktop UI dev</td><td>Only for working on the desktop frontend.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Terminal app (<code>er</code>) <span class="pill tui">terminal</span></h2>
+
+    <h3>Quick install — macOS &amp; Linux</h3>
+    <p>The install script downloads a pre-built binary into <code>~/.local/bin/</code>:</p>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/VilfredSikker/easy-review/main/install.sh | bash</code></pre>
+    <p>Install to a different directory, or pin a version:</p>
+    <pre><code><span class="cmt"># custom install directory</span>
+curl -fsSL https://raw.githubusercontent.com/VilfredSikker/easy-review/main/install.sh | bash -s -- --dir /usr/local/bin
+
+<span class="cmt"># a specific released version</span>
+curl -fsSL https://raw.githubusercontent.com/VilfredSikker/easy-review/main/install.sh | bash -s -- --version v0.3.0</code></pre>
+
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>Make sure your install directory is on your <code>PATH</code>. For <code>~/.local/bin</code>, add
+      <code>export PATH="$HOME/.local/bin:$PATH"</code> to your shell profile if it is not already there.</p></div>
+    </div>
+
+    <h3>From source with Cargo</h3>
+    <pre><code>git clone https://github.com/VilfredSikker/easy-review.git
+cd easy-review
+cargo install --path crates/er-tui</code></pre>
+    <p>Or install directly from the repository without cloning:</p>
+    <pre><code>cargo install --git https://github.com/VilfredSikker/easy-review er-tui</code></pre>
+    <p>This produces a single <code>er</code> binary with no runtime dependencies beyond git.</p>
+
+    <h3>Verify the install</h3>
+    <pre><code>er --help
+cd ~/some/git/repo
+er</code></pre>
+
+    <h2 id="desktop-app">Desktop app <span class="pill desktop">desktop</span></h2>
+    <div class="callout warn">
+      <span class="ico">▲</span>
+      <div><p>The desktop app is in active development and is <strong>not</strong> part of the published GitHub
+      releases yet — only the <code>er</code> terminal binary is released. To run it today, build it from source.</p></div>
+    </div>
+
+    <h3>Run in development</h3>
+    <pre><code>git clone https://github.com/VilfredSikker/easy-review.git
+cd easy-review
+./scripts/tauri-dev.sh</code></pre>
+    <p>This launches the Tauri dev shell with the Svelte frontend and hot reload.</p>
+
+    <h3>Build a release bundle</h3>
+    <pre><code>./scripts/tauri-build.sh</code></pre>
+    <p>On macOS this produces an <code>Easy Review.app</code> and a <code>.dmg</code> under the desktop build target.
+    Building requires <code>cargo-tauri</code> and the platform WebView dependencies (WebKit/GTK on Linux).</p>
+
+    <div class="callout tip">
+      <span class="ico">✦</span>
+      <div><p>The terminal and desktop apps read and write the same review data per repository and branch, so you can
+      install both and switch between them freely. See <a href="storage.html">Review Storage</a> for where that data lives.</p></div>
+    </div>
+
+    <h2>Updating</h2>
+    <ul>
+      <li><strong>Script install:</strong> re-run the install command to fetch the latest release.</li>
+      <li><strong>Cargo install:</strong> re-run <code>cargo install --git … er-tui</code> (add <code>--force</code> if needed).</li>
+      <li><strong>From a clone:</strong> <code>git pull</code> then rebuild.</li>
+    </ul>
+
+    <h2>Uninstalling</h2>
+    <p>Delete the <code>er</code> binary from your install directory (e.g. <code>rm ~/.local/bin/er</code>). Review
+    data lives separately in managed storage — see <a href="storage.html">Review Storage</a> for those paths if you
+    want to remove it too.</p>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Troubleshooting &amp; FAQ — easy-review docs</title>
+  <meta name="description" content="Common issues and questions for easy-review: base branch, missing AI data, GitHub auth, watch mode, storage location, performance, and how your data is handled.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Help</p>
+    <h1>Troubleshooting &amp; FAQ</h1>
+    <p class="lead">
+      Answers to the questions that come up most often, and fixes for the things that occasionally go sideways.
+    </p>
+
+    <h2>Troubleshooting</h2>
+
+    <h3><code>er</code> shows the wrong base branch</h3>
+    <p>
+      The base is auto-detected: upstream tracking → <code>main</code> → <code>master</code> → <code>develop</code> →
+      <code>dev</code>. If it picks the wrong one, set your branch's upstream so tracking wins:
+      <code>git branch --set-upstream-to=origin/main</code>. When a PR is detected with a different target,
+      <code>er</code> shows a hint rather than switching automatically.
+    </p>
+
+    <h3>AI findings do not appear</h3>
+    <ul>
+      <li><strong>Check where the artifacts went.</strong> By default <code>er</code> reads from managed storage, not the
+      repo's <code>.er/</code>. If you ran a skill in Claude Code that wrote to <code>.er/</code>, either run reviews
+      through <code>er</code>'s own agent commands or launch <code>er</code> with <code>ER_REPO_LOCAL=1</code>. See
+      <a href="storage.html">Review Storage</a>.</li>
+      <li><strong>Check freshness.</strong> If the diff changed after the review ran, the data is dimmed as
+      <em>stale</em>. Re-run the relevant skill.</li>
+      <li><strong>Cycle the view.</strong> In the terminal, press <kbd>v</kbd> to make sure you are in an AI view mode.</li>
+      <li><strong>Try fixtures.</strong> Run <code>scripts/generate-test-fixtures.sh</code> in your repo to confirm the
+      overlay renders at all.</li>
+    </ul>
+
+    <h3>GitHub features are missing or failing</h3>
+    <p>
+      GitHub integration requires the <code>gh</code> CLI, authenticated with <code>gh auth login</code>. If <kbd>G</kbd>
+      / <kbd>P</kbd> do nothing or PR data is absent, run <code>gh auth status</code> to confirm you are logged in and
+      that <code>gh</code> is on your <code>PATH</code>.
+    </p>
+
+    <h3>The diff is not updating</h3>
+    <p>
+      Watch mode should refresh on saves, staging, and commits. Confirm the <span style="color:var(--green)">● WATCH</span>
+      indicator is on (toggle with <kbd>w</kbd>), and press <kbd>r</kbd> to force a manual refresh. Watch uses a ~500ms
+      debounce, so a burst of changes lands as one update.
+    </p>
+
+    <h3>A huge file is collapsed and I can't see it</h3>
+    <p>
+      Lock files, generated code, and files over ~500 lines are <strong>auto-compacted</strong> — shown as a single
+      collapsed entry to keep things fast. Press <kbd>Enter</kbd> on it to expand on demand. See
+      <a href="diff-modes.html#performance-with-large-diffs">large-diff performance</a>.
+    </p>
+
+    <h3><code>er</code> exits immediately or renders nothing</h3>
+    <p>
+      The terminal UI needs a real TTY. Running it through a pipe or a non-interactive context will not work — launch it
+      in an actual terminal (a tmux pane is fine).
+    </p>
+
+    <h3>The <code>target/</code> directory is enormous (building from source)</h3>
+    <p>
+      Building the whole workspace compiles the Tauri desktop app into the shared <code>target/</code>, which can balloon.
+      Use the scoped scripts: <code>./scripts/er-tui.sh</code> for TUI work and <code>./scripts/tauri-dev.sh</code> for
+      desktop, and run <code>./scripts/cargo-gc.sh</code> to reclaim space.
+    </p>
+
+    <h3>Getting a debug log</h3>
+    <p>Run <code>ER_DEBUG=1 er</code>. It writes <code>/tmp/er_debug.log</code> (overwritten on each git diff) and shows
+    the memory budget in the status bar.</p>
+
+    <h2>FAQ</h2>
+
+    <h3>Does <code>er</code> run AI or send my code anywhere?</h3>
+    <p>
+      No. <code>er</code> does not run AI models and has no backend, telemetry, or analytics. It shells out to your local
+      <code>git</code> (and optionally <code>gh</code>) and reads artifacts that AI tools <em>you</em> run write to disk.
+      You bring your own AI tool and credentials, and you are the customer of those providers.
+    </p>
+
+    <h3>Which AI tools work with it?</h3>
+    <p>
+      Any tool you can drive from the command line. The included skills target Claude Code, and the AI Hub config ships
+      presets for Claude, Codex, and Cursor. See <a href="configuration.html#ai-hub">AI Hub configuration</a>.
+    </p>
+
+    <h3>Do I have to use AI at all?</h3>
+    <p>
+      No. Every non-AI feature — diff modes, navigation, reviewed tracking, comments, GitHub sync, filtering — works on
+      its own. AI review is an optional layer on top.
+    </p>
+
+    <h3>Can I use the terminal and desktop apps together?</h3>
+    <p>
+      Yes. They share one engine and the same on-disk review data per repo, branch, and view, so you can switch between
+      them mid-review.
+    </p>
+
+    <h3>Where is my review data stored, and is it in git?</h3>
+    <p>
+      By default it is in managed application data outside your repository, so it never touches <code>git status</code>.
+      Set <code>ER_REPO_LOCAL=1</code> to use a repo <code>.er/</code> directory instead (add it to <code>.gitignore</code>
+      if you do). Full paths are in <a href="storage.html">Review Storage</a>.
+    </p>
+
+    <h3>What does the desktop app add over the terminal?</h3>
+    <p>
+      Split and word diffs, an embedded terminal and browser, the multi-model review arena, a settings GUI, persistent
+      drag-to-reorder tabs, and reference “find usages”. The terminal wins on speed, zero dependencies, and running
+      anywhere a terminal does. See the <a href="desktop.html">Desktop Overview</a>.
+    </p>
+
+    <h3>Is the desktop app released?</h3>
+    <p>
+      Not yet — published releases are the <code>er</code> terminal binary only. Build the desktop app from source with
+      <code>./scripts/tauri-dev.sh</code> or <code>./scripts/tauri-build.sh</code>.
+    </p>
+
+    <h3>How do I report a bug or request a feature?</h3>
+    <p>
+      Open an issue on the <a href="https://github.com/VilfredSikker/easy-review" target="_blank" rel="noopener">GitHub
+      repository</a>.
+    </p>
+
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>Building from source or contributing? The repository's <code>docs/DEVELOPMENT.md</code> and
+      <code>AGENTS.md</code> cover the workspace layout, cargo aliases, scoped builds, profiling, and the release process.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>
