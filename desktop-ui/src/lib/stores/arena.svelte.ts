@@ -467,9 +467,8 @@ class ArenaStore {
       app.showToast("error", "Cancel the run before deleting it");
       return;
     }
-    if (!confirm("Delete this arena run permanently? This cannot be undone.")) {
-      return;
-    }
+    // Confirmation is handled inline by the caller (two-step button); native
+    // confirm() is a no-op in the Tauri webview.
     try {
       await invoke("arena_delete", { runId });
       if (this.overlayRunId === runId) {

@@ -85,14 +85,21 @@
     return "bg-add-fg text-on-accent";
   }
 
+  // Native confirm() is a no-op in the Tauri webview (returns false, shows no
+  // dialog), which silently aborted deletes of threads with replies. Use an
+  // inline two-step confirm instead; the backend cascade-deletes root + replies.
+  let confirmingDelete = $state(false);
+  let confirmDeleteTimer: ReturnType<typeof setTimeout> | undefined;
+
   async function deleteThread() {
-    if (thread.replies.length > 0) {
-      const n = thread.replies.length;
-      const ok = confirm(
-        `Delete this thread and its ${n} ${n === 1 ? "reply" : "replies"}? This can't be undone.`,
-      );
-      if (!ok) return;
+    if (thread.replies.length > 0 && !confirmingDelete) {
+      confirmingDelete = true;
+      clearTimeout(confirmDeleteTimer);
+      confirmDeleteTimer = setTimeout(() => (confirmingDelete = false), 3000);
+      return;
     }
+    clearTimeout(confirmDeleteTimer);
+    confirmingDelete = false;
     await app.cmd("delete_thread", { id: thread.id });
   }
 
@@ -266,9 +273,9 @@
       <button
         type="button"
         onclick={deleteThread}
-        title={thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
-        aria-label="Delete thread"
-        class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-del-fg hover:bg-hover transition"
+        title={confirmingDelete ? "Click again to confirm — deletes root + all replies" : thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
+        aria-label={confirmingDelete ? "Confirm delete thread" : "Delete thread"}
+        class="p-0.5 rounded transition {confirmingDelete ? 'text-del-fg bg-hover !opacity-100' : 'text-muted hover:!opacity-100 hover:text-del-fg hover:bg-hover'}"
       >
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
       </button>
@@ -461,9 +468,9 @@
     <button
       type="button"
       onclick={deleteThread}
-      title={thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
-      class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg"
-    >Delete</button>
+      title={confirmingDelete ? "Click again to confirm — deletes root + all replies" : thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
+      class="px-2 py-0.5 rounded {confirmingDelete ? 'text-del-fg bg-hover font-medium' : 'text-fg-3 hover:bg-hover hover:text-del-fg'}"
+    >{confirmingDelete ? "Confirm delete?" : "Delete"}</button>
     {#if thread.replies.length > 0}
       <span class="ml-auto text-muted text-[10px]">{thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"}</span>
     {/if}

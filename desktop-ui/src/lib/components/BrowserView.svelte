@@ -384,15 +384,25 @@
     void browser.setAnnotateMode(false);
   }
 
+  // Two-step inline confirm (native confirm() is a no-op in the Tauri webview).
+  let pendingClearPage = $state(false);
+  let pendingClearAll = $state(false);
+  let clearPageTimer: ReturnType<typeof setTimeout> | undefined;
+  let clearAllTimer: ReturnType<typeof setTimeout> | undefined;
+
   async function clearAnnotationsPage() {
     const all = app.snapshot?.ui_annotations ?? [];
     const onPage = all.filter((a) => annotationMatchesPage(a.url, currentPageUrl()));
     const count = onPage.length;
     if (count === 0) return;
-    const ok = window.confirm(
-      `Clear ${count} annotation${count === 1 ? "" : "s"} on this page?`,
-    );
-    if (!ok) return;
+    if (!pendingClearPage) {
+      pendingClearPage = true;
+      clearTimeout(clearPageTimer);
+      clearPageTimer = setTimeout(() => (pendingClearPage = false), 3000);
+      return;
+    }
+    clearTimeout(clearPageTimer);
+    pendingClearPage = false;
     await clearInPageAnnotationUi();
     await app.cmd("clear_ui_annotations_for_page", { pageUrl: pageKey(currentPageUrl()) });
     syncPinsToPage();
@@ -401,10 +411,14 @@
   async function clearAnnotationsAll() {
     const count = app.snapshot?.ui_annotations?.length ?? 0;
     if (count === 0) return;
-    const ok = window.confirm(
-      `Clear all ${count} UI annotation${count === 1 ? "" : "s"} on this review tab?`,
-    );
-    if (!ok) return;
+    if (!pendingClearAll) {
+      pendingClearAll = true;
+      clearTimeout(clearAllTimer);
+      clearAllTimer = setTimeout(() => (pendingClearAll = false), 3000);
+      return;
+    }
+    clearTimeout(clearAllTimer);
+    pendingClearAll = false;
     await clearInPageAnnotationUi();
     await app.cmd("clear_ui_annotations", {});
     syncPinsToPage();
@@ -857,23 +871,23 @@
     </button>
     <button
       type="button"
-      class="text-xs px-2 py-1 rounded hover:bg-error/15 text-muted hover:text-error disabled:opacity-40"
+      class="text-xs px-2 py-1 rounded disabled:opacity-40 {pendingClearPage ? 'bg-error/15 text-error' : 'hover:bg-error/15 text-muted hover:text-error'}"
       onclick={clearAnnotationsPage}
       disabled={!(app.snapshot?.ui_annotations ?? []).some((a) =>
         annotationMatchesPage(a.url, currentPageUrl()),
       )}
-      title="Clear annotations on this page"
+      title={pendingClearPage ? "Click again to confirm" : "Clear annotations on this page"}
     >
-      Clear page
+      {pendingClearPage ? "Confirm clear?" : "Clear page"}
     </button>
     <button
       type="button"
-      class="text-xs px-2 py-1 rounded hover:bg-error/15 text-muted hover:text-error disabled:opacity-40"
+      class="text-xs px-2 py-1 rounded disabled:opacity-40 {pendingClearAll ? 'bg-error/15 text-error' : 'hover:bg-error/15 text-muted hover:text-error'}"
       onclick={clearAnnotationsAll}
       disabled={(app.snapshot?.ui_annotations?.length ?? 0) === 0}
-      title="Clear all UI annotations on this review tab"
+      title={pendingClearAll ? "Click again to confirm" : "Clear all UI annotations on this review tab"}
     >
-      Clear all
+      {pendingClearAll ? "Confirm clear all?" : "Clear all"}
     </button>
     <button
       type="button"
