@@ -2,12 +2,15 @@ use serde::{Deserialize, Serialize};
 
 // ── Comment type discriminator ──
 
-/// Distinguishes between personal review questions and GitHub PR comments
+/// Distinguishes between personal review questions, local notes, and GitHub PR comments
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CommentType {
-    /// Personal internal question (stored in .er-questions.json)
+    /// Personal internal question (stored in questions.json)
     Question,
-    /// GitHub PR comment (stored in .er-github-comments.json)
+    /// Local actionable note (stored in notes.json) — private, like a question,
+    /// but framed as an instruction to hand off to an agent.
+    Note,
+    /// GitHub PR comment (stored in github-comments.json)
     GitHubComment,
 }
 
@@ -15,15 +18,21 @@ pub enum CommentType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HintType {
     Question,
+    Note,
     GitHubComment,
     Finding,
 }
 
-/// Unified reference to either a question, GitHub comment, or legacy comment.
+/// Unified reference to either a question, note, GitHub comment, or legacy comment.
 /// Used by query methods and UI rendering to handle both types uniformly.
+///
+/// Notes reuse the [`ReviewQuestion`] struct (their fields are identical); the
+/// `Note` variant exists so callers can distinguish a note from a question for
+/// icons, colors, and snapshot `kind` tagging.
 #[derive(Debug, Clone)]
 pub enum CommentRef<'a> {
     Question(&'a ReviewQuestion),
+    Note(&'a ReviewQuestion),
     GitHubComment(&'a GitHubReviewComment),
     Legacy(&'a FeedbackComment),
 }
@@ -31,7 +40,7 @@ pub enum CommentRef<'a> {
 impl<'a> CommentRef<'a> {
     pub fn id(&self) -> &str {
         match self {
-            CommentRef::Question(q) => &q.id,
+            CommentRef::Question(q) | CommentRef::Note(q) => &q.id,
             CommentRef::GitHubComment(c) => &c.id,
             CommentRef::Legacy(c) => &c.id,
         }
@@ -40,13 +49,14 @@ impl<'a> CommentRef<'a> {
     pub fn comment_type(&self) -> CommentType {
         match self {
             CommentRef::Question(_) => CommentType::Question,
+            CommentRef::Note(_) => CommentType::Note,
             CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => CommentType::GitHubComment,
         }
     }
 
     pub fn text(&self) -> &str {
         match self {
-            CommentRef::Question(q) => &q.text,
+            CommentRef::Question(q) | CommentRef::Note(q) => &q.text,
             CommentRef::GitHubComment(c) => &c.comment,
             CommentRef::Legacy(c) => &c.comment,
         }
@@ -54,7 +64,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn author(&self) -> &str {
         match self {
-            CommentRef::Question(q) => {
+            CommentRef::Question(q) | CommentRef::Note(q) => {
                 if q.author.is_empty() {
                     "You"
                 } else {
@@ -80,7 +90,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn timestamp(&self) -> &str {
         match self {
-            CommentRef::Question(q) => &q.timestamp,
+            CommentRef::Question(q) | CommentRef::Note(q) => &q.timestamp,
             CommentRef::GitHubComment(c) => &c.timestamp,
             CommentRef::Legacy(c) => &c.timestamp,
         }
@@ -88,7 +98,8 @@ impl<'a> CommentRef<'a> {
 
     pub fn is_synced(&self) -> bool {
         match self {
-            CommentRef::Question(_) => false,
+            // Questions and notes are local-only and never synced to GitHub.
+            CommentRef::Question(_) | CommentRef::Note(_) => false,
             CommentRef::GitHubComment(c) => c.synced,
             CommentRef::Legacy(c) => c.synced,
         }
@@ -96,7 +107,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn is_resolved(&self) -> bool {
         match self {
-            CommentRef::Question(q) => q.resolved,
+            CommentRef::Question(q) | CommentRef::Note(q) => q.resolved,
             CommentRef::GitHubComment(c) => c.resolved,
             CommentRef::Legacy(c) => c.resolved,
         }
@@ -104,7 +115,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn is_stale(&self) -> bool {
         match self {
-            CommentRef::Question(q) => q.stale,
+            CommentRef::Question(q) | CommentRef::Note(q) => q.stale,
             CommentRef::GitHubComment(c) => c.stale || c.outdated,
             CommentRef::Legacy(_) => false,
         }
@@ -112,7 +123,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn in_reply_to(&self) -> Option<&str> {
         match self {
-            CommentRef::Question(q) => q.in_reply_to.as_deref(),
+            CommentRef::Question(q) | CommentRef::Note(q) => q.in_reply_to.as_deref(),
             CommentRef::GitHubComment(c) => c.in_reply_to.as_deref(),
             CommentRef::Legacy(c) => c.in_reply_to.as_deref(),
         }
@@ -121,7 +132,7 @@ impl<'a> CommentRef<'a> {
     #[allow(dead_code)]
     pub fn file(&self) -> &str {
         match self {
-            CommentRef::Question(q) => &q.file,
+            CommentRef::Question(q) | CommentRef::Note(q) => &q.file,
             CommentRef::GitHubComment(c) => &c.file,
             CommentRef::Legacy(c) => &c.file,
         }
@@ -129,7 +140,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn hunk_index(&self) -> Option<usize> {
         match self {
-            CommentRef::Question(q) => q.hunk_index,
+            CommentRef::Question(q) | CommentRef::Note(q) => q.hunk_index,
             CommentRef::GitHubComment(c) => c.hunk_index,
             CommentRef::Legacy(c) => c.hunk_index,
         }
@@ -137,7 +148,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn line_start(&self) -> Option<usize> {
         match self {
-            CommentRef::Question(q) => q.line_start,
+            CommentRef::Question(q) | CommentRef::Note(q) => q.line_start,
             CommentRef::GitHubComment(c) => c.line_start,
             CommentRef::Legacy(c) => c.line_start,
         }
@@ -145,7 +156,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn line_end(&self) -> Option<usize> {
         match self {
-            CommentRef::Question(q) => q.line_end,
+            CommentRef::Question(q) | CommentRef::Note(q) => q.line_end,
             CommentRef::GitHubComment(c) => c.line_end,
             CommentRef::Legacy(c) => c.line_end,
         }
@@ -153,7 +164,7 @@ impl<'a> CommentRef<'a> {
 
     pub fn old_line_start(&self) -> Option<usize> {
         match self {
-            CommentRef::Question(q) => q.old_line_start,
+            CommentRef::Question(q) | CommentRef::Note(q) => q.old_line_start,
             CommentRef::GitHubComment(c) => c.old_line_start,
             CommentRef::Legacy(_) => None,
         }
@@ -162,7 +173,7 @@ impl<'a> CommentRef<'a> {
     #[allow(dead_code)]
     pub fn anchor_status(&self) -> &str {
         match self {
-            CommentRef::Question(q) => &q.anchor_status,
+            CommentRef::Question(q) | CommentRef::Note(q) => &q.anchor_status,
             CommentRef::GitHubComment(c) => &c.anchor_status,
             CommentRef::Legacy(_) => "original",
         }
@@ -171,7 +182,7 @@ impl<'a> CommentRef<'a> {
     /// Whether this comment can be replied to (top-level comments/questions, not replies themselves)
     pub fn can_reply(&self) -> bool {
         match self {
-            CommentRef::Question(q) => q.in_reply_to.is_none(),
+            CommentRef::Question(q) | CommentRef::Note(q) => q.in_reply_to.is_none(),
             CommentRef::GitHubComment(c) => c.in_reply_to.is_none(),
             CommentRef::Legacy(c) => c.in_reply_to.is_none(),
         }
@@ -181,7 +192,7 @@ impl<'a> CommentRef<'a> {
     #[allow(dead_code)]
     pub fn can_delete(&self) -> bool {
         match self {
-            CommentRef::Question(_) => true,
+            CommentRef::Question(_) | CommentRef::Note(_) => true,
             // Local comments are stored with author "You" — ownership is inferred from
             // that display name, not from the GitHub identity.
             CommentRef::GitHubComment(c) => c.source != "github" || c.author == "You",
@@ -198,6 +209,22 @@ pub struct ErQuestions {
     pub diff_hash: String,
     #[serde(default)]
     pub questions: Vec<ReviewQuestion>,
+}
+
+// ── notes.json — local actionable notes ──
+//
+// Notes are private (never pushed to GitHub) like questions, but framed as
+// instructions to hand off to a coding agent. They reuse the `ReviewQuestion`
+// shape so all comment machinery (anchoring, replies, staleness) works
+// unchanged; the separate file + `n-` id prefix keep them distinct from
+// questions.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErNotes {
+    pub version: u32,
+    pub diff_hash: String,
+    #[serde(default)]
+    pub notes: Vec<ReviewQuestion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -704,6 +731,38 @@ mod tests {
             }],
         };
         assert_eq!(count_eligible_github_comments(&gc), 1);
+    }
+
+    #[test]
+    fn er_notes_roundtrips_via_serde() {
+        let notes = ErNotes {
+            version: 1,
+            diff_hash: "abc".into(),
+            notes: vec![{
+                let mut n = sample_question();
+                n.id = "n-1".into();
+                n.text = "Wire this up to the new endpoint".into();
+                n
+            }],
+        };
+        let json = serde_json::to_string(&notes).unwrap();
+        let back: ErNotes = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.notes.len(), 1);
+        assert_eq!(back.notes[0].id, "n-1");
+    }
+
+    #[test]
+    fn comment_ref_note_reports_note_type_but_shares_accessors() {
+        let mut n = sample_question();
+        n.id = "n-1".into();
+        n.text = "Refactor before merge".into();
+        let cref = CommentRef::Note(&n);
+        assert_eq!(cref.comment_type(), CommentType::Note);
+        assert_eq!(cref.id(), "n-1");
+        assert_eq!(cref.text(), "Refactor before merge");
+        // Notes are local-only, like questions.
+        assert!(!cref.is_synced());
+        assert!(cref.can_delete());
     }
 
     #[test]

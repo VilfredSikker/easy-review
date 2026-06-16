@@ -8,9 +8,9 @@
   import AiReviewCard from "./AiReviewCard.svelte";
   import TriageCard from "./TriageCard.svelte";
   import CommentsCard from "./CommentsCard.svelte";
-  import QuestionsCard from "./QuestionsCard.svelte";
   import UiAnnotationsCard from "./UiAnnotationsCard.svelte";
   import AgentOutputCard from "./AgentOutputCard.svelte";
+  import InlineThread from "./InlineThread.svelte";
 
   interface Props {
     ai: AiSnapshot | null;
@@ -54,8 +54,36 @@
 
   // ── Derived counts for tab badges ──────────────────────────────────────────
   const totalFindings = $derived(ai?.findings.length ?? 0);
-  const questionCount = $derived(
-    ai?.threads.filter((t) => t.kind === "question").length ?? 0
+  const questionThreads = $derived(
+    ai?.threads.filter((t) => t.kind === "question") ?? []
+  );
+  const noteThreads = $derived(ai?.threads.filter((t) => t.kind === "note") ?? []);
+  const questionCount = $derived(questionThreads.length);
+  const noteCount = $derived(noteThreads.length);
+
+  // ── Notes-tab sub-filter (All | Notes | Questions) ──────────────────────────
+  const NOTES_SUBTAB_KEY = "notesPanelSubTab";
+  type NotesSubTab = "all" | "notes" | "questions";
+  function readStoredNotesSubTab(): NotesSubTab {
+    try {
+      const raw = localStorage.getItem(NOTES_SUBTAB_KEY);
+      if (raw === "all" || raw === "notes" || raw === "questions") return raw;
+    } catch { /* ignore */ }
+    return "all";
+  }
+  let notesSubTab = $state<NotesSubTab>(readStoredNotesSubTab());
+  function setNotesSubTab(t: NotesSubTab) {
+    notesSubTab = t;
+    try {
+      localStorage.setItem(NOTES_SUBTAB_KEY, t);
+    } catch { /* ignore */ }
+  }
+  const visibleNotesThreads = $derived(
+    notesSubTab === "notes"
+      ? noteThreads
+      : notesSubTab === "questions"
+        ? questionThreads
+        : [...noteThreads, ...questionThreads],
   );
 
   const currentWorktree = $derived(
@@ -97,7 +125,7 @@
   const tabs: TabDef[] = $derived([
     { id: "branch", label: "Branch", badge: commentCount > 0 ? commentCount : null },
     { id: "review", label: "Review", badge: totalFindings > 0 ? totalFindings : null },
-    { id: "notes",  label: "Notes",  badge: questionCount > 0 ? questionCount : null },
+    { id: "notes",  label: "Notes",  badge: noteCount + questionCount > 0 ? noteCount + questionCount : null },
   ]);
 
   // ── Per-tab export ───────────────────────────────────────────────────────────
@@ -112,6 +140,7 @@
   type ExportOpts = {
     includeComments: boolean;
     includeQuestions: boolean;
+    includeNotes: boolean;
     includeFindings: boolean;
     includeAnnotations: boolean;
     onlyUnresolved: boolean;
@@ -120,11 +149,15 @@
   const NO_SECTIONS: ExportOpts = {
     includeComments: false,
     includeQuestions: false,
+    includeNotes: false,
     includeFindings: false,
     includeAnnotations: false,
     onlyUnresolved: false,
   };
 
+  // The Notes tab mirrors its active sub-tab (All | Notes | Questions) so the
+  // clipboard export matches exactly what the user is looking at. Annotations
+  // only render under "All", so they ride along only there.
   function exportOptsForTab(t: Tab): ExportOpts {
     switch (t) {
       case "branch":
@@ -132,8 +165,20 @@
       case "review":
         return { ...NO_SECTIONS, includeFindings: true };
       case "notes":
-        return { ...NO_SECTIONS, includeQuestions: true, includeAnnotations: true };
+        switch (notesSubTab) {
+          case "notes":
+            return { ...NO_SECTIONS, includeNotes: true };
+          case "questions":
+            return { ...NO_SECTIONS, includeQuestions: true };
+          case "all":
+            return { ...NO_SECTIONS, includeNotes: true, includeQuestions: true, includeAnnotations: true };
+        }
     }
+  }
+
+  function exportLabel(): string {
+    if (activeTab !== "notes") return tabs.find((t) => t.id === activeTab)?.label ?? "section";
+    return notesSubTab === "notes" ? "Notes" : notesSubTab === "questions" ? "Questions" : "All notes & questions";
   }
 
   let copying = $state(false);
@@ -141,7 +186,7 @@
   async function copyTabToClipboard() {
     if (copying) return;
     copying = true;
-    const label = tabs.find((t) => t.id === activeTab)?.label ?? "section";
+    const label = exportLabel();
     try {
       const body = await invoke<string>("export_review", { opts: exportOptsForTab(activeTab) });
       if (!body.trim()) {
@@ -278,14 +323,57 @@
 
     <!-- Notes tab -->
     {:else if activeTab === "notes"}
-      <div class="p-4 pb-8 space-y-4">
-        <p class="text-[11px] text-muted leading-relaxed">
-          Questions stay on your machine — use them for personal review notes or routing to an AI assistant.
-        </p>
-        {#if ai && ai.questions > 0}
-          <QuestionsCard {ai} />
-        {/if}
-        <UiAnnotationsCard />
+      <div class="pb-8">
+        <!-- Sub-tab filter: All | Notes | Questions -->
+        <div class="flex items-stretch border-b border-hairline bg-surface px-3 gap-1 sticky top-0 z-10">
+          {#each [
+            { id: "all", label: "All", count: noteCount + questionCount },
+            { id: "notes", label: "Notes", count: noteCount },
+            { id: "questions", label: "Questions", count: questionCount },
+          ] as sub}
+            {@const active = notesSubTab === sub.id}
+            <button
+              type="button"
+              onclick={() => setNotesSubTab(sub.id as NotesSubTab)}
+              class="relative px-2.5 py-2 text-[11px] font-medium transition-colors flex items-center gap-1.5
+                {active ? 'text-fg' : 'text-fg-3 hover:text-fg-2'}"
+            >
+              <span>{sub.label}</span>
+              {#if sub.count > 0}
+                <span class="min-w-[14px] h-[14px] px-1 flex items-center justify-center rounded-full text-[9px] font-bold leading-none
+                  {active ? 'bg-question/20 text-question' : 'bg-hairline text-fg-3'}">
+                  {sub.count}
+                </span>
+              {/if}
+              {#if active}
+                <span class="absolute inset-x-2 bottom-0 h-[2px] bg-question rounded-t"></span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+
+        <div class="p-3 space-y-3">
+          <p class="text-[11px] text-muted leading-relaxed">
+            Notes and questions stay on your machine. Notes are actionable hand-offs for an
+            AI agent; questions are for your own review. Neither is pushed to GitHub.
+          </p>
+          {#if visibleNotesThreads.length === 0}
+            <p class="text-[11px] text-muted">
+              {notesSubTab === "questions"
+                ? "No questions yet."
+                : notesSubTab === "notes"
+                  ? "No notes yet — select lines in the diff and choose Note."
+                  : "No notes or questions yet."}
+            </p>
+          {:else}
+            {#each visibleNotesThreads as thread (thread.id)}
+              <InlineThread {thread} hunk_idx={0} variant="panel" />
+            {/each}
+          {/if}
+          {#if notesSubTab === "all"}
+            <UiAnnotationsCard />
+          {/if}
+        </div>
       </div>
     {/if}
   </div>

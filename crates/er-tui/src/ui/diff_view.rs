@@ -115,7 +115,7 @@ fn build_split_rows(hunk: &er_engine::git::DiffHunk) -> Vec<TuiSplitRow<'_>> {
 /// Whether a comment should render given layer visibility toggles.
 fn comment_layer_visible(tab: &TabState, comment: &CommentRef<'_>) -> bool {
     let visible = match comment {
-        CommentRef::Question(_) => tab.layers.show_questions,
+        CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
         CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
     };
     visible && !(tab.layers.hide_resolved && comment.is_resolved())
@@ -376,7 +376,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         let unanchored = tab.ai.comments_for_file_unanchored(&file.path);
         for comment in &unanchored {
             let visible = match comment {
-                CommentRef::Question(_) => tab.layers.show_questions,
+                CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
                 CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
                     tab.layers.show_github_comments
                 }
@@ -1049,7 +1049,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         let unanchored = tab.ai.comments_for_file_unanchored(&file.path);
         for comment in &unanchored {
             let visible = match comment {
-                CommentRef::Question(_) => tab.layers.show_questions,
+                CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
                 CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
                     tab.layers.show_github_comments
                 }
@@ -2135,7 +2135,9 @@ fn render_comment_lines(
     inline: bool,
     focused: bool,
 ) {
-    let is_question = comment.comment_type() == CommentType::Question;
+    let ctype = comment.comment_type();
+    let is_question = ctype == CommentType::Question;
+    let is_note = ctype == CommentType::Note;
     let is_stale = comment.is_stale();
     let anchor = comment.anchor_status();
     let is_lost = anchor == "lost";
@@ -2148,16 +2150,22 @@ fn render_comment_lines(
         styles::COMMENT_BG()
     };
 
-    // Questions use yellow/orange, GitHub comments use cyan
+    // Questions and notes use yellow, GitHub comments use cyan
     let accent = if is_stale {
         styles::STALE()
-    } else if is_question {
+    } else if is_question || is_note {
         styles::YELLOW()
     } else {
         styles::CYAN()
     };
 
-    let icon = if is_question { "❓" } else { "💬" };
+    let icon = if is_note {
+        "📝"
+    } else if is_question {
+        "❓"
+    } else {
+        "💬"
+    };
     let author = comment.author();
 
     if inline {

@@ -11,6 +11,26 @@
 
   const { summaries, activeRunId = null, onOpen, onDelete }: Props = $props();
 
+  // Two-step inline confirm (native confirm() is a no-op in the Tauri webview).
+  let pendingDeleteId = $state<string | null>(null);
+  let pendingDeleteTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function requestDelete(runId: string) {
+    if (pendingDeleteId !== runId) {
+      pendingDeleteId = runId;
+      if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
+      pendingDeleteTimer = setTimeout(() => {
+        pendingDeleteId = null;
+        pendingDeleteTimer = null;
+      }, 3000);
+      return;
+    }
+    if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
+    pendingDeleteTimer = null;
+    pendingDeleteId = null;
+    onDelete(runId);
+  }
+
   function statusLabel(status: RunStatus): string {
     if (status === "queued") return "Queued";
     if (status === "complete") return "Complete";
@@ -84,16 +104,23 @@
           </button>
           <button
             type="button"
-            class="shrink-0 rounded p-1 text-[var(--arena-fg-faint)] opacity-0 transition-opacity hover:bg-[var(--arena-bg-3)] hover:text-[var(--arena-err)] group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-            title={isArenaRunActive(run.status) ? "Cancel the run before deleting" : "Delete run"}
+            class="shrink-0 rounded px-1.5 py-1 text-[10px] leading-none transition-opacity disabled:cursor-not-allowed disabled:opacity-30
+              {pendingDeleteId === run.id
+                ? 'opacity-100 bg-[var(--arena-bg-3)] text-[var(--arena-err)]'
+                : 'text-[var(--arena-fg-faint)] opacity-0 hover:bg-[var(--arena-bg-3)] hover:text-[var(--arena-err)] group-hover:opacity-100'}"
+            title={isArenaRunActive(run.status)
+              ? "Cancel the run before deleting"
+              : pendingDeleteId === run.id
+                ? "Click again to confirm"
+                : "Delete run"}
             disabled={isArenaRunActive(run.status)}
-            aria-label="Delete run"
+            aria-label={pendingDeleteId === run.id ? "Confirm delete run" : "Delete run"}
             onclick={(e) => {
               e.stopPropagation();
-              onDelete(run.id);
+              requestDelete(run.id);
             }}
           >
-            ✕
+            {pendingDeleteId === run.id ? "Confirm?" : "✕"}
           </button>
         </div>
       </li>

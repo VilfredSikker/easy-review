@@ -196,6 +196,32 @@ pub fn collect_finding_promote_replies(ai: &AiState, finding_id: &str) -> Vec<(S
         }
     }
 
+    if let Some(ns) = ai.notes.as_ref() {
+        let roots: Vec<&str> = ns
+            .notes
+            .iter()
+            .filter(|n| n.finding_ref.as_deref() == Some(finding_id) && n.in_reply_to.is_none())
+            .map(|n| n.id.as_str())
+            .collect();
+        for n in &ns.notes {
+            if let Some(parent) = n.in_reply_to.as_deref() {
+                if roots.contains(&parent) {
+                    let author = if n.author.is_empty() {
+                        "You".to_string()
+                    } else {
+                        n.author.clone()
+                    };
+                    entries.push(PromoteReply {
+                        timestamp: n.timestamp.clone(),
+                        author,
+                        body: n.text.clone(),
+                        dedupe_key: format!("note:{}", n.id),
+                    });
+                }
+            }
+        }
+    }
+
     if let Some(gc) = ai.github_comments.as_ref() {
         let roots: Vec<&str> = gc
             .comments

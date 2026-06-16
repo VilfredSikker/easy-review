@@ -245,7 +245,7 @@ pub struct ChecklistItem {
 }
 
 // Comment types, question/GitHub comment data, and legacy feedback are in comments.rs.
-use super::comments::{CommentRef, ErFeedback, ErGitHubComments, ErQuestions, HintType};
+use super::comments::{CommentRef, ErFeedback, ErGitHubComments, ErNotes, ErQuestions, HintType};
 
 // ── AiReview navigation ──
 
@@ -264,6 +264,7 @@ pub enum ReviewFocus {
 #[derive(Clone, Debug)]
 enum CommentSource {
     Question,
+    Note,
     GitHubComment,
 }
 
@@ -277,9 +278,9 @@ struct CommentIndexData {
     /// (file, line_start) -> vec of (source, index_in_source_vec)
     /// Only top-level comments (in_reply_to.is_none())
     line_index: HashMap<(String, usize), Vec<(CommentSource, usize)>>,
-    /// file -> (question_count, github_comment_count)
-    /// Only top-level GitHub comments counted; all questions counted
-    file_comment_counts: HashMap<String, (usize, usize)>,
+    /// file -> (question_count, github_comment_count, note_count)
+    /// Only top-level GitHub comments counted; all questions and notes counted
+    file_comment_counts: HashMap<String, (usize, usize, usize)>,
 }
 
 // ── Aggregate AI state for a tab ──
@@ -292,8 +293,10 @@ pub struct AiState {
     /// Per-agent markdown summaries keyed by display label (Security, Testing, Professor, …).
     pub agent_summaries: HashMap<String, String>,
     pub checklist: Option<ErChecklist>,
-    /// Personal review questions (.er-questions.json)
+    /// Personal review questions (questions.json)
     pub questions: Option<ErQuestions>,
+    /// Local actionable notes (notes.json) — private, agent hand-off oriented
+    pub notes: Option<ErNotes>,
     /// GitHub PR comments (.er-github-comments.json)
     pub github_comments: Option<ErGitHubComments>,
     /// Fast branch triage (`.er/triage.json`) — routing verdict, not merged into review.
@@ -318,6 +321,7 @@ impl Default for AiState {
             agent_summaries: HashMap::new(),
             checklist: None,
             questions: None,
+            notes: None,
             github_comments: None,
             triage: None,
             feedback: None,
@@ -342,7 +346,7 @@ impl AiState {
         }
         let mut hunk_index: HunkIndexMap = HashMap::new();
         let mut line_index: HashMap<(String, usize), Vec<(CommentSource, usize)>> = HashMap::new();
-        let mut file_comment_counts: HashMap<String, (usize, usize)> = HashMap::new();
+        let mut file_comment_counts: HashMap<String, (usize, usize, usize)> = HashMap::new();
 
         if let Some(qs) = &self.questions {
             for (i, q) in qs.questions.iter().enumerate() {
@@ -361,8 +365,32 @@ impl AiState {
                     }
                 }
                 // File count: all questions (matching file_question_count behavior)
-                let counts = file_comment_counts.entry(q.file.clone()).or_insert((0, 0));
+                let counts = file_comment_counts
+                    .entry(q.file.clone())
+                    .or_insert((0, 0, 0));
                 counts.0 += 1;
+            }
+        }
+
+        if let Some(ns) = &self.notes {
+            for (i, n) in ns.notes.iter().enumerate() {
+                // Notes are indexed exactly like questions.
+                hunk_index
+                    .entry((n.file.clone(), n.hunk_index))
+                    .or_default()
+                    .push((CommentSource::Note, i));
+                if let Some(ls) = n.line_start {
+                    if n.in_reply_to.is_none() {
+                        line_index
+                            .entry((n.file.clone(), ls))
+                            .or_default()
+                            .push((CommentSource::Note, i));
+                    }
+                }
+                let counts = file_comment_counts
+                    .entry(n.file.clone())
+                    .or_insert((0, 0, 0));
+                counts.2 += 1;
             }
         }
 
@@ -383,7 +411,9 @@ impl AiState {
                     }
                 }
                 // File count: top-level only, excluding finding replies
-                let counts = file_comment_counts.entry(c.file.clone()).or_insert((0, 0));
+                let counts = file_comment_counts
+                    .entry(c.file.clone())
+                    .or_insert((0, 0, 0));
                 if c.in_reply_to.is_none() && c.finding_ref.is_none() {
                     counts.1 += 1;
                 }
@@ -530,8 +560,8 @@ impl AiState {
 
     /// Get all comments (questions + GitHub) for a specific file and hunk (including replies)
     pub fn comments_for_hunk(&self, path: &str, hunk_index: usize) -> Vec<CommentRef<'_>> {
-        // Use index only when questions or github_comments are present (not legacy fallback)
-        if self.questions.is_some() || self.github_comments.is_some() {
+        // Use index only when questions, notes, or github_comments are present (not legacy fallback)
+        if self.questions.is_some() || self.notes.is_some() || self.github_comments.is_some() {
             self.ensure_index();
             let index = self.comment_index.borrow();
             let index = index.as_ref().unwrap();
@@ -545,6 +575,13 @@ impl AiState {
                             if let Some(qs) = &self.questions {
                                 if let Some(q) = qs.questions.get(*idx) {
                                     result.push(CommentRef::Question(q));
+                                }
+                            }
+                        }
+                        CommentSource::Note => {
+                            if let Some(ns) = &self.notes {
+                                if let Some(n) = ns.notes.get(*idx) {
+                                    result.push(CommentRef::Note(n));
                                 }
                             }
                         }
@@ -609,6 +646,16 @@ impl AiState {
                 }
             }
         }
+        if let Some(ns) = &self.notes {
+            for n in &ns.notes {
+                if n.file == path && n.in_reply_to.is_none() {
+                    let c = CommentRef::Note(n);
+                    if matches_hunk!(c, hunk_idx) && seen_ids.insert(n.id.clone()) {
+                        result.push(CommentRef::Note(n));
+                    }
+                }
+            }
+        }
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.file == path && c.in_reply_to.is_none() {
@@ -637,6 +684,15 @@ impl AiState {
                 if let Some(ref parent) = q.in_reply_to {
                     if top_level_ids.contains(parent) && seen_ids.insert(q.id.clone()) {
                         result.push(CommentRef::Question(q));
+                    }
+                }
+            }
+        }
+        if let Some(ns) = &self.notes {
+            for n in &ns.notes {
+                if let Some(ref parent) = n.in_reply_to {
+                    if top_level_ids.contains(parent) && seen_ids.insert(n.id.clone()) {
+                        result.push(CommentRef::Note(n));
                     }
                 }
             }
@@ -670,7 +726,7 @@ impl AiState {
         hunk_idx: usize,
         line_num: usize,
     ) -> Vec<CommentRef<'_>> {
-        if self.questions.is_some() || self.github_comments.is_some() {
+        if self.questions.is_some() || self.notes.is_some() || self.github_comments.is_some() {
             self.ensure_index();
             let index = self.comment_index.borrow();
             let index = index.as_ref().unwrap();
@@ -686,6 +742,15 @@ impl AiState {
                                     // Filter by hunk_idx too (line_index is keyed by file+line only)
                                     if q.hunk_index == Some(hunk_idx) {
                                         result.push(CommentRef::Question(q));
+                                    }
+                                }
+                            }
+                        }
+                        CommentSource::Note => {
+                            if let Some(ns) = &self.notes {
+                                if let Some(n) = ns.notes.get(*idx) {
+                                    if n.hunk_index == Some(hunk_idx) {
+                                        result.push(CommentRef::Note(n));
                                     }
                                 }
                             }
@@ -722,7 +787,7 @@ impl AiState {
 
     /// Comments targeting the hunk as a whole (no specific line, top-level only)
     pub fn comments_for_hunk_only(&self, path: &str, hunk_idx: usize) -> Vec<CommentRef<'_>> {
-        if self.questions.is_some() || self.github_comments.is_some() {
+        if self.questions.is_some() || self.notes.is_some() || self.github_comments.is_some() {
             self.ensure_index();
             let index = self.comment_index.borrow();
             let index = index.as_ref().unwrap();
@@ -739,6 +804,15 @@ impl AiState {
                                     // Hunk-only: no line_start, top-level only
                                     if q.line_start.is_none() && q.in_reply_to.is_none() {
                                         result.push(CommentRef::Question(q));
+                                    }
+                                }
+                            }
+                        }
+                        CommentSource::Note => {
+                            if let Some(ns) = &self.notes {
+                                if let Some(n) = ns.notes.get(*idx) {
+                                    if n.line_start.is_none() && n.in_reply_to.is_none() {
+                                        result.push(CommentRef::Note(n));
                                     }
                                 }
                             }
@@ -784,6 +858,13 @@ impl AiState {
                 }
             }
         }
+        if let Some(ns) = &self.notes {
+            for n in &ns.notes {
+                if n.file == path && n.hunk_index.is_none() && n.in_reply_to.is_none() {
+                    result.push(CommentRef::Note(n));
+                }
+            }
+        }
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.file == path && c.hunk_index.is_none() && c.in_reply_to.is_none() {
@@ -812,6 +893,14 @@ impl AiState {
             for q in &qs.questions {
                 if q.in_reply_to.as_deref() == Some(comment_id) {
                     result.push(CommentRef::Question(q));
+                }
+            }
+        }
+        // Note replies
+        if let Some(ns) = &self.notes {
+            for n in &ns.notes {
+                if n.in_reply_to.as_deref() == Some(comment_id) {
+                    result.push(CommentRef::Note(n));
                 }
             }
         }
@@ -870,6 +959,33 @@ impl AiState {
         0
     }
 
+    /// Get notes data
+    #[allow(dead_code)]
+    pub fn notes_data(&self) -> Option<&ErNotes> {
+        self.notes.as_ref()
+    }
+
+    /// Whether any local notes are loaded.
+    #[allow(dead_code)]
+    pub fn has_notes(&self) -> bool {
+        self.notes.as_ref().is_some_and(|ns| !ns.notes.is_empty())
+    }
+
+    /// Count of notes for a file (all notes, including replies)
+    #[allow(dead_code)]
+    pub fn file_note_count(&self, path: &str) -> usize {
+        if self.notes.is_some() {
+            self.ensure_index();
+            let index = self.comment_index.borrow();
+            let index = index.as_ref().unwrap();
+            return index
+                .file_comment_counts
+                .get(path)
+                .map_or(0, |counts| counts.2);
+        }
+        0
+    }
+
     /// Whether a file has any GitHub comments (top-level, not replies)
     #[allow(dead_code)]
     pub fn file_has_github_comments(&self, path: &str) -> bool {
@@ -906,6 +1022,13 @@ impl AiState {
                 }
             }
         }
+        if let Some(ns) = &self.notes {
+            for n in &ns.notes {
+                if n.in_reply_to.is_none() {
+                    result.push((n.file.clone(), n.hunk_index, n.line_start, n.id.clone()));
+                }
+            }
+        }
         if let Some(gc) = &self.github_comments {
             for c in &gc.comments {
                 if c.in_reply_to.is_none() {
@@ -924,6 +1047,21 @@ impl AiState {
             for q in &qs.questions {
                 if q.in_reply_to.is_none() {
                     result.push((q.file.clone(), q.hunk_index, q.id.clone()));
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        result
+    }
+
+    /// All notes across all files, ordered by file path then hunk index.
+    #[allow(dead_code)]
+    pub fn all_notes_ordered(&self) -> Vec<(String, Option<usize>, String)> {
+        let mut result = Vec::new();
+        if let Some(ns) = &self.notes {
+            for n in &ns.notes {
+                if n.in_reply_to.is_none() {
+                    result.push((n.file.clone(), n.hunk_index, n.id.clone()));
                 }
             }
         }
@@ -990,6 +1128,21 @@ impl AiState {
                 ));
             }
         }
+        // Notes (both top-level and replies)
+        if let Some(ns) = &self.notes {
+            for (i, n) in ns.notes.iter().enumerate() {
+                let is_reply = if n.in_reply_to.is_none() { 0 } else { 1 };
+                extended.push((
+                    n.file.clone(),
+                    n.hunk_index,
+                    n.line_start,
+                    is_reply,
+                    i,
+                    n.id.clone(),
+                    HintType::Note,
+                ));
+            }
+        }
         // GitHub comments (both top-level and replies)
         if let Some(gc) = &self.github_comments {
             for (i, c) in gc.comments.iter().enumerate() {
@@ -1039,6 +1192,11 @@ impl AiState {
         if let Some(qs) = &self.questions {
             if let Some(q) = qs.questions.iter().find(|q| q.id == id) {
                 return Some(CommentRef::Question(q));
+            }
+        }
+        if let Some(ns) = &self.notes {
+            if let Some(n) = ns.notes.iter().find(|n| n.id == id) {
+                return Some(CommentRef::Note(n));
             }
         }
         if let Some(gc) = &self.github_comments {

@@ -2625,6 +2625,63 @@ impl TabState {
             false
         };
 
+        // Process notes (same anchoring model as questions)
+        let notes_changed = if let Some(ref mut ns) = self.ai.notes {
+            let mut changed = false;
+            for n in &mut ns.notes {
+                if n.relocated_at_hash == current_hash {
+                    continue;
+                }
+                if n.hunk_index.is_none() && n.line_start.is_none() && n.hunk_header.is_empty() {
+                    n.relocated_at_hash = current_hash.clone();
+                    continue;
+                }
+                let result = if let Some(idx) = find_file(&n.file) {
+                    let anchor = ai::CommentAnchor {
+                        file: n.file.clone(),
+                        hunk_index: n.hunk_index,
+                        line_start: n.line_start,
+                        line_content: n.line_content.clone(),
+                        context_before: n.context_before.clone(),
+                        context_after: n.context_after.clone(),
+                        old_line_start: n.old_line_start,
+                        hunk_header: n.hunk_header.clone(),
+                    };
+                    ai::relocate_comment(&anchor, &self.files[idx])
+                } else {
+                    ai::RelocationResult::Lost
+                };
+                match result {
+                    ai::RelocationResult::Unchanged => {
+                        n.anchor_status = "original".to_string();
+                        n.relocated_at_hash = current_hash.clone();
+                        n.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Relocated {
+                        new_hunk_index,
+                        new_line_start,
+                    } => {
+                        n.hunk_index = Some(new_hunk_index);
+                        n.line_start = Some(new_line_start);
+                        n.anchor_status = "relocated".to_string();
+                        n.relocated_at_hash = current_hash.clone();
+                        n.stale = false;
+                        changed = true;
+                    }
+                    ai::RelocationResult::Lost => {
+                        n.anchor_status = "lost".to_string();
+                        n.stale = true;
+                        n.relocated_at_hash = current_hash.clone();
+                        changed = true;
+                    }
+                }
+            }
+            changed
+        } else {
+            false
+        };
+
         // Process GitHub comments (top-level only; replies follow their parent)
         let comments_changed = if let Some(ref mut gc) = self.ai.github_comments {
             let mut changed = false;
@@ -2697,6 +2754,15 @@ impl TabState {
                 }
             }
         }
+        if notes_changed {
+            if let Some(ref ns) = self.ai.notes {
+                let path = format!("{}/notes.json", self.er_dir());
+                if let Ok(json) = serde_json::to_string_pretty(ns) {
+                    let tmp = format!("{}.tmp", path);
+                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                }
+            }
+        }
         if comments_changed {
             if let Some(ref gc) = self.ai.github_comments {
                 let path = self.github_comments_path();
@@ -2711,7 +2777,7 @@ impl TabState {
         // Relocation mutates hunk_index / line_start in memory; rebuild the lazy
         // comment index so inline lookups stay in sync (file-level counts alone
         // would still look correct with a stale index).
-        if questions_changed || comments_changed {
+        if questions_changed || notes_changed || comments_changed {
             self.ai.rebuild_comment_index();
         }
     }
@@ -3505,6 +3571,7 @@ impl TabState {
             comment_draft_line: self.comment_line_num,
             comment_draft_type: match self.comment_type {
                 CommentType::Question => "question".to_string(),
+                CommentType::Note => "note".to_string(),
                 CommentType::GitHubComment => "github".to_string(),
             },
         }
@@ -3574,6 +3641,7 @@ impl TabState {
             self.comment_line_num = session.comment_draft_line;
             self.comment_type = match session.comment_draft_type.as_str() {
                 "question" => CommentType::Question,
+                "note" => CommentType::Note,
                 _ => CommentType::GitHubComment,
             };
         }

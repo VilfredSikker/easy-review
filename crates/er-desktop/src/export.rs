@@ -22,6 +22,8 @@ fn default_true() -> bool {
 pub struct ExportOpts {
     pub include_comments: bool,
     pub include_questions: bool,
+    #[serde(default = "default_true")]
+    pub include_notes: bool,
     pub include_findings: bool,
     pub only_unresolved: bool,
     #[serde(default = "default_true")]
@@ -33,6 +35,7 @@ impl Default for ExportOpts {
         ExportOpts {
             include_comments: true,
             include_questions: true,
+            include_notes: true,
             include_findings: true,
             only_unresolved: false,
             include_annotations: true,
@@ -80,6 +83,28 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
                     .filter(|r| r.in_reply_to.as_deref() == Some(q.id.as_str()))
                     .collect();
                 push(&mut groups, &q.file, ItemBlock::Question(q, replies));
+            }
+        }
+    }
+
+    if opts.include_notes {
+        if let Some(ns) = tab.ai.notes.as_ref() {
+            // Top-level only — replies are rendered nested under their parent.
+            let top_level: Vec<&ReviewQuestion> = ns
+                .notes
+                .iter()
+                .filter(|n| n.in_reply_to.is_none())
+                .collect();
+            for n in top_level {
+                if opts.only_unresolved && n.resolved {
+                    continue;
+                }
+                let replies: Vec<&ReviewQuestion> = ns
+                    .notes
+                    .iter()
+                    .filter(|r| r.in_reply_to.as_deref() == Some(n.id.as_str()))
+                    .collect();
+                push(&mut groups, &n.file, ItemBlock::Note(n, replies));
             }
         }
     }
@@ -221,6 +246,7 @@ fn render_ui_annotations(out: &mut String, annotations: &[UiAnnotation]) {
 
 enum ItemBlock<'a> {
     Question(&'a ReviewQuestion, Vec<&'a ReviewQuestion>),
+    Note(&'a ReviewQuestion, Vec<&'a ReviewQuestion>),
     Comment(&'a GitHubReviewComment, Vec<&'a GitHubReviewComment>),
     Finding(&'a Finding),
 }
@@ -245,6 +271,35 @@ fn render_item(out: &mut String, item: &ItemBlock<'_>) {
                 file = q.file,
             ));
             push_blockquote(out, &q.text, 1);
+            for r in replies {
+                let r_author = if r.author.is_empty() {
+                    "You"
+                } else {
+                    r.author.as_str()
+                };
+                let r_ago = ago_label(&r.timestamp);
+                out.push_str(&format!("> ↳ **{r_author}{r_ago}**\n"));
+                push_blockquote(out, &r.text, 2);
+            }
+        }
+        ItemBlock::Note(n, replies) => {
+            let line = n
+                .line_start
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "—".into());
+            let stale = if n.stale { " [stale]" } else { "" };
+            let resolved = if n.resolved { " [resolved]" } else { "" };
+            let author = if n.author.is_empty() {
+                "You"
+            } else {
+                n.author.as_str()
+            };
+            let ago = ago_label(&n.timestamp);
+            out.push_str(&format!(
+                "### `{file}:{line}` — Note ({author}{ago}){stale}{resolved}\n",
+                file = n.file,
+            ));
+            push_blockquote(out, &n.text, 1);
             for r in replies {
                 let r_author = if r.author.is_empty() {
                     "You"
@@ -498,6 +553,7 @@ mod tests {
         let opts = ExportOpts {
             include_comments: false,
             include_questions: true,
+            include_notes: false,
             include_findings: false,
             only_unresolved: true,
             include_annotations: false,

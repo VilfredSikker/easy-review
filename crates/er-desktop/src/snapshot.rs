@@ -665,7 +665,7 @@ pub struct LineSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadSnapshot {
     pub id: String,
-    pub kind: String, // "comment" | "question"
+    pub kind: String, // "comment" | "question" | "note"
     pub file: String,
     pub line: usize,
     /// Inclusive end line when the thread spans multiple diff lines (`None` = single line).
@@ -750,6 +750,7 @@ pub struct AiSnapshot {
     pub github_comment_count: usize,
     pub comments: usize,
     pub questions: usize,
+    pub notes: usize,
     pub unpushed: usize,
     pub threads: Vec<ThreadSnapshot>,
     pub findings: Vec<FlatFinding>,
@@ -875,6 +876,7 @@ fn comment_ref_to_thread(
 ) -> ThreadSnapshot {
     let kind = match c.comment_type() {
         er_engine::ai::CommentType::Question => "question",
+        er_engine::ai::CommentType::Note => "note",
         er_engine::ai::CommentType::GitHubComment => "comment",
     };
     let source = match c {
@@ -882,7 +884,7 @@ fn comment_ref_to_thread(
         _ => "local".to_string(),
     };
     let line = match c {
-        CommentRef::Question(q) => q.line_start.unwrap_or(0),
+        CommentRef::Question(q) | CommentRef::Note(q) => q.line_start.unwrap_or(0),
         CommentRef::GitHubComment(gc) => gc.line_start.unwrap_or(0),
         CommentRef::Legacy(lc) => lc.line_start.unwrap_or(0),
     };
@@ -902,7 +904,7 @@ fn comment_ref_to_thread(
         source,
         synced: c.is_synced(),
         stale: match c {
-            CommentRef::Question(q) => q.stale,
+            CommentRef::Question(q) | CommentRef::Note(q) => q.stale,
             CommentRef::GitHubComment(gc) => gc.stale || gc.outdated,
             CommentRef::Legacy(_) => false,
         },
@@ -921,7 +923,7 @@ fn comment_ref_to_thread(
         },
         replies: build_replies(c, tab, pending),
         promoted_to: match c {
-            CommentRef::Question(q) => q.promoted_to.clone(),
+            CommentRef::Question(q) | CommentRef::Note(q) => q.promoted_to.clone(),
             _ => None,
         },
     }
@@ -968,6 +970,26 @@ fn build_replies(
                     body_markdown: q.text.clone(),
                     origin: Some("thread_reply".to_string()),
                     source: Some("question".to_string()),
+                    synced: None,
+                    editable: Some(kind == "you"),
+                    deletable: Some(true),
+                });
+            }
+        }
+    }
+    if let Some(ns) = &tab.ai.notes {
+        for n in &ns.notes {
+            if n.in_reply_to.as_deref() == Some(root_id) {
+                let author = display_author(&n.author);
+                let kind = reply_kind(&author);
+                replies.push(ThreadMessage {
+                    id: n.id.clone(),
+                    author,
+                    kind: kind.to_string(),
+                    timestamp: n.timestamp.clone(),
+                    body_markdown: n.text.clone(),
+                    origin: Some("thread_reply".to_string()),
+                    source: Some("note".to_string()),
                     synced: None,
                     editable: Some(kind == "you"),
                     deletable: Some(true),
@@ -1806,6 +1828,7 @@ fn empty_ai_snapshot() -> AiSnapshot {
         github_comment_count: 0,
         comments: 0,
         questions: 0,
+        notes: 0,
         unpushed: 0,
         threads: Vec::new(),
         findings: Vec::new(),
@@ -2565,7 +2588,8 @@ fn build_hunk_threads(
                 .iter()
                 .filter(|c| {
                     c.in_reply_to().is_none()
-                        && !(matches!(c, CommentRef::Question(_)) && c.is_resolved())
+                        && !(matches!(c, CommentRef::Question(_) | CommentRef::Note(_))
+                            && c.is_resolved())
                 })
                 .map(|c| comment_ref_to_thread(c, &file.path, hunk_idx, tab, pending))
                 .collect()
@@ -2676,6 +2700,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         .as_ref()
         .map(|q| q.questions.len())
         .unwrap_or(0);
+    let notes = ai.notes.as_ref().map(|n| n.notes.len()).unwrap_or(0);
     let comments = ai
         .github_comments
         .as_ref()
@@ -2711,7 +2736,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         })
         .unwrap_or(0);
 
-    // Flat thread list for CommentsCard / QuestionsCard
+    // Flat thread list for the Branch comments card and the Notes panel
     let threads: Vec<ThreadSnapshot> = {
         let mut result = Vec::new();
         if let Some(qs) = &ai.questions {
@@ -2743,6 +2768,39 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         },
                         replies: build_replies(&qref, tab, pending),
                         promoted_to: q.promoted_to.clone(),
+                    });
+                }
+            }
+        }
+        if let Some(ns) = &ai.notes {
+            for n in &ns.notes {
+                if n.in_reply_to.is_none() && !n.resolved {
+                    let nref = CommentRef::Note(n);
+                    result.push(ThreadSnapshot {
+                        id: n.id.clone(),
+                        kind: "note".to_string(),
+                        file: n.file.clone(),
+                        line: n.line_start.unwrap_or(0),
+                        line_end: n.line_end,
+                        side: default_thread_side(),
+                        source: "local".to_string(),
+                        synced: false,
+                        stale: n.stale,
+                        resolved: n.resolved,
+                        root: ThreadMessage {
+                            id: n.id.clone(),
+                            author: display_author(&n.author),
+                            kind: "you".to_string(),
+                            timestamp: n.timestamp.clone(),
+                            body_markdown: n.text.clone(),
+                            origin: None,
+                            source: None,
+                            synced: None,
+                            editable: None,
+                            deletable: None,
+                        },
+                        replies: build_replies(&nref, tab, pending),
+                        promoted_to: n.promoted_to.clone(),
                     });
                 }
             }
@@ -2923,6 +2981,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         github_comment_count,
         comments,
         questions,
+        notes,
         unpushed,
         threads,
         findings,

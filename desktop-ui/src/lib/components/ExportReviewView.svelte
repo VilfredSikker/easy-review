@@ -7,6 +7,7 @@
   type ExportOpts = {
     includeComments: boolean;
     includeQuestions: boolean;
+    includeNotes: boolean;
     includeFindings: boolean;
     includeAnnotations: boolean;
     onlyUnresolved: boolean;
@@ -15,6 +16,7 @@
 
   let includeComments = $state(true);
   let includeQuestions = $state(true);
+  let includeNotes = $state(true);
   let includeFindings = $state(true);
   let includeAnnotations = $state(true);
   let onlyUnresolved = $state(false);
@@ -31,6 +33,7 @@
     return {
       includeComments,
       includeQuestions,
+      includeNotes,
       includeFindings,
       includeAnnotations,
       onlyUnresolved,
@@ -56,6 +59,7 @@
   function applyExportOpts(nextOpts: ExportOpts) {
     includeComments = nextOpts.includeComments;
     includeQuestions = nextOpts.includeQuestions;
+    includeNotes = nextOpts.includeNotes;
     includeFindings = nextOpts.includeFindings;
     includeAnnotations = nextOpts.includeAnnotations;
     onlyUnresolved = nextOpts.onlyUnresolved;
@@ -70,6 +74,7 @@
     applyExportOpts({
       includeComments: true,
       includeQuestions: true,
+      includeNotes: true,
       includeFindings: true,
       includeAnnotations: true,
       onlyUnresolved: false,
@@ -80,6 +85,7 @@
     applyExportOpts({
       includeComments: false,
       includeQuestions: false,
+      includeNotes: false,
       includeFindings: false,
       includeAnnotations: false,
       onlyUnresolved: false,
@@ -184,6 +190,14 @@
         onchange={(e) => onExportOptionChange("includeQuestions", e)}
       />
       <span>Questions</span>
+    </label>
+    <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
+      <input
+        type="checkbox"
+        checked={includeNotes}
+        onchange={(e) => onExportOptionChange("includeNotes", e)}
+      />
+      <span>Notes</span>
     </label>
     <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
       <input

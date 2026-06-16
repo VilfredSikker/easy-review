@@ -8,7 +8,7 @@
 
 import { DRAG_SLOP_PX, exceededDragSlop as slopExceeded } from "$lib/dragSlop";
 
-export type SelectionKind = "comment" | "question";
+export type SelectionKind = "comment" | "question" | "note";
 export type SelectionSide = "old" | "new" | null;
 
 export { DRAG_SLOP_PX };
