@@ -16,7 +16,7 @@ This directory contains Desktop feature components. Most components are thin vie
 - `CommandPalette.svelte`: global command discovery and command execution.
 - `ExportModal.svelte`: Markdown export preview/copy/write flow.
 - `Terminal.svelte`: PTY drawer UI.
-- `Toast.svelte`, `BottomHints.svelte`, `EmptyState.svelte`: global shell feedback.
+- `Toast.svelte`, `EmptyState.svelte`: global shell feedback.
 
 ## `$effect` conventions
 

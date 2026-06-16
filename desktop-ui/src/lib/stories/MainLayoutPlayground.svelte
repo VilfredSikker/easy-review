@@ -9,7 +9,6 @@
   import RightPanel from "$lib/components/RightPanel.svelte";
   import CollapsedRightRail from "$lib/components/CollapsedRightRail.svelte";
   import Toast from "$lib/components/Toast.svelte";
-  import BottomHints from "$lib/components/BottomHints.svelte";
   import { richSnapshot } from "$lib/stories/fixtures";
   import type { InboxItemSnapshot } from "$lib/types";
 
@@ -227,10 +226,6 @@
         </div>
       {/if}
     </div>
-  {/if}
-
-  {#if !terminalOpen}
-    <BottomHints />
   {/if}
 
   <!-- Toast stack -->
