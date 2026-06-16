@@ -140,6 +140,7 @@
   type ExportOpts = {
     includeComments: boolean;
     includeQuestions: boolean;
+    includeNotes: boolean;
     includeFindings: boolean;
     includeAnnotations: boolean;
     onlyUnresolved: boolean;
@@ -148,11 +149,15 @@
   const NO_SECTIONS: ExportOpts = {
     includeComments: false,
     includeQuestions: false,
+    includeNotes: false,
     includeFindings: false,
     includeAnnotations: false,
     onlyUnresolved: false,
   };
 
+  // The Notes tab mirrors its active sub-tab (All | Notes | Questions) so the
+  // clipboard export matches exactly what the user is looking at. Annotations
+  // only render under "All", so they ride along only there.
   function exportOptsForTab(t: Tab): ExportOpts {
     switch (t) {
       case "branch":
@@ -160,8 +165,20 @@
       case "review":
         return { ...NO_SECTIONS, includeFindings: true };
       case "notes":
-        return { ...NO_SECTIONS, includeQuestions: true, includeAnnotations: true };
+        switch (notesSubTab) {
+          case "notes":
+            return { ...NO_SECTIONS, includeNotes: true };
+          case "questions":
+            return { ...NO_SECTIONS, includeQuestions: true };
+          case "all":
+            return { ...NO_SECTIONS, includeNotes: true, includeQuestions: true, includeAnnotations: true };
+        }
     }
+  }
+
+  function exportLabel(): string {
+    if (activeTab !== "notes") return tabs.find((t) => t.id === activeTab)?.label ?? "section";
+    return notesSubTab === "notes" ? "Notes" : notesSubTab === "questions" ? "Questions" : "All notes & questions";
   }
 
   let copying = $state(false);
@@ -169,7 +186,7 @@
   async function copyTabToClipboard() {
     if (copying) return;
     copying = true;
-    const label = tabs.find((t) => t.id === activeTab)?.label ?? "section";
+    const label = exportLabel();
     try {
       const body = await invoke<string>("export_review", { opts: exportOptsForTab(activeTab) });
       if (!body.trim()) {
