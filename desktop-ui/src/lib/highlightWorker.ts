@@ -33,6 +33,8 @@ const bundledThemes = {
   "tokyo-night": () => import("@shikijs/themes/tokyo-night"),
   "github-dark-high-contrast": () =>
     import("@shikijs/themes/github-dark-high-contrast"),
+  "github-light-high-contrast": () =>
+    import("@shikijs/themes/github-light-high-contrast"),
 } as const;
 
 type BundledLangId = keyof typeof bundledLangs;

@@ -3,6 +3,7 @@
   import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
   import { startWindowDrag } from "$lib/windowDrag";
   import { openExternalUrl } from "$lib/openExternalUrl";
+  import AppMark from "$lib/components/AppMark.svelte";
 
   interface Props {
     /** When true, render as a dismissible layer over an active review. */
@@ -87,7 +88,7 @@
     data-tauri-drag-region
     onmousedown={startWindowDrag}
   >
-    <div class="w-5 h-5 rounded bg-accent flex items-center justify-center text-on-accent text-[10px] font-bold">er</div>
+    <AppMark size={20} />
     <span class="text-sm">Easy Review</span>
     {#if hasActiveReview}
       <button
@@ -133,7 +134,7 @@
     <main class="flex-1 flex items-center justify-center p-8 overflow-y-auto">
       <div class="max-w-2xl w-full">
         <div class="mb-10">
-          <div class="w-12 h-12 rounded-xl bg-accent flex items-center justify-center text-on-accent text-xl font-bold mb-5">er</div>
+          <AppMark size={48} class="mb-5" />
           <h1 class="text-3xl font-semibold tracking-tight mb-2">Review code, then your app.</h1>
           <p class="text-fg-3 text-lg">Diff review and live UI annotation in one workspace. Local-first.</p>
         </div>
