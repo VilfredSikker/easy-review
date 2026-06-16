@@ -4,7 +4,6 @@
   import FileTree from "$lib/components/FileTree.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
   import RightPanel from "$lib/components/RightPanel.svelte";
-  import BottomHints from "$lib/components/BottomHints.svelte";
   import type { AppSnapshot } from "$lib/types";
 
   interface PinnedItem {
@@ -100,6 +99,4 @@
       <RightPanel ai={snapshot.ai} pr={snapshot.pr} />
     {/if}
   </div>
-
-  <BottomHints />
 </div>

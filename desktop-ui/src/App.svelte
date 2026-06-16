@@ -12,7 +12,6 @@
   import CollapsedRightRail from "$lib/components/CollapsedRightRail.svelte";
   import Toast from "$lib/components/Toast.svelte";
   import BackgroundTasks from "$lib/components/BackgroundTasks.svelte";
-  import BottomHints from "$lib/components/BottomHints.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import AiActionPalette from "$lib/components/AiActionPalette.svelte";
   import AiReviewFilesModal from "$lib/components/AiReviewFilesModal.svelte";
@@ -406,10 +405,6 @@
         refitToken={terminalRefitToken}
       />
     </div>
-  {/if}
-
-  {#if showDiff && !terminal.open}
-    <BottomHints />
   {/if}
 
   <BackgroundTasks
