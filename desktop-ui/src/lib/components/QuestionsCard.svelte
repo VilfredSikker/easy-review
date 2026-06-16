@@ -56,6 +56,7 @@
 
   <div class="space-y-1 mb-3">
     {#each questionThreads as thread (thread.id)}
+      {@const reply = latestReply(thread)}
       <div class="relative group">
         <button
           onclick={() => navigateToThread(thread)}
@@ -67,11 +68,10 @@
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ml-auto opacity-0 group-hover:opacity-100 transition text-accent"><path d="M7 17L17 7M7 7h10v10"/></svg>
           </div>
           <MarkdownText text={thread.root.body_markdown} className="text-fg-2 text-left" />
-          {#if latestReply(thread)}
-            {@const reply = latestReply(thread)}
+          {#if reply}
             <div class="mt-1 pl-2 border-l border-hairline">
-              <div class="text-[10px] font-mono text-muted mb-0.5">{reply?.author ?? "reply"} replied</div>
-              <MarkdownText text={reply?.body_markdown ?? ""} className="text-fg-3 text-left" />
+              <div class="text-[10px] font-mono text-muted mb-0.5">{reply.author} replied</div>
+              <MarkdownText text={reply.body_markdown} className="text-fg-3 text-left" />
             </div>
           {/if}
         </button>
