@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { parseMarkdown, renderInline, type MarkdownNode } from "./markdown";
 
 function tableOf(nodes: MarkdownNode[]) {
@@ -44,6 +44,12 @@ describe("parseMarkdown tables", () => {
     expect(nodes[0]).toEqual({ t: "p", v: "this | is not | a table" });
   });
 
+  it("does not treat prose above a dashed rule as a table (column count must match)", () => {
+    const md = ["a | b", "-----", "c | d"].join("\n");
+    const nodes = parseMarkdown(md);
+    expect(nodes.every((n) => n.t !== "table")).toBe(true);
+  });
+
   it("ends the table at a blank line and resumes normal parsing", () => {
     const md = ["| a | b |", "| --- | --- |", "| 1 | 2 |", "", "after"].join("\n");
     const nodes = parseMarkdown(md);
@@ -54,5 +60,11 @@ describe("parseMarkdown tables", () => {
 
   it("renders inline markup inside cells", () => {
     expect(renderInline("**bold** and `code`")).toBe("<strong>bold</strong> and <code>code</code>");
+  });
+
+  it("escapes quotes so a link URL cannot break out of the href attribute", () => {
+    const html = renderInline('[hi](https://e.com"onmouseover="alert(1))');
+    expect(html).not.toContain('"onmouseover="');
+    expect(html).toContain("&quot;onmouseover=");
   });
 });

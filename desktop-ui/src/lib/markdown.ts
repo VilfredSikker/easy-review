@@ -71,11 +71,12 @@ export function parseMarkdown(md: string): MarkdownNode[] {
       out.push({ t: "code", lang, v: code.join("\n") });
       continue;
     }
-    // GFM table: a row containing a pipe followed by a delimiter row.
+    // GFM table: a row containing a pipe followed by a delimiter row whose
+    // column count matches the header (else it's prose above a `---` rule).
     if (line.includes("|") && i + 1 < lines.length) {
       const align = parseDelimiterRow(lines[i + 1]);
-      if (align) {
-        const header = splitRow(line);
+      const header = align ? splitRow(line) : [];
+      if (align && align.length === header.length) {
         i += 2;
         const rows: string[][] = [];
         while (i < lines.length && lines[i].trim() && lines[i].includes("|")) {
@@ -132,7 +133,8 @@ export function renderInline(s: string): string {
   const escaped = s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
   return escaped
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
