@@ -20,11 +20,14 @@ what they produce. No backend, no telemetry.
 ## 2. Architecture at a glance (for design context)
 
 - **Backend (Rust/Tauri):** owns all truth. A single `App` state behind a mutex,
-  exposed through ~77 Tauri commands. Heavy work (git, gh, agents) runs off the main
-  thread and on background threads; results surface through a **polling model**.
-- **Frontend (Svelte):** a consumer of a single **`AppSnapshot`** contract. It polls
-  `poll` every 2s and only re-renders when a revision number changes. The frontend
-  owns only ephemeral UI prefs (panel widths, drawer heights, view mode) in
+  exposed through ~150 Tauri commands. Heavy work (git, gh, agents) runs off the main
+  thread and on background threads; results surface through a **revision-event +
+  snapshot model** (see frontend).
+- **Frontend (Svelte):** a consumer of a single **`AppSnapshot`** contract. The
+  backend emits an `er://revision` event on every state change; the frontend responds
+  by calling `poll` to fetch the new snapshot (with a 30s safety-net poll as a
+  fallback for missed events) and only re-renders when a revision number changes. The
+  frontend owns only ephemeral UI prefs (panel widths, drawer heights, view mode) in
   localStorage.
 - **Rendering specializations:** windowed/virtualized diff rendering, client-side
   syntax highlighting via **Shiki in a Web Worker** (plain text crosses IPC, spans
