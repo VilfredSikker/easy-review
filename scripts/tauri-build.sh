@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Release desktop bundle (DMG + .app on macOS).
+# Release desktop bundle (.app install by default; DMG/open are opt-in).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export CARGO_TARGET_DIR="$ROOT/target/desktop"
@@ -7,6 +7,9 @@ CONF="$ROOT/crates/er-desktop/tauri.conf.json"
 BUNDLE_ROOT="$CARGO_TARGET_DIR/release/bundle"
 MACOS_BUNDLE_DIR="$BUNDLE_ROOT/macos"
 DMG_DIR="$BUNDLE_ROOT/dmg"
+
+: "${ER_SKIP_DMG:=1}"
+: "${ER_SKIP_OPEN_APP:=1}"
 
 "$ROOT/scripts/cargo-gc.sh" --quiet
 cd "$ROOT/crates/er-desktop"
@@ -89,6 +92,20 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 0
 fi
 
+patch_macos_bundle_plist() {
+  local plist="$MACOS_BUNDLE_DIR/Easy Review.app/Contents/Info.plist"
+  if [[ ! -f "$plist" ]]; then
+    return 0
+  fi
+  # Tauri currently emits this legacy key in generated app bundles. On modern
+  # macOS it can abort during AppKit registration before logs start.
+  if /usr/libexec/PlistBuddy -c "Print :LSRequiresCarbon" "$plist" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Delete :LSRequiresCarbon" "$plist"
+  fi
+}
+
+patch_macos_bundle_plist
+
 install_to_applications() {
   local src="$MACOS_BUNDLE_DIR/Easy Review.app"
   local dest="/Applications/Easy Review.app"
@@ -113,4 +130,8 @@ install_to_applications() {
 }
 
 install_to_applications
-bundle_dmg_hdiutil
+if [[ "${ER_SKIP_DMG:-}" == "1" ]]; then
+  echo "ER_SKIP_DMG=1 — not creating DMG" >&2
+else
+  bundle_dmg_hdiutil
+fi
