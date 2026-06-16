@@ -20,7 +20,7 @@ view_hidden   = true   # Hidden/ignored files (6)
 
 # ── Display ────────────────────────────────────────────────────────────
 [display]
-theme        = "ocean-depth"  # ocean-depth | moonlight | daybreak | high-contrast
+theme        = "graphite"  # graphite | slate | midnight | ember (dark) · paper | daylight (light) · contrast-dark | contrast-light (a11y)
 line_numbers = true
 wrap_lines   = false
 split_diff   = false

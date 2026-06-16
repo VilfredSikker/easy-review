@@ -1,12 +1,18 @@
 /**
- * Desktop port of the TUI theme palettes (crates/er-tui/src/ui/themes.rs).
+ * Desktop port of the shared theme system (mirrors
+ * `crates/er-tui/src/ui/themes.rs` and the design's `theme-tokens.js`).
  *
- * Each theme overrides the CSS custom properties declared in `app.css`
- * (`@theme` block) on the document root, so every Tailwind utility and
- * semantic alias (`--color-bg`, `--color-card`, …) follows the active theme.
- * The `--color-ink-*` ladder is interpolated from the theme's four anchor
- * surfaces (bg → surface → panel → border) and text colors so intermediate
- * shades stay consistent for light and dark palettes alike.
+ * Each theme is a pure data swap of role tokens; every value the desktop UI
+ * needs that isn't a raw token (borders, diff backgrounds, selection) is
+ * *derived* from the tokens by alpha-compositing over the canvas, so adding or
+ * editing a theme touches data alone.
+ *
+ * Themes override the CSS custom properties declared in `app.css` (`@theme`
+ * block) on the document root, so every Tailwind utility and semantic alias
+ * (`--color-bg`, `--color-card`, …) follows the active theme. The
+ * `--color-ink-*` ladder is interpolated from the theme's four anchor surfaces
+ * (bg → surface → panel → border) so intermediate shades stay consistent for
+ * light and dark palettes alike.
  */
 
 import { DEFAULT_SYNTAX_THEME_ID } from "./syntaxThemes";
@@ -31,6 +37,8 @@ export interface AppTheme {
   textMuted: string;
 
   // Accent layer
+  accent: string;
+  onAccent: string;
   blue: string;
   cyan: string;
   green: string;
@@ -50,221 +58,30 @@ export interface AppTheme {
   selectedBg: string;
 }
 
-export const APP_THEMES: AppTheme[] = [
-  {
-    name: "ocean-depth",
-    light: false,
-    syntaxThemeId: "one-dark-pro",
-    bg: "#0b0b0f",
-    surface: "#13131a",
-    panel: "#1a1a24",
-    border: "#2a2a3a",
-    text: "#e4e4ef",
-    textBright: "#e8e8f2",
-    textDim: "#8888a0",
-    textMuted: "#55556a",
-    blue: "#60a5fa",
-    cyan: "#22d3ee",
-    green: "#4ade80",
-    yellow: "#facc15",
-    red: "#f87171",
-    purple: "#a78bfa",
-    orange: "#fb923c",
-    addBg: "#0e1b17",
-    addText: "#4ade80",
-    delBg: "#1f0e14",
-    delText: "#f87171",
-    hunkBg: "#16162a",
-    selectedBg: "#1e1830",
-  },
-  {
-    name: "moonlight",
-    light: false,
-    syntaxThemeId: "one-dark-pro",
-    bg: "#0e0e12",
-    surface: "#16161c",
-    panel: "#1e1e26",
-    border: "#32323e",
-    text: "#d2d2dc",
-    textBright: "#dcdce6",
-    textDim: "#78788c",
-    textMuted: "#4e4e5f",
-    blue: "#6e9bdc",
-    cyan: "#50b9c8",
-    green: "#64c382",
-    yellow: "#d2b43c",
-    red: "#d27878",
-    purple: "#a08cd2",
-    orange: "#d28c50",
-    addBg: "#111b17",
-    addText: "#64c382",
-    delBg: "#1e1115",
-    delText: "#d27878",
-    hunkBg: "#181828",
-    selectedBg: "#1e1a2c",
-  },
-  {
-    name: "daybreak",
-    light: true,
-    syntaxThemeId: "one-light",
-    bg: "#fafafc",
-    surface: "#f2f2f6",
-    panel: "#eaeaf0",
-    border: "#c8c8d7",
-    text: "#1e1e28",
-    textBright: "#0f0f19",
-    textDim: "#646478",
-    textMuted: "#9494a5",
-    blue: "#2563eb",
-    cyan: "#0694a2",
-    green: "#16a34a",
-    yellow: "#a17804",
-    red: "#dc2626",
-    purple: "#7c3aed",
-    orange: "#c2580e",
-    addBg: "#e6fbee",
-    addText: "#16a34a",
-    delBg: "#fdeaeb",
-    delText: "#dc2626",
-    hunkBg: "#e2e8f8",
-    selectedBg: "#e6e1f5",
-  },
-  {
-    name: "high-contrast",
-    light: false,
-    syntaxThemeId: "github-dark-high-contrast",
-    bg: "#000000",
-    surface: "#0a0a0a",
-    panel: "#141414",
-    border: "#505050",
-    text: "#ffffff",
-    textBright: "#ffffff",
-    textDim: "#b4b4b4",
-    textMuted: "#787878",
-    blue: "#0078ff",
-    cyan: "#00e6ff",
-    green: "#00ff50",
-    yellow: "#ffdc00",
-    red: "#ff3232",
-    purple: "#be82ff",
-    orange: "#ff8c00",
-    addBg: "#001a0d",
-    addText: "#00ff50",
-    delBg: "#210000",
-    delText: "#ff3232",
-    hunkBg: "#000028",
-    selectedBg: "#1e1432",
-  },
-  {
-    name: "tokyo-night",
-    light: false,
-    syntaxThemeId: "tokyo-night",
-    bg: "#1a1b26",
-    surface: "#16161e",
-    panel: "#1f2335",
-    border: "#292e42",
-    text: "#a9b1d6",
-    textBright: "#c0caf5",
-    textDim: "#545c7e",
-    textMuted: "#565f89",
-    blue: "#7aa2f7",
-    cyan: "#7dcfff",
-    green: "#9ece6a",
-    yellow: "#e0af68",
-    red: "#f7768e",
-    purple: "#bb9af7",
-    orange: "#ff9e64",
-    addBg: "#21323d",
-    addText: "#9ece6a",
-    delBg: "#39232c",
-    delText: "#f7768e",
-    hunkBg: "#1f2231",
-    selectedBg: "#292e42",
-  },
-  {
-    name: "tokyo-night-storm",
-    light: false,
-    syntaxThemeId: "tokyo-night",
-    bg: "#24283b",
-    surface: "#1f2335",
-    panel: "#1f2335",
-    border: "#292e42",
-    text: "#a9b1d6",
-    textBright: "#c0caf5",
-    textDim: "#545c7e",
-    textMuted: "#565f89",
-    blue: "#7aa2f7",
-    cyan: "#7dcfff",
-    green: "#9ece6a",
-    yellow: "#e0af68",
-    red: "#f7768e",
-    purple: "#bb9af7",
-    orange: "#ff9e64",
-    addBg: "#293d4f",
-    addText: "#9ece6a",
-    delBg: "#422e3e",
-    delText: "#f7768e",
-    hunkBg: "#272d43",
-    selectedBg: "#292e42",
-  },
-  {
-    name: "tokyo-night-moon",
-    light: false,
-    syntaxThemeId: "tokyo-night",
-    bg: "#222436",
-    surface: "#1e2030",
-    panel: "#1e2030",
-    border: "#2f334d",
-    text: "#828bb8",
-    textBright: "#c8d3f5",
-    textDim: "#636da6",
-    textMuted: "#636da6",
-    blue: "#82aaff",
-    cyan: "#86e1fc",
-    green: "#c3e88d",
-    yellow: "#ffc777",
-    red: "#ff757f",
-    purple: "#c099ff",
-    orange: "#ff966c",
-    addBg: "#27394b",
-    addText: "#c3e88d",
-    delBg: "#3d283b",
-    delText: "#ff757f",
-    hunkBg: "#252a3f",
-    selectedBg: "#2f334d",
-  },
-  {
-    name: "tokyo-night-day",
-    light: true,
-    syntaxThemeId: "one-light",
-    bg: "#e1e2e7",
-    surface: "#d0d5e3",
-    panel: "#d0d5e3",
-    border: "#c4c8da",
-    text: "#3760bf",
-    textBright: "#343a4f",
-    textDim: "#8990b3",
-    textMuted: "#848cb5",
-    blue: "#2e7de9",
-    cyan: "#007197",
-    green: "#587539",
-    yellow: "#8c6c3e",
-    red: "#f52a65",
-    purple: "#9854f1",
-    orange: "#b15c00",
-    addBg: "#c6d5db",
-    addText: "#587539",
-    delBg: "#dcc8cc",
-    delText: "#f52a65",
-    hunkBg: "#d5d9e4",
-    selectedBg: "#c4c8da",
-  },
-];
-
-export const DEFAULT_THEME_NAME = "ocean-depth";
-
-export function themeByName(name: string | null | undefined): AppTheme {
-  return APP_THEMES.find((t) => t.name === name) ?? APP_THEMES[0];
+/** Raw role tokens for one theme — hex strings mirror `theme-tokens.js`. */
+interface ThemeTokens {
+  name: string;
+  light: boolean;
+  syntaxThemeId: string;
+  bg: string;
+  bg1: string;
+  bg2: string;
+  bg3: string;
+  /** Hairline border; may carry an 8-digit alpha suffix (e.g. `ffffff26`). */
+  line2: string;
+  tx: string;
+  tx2: string;
+  tx3: string;
+  accent: string;
+  onAccent: string;
+  red: string;
+  amber: string;
+  blue: string;
+  cyan: string;
+  purple: string;
+  green: string;
+  add: string;
+  del: string;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -276,17 +93,209 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-/** Linear blend of two hex colors; t=0 → a, t=1 → b. */
-function mix(a: string, b: string, t: number): string {
-  const ra = hexToRgb(a);
-  const rb = hexToRgb(b);
-  const c = ra.map((v, i) => Math.round(v + (rb[i] - v) * t));
-  return `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+function rgbToHex([r, g, b]: [number, number, number]): string {
+  return `#${[r, g, b].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** Composite a (possibly 8-digit) hex `fg` over an opaque `bg`. */
+function over(fg: string, bg: string): string {
+  const h = fg.replace("#", "");
+  const a = h.length >= 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
+  const f = hexToRgb(h);
+  const b = hexToRgb(bg);
+  return rgbToHex([
+    f[0] * a + b[0] * (1 - a),
+    f[1] * a + b[1] * (1 - a),
+    f[2] * a + b[2] * (1 - a),
+  ]);
+}
+
+/** Composite `fg` at explicit opacity `t` over an opaque `bg`. */
+function overAt(fg: string, t: number, bg: string): string {
+  const f = hexToRgb(fg);
+  const b = hexToRgb(bg);
+  return rgbToHex([
+    f[0] * t + b[0] * (1 - t),
+    f[1] * t + b[1] * (1 - t),
+    f[2] * t + b[2] * (1 - t),
+  ]);
+}
+
+function buildTheme(t: ThemeTokens): AppTheme {
+  return {
+    name: t.name,
+    light: t.light,
+    syntaxThemeId: t.syntaxThemeId,
+
+    bg: t.bg,
+    surface: t.bg1,
+    panel: t.bg2,
+    border: over(t.line2, t.bg),
+
+    text: t.tx,
+    textBright: t.tx,
+    textDim: t.tx2,
+    textMuted: t.tx3,
+
+    accent: t.accent,
+    onAccent: t.onAccent,
+    blue: t.blue,
+    cyan: t.cyan,
+    green: t.green,
+    yellow: t.amber,
+    red: t.red,
+    purple: t.purple,
+    orange: t.accent,
+
+    addBg: overAt(t.add, 0.15, t.bg),
+    addText: t.add,
+    delBg: overAt(t.del, 0.15, t.bg),
+    delText: t.del,
+    hunkBg: overAt(t.blue, 0.1, t.bg),
+
+    selectedBg: t.bg3,
+  };
+}
+
+const THEME_TOKENS: ThemeTokens[] = [
+  // ── DARK ──────────────────────────────────────────────────────────────
+  {
+    name: "graphite",
+    light: false,
+    syntaxThemeId: "one-dark-pro",
+    bg: "#0b0b0d", bg1: "#16161a", bg2: "#1d1d22", bg3: "#28282f",
+    line2: "#ffffff26",
+    tx: "#ededf0", tx2: "#a1a1ab", tx3: "#6b6b75",
+    accent: "#f2843c", onAccent: "#1a0e05",
+    red: "#ef5f5b", amber: "#e3b341", blue: "#5f9cea",
+    cyan: "#4cc4e0", purple: "#a78bf6", green: "#46bd6c",
+    add: "#46bd6c", del: "#ef5f5b",
+  },
+  {
+    name: "slate",
+    light: false,
+    syntaxThemeId: "one-dark-pro",
+    bg: "#0c1118", bg1: "#131b25", bg2: "#1a2431", bg3: "#243140",
+    line2: "#9fc0ff2e",
+    tx: "#e9eef5", tx2: "#9aa9bb", tx3: "#647588",
+    accent: "#f2843c", onAccent: "#1a0e05",
+    red: "#f0635f", amber: "#e6b84a", blue: "#6aa6f5",
+    cyan: "#43c8e2", purple: "#ab92f7", green: "#4ec977",
+    add: "#4ec977", del: "#f0635f",
+  },
+  {
+    name: "midnight",
+    light: false,
+    syntaxThemeId: "tokyo-night",
+    bg: "#0e0f1a", bg1: "#171829", bg2: "#1e2036", bg3: "#292c48",
+    line2: "#a9b8ff2e",
+    tx: "#e6e8f5", tx2: "#9aa0c4", tx3: "#666c90",
+    accent: "#f2843c", onAccent: "#1a0e05",
+    red: "#f7768e", amber: "#e0af68", blue: "#7aa2f7",
+    cyan: "#7dcfff", purple: "#bb9af7", green: "#9ece6a",
+    add: "#9ece6a", del: "#f7768e",
+  },
+  {
+    name: "ember",
+    light: false,
+    syntaxThemeId: "one-dark-pro",
+    bg: "#100c0a", bg1: "#1b1512", bg2: "#241c17", bg3: "#312620",
+    line2: "#ffd9b82b",
+    tx: "#f1e9e2", tx2: "#b09c8d", tx3: "#75665c",
+    accent: "#f2843c", onAccent: "#1f0f04",
+    red: "#ef6151", amber: "#e7b24a", blue: "#7aa6dd",
+    cyan: "#56bfc0", purple: "#c193e8", green: "#76b95f",
+    add: "#76b95f", del: "#ef6151",
+  },
+
+  // ── LIGHT ─────────────────────────────────────────────────────────────
+  {
+    name: "paper",
+    light: true,
+    syntaxThemeId: "one-light",
+    bg: "#faf8f4", bg1: "#ffffff", bg2: "#f3efe8", bg3: "#e9e3d8",
+    line2: "#3a2a1a2b",
+    tx: "#211d18", tx2: "#6b6258", tx3: "#9a9085",
+    accent: "#cf5f17", onAccent: "#ffffff",
+    red: "#cc3b39", amber: "#a9740f", blue: "#2f6fd0",
+    cyan: "#0e87a3", purple: "#7a4fd0", green: "#1c854b",
+    add: "#1c854b", del: "#cc3b39",
+  },
+  {
+    name: "daylight",
+    light: true,
+    syntaxThemeId: "one-light",
+    bg: "#f6f7f9", bg1: "#ffffff", bg2: "#eef0f3", bg3: "#e3e7ec",
+    line2: "#0b1b3a29",
+    tx: "#161a21", tx2: "#5b6573", tx3: "#8b95a3",
+    accent: "#cf5f17", onAccent: "#ffffff",
+    red: "#cc3b39", amber: "#9a6b12", blue: "#2563cf",
+    cyan: "#0b7e9c", purple: "#6f45cc", green: "#168049",
+    add: "#168049", del: "#cc3b39",
+  },
+
+  // ── ACCESSIBILITY ───────────────────────────────────────────────────────
+  {
+    name: "contrast-dark",
+    light: false,
+    syntaxThemeId: "github-dark-high-contrast",
+    bg: "#000000", bg1: "#0a0a0b", bg2: "#151517", bg3: "#202024",
+    line2: "#ffffff5c",
+    tx: "#ffffff", tx2: "#d4d4da", tx3: "#9a9aa2",
+    accent: "#ff9a4d", onAccent: "#000000",
+    red: "#ff6b66", amber: "#ffcf4d", blue: "#7fb4ff",
+    cyan: "#5fd6f0", purple: "#cbabff", green: "#5fe08a",
+    add: "#5fe08a", del: "#ff6b66",
+  },
+  {
+    name: "contrast-light",
+    light: true,
+    syntaxThemeId: "github-light-high-contrast",
+    bg: "#ffffff", bg1: "#ffffff", bg2: "#f2f2f4", bg3: "#e6e6ea",
+    line2: "#0000005c",
+    tx: "#000000", tx2: "#2e2e33", tx3: "#5a5a61",
+    accent: "#b8530c", onAccent: "#ffffff",
+    red: "#bf1b1b", amber: "#7a5300", blue: "#1551c4",
+    cyan: "#056b85", purple: "#6321c0", green: "#0c7a3f",
+    add: "#0c7a3f", del: "#bf1b1b",
+  },
+];
+
+export const APP_THEMES: AppTheme[] = THEME_TOKENS.map(buildTheme);
+
+export const DEFAULT_THEME_NAME = "graphite";
+
+/** Backward-compat aliases for the retired theme set. */
+const THEME_ALIASES: Record<string, string> = {
+  "ocean-depth": "graphite",
+  moonlight: "slate",
+  "high-contrast": "contrast-dark",
+  daybreak: "daylight",
+  "tokyo-night": "midnight",
+  "tokyo-night-storm": "midnight",
+  "tokyo-night-moon": "midnight",
+  "tokyo-night-day": "paper",
+};
+
+export function themeByName(name: string | null | undefined): AppTheme {
+  const resolved = (name && THEME_ALIASES[name]) || name;
+  return APP_THEMES.find((t) => t.name === resolved) ?? APP_THEMES[0];
 }
 
 function alpha(hex: string, a: number): string {
   const [r, g, b] = hexToRgb(hex);
   return `rgba(${r},${g},${b},${a})`;
+}
+
+/** Linear blend of two hex colors; t=0 → a, t=1 → b. */
+function mix(a: string, b: string, t: number): string {
+  const ra = hexToRgb(a);
+  const rb = hexToRgb(b);
+  return rgbToHex([
+    ra[0] + (rb[0] - ra[0]) * t,
+    ra[1] + (rb[1] - ra[1]) * t,
+    ra[2] + (rb[2] - ra[2]) * t,
+  ]);
 }
 
 /** CSS custom-property overrides for a theme, keyed by the vars in app.css. */
@@ -309,11 +318,11 @@ export function cssVarsFor(t: AppTheme): Record<string, string> {
     "--color-ink-100": t.text,
     "--color-ink-50": t.textBright,
 
-    "--color-accent": t.orange,
-    "--color-accent-soft": alpha(t.orange, 0.12),
-    "--color-accent-border": alpha(t.orange, 0.3),
-    "--color-accent-hover": mix(t.orange, t.light ? "#000000" : "#ffffff", 0.12),
-    "--color-on-accent": "#0a0a0a",
+    "--color-accent": t.accent,
+    "--color-accent-soft": alpha(t.accent, 0.12),
+    "--color-accent-border": alpha(t.accent, 0.3),
+    "--color-accent-hover": mix(t.accent, t.light ? "#000000" : "#ffffff", 0.12),
+    "--color-on-accent": t.onAccent,
     "--color-periwinkle": t.purple,
     "--color-periwinkle-soft": alpha(t.purple, 0.14),
 

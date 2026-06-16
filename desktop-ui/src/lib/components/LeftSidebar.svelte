@@ -2,6 +2,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
+  import AppMark from "$lib/components/AppMark.svelte";
   import type { BackgroundTaskSnapshot, InboxItemSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
@@ -634,7 +635,7 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
     </button>
     <div class="mt-auto">
-      <button title="Settings" aria-label="Settings" onclick={() => app.setMainView("settings")} class="w-7 h-7 rounded bg-accent flex items-center justify-center text-on-accent text-[10px] font-bold">er</button>
+      <button title="Settings" aria-label="Settings" onclick={() => app.setMainView("settings")} class="w-7 h-7 rounded flex items-center justify-center hover:bg-hover"><AppMark size={24} /></button>
     </div>
   </aside>
 {:else}
@@ -1309,7 +1310,7 @@
     onclick={() => app.setMainView("settings")}
     class="border-t border-hairline p-3 flex items-center gap-2 text-[12px] text-fg-3 shrink-0 hover:bg-hover text-left"
   >
-    <div class="w-6 h-6 rounded-md bg-accent flex items-center justify-center text-on-accent text-xs font-bold">er</div>
+    <AppMark size={24} />
     <span>Settings</span>
   </button>
 </aside>

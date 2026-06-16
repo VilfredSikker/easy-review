@@ -108,7 +108,7 @@ fn default_diff_mode() -> String {
 }
 
 fn default_theme() -> String {
-    "ocean-depth".to_string()
+    "graphite".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1370,7 +1370,7 @@ args = ["--model", "gpt-5.4"]
                 wrap_lines: true,
                 split_diff: true,
                 auto_context_threshold: 100,
-                theme: "moonlight".into(),
+                theme: "slate".into(),
             },
             agent: AgentConfig {
                 command: "my-agent".into(),
@@ -1574,7 +1574,7 @@ args = ["--model", "gpt-5.4"]
             get, set, options, ..
         }) = theme_cycle
         {
-            assert_eq!(get(&config), "ocean-depth");
+            assert_eq!(get(&config), "graphite");
             set(&mut config, options[1].to_string());
             assert_eq!(get(&config), options[1]);
         } else {

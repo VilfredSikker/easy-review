@@ -27,6 +27,11 @@ export const SYNTAX_THEMES: SyntaxTheme[] = [
     label: "GitHub Dark High Contrast",
     shikiName: "github-dark-high-contrast",
   },
+  {
+    id: "github-light-high-contrast",
+    label: "GitHub Light High Contrast",
+    shikiName: "github-light-high-contrast",
+  },
 ];
 
 export const DEFAULT_SYNTAX_THEME_ID = "one-dark-pro";
