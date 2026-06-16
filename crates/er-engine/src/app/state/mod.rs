@@ -1004,12 +1004,10 @@ impl TabState {
         let t_parse = Instant::now();
         if raw.len() > 200_000 {
             let headers = crate::git::parse_diff_headers(&raw);
-            let files = crate::git::lazy_files_with_compaction(
-                &raw,
-                &headers,
-                &compaction_config,
-                |p| tab.user_expanded.contains(p),
-            );
+            let files =
+                crate::git::lazy_files_with_compaction(&raw, &headers, &compaction_config, |p| {
+                    tab.user_expanded.contains(p)
+                });
             tab.files = files;
             tab.file_headers = headers;
             tab.raw_diff = Some(raw.clone());
@@ -2330,12 +2328,10 @@ impl TabState {
             // small files are parsed eagerly so they render without a lazy round-trip.
             let headers = git::parse_diff_headers(&raw);
             let compaction_config = self.compaction_config.clone();
-            let files = crate::git::lazy_files_with_compaction(
-                &raw,
-                &headers,
-                &compaction_config,
-                |p| self.user_expanded.contains(p),
-            );
+            let files =
+                crate::git::lazy_files_with_compaction(&raw, &headers, &compaction_config, |p| {
+                    self.user_expanded.contains(p)
+                });
             self.files = files;
             self.file_headers = headers;
             self.raw_diff = Some(raw.clone());

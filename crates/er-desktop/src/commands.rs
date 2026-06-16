@@ -3438,32 +3438,34 @@ pub fn promote_to_comment(
         let tab = app.tab();
         // Both questions and notes use the `ReviewQuestion` shape; pick the
         // collection by id prefix so notes can be promoted too.
-        let (items, item): (&[er_engine::ai::ReviewQuestion], &er_engine::ai::ReviewQuestion) =
-            if id.starts_with("n-") {
-                let ns = tab
-                    .ai
-                    .notes
-                    .as_ref()
-                    .ok_or_else(|| "No notes loaded".to_string())?;
-                let n = ns
-                    .notes
-                    .iter()
-                    .find(|n| n.id == id)
-                    .ok_or_else(|| format!("Note not found: {id}"))?;
-                (ns.notes.as_slice(), n)
-            } else {
-                let qs = tab
-                    .ai
-                    .questions
-                    .as_ref()
-                    .ok_or_else(|| "No questions loaded".to_string())?;
-                let q = qs
-                    .questions
-                    .iter()
-                    .find(|q| q.id == id)
-                    .ok_or_else(|| format!("Question not found: {id}"))?;
-                (qs.questions.as_slice(), q)
-            };
+        let (items, item): (
+            &[er_engine::ai::ReviewQuestion],
+            &er_engine::ai::ReviewQuestion,
+        ) = if id.starts_with("n-") {
+            let ns = tab
+                .ai
+                .notes
+                .as_ref()
+                .ok_or_else(|| "No notes loaded".to_string())?;
+            let n = ns
+                .notes
+                .iter()
+                .find(|n| n.id == id)
+                .ok_or_else(|| format!("Note not found: {id}"))?;
+            (ns.notes.as_slice(), n)
+        } else {
+            let qs = tab
+                .ai
+                .questions
+                .as_ref()
+                .ok_or_else(|| "No questions loaded".to_string())?;
+            let q = qs
+                .questions
+                .iter()
+                .find(|q| q.id == id)
+                .ok_or_else(|| format!("Question not found: {id}"))?;
+            (qs.questions.as_slice(), q)
+        };
 
         let replies: Vec<(&str, &str)> = items
             .iter()
@@ -3660,10 +3662,7 @@ pub fn validate_with_ai(
 /// This is the question-flavored counterpart to `validate_with_ai`: questions
 /// get "Elaborate" (investigate + answer) rather than "Validate" (confirm/refute).
 #[tauri::command]
-pub fn elaborate_with_ai(
-    thread_id: String,
-    state: State<AppState>,
-) -> Result<AppSnapshot, String> {
+pub fn elaborate_with_ai(thread_id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     ask_ai(thread_id, ELABORATE_CARD_AI_PROMPT.to_string(), state)
 }
 
@@ -3735,7 +3734,13 @@ pub fn ask_ai(
             let q = items
                 .iter()
                 .find(|q| q.id == thread_id)
-                .ok_or_else(|| if is_note { "Note not found" } else { "Question not found" })
+                .ok_or_else(|| {
+                    if is_note {
+                        "Note not found"
+                    } else {
+                        "Question not found"
+                    }
+                })
                 .map_err(|e| e.to_string())?;
             let mut thread_body = String::new();
             thread_body.push_str(&format!("{}:{}\n", q.file, q.line_start.unwrap_or(0)));
