@@ -21,8 +21,8 @@ alias t := test
 alias f := fmt
 alias l := lint
 
-# Default: show the grouped recipe list.
-default:
+# Bare `just` lists every recipe. The `_` prefix hides this entry from the list itself.
+_default:
     @just --list
 
 # ─────────────────────────────── run (local / dev) ───────────────────────────────
