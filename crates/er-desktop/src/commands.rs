@@ -2328,7 +2328,15 @@ pub fn submit_github_review(
                 return Err("No PR info for this tab".to_string());
             }
         } else {
-            let pr_info = github::get_pr_info(&repo_root).map_err(|e| e.to_string())?;
+            // Prefer the tab's explicit PR number (set when a local PR review was
+            // opened) over branch detection. `get_pr_info` alone re-runs `gh pr
+            // view` for the current branch and bails when no PR is detected, even
+            // though the tab already knows which PR these comments belong to —
+            // which is why individual pushes (which use `local_pr_target`) work
+            // but the batch review submit failed with "No PR associated with
+            // current branch".
+            let pr_info = er_engine::sync::local_pr_target(&repo_root, tab.pr_number)
+                .map_err(|e| e.to_string())?;
             (pr_info.0, pr_info.1, pr_info.2)
         };
         if event == "APPROVE" {
