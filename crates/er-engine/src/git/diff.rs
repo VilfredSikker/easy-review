@@ -1620,8 +1620,7 @@ index aaa..bbb 100644
         let raw = make_file_diff("src/large.rs", 2500);
         let headers = parse_diff_headers(&raw);
         let config = CompactionConfig::default();
-        let files =
-            lazy_files_with_compaction(&raw, &headers, &config, |p| p == "src/large.rs");
+        let files = lazy_files_with_compaction(&raw, &headers, &config, |p| p == "src/large.rs");
         assert_eq!(files.len(), 1);
         let f = &files[0];
         assert!(!f.compacted, "user-expanded file must not be compacted");
@@ -1643,8 +1642,7 @@ index aaa..bbb 100644
 
         let headers = parse_diff_headers(&raw);
         let config = CompactionConfig::default();
-        let files =
-            lazy_files_with_compaction(&raw, &headers, &config, |p| p == "src/expanded.rs");
+        let files = lazy_files_with_compaction(&raw, &headers, &config, |p| p == "src/expanded.rs");
 
         let small = files
             .iter()
