@@ -2056,6 +2056,13 @@ fn finding_linked_thread_ids(ai: &er_engine::ai::AiState, finding_id: &str) -> V
             }
         }
     }
+    if let Some(ns) = ai.notes.as_ref() {
+        for n in &ns.notes {
+            if n.finding_ref.as_deref() == Some(finding_id) {
+                ids.push(n.id.clone());
+            }
+        }
+    }
     if let Some(gc) = ai.github_comments.as_ref() {
         for c in &gc.comments {
             if c.finding_ref.as_deref() == Some(finding_id) {
@@ -6333,6 +6340,12 @@ pub fn update_thread_message(
                 .as_ref()
                 .and_then(|qs| qs.questions.iter().find(|q| q.id == id))
                 .map(|q| q.author.clone())
+        } else if id.starts_with("n-") {
+            tab.ai
+                .notes
+                .as_ref()
+                .and_then(|ns| ns.notes.iter().find(|n| n.id == id))
+                .map(|n| n.author.clone())
         } else {
             tab.ai
                 .github_comments
@@ -7130,6 +7143,12 @@ fn compute_content_revision(app: &App) -> u64 {
         .unwrap_or(0)
         .hash(&mut h);
     tab.ai
+        .notes
+        .as_ref()
+        .map(|n| n.notes.len())
+        .unwrap_or(0)
+        .hash(&mut h);
+    tab.ai
         .github_comments
         .as_ref()
         .map(|g| g.comments.len())
@@ -7137,6 +7156,13 @@ fn compute_content_revision(app: &App) -> u64 {
         .hash(&mut h);
     if let Some(qs) = &tab.ai.questions {
         if let Some(last) = qs.questions.last() {
+            last.id.hash(&mut h);
+            last.timestamp.hash(&mut h);
+            last.resolved.hash(&mut h);
+        }
+    }
+    if let Some(ns) = &tab.ai.notes {
+        if let Some(last) = ns.notes.last() {
             last.id.hash(&mut h);
             last.timestamp.hash(&mut h);
             last.resolved.hash(&mut h);
