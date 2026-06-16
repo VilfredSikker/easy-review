@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onExternalLinkClick } from "$lib/openExternalUrl";
+  import { parseMarkdown, renderInline as inline } from "$lib/markdown";
 
   interface Props {
     text: string;
@@ -7,94 +8,7 @@
   }
   const { text, className = "" }: Props = $props();
 
-  type Node =
-    | { t: "p"; v: string }
-    | { t: "h"; l: number; v: string }
-    | { t: "ul"; items: string[] }
-    | { t: "ol"; items: string[] }
-    | { t: "bq"; v: string }
-    | { t: "code"; lang: string; v: string };
-
-  function parse(md: string): Node[] {
-    const lines = md.replace(/\r\n/g, "\n").split("\n");
-    const out: Node[] = [];
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
-      if (!line.trim()) {
-        i++;
-        continue;
-      }
-      const hm = line.match(/^(#{1,6})\s+(.*)$/);
-      if (hm) {
-        out.push({ t: "h", l: hm[1].length, v: hm[2] });
-        i++;
-        continue;
-      }
-      const cm = line.match(/^```(\w+)?\s*$/);
-      if (cm) {
-        const lang = cm[1] ?? "";
-        i++;
-        const code: string[] = [];
-        while (i < lines.length && !lines[i].startsWith("```")) code.push(lines[i++]);
-        if (i < lines.length) i++;
-        out.push({ t: "code", lang, v: code.join("\n") });
-        continue;
-      }
-      if (line.startsWith("> ")) {
-        const q: string[] = [];
-        while (i < lines.length && lines[i].startsWith("> ")) q.push(lines[i++].slice(2));
-        out.push({ t: "bq", v: q.join("\n") });
-        continue;
-      }
-      const um = line.match(/^\s*[-*]\s+(.+)$/);
-      if (um) {
-        const items: string[] = [];
-        while (i < lines.length) {
-          const m = lines[i].match(/^\s*[-*]\s+(.+)$/);
-          if (!m) break;
-          items.push(m[1]);
-          i++;
-        }
-        out.push({ t: "ul", items });
-        continue;
-      }
-      const om = line.match(/^\s*\d+\.\s+(.+)$/);
-      if (om) {
-        const items: string[] = [];
-        while (i < lines.length) {
-          const m = lines[i].match(/^\s*\d+\.\s+(.+)$/);
-          if (!m) break;
-          items.push(m[1]);
-          i++;
-        }
-        out.push({ t: "ol", items });
-        continue;
-      }
-      const p: string[] = [line];
-      i++;
-      while (i < lines.length && lines[i].trim()) {
-        if (/^(#{1,6})\s+/.test(lines[i]) || /^```/.test(lines[i])) break;
-        p.push(lines[i++]);
-      }
-      out.push({ t: "p", v: p.join("\n") });
-    }
-    return out;
-  }
-
-  const nodes = $derived(parse(text || ""));
-
-  function inline(s: string): string {
-    const escaped = s
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-    return escaped
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>');
-  }
+  const nodes = $derived(parseMarkdown(text || ""));
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -121,6 +35,27 @@
       <blockquote>{@html inline(n.v)}</blockquote>
     {:else if n.t === "code"}
       <pre><code class={n.lang ? `language-${n.lang}` : ""}>{n.v}</code></pre>
+    {:else if n.t === "table"}
+      <div class="md-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              {#each n.header as cell, c}
+                <th style={n.align[c] ? `text-align:${n.align[c]}` : ""}>{@html inline(cell)}</th>
+              {/each}
+            </tr>
+          </thead>
+          <tbody>
+            {#each n.rows as row}
+              <tr>
+                {#each n.header as _, c}
+                  <td style={n.align[c] ? `text-align:${n.align[c]}` : ""}>{@html inline(row[c] ?? "")}</td>
+                {/each}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
   {/each}
 </div>
@@ -169,4 +104,31 @@
     word-break: break-word;
   }
   .markdown-text :global(a) { text-decoration: underline; }
+  .markdown-text :global(.md-table-wrap) {
+    margin: 0.45rem 0;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .markdown-text :global(table) {
+    border-collapse: collapse;
+    font-size: 0.9em;
+    width: max-content;
+    max-width: 100%;
+  }
+  .markdown-text :global(th),
+  .markdown-text :global(td) {
+    border: 1px solid color-mix(in srgb, var(--color-fg-3) 25%, transparent);
+    padding: 0.28rem 0.55rem;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .markdown-text :global(th) {
+    font-weight: 600;
+    background: color-mix(in srgb, var(--color-fg-3) 12%, transparent);
+  }
+  .markdown-text :global(tbody tr:nth-child(even) td) {
+    background: color-mix(in srgb, var(--color-fg-3) 6%, transparent);
+  }
 </style>
