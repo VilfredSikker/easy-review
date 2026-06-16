@@ -22,8 +22,23 @@
     return i === -1 ? p : p.slice(i + 1);
   }
 
-  function previewBody(thread: AiSnapshot["threads"][number]): string {
-    return thread.replies.at(-1)?.body_markdown ?? thread.root.body_markdown;
+  function latestReply(
+    thread: AiSnapshot["threads"][number],
+  ): AiSnapshot["threads"][number]["replies"][number] | undefined {
+    return thread.replies.at(-1);
+  }
+
+  async function askAll() {
+    for (const t of questionThreads) {
+      await app.cmd("ask_ai", { threadId: t.id, prompt: "" });
+    }
+  }
+
+  async function promoteAll() {
+    for (const t of questionThreads) {
+      if (t.promoted_to) continue;
+      await app.cmd("promote_to_comment", { id: t.id });
+    }
   }
 </script>
 
@@ -41,6 +56,7 @@
 
   <div class="space-y-1 mb-3">
     {#each questionThreads as thread (thread.id)}
+      {@const reply = latestReply(thread)}
       <div class="relative group">
         <button
           onclick={() => navigateToThread(thread)}
@@ -51,7 +67,13 @@
             <span>{basename(thread.file)}{thread.line > 0 ? `:${threadLineRefSuffix(thread)}` : ""}</span>
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ml-auto opacity-0 group-hover:opacity-100 transition text-accent"><path d="M7 17L17 7M7 7h10v10"/></svg>
           </div>
-          <MarkdownText text={previewBody(thread)} className="text-fg-2 text-left" />
+          <MarkdownText text={thread.root.body_markdown} className="text-fg-2 text-left" />
+          {#if reply}
+            <div class="mt-1 pl-2 border-l border-hairline">
+              <div class="text-[10px] font-mono text-muted mb-0.5">{reply.author} replied</div>
+              <MarkdownText text={reply.body_markdown} className="text-fg-3 text-left" />
+            </div>
+          {/if}
         </button>
         <button
           type="button"
@@ -72,10 +94,7 @@
       variant="primary"
       class="flex items-center justify-center gap-1.5 normal-case"
       disabled={questionThreads.length === 0}
-      onclick={() => {
-        const t = questionThreads[questionThreads.length - 1];
-        if (t) app.cmd("ask_ai", { threadId: t.id, prompt: "" });
-      }}
+      onclick={askAll}
     >
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
       Ask AI
@@ -84,10 +103,7 @@
       variant="secondary"
       class="flex items-center justify-center gap-1.5 normal-case"
       disabled={questionThreads.length === 0}
-      onclick={() => {
-        const t = questionThreads[questionThreads.length - 1];
-        if (t) app.cmd("promote_to_comment", { id: t.id });
-      }}
+      onclick={promoteAll}
     >
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       Promote to comment
