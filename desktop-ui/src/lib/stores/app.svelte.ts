@@ -37,6 +37,12 @@ export interface CommentVisibility {
   hideAll: boolean;
   hideResolved: boolean;
   hideOutdated: boolean;
+  /** Hide GitHub comment threads (kind === "comment"). */
+  hideComments: boolean;
+  /** Hide AI findings. */
+  hideFindings: boolean;
+  /** Hide personal question threads (kind === "question"). */
+  hideQuestions: boolean;
 }
 
 function loadDiffViewMode(): DiffViewMode {
@@ -51,7 +57,14 @@ function loadCompactLines(): boolean {
 }
 
 function loadCommentVisibility(): CommentVisibility {
-  const defaults = { hideAll: false, hideResolved: true, hideOutdated: true };
+  const defaults: CommentVisibility = {
+    hideAll: false,
+    hideResolved: true,
+    hideOutdated: true,
+    hideComments: false,
+    hideFindings: false,
+    hideQuestions: false,
+  };
   if (typeof localStorage === "undefined") return defaults;
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(COMMENT_VISIBILITY_KEY) ?? "{}") };

@@ -1500,6 +1500,41 @@
                 </span>
                 Split
               </button>
+              <div class="border-t border-ink-600 my-1"></div>
+              <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Annotations</div>
+              <button
+                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                onclick={() => app.setCommentVisibility({ hideComments: !app.commentVisibility.hideComments })}
+              >
+                <span class="w-3 inline-flex items-center justify-center">
+                  {#if !app.commentVisibility.hideComments}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                  {/if}
+                </span>
+                Comments
+              </button>
+              <button
+                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                onclick={() => app.setCommentVisibility({ hideFindings: !app.commentVisibility.hideFindings })}
+              >
+                <span class="w-3 inline-flex items-center justify-center">
+                  {#if !app.commentVisibility.hideFindings}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                  {/if}
+                </span>
+                Findings
+              </button>
+              <button
+                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                onclick={() => app.setCommentVisibility({ hideQuestions: !app.commentVisibility.hideQuestions })}
+              >
+                <span class="w-3 inline-flex items-center justify-center">
+                  {#if !app.commentVisibility.hideQuestions}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                  {/if}
+                </span>
+                Questions
+              </button>
             </div>
           {/if}
         </div>
