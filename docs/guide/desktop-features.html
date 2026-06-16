@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Desktop Features in Depth — easy-review docs</title>
+  <meta name="description" content="In-depth look at the easy-review desktop app: review arena, AI Hub, inline threads, browser annotations, terminal drawer, export, references, split/word diff, settings, and shortcuts.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Desktop App</p>
+    <h1>Features in Depth</h1>
+    <p class="lead">
+      A tour of the capabilities that are unique to the desktop app. For the shared review model — diff modes, comments,
+      AI sidecars — see <a href="concepts.html">Core Concepts</a>.
+    </p>
+    <div class="callout warn">
+      <span class="ico">▲</span>
+      <div><p>The desktop app is evolving quickly. Treat specific shortcuts and panel names as current-as-of-writing
+      rather than a frozen contract.</p></div>
+    </div>
+
+    <h2>Diff rendering: split and word diff</h2>
+    <p>
+      Beyond the unified view, the desktop app offers a <strong>split (side-by-side)</strong> diff — old on the left, new
+      on the right — toggleable from the keyboard or command palette. Within changed lines it computes an
+      <strong>intra-line word diff</strong>, so a renamed variable or a tweaked literal is highlighted at the token level
+      rather than marking the whole line changed. Syntax highlighting runs client-side via Shiki in a Web Worker, cached
+      per file.
+    </p>
+
+    <h2 id="arena">The review arena</h2>
+    <p>
+      The arena runs multiple AI reviewers over the same diff and reconciles their findings — think of it as a panel of
+      reviewers rather than a single pass.
+    </p>
+    <ul>
+      <li><strong>Configure a run</strong> — pick reviewers (models and/or specialized agents like Security, Performance,
+      Testing), choose a scope (full branch, unstaged, staged, or selected files), set the number of rounds, and pick an
+      arbiter model.</li>
+      <li><strong>Cost preview</strong> — an estimate based on each model's per-1k-token pricing, with an approval gate
+      before anything runs.</li>
+      <li><strong>Watch progress</strong> — a minimizable panel shows the current round and phase, with a cancel button.</li>
+      <li><strong>Read the results</strong> — three layouts: a <em>bracket</em> view of how verdicts flowed, a
+      <em>matrix</em> of reviewers against findings, and a <em>funnel</em> from proposed to final.</li>
+      <li><strong>History</strong> — past arena runs on the current branch are listed with their reviewer and finding counts.</li>
+    </ul>
+    <p>
+      Concurrency is bounded: spawns go through a queue with a configurable cap (default 3, adjustable in settings), and a
+      process-wide semaphore keeps simultaneous runs from multiplying agent subprocesses.
+    </p>
+
+    <h2>AI Hub: providers, models, reviewers</h2>
+    <p>
+      The AI action palette (<kbd>Cmd</kbd>+<kbd>A</kbd>) is the desktop's front door to AI. From it you can run a review,
+      launch the arena, choose a <strong>provider</strong> (Claude, Codex, Cursor), pick a specific <strong>model</strong>,
+      select which <strong>reviewer kinds</strong> to run, and reach export, the browser, and settings. Running reviews
+      surface as background tasks with cancellation; results land in the Review tab, filterable by severity or by agent.
+      The provider and model catalog comes from your <a href="configuration.html#ai-hub">AI Hub configuration</a>.
+    </p>
+
+    <h2>Inline threads &amp; findings</h2>
+    <p>
+      Comments and questions render as <strong>inline threads</strong> on the diff, with a reply composer. Two desktop
+      conveniences stand out:
+    </p>
+    <ul>
+      <li><strong>Ask AI</strong> — prompt an agent to validate or expand on a thread directly from the comment.</li>
+      <li><strong>Promote to GitHub</strong> — turn a private question into a GitHub PR comment when you decide it is worth
+      raising.</li>
+    </ul>
+    <p>
+      AI findings render as inline cards with a severity badge and an agent pill (Security, Performance, Professor, …),
+      their own reply thread, and a control to promote them into GitHub comments. Resolved and stale states are tracked
+      just as in the terminal.
+    </p>
+
+    <h2>Embedded browser &amp; page annotations</h2>
+    <p>
+      The desktop app can show a real embedded browser beside your diff — handy for reading docs, a design system, or an
+      API while you review. It loads real <code>http://localhost</code> URLs so logins and sessions work like a normal
+      browser, with an iframe proxy fallback. Its <strong>annotation mode</strong> lets you click elements on the page to
+      drop pins, optionally capturing a screenshot crop and DOM context, then write a markdown note. Annotations can link
+      back to specific lines in the diff, and findings in code can link out to page sections.
+    </p>
+
+    <h2>Embedded terminal drawer</h2>
+    <p>
+      A resizable terminal drawer runs a full shell (xterm.js + PTY) per tab, themed to match the app. Run tests, git
+      commands, or anything else without leaving the review. It includes a generous scrollback buffer and a one-click
+      “checkout this branch” helper.
+    </p>
+
+    <h2>Code references &amp; “find usages”</h2>
+    <p>
+      A search bar (<kbd>Cmd</kbd>+<kbd>F</kbd>) prefills from selected text or a hovered identifier. Hovering an
+      identifier highlights every occurrence in the diff, and a “find usages” popover lists references with surrounding
+      line context (calls, assignments, and so on). A ruler along the scroll gutter marks where matches are.
+    </p>
+
+    <h2>Triage &amp; professor</h2>
+    <p>
+      The Review tab can show a <strong>triage card</strong> with a routing verdict (general review, expert review,
+      arena, professor, or skip), a confidence level, rationale, and priority files — each with a one-click button to run
+      the recommended next step. A <strong>professor focus</strong> flow lets you pair an expert with a custom focus
+      prompt and scope for a deeper, teaching-oriented pass.
+    </p>
+
+    <h2>Export a review</h2>
+    <p>
+      The export view renders a live markdown preview of your findings, comments, questions, and annotations, with
+      toggles to include or exclude each type and an “unresolved only” filter. Copy it to the clipboard or save it to
+      <code>export.md</code> — useful for a review summary in a PR description or a writeup.
+    </p>
+
+    <h2>Tabs, projects, and PRs</h2>
+    <ul>
+      <li><strong>Persistent tabs</strong> — open repos, branches, and PRs as tabs that survive restarts; drag to reorder.</li>
+      <li><strong>Lazy restoration</strong> — inactive tabs are lightweight stubs until selected, with background warming
+      for fast switching.</li>
+      <li><strong>Project / branch picker</strong> — switch repositories and branches from the sidebar.</li>
+      <li><strong>Remote PR review</strong> — paste a PR URL (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>) and review
+      against remote refs without a checkout.</li>
+      <li><strong>Worktree picker</strong> — jump between git worktrees.</li>
+    </ul>
+
+    <h2>Settings GUI</h2>
+    <p>The settings page exposes configuration as a UI, organized into tabs:</p>
+    <table>
+      <thead><tr><th>Tab</th><th>Covers</th></tr></thead>
+      <tbody>
+        <tr><td><strong>General</strong></td><td>Theme, default AI provider and model, agent effort and concurrency cap. Shared with the terminal where applicable.</td></tr>
+        <tr><td><strong>Projects</strong></td><td>Per-project triage timing, file-size limits, and review ignore patterns.</td></tr>
+        <tr><td><strong>Terminal</strong></td><td>TUI display and key-hint options.</td></tr>
+      </tbody>
+    </table>
+    <p>The same <a href="configuration.html">themes</a> drive both the desktop and terminal UIs; changing one restyles the app live.</p>
+
+    <h2>Keyboard shortcuts</h2>
+    <p>The desktop app is heavily keyboard-driven too. Current shortcuts include:</p>
+    <table>
+      <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Cmd</kbd>+<kbd>A</kbd></td><td>AI action palette (run review, pick agents)</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>K</kbd></td><td>Command palette</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>F</kbd></td><td>Diff search (prefilled from selection)</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>B</kbd></td><td>Cycle browser layout (hidden → split → fullscreen)</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd></td><td>Open the export view</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>T</kbd></td><td>Toggle the terminal drawer (also the backtick key)</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>New tab</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>W</kbd></td><td>Close the current tab</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>1</kbd>…<kbd>9</kbd></td><td>Jump to tab N</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd></td><td>Open a PR by URL</td></tr>
+        <tr><td><kbd>Cmd</kbd>+<kbd>R</kbd></td><td>Force refresh (fetch from remote)</td></tr>
+        <tr><td><kbd>[</kbd> / <kbd>]</kbd> / <kbd>\</kbd></td><td>Toggle left panel / right panel / file tree</td></tr>
+        <tr><td><kbd>d</kbd></td><td>Toggle unified ↔ split diff</td></tr>
+        <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>Navigate files</td></tr>
+        <tr><td><kbd>e</kbd></td><td>Open the selected file in your editor</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Close modals / clear highlights (in precedence order)</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Quit</td></tr>
+      </tbody>
+    </table>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>On non-macOS platforms, <kbd>Cmd</kbd> maps to the platform's primary modifier. The live shortcut list in
+      the command palette is always the source of truth.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

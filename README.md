@@ -7,6 +7,8 @@ AI writes code faster than you can review it. `er` makes review fast, navigable,
 ![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
+📚 **Documentation:** the full guide lives in [`docs/guide/`](docs/guide/index.html) — getting started, core concepts shared by both apps, and dedicated sections for the [terminal UI](docs/guide/tui.html) and the [desktop app](docs/guide/desktop.html). When published via GitHub Pages it is served from the site root under `/guide/`.
+
 ## Install
 
 ### Quick install (macOS / Linux)

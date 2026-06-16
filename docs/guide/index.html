@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>easy-review documentation</title>
+  <meta name="description" content="Documentation for easy-review (er) — a fast git diff review tool for developers who work with AI coding assistants. Terminal UI and desktop app.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">easy-review documentation</p>
+    <h1>Review diffs at the speed of thought</h1>
+    <p class="lead">
+      <strong>easy-review</strong> (the <code>er</code> binary) is a git diff review tool built for
+      developers who work with AI coding assistants. AI writes code faster than you can read it —
+      <code>er</code> makes review fast, navigable, and live-updating, whether you prefer a keyboard-driven
+      terminal UI or a full desktop application.
+    </p>
+
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div>
+        <p><strong>New here?</strong> Start with <a href="installation.html">Installation</a>, then walk through
+        your first review in the <a href="quick-start.html">Quick Start</a>. If you just want the key map,
+        jump to the <a href="tui-keybindings.html">Keybinding Reference</a>.</p>
+      </div>
+    </div>
+
+    <h2>Two front ends, one engine</h2>
+    <p>
+      <code>er</code> ships as two applications that share the same review engine, the same on-disk review data,
+      and the same core concepts. Pick the one that fits how you work — or use both on the same repository and
+      branch, since they read and write the same review files.
+    </p>
+
+    <div class="card-grid">
+      <a class="card" href="tui.html">
+        <div class="card-eyebrow">Terminal</div>
+        <h3>The <code>er</code> TUI</h3>
+        <p>A single static binary. Keyboard-driven, instant startup, runs anywhere a terminal does — perfect next to Claude Code in a split pane.</p>
+      </a>
+      <a class="card" href="desktop.html">
+        <div class="card-eyebrow">Desktop</div>
+        <h3>The desktop app</h3>
+        <p>A Tauri application with split diffs, an embedded terminal and browser, multi-model review “arena”, and a settings GUI.</p>
+      </a>
+    </div>
+
+    <h2>What you can do with it</h2>
+    <ul>
+      <li><strong>Read diffs in six modes</strong> — branch, unstaged, staged, commit history, merge conflicts, and hidden/ignored files.</li>
+      <li><strong>Follow changes live</strong> — watch mode refreshes the diff as files are saved, staged, and committed.</li>
+      <li><strong>Track your progress</strong> — mark files reviewed, filter to what is left, jump to the next unreviewed file.</li>
+      <li><strong>Leave two kinds of notes</strong> — private questions for yourself or your AI, and GitHub comments that sync to a pull request.</li>
+      <li><strong>Layer in AI analysis</strong> — per-file risk levels, inline findings, a review checklist, and specialized expert agents.</li>
+      <li><strong>Work with pull requests</strong> — open a PR by number or URL, see CI and reviewer status, and sync comments two ways.</li>
+    </ul>
+
+    <h2>How this documentation is organized</h2>
+    <p>
+      Most features work the same in both the terminal and desktop apps. Those shared ideas live under
+      <strong>Core Concepts</strong>. Where the two differ, the dedicated <strong>Terminal UI</strong> and
+      <strong>Desktop App</strong> sections cover what is unique to each. Throughout the docs, look for these badges:
+    </p>
+    <p>
+      <span class="pill both">both</span> works in the terminal and desktop apps &nbsp;
+      <span class="pill tui">terminal</span> terminal UI only &nbsp;
+      <span class="pill desktop">desktop</span> desktop app only
+    </p>
+
+    <table>
+      <thead><tr><th>If you want to…</th><th>Read</th></tr></thead>
+      <tbody>
+        <tr><td>Install either app</td><td><a href="installation.html">Installation</a></td></tr>
+        <tr><td>Run your first review end to end</td><td><a href="quick-start.html">Quick Start</a></td></tr>
+        <tr><td>Understand the mental model</td><td><a href="concepts.html">How er Works</a></td></tr>
+        <tr><td>Learn the diff modes</td><td><a href="diff-modes.html">Diff Modes</a></td></tr>
+        <tr><td>Comment and ask questions</td><td><a href="comments.html">Comments &amp; Questions</a></td></tr>
+        <tr><td>Set up the AI review loop</td><td><a href="ai-review.html">AI Review</a> &amp; <a href="skills.html">Skills</a></td></tr>
+        <tr><td>Connect a GitHub pull request</td><td><a href="github.html">GitHub &amp; Pull Requests</a></td></tr>
+        <tr><td>Customize behavior</td><td><a href="configuration.html">Configuration</a></td></tr>
+        <tr><td>Memorize the keyboard</td><td><a href="tui-keybindings.html">Keybinding Reference</a></td></tr>
+      </tbody>
+    </table>
+
+    <h2>A note on your data</h2>
+    <p>
+      <code>er</code> is a <strong>viewer and orchestrator</strong>. It does not run AI models itself, and it does
+      not transmit your code anywhere. There is no telemetry, no analytics, and no backend — it shells out to your
+      local <code>git</code> (and optionally the <code>gh</code> CLI) and reads review artifacts that AI tools
+      <em>you</em> run write to disk. You bring your own AI tools and credentials. See
+      <a href="ai-review.html">AI Review</a> for how that loop works.
+    </p>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diff Modes — easy-review docs</title>
+  <meta name="description" content="The six diff modes in easy-review: branch, unstaged, staged, commit history, merge conflicts, and hidden/ignored files — plus PR diff and recency sorting.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Core Concepts</p>
+    <h1>Diff Modes</h1>
+    <p class="lead">
+      A “mode” is simply <em>which set of changes</em> <code>er</code> is showing you. There are six built-in modes plus
+      a pull-request mode. In the terminal you switch with the number keys; in the desktop app you switch from the
+      branch context bar.
+    </p>
+
+    <h2>The six modes at a glance</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Mode</th><th>Shows</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>1</kbd></td><td>Branch</td><td>Everything that differs between your branch and its detected base branch.</td></tr>
+        <tr><td><kbd>2</kbd></td><td>Unstaged</td><td>Working-tree changes you have not staged yet (<code>git diff</code>).</td></tr>
+        <tr><td><kbd>3</kbd></td><td>Staged</td><td>Changes in the index, ready to commit (<code>git diff --cached</code>).</td></tr>
+        <tr><td><kbd>4</kbd></td><td>History</td><td>Commit-by-commit view of your branch's history.</td></tr>
+        <tr><td><kbd>5</kbd></td><td>Conflicts</td><td>Files with unresolved merge conflicts.</td></tr>
+        <tr><td><kbd>6</kbd></td><td>Hidden</td><td>Hidden / git-ignored files that <code>er</code> can still surface.</td></tr>
+      </tbody>
+    </table>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>Tab numbers are assigned dynamically to the modes that are <em>enabled</em>. If you disable a mode in
+      <a href="configuration.html">configuration</a>, the remaining modes renumber so there are no gaps.</p></div>
+    </div>
+
+    <h2>Branch <span class="pill both">both</span></h2>
+    <p>
+      The default mode and the one you will use most. It answers “what does this branch change?” by diffing against the
+      auto-detected base branch (see <a href="concepts.html#base-branch-is-detected-for-you">base branch detection</a>).
+      This is the right mode for reviewing a feature branch or a pull request's worth of work.
+    </p>
+
+    <h2>Unstaged <span class="pill both">both</span></h2>
+    <p>
+      Your in-progress edits that have not been <code>git add</code>-ed. Pairs naturally with watch mode while an AI
+      assistant is actively editing — you see changes appear as they are written.
+    </p>
+
+    <h2>Staged <span class="pill both">both</span></h2>
+    <p>
+      What is in the index and would go into your next commit. From the terminal you can <strong>stage or unstage</strong>
+      the current file with <kbd>s</kbd>, and in staged mode you can commit and push without leaving <code>er</code>
+      (<kbd>Ctrl</kbd>+<kbd>P</kbd>). After you commit, <code>er</code> automatically switches to a view of exactly what
+      you just committed (<code>git diff HEAD~1 HEAD</code>) so you can confirm it before moving on.
+    </p>
+
+    <h2>History <span class="pill both">both</span></h2>
+    <p>
+      A commit log for your branch. Selecting a commit loads its full diff (the parser runs <code>git log</code> plus a
+      <code>git diff</code> per commit). Recent commits are cached so scrolling back through history stays fast. Use this
+      to review work commit by commit rather than as one big squashed diff.
+    </p>
+
+    <h2>Conflicts <span class="pill both">both</span></h2>
+    <p>
+      Surfaces files with unresolved merge conflicts so you can find and work through them quickly during a merge or
+      rebase.
+    </p>
+
+    <h2>Hidden / ignored <span class="pill both">both</span></h2>
+    <p>
+      Files git normally hides — ignored paths and the like. This is distinct from the <strong>watched files</strong>
+      feature (configurable globs for git-ignored paths such as agent sync folders), which you toggle with <kbd>W</kbd>.
+      See <a href="configuration.html#watched">Watched files</a>.
+    </p>
+
+    <h2>Pull request mode <span class="pill both">both</span></h2>
+    <p>
+      Not a number key — you enter it by opening a PR. From the terminal:
+    </p>
+    <pre><code>er --pr 42
+er https://github.com/owner/repo/pull/42</code></pre>
+    <p>
+      In PR mode the right-hand panel shows CI checks, reviewer decisions, and labels, and comment sync targets that
+      pull request. The desktop app has a “PR Diff” toggle and a paste-a-URL modal. PR review can be done against remote
+      refs without checking out the branch. See <a href="github.html">GitHub &amp; Pull Requests</a>.
+    </p>
+
+    <h2>Sorting by recency</h2>
+    <p>
+      In any mode, press <kbd>Shift</kbd>+<kbd>R</kbd> to toggle sorting files by modification time. When an AI tool just
+      touched a handful of files, this floats them to the top of the list so you review the freshest changes first.
+    </p>
+
+    <h2>Performance with large diffs</h2>
+    <p><code>er</code> is built to stay fast even on enormous diffs. Three mechanisms do the heavy lifting:</p>
+    <ul>
+      <li><strong>Auto-compaction</strong> — lock files, generated code, minified assets, and files over ~500 lines are
+      compacted automatically: their hunks are cleared from memory and shown as a single collapsed entry. Press
+      <kbd>Enter</kbd> to expand one on demand.</li>
+      <li><strong>Two-phase lazy parsing</strong> — diffs above ~5,000 lines get a header-only scan for the file list,
+      and individual files are parsed only when you navigate to them.</li>
+      <li><strong>Viewport rendering</strong> — only the rows visible on screen (plus a small buffer) are ever built, so
+      a 5,000-line file renders like a 60-line one.</li>
+    </ul>
+    <p>You rarely have to think about any of this — it just keeps scrolling smooth.</p>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

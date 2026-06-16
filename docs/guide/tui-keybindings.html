@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Keybinding Reference — easy-review docs</title>
+  <meta name="description" content="The complete keyboard reference for the er terminal UI: navigation, diff modes, actions, comments, GitHub sync, AI views, tabs, and general keys.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Terminal UI</p>
+    <h1>Keybinding Reference</h1>
+    <p class="lead">
+      The complete key map for the <code>er</code> terminal UI, grouped by task. Bottom-bar hints show a subset; this is
+      the full list. Hint groups are configurable — see <a href="configuration.html">Configuration</a>.
+    </p>
+
+    <h2>Navigation</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>Next / previous file</td></tr>
+        <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>Next / previous hunk</td></tr>
+        <tr><td><kbd>↓</kbd> / <kbd>↑</kbd></td><td>Next / previous line (within hunks)</td></tr>
+        <tr><td><kbd>h</kbd> / <kbd>l</kbd></td><td>Scroll left / right</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>d</kbd> / <kbd>Ctrl</kbd>+<kbd>u</kbd></td><td>Half page down / up</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Diff modes</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>1</kbd></td><td>Branch diff (vs base branch)</td></tr>
+        <tr><td><kbd>2</kbd></td><td>Unstaged changes</td></tr>
+        <tr><td><kbd>3</kbd></td><td>Staged changes</td></tr>
+        <tr><td><kbd>4</kbd></td><td>Commit history</td></tr>
+        <tr><td><kbd>5</kbd></td><td>Merge conflicts</td></tr>
+        <tr><td><kbd>6</kbd></td><td>Hidden / ignored files</td></tr>
+        <tr><td><kbd>8</kbd></td><td>Quiz mode (when a quiz exists)</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>R</kbd></td><td>Toggle sort by recency</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Actions</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>s</kbd></td><td>Stage / unstage the current file</td></tr>
+        <tr><td><kbd>Space</kbd></td><td>Toggle the current file as reviewed</td></tr>
+        <tr><td><kbd>u</kbd></td><td>Filter to unreviewed files</td></tr>
+        <tr><td><kbd>U</kbd></td><td>Jump to the next unreviewed file</td></tr>
+        <tr><td><kbd>q</kbd></td><td>Question on the current line (private, yellow)</td></tr>
+        <tr><td><kbd>Q</kbd></td><td>Question on the current hunk</td></tr>
+        <tr><td><kbd>c</kbd></td><td>Comment on the current line (GitHub, cyan)</td></tr>
+        <tr><td><kbd>C</kbd></td><td>Comment on the current hunk</td></tr>
+        <tr><td><kbd>y</kbd></td><td>Copy the current hunk to the clipboard</td></tr>
+        <tr><td><kbd>e</kbd></td><td>Open the current file in <code>$EDITOR</code></td></tr>
+        <tr><td><kbd>r</kbd></td><td>Refresh the diff</td></tr>
+        <tr><td><kbd>w</kbd></td><td>Toggle watch mode</td></tr>
+        <tr><td><kbd>W</kbd></td><td>Toggle the watched-files section</td></tr>
+        <tr><td><kbd>/</kbd></td><td>Search files by name</td></tr>
+        <tr><td><kbd>f</kbd></td><td>Filter files (glob, status, size)</td></tr>
+        <tr><td><kbd>F</kbd></td><td>Filter presets &amp; history</td></tr>
+        <tr><td><kbd>Enter</kbd></td><td>Expand a compacted file</td></tr>
+        <tr><td><kbd>z</kbd></td><td>Clean AI artifacts for the current file</td></tr>
+        <tr><td><kbd>Z</kbd></td><td>Clean all AI artifacts</td></tr>
+        <tr><td><kbd>S</kbd></td><td>Open settings</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Comments (in comment focus mode)</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Tab</kbd></td><td>Toggle comment focus mode</td></tr>
+        <tr><td><kbd>↓</kbd> / <kbd>↑</kbd></td><td>Navigate between comments</td></tr>
+        <tr><td><kbd>r</kbd></td><td>Reply to the focused comment</td></tr>
+        <tr><td><kbd>d</kbd></td><td>Delete the focused comment</td></tr>
+        <tr><td><kbd>R</kbd></td><td>Toggle resolved</td></tr>
+      </tbody>
+    </table>
+
+    <h2>GitHub sync <span class="pill tui">requires gh</span></h2>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>G</kbd></td><td>Pull PR comments from GitHub</td></tr>
+        <tr><td><kbd>P</kbd></td><td>Push local comments to GitHub</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td><td>Git push (from staged mode)</td></tr>
+      </tbody>
+    </table>
+
+    <h2>AI views</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>v</kbd> / <kbd>V</kbd></td><td>Cycle AI view mode forward / backward</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Tabs &amp; repositories</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>]</kbd> / <kbd>[</kbd></td><td>Next / previous tab</td></tr>
+        <tr><td><kbd>x</kbd></td><td>Close the current tab</td></tr>
+        <tr><td><kbd>t</kbd></td><td>Worktree picker</td></tr>
+        <tr><td><kbd>o</kbd></td><td>Directory browser</td></tr>
+      </tbody>
+    </table>
+
+    <h2>General</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Esc</kbd></td><td>Clear search / filter (innermost first)</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>q</kbd></td><td>Quit</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>Some keys are mode-dependent: <kbd>r</kbd> refreshes the diff normally but replies to a comment in comment
+      focus mode, and <kbd>R</kbd> toggles resolved there. The status bar always reflects what is available right now.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>
