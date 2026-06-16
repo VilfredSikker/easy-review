@@ -6,6 +6,10 @@ environment gotchas, and a map of the desktop app, which spans three layers.
 
 ## Build / Test / Lint / Run
 
+A [`just`](https://just.systems) front-end wraps these (`just` to list, e.g.
+`just run`, `just test`, `just lint`, `just ci`). It delegates to the same
+scripts/aliases below, so either form works.
+
 | Task | Command |
 |------|---------|
 | Build TUI (dev) | `./scripts/er-tui.sh build -p er-tui` or `cargo tui-build` (needs `.cargo/bin` on `PATH`; see `.envrc`) |
