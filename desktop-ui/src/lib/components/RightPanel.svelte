@@ -104,6 +104,11 @@
   // The shared `export_review` backend command renders selected sections to
   // markdown. Each tab exports only the sections it shows, so the clipboard
   // content lands ready to paste into a coding agent.
+  //
+  // NOTE: This mirrors the Rust `ExportOpts` struct in
+  // `crates/er-desktop/src/export.rs` (camelCase over IPC). There are no
+  // generated Tauri bindings, so keep these fields in sync with that struct —
+  // `ExportReviewView.svelte` keeps its own copy for the same reason.
   type ExportOpts = {
     includeComments: boolean;
     includeQuestions: boolean;
