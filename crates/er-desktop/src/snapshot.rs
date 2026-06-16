@@ -2736,7 +2736,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         })
         .unwrap_or(0);
 
-    // Flat thread list for CommentsCard / QuestionsCard
+    // Flat thread list for the Branch comments card and the Notes panel
     let threads: Vec<ThreadSnapshot> = {
         let mut result = Vec::new();
         if let Some(qs) = &ai.questions {

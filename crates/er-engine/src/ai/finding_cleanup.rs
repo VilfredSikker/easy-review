@@ -1,6 +1,6 @@
 //! Persisted removal of findings and linked validation threads.
 
-use super::comments::{ErGitHubComments, ErQuestions};
+use super::comments::{ErGitHubComments, ErNotes, ErQuestions};
 use super::experts::{expert_by_id, load_expert_reviews, ExpertReview};
 use super::professor::{load_professor_review, PROFESSOR_ID_PREFIX};
 use super::review::AiState;
@@ -16,6 +16,15 @@ pub fn find_finding_thread_root(ai: &AiState, finding_id: &str) -> Option<String
             .find(|q| q.finding_ref.as_deref() == Some(finding_id) && q.in_reply_to.is_none())
         {
             return Some(q.id.clone());
+        }
+    }
+    if let Some(ns) = ai.notes.as_ref() {
+        if let Some(n) = ns
+            .notes
+            .iter()
+            .find(|n| n.finding_ref.as_deref() == Some(finding_id) && n.in_reply_to.is_none())
+        {
+            return Some(n.id.clone());
         }
     }
     if let Some(gc) = ai.github_comments.as_ref() {
@@ -157,6 +166,39 @@ pub fn delete_threads_linked_to_finding(er_dir: &str, finding_id: &str) -> std::
                         q.finding_ref.as_deref() != Some(finding_id)
                     });
                     write_json_atomic(&q_path, &qs)?;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    let notes_path = er.join("notes.json");
+    if notes_path.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&notes_path) {
+            if let Ok(mut ns) = serde_json::from_str::<ErNotes>(&content) {
+                let roots: Vec<String> = ns
+                    .notes
+                    .iter()
+                    .filter(|n| {
+                        n.finding_ref.as_deref() == Some(finding_id) && n.in_reply_to.is_none()
+                    })
+                    .map(|n| n.id.clone())
+                    .collect();
+                if !roots.is_empty() {
+                    let root_set: std::collections::HashSet<&str> =
+                        roots.iter().map(|s| s.as_str()).collect();
+                    ns.notes.retain(|n| {
+                        if root_set.contains(n.id.as_str()) {
+                            return false;
+                        }
+                        if let Some(parent) = n.in_reply_to.as_deref() {
+                            if root_set.contains(parent) {
+                                return false;
+                            }
+                        }
+                        n.finding_ref.as_deref() != Some(finding_id)
+                    });
+                    write_json_atomic(&notes_path, &ns)?;
                     changed = true;
                 }
             }
