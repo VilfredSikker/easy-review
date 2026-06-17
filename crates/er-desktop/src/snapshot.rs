@@ -415,6 +415,10 @@ pub struct AppSnapshot {
     /// Guided tour (Guide tab). `available` drives whether the Guide tab shows.
     #[serde(default)]
     pub tour: TourSnapshot,
+    /// True when the active tab has `.er/` review sidecars (written by /er-* skills)
+    /// not yet imported into managed storage. Cheap mtime/existence check.
+    #[serde(default)]
+    pub er_import_pending: bool,
     /// Active arena runs across ALL tabs (tab-independent background runs).
     /// Lets the UI keep a run visible/controllable after switching branches.
     #[serde(default)]
@@ -1940,6 +1944,7 @@ fn build_snapshot_inner(
             app.arena_list_summaries(Some(&branch)).unwrap_or_default()
         },
         tour: build_tour_snapshot(tab),
+        er_import_pending: tab.has_pending_er_import(),
         background_arena_runs: app.background_arena_runs(),
     };
     if crate::profile_log::profile_enabled() {

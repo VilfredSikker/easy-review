@@ -1414,6 +1414,8 @@ fn main() {
             commands::bulk_review_pillar,
             commands::unbulk_review_pillar,
             commands::generate_tour,
+            commands::scan_er_imports,
+            commands::import_er_sidecars,
             commands::open_in_editor,
             commands::open_in_vscode,
             commands::open_source,

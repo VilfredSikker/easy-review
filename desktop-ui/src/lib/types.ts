@@ -127,6 +127,32 @@ export interface FilterSuggestionSnapshot {
   expr: string;
 }
 
+export type ErImportOutcome = "imported" | "conflict" | "skipped";
+
+/** One `.er/` sidecar whose import would change managed storage. */
+export interface ErImportItem {
+  name: string;
+  /** A managed copy already exists, so importing would overwrite it. */
+  managed_exists: boolean;
+  /** The `.er/` and managed copies differ in content (only when managed_exists). */
+  differs: boolean;
+  /** The `.er/` copy is at least as new as the managed copy (by mtime). */
+  er_newer: boolean;
+  /** `.er/` copy mtime, Unix-epoch seconds. */
+  er_mtime: number | null;
+  /** Managed copy mtime, Unix-epoch seconds. */
+  managed_mtime: number | null;
+}
+
+/** Result of attempting to import a single sidecar. */
+export interface ErImportItemResult {
+  name: string;
+  outcome: ErImportOutcome;
+  er_newer: boolean;
+  er_mtime: number | null;
+  managed_mtime: number | null;
+}
+
 export interface ExpertInfo {
   id: string;
   label: string;
@@ -429,6 +455,8 @@ export interface AppSnapshot {
   arena_runs?: import("./types/arena").ArenaRunSummary[];
   /** Guided tour for the active tab. `available` drives the Guide tab. */
   tour?: TourSnapshot;
+  /** True when the active tab has `.er/` sidecars not yet imported into managed storage. */
+  er_import_pending?: boolean;
   /** Active arena runs across all tabs (tab-independent background runs). */
   background_arena_runs?: import("./types/arena").ArenaRunSummary[];
 }

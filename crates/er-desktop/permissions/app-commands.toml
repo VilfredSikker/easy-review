@@ -20,6 +20,8 @@ commands.allow = [
   "bulk_review_pillar",
   "unbulk_review_pillar",
   "generate_tour",
+  "scan_er_imports",
+  "import_er_sidecars",
   "open_in_editor",
   "open_in_vscode",
   "open_source",

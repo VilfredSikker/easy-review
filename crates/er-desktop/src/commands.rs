@@ -3071,6 +3071,37 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
     Ok(snap_from(&app, &state))
 }
 
+/// Scan the active tab's `.er/` directory for review sidecars (written by
+/// `/er-*` skills) that are newer than or absent from managed storage. Read-only.
+#[tauri::command]
+pub async fn scan_er_imports(
+    state: State<'_, AppState>,
+) -> Result<Vec<er_engine::app::ErImportItem>, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(app.tab().scan_er_imports())
+    })
+    .await
+}
+
+/// Import the active tab's pending `.er/` sidecars into managed storage. With
+/// `overwrite=false`, sidecars whose managed copy differs come back as
+/// `ErImportOutcome::Conflict` (not overwritten); with `overwrite=true` they are
+/// overwritten. The mtime poll reloads the new managed sidecars automatically.
+#[tauri::command]
+pub async fn import_er_sidecars(
+    overwrite: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<er_engine::app::ErImportItemResult>, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(app.tab().import_er_sidecars(overwrite))
+    })
+    .await
+}
+
 pub use er_engine::ai::{ExpertInfo, ReviewerInfo};
 
 #[tauri::command]

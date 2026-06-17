@@ -549,6 +549,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
         hints.insert(0, Hint::new("Tab", " resume draft "));
     }
 
+    // Surface the import key whenever a skill has left .er/ output waiting to move into storage
+    if tab.has_pending_er_import() {
+        hints.push(Hint::new("I", " import .er/ "));
+    }
+
     if tab.panel.is_some() {
         // Context: panel open — show panel controls
         if h.navigation {
@@ -795,6 +800,21 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 ConfirmAction::ApprovePR => "Approve this PR on GitHub? (y/n)".to_string(),
                 ConfirmAction::PushComments => {
                     "Push as: (r) Review  (i) Individual  (Esc) Cancel".to_string()
+                }
+                ConfirmAction::ImportErSidecars {
+                    total,
+                    conflicts,
+                    storage_newer,
+                } => {
+                    let newer = if *storage_newer {
+                        "storage copy is newer — would be overwritten"
+                    } else {
+                        ".er/ copy is newer"
+                    };
+                    format!(
+                        "Import {} .er/ file(s), overwriting {} differing in storage ({})? (y/n)",
+                        total, conflicts, newer
+                    )
                 }
             };
             let spans = vec![

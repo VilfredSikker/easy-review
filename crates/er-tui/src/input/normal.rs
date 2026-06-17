@@ -189,6 +189,39 @@ pub fn handle_normal_input(
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupReviews { count });
             return Ok(());
         }
+        // Import skill-written .er/ review sidecars into managed storage
+        KeyCode::Char('I') => {
+            if app.tab().is_remote() {
+                return Ok(());
+            }
+            if !app.tab().has_pending_er_import() {
+                app.notify("No local .er/ review files to import");
+                return Ok(());
+            }
+            let items = app.tab().scan_er_imports();
+            let conflicts: Vec<_> = items.iter().filter(|i| i.managed_exists && i.differs).collect();
+            if conflicts.is_empty() {
+                let results = app.tab().import_er_sidecars(false);
+                let imported = results
+                    .iter()
+                    .filter(|r| r.outcome == er_engine::app::ErImportOutcome::Imported)
+                    .count();
+                if imported == 0 {
+                    app.notify("Local .er/ files already in sync");
+                } else {
+                    app.tab_mut().reload_ai_state();
+                    app.notify(&format!("Imported {} review file(s) to storage", imported));
+                }
+            } else {
+                let storage_newer = conflicts.iter().any(|i| !i.er_newer);
+                app.input_mode = InputMode::Confirm(ConfirmAction::ImportErSidecars {
+                    total: items.len(),
+                    conflicts: conflicts.len(),
+                    storage_newer,
+                });
+            }
+            return Ok(());
+        }
         KeyCode::Char('x') => {
             app.close_tab();
             return Ok(());

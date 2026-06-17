@@ -17,9 +17,10 @@
   import ReviewerPickerList from "$lib/components/ReviewerPickerList.svelte";
   import { openAiReviewFilesModal } from "$lib/components/AiReviewFilesModal.svelte";
   import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
+  import ErImportConflictModal from "$lib/components/ErImportConflictModal.svelte";
   import { effortLabel, effortLevelsForModel, modelSupportsEffort } from "$lib/arena/effort";
   import { reviewScopeFromMode, scopeDescriptionFromMode } from "$lib/reviewScope";
-  import type { AiProviderInfo } from "$lib/types";
+  import type { AiProviderInfo, ErImportItemResult } from "$lib/types";
 
   type SubView = "main" | "providers" | "models" | "reviewers";
 
@@ -31,6 +32,8 @@
   let selectedReviewers = $state<Set<string>>(new Set());
   let reviewerHighlight = $state(0);
   let reviewerPickerRef = $state<{ moveHighlight: (d: number) => void; toggleHighlighted: () => void } | null>(null);
+  let erImportConflicts = $state<ErImportItemResult[]>([]);
+  let erImportModalOpen = $state(false);
 
   interface AiAction {
     id: string;
@@ -104,6 +107,50 @@
     );
   }
 
+  async function runErImport() {
+    try {
+      const results = await invoke<ErImportItemResult[]>("import_er_sidecars", { overwrite: false });
+      const conflicts = results.filter((r) => r.outcome === "conflict");
+      if (conflicts.length > 0) {
+        // Non-conflicting files were already imported; ask before overwriting the rest.
+        erImportConflicts = conflicts;
+        erImportModalOpen = true;
+        return;
+      }
+      const imported = results.filter((r) => r.outcome === "imported").length;
+      await app.load();
+      app.showToast(
+        "success",
+        imported > 0
+          ? `Imported ${imported} review file${imported === 1 ? "" : "s"} into shared storage`
+          : "Review files already up to date",
+      );
+    } catch (e) {
+      app.showToast("error", `import_er_sidecars: ${e}`);
+    }
+  }
+
+  async function confirmErImportOverwrite() {
+    try {
+      const results = await invoke<ErImportItemResult[]>("import_er_sidecars", { overwrite: true });
+      const imported = results.filter((r) => r.outcome === "imported").length;
+      erImportModalOpen = false;
+      erImportConflicts = [];
+      await app.load();
+      app.showToast(
+        "success",
+        `Imported ${imported} review file${imported === 1 ? "" : "s"} into shared storage`,
+      );
+    } catch (e) {
+      app.showToast("error", `import_er_sidecars: ${e}`);
+    }
+  }
+
+  function closeErImportModal() {
+    erImportModalOpen = false;
+    erImportConflicts = [];
+  }
+
   async function openProviderPicker() {
     try {
       providers = await invoke<AiProviderInfo[]>("list_ai_providers");
@@ -166,6 +213,7 @@
 
   const hasReviewJson = $derived(app.snapshot?.ai?.has_review_json ?? false);
   const tourAvailable = $derived(app.snapshot?.tour?.available ?? false);
+  const erImportPending = $derived(app.snapshot?.er_import_pending ?? false);
   const eligibleCommentCount = $derived(app.snapshot?.ai?.eligible_comment_count ?? 0);
   const validateAvailable = $derived(hasReviewJson || eligibleCommentCount > 0);
 
@@ -237,6 +285,16 @@
         dismissAndRun(() => void app.cmd("generate_tour"));
       },
     },
+    ...(erImportPending
+      ? [{
+          id: "import-er-sidecars",
+          label: "Import local review files",
+          description: "Copy .er/ sidecars written by /er-* skills into shared storage",
+          run: () => {
+            dismissAndRun(() => void runErImport());
+          },
+        }]
+      : []),
     {
       id: "validate-current",
       label: "Validate / re-anchor",
@@ -480,3 +538,10 @@
     </div>
   {/if}
 </ModalShell>
+
+<ErImportConflictModal
+  open={erImportModalOpen}
+  conflicts={erImportConflicts}
+  onConfirm={confirmErImportOverwrite}
+  onClose={closeErImportModal}
+/>

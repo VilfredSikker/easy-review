@@ -1,6 +1,7 @@
 pub mod arena;
 pub mod background;
 pub(super) mod comments;
+pub mod er_import;
 pub mod github_sync;
 pub(super) mod navigation;
 pub mod remote_diff_sync;
@@ -287,6 +288,13 @@ pub enum ConfirmAction {
     ApprovePR,
     /// Choose how to push comments: as review or individually
     PushComments,
+    /// Confirm overwriting differing managed sidecars when importing local `.er/` files
+    ImportErSidecars {
+        total: usize,
+        conflicts: usize,
+        /// At least one conflicting managed copy is newer than its `.er/` source.
+        storage_newer: bool,
+    },
 }
 
 /// Which pane has focus in split diff view

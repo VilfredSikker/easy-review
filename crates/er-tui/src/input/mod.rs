@@ -619,6 +619,19 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 if let Some(prompt) = build_agent_questions_prompt(app) {
                     app.spawn_agent_prompt("questions", &prompt)?;
                 }
+            } else if let InputMode::Confirm(ConfirmAction::ImportErSidecars { .. }) = action {
+                app.input_mode = InputMode::Normal;
+                let results = app.tab().import_er_sidecars(true);
+                let imported = results
+                    .iter()
+                    .filter(|r| r.outcome == er_engine::app::ErImportOutcome::Imported)
+                    .count();
+                if imported == 0 {
+                    app.notify("Local .er/ files already in sync");
+                } else {
+                    app.tab_mut().reload_ai_state();
+                    app.notify(&format!("Imported {} review file(s) to storage", imported));
+                }
             } else if let InputMode::Confirm(ConfirmAction::ApprovePR) = action {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
