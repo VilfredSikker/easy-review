@@ -9590,6 +9590,59 @@ mod tests {
         std::env::remove_var("ER_STORAGE_ROOT");
     }
 
+    #[test]
+    fn er_dir_routes_to_active_view_bucket_or_shared_pr_bucket() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "feat/buckets".to_string();
+        tab.local_branch_view = Some("feat/buckets".to_string());
+
+        for (mode, bucket) in [
+            (DiffMode::Branch, "branch"),
+            (DiffMode::Unstaged, "unstaged"),
+            (DiffMode::Staged, "staged"),
+            (DiffMode::History, "history"),
+        ] {
+            tab.mode = mode;
+            tab.pr_number = None;
+            tab.remote_repo = None;
+            tab.apply_managed_root();
+
+            let expected = crate::storage::view_bucket_dir(
+                &crate::storage::slug_repo(&tab.repo_root),
+                &crate::storage::slug_branch("feat/buckets"),
+                bucket,
+            )
+            .to_string_lossy()
+            .into_owned();
+            assert_eq!(
+                tab.er_dir(),
+                expected,
+                "{mode:?} should use {bucket} bucket"
+            );
+        }
+
+        tab.pr_number = Some(99);
+        tab.remote_repo = Some("owner/repo".to_string());
+        for mode in [DiffMode::Branch, DiffMode::PrDiff] {
+            tab.mode = mode;
+            tab.apply_managed_root();
+            let expected =
+                crate::storage::pr_bucket_dir(&crate::storage::slug_branch("owner/repo"), 99)
+                    .to_string_lossy()
+                    .into_owned();
+            assert_eq!(tab.er_dir(), expected, "{mode:?} should use PR bucket");
+        }
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
     /// Local PR tabs in Branch mode must share the PR bucket (not the branch view-bucket).
     #[test]
     fn pr_number_branch_mode_routes_to_pr_bucket() {
