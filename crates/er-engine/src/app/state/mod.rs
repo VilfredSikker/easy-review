@@ -2829,6 +2829,10 @@ impl TabState {
         self.layers.show_questions = !self.layers.show_questions;
     }
 
+    pub fn toggle_layer_notes(&mut self) {
+        self.layers.show_notes = !self.layers.show_notes;
+    }
+
     pub fn toggle_layer_comments(&mut self) {
         self.layers.show_github_comments = !self.layers.show_github_comments;
     }
@@ -4972,7 +4976,7 @@ impl App {
                 enabled: false,
             },
             HubItem {
-                label: "n / N".into(),
+                label: "Ctrl+↓ / ↑".into(),
                 hint: "".into(),
                 description: "Next / previous hunk".into(),
                 action: HubAction::Noop,
@@ -5072,6 +5076,14 @@ impl App {
                 label: "q".into(),
                 hint: "".into(),
                 description: "Add review question".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "n".into(),
+                hint: "".into(),
+                description: "Add local note".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -5178,6 +5190,14 @@ impl App {
                 label: "Q".into(),
                 hint: "".into(),
                 description: "Toggle questions".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "N".into(),
+                hint: "".into(),
+                description: "Toggle notes".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -7390,6 +7410,16 @@ mod tests {
     }
 
     #[test]
+    fn toggle_layer_notes_flips_show_notes() {
+        let mut tab = make_test_tab(vec![]);
+        assert!(tab.layers.show_notes);
+        tab.toggle_layer_notes();
+        assert!(!tab.layers.show_notes);
+        tab.toggle_layer_notes();
+        assert!(tab.layers.show_notes);
+    }
+
+    #[test]
     fn toggle_layer_comments_flips_show_github_comments() {
         let mut tab = make_test_tab(vec![]);
         assert!(tab.layers.show_github_comments);
@@ -8269,6 +8299,8 @@ mod tests {
         app.start_comment(CommentType::Question);
         assert!(app.can_toggle_comment_type());
         app.toggle_comment_type();
+        assert_eq!(app.tab().comment_type, CommentType::Note);
+        app.toggle_comment_type();
         assert_eq!(app.tab().comment_type, CommentType::GitHubComment);
         app.toggle_comment_type();
         assert_eq!(app.tab().comment_type, CommentType::Question);
@@ -8295,6 +8327,22 @@ mod tests {
         assert!(!app.can_toggle_comment_type());
         app.toggle_comment_type();
         assert_eq!(app.tab().comment_type, CommentType::Question);
+    }
+
+    #[test]
+    fn start_comment_note_sets_note_draft() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::Note);
+        assert_eq!(app.tab().comment_type, CommentType::Note);
+        assert!(matches!(app.input_mode, InputMode::Comment));
+        assert_eq!(app.tab().comment_file, "src/main.rs");
     }
 
     #[test]

@@ -115,7 +115,8 @@ fn build_split_rows(hunk: &er_engine::git::DiffHunk) -> Vec<TuiSplitRow<'_>> {
 /// Whether a comment should render given layer visibility toggles.
 fn comment_layer_visible(tab: &TabState, comment: &CommentRef<'_>) -> bool {
     let visible = match comment {
-        CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
+        CommentRef::Question(_) => tab.layers.show_questions,
+        CommentRef::Note(_) => tab.layers.show_notes,
         CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
     };
     visible && !(tab.layers.hide_resolved && comment.is_resolved())
@@ -376,7 +377,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         let unanchored = tab.ai.comments_for_file_unanchored(&file.path);
         for comment in &unanchored {
             let visible = match comment {
-                CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
+                CommentRef::Question(_) => tab.layers.show_questions,
+                CommentRef::Note(_) => tab.layers.show_notes,
                 CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
                     tab.layers.show_github_comments
                 }
@@ -772,6 +774,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     }
                 }
             }
+            if let Some(ns) = &tab.ai.notes {
+                for n in &ns.notes {
+                    if n.file == file.path
+                        && n.anchor_status == "lost"
+                        && n.hunk_index.is_some_and(|hi| hi >= num_hunks)
+                        && tab.layers.show_notes
+                        && !(tab.layers.hide_resolved && n.resolved)
+                    {
+                        v.push(CommentRef::Note(n));
+                    }
+                }
+            }
             if let Some(gc) = &tab.ai.github_comments {
                 for c in &gc.comments {
                     if c.file == file.path
@@ -1049,7 +1063,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         let unanchored = tab.ai.comments_for_file_unanchored(&file.path);
         for comment in &unanchored {
             let visible = match comment {
-                CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
+                CommentRef::Question(_) => tab.layers.show_questions,
+                CommentRef::Note(_) => tab.layers.show_notes,
                 CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => {
                     tab.layers.show_github_comments
                 }

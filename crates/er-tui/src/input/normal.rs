@@ -614,6 +614,13 @@ pub fn handle_normal_input(
                 }
             }
         }
+        // Hunk navigation (Ctrl+↓ / Ctrl+↑) — must precede the plain arrow arms
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().next_hunk();
+        }
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tab_mut().prev_hunk();
+        }
         KeyCode::Down => {
             app.tab_mut().next_line();
         }
@@ -621,9 +628,16 @@ pub fn handle_normal_input(
             app.tab_mut().prev_line();
         }
 
-        // Hunk navigation
-        KeyCode::Char('n') => app.tab_mut().next_hunk(),
-        KeyCode::Char('N') => app.tab_mut().prev_hunk(),
+        // Add a local note on the current line/hunk (n)
+        KeyCode::Char('n') => {
+            app.start_comment(er_engine::ai::CommentType::Note);
+        }
+        // Toggle note layer visibility (N)
+        KeyCode::Char('N') => {
+            app.tab_mut().toggle_layer_notes();
+            let on = app.tab().layers.show_notes;
+            app.notify(if on { "Notes: visible" } else { "Notes: hidden" });
+        }
 
         // Horizontal scroll (for long lines)
         KeyCode::Char('l') | KeyCode::Right => {

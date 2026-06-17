@@ -566,6 +566,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         if h.verbose {
             if tab.mode != DiffMode::Staged {
                 hints.push(Hint::new("q", " question "));
+                hints.push(Hint::new("n", " note "));
                 hints.push(Hint::new("c", " comment "));
             }
             hints.push(Hint::new("f", " filter "));
@@ -577,7 +578,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         // Default normal mode — essential navigation only
         if h.navigation {
             hints.push(Hint::new("j/k", " nav "));
-            hints.push(Hint::new("n/N", " hunks "));
+            hints.push(Hint::new("^↑/↓", " hunks "));
             hints.push(Hint::new("+/-", " context "));
             hints.push(Hint::new("␣", " review "));
             hints.push(Hint::new("/", " search "));
@@ -619,6 +620,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         if h.verbose {
             if tab.mode != DiffMode::Staged {
                 hints.push(Hint::new("q", " question "));
+                hints.push(Hint::new("n", " note "));
                 hints.push(Hint::new("c", " comment "));
             }
             hints.push(Hint::new("e", " edit "));
@@ -633,6 +635,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
             // Show comment navigation hints when current file has comments
             if let Some(file) = tab.files.get(tab.selected_file) {
                 let has_comments = tab.ai.file_question_count(&file.path) > 0
+                    || tab.ai.file_note_count(&file.path) > 0
                     || tab.ai.file_github_comment_count(&file.path) > 0;
                 if has_comments {
                     hints.push(Hint::new("J/K", " comments "));
@@ -790,12 +793,15 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         InputMode::Comment => {
             let is_question = tab.comment_type == er_engine::ai::CommentType::Question;
+            let is_note = tab.comment_type == er_engine::ai::CommentType::Note;
+            // Questions and notes share the yellow accent; GitHub comments are cyan.
+            let yellow_kind = is_question || is_note;
             let is_reply = tab.comment_reply_to.is_some();
             let is_finding_reply = tab.comment_finding_ref.is_some();
             let (label, accent) = if is_reply {
                 (
                     "reply",
-                    if is_question {
+                    if yellow_kind {
                         styles::YELLOW()
                     } else {
                         styles::CYAN()
@@ -803,6 +809,8 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 )
             } else if is_finding_reply {
                 ("response", styles::CYAN())
+            } else if is_note {
+                ("note", styles::YELLOW())
             } else if is_question {
                 ("question", styles::YELLOW())
             } else {

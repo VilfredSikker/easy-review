@@ -874,12 +874,11 @@ impl App {
             return;
         }
         let tab = self.tab_mut();
+        // Cycle through all three local draft kinds: question → note → comment.
         tab.comment_type = match tab.comment_type {
-            CommentType::Question => CommentType::GitHubComment,
+            CommentType::Question => CommentType::Note,
+            CommentType::Note => CommentType::GitHubComment,
             CommentType::GitHubComment => CommentType::Question,
-            // Notes are a desktop-composer concept; the TUI question/comment
-            // toggle leaves them unchanged.
-            CommentType::Note => CommentType::Note,
         };
     }
 
@@ -1766,7 +1765,7 @@ impl App {
     /// What gets copied depends on navigation state:
     /// - Selection active (shift+arrow): selected lines only
     /// - Line-level nav (arrow keys): current line only
-    /// - Hunk-level nav (n/N keys): full hunk
+    /// - Hunk-level nav (Ctrl+↑/↓ keys): full hunk
     pub fn copy_context(&mut self) -> Result<()> {
         let tab = self.tab();
         let file = match tab.selected_diff_file() {
