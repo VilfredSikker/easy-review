@@ -636,7 +636,11 @@ pub fn handle_normal_input(
         KeyCode::Char('N') => {
             app.tab_mut().toggle_layer_notes();
             let on = app.tab().layers.show_notes;
-            app.notify(if on { "Notes: visible" } else { "Notes: hidden" });
+            app.notify(if on {
+                "Notes: visible"
+            } else {
+                "Notes: hidden"
+            });
         }
 
         // Horizontal scroll (for long lines)
