@@ -230,6 +230,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         return;
     }
 
+    // Tour mode: render the pillar-grouped walkthrough diff
+    if tab.mode == DiffMode::Tour {
+        render_tour_diff(f, area, app, hl);
+        return;
+    }
+
     // Check if a watched file is selected
     if let Some(watched) = tab.selected_watched_file() {
         render_watched(f, area, app, &watched.path, watched.size);
@@ -648,7 +654,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         DiffMode::History
                         | DiffMode::Conflicts
                         | DiffMode::Hidden
-                        | DiffMode::PrDiff => vec![],
+                        | DiffMode::PrDiff
+                        | DiffMode::Tour => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -698,7 +705,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::PrDiff => {
+                DiffMode::History
+                | DiffMode::Conflicts
+                | DiffMode::Hidden
+                | DiffMode::PrDiff
+                | DiffMode::Tour => {
                     vec![]
                 } // AI findings not shown in these modes
             };
@@ -1490,7 +1501,8 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         DiffMode::History
                         | DiffMode::Conflicts
                         | DiffMode::Hidden
-                        | DiffMode::PrDiff => vec![],
+                        | DiffMode::PrDiff
+                        | DiffMode::Tour => vec![],
                     };
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -1549,7 +1561,11 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                     hunk_idx,
                     total_hunks,
                 ),
-                DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::PrDiff => {
+                DiffMode::History
+                | DiffMode::Conflicts
+                | DiffMode::Hidden
+                | DiffMode::PrDiff
+                | DiffMode::Tour => {
                     vec![]
                 }
             };
@@ -2044,6 +2060,332 @@ fn render_history_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighte
         )));
         f.render_widget(indicator, indicator_area);
     }
+}
+
+/// Render the Tour walkthrough diff: the branch diff reordered/grouped by
+/// pillar. Files are concatenated like History mode; the current pillar's title
+/// and description are pinned at the top of the viewport as a sticky header.
+fn render_tour_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
+    let tab = app.tab();
+    let tour = match tab.tour.as_ref() {
+        Some(t) => t,
+        None => {
+            render_history_empty(f, area, "No tour available — run /er-tour to generate one");
+            return;
+        }
+    };
+    if tour.files.is_empty() {
+        render_history_empty(f, area, "Tour has no files in this diff");
+        return;
+    }
+
+    let current_pillar = tour.pillars.get(tour.selected_pillar);
+    let pillar_title = current_pillar.map(|p| p.title.clone()).unwrap_or_default();
+    let pillar_desc = current_pillar
+        .map(|p| p.description.clone())
+        .unwrap_or_default();
+
+    // Sticky pillar header: title row + wrapped description (capped height).
+    let desc_width = (area.width as usize).saturating_sub(2).max(10);
+    let desc_lines = word_wrap(&pillar_desc, desc_width);
+    let max_desc_rows = 4usize;
+    let shown_desc = desc_lines.len().min(max_desc_rows);
+    // header rows = title (1) + desc rows + separator (1)
+    let header_rows = 1 + shown_desc + 1;
+
+    let title = format!(
+        " TOUR · pillar {}/{} ",
+        tour.selected_pillar + 1,
+        tour.pillars.len().max(1)
+    );
+
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            ratatui::style::Style::default().fg(styles::BRIGHT()),
+        ))
+        .title_alignment(ratatui::layout::Alignment::Left)
+        .borders(Borders::NONE)
+        .style(ratatui::style::Style::default().bg(styles::BG()))
+        .padding(Padding::new(0, 1, 0, 0));
+
+    let inner_height = block.inner(area).height as usize;
+    // Reserve the top rows for the sticky pillar header.
+    let diff_height = inner_height.saturating_sub(header_rows);
+    let scroll_y = tour.diff_scroll as usize;
+    let render_end = scroll_y + diff_height;
+
+    let mut visible_lines: Vec<Line> = Vec::with_capacity(diff_height);
+    let mut cursor: usize = 0;
+
+    macro_rules! emit {
+        ($line:expr $(,)?) => {{
+            if cursor >= scroll_y && cursor < render_end {
+                visible_lines.push($line);
+            }
+            cursor += 1;
+        }};
+    }
+
+    for (file_idx, file) in tour.files.iter().enumerate() {
+        let is_current_file = file_idx == tour.selected_file;
+        let file_line_count: usize =
+            2 + file.hunks.iter().map(|h| 2 + h.lines.len()).sum::<usize>();
+        if cursor + file_line_count <= scroll_y || cursor >= render_end {
+            cursor += file_line_count;
+            continue;
+        }
+
+        let file_header_bg = if is_current_file {
+            styles::HUNK_BG()
+        } else {
+            styles::BG()
+        };
+        let reviewed = tab.reviewed.contains_key(&file.path);
+        let mut header_spans = vec![
+            Span::styled(
+                if is_current_file { " ▶ " } else { "   " },
+                ratatui::style::Style::default()
+                    .fg(if is_current_file {
+                        styles::CYAN()
+                    } else {
+                        styles::DIM()
+                    })
+                    .bg(file_header_bg),
+            ),
+            Span::styled(
+                format!("{} ", file.status.symbol()),
+                match &file.status {
+                    er_engine::git::FileStatus::Added => ratatui::style::Style::default()
+                        .fg(styles::GREEN())
+                        .bg(file_header_bg),
+                    er_engine::git::FileStatus::Deleted => ratatui::style::Style::default()
+                        .fg(styles::RED())
+                        .bg(file_header_bg),
+                    _ => ratatui::style::Style::default()
+                        .fg(styles::YELLOW())
+                        .bg(file_header_bg),
+                },
+            ),
+            Span::styled(
+                &file.path,
+                ratatui::style::Style::default()
+                    .fg(if is_current_file {
+                        styles::BRIGHT()
+                    } else {
+                        styles::TEXT()
+                    })
+                    .bg(file_header_bg),
+            ),
+            Span::styled(
+                format!("  +{} -{}", file.adds, file.dels),
+                ratatui::style::Style::default()
+                    .fg(styles::DIM())
+                    .bg(file_header_bg),
+            ),
+        ];
+        if reviewed {
+            header_spans.push(Span::styled(
+                "  ✓ reviewed",
+                ratatui::style::Style::default()
+                    .fg(styles::GREEN())
+                    .bg(file_header_bg),
+            ));
+        }
+        let header_len: usize = header_spans.iter().map(|s| s.content.chars().count()).sum();
+        let remaining = (area.width as usize).saturating_sub(header_len);
+        header_spans.push(Span::styled(
+            " ".repeat(remaining),
+            ratatui::style::Style::default().bg(file_header_bg),
+        ));
+        emit!(Line::from(header_spans));
+        emit!(Line::from(""));
+
+        for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+            let hunk_line_count = 2 + hunk.lines.len();
+            if cursor + hunk_line_count <= scroll_y || cursor >= render_end {
+                cursor += hunk_line_count;
+                continue;
+            }
+            let is_current_hunk = is_current_file && hunk_idx == tour.current_hunk;
+            let marker = if is_current_hunk { "▶" } else { " " };
+            emit!(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", marker),
+                    if is_current_hunk {
+                        ratatui::style::Style::default()
+                            .fg(styles::CYAN())
+                            .bg(styles::HUNK_BG())
+                    } else {
+                        ratatui::style::Style::default()
+                            .fg(styles::DIM())
+                            .bg(styles::HUNK_BG())
+                    },
+                ),
+                Span::styled(&hunk.header, styles::hunk_header_style()),
+            ])
+            .style(styles::hunk_header_style()));
+
+            for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
+                if cursor < scroll_y || cursor >= render_end {
+                    cursor += 1;
+                    continue;
+                }
+                if let LineType::Fold(hidden) = diff_line.line_type {
+                    let fold_text = format!(" ··· {} lines ···", hidden);
+                    let fold_style = ratatui::style::Style::default().fg(styles::MUTED());
+                    emit!(Line::from(vec![Span::styled(fold_text, fold_style)]));
+                    continue;
+                }
+                let is_selected_line = is_current_hunk && tour.current_line == Some(line_idx);
+                let old_num = diff_line
+                    .old_num
+                    .map(|n| format!("{:>4}", n))
+                    .unwrap_or_else(|| "    ".to_string());
+                let new_num = diff_line
+                    .new_num
+                    .map(|n| format!("{:>4}", n))
+                    .unwrap_or_else(|| "    ".to_string());
+                let (prefix, base_style) = if is_selected_line {
+                    match diff_line.line_type {
+                        LineType::Add => ("+", styles::line_cursor_add()),
+                        LineType::Delete => ("-", styles::line_cursor_del()),
+                        LineType::Context => (" ", styles::line_cursor()),
+                        LineType::Fold(_) => unreachable!(),
+                    }
+                } else {
+                    match diff_line.line_type {
+                        LineType::Add => ("+", styles::add_style()),
+                        LineType::Delete => ("-", styles::del_style()),
+                        LineType::Context => (" ", styles::default_style()),
+                        LineType::Fold(_) => unreachable!(),
+                    }
+                };
+                let gutter_style = if is_selected_line {
+                    ratatui::style::Style::default()
+                        .fg(styles::BRIGHT())
+                        .bg(styles::LINE_CURSOR_BG())
+                } else {
+                    match diff_line.line_type {
+                        LineType::Add => ratatui::style::Style::default()
+                            .fg(styles::DIM())
+                            .bg(styles::ADD_BG()),
+                        LineType::Delete => ratatui::style::Style::default()
+                            .fg(styles::DIM())
+                            .bg(styles::DEL_BG()),
+                        LineType::Context => ratatui::style::Style::default().fg(styles::DIM()),
+                        LineType::Fold(_) => unreachable!(),
+                    }
+                };
+                let mut spans = vec![
+                    Span::styled(format!("{} {} │", old_num, new_num), gutter_style),
+                    Span::styled(prefix, base_style),
+                ];
+                if diff_line.content.is_empty() {
+                    spans.push(Span::styled("", base_style));
+                } else {
+                    let content = expand_tabs(&diff_line.content, app.config.display.tab_width);
+                    let highlighted: Vec<Span<'static>> = hl
+                        .highlight_line(&content, &file.path, base_style)
+                        .into_iter()
+                        .map(|s| Span::styled(s.content.into_owned(), s.style))
+                        .collect();
+                    spans.extend(highlighted);
+                }
+                emit!(Line::from(spans).style(base_style));
+            }
+
+            let gap = if hunk_idx + 1 < file.hunks.len() {
+                let next = &file.hunks[hunk_idx + 1];
+                next.old_start
+                    .saturating_sub(hunk.old_start + hunk.old_count)
+            } else {
+                0
+            };
+            if gap > 0 {
+                emit!(Line::from(Span::styled(
+                    format!("  ··· {} lines hidden ···", gap),
+                    ratatui::style::Style::default().fg(styles::MUTED()),
+                )));
+            } else {
+                emit!(Line::from(""));
+            }
+        }
+    }
+
+    let bg_line = Line::from("").style(ratatui::style::Style::default().bg(styles::BG()));
+    while visible_lines.len() < diff_height {
+        visible_lines.push(bg_line.clone());
+    }
+
+    // Diff area sits below the sticky pillar header.
+    let diff_area = Rect {
+        x: area.x,
+        y: area.y + header_rows as u16,
+        width: area.width,
+        height: area.height.saturating_sub(header_rows as u16),
+    };
+    let paragraph = Paragraph::new(visible_lines)
+        .block(
+            Block::default()
+                .borders(Borders::NONE)
+                .style(ratatui::style::Style::default().bg(styles::BG()))
+                .padding(Padding::new(0, 1, 0, 0)),
+        )
+        .scroll((0, tour.h_scroll));
+    f.render_widget(Clear, area);
+    f.render_widget(paragraph, diff_area);
+
+    // Sticky pillar header overlay (title + description) pinned at the very top.
+    let header_bg = styles::PANEL();
+    let mut header_lines: Vec<Line> = Vec::with_capacity(header_rows);
+    header_lines.push(Line::from(Span::styled(
+        format!(" {} ", pillar_title),
+        ratatui::style::Style::default()
+            .fg(styles::BRIGHT())
+            .bg(header_bg),
+    )));
+    for d in desc_lines.iter().take(max_desc_rows) {
+        header_lines.push(Line::from(Span::styled(
+            format!(" {}", d),
+            ratatui::style::Style::default()
+                .fg(styles::TEXT())
+                .bg(header_bg),
+        )));
+    }
+    header_lines.push(Line::from(Span::styled(
+        "─".repeat(area.width as usize),
+        ratatui::style::Style::default().fg(styles::BORDER()),
+    )));
+    let header_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: header_rows as u16,
+    };
+    f.render_widget(
+        Paragraph::new(header_lines).style(ratatui::style::Style::default().bg(header_bg)),
+        header_area,
+    );
+
+    // File indicator overlay in the top-right corner.
+    let indicator_text = format!("File {}/{}", tour.selected_file + 1, tour.files.len());
+    let indicator_width = indicator_text.len() + 3;
+    let indicator_area = Rect {
+        x: area.x + area.width.saturating_sub(indicator_width as u16 + 1),
+        y: area.y,
+        width: indicator_width as u16,
+        height: 1,
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            indicator_text,
+            ratatui::style::Style::default()
+                .fg(styles::MUTED())
+                .bg(styles::PANEL()),
+        ))),
+        indicator_area,
+    );
 }
 
 /// Render empty state for history mode

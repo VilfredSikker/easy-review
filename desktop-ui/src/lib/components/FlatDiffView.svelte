@@ -20,6 +20,7 @@
   import ThreadRow from "./diff-rows/ThreadRow.svelte";
   import FindingRow from "./diff-rows/FindingRow.svelte";
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
+  import PillarRail from "./diff-rows/PillarRail.svelte";
   import ReferenceRuler from "./ReferenceRuler.svelte";
   import ReferenceUsagesPopover from "./ReferenceUsagesPopover.svelte";
   import DiffSearchBar from "./DiffSearchBar.svelte";
@@ -39,6 +40,7 @@
     getCrossFileModel,
     type CrossFileModel,
     type CrossFileFlatRow,
+    type PillarHeaderInfo,
   } from "$lib/diffRenderModel";
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { splitRows } from "$lib/splitRows";
@@ -115,8 +117,27 @@
   const files = $derived.by<FileSnapshot[]>(() => {
     const all = snapshot?.files ?? [];
     if (all.length === 0) return [];
-    const orderedPaths = flattenForNav(buildTree(all));
     const byPath = new Map(all.map((f) => [f.path, f]));
+    // Guide mode: order files by the tour's pillar sequence so each pillar's
+    // files are contiguous (its header is injected before the first one).
+    if (snapshot?.mode === "tour" && snapshot.tour?.pillars?.length) {
+      const out: FileSnapshot[] = [];
+      const seen = new Set<string>();
+      for (const p of snapshot.tour.pillars) {
+        for (const tf of p.files) {
+          const f = byPath.get(tf.path);
+          if (f && !seen.has(tf.path)) {
+            out.push(f);
+            seen.add(tf.path);
+          }
+        }
+      }
+      for (const f of all) {
+        if (!seen.has(f.path)) out.push(f);
+      }
+      return out;
+    }
+    const orderedPaths = flattenForNav(buildTree(all));
     const out: FileSnapshot[] = [];
     for (const p of orderedPaths) {
       const f = byPath.get(p);
@@ -124,9 +145,14 @@
     }
     return out;
   });
+
   const treeHidden = $derived(!snapshot?.panels.tree);
   const viewMode = $derived<DiffViewMode>(viewModeOverride ?? app.diffViewMode);
   const mode = $derived(snapshot?.mode ?? "branch");
+  /** Guide/Diff toggle is offered once a tour exists for this branch. */
+  const tourAvailable = $derived(
+    (snapshot?.features?.viewTour ?? true) && (snapshot?.tour?.available ?? false),
+  );
 
   let settingsOpen = $state(false);
 
@@ -184,6 +210,28 @@
   let overlayHeights = $state(new Map<string, number>());
   let overlaySerial = $state(0);
 
+  // Guide mode: measured rendered height of each pillar's rail (keyed by pillar
+  // id). Drives pillarPadByRowIdentity so a pillar's region is never shorter
+  // than its rail (no overlap when files are short/collapsed).
+  let railHeights = $state(new Map<string, number>());
+  function setRailHeight(pillarId: string, px: number) {
+    if ((railHeights.get(pillarId) ?? -1) === px) return;
+    const next = new Map(railHeights);
+    next.set(pillarId, px);
+    railHeights = next;
+  }
+  /** Svelte action: report a node's rendered height (ResizeObserver). */
+  function measureHeight(node: HTMLElement, onHeight: (px: number) => void) {
+    let cb = onHeight;
+    const ro = new ResizeObserver(() => cb(node.offsetHeight));
+    ro.observe(node);
+    cb(node.offsetHeight);
+    return {
+      update(next: (px: number) => void) { cb = next; },
+      destroy() { ro.disconnect(); },
+    };
+  }
+
   // Evict stale overlay entries when the model changes to prevent unbounded growth.
   $effect(() => {
     const validIds = new Set(crossFileModel.rows.map((r) => r.identity));
@@ -207,7 +255,10 @@
   }
 
   // ── Effective geometry (model + overlay) ──────────────────────────────────
-  const effectiveGeometry = $derived.by<EffectiveGeometry>(() => {
+  // baseGeometry = model row heights + measured overlay heights (threads/findings),
+  // WITHOUT the Guide pillar padding (so pillar-pad can be derived from it without
+  // feeding back into itself).
+  const baseGeometry = $derived.by<EffectiveGeometry>(() => {
     overlaySerial; // reactive on overlay changes
     const model = crossFileModel;
     if (model.rows.length === 0) {
@@ -225,6 +276,61 @@
     for (let i = 0; i < model.rows.length; i++) {
       const h = overlayHeights.get(model.rows[i].identity) ?? model.rows[i].height;
       offsets[i + 1] = offsets[i] + h;
+    }
+    return {
+      cumulativeOffsets: offsets,
+      totalHeight: offsets[model.rows.length],
+      rowCount: model.rows.length,
+    };
+  });
+
+  // Guide mode: extra bottom padding for each pillar's LAST row so the pillar's
+  // region is at least as tall as its (measured) rail — keyed by that row's
+  // identity. Derived from baseGeometry (never effectiveGeometry) to avoid a
+  // feedback loop. Empty outside tour mode.
+  const pillarPadByRowIdentity = $derived.by<Map<string, number>>(() => {
+    const pad = new Map<string, number>();
+    if (!tourActive || railHeights.size === 0) return pad;
+    const model = crossFileModel;
+    const offsets = baseGeometry.cumulativeOffsets;
+    // Pillar boundaries: first in-diff file's start row, in pillar order.
+    const bounds: { pillarId: string; startRow: number }[] = [];
+    const present = new Set(files.map((f) => f.path));
+    for (const p of snapshot?.tour?.pillars ?? []) {
+      const firstPath = p.files.map((tf) => tf.path).find((path) => present.has(path));
+      if (!firstPath) continue;
+      const startRow = model.fileStartRow.get(firstPath);
+      if (startRow === undefined) continue;
+      bounds.push({ pillarId: p.id, startRow });
+    }
+    bounds.sort((a, b) => a.startRow - b.startRow);
+    for (let i = 0; i < bounds.length; i++) {
+      const startRow = bounds[i].startRow;
+      const endRow = i + 1 < bounds.length ? bounds[i + 1].startRow : model.rows.length; // exclusive
+      if (endRow <= startRow) continue;
+      const diffSpanPx = (offsets[endRow] ?? 0) - (offsets[startRow] ?? 0);
+      const railPx = railHeights.get(bounds[i].pillarId) ?? 0;
+      const extra = Math.max(0, railPx - diffSpanPx);
+      if (extra > 0) {
+        const lastRow = model.rows[endRow - 1];
+        if (lastRow) pad.set(lastRow.identity, extra);
+      }
+    }
+    return pad;
+  });
+
+  // effectiveGeometry = baseGeometry + Guide pillar padding. Everything
+  // downstream (virtual window, pillarSpans, scroll mapping) uses this.
+  const effectiveGeometry = $derived.by<EffectiveGeometry>(() => {
+    const base = baseGeometry;
+    const pad = pillarPadByRowIdentity;
+    if (pad.size === 0) return base;
+    const model = crossFileModel;
+    const offsets = new Array<number>(model.rows.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < model.rows.length; i++) {
+      const baseH = base.cumulativeOffsets[i + 1] - base.cumulativeOffsets[i];
+      offsets[i + 1] = offsets[i] + baseH + (pad.get(model.rows[i].identity) ?? 0);
     }
     return {
       cumulativeOffsets: offsets,
@@ -333,6 +439,86 @@
   const stickyHeaderClicksOverlay = $derived(
     !stickyHeaderHidden && visibleFileHeaderRow !== null,
   );
+
+  // ── Guide mode: Split View pillar lane ───────────────────────────────────
+  const tourActive = $derived(snapshot?.mode === "tour");
+  /** Width of the left pillar rail lane in Guide mode. */
+  const RAIL_W = 320;
+
+  /**
+   * Vertical span of each pillar's diffs (column 2), so the left rail (column 1)
+   * can position a sticky block aligned to it. Files are reordered contiguously
+   * per pillar, so each span runs from its first file's start row to the next
+   * pillar's. Uses post-collapse geometry so spans track collapsed heights.
+   */
+  const pillarSpans = $derived.by(
+    (): { info: PillarHeaderInfo; topPx: number; heightPx: number }[] => {
+      if (!tourActive || !snapshot?.tour?.pillars?.length) return [];
+      const geom = effectiveGeometry;
+      const model = crossFileModel;
+      const present = new Set(files.map((f) => f.path));
+      const entries: { info: PillarHeaderInfo; topPx: number }[] = [];
+      for (const p of snapshot.tour.pillars) {
+        const firstPath = p.files.map((tf) => tf.path).find((path) => present.has(path));
+        if (!firstPath) continue;
+        const startRow = model.fileStartRow.get(firstPath);
+        if (startRow === undefined) continue;
+        entries.push({
+          info: {
+            pillarId: p.id,
+            title: p.title,
+            descriptionMarkdown: p.descriptionMarkdown,
+            reviewedCount: p.reviewedCount,
+            totalCount: p.totalCount,
+            foundation: p.foundation,
+          },
+          topPx: geom.cumulativeOffsets[startRow] ?? 0,
+        });
+      }
+      entries.sort((a, b) => a.topPx - b.topPx);
+      const total = geom.totalHeight;
+      return entries.map((e, i) => ({
+        info: e.info,
+        topPx: e.topPx,
+        heightPx: (i + 1 < entries.length ? entries[i + 1].topPx : total) - e.topPx,
+      }));
+    },
+  );
+
+  /** Per-pillar file rows for the rail (path + +/- + reviewed), in diff order. */
+  const pillarFileRows = $derived.by((): Map<string, FileSnapshot[]> => {
+    const m = new Map<string, FileSnapshot[]>();
+    if (!tourActive || !snapshot?.tour?.pillars?.length) return m;
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    for (const p of snapshot.tour.pillars) {
+      const list: FileSnapshot[] = [];
+      for (const tf of p.files) {
+        const f = byPath.get(tf.path);
+        if (f) list.push(f);
+      }
+      m.set(p.id, list);
+    }
+    return m;
+  });
+
+  // Guide mode: auto-collapse a file to a compact row once it's reviewed. Acts
+  // only on the false→true transition (and on already-reviewed files when Guide
+  // is first entered), so a user who manually re-expands a reviewed file isn't
+  // fought.
+  let _prevReviewedTour = new Set<string>();
+  $effect(() => {
+    if (snapshot?.mode !== "tour") {
+      _prevReviewedTour = new Set();
+      return;
+    }
+    const cur = new Set<string>();
+    for (const f of files) {
+      if (!f.reviewed) continue;
+      cur.add(f.path);
+      if (!_prevReviewedTour.has(f.path)) diffFileCollapse.collapse(f.path);
+    }
+    _prevReviewedTour = cur;
+  });
 
   // ── Selection validation ─────────────────────────────────────────────────
   let selectionContextKey: string | null = $state(null);
@@ -1438,6 +1624,27 @@
       {/if}
       <span class="mono text-xs text-fg-3">{files.length} {files.length === 1 ? "file" : "files"}</span>
       <div class="ml-auto flex items-center gap-1">
+        {#if tourAvailable}
+          <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 mr-1 shrink-0">
+            <button
+              role="tab"
+              aria-selected={mode !== "tour"}
+              onclick={() => { if (mode === "tour") void app.cmd("set_mode", { mode: "branch" }); }}
+              class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {mode !== 'tour' ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+            >
+              Diff
+            </button>
+            <button
+              role="tab"
+              aria-selected={mode === "tour"}
+              onclick={() => { if (mode !== "tour") void app.cmd("set_mode", { mode: "tour" }); }}
+              class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {mode === 'tour' ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/><circle cx="4" cy="12" r="1.5"/></svg>
+              Guide
+            </button>
+          </div>
+        {/if}
         <button
           type="button"
           class="p-1 text-fg-3 hover:bg-hover rounded flex items-center"
@@ -1573,14 +1780,41 @@
     {:else if files.length === 0}
       <div class="flex items-center justify-center h-full text-muted text-sm">No changes</div>
     {:else}
-      <!-- Sticky file path overlay: hides when real file-header is in viewport top band -->
-      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden} />
+      <!-- Sticky file path overlay: hides when real file-header is in viewport top band.
+           In Guide mode the pillar rail lane (column 1) replaces it. -->
+      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden || tourActive} />
 
-      <!-- X-scroll surface: full-height absolute-positioned band -->
+      {#if tourActive}
+        <!-- Column 1: pillar rail lane. Each pillar block aligns to its diffs in
+             column 2 and pins its rail (sticky) while that pillar is on screen. -->
+        <div
+          class="pillar-rail-lane"
+          style="position:absolute;top:{STICKY_HEADER_PX}px;left:0;width:{RAIL_W}px;height:{effectiveGeometry.totalHeight}px;z-index:20;border-right:1px solid var(--color-hairline);"
+        >
+          {#each pillarSpans as span (span.info.pillarId)}
+            <div style="position:absolute;left:0;right:0;top:{span.topPx}px;height:{span.heightPx}px;">
+              <div
+                style="position:sticky;top:0;"
+                use:measureHeight={(px) => setRailHeight(span.info.pillarId, px)}
+              >
+                <PillarRail
+                  info={span.info}
+                  fileRows={pillarFileRows.get(span.info.pillarId) ?? []}
+                  selectedPath={visibleFilePath}
+                />
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- X-scroll surface: full-height absolute-positioned band (column 2 in Guide) -->
       <div
         bind:this={hscrollEl}
         class="hscroll"
-        style="height:{effectiveGeometry.totalHeight}px;overflow-x:auto;overflow-y:hidden;position:relative;width:100%"
+        style="height:{effectiveGeometry.totalHeight}px;overflow-x:auto;overflow-y:hidden;position:relative;{tourActive
+          ? `margin-left:${RAIL_W}px;width:calc(100% - ${RAIL_W}px);`
+          : 'width:100%;'}"
       >
         <div
           class="band"
@@ -1640,6 +1874,11 @@
               {#if finding}
                 <FindingRow {row} {finding} {thread} />
               {/if}
+            {/if}
+            {#if tourActive && pillarPadByRowIdentity.get(row.identity)}
+              <!-- Guide mode: pad the pillar's last row down to the rail height so
+                   the next pillar's files start below the (taller) rail. -->
+              <div style="height:{pillarPadByRowIdentity.get(row.identity)}px"></div>
             {/if}
           {/each}
         </div>

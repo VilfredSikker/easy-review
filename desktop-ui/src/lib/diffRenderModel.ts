@@ -136,6 +136,16 @@ export function getFileRenderModel(file: FileSnapshot): FileRenderModel {
 
 // ---------------- Step A: Flat cross-file row block ----------------
 
+/** Data for a Guide pillar group (drives the left rail lane in Split View). */
+export interface PillarHeaderInfo {
+  pillarId: string;
+  title: string;
+  descriptionMarkdown: string;
+  reviewedCount: number;
+  totalCount: number;
+  foundation: boolean;
+}
+
 export type CrossFileFlatRow =
   | {
       type: "file-header";

@@ -94,6 +94,33 @@ export interface FileSnapshot {
   hunks_omitted?: boolean;
 }
 
+export interface TourFileRef {
+  path: string;
+  reason: string;
+  findingIds: string[];
+}
+
+export interface PillarSnapshot {
+  id: string;
+  title: string;
+  descriptionMarkdown: string;
+  importance: number;
+  foundation: boolean;
+  files: TourFileRef[];
+  reviewedCount: number;
+  totalCount: number;
+}
+
+export interface TourSnapshot {
+  /** True when a tour.json exists for this branch (drives the Guide tab). */
+  available: boolean;
+  /** True when the tour matches the current diff. */
+  fresh: boolean;
+  title: string;
+  overviewMarkdown: string;
+  pillars: PillarSnapshot[];
+}
+
 export interface FilterSuggestionSnapshot {
   kind: "preset" | "history";
   name: string;
@@ -337,7 +364,7 @@ export interface GithubStatusSnapshot {
 }
 
 export interface AppSnapshot {
-  mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden";
+  mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden" | "tour";
   /** Optional — populated by the engine when in history mode or branch-mode scope. */
   commits?: CommitSummary[];
   /** SHA of the selected commit when in history mode; null otherwise. */
@@ -400,6 +427,8 @@ export interface AppSnapshot {
   arena_enabled?: boolean;
   active_arena_run?: string | null;
   arena_runs?: import("./types/arena").ArenaRunSummary[];
+  /** Guided tour for the active tab. `available` drives the Guide tab. */
+  tour?: TourSnapshot;
   /** Active arena runs across all tabs (tab-independent background runs). */
   background_arena_runs?: import("./types/arena").ArenaRunSummary[];
 }
@@ -626,6 +655,7 @@ export interface FeatureFlagsSnapshot {
   viewHistory: boolean;
   viewConflicts: boolean;
   viewHidden: boolean;
+  viewTour: boolean;
 }
 
 export interface DisplayConfigSnapshot {

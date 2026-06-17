@@ -405,6 +405,11 @@ mod tests {
             .current_dir(root)
             .output()
             .unwrap();
+        Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(root)
+            .output()
+            .unwrap();
         std::fs::write(root.join("file.txt"), "base\n").unwrap();
         Command::new("git")
             .args(["add", "file.txt"])

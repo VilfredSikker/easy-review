@@ -173,6 +173,17 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
         }
     }
 
+    // Load .er/tour.json (guided walkthrough — its own ordering/grouping)
+    let tour_path = Path::new(er_dir).join("tour.json");
+    if let Ok(content) = read_sidecar(&tour_path) {
+        if let Ok(tour) = serde_json::from_str::<ErTour>(&content) {
+            if !state.is_stale && tour.diff_hash != current_diff_hash {
+                state.is_stale = true;
+            }
+            state.tour = Some(tour);
+        }
+    }
+
     // Load .er/summary.md
     let summary_path = Path::new(er_dir).join("summary.md");
     if let Ok(content) = read_sidecar(&summary_path) {
@@ -291,6 +302,7 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
     let files = [
         "review.json",
         "order.json",
+        "tour.json",
         "summary.md",
         "checklist.json",
         "feedback.json",
@@ -403,6 +415,66 @@ mod tests {
         let state = load_ai_state(er_dir, "abc", Some("dependabot/npm_and_yarn/foo"));
         assert!(state.review.is_none());
         assert!(state.summary.is_none());
+    }
+
+    #[test]
+    fn load_ai_state_reads_tour_and_sets_freshness() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let tour = serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc",
+            "title": "Tour: foo",
+            "overview": "intro",
+            "pillars": [{
+                "id": "p-1",
+                "title": "Foundation",
+                "description": "start here",
+                "order": 0,
+                "importance": 90,
+                "foundation": true,
+                "files": [{"path": "src/a.rs", "reason": "core", "finding_ids": ["f-1"]}]
+            }]
+        });
+        std::fs::write(
+            dir.path().join("tour.json"),
+            serde_json::to_string(&tour).unwrap(),
+        )
+        .unwrap();
+
+        // Matching hash → fresh tour loaded.
+        let state = load_ai_state(er_dir, "abc", None);
+        assert!(state.has_tour());
+        assert!(!state.is_stale);
+        let loaded = state.tour.as_ref().unwrap();
+        assert_eq!(loaded.pillars.len(), 1);
+        assert_eq!(loaded.file_pillar("src/a.rs").unwrap().id, "p-1");
+
+        // Mismatched hash → tour still loaded but marked stale.
+        let stale = load_ai_state(er_dir, "different", None);
+        assert!(stale.has_tour());
+        assert!(stale.is_stale);
+    }
+
+    #[test]
+    fn er_tour_ordered_pillars_sorts_foundation_then_importance() {
+        let tour: ErTour = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "diff_hash": "h",
+            "pillars": [
+                {"id": "b", "title": "B", "order": 0, "importance": 10, "foundation": false},
+                {"id": "a", "title": "A", "order": 0, "importance": 50, "foundation": true},
+                {"id": "c", "title": "C", "order": 1, "importance": 99, "foundation": true}
+            ]
+        }))
+        .unwrap();
+        let ordered: Vec<&str> = tour
+            .ordered_pillars()
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect();
+        // order 0 foundation first, then order 0 non-foundation, then order 1.
+        assert_eq!(ordered, vec!["a", "b", "c"]);
     }
 
     #[test]

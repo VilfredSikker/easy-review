@@ -1943,7 +1943,7 @@ impl App {
                         "Review done — review.json written but could not be parsed".into()
                     }
                 } else {
-                    "Review done — but no .er/review.json found (agent may lack permissions)".into()
+                    "Review done — but no review.json found (agent may lack permissions)".into()
                 }
             }
             "questions" => {
@@ -1965,11 +1965,24 @@ impl App {
                         "Questions done — questions.json written but could not be parsed".into()
                     }
                 } else {
-                    "Questions done — but no .er/questions.json found".into()
+                    "Questions done — but no questions.json found".into()
                 }
             }
             _ => format!("{} done", name),
         }
+    }
+
+    fn agent_command_writes_ai_artifacts(name: &str) -> bool {
+        matches!(
+            name,
+            "summary"
+                | "review"
+                | "questions"
+                | "triage"
+                | "professor"
+                | "validate"
+                | "validate-comments"
+        ) || name.starts_with("expert-")
     }
 
     /// Spawn a shell command in the background under the given name.
@@ -2154,9 +2167,10 @@ impl App {
                                 source: AgentLogSource::Status,
                                 text: format!("{} completed", name),
                             });
-                            // Force AI reload for commands that write .er/ files
-                            if name == "summary" || name == "review" || name == "questions" {
-                                tab.last_ai_check = None;
+                            // Force AI reload for commands that write sidecar artifacts.
+                            // reload_ai_state() resets last_ai_check itself.
+                            if Self::agent_command_writes_ai_artifacts(&name) {
+                                tab.reload_ai_state();
                             }
                             let msg = Self::agent_completion_summary_for(tab, &name);
                             notifications.push(msg);
@@ -2312,11 +2326,15 @@ impl App {
                         "Write",
                         "Edit",
                         "Bash(gh pr *)",
-                        "Bash(cp .er/*)",
+                        "Bash(cp *)",
+                        "Bash(grep *)",
+                        "Bash(rg *)",
+                        "Bash(git grep*)",
                         "Bash(git diff*)",
                         "Bash(shasum*)",
                         "Bash(sha256sum*)",
                         "Bash(mkdir*)",
+                        "Bash(awk*)",
                     ];
                     for rule in allowed.iter().rev() {
                         agent_args.insert(0, rule.to_string());
@@ -2474,6 +2492,16 @@ impl App {
             prompt,
             prepared_diff,
         )
+    }
+
+    /// Spawn guided-tour generation (`kind` = `tour`). Writes `tour.json` only.
+    pub fn spawn_background_tour(
+        &mut self,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+    ) -> Result<()> {
+        self.spawn_background_agent_task("tour".to_string(), "tour", target, prompt, prepared_diff)
     }
 
     /// Spawn the Professor learning agent (`kind` = `professor`).
@@ -3244,5 +3272,31 @@ mod background_queue_tests {
         }
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn agent_command_artifact_reload_classification() {
+        for name in [
+            "summary",
+            "review",
+            "questions",
+            "triage",
+            "professor",
+            "expert-security",
+            "validate",
+            "validate-comments",
+        ] {
+            assert!(
+                App::agent_command_writes_ai_artifacts(name),
+                "{name} should trigger AI sidecar reload"
+            );
+        }
+
+        for name in ["test", "lint", "fmt", "build"] {
+            assert!(
+                !App::agent_command_writes_ai_artifacts(name),
+                "{name} should not trigger AI sidecar reload"
+            );
+        }
     }
 }

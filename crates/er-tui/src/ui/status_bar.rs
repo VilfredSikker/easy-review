@@ -128,7 +128,10 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::ORANGE()),
         ));
     }
-    if tab.mode == DiffMode::Branch || tab.mode == DiffMode::History {
+    if matches!(
+        tab.mode,
+        DiffMode::Branch | DiffMode::History | DiffMode::Tour
+    ) {
         info_spans.push(Span::styled(
             format!(" (vs {})", tab.base_branch),
             ratatui::style::Style::default().fg(styles::DIM()),
@@ -174,6 +177,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             DiffMode::Conflicts => " CONFLICTS ",
             DiffMode::Hidden => " HIDDEN ",
             DiffMode::PrDiff => " PR DIFF ",
+            DiffMode::Tour => " TOUR ",
         };
         modes.push(Span::styled(num, mode_style(vmode, tab.mode)));
         modes.push(Span::styled(label, mode_style(vmode, tab.mode)));
@@ -424,6 +428,21 @@ fn build_ai_panel_hints(app: &App) -> Vec<Hint> {
 }
 
 /// Build hints for History mode
+fn build_tour_hints(app: &App) -> Vec<Hint> {
+    let h = &app.config.hints;
+    let mut hints = Vec::new();
+    if h.navigation {
+        hints.push(Hint::new("j/k", " pillars "));
+        hints.push(Hint::new("n/N", " files "));
+        hints.push(Hint::new("u/d", " scroll "));
+        hints.push(Hint::new("↑↓", " lines "));
+    }
+    hints.push(Hint::new("␣", " reviewed "));
+    hints.push(Hint::new("b", " review pillar "));
+    hints.push(Hint::new("g", " git "));
+    hints
+}
+
 fn build_history_hints(app: &App) -> Vec<Hint> {
     let tab = app.tab();
     let h = &app.config.hints;
@@ -514,6 +533,11 @@ fn build_hints(app: &App) -> Vec<Hint> {
     // History mode has different hints
     if tab.mode == DiffMode::History {
         return build_history_hints(app);
+    }
+
+    // Tour mode has its own hints
+    if tab.mode == DiffMode::Tour {
+        return build_tour_hints(app);
     }
 
     // Conflicts mode uses same hint structure as normal mode (staging not applicable)

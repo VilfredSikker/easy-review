@@ -3,7 +3,7 @@
   import type { CommitSummary } from "$lib/types";
 
   interface Props {
-    mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden";
+    mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden" | "tour";
     total_count: number;
     reviewed_count: number;
     commits?: CommitSummary[];
@@ -16,6 +16,7 @@
     mode === "unstaged" ? "Unstaged" :
     mode === "staged" ? "Staged" :
     mode === "pr" ? "PR Diff" :
+    mode === "tour" ? "Guide" :
     "History"
   );
 
@@ -28,6 +29,7 @@
       viewHistory: true,
       viewConflicts: true,
       viewHidden: true,
+      viewTour: true,
     },
   );
   const commitsToShow = $derived(commits.length > 0 ? commits : (snapshot?.commits ?? []));

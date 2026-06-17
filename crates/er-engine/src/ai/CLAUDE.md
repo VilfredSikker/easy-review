@@ -27,6 +27,7 @@ paths below use the repo-local `.er/` names, which are identical.
 |------|--------|---------|
 | `review.json` | `ErReview` | Per-file risk levels, findings, suggestions |
 | `order.json` | `ErOrder` | Suggested file review order with groupings |
+| `tour.json` | `ErTour` | Guided walkthrough: ordered "pillars" (foundation→importance) with descriptions + files. Read-only to `er`; written by the `er-tour` skill / desktop "Generate tour". Self-contained — never mutates `order.json`/`review.json`. |
 | `summary.md` | (raw text) | Markdown summary of overall changes |
 | `checklist.json` | `ErChecklist` | Review checklist items |
 | `triage.json` | `TriageReview` | Fast branch scan / routing verdict |

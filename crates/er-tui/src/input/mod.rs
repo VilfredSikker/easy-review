@@ -701,10 +701,14 @@ pub(super) fn build_agent_triage_prompt(app: &mut App) -> Option<String> {
         return None;
     }
     let base = app.tab().base_branch.clone();
-    Some(er_engine::ai::prompts::build_triage_review_prompt(
-        &base,
-        mode.git_mode(),
-    ))
+    let output_dir = app.tab().er_dir();
+    Some(
+        er_engine::ai::prompts::build_triage_review_prompt_local_managed(
+            &base,
+            mode.git_mode(),
+            &output_dir,
+        ),
+    )
 }
 
 /// Build the Professor learning prompt (local diff modes only).
@@ -716,9 +720,15 @@ pub(super) fn build_agent_professor_prompt(app: &mut App) -> Option<String> {
     }
     let mode = tab.mode;
     let base = tab.base_branch.clone();
+    let output_dir = tab.er_dir();
     match mode {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
-            er_engine::ai::prompts::build_professor_review_prompt(&base, mode.git_mode(), None),
+            er_engine::ai::prompts::build_professor_review_prompt_local_managed(
+                &base,
+                mode.git_mode(),
+                &output_dir,
+                None,
+            ),
         ),
         _ => {
             app.notify("Professor not available in this mode");
@@ -740,9 +750,15 @@ pub(super) fn build_agent_expert_prompt(app: &mut App, expert_id: &str) -> Optio
     }
     let mode = tab.mode;
     let base = tab.base_branch.clone();
+    let output_dir = tab.er_dir();
     match mode {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
-            er_engine::ai::prompts::build_expert_review_prompt(&base, mode.git_mode(), expert_id),
+            er_engine::ai::prompts::build_expert_review_prompt_local_managed(
+                &base,
+                mode.git_mode(),
+                &output_dir,
+                expert_id,
+            ),
         ),
         _ => {
             app.notify("Expert review not available in this mode");
@@ -777,11 +793,20 @@ pub(super) fn build_agent_review_prompt(app: &mut App) -> Option<String> {
     }
     let mode = tab.mode;
     let base = tab.base_branch.clone();
+    let output_dir = tab.er_dir();
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
-            er_engine::ai::prompts::build_review_prompt(&base, mode.git_mode()),
-        ),
-        DiffMode::PrDiff => Some(er_engine::ai::prompts::build_review_prompt(&base, "branch")),
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
+            Some(er_engine::ai::prompts::build_review_prompt_local_managed(
+                &base,
+                mode.git_mode(),
+                &output_dir,
+            ))
+        }
+        DiffMode::PrDiff => Some(er_engine::ai::prompts::build_review_prompt_local_managed(
+            &base,
+            "branch",
+            &output_dir,
+        )),
         _ => {
             app.notify("AI review not available in this mode");
             None
@@ -799,12 +824,19 @@ pub(super) fn build_agent_validate_prompt(app: &mut App) -> Option<String> {
     }
     let mode = tab.mode;
     let base = tab.base_branch.clone();
+    let output_dir = tab.er_dir();
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
-            er_engine::ai::prompts::build_validate_prompt(&base, mode.git_mode()),
-        ),
-        DiffMode::PrDiff => Some(er_engine::ai::prompts::build_validate_prompt(
-            &base, "branch",
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
+            Some(er_engine::ai::prompts::build_validate_prompt_local_managed(
+                &base,
+                mode.git_mode(),
+                &output_dir,
+            ))
+        }
+        DiffMode::PrDiff => Some(er_engine::ai::prompts::build_validate_prompt_local_managed(
+            &base,
+            "branch",
+            &output_dir,
         )),
         _ => {
             app.notify("validate not available in this mode");
@@ -839,9 +871,14 @@ pub(super) fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
     }
     let mode = tab.mode;
     let base = tab.base_branch.clone();
+    let output_dir = tab.er_dir();
     match mode {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
-            er_engine::ai::prompts::build_questions_prompt(&base, mode.git_mode()),
+            er_engine::ai::prompts::build_questions_prompt_local_managed(
+                &base,
+                mode.git_mode(),
+                &output_dir,
+            ),
         ),
         _ => {
             app.notify("AI questions not available in this mode");
@@ -876,10 +913,15 @@ pub(super) fn build_agent_summary_prompt(app: &mut App) -> Option<String> {
     }
     let mode = tab.mode;
     let base = tab.base_branch.clone();
+    let output_dir = tab.er_dir();
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
-            er_engine::ai::prompts::build_summary_prompt(&base, mode.git_mode()),
-        ),
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
+            Some(er_engine::ai::prompts::build_summary_prompt_local_managed(
+                &base,
+                mode.git_mode(),
+                &output_dir,
+            ))
+        }
         _ => {
             app.notify("Summary generation not available in this mode");
             None
@@ -1718,4 +1760,60 @@ fn push_comments_as_review(app: &mut App) -> Result<()> {
 
 fn chrono_now() -> String {
     app::chrono_now()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_with_managed_dir(output_dir: &str) -> App {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().er_root = er_engine::ErRoot::Managed {
+            agent_dir: output_dir.to_string(),
+            session_dir: output_dir.to_string(),
+        };
+        app
+    }
+
+    fn assert_managed_prompt(prompt: &str, output_dir: &str, artifact: &str) {
+        assert!(
+            prompt.contains(output_dir),
+            "prompt should mention managed output dir {output_dir}:\n{prompt}"
+        );
+        assert!(
+            prompt.contains(artifact),
+            "prompt should mention target artifact {artifact}:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("> .er/diff-tmp"),
+            "prompt must not write repo-local diff-tmp:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn local_ai_prompt_builders_target_tab_er_dir() {
+        let output_dir = "/tmp/er-tui-managed";
+        let mut app = app_with_managed_dir(output_dir);
+
+        let review = build_agent_review_prompt(&mut app).expect("review prompt");
+        assert_managed_prompt(&review, output_dir, "review.json");
+
+        let validate = build_agent_validate_prompt(&mut app).expect("validate prompt");
+        assert_managed_prompt(&validate, output_dir, "review.json");
+
+        let questions = build_agent_questions_prompt(&mut app).expect("questions prompt");
+        assert_managed_prompt(&questions, output_dir, "questions.json");
+
+        let summary = build_agent_summary_prompt(&mut app).expect("summary prompt");
+        assert_managed_prompt(&summary, output_dir, "summary.md");
+
+        let triage = build_agent_triage_prompt(&mut app).expect("triage prompt");
+        assert_managed_prompt(&triage, output_dir, "triage.json");
+
+        let professor = build_agent_professor_prompt(&mut app).expect("professor prompt");
+        assert_managed_prompt(&professor, output_dir, "professor.json");
+
+        let expert = build_agent_expert_prompt(&mut app, "security").expect("expert prompt");
+        assert_managed_prompt(&expert, output_dir, "experts/security.json");
+    }
 }

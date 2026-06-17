@@ -165,6 +165,7 @@
   );
 
   const hasReviewJson = $derived(app.snapshot?.ai?.has_review_json ?? false);
+  const tourAvailable = $derived(app.snapshot?.tour?.available ?? false);
   const eligibleCommentCount = $derived(app.snapshot?.ai?.eligible_comment_count ?? 0);
   const validateAvailable = $derived(hasReviewJson || eligibleCommentCount > 0);
 
@@ -223,6 +224,17 @@
       run: () => {
         if (!reviewScope) return;
         dismissAndRun(() => openProfessorFocusModal(reviewScope, ["professor"], []));
+      },
+    },
+    {
+      id: "generate-tour",
+      label: tourAvailable ? "Regenerate tour" : "Generate tour",
+      description: reviewScope
+        ? "Group the diff into a guided walkthrough (pillars) for the Guide tab"
+        : "Not available in this view",
+      run: () => {
+        if (!reviewScope) return;
+        dismissAndRun(() => void app.cmd("generate_tour"));
       },
     },
     {
@@ -288,7 +300,7 @@
       label: a.label,
       description: a.description,
       disabled: a.disabled ?? (
-        (!reviewScope && (a.id === "triage-current" || a.id === "review-current" || a.id === "validate-current" || a.id === "review-select-files" || a.id === "review-reviewers" || a.id === "professor"))
+        (!reviewScope && (a.id === "triage-current" || a.id === "review-current" || a.id === "validate-current" || a.id === "review-select-files" || a.id === "review-reviewers" || a.id === "professor" || a.id === "generate-tour"))
         || (a.id === "validate-current" && !validateAvailable)
       ),
       onSelect: a.run,
