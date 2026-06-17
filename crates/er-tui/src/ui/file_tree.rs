@@ -38,6 +38,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // Tour mode: render pillar list instead of file tree
+    if tab.mode == DiffMode::Tour {
+        render_pillar_list(f, area, app);
+        return;
+    }
+
     // Conflicts mode uses the standard file tree (falls through below)
 
     let visible = tab.visible_files();
@@ -474,6 +480,149 @@ fn render_commit_list(f: &mut Frame, area: Rect, app: &App) {
             result
         })
         .collect();
+
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            ratatui::style::Style::default().fg(styles::MUTED()),
+        ))
+        .borders(Borders::RIGHT)
+        .border_style(ratatui::style::Style::default().fg(styles::BORDER()))
+        .style(ratatui::style::Style::default().bg(styles::SURFACE()))
+        .padding(Padding::new(0, 0, 0, 0));
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
+}
+
+/// Render the tour pillar list (left panel in Tour mode). Each pillar shows its
+/// title, a foundation/importance badge, a reviewed/total count, and its files.
+fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
+    let tab = app.tab();
+    let Some(tour) = tab.tour.as_ref() else {
+        let block = Block::default()
+            .title(Span::styled(
+                " TOUR ",
+                ratatui::style::Style::default().fg(styles::MUTED()),
+            ))
+            .borders(Borders::RIGHT)
+            .border_style(ratatui::style::Style::default().fg(styles::BORDER()))
+            .style(ratatui::style::Style::default().bg(styles::SURFACE()));
+        f.render_widget(block, area);
+        return;
+    };
+
+    let total: usize = tour.pillars.len();
+    let title = format!(" PILLARS ({}) ", total);
+    let inner_width = (area.width as usize).saturating_sub(2).max(1);
+
+    let mut items: Vec<ListItem> = Vec::new();
+    for (pi, pillar) in tour.pillars.iter().enumerate() {
+        let is_selected = pi == tour.selected_pillar;
+        let (start, end) = tour
+            .pillar_file_ranges
+            .get(pi)
+            .copied()
+            .unwrap_or((0, 0));
+        let files = tour.files.get(start..end).unwrap_or(&[]);
+        let reviewed = files
+            .iter()
+            .filter(|fd| tab.reviewed.contains_key(&fd.path))
+            .count();
+        let total_files = files.len();
+        let all_reviewed = total_files > 0 && reviewed == total_files;
+
+        let line_style = if is_selected {
+            styles::selected_style()
+        } else {
+            styles::surface_style()
+        };
+        let indicator = if is_selected { "●" } else { "○" };
+        let indicator_style = if is_selected {
+            ratatui::style::Style::default().fg(styles::PURPLE())
+        } else {
+            ratatui::style::Style::default().fg(styles::DIM())
+        };
+        let title_style = if is_selected {
+            ratatui::style::Style::default().fg(styles::BRIGHT())
+        } else {
+            ratatui::style::Style::default().fg(styles::TEXT())
+        };
+
+        // Badge: foundation marker + reviewed count.
+        let badge = if all_reviewed {
+            " ✓".to_string()
+        } else {
+            format!(" {:02}/{:02}", reviewed, total_files)
+        };
+        let badge_style = if all_reviewed {
+            ratatui::style::Style::default().fg(styles::GREEN())
+        } else {
+            ratatui::style::Style::default().fg(styles::DIM())
+        };
+
+        let title_text = if pillar.foundation {
+            format!("◆ {}", pillar.title)
+        } else {
+            pillar.title.clone()
+        };
+        let title_width = inner_width.saturating_sub(3 + badge.len());
+        let wrapped = word_wrap(&title_text, title_width.max(1));
+
+        let first = Line::from(vec![
+            Span::styled(format!(" {} ", indicator), indicator_style),
+            Span::styled(wrapped.first().cloned().unwrap_or_default(), title_style),
+            Span::styled(badge.clone(), badge_style),
+        ]);
+        items.push(ListItem::new(first).style(line_style));
+        for seg in wrapped.iter().skip(1) {
+            let line = Line::from(vec![
+                Span::raw("   "),
+                Span::styled(seg.clone(), title_style),
+            ]);
+            items.push(ListItem::new(line).style(line_style));
+        }
+
+        // File rows under the pillar.
+        for (fi, fd) in files.iter().enumerate() {
+            let abs_idx = start + fi;
+            let is_file_selected = is_selected && abs_idx == tour.selected_file;
+            let reviewed_mark = if tab.reviewed.contains_key(&fd.path) {
+                "✓ "
+            } else {
+                "  "
+            };
+            let name = shorten_path(&fd.path, inner_width.saturating_sub(6));
+            let fstyle = if is_file_selected {
+                ratatui::style::Style::default().fg(styles::BRIGHT())
+            } else if tab.reviewed.contains_key(&fd.path) {
+                ratatui::style::Style::default().fg(styles::DIM())
+            } else {
+                ratatui::style::Style::default().fg(styles::TEXT())
+            };
+            let mark_style = ratatui::style::Style::default().fg(styles::GREEN());
+            let row_style = if is_file_selected {
+                styles::selected_style()
+            } else {
+                styles::surface_style()
+            };
+            let line = Line::from(vec![
+                Span::raw("   "),
+                Span::styled(reviewed_mark, mark_style),
+                Span::styled(name, fstyle),
+            ]);
+            items.push(ListItem::new(line).style(row_style));
+        }
+
+        // Separator
+        items.push(
+            ListItem::new(Line::from(Span::styled(
+                horizontal_rule(area.width.saturating_sub(2) as usize),
+                ratatui::style::Style::default().fg(styles::BORDER()),
+            )))
+            .style(styles::surface_style()),
+        );
+    }
 
     let block = Block::default()
         .title(Span::styled(

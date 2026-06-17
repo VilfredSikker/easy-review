@@ -2476,6 +2476,16 @@ impl App {
         )
     }
 
+    /// Spawn guided-tour generation (`kind` = `tour`). Writes `tour.json` only.
+    pub fn spawn_background_tour(
+        &mut self,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+    ) -> Result<()> {
+        self.spawn_background_agent_task("tour".to_string(), "tour", target, prompt, prepared_diff)
+    }
+
     /// Spawn the Professor learning agent (`kind` = `professor`).
     pub fn spawn_background_professor_review(
         &mut self,

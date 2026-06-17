@@ -371,7 +371,9 @@ pub fn handle_normal_input(
                 app.resume_comment();
                 return Ok(());
             }
-            if mode != DiffMode::History && app.split_diff_active(&app.config.clone()) {
+            if !matches!(mode, DiffMode::History | DiffMode::Tour)
+                && app.split_diff_active(&app.config.clone())
+            {
                 let tab = app.tab_mut();
                 tab.split_focus = match tab.split_focus {
                     SplitSide::Old => SplitSide::New,
@@ -510,7 +512,7 @@ pub fn handle_normal_input(
 
         // Stage/unstage file (or update snapshot for watched files) — not meaningful in History or remote mode
         KeyCode::Char('s')
-            if mode != DiffMode::History
+            if !matches!(mode, DiffMode::History | DiffMode::Tour)
                 && !app.tab().is_remote()
                 && key.modifiers == KeyModifiers::NONE =>
         {
@@ -530,26 +532,33 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
-        // Toggle unreviewed-only filter — not meaningful in History
-        KeyCode::Char('!') if mode != DiffMode::History => {
+        // Toggle unreviewed-only filter — not meaningful in History/Tour
+        KeyCode::Char('!') if !matches!(mode, DiffMode::History | DiffMode::Tour) => {
             app.toggle_unreviewed_filter();
             return Ok(());
         }
 
-        // Toggle reviewed — review tracking is per-branch, not meaningful in History
-        KeyCode::Char(' ') if mode != DiffMode::History => {
+        // Toggle reviewed — review tracking is per-branch, not meaningful in History.
+        // Tour handles `space` in its own handler (operates on the tour file list).
+        KeyCode::Char(' ') if !matches!(mode, DiffMode::History | DiffMode::Tour) => {
             app.toggle_reviewed()?;
             return Ok(());
         }
 
-        // Jump to next unreviewed file — not meaningful in History
-        KeyCode::Char('U') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
+        // Jump to next unreviewed file — not meaningful in History/Tour
+        KeyCode::Char('U')
+            if !matches!(mode, DiffMode::History | DiffMode::Tour)
+                && key.modifiers == KeyModifiers::NONE =>
+        {
             app.next_unreviewed_file();
             return Ok(());
         }
 
         // Copy hub — offers full file, path, hunk, or line copy options
-        KeyCode::Char('y') if mode != DiffMode::History && key.modifiers == KeyModifiers::NONE => {
+        KeyCode::Char('y')
+            if !matches!(mode, DiffMode::History | DiffMode::Tour)
+                && key.modifiers == KeyModifiers::NONE =>
+        {
             app.open_copy_hub();
             return Ok(());
         }
@@ -560,6 +569,11 @@ pub fn handle_normal_input(
     // ── History mode: route to dedicated handler (pure navigation only) ──
     if mode == DiffMode::History {
         return handle_history_input(app, key);
+    }
+
+    // ── Tour mode: route to dedicated handler ──
+    if mode == DiffMode::Tour {
+        return handle_tour_input(app, key);
     }
 
     // ── Non-History navigation keys ──
@@ -807,6 +821,59 @@ pub fn handle_history_input(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::PageDown => app.tab_mut().history_scroll_down(20),
         KeyCode::PageUp => app.tab_mut().history_scroll_up(20),
+
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn handle_tour_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        // Pillar navigation (left panel) — k next, j prev (matches History).
+        KeyCode::Char('k') => app.tab_mut().tour_next_pillar(),
+        KeyCode::Char('j') => app.tab_mut().tour_prev_pillar(),
+
+        // File navigation within the tour (n/N)
+        KeyCode::Char('n') => app.tab_mut().tour_next_file(),
+        KeyCode::Char('N') => app.tab_mut().tour_prev_file(),
+
+        // Line navigation (arrows)
+        KeyCode::Down => app.tab_mut().tour_next_line(),
+        KeyCode::Up => app.tab_mut().tour_prev_line(),
+
+        // Horizontal scroll
+        KeyCode::Char('l') | KeyCode::Right => app.tab_mut().tour_scroll_right(8),
+        KeyCode::Char('h') | KeyCode::Left => app.tab_mut().tour_scroll_left(8),
+        KeyCode::Home => {
+            if let Some(ref mut t) = app.tab_mut().tour {
+                t.h_scroll = 0;
+            }
+        }
+
+        // Vertical scroll (u/d page through all files; pillars switch as you go)
+        KeyCode::Char('d')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            app.tab_mut().tour_scroll_down(10);
+        }
+        KeyCode::Char('u')
+            if key.modifiers == KeyModifiers::NONE
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            app.tab_mut().tour_scroll_up(10);
+        }
+        KeyCode::PageDown => app.tab_mut().tour_scroll_down(20),
+        KeyCode::PageUp => app.tab_mut().tour_scroll_up(20),
+
+        // Toggle reviewed for the current file
+        KeyCode::Char(' ') => app.tab_mut().tour_toggle_reviewed(),
+
+        // Bulk-review the whole pillar
+        KeyCode::Char('b') => {
+            app.tab_mut().tour_bulk_review_pillar();
+            app.notify("Reviewed all files in pillar");
+        }
 
         _ => {}
     }

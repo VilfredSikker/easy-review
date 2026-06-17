@@ -865,6 +865,7 @@ fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &st
         "history" => features.view_history,
         "conflicts" => features.view_conflicts,
         "hidden" => features.view_hidden,
+        "tour" => features.view_tour,
         "pr" | "pr_diff" => features.view_branch,
         _ => features.view_branch,
     }
@@ -904,6 +905,7 @@ pub async fn set_mode(
             "history" => DiffMode::History,
             "conflicts" => DiffMode::Conflicts,
             "hidden" => DiffMode::Hidden,
+            "tour" => DiffMode::Tour,
             _ => DiffMode::Branch,
         };
         app.tab_mut().set_mode(diff_mode);
@@ -955,6 +957,66 @@ pub fn unmark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapsh
         }
     }
     // Return chrome-only: counts update, no hunk rebuild needed
+    Ok(chrome_snap_from(&app, &state))
+}
+
+/// Paths of a tour pillar's files (from the loaded tour.json).
+fn pillar_file_paths(tab: &TabState, pillar_id: &str) -> Vec<String> {
+    tab.ai
+        .tour
+        .as_ref()
+        .and_then(|t| t.pillars.iter().find(|p| p.id == pillar_id))
+        .map(|p| p.files.iter().map(|f| f.path.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn bulk_review_pillar(
+    pillar_id: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    {
+        let tab = app.tab_mut();
+        let paths = pillar_file_paths(tab, &pillar_id);
+        let mut changed = false;
+        for path in paths {
+            let hash = tab
+                .current_per_file_hashes
+                .get(&path)
+                .cloned()
+                .unwrap_or_default();
+            tab.reviewed.insert(path, hash);
+            changed = true;
+        }
+        if changed {
+            tab.reviewed_revision += 1;
+            let _ = tab.save_reviewed_files();
+        }
+    }
+    Ok(chrome_snap_from(&app, &state))
+}
+
+#[tauri::command]
+pub fn unbulk_review_pillar(
+    pillar_id: String,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    {
+        let tab = app.tab_mut();
+        let paths = pillar_file_paths(tab, &pillar_id);
+        let mut changed = false;
+        for path in paths {
+            if tab.reviewed.remove(&path).is_some() {
+                changed = true;
+            }
+        }
+        if changed {
+            tab.reviewed_revision += 1;
+            let _ = tab.save_reviewed_files();
+        }
+    }
     Ok(chrome_snap_from(&app, &state))
 }
 
@@ -2911,6 +2973,69 @@ fn spawn_ai_review_with_diff(
         );
     }
     Ok(())
+}
+
+/// Generate a guided Tour with AI: captures the branch diff and spawns the
+/// er-tour agent, which writes `tour.json` into the branch bucket. The mtime
+/// poll reloads it automatically on completion, surfacing the Guide tab.
+#[tauri::command]
+pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    // Tour always walks the branch diff (shares the branch bucket).
+    let scope = "branch".to_string();
+
+    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+        let tab = app.tab();
+        let branch_label = tab
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| tab.current_branch.clone());
+        (
+            tab.repo_root.clone(),
+            branch_label,
+            tab.base_branch.clone(),
+            // tour.json lives in the branch bucket; resolve it regardless of mode.
+            tab.branch_bucket_er_dir().unwrap_or_else(|| tab.er_dir()),
+            tab.pr_number,
+            tab.remote_repo.clone(),
+            tab.remote_repo.is_some(),
+        )
+    };
+
+    std::fs::create_dir_all(&er_dir)
+        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+
+    let mut raw = app
+        .tab()
+        .raw_diff_for_review(&scope)
+        .map_err(|e| e.to_string())?;
+    let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+    if !ignore.is_empty() {
+        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+    }
+    if raw.trim().is_empty() {
+        return Err("Nothing to tour".to_string());
+    }
+    std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
+        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
+
+    let prompt = er_engine::ai::prompts::build_tour_prompt_prepared_diff(&scope, &er_dir);
+    let target = er_engine::app::BackgroundTaskTarget {
+        repo_root,
+        er_dir: er_dir.clone(),
+        branch_label,
+        base_branch,
+        scope,
+        pr_number,
+        remote_repo,
+        managed_local: !is_remote,
+    };
+    app.spawn_background_tour(target, prompt, true)
+        .map_err(|e| e.to_string())?;
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(snap_from(&app, &state))
 }
 
 pub use er_engine::ai::{ExpertInfo, ReviewerInfo};

@@ -125,6 +125,10 @@ pub struct FeatureFlags {
     pub view_conflicts: bool,
     #[serde(default = "default_true")]
     pub view_hidden: bool,
+    /// Guided Tour walkthrough mode (AI-grouped pillars). Tab appears only when a
+    /// `tour.json` exists for the branch.
+    #[serde(default = "default_true")]
+    pub view_tour: bool,
     /// Multi-round AI Review Arena (orchestrated debate + consensus UI).
     #[serde(default = "default_true")]
     pub arena: bool,
@@ -304,6 +308,7 @@ impl Default for FeatureFlags {
             view_history: true,
             view_conflicts: true,
             view_hidden: true,
+            view_tour: true,
             arena: true,
         }
     }
@@ -982,6 +987,12 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
             get: |c| c.features.view_hidden,
             set: |c, v| c.features.view_hidden = v,
         },
+        ConfigItem::BoolToggle {
+            label: "Tour".into(),
+            description: "Show AI guided tour mode (when a tour exists)".into(),
+            get: |c| c.features.view_tour,
+            set: |c, v| c.features.view_tour = v,
+        },
         ConfigItem::SectionHeader("Display".into()),
         ConfigItem::StringCycle {
             label: "Theme".into(),
@@ -1298,6 +1309,7 @@ args = ["--model", "gpt-5.4"]
         assert!(flags.view_history);
         assert!(flags.view_conflicts);
         assert!(flags.view_hidden);
+        assert!(flags.view_tour);
     }
 
     #[test]
@@ -1362,6 +1374,7 @@ args = ["--model", "gpt-5.4"]
                 view_history: true,
                 view_conflicts: false,
                 view_hidden: true,
+                view_tour: true,
                 arena: false,
             },
             display: DisplayConfig {

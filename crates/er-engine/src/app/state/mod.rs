@@ -68,6 +68,8 @@ pub enum DiffMode {
     Conflicts,
     Hidden,
     PrDiff,
+    /// AI guided walkthrough — branch diff reordered/grouped into pillars.
+    Tour,
 }
 
 impl DiffMode {
@@ -81,6 +83,7 @@ impl DiffMode {
             DiffMode::Conflicts => "CONFLICTS",
             DiffMode::Hidden => "HIDDEN",
             DiffMode::PrDiff => "PR DIFF",
+            DiffMode::Tour => "TOUR",
         }
     }
 
@@ -95,14 +98,17 @@ impl DiffMode {
             // PrDiff uses branch-style git diff under the hood (PR head vs base).
             // "pr" is used as the session-persistence key and bucket identifier only.
             DiffMode::PrDiff => "pr",
+            // Tour reorders the branch diff; it shares the branch git scope/bucket.
+            DiffMode::Tour => "tour",
         }
     }
 
     /// The scope string passed to `git_diff_raw` / `fetch_tab_raw_diff`.
     /// PrDiff diffs against a PR head ref — same git mechanics as `branch`.
+    /// Tour walks the branch diff, so it fetches with branch mechanics too.
     pub fn fetch_scope(&self) -> &'static str {
         match self {
-            DiffMode::PrDiff => "branch",
+            DiffMode::PrDiff | DiffMode::Tour => "branch",
             other => other.git_mode(),
         }
     }
@@ -171,6 +177,71 @@ impl DiffCache {
             self.entries.pop_front();
         }
         self.entries.push_back((hash, files));
+    }
+}
+
+/// One pillar's display metadata within a TourState (the diff files themselves
+/// live in `TourState.files`, indexed by `TourState.pillar_file_ranges`).
+#[derive(Debug, Clone)]
+pub struct TourPillarView {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub importance: u32,
+    pub foundation: bool,
+}
+
+/// State for Tour mode — pillars (left) + the branch diff reordered/grouped by
+/// pillar (right). Parallels `HistoryState`. The Tour shares the Branch review
+/// bucket, so `reviewed` is the branch's reviewed set.
+pub struct TourState {
+    /// Pillars in display order (foundation first, then importance).
+    pub pillars: Vec<TourPillarView>,
+    /// Currently selected pillar index (left panel).
+    pub selected_pillar: usize,
+    /// Flattened, pillar-ordered diff files for the whole tour.
+    pub files: Vec<DiffFile>,
+    /// `(start, end_exclusive)` index range into `files` for each pillar.
+    pub pillar_file_ranges: Vec<(usize, usize)>,
+    /// File navigation within `files`.
+    pub selected_file: usize,
+    /// Hunk navigation within the selected file.
+    pub current_hunk: usize,
+    /// Line navigation within the selected hunk.
+    pub current_line: Option<usize>,
+    /// Vertical scroll in the diff pane.
+    pub diff_scroll: u16,
+    /// Horizontal scroll.
+    pub h_scroll: u16,
+}
+
+impl TourState {
+    /// The pillar index that owns file index `file_idx`, if any.
+    pub fn pillar_of_file(&self, file_idx: usize) -> Option<usize> {
+        self.pillar_file_ranges
+            .iter()
+            .position(|&(start, end)| file_idx >= start && file_idx < end)
+    }
+
+    /// The pillar whose files occupy the current `diff_scroll` row. Mirrors the
+    /// diff-pane row layout (per file: 2 header rows + per hunk `1 + lines + 1`).
+    /// Used to keep the sticky pillar header / left-list selection in sync while
+    /// free-scrolling with u/d.
+    pub fn pillar_at_scroll(&self) -> Option<usize> {
+        let target = self.diff_scroll as usize;
+        let mut row: usize = 0;
+        for (file_idx, file) in self.files.iter().enumerate() {
+            let mut height = 2; // header + blank
+            for hunk in &file.hunks {
+                height += 1 + hunk.lines.len() + 1;
+            }
+            if target < row + height {
+                return self.pillar_of_file(file_idx);
+            }
+            row += height;
+        }
+        // Past the end — last pillar.
+        self.pillar_file_ranges.len().checked_sub(1)
     }
 }
 
@@ -586,6 +657,9 @@ pub struct TabState {
 
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
+
+    /// Tour mode state (only populated when mode == Tour)
+    pub tour: Option<TourState>,
 
     // ── Watched files state ──
     /// Configuration for watched files
@@ -1164,6 +1238,7 @@ impl TabState {
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
             history: None,
+            tour: None,
             watched_config: er_config.watched.clone(),
             watched_files: Vec::new(),
             selected_watched: None,
@@ -1282,6 +1357,7 @@ impl TabState {
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
             history: None,
+            tour: None,
             watched_config: er_config.watched.clone(),
             watched_files: Vec::new(),
             selected_watched: None,
@@ -1396,6 +1472,7 @@ impl TabState {
             pr_head_ref: None,
             pr_number: None,
             history: None,
+            tour: None,
             watched_config,
             watched_files: Vec::new(),
             selected_watched: None,
@@ -1510,6 +1587,7 @@ impl TabState {
             pr_head_ref: None,
             pr_number: None,
             history: None,
+            tour: None,
             watched_config: WatchedConfig::default(),
             watched_files: Vec::new(),
             selected_watched: None,
@@ -1678,6 +1756,12 @@ impl TabState {
         if config.features.view_history && !read_only {
             modes.push(DiffMode::History);
         }
+        // Tour appears next to the working-tree views, only when a tour.json exists
+        // for this branch. `ai.tour` is loaded independent of the active bucket
+        // (see reload_ai_state), so this is stable across mode switches.
+        if config.features.view_tour && self.ai.has_tour() {
+            modes.push(DiffMode::Tour);
+        }
         if config.features.view_conflicts && !read_only && self.merge_active {
             modes.push(DiffMode::Conflicts);
         }
@@ -1699,6 +1783,43 @@ impl TabState {
     /// Directory for storing comment files (github-comments.json, questions.json).
     pub fn comments_dir(&self) -> String {
         self.er_dir()
+    }
+
+    /// Directory of the "branch" review bucket for this tab — where `tour.json`
+    /// lives — regardless of the currently active view bucket. The guided tour is
+    /// branch-scoped, so it must be discoverable from Unstaged/Staged/History
+    /// modes too (those use other buckets). Returns `None` when storage can't be
+    /// resolved (empty repo/branch). Uses pure path helpers (no dir creation).
+    pub fn branch_bucket_er_dir(&self) -> Option<String> {
+        if crate::storage::use_repo_local_storage() {
+            return Some(format!("{}/.er", self.repo_root));
+        }
+        if let Some(pr_num) = self.pr_number {
+            let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
+                crate::storage::slug_branch(&remote_repo.to_lowercase())
+            } else {
+                crate::github::canonical_owner_repo_slug(&self.repo_root)?
+            };
+            return Some(
+                crate::storage::pr_bucket_dir(&owner_repo_slug, pr_num)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        let branch = self
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| self.current_branch.clone());
+        if branch.is_empty() || self.repo_root.is_empty() {
+            return None;
+        }
+        let repo_slug = crate::storage::slug_repo(&self.repo_root);
+        let branch_slug = crate::storage::slug_branch(&branch);
+        Some(
+            crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch")
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 
     /// Point this tab at managed storage (shared by TUI and Desktop).
@@ -2491,6 +2612,11 @@ impl TabState {
         // Rebuild hunk offsets for the new selection
         self.rebuild_hunk_offsets();
 
+        // Tour mode reorders this branch diff into pillars — rebuild after re-parse.
+        if self.mode == DiffMode::Tour {
+            self.rebuild_tour_state();
+        }
+
         log_branch_profile_phase(self, "refresh_diff_impl_total", t_total);
         Ok(())
     }
@@ -2501,6 +2627,21 @@ impl TabState {
         let er_dir = self.er_dir();
         let branch_scope = self.storage_branch_scope().map(str::to_string);
         self.ai = ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref());
+        // The guided tour lives in the "branch" bucket. When the active bucket is a
+        // different view (unstaged/staged/history), load tour.json from the branch
+        // bucket so the Tour tab stays discoverable from any mode.
+        if self.ai.tour.is_none() {
+            if let Some(branch_dir) = self.branch_bucket_er_dir() {
+                if branch_dir != er_dir {
+                    let tour_path = std::path::Path::new(&branch_dir).join("tour.json");
+                    if let Ok(content) = std::fs::read_to_string(&tour_path) {
+                        if let Ok(tour) = serde_json::from_str::<ai::ErTour>(&content) {
+                            self.ai.tour = Some(tour);
+                        }
+                    }
+                }
+            }
+        }
         // Finding IDs may change after review reload — clear stale reference
         self.focused_finding_id = None;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
@@ -3163,6 +3304,87 @@ impl TabState {
             .unwrap_or(self.current_branch.as_str())
     }
 
+    /// (Re)build `TourState` from the loaded tour (`ai.tour`) and the current
+    /// branch diff (`self.files`). Pillar files absent from the diff are skipped;
+    /// diff files referenced by no pillar are appended to a trailing "Other
+    /// changes" pillar so nothing is hidden. Preserves the selected pillar across
+    /// rebuilds (e.g. live diff refreshes) when possible.
+    pub fn rebuild_tour_state(&mut self) {
+        let Some(tour) = self.ai.tour.clone() else {
+            self.tour = None;
+            return;
+        };
+        let ordered = tour.ordered_pillars();
+        let mut pillars: Vec<TourPillarView> = Vec::new();
+        let mut files: Vec<DiffFile> = Vec::new();
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut used: HashSet<String> = HashSet::new();
+
+        for p in &ordered {
+            let start = files.len();
+            for tf in &p.files {
+                if used.contains(&tf.path) {
+                    continue;
+                }
+                if let Some(df) = self.files.iter().find(|f| f.path == tf.path) {
+                    files.push(df.clone());
+                    used.insert(tf.path.clone());
+                }
+            }
+            let end = files.len();
+            // Skip pillars whose files are all absent from the current diff.
+            if end == start {
+                continue;
+            }
+            pillars.push(TourPillarView {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                description: p.description.clone(),
+                importance: p.importance,
+                foundation: p.foundation,
+            });
+            ranges.push((start, end));
+        }
+
+        // Trailing "Other changes" pillar for diff files no pillar referenced.
+        let start = files.len();
+        for df in &self.files {
+            if !used.contains(&df.path) {
+                files.push(df.clone());
+            }
+        }
+        if files.len() > start {
+            pillars.push(TourPillarView {
+                id: "__other__".to_string(),
+                title: "Other changes".to_string(),
+                description: "Files not assigned to a tour pillar.".to_string(),
+                importance: 0,
+                foundation: false,
+            });
+            ranges.push((start, files.len()));
+        }
+
+        let selected_pillar = self
+            .tour
+            .as_ref()
+            .map(|t| t.selected_pillar)
+            .unwrap_or(0)
+            .min(pillars.len().saturating_sub(1));
+        let selected_file = ranges.get(selected_pillar).map(|&(s, _)| s).unwrap_or(0);
+
+        self.tour = Some(TourState {
+            pillars,
+            selected_pillar,
+            files,
+            pillar_file_ranges: ranges,
+            selected_file,
+            current_hunk: 0,
+            current_line: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+        });
+    }
+
     pub fn set_mode(&mut self, mode: DiffMode) {
         if self.mode != mode {
             // Remember current position to restore after mode switch
@@ -3224,6 +3446,14 @@ impl TabState {
                         diff_cache: cache,
                     });
                 }
+            } else if mode == DiffMode::Tour {
+                self.current_hunk = 0;
+                self.current_line = None;
+                self.selected_watched = None;
+                self.diff_scroll = 0;
+                // Tour reorders the branch diff — load it first (fetch_scope == "branch").
+                let _ = self.refresh_diff_mode_switch();
+                self.rebuild_tour_state();
             } else if mode == DiffMode::Conflicts {
                 self.current_hunk = 0;
                 self.current_line = None;
@@ -6133,7 +6363,7 @@ impl App {
                 git::git_stage_file(&repo_root, &file_path)?;
                 self.notify(&format!("Resolved: {}", file_path));
             }
-            DiffMode::History | DiffMode::Hidden | DiffMode::PrDiff => {
+            DiffMode::History | DiffMode::Hidden | DiffMode::PrDiff | DiffMode::Tour => {
                 self.notify("Staging not available in this mode");
                 return Ok(());
             }
@@ -6567,6 +6797,7 @@ mod tests {
             pr_head_ref: None,
             pr_number: None,
             history: None,
+            tour: None,
             watched_config: WatchedConfig::default(),
             watched_files: Vec::new(),
             selected_watched: None,

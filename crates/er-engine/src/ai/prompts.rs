@@ -510,6 +510,53 @@ pub fn build_expert_review_prompt_prepared_diff(
     )
 }
 
+/// Guided tour generation when `{output_dir}/diff-tmp` is already prepared
+/// (desktop "Generate tour"). Writes only `{output_dir}/tour.json`.
+pub fn build_tour_prompt_prepared_diff(scope: &str, output_dir: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    format!(
+        r#"You are preparing a guided **Tour** of a code diff for a reviewer. A diff for scope `{scope}` is already captured at `{safe_output_dir}/diff-tmp`.
+
+## Steps
+1. Compute the diff hash: `sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp`.
+2. Read `{safe_output_dir}/diff-tmp` (the full diff) into context.
+3. Optionally read `{safe_output_dir}/review.json` if it exists and its `diff_hash` matches — reuse its groupings and reference finding ids.
+4. Group the changed files into **pillars** ordered foundation-first, then by importance:
+   - `foundation: true` for pillars other pillars build on (data models, core types, shared utilities, schema). Order these first.
+   - `importance` (0–100) ranks reviewer attention; higher sorts earlier among non-foundation.
+   - Each pillar: a short `title`, a 1–3 sentence markdown `description` (what it is and what to look for), and its `files` (new-side paths) in reading order, each with a one-line `reason`.
+   - Every changed file appears in exactly one pillar. 3–7 pillars is ideal.
+5. Write `{safe_output_dir}/tour.json` (and nothing else) with this exact shape:
+
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256 from step 1>",
+  "created_at": "<ISO 8601>",
+  "title": "<short tour title>",
+  "overview": "<1-2 sentence markdown intro>",
+  "pillars": [
+    {{
+      "id": "p-1",
+      "title": "Foundation: ...",
+      "description": "...",
+      "order": 0,
+      "importance": 90,
+      "foundation": true,
+      "files": [
+        {{"path": "src/foo.rs", "reason": "...", "finding_ids": []}}
+      ]
+    }}
+  ]
+}}
+```
+
+Do NOT modify `review.json`, `order.json`, or any other file. Write only `tour.json`."#
+    )
+}
+
 /// When `review-files.txt` exists, agents must limit analysis to those paths.
 pub fn file_scope_appendix(output_dir: &str) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
