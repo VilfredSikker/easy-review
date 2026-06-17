@@ -595,8 +595,7 @@ mod tests {
     fn arena_override_finding_resolves_nonactive_tab() {
         let ta = tempfile::tempdir().unwrap();
         let tb = tempfile::tempdir().unwrap();
-        let mut app =
-            app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
         let er_b = app.tabs[1].er_dir();
         let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-ov");
         crate::arena::save_run(&paths, &sample_run("arena-ov")).unwrap();
