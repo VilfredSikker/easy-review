@@ -6,6 +6,7 @@
   import { initKeyboard } from "$lib/stores/keyboard";
   import AppMark from "$lib/components/AppMark.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
+  import PillarNav from "$lib/components/PillarNav.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
   import LeftSidebar from "$lib/components/LeftSidebar.svelte";
   import RightPanel from "$lib/components/RightPanel.svelte";
@@ -331,7 +332,11 @@
             style="flex: {diffColumnFlex};"
           >
             {#if app.mainView === "diff"}
-              <FileTree collapsed={!panels?.tree} />
+              {#if app.snapshot?.mode === "tour"}
+                <PillarNav collapsed={!panels?.tree} />
+              {:else}
+                <FileTree collapsed={!panels?.tree} />
+              {/if}
               <DiffView />
             {:else if app.mainView === "agent-output"}
               <AgentOutputView />

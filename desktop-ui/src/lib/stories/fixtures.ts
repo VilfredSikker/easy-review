@@ -479,6 +479,7 @@ const baseSnapshot: AppSnapshot = {
     viewHistory: true,
     viewConflicts: true,
     viewHidden: true,
+    viewTour: true,
   },
   display: {
     lineNumbers: true,

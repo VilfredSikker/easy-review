@@ -37,6 +37,7 @@ fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
         DiffMode::History => features.view_history,
         DiffMode::Conflicts => features.view_conflicts,
         DiffMode::Hidden => features.view_hidden,
+        DiffMode::Tour => features.view_tour,
         DiffMode::PrDiff => true, // PrDiff is always allowed when the tab is in PR mode
     }
 }

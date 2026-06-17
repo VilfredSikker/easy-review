@@ -3,7 +3,7 @@
   import type { CommitSummary } from "$lib/types";
 
   interface Props {
-    mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden";
+    mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden" | "tour";
     total_count: number;
     reviewed_count: number;
     commits?: CommitSummary[];
@@ -16,6 +16,7 @@
     mode === "unstaged" ? "Unstaged" :
     mode === "staged" ? "Staged" :
     mode === "pr" ? "PR Diff" :
+    mode === "tour" ? "Guide" :
     "History"
   );
 
@@ -28,7 +29,16 @@
       viewHistory: true,
       viewConflicts: true,
       viewHidden: true,
+      viewTour: true,
     },
+  );
+  const tour = $derived(snapshot?.tour ?? null);
+  const tourAvailable = $derived(features.viewTour && (tour?.available ?? false));
+  /** A tour generation task already running for this tab. */
+  const tourGenerating = $derived(
+    (snapshot?.background_tasks ?? []).some(
+      (t) => t.kind === "tour" && (t.status === "running" || t.status === "queued"),
+    ),
   );
   const commitsToShow = $derived(commits.length > 0 ? commits : (snapshot?.commits ?? []));
   const selectedCommitSha = $derived(snapshot?.selected_commit_sha ?? null);
@@ -150,6 +160,32 @@
       {/if}
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 {mode === 'pr' ? 'text-accent' : 'text-fg-3'}"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
       <span class="text-[12px]">PR Diff</span>
+    </button>
+    {/if}
+
+    {#if !isRemotePr && tourAvailable}
+    <button
+      class="w-full text-left px-2 py-[5px] rounded-md flex items-center gap-2 relative {mode === 'tour' ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
+      onclick={() => void app.cmd("set_mode", { mode: "tour" })}
+    >
+      {#if mode === 'tour'}
+        <span class="absolute left-0 top-[4px] bottom-[4px] w-[2px] rounded-r bg-accent"></span>
+      {/if}
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 {mode === 'tour' ? 'text-accent' : 'text-fg-3'}"><path d="M9 18l6-6-6-6"/><circle cx="4" cy="12" r="1.5"/></svg>
+      <span class="text-[12px]">Guide</span>
+      {#if tour}
+        <span class="ml-auto mono text-[10px] text-muted">{tour.pillars.length} pillars</span>
+      {/if}
+    </button>
+    {:else if !isRemotePr && features.viewTour && !isReadOnly}
+    <button
+      class="w-full text-left px-2 py-[5px] rounded-md flex items-center gap-2 text-fg-3 hover:bg-card disabled:opacity-50"
+      disabled={tourGenerating}
+      onclick={() => void app.cmd("generate_tour")}
+      title="Analyze the diff with AI and group it into a guided tour"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><path d="M9 18l6-6-6-6"/><circle cx="4" cy="12" r="1.5"/></svg>
+      <span class="text-[12px]">{tourGenerating ? "Generating tour…" : "Generate tour"}</span>
     </button>
     {/if}
 
