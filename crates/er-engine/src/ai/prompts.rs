@@ -483,6 +483,45 @@ Ensure `.er/` exists: `mkdir -p .er/experts`
     )
 }
 
+/// Specialized expert review for local-managed app/TUI runs.
+pub fn build_expert_review_prompt_local_managed(
+    base_branch: &str,
+    scope: &str,
+    output_dir: &str,
+    expert_id: &str,
+) -> String {
+    let _ = expert_by_id(expert_id).expect("unknown expert_id");
+    let safe_base_branch = sanitize_for_shell(base_branch)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+    };
+    let capture = format!(
+        "mkdir -p {safe_output_dir}/experts && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
+    );
+    let preamble = review_rules_preamble(output_dir, false, FindingCaps::expert(), Some(&capture));
+    let lens = expert_lens_instructions(expert_id);
+    let output = expert_review_output_section(output_dir, expert_id);
+    format!(
+        r#"You are a specialized code reviewer. Write expert findings to `{safe_output_dir}/experts/`.
+
+{preamble}
+
+{lens}
+
+{analyze}
+
+{output}"#,
+        analyze = general_review_instructions_read_analyze(),
+    )
+}
+
 /// Specialized expert review when `{output_dir}/diff-tmp` is already prepared (desktop).
 pub fn build_expert_review_prompt_prepared_diff(
     scope: &str,
@@ -507,6 +546,53 @@ pub fn build_expert_review_prompt_prepared_diff(
 
 {output}"#,
         analyze = general_review_instructions_read_analyze(),
+    )
+}
+
+/// Guided tour generation when `{output_dir}/diff-tmp` is already prepared
+/// (desktop "Generate tour"). Writes only `{output_dir}/tour.json`.
+pub fn build_tour_prompt_prepared_diff(scope: &str, output_dir: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    format!(
+        r#"You are preparing a guided **Tour** of a code diff for a reviewer. A diff for scope `{scope}` is already captured at `{safe_output_dir}/diff-tmp`.
+
+## Steps
+1. Compute the diff hash: `sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp`.
+2. Read `{safe_output_dir}/diff-tmp` (the full diff) into context.
+3. Optionally read `{safe_output_dir}/review.json` if it exists and its `diff_hash` matches — reuse its groupings and reference finding ids.
+4. Group the changed files into **pillars** ordered foundation-first, then by importance:
+   - `foundation: true` for pillars other pillars build on (data models, core types, shared utilities, schema). Order these first.
+   - `importance` (0–100) ranks reviewer attention; higher sorts earlier among non-foundation.
+   - Each pillar: a short `title`, a 1–3 sentence markdown `description` (what it is and what to look for), and its `files` (new-side paths) in reading order, each with a one-line `reason`.
+   - Every changed file appears in exactly one pillar. 3–7 pillars is ideal.
+5. Write `{safe_output_dir}/tour.json` (and nothing else) with this exact shape:
+
+```json
+{{
+  "version": 1,
+  "diff_hash": "<sha256 from step 1>",
+  "created_at": "<ISO 8601>",
+  "title": "<short tour title>",
+  "overview": "<1-2 sentence markdown intro>",
+  "pillars": [
+    {{
+      "id": "p-1",
+      "title": "Foundation: ...",
+      "description": "...",
+      "order": 0,
+      "importance": 90,
+      "foundation": true,
+      "files": [
+        {{"path": "src/foo.rs", "reason": "...", "finding_ids": []}}
+      ]
+    }}
+  ]
+}}
+```
+
+Do NOT modify `review.json`, `order.json`, or any other file. Write only `tour.json`."#
     )
 }
 
@@ -645,6 +731,45 @@ pub fn build_professor_review_prompt(
         r#"You are a code professor. Teach what this diff implements; write insights to `.er/professor.json`.
 
 Ensure `.er/` exists: `mkdir -p .er`
+
+{preamble}
+
+{lens}
+
+{analyze}
+
+{output}{file_scope}"#,
+        analyze = general_review_instructions_read_analyze(),
+    )
+}
+
+/// Professor learning agent for local-managed app/TUI runs.
+pub fn build_professor_review_prompt_local_managed(
+    base_branch: &str,
+    scope: &str,
+    output_dir: &str,
+    user_focus: Option<&str>,
+) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+    };
+    let capture = format!(
+        "mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
+    );
+    let preamble = professor_rules_preamble(output_dir, false, Some(&capture));
+    let lens = professor_lens_instructions(user_focus);
+    let output = professor_output_section(output_dir);
+    let file_scope = file_scope_if_present(output_dir);
+    format!(
+        r#"You are a code professor. Teach what this diff implements; write insights to `{safe_output_dir}/professor.json`.
 
 {preamble}
 
@@ -802,6 +927,52 @@ Ensure `.er/` exists: `mkdir -p .er`
     )
 }
 
+/// Triage scan for local-managed app/TUI runs.
+pub fn build_triage_review_prompt_local_managed(
+    base_branch: &str,
+    scope: &str,
+    output_dir: &str,
+) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
+    };
+    let capture = format!(
+        "mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
+    );
+    let preamble = review_rules_preamble(
+        output_dir,
+        false,
+        FindingCaps {
+            per_file: 0,
+            total: 2,
+            is_expert: true,
+        },
+        Some(&capture),
+    );
+    let lens = triage_lens_instructions();
+    let output = triage_output_section(output_dir);
+    format!(
+        r#"You are a code review triage agent. Scan the branch diff broadly and write routing guidance to `{safe_output_dir}/triage.json`.
+
+{preamble}
+
+{lens}
+
+{analyze}
+
+{output}"#,
+        analyze = general_review_instructions_read_analyze(),
+    )
+}
+
 /// Triage when `{output_dir}/diff-tmp` is already prepared (desktop).
 pub fn build_triage_review_prompt_prepared_diff(scope: &str, output_dir: &str) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
@@ -880,6 +1051,72 @@ pub fn build_questions_prompt(base_branch: &str, scope: &str) -> String {
    c. Set the original question's `resolved` field to `true`
 6. Write the updated `.er/questions.json`
 7. Back up: `cp .er/questions.json .er/questions.prev.json`
+
+## Answer Quality
+
+- Actually read the code the human is asking about. Don't give generic answers.
+- If they ask "why?", explain with specifics from the diff.
+- Keep responses concise — they render in a TUI with limited width.
+- Never be defensive. If the code is fine, say so.
+
+## Speed
+
+Target: complete in under 60 seconds. Read the diff once, answer all questions in-context."#
+    )
+}
+
+/// Build the questions-answering prompt for local-managed app/TUI runs.
+pub fn build_questions_prompt_local_managed(
+    base_branch: &str,
+    scope: &str,
+    output_dir: &str,
+) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
+    };
+    let annotate = annotate_diff_command(
+        &format!("{output_dir}/diff-tmp"),
+        &format!("{output_dir}/diff-annotated"),
+    );
+
+    format!(
+        r#"You are answering code review questions. Read the questions file and the diff, then provide answers.
+
+## Instructions
+
+1. Read `{safe_output_dir}/questions.json`
+   - If it doesn't exist or has no unresolved questions: print "No questions to answer" and stop.
+2. Run: `mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp`
+3. Annotate with file line numbers: `{annotate}`
+4. Read `{safe_output_dir}/diff-annotated` — each content line carries `[h<hunk> L<file_line>]` tags matching `Question.hunk_index` and `Question.line_start`
+5. For each question where `resolved == false` and no existing reply (no entry with `in_reply_to` == that question's `id`):
+   a. Locate the relevant code in the diff (using `file`, `hunk_index`, `line_start`)
+   b. Write a thoughtful answer as a NEW entry appended to the `questions` array:
+      ```json
+      {{
+        "id": "a-<timestamp>-<seq>",
+        "timestamp": "<ISO 8601>",
+        "file": "<same as question>",
+        "hunk_index": <same as question>,
+        "line_start": <same as question>,
+        "line_content": "<same as question>",
+        "text": "<your answer referencing actual code from the diff>",
+        "resolved": false,
+        "in_reply_to": "<question.id>",
+        "author": "Claude"
+      }}
+      ```
+   c. Set the original question's `resolved` field to `true`
+6. Write the updated `{safe_output_dir}/questions.json`
+7. Back up: `cp {safe_output_dir}/questions.json {safe_output_dir}/questions.prev.json`
 
 ## Answer Quality
 
@@ -1100,6 +1337,46 @@ pub fn build_summary_prompt(base_branch: &str, scope: &str) -> String {
 2. Run: `git diff {diff_args} > .er/diff-tmp`
 3. Read `.er/diff-tmp`
 4. Write `.er/summary.md` as 3-5 short markdown paragraphs covering:
+   - what changed
+   - the most important files or subsystems touched
+   - the main implementation risks or things a reviewer should pay attention to
+
+## Guidelines
+
+- Be concrete and reference actual changes from the diff.
+- Focus on behavior and review relevance, not commit-style fluff.
+- Do not write any other files.
+- Do NOT read individual source files — the diff contains everything needed."#
+    )
+}
+
+/// Build the summary-only prompt for local-managed app/TUI runs.
+pub fn build_summary_prompt_local_managed(
+    base_branch: &str,
+    scope: &str,
+    output_dir: &str,
+) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
+    };
+
+    format!(
+        r#"Summarize the current git diff and write the result to `{safe_output_dir}/summary.md`.
+
+## Instructions
+
+1. Ensure the output dir exists: `mkdir -p {safe_output_dir}`
+2. Run: `git diff {diff_args} > {safe_output_dir}/diff-tmp`
+3. Read `{safe_output_dir}/diff-tmp`
+4. Write `{safe_output_dir}/summary.md` as 3-5 short markdown paragraphs covering:
    - what changed
    - the most important files or subsystems touched
    - the main implementation risks or things a reviewer should pay attention to
@@ -1663,6 +1940,57 @@ mod tests {
         assert!(prompt.contains("'/tmp/out/diff-tmp'"));
         assert!(!prompt.contains("git diff"));
         assert!(!prompt.contains("gh pr"));
+    }
+
+    #[test]
+    fn local_managed_review_prompt_targets_output_dir() {
+        let prompt = build_review_prompt_local_managed("main", "branch", "/tmp/managed-er");
+        assert!(prompt.contains("'/tmp/managed-er/diff-tmp'"));
+        assert!(prompt.contains("`'/tmp/managed-er'/review.json`"));
+        assert!(!prompt.contains("> .er/diff-tmp"));
+        assert!(!prompt.contains("write results to `.er/`"));
+    }
+
+    #[test]
+    fn local_managed_questions_prompt_targets_output_dir() {
+        let prompt = build_questions_prompt_local_managed("main", "branch", "/tmp/managed-er");
+        assert!(prompt.contains("'/tmp/managed-er'/questions.json"));
+        assert!(prompt.contains("'/tmp/managed-er/diff-tmp'"));
+        assert!(prompt.contains("'/tmp/managed-er/diff-annotated'"));
+        assert!(prompt.contains("cp '/tmp/managed-er'/questions.json"));
+        assert!(!prompt.contains("Read `.er/questions.json`"));
+        assert!(!prompt.contains("> .er/diff-tmp"));
+    }
+
+    #[test]
+    fn local_managed_summary_prompt_targets_output_dir() {
+        let prompt = build_summary_prompt_local_managed("main", "staged", "/tmp/managed-er");
+        assert!(prompt.contains("'/tmp/managed-er'/summary.md"));
+        assert!(prompt.contains(
+            "git diff --staged --unified=3 --no-color --no-ext-diff > '/tmp/managed-er'/diff-tmp"
+        ));
+        assert!(!prompt.contains("write the result to `.er/summary.md`"));
+        assert!(!prompt.contains("> .er/diff-tmp"));
+    }
+
+    #[test]
+    fn local_managed_specialized_prompts_target_output_dir() {
+        let triage = build_triage_review_prompt_local_managed("main", "branch", "/tmp/out");
+        assert!(triage.contains("'/tmp/out'/triage.json"));
+        assert!(triage.contains("'/tmp/out/diff-tmp'"));
+        assert!(!triage.contains("`.er/triage.json`"));
+
+        let professor =
+            build_professor_review_prompt_local_managed("main", "unstaged", "/tmp/out", None);
+        assert!(professor.contains("'/tmp/out'/professor.json"));
+        assert!(professor.contains("'/tmp/out/diff-tmp'"));
+        assert!(!professor.contains("`.er/professor.json`"));
+
+        let expert =
+            build_expert_review_prompt_local_managed("main", "branch", "/tmp/out", "security");
+        assert!(expert.contains("'/tmp/out'/experts/security.json"));
+        assert!(expert.contains("'/tmp/out/diff-tmp'"));
+        assert!(!expert.contains("`.er/experts/`"));
     }
 
     // ── review_rules_preamble + experts ──

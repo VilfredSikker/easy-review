@@ -125,6 +125,10 @@ pub struct FeatureFlags {
     pub view_conflicts: bool,
     #[serde(default = "default_true")]
     pub view_hidden: bool,
+    /// Guided Tour walkthrough mode (AI-grouped pillars). Tab appears only when a
+    /// `tour.json` exists for the branch.
+    #[serde(default = "default_true")]
+    pub view_tour: bool,
     /// Multi-round AI Review Arena (orchestrated debate + consensus UI).
     #[serde(default = "default_true")]
     pub arena: bool,
@@ -304,6 +308,7 @@ impl Default for FeatureFlags {
             view_history: true,
             view_conflicts: true,
             view_hidden: true,
+            view_tour: true,
             arena: true,
         }
     }
@@ -392,6 +397,23 @@ impl AiHubConfig {
             }
         }
         if reviewer_kind == "triage" {
+            return provider
+                .models
+                .iter()
+                .min_by_key(|m| m.avg_latency_ms.unwrap_or(u32::MAX))
+                .map(|m| m.id.clone());
+        }
+        if reviewer_kind == "tour" {
+            // Tour generation is clustering + short descriptions — Opus is
+            // overkill. Default to a Sonnet-class model (good quality, far
+            // cheaper/faster); fall back to the fastest model when none exists.
+            if let Some(m) = provider
+                .models
+                .iter()
+                .find(|m| m.id.to_lowercase().contains("sonnet"))
+            {
+                return Some(m.id.clone());
+            }
             return provider
                 .models
                 .iter()
@@ -982,6 +1004,12 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
             get: |c| c.features.view_hidden,
             set: |c, v| c.features.view_hidden = v,
         },
+        ConfigItem::BoolToggle {
+            label: "Tour".into(),
+            description: "Show AI guided tour mode (when a tour exists)".into(),
+            get: |c| c.features.view_tour,
+            set: |c, v| c.features.view_tour = v,
+        },
         ConfigItem::SectionHeader("Display".into()),
         ConfigItem::StringCycle {
             label: "Theme".into(),
@@ -1298,6 +1326,7 @@ args = ["--model", "gpt-5.4"]
         assert!(flags.view_history);
         assert!(flags.view_conflicts);
         assert!(flags.view_hidden);
+        assert!(flags.view_tour);
     }
 
     #[test]
@@ -1362,6 +1391,7 @@ args = ["--model", "gpt-5.4"]
                 view_history: true,
                 view_conflicts: false,
                 view_hidden: true,
+                view_tour: true,
                 arena: false,
             },
             display: DisplayConfig {
@@ -1830,6 +1860,51 @@ args = ["--model", "gpt-5.4"]
         assert_eq!(
             hub.resolve_reviewer_model("triage", "claude").as_deref(),
             Some("haiku-4.5")
+        );
+    }
+
+    #[test]
+    fn resolve_reviewer_model_tour_defaults_to_sonnet() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "claude".into(),
+            AiProviderConfig {
+                models: vec![
+                    AiModelConfig {
+                        id: "claude-opus-4-8".into(),
+                        avg_latency_ms: Some(20_000),
+                        ..Default::default()
+                    },
+                    AiModelConfig {
+                        id: "claude-sonnet-4-6".into(),
+                        avg_latency_ms: Some(12_000),
+                        ..Default::default()
+                    },
+                    AiModelConfig {
+                        id: "claude-haiku-4-5".into(),
+                        avg_latency_ms: Some(5_000),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        // No override → defaults to the Sonnet-class model (not Opus, not Haiku).
+        assert_eq!(
+            hub.resolve_reviewer_model("tour", "claude").as_deref(),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(
+            hub.resolve_spawn_model_id("claude", Some("claude-opus-4-8"), "tour")
+                .as_deref(),
+            Some("claude-sonnet-4-6")
+        );
+        // Explicit override is honored.
+        hub.reviewer_models
+            .insert("tour".into(), "claude-haiku-4-5".into());
+        assert_eq!(
+            hub.resolve_reviewer_model("tour", "claude").as_deref(),
+            Some("claude-haiku-4-5")
         );
     }
 }

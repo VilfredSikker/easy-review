@@ -220,6 +220,84 @@ pub struct OrderGroup {
     pub color: String,
 }
 
+// ── .er/tour.json ──
+//
+// A guided walkthrough of a diff. The AI analyzes the change and groups files
+// into ordered "pillars" (foundation first, then importance), each with a
+// description and its relevant files. This is a self-contained sidecar — it
+// keeps its own ordering and grouping and never overwrites `order.json` or
+// `review.json` (it may reference review findings by id).
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErTour {
+    pub version: u32,
+    pub diff_hash: String,
+    #[serde(default)]
+    pub created_at: String,
+    /// Short title for the whole tour, e.g. "Tour: OAuth token refresh".
+    #[serde(default)]
+    pub title: String,
+    /// Markdown intro shown above the first pillar.
+    #[serde(default)]
+    pub overview: String,
+    #[serde(default)]
+    pub pillars: Vec<TourPillar>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TourPillar {
+    pub id: String,
+    pub title: String,
+    /// Markdown description — the sticky header body for this pillar.
+    #[serde(default)]
+    pub description: String,
+    /// Lower sorts earlier.
+    #[serde(default)]
+    pub order: u32,
+    /// 0..=100 reviewer-attention weight; tie-break for ordering and a badge.
+    #[serde(default)]
+    pub importance: u32,
+    /// Foundational pillars sort before non-foundation at equal `order`.
+    #[serde(default)]
+    pub foundation: bool,
+    /// Files in this pillar, in intended reading order.
+    #[serde(default)]
+    pub files: Vec<TourFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TourFile {
+    /// New-side path; matches `DiffFile.path`.
+    pub path: String,
+    #[serde(default)]
+    pub reason: String,
+    /// Optional links to `review.json` finding ids surfaced for this file.
+    #[serde(default)]
+    pub finding_ids: Vec<String>,
+}
+
+impl ErTour {
+    /// Pillars sorted by (order, !foundation, descending importance, title).
+    pub fn ordered_pillars(&self) -> Vec<&TourPillar> {
+        let mut pillars: Vec<&TourPillar> = self.pillars.iter().collect();
+        pillars.sort_by(|a, b| {
+            a.order
+                .cmp(&b.order)
+                .then((!a.foundation).cmp(&(!b.foundation)))
+                .then(b.importance.cmp(&a.importance))
+                .then(a.title.cmp(&b.title))
+        });
+        pillars
+    }
+
+    /// The pillar a given file path belongs to, if any.
+    pub fn file_pillar(&self, path: &str) -> Option<&TourPillar> {
+        self.pillars
+            .iter()
+            .find(|p| p.files.iter().any(|f| f.path == path))
+    }
+}
+
 // ── .er-checklist.json ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,6 +367,8 @@ struct CommentIndexData {
 pub struct AiState {
     pub review: Option<ErReview>,
     pub order: Option<ErOrder>,
+    /// Guided walkthrough (tour.json) — its own ordering/grouping into pillars.
+    pub tour: Option<ErTour>,
     pub summary: Option<String>,
     /// Per-agent markdown summaries keyed by display label (Security, Testing, Professor, …).
     pub agent_summaries: HashMap<String, String>,
@@ -317,6 +397,7 @@ impl Default for AiState {
         AiState {
             review: None,
             order: None,
+            tour: None,
             summary: None,
             agent_summaries: HashMap::new(),
             checklist: None,
@@ -438,6 +519,11 @@ impl AiState {
             || self.order.is_some()
             || self.summary.is_some()
             || self.checklist.is_some()
+    }
+
+    /// Whether a non-empty guided tour is loaded.
+    pub fn has_tour(&self) -> bool {
+        self.tour.as_ref().is_some_and(|t| !t.pillars.is_empty())
     }
 
     /// Whether any personal review questions are loaded.

@@ -132,6 +132,7 @@ fn mode_str(mode: DiffMode) -> &'static str {
         DiffMode::Conflicts => "conflicts",
         DiffMode::Hidden => "hidden",
         DiffMode::PrDiff => "pr",
+        DiffMode::Tour => "tour",
     }
 }
 
@@ -231,6 +232,7 @@ pub struct FeatureFlagsSnapshot {
     pub view_history: bool,
     pub view_conflicts: bool,
     pub view_hidden: bool,
+    pub view_tour: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -251,8 +253,45 @@ impl From<&er_engine::config::FeatureFlags> for FeatureFlagsSnapshot {
             view_history: f.view_history,
             view_conflicts: f.view_conflicts,
             view_hidden: f.view_hidden,
+            view_tour: f.view_tour,
         }
     }
+}
+
+/// One file reference within a tour pillar (wire form).
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TourFileRef {
+    pub path: String,
+    pub reason: String,
+    pub finding_ids: Vec<String>,
+}
+
+/// One tour pillar (wire form) with per-pillar review progress.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PillarSnapshot {
+    pub id: String,
+    pub title: String,
+    pub description_markdown: String,
+    pub importance: u32,
+    pub foundation: bool,
+    pub files: Vec<TourFileRef>,
+    pub reviewed_count: usize,
+    pub total_count: usize,
+}
+
+/// Guided tour state for the active tab (Guide tab in the desktop).
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TourSnapshot {
+    /// True when a tour.json exists for this branch.
+    pub available: bool,
+    /// True when the tour matches the current diff (not stale).
+    pub fresh: bool,
+    pub title: String,
+    pub overview_markdown: String,
+    pub pillars: Vec<PillarSnapshot>,
 }
 
 impl From<&er_engine::config::DisplayConfig> for DisplayConfigSnapshot {
@@ -373,6 +412,13 @@ pub struct AppSnapshot {
     /// Recent arena runs for the active tab (newest first).
     #[serde(default)]
     pub arena_runs: Vec<ArenaRunSummaryWire>,
+    /// Guided tour (Guide tab). `available` drives whether the Guide tab shows.
+    #[serde(default)]
+    pub tour: TourSnapshot,
+    /// Active arena runs across ALL tabs (tab-independent background runs).
+    /// Lets the UI keep a run visible/controllable after switching branches.
+    #[serde(default)]
+    pub background_arena_runs: Vec<ArenaRunSummaryWire>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1287,6 +1333,125 @@ pub(crate) fn build_file_snapshot(
     }
 }
 
+/// Build the guided-tour wire snapshot from the loaded `tour.json`, including
+/// per-pillar reviewed/total counts (shared branch `reviewed` set).
+///
+/// When the tab shows the branch diff (Branch/Tour/PrDiff — the modes that share
+/// the branch bucket and load the branch diff into `tab.files`), this mirrors the
+/// TUI's `rebuild_tour_state`: files absent from the diff are dropped, each file
+/// appears in only its first pillar, empty pillars are skipped, and unreferenced
+/// diff files collect into a trailing "Other changes" pillar. In other scopes
+/// (unstaged/staged/history) `tab.files` is a different diff, so the raw pillars
+/// are passed through unfiltered — only `available`/pillar-count is consumed
+/// there (the pillar nav renders in Tour mode only).
+fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
+    let Some(tour) = tab.ai.tour.as_ref() else {
+        return TourSnapshot::default();
+    };
+    if tour.pillars.is_empty() {
+        return TourSnapshot::default();
+    }
+
+    let branch_scope = matches!(
+        tab.mode,
+        DiffMode::Branch | DiffMode::Tour | DiffMode::PrDiff
+    );
+
+    let make_file = |f: &er_engine::ai::TourFile| TourFileRef {
+        path: f.path.clone(),
+        reason: f.reason.clone(),
+        finding_ids: f.finding_ids.clone(),
+    };
+    let count_reviewed = |files: &[TourFileRef]| {
+        files
+            .iter()
+            .filter(|f| tab.reviewed.contains_key(&f.path))
+            .count()
+    };
+
+    let mut pillars: Vec<PillarSnapshot> = Vec::new();
+
+    if branch_scope {
+        // Filter to files actually in the diff; dedup so a file shows once.
+        let diff_paths: std::collections::HashSet<&str> =
+            tab.files.iter().map(|f| f.path.as_str()).collect();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for p in tour.ordered_pillars() {
+            let mut files: Vec<TourFileRef> = Vec::new();
+            for f in &p.files {
+                if !diff_paths.contains(f.path.as_str()) || !seen.insert(f.path.clone()) {
+                    continue;
+                }
+                files.push(make_file(f));
+            }
+            if files.is_empty() {
+                continue;
+            }
+            let reviewed_count = count_reviewed(&files);
+            let total_count = files.len();
+            pillars.push(PillarSnapshot {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                description_markdown: p.description.clone(),
+                importance: p.importance,
+                foundation: p.foundation,
+                files,
+                reviewed_count,
+                total_count,
+            });
+        }
+        // Trailing "Other changes" pillar for diff files no pillar referenced.
+        let other: Vec<TourFileRef> = tab
+            .files
+            .iter()
+            .filter(|f| !seen.contains(&f.path))
+            .map(|f| TourFileRef {
+                path: f.path.clone(),
+                reason: String::new(),
+                finding_ids: Vec::new(),
+            })
+            .collect();
+        if !other.is_empty() {
+            let reviewed_count = count_reviewed(&other);
+            let total_count = other.len();
+            pillars.push(PillarSnapshot {
+                id: "__other__".to_string(),
+                title: "Other changes".to_string(),
+                description_markdown: "Files not assigned to a tour pillar.".to_string(),
+                importance: 0,
+                foundation: false,
+                files: other,
+                reviewed_count,
+                total_count,
+            });
+        }
+    } else {
+        for p in tour.ordered_pillars() {
+            let files: Vec<TourFileRef> = p.files.iter().map(&make_file).collect();
+            let reviewed_count = count_reviewed(&files);
+            let total_count = files.len();
+            pillars.push(PillarSnapshot {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                description_markdown: p.description.clone(),
+                importance: p.importance,
+                foundation: p.foundation,
+                files,
+                reviewed_count,
+                total_count,
+            });
+        }
+    }
+
+    TourSnapshot {
+        available: true,
+        fresh: !tab.ai.is_stale,
+        title: tour.title.clone(),
+        overview_markdown: tour.overview.clone(),
+        pillars,
+    }
+}
+
 /// Build a full snapshot, with differential-snapshot support: when
 /// `sent_files` is provided, files whose hunk content the frontend already
 /// holds are sent with `hunks_omitted = true` and no hunk payload.
@@ -1774,6 +1939,8 @@ fn build_snapshot_inner(
             let branch = app.arena_branch_ref();
             app.arena_list_summaries(Some(&branch)).unwrap_or_default()
         },
+        tour: build_tour_snapshot(tab),
+        background_arena_runs: app.background_arena_runs(),
     };
     if crate::profile_log::profile_enabled() {
         let total_lines: usize = out
