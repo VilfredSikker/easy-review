@@ -196,13 +196,7 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
             });
         }
         HubAction::CleanupQuestions => {
-            let count = app
-                .tab()
-                .ai
-                .questions
-                .as_ref()
-                .map_or(0, |q| q.questions.len())
-                + app.tab().ai.notes.as_ref().map_or(0, |n| n.notes.len());
+            let count = app.tab().ai.local_draft_count();
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
         }
         HubAction::CleanupReviews => {

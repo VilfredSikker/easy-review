@@ -566,7 +566,6 @@ fn build_hints(app: &App) -> Vec<Hint> {
         if h.verbose {
             if tab.mode != DiffMode::Staged {
                 hints.push(Hint::new("q", " question "));
-                hints.push(Hint::new("n", " note "));
                 hints.push(Hint::new("c", " comment "));
             }
             hints.push(Hint::new("f", " filter "));
@@ -578,7 +577,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
         // Default normal mode — essential navigation only
         if h.navigation {
             hints.push(Hint::new("j/k", " nav "));
-            hints.push(Hint::new("^↑/↓", " hunks "));
+            hints.push(Hint::new("n/N", " hunks "));
             hints.push(Hint::new("+/-", " context "));
             hints.push(Hint::new("␣", " review "));
             hints.push(Hint::new("/", " search "));
@@ -620,7 +619,6 @@ fn build_hints(app: &App) -> Vec<Hint> {
         if h.verbose {
             if tab.mode != DiffMode::Staged {
                 hints.push(Hint::new("q", " question "));
-                hints.push(Hint::new("n", " note "));
                 hints.push(Hint::new("c", " comment "));
             }
             hints.push(Hint::new("e", " edit "));
@@ -758,7 +756,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 }
                 ConfirmAction::Push => "Push branch to remote? (y/n)".to_string(),
                 ConfirmAction::CleanupQuestions { count } => {
-                    format!("Clear {} question(s) & note(s)? (y/n)", count)
+                    format!("Clear {} item(s) (questions & notes)? (y/n)", count)
                 }
                 ConfirmAction::CleanupReviews { count } => {
                     format!("Clear {} review file(s)? (y/n)", count)
@@ -860,7 +858,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             ];
             if app.can_toggle_comment_type() {
                 header_spans.push(Span::styled("Ctrl+t", styles::key_hint_style()));
-                header_spans.push(Span::styled(" toggle  ", dim));
+                header_spans.push(Span::styled(" type  ", dim));
             }
             header_spans.push(Span::styled("Esc", styles::key_hint_style()));
             header_spans.push(Span::styled(" cancel", dim));

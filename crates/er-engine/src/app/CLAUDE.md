@@ -47,7 +47,7 @@ persistence. See `state/agent.md` for the `App` vs `TabState` vs desktop
 - `next_line/prev_line` — sets `current_line: Some(i)`, crosses hunk boundaries automatically
 - `scroll_to_current_hunk()` — computes scroll offset for the current hunk position via `HunkOffsets`
 
-`current_line: Option<usize>` — `None` = hunk-level navigation (Ctrl+↑/↓ keys). `Some(i)` = line-level (arrow keys). Hunk keys reset it to `None`.
+`current_line: Option<usize>` — `None` = hunk-level navigation (n/N keys). `Some(i)` = line-level (arrow keys). Hunk keys reset it to `None`.
 
 `selected_watched: Option<usize>` — `None` = cursor is in diff files section. `Some(idx)` = cursor is on a watched file. Navigation flows from diff files into watched files and back.
 

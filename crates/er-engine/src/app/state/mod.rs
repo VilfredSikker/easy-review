@@ -2829,10 +2829,6 @@ impl TabState {
         self.layers.show_questions = !self.layers.show_questions;
     }
 
-    pub fn toggle_layer_notes(&mut self) {
-        self.layers.show_notes = !self.layers.show_notes;
-    }
-
     pub fn toggle_layer_comments(&mut self) {
         self.layers.show_github_comments = !self.layers.show_github_comments;
     }
@@ -4978,7 +4974,7 @@ impl App {
                 enabled: false,
             },
             HubItem {
-                label: "Ctrl+↓ / ↑".into(),
+                label: "n / N".into(),
                 hint: "".into(),
                 description: "Next / previous hunk".into(),
                 action: HubAction::Noop,
@@ -5077,15 +5073,7 @@ impl App {
             HubItem {
                 label: "q".into(),
                 hint: "".into(),
-                description: "Add review question".into(),
-                action: HubAction::Noop,
-                is_header: false,
-                enabled: false,
-            },
-            HubItem {
-                label: "n".into(),
-                hint: "".into(),
-                description: "Add local note".into(),
+                description: "Add review question (Ctrl+t → note)".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -5163,6 +5151,14 @@ impl App {
                 is_header: false,
                 enabled: false,
             },
+            HubItem {
+                label: "Ctrl+t".into(),
+                hint: "".into(),
+                description: "While composing: cycle question → note → comment".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
             // ── Layers ──
             HubItem {
                 label: "── Layers ──".into(),
@@ -5191,15 +5187,7 @@ impl App {
             HubItem {
                 label: "Q".into(),
                 hint: "".into(),
-                description: "Toggle questions".into(),
-                action: HubAction::Noop,
-                is_header: false,
-                enabled: false,
-            },
-            HubItem {
-                label: "N".into(),
-                hint: "".into(),
-                description: "Toggle notes".into(),
+                description: "Toggle questions & notes".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -7413,16 +7401,6 @@ mod tests {
         assert!(!tab.layers.show_questions);
         tab.toggle_layer_questions();
         assert!(tab.layers.show_questions);
-    }
-
-    #[test]
-    fn toggle_layer_notes_flips_show_notes() {
-        let mut tab = make_test_tab(vec![]);
-        assert!(tab.layers.show_notes);
-        tab.toggle_layer_notes();
-        assert!(!tab.layers.show_notes);
-        tab.toggle_layer_notes();
-        assert!(tab.layers.show_notes);
     }
 
     #[test]

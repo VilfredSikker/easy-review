@@ -1765,7 +1765,7 @@ impl App {
     /// What gets copied depends on navigation state:
     /// - Selection active (shift+arrow): selected lines only
     /// - Line-level nav (arrow keys): current line only
-    /// - Hunk-level nav (Ctrl+↑/↓ keys): full hunk
+    /// - Hunk-level nav (n/N keys): full hunk
     pub fn copy_context(&mut self) -> Result<()> {
         let tab = self.tab();
         let file = match tab.selected_diff_file() {
