@@ -657,13 +657,14 @@ fn build_hints(app: &App) -> Vec<Hint> {
             // Show comment navigation hints when current file has comments
             if let Some(file) = tab.files.get(tab.selected_file) {
                 let has_comments = tab.ai.file_question_count(&file.path) > 0
+                    || tab.ai.file_note_count(&file.path) > 0
                     || tab.ai.file_github_comment_count(&file.path) > 0;
                 if has_comments {
                     hints.push(Hint::new("J/K", " comments "));
                 }
             }
-            if tab.ai.has_questions() {
-                hints.push(Hint::new("z", " clear questions "));
+            if tab.ai.has_questions() || tab.ai.has_notes() {
+                hints.push(Hint::new("z", " clear questions & notes "));
             }
             if tab.ai.has_data() {
                 hints.push(Hint::new("Z", " clear reviews "));
@@ -779,7 +780,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 }
                 ConfirmAction::Push => "Push branch to remote? (y/n)".to_string(),
                 ConfirmAction::CleanupQuestions { count } => {
-                    format!("Clear {} question(s)? (y/n)", count)
+                    format!("Clear {} item(s) (questions & notes)? (y/n)", count)
                 }
                 ConfirmAction::CleanupReviews { count } => {
                     format!("Clear {} review file(s)? (y/n)", count)
@@ -814,12 +815,15 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
         }
         InputMode::Comment => {
             let is_question = tab.comment_type == er_engine::ai::CommentType::Question;
+            let is_note = tab.comment_type == er_engine::ai::CommentType::Note;
+            // Questions and notes share the yellow accent; GitHub comments are cyan.
+            let yellow_kind = is_question || is_note;
             let is_reply = tab.comment_reply_to.is_some();
             let is_finding_reply = tab.comment_finding_ref.is_some();
             let (label, accent) = if is_reply {
                 (
                     "reply",
-                    if is_question {
+                    if yellow_kind {
                         styles::YELLOW()
                     } else {
                         styles::CYAN()
@@ -827,6 +831,8 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 )
             } else if is_finding_reply {
                 ("response", styles::CYAN())
+            } else if is_note {
+                ("note", styles::YELLOW())
             } else if is_question {
                 ("question", styles::YELLOW())
             } else {
@@ -876,7 +882,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
             ];
             if app.can_toggle_comment_type() {
                 header_spans.push(Span::styled("Ctrl+t", styles::key_hint_style()));
-                header_spans.push(Span::styled(" toggle  ", dim));
+                header_spans.push(Span::styled(" type  ", dim));
             }
             header_spans.push(Span::styled("Esc", styles::key_hint_style()));
             header_spans.push(Span::styled(" cancel", dim));

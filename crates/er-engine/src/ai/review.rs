@@ -1057,6 +1057,14 @@ impl AiState {
         self.notes.as_ref().is_some_and(|ns| !ns.notes.is_empty())
     }
 
+    /// Total count of private local drafts (questions + notes). These are the
+    /// sidecars cleared together by the `z` cleanup action.
+    #[allow(dead_code)]
+    pub fn local_draft_count(&self) -> usize {
+        self.questions.as_ref().map_or(0, |q| q.questions.len())
+            + self.notes.as_ref().map_or(0, |n| n.notes.len())
+    }
+
     /// Count of notes for a file (all notes, including replies)
     #[allow(dead_code)]
     pub fn file_note_count(&self, path: &str) -> usize {

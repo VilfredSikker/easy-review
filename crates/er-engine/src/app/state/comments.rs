@@ -874,12 +874,11 @@ impl App {
             return;
         }
         let tab = self.tab_mut();
+        // Cycle through all three local draft kinds: question → note → comment.
         tab.comment_type = match tab.comment_type {
-            CommentType::Question => CommentType::GitHubComment,
+            CommentType::Question => CommentType::Note,
+            CommentType::Note => CommentType::GitHubComment,
             CommentType::GitHubComment => CommentType::Question,
-            // Notes are a desktop-composer concept; the TUI question/comment
-            // toggle leaves them unchanged.
-            CommentType::Note => CommentType::Note,
         };
     }
 

@@ -149,10 +149,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 None
             };
 
-            // Comment indicators (questions = yellow ◆N, github = cyan ◆N)
+            // Comment indicators (questions = yellow ◆N, notes = yellow ▪N, github = cyan ◆N)
             let question_count = tab.ai.file_question_count(&file.path);
+            let note_count = tab.ai.file_note_count(&file.path);
             let gh_comment_count = tab.ai.file_github_comment_count(&file.path);
             let has_questions = question_count > 0;
+            let has_notes = note_count > 0;
             let has_gh_comments = gh_comment_count > 0;
 
             // Relative time when sorting by mtime — read from the cache populated on refresh,
@@ -176,12 +178,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 String::new()
             };
+            let n_indicator = if has_notes {
+                format!("\u{25aa}{} ", note_count)
+            } else {
+                String::new()
+            };
             let gh_indicator = if has_gh_comments {
                 format!("\u{25c6}{} ", gh_comment_count)
             } else {
                 String::new()
             };
-            let comment_width: usize = q_indicator.chars().count() + gh_indicator.chars().count();
+            let comment_width: usize = q_indicator.chars().count()
+                + n_indicator.chars().count()
+                + gh_indicator.chars().count();
 
             // Adjust path width to account for risk dot, comment indicators, and time column
             let extra_width = if risk_dot.is_some() { 2 } else { 0 };
@@ -241,6 +250,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             if has_questions {
                 spans.push(Span::styled(
                     q_indicator,
+                    ratatui::style::Style::default().fg(styles::YELLOW()),
+                ));
+            }
+            if has_notes {
+                spans.push(Span::styled(
+                    n_indicator,
                     ratatui::style::Style::default().fg(styles::YELLOW()),
                 ));
             }

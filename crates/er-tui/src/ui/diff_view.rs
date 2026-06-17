@@ -783,6 +783,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                     }
                 }
             }
+            if let Some(ns) = &tab.ai.notes {
+                for n in &ns.notes {
+                    if n.file == file.path
+                        && n.anchor_status == "lost"
+                        && n.hunk_index.is_some_and(|hi| hi >= num_hunks)
+                        && tab.layers.show_questions
+                        && !(tab.layers.hide_resolved && n.resolved)
+                    {
+                        v.push(CommentRef::Note(n));
+                    }
+                }
+            }
             if let Some(gc) = &tab.ai.github_comments {
                 for c in &gc.comments {
                     if c.file == file.path

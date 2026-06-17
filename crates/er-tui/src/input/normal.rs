@@ -177,12 +177,7 @@ pub fn handle_normal_input(
             if app.tab().is_remote() {
                 return Ok(());
             }
-            let count = app
-                .tab()
-                .ai
-                .questions
-                .as_ref()
-                .map_or(0, |q| q.questions.len());
+            let count = app.tab().ai.local_draft_count();
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
             return Ok(());
         }

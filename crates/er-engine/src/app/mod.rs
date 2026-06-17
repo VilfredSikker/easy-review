@@ -14,8 +14,8 @@ pub use state::chrono_now;
 pub use state::github_sync::{fetch_comment_sync_data, CommentSyncContext, CommentSyncResult};
 pub use state::remote_diff_sync::{fetch_remote_diff_data, RemoteDiffContext, RemoteDiffResult};
 pub use state::{
-    cleanup_question_answers, cleanup_questions, cleanup_review_artifacts, cleanup_reviews,
-    cleanup_triage, AgentLogEntry, AgentLogSource, AiActionKind, App, BrowserLayout, CommandStatus,
-    ConfigEditState, ConfirmAction, DiffMode, DirEntry, HubAction, HubItem, HubKind, InputMode,
-    OverlayData, PanelsVisible, SplitSide, TabState,
+    cleanup_question_answers, cleanup_questions_and_notes, cleanup_review_artifacts,
+    cleanup_reviews, cleanup_triage, AgentLogEntry, AgentLogSource, AiActionKind, App,
+    BrowserLayout, CommandStatus, ConfigEditState, ConfirmAction, DiffMode, DirEntry, HubAction,
+    HubItem, HubKind, InputMode, OverlayData, PanelsVisible, SplitSide, TabState,
 };

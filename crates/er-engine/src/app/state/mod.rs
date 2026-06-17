@@ -4757,6 +4757,8 @@ impl App {
             .questions
             .as_ref()
             .is_some_and(|q| !q.questions.is_empty());
+        let has_notes = self.tab().ai.has_notes();
+        let has_questions_or_notes = has_questions || has_notes;
         let has_unresolved_questions = self
             .tab()
             .ai
@@ -4933,16 +4935,16 @@ impl App {
                 enabled: true,
             },
             HubItem {
-                label: "Cleanup questions".into(),
+                label: "Cleanup questions & notes".into(),
                 hint: "z".into(),
-                description: if has_questions {
-                    "Delete .er/questions.json".into()
+                description: if has_questions_or_notes {
+                    "Delete .er/questions.json + notes.json".into()
                 } else {
-                    "no questions to clean up".into()
+                    "no questions or notes to clean up".into()
                 },
                 action: HubAction::CleanupQuestions,
                 is_header: false,
-                enabled: has_questions,
+                enabled: has_questions_or_notes,
             },
             HubItem {
                 label: "Cleanup reviews".into(),
@@ -5309,7 +5311,7 @@ impl App {
             HubItem {
                 label: "q".into(),
                 hint: "".into(),
-                description: "Add review question".into(),
+                description: "Add review question (Ctrl+t → note)".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -5387,6 +5389,14 @@ impl App {
                 is_header: false,
                 enabled: false,
             },
+            HubItem {
+                label: "Ctrl+t".into(),
+                hint: "".into(),
+                description: "While composing: cycle question → note → comment".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
             // ── Layers ──
             HubItem {
                 label: "── Layers ──".into(),
@@ -5415,7 +5425,7 @@ impl App {
             HubItem {
                 label: "Q".into(),
                 hint: "".into(),
-                description: "Toggle questions".into(),
+                description: "Toggle questions & notes".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -5488,7 +5498,7 @@ impl App {
             HubItem {
                 label: "z / Z".into(),
                 hint: "".into(),
-                description: "Cleanup questions / all AI data".into(),
+                description: "Cleanup questions & notes / all AI data".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -6652,10 +6662,14 @@ fn truncate_str(s: &str, max: usize) -> String {
 pub use crate::sync::chrono_now;
 
 /// Delete personal questions sidecar files. Errors are ignored (files may not exist).
-pub fn cleanup_questions(er_dir: &str) {
+/// Remove the private local-draft sidecars: questions and notes. Both are
+/// user-authored, never-pushed drafts, so the `z` cleanup clears them together.
+pub fn cleanup_questions_and_notes(er_dir: &str) {
     let base = std::path::Path::new(er_dir);
     let _ = std::fs::remove_file(base.join("questions.json"));
     let _ = std::fs::remove_file(base.join("questions.prev.json"));
+    let _ = std::fs::remove_file(base.join("notes.json"));
+    let _ = std::fs::remove_file(base.join("notes.prev.json"));
 }
 
 /// Remove AI-generated answers from questions.json, keeping human questions intact.
@@ -8508,6 +8522,8 @@ mod tests {
         app.start_comment(CommentType::Question);
         assert!(app.can_toggle_comment_type());
         app.toggle_comment_type();
+        assert_eq!(app.tab().comment_type, CommentType::Note);
+        app.toggle_comment_type();
         assert_eq!(app.tab().comment_type, CommentType::GitHubComment);
         app.toggle_comment_type();
         assert_eq!(app.tab().comment_type, CommentType::Question);
@@ -8534,6 +8550,64 @@ mod tests {
         assert!(!app.can_toggle_comment_type());
         app.toggle_comment_type();
         assert_eq!(app.tab().comment_type, CommentType::Question);
+    }
+
+    #[test]
+    fn start_comment_note_sets_note_draft() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let tab = make_test_tab(files);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::Note);
+        assert_eq!(app.tab().comment_type, CommentType::Note);
+        assert!(matches!(app.input_mode, InputMode::Comment));
+        assert_eq!(app.tab().comment_file, "src/main.rs");
+    }
+
+    #[test]
+    fn submit_note_persists_to_notes_json_with_n_prefix() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_string_lossy().into_owned();
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(
+                LineType::Add,
+                "let x = 1;",
+                Some(1),
+            )])],
+            1,
+            0,
+        )];
+        let mut tab = make_test_tab(files);
+        // Route the note sidecar into the TempDir's .er/ dir.
+        tab.er_root = ErRoot::RepoLocal(root.clone());
+        tab.repo_root = root.clone();
+        let mut app = make_test_app(tab);
+
+        // Author a note via the composer (the TUI reaches Note through Ctrl+t).
+        app.start_comment(CommentType::Note);
+        app.tab_mut().comment_textarea = TextArea::new(vec!["Refactor this helper".to_string()]);
+        app.submit_comment().unwrap();
+
+        // notes.json holds the new note with an n- prefixed id.
+        let content = std::fs::read_to_string(format!("{root}/.er/notes.json"))
+            .expect("notes.json should be written");
+        let notes: crate::ai::ErNotes = serde_json::from_str(&content).unwrap();
+        assert_eq!(notes.notes.len(), 1);
+        assert!(
+            notes.notes[0].id.starts_with("n-"),
+            "note id must use n- prefix"
+        );
+        assert_eq!(notes.notes[0].text, "Refactor this helper");
+        assert_eq!(notes.notes[0].file, "src/main.rs");
+
+        // The reloaded state reflects the note in the per-file count (counts.2).
+        assert_eq!(app.tab().ai.file_note_count("src/main.rs"), 1);
+        assert!(app.tab().ai.has_notes());
     }
 
     #[test]
