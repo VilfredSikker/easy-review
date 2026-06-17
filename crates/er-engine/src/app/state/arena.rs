@@ -34,21 +34,26 @@ fn load_run_summary_cached(paths: &ArenaPaths) -> Option<crate::arena::ArenaRunS
         .ok()
         .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
 
-    let mut cache = match CACHE.lock() {
-        Ok(g) => g,
-        Err(_) => return load_run(paths).ok().map(|r| r.summary()),
-    };
-    if let Some((cached_key, summary)) = cache.get(&json) {
-        if *cached_key == key {
-            return Some(summary.clone());
+    // Fast path: reuse the cached summary if run.json is unchanged. The lock is
+    // released before the disk read below so a slow read on one run can't block
+    // the cache for the others.
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((cached_key, summary)) = cache.get(&json) {
+            if *cached_key == key {
+                return Some(summary.clone());
+            }
         }
     }
+    // Slow path: parse without holding the lock, then record. A concurrent miss
+    // may parse twice (benign); the per-poll caller is single-threaded anyway.
     let summary = load_run(paths).ok()?.summary();
-    // Bounded: one entry per run.json path; drop everything if it grows.
-    if cache.len() > 256 {
-        cache.clear();
+    if let Ok(mut cache) = CACHE.lock() {
+        // Bounded: one entry per run.json path; drop everything if it grows.
+        if cache.len() > 256 {
+            cache.clear();
+        }
+        cache.insert(json, (key, summary.clone()));
     }
-    cache.insert(json, (key, summary.clone()));
     Some(summary)
 }
 
@@ -689,6 +694,68 @@ mod tests {
             app.background_arena_runs()[0].finding_count,
             2,
             "changed run.json must invalidate the mtime-keyed summary cache"
+        );
+    }
+
+    // ── Remaining mutating wrappers resolve a non-active tab's er_dir ─────
+
+    #[test]
+    fn arena_cancel_resolves_nonactive_tab() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-cancel");
+        crate::arena::save_run(&paths, &sample_run("arena-cancel")).unwrap();
+        app.arena_registry.insert_active_for_test(
+            "arena-cancel",
+            crate::arena::RunStatus::Running { round: 1 },
+        );
+
+        // Active tab is A; cancel must persist to B's run.json.
+        app.arena_cancel("arena-cancel").unwrap();
+        let reloaded = load_run(&paths).unwrap();
+        assert_eq!(reloaded.status, crate::arena::RunStatus::Cancelled);
+    }
+
+    #[test]
+    fn arena_delete_resolves_nonactive_tab() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-del");
+        crate::arena::save_run(&paths, &sample_run("arena-del")).unwrap();
+        assert!(paths.root.is_dir());
+
+        // Active tab is A; delete must remove the run dir under B.
+        app.arena_delete("arena-del").unwrap();
+        assert!(
+            !paths.root.is_dir(),
+            "delete must target the run's own er_dir, not the active tab's"
+        );
+    }
+
+    #[test]
+    fn arena_accept_findings_resolves_nonactive_tab() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-acc");
+        crate::arena::save_run(&paths, &sample_run("arena-acc")).unwrap();
+
+        // Active tab is A; the import must write review.json under B's er_dir.
+        app.arena_accept_findings("arena-acc", None).unwrap();
+        assert!(
+            Path::new(&er_b).join("review.json").is_file(),
+            "accept must import into the run's own er_dir, not the active tab's"
+        );
+        assert!(
+            !Path::new(&app.tabs[0].er_dir())
+                .join("review.json")
+                .is_file(),
+            "active tab A must be untouched by accepting a run that lives on B"
         );
     }
 }
