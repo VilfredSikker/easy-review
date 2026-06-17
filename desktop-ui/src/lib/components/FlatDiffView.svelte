@@ -20,6 +20,8 @@
   import ThreadRow from "./diff-rows/ThreadRow.svelte";
   import FindingRow from "./diff-rows/FindingRow.svelte";
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
+  import PillarHeaderRow from "./diff-rows/PillarHeaderRow.svelte";
+  import StickyPillarHeader from "./diff-rows/StickyPillarHeader.svelte";
   import ReferenceRuler from "./ReferenceRuler.svelte";
   import ReferenceUsagesPopover from "./ReferenceUsagesPopover.svelte";
   import DiffSearchBar from "./DiffSearchBar.svelte";
@@ -39,6 +41,7 @@
     getCrossFileModel,
     type CrossFileModel,
     type CrossFileFlatRow,
+    type PillarHeaderInfo,
   } from "$lib/diffRenderModel";
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { splitRows } from "$lib/splitRows";
@@ -115,8 +118,27 @@
   const files = $derived.by<FileSnapshot[]>(() => {
     const all = snapshot?.files ?? [];
     if (all.length === 0) return [];
-    const orderedPaths = flattenForNav(buildTree(all));
     const byPath = new Map(all.map((f) => [f.path, f]));
+    // Guide mode: order files by the tour's pillar sequence so each pillar's
+    // files are contiguous (its header is injected before the first one).
+    if (snapshot?.mode === "tour" && snapshot.tour?.pillars?.length) {
+      const out: FileSnapshot[] = [];
+      const seen = new Set<string>();
+      for (const p of snapshot.tour.pillars) {
+        for (const tf of p.files) {
+          const f = byPath.get(tf.path);
+          if (f && !seen.has(tf.path)) {
+            out.push(f);
+            seen.add(tf.path);
+          }
+        }
+      }
+      for (const f of all) {
+        if (!seen.has(f.path)) out.push(f);
+      }
+      return out;
+    }
+    const orderedPaths = flattenForNav(buildTree(all));
     const out: FileSnapshot[] = [];
     for (const p of orderedPaths) {
       const f = byPath.get(p);
@@ -124,9 +146,34 @@
     }
     return out;
   });
+
+  // Guide mode: pillar header to inject before each pillar's first in-diff file.
+  const pillarHeaders = $derived.by<Map<string, PillarHeaderInfo> | undefined>(() => {
+    if (snapshot?.mode !== "tour" || !snapshot.tour?.pillars?.length) return undefined;
+    const present = new Set(files.map((f) => f.path));
+    const m = new Map<string, PillarHeaderInfo>();
+    for (const p of snapshot.tour.pillars) {
+      const firstPath = p.files.map((tf) => tf.path).find((path) => present.has(path));
+      if (firstPath) {
+        m.set(firstPath, {
+          pillarId: p.id,
+          title: p.title,
+          descriptionMarkdown: p.descriptionMarkdown,
+          reviewedCount: p.reviewedCount,
+          totalCount: p.totalCount,
+          foundation: p.foundation,
+        });
+      }
+    }
+    return m;
+  });
   const treeHidden = $derived(!snapshot?.panels.tree);
   const viewMode = $derived<DiffViewMode>(viewModeOverride ?? app.diffViewMode);
   const mode = $derived(snapshot?.mode ?? "branch");
+  /** Guide/Diff toggle is offered once a tour exists for this branch. */
+  const tourAvailable = $derived(
+    (snapshot?.features?.viewTour ?? true) && (snapshot?.tour?.available ?? false),
+  );
 
   let settingsOpen = $state(false);
 
@@ -165,6 +212,7 @@
       annotationIndex,
       commentVisibility: app.commentVisibility,
       snapshotKey,
+      pillarHeaders,
     }),
   );
   const crossFileModel = $derived.by(() => {
@@ -333,6 +381,31 @@
   const stickyHeaderClicksOverlay = $derived(
     !stickyHeaderHidden && visibleFileHeaderRow !== null,
   );
+
+  // ── Guide mode: sticky pillar group header ───────────────────────────────
+  const tourActive = $derived(snapshot?.mode === "tour");
+
+  /** The pillar-header row at or above the viewport top (incl. "Other changes"). */
+  const visiblePillarRow = $derived.by(
+    (): { row: Extract<CrossFileFlatRow, { type: "pillar-header" }>; rowIndex: number } | null => {
+      if (!tourActive) return null;
+      const idx = rowIndexAtOffset(effectiveGeometry, scrollTopLivePx);
+      if (idx < 0) return null;
+      for (let i = Math.min(idx, crossFileModel.rows.length - 1); i >= 0; i--) {
+        const r = crossFileModel.rows[i];
+        if (r.type === "pillar-header") return { row: r, rowIndex: i };
+      }
+      return null;
+    },
+  );
+
+  // Hide the pillar overlay while its inline header sits in the top band.
+  const stickyPillarHidden = $derived.by(() => {
+    const vp = visiblePillarRow;
+    if (!vp) return true;
+    const headerTop = effectiveGeometry.cumulativeOffsets[vp.rowIndex] ?? 0;
+    return stickyFileHeaderOverlayHidden(headerTop, scrollTopLivePx, STICKY_HEADER_PX);
+  });
 
   // ── Selection validation ─────────────────────────────────────────────────
   let selectionContextKey: string | null = $state(null);
@@ -1438,6 +1511,27 @@
       {/if}
       <span class="mono text-xs text-fg-3">{files.length} {files.length === 1 ? "file" : "files"}</span>
       <div class="ml-auto flex items-center gap-1">
+        {#if tourAvailable}
+          <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 mr-1 shrink-0">
+            <button
+              role="tab"
+              aria-selected={mode !== "tour"}
+              onclick={() => { if (mode === "tour") void app.cmd("set_mode", { mode: "branch" }); }}
+              class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {mode !== 'tour' ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+            >
+              Diff
+            </button>
+            <button
+              role="tab"
+              aria-selected={mode === "tour"}
+              onclick={() => { if (mode !== "tour") void app.cmd("set_mode", { mode: "tour" }); }}
+              class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {mode === 'tour' ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/><circle cx="4" cy="12" r="1.5"/></svg>
+              Guide
+            </button>
+          </div>
+        {/if}
         <button
           type="button"
           class="p-1 text-fg-3 hover:bg-hover rounded flex items-center"
@@ -1573,8 +1667,12 @@
     {:else if files.length === 0}
       <div class="flex items-center justify-center h-full text-muted text-sm">No changes</div>
     {:else}
-      <!-- Sticky file path overlay: hides when real file-header is in viewport top band -->
-      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden} />
+      <!-- Sticky file path overlay: hides when real file-header is in viewport top band.
+           In Guide mode the pillar overlay takes the top slot instead. -->
+      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden || tourActive} />
+      {#if tourActive}
+        <StickyPillarHeader row={visiblePillarRow?.row ?? null} hidden={stickyPillarHidden} />
+      {/if}
 
       <!-- X-scroll surface: full-height absolute-positioned band -->
       <div
@@ -1588,7 +1686,9 @@
         >
           {#each windowedRows as row, localIdx (row.identity)}
             {@const rowIdx = vw.start + localIdx}
-            {#if row.type === "file-header"}
+            {#if row.type === "pillar-header"}
+              <PillarHeaderRow {row} />
+            {:else if row.type === "file-header"}
               <FileHeaderRow
                 {row}
                 pointerEventsNone={stickyHeaderClicksOverlay && row.filePath === visibleFilePath}
