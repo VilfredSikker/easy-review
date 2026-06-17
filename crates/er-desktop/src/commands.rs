@@ -961,7 +961,7 @@ pub fn unmark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapsh
 }
 
 /// Paths of a tour pillar's files (from the loaded tour.json).
-fn pillar_file_paths(tab: &TabState, pillar_id: &str) -> Vec<String> {
+fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<String> {
     tab.ai
         .tour
         .as_ref()

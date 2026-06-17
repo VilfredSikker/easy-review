@@ -2080,9 +2080,7 @@ fn render_tour_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) 
     }
 
     let current_pillar = tour.pillars.get(tour.selected_pillar);
-    let pillar_title = current_pillar
-        .map(|p| p.title.clone())
-        .unwrap_or_default();
+    let pillar_title = current_pillar.map(|p| p.title.clone()).unwrap_or_default();
     let pillar_desc = current_pillar
         .map(|p| p.description.clone())
         .unwrap_or_default();
@@ -2366,8 +2364,7 @@ fn render_tour_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) 
         height: header_rows as u16,
     };
     f.render_widget(
-        Paragraph::new(header_lines)
-            .style(ratatui::style::Style::default().bg(header_bg)),
+        Paragraph::new(header_lines).style(ratatui::style::Style::default().bg(header_bg)),
         header_area,
     );
 

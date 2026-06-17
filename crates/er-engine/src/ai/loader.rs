@@ -468,7 +468,11 @@ mod tests {
             ]
         }))
         .unwrap();
-        let ordered: Vec<&str> = tour.ordered_pillars().iter().map(|p| p.id.as_str()).collect();
+        let ordered: Vec<&str> = tour
+            .ordered_pillars()
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect();
         // order 0 foundation first, then order 0 non-foundation, then order 1.
         assert_eq!(ordered, vec!["a", "b", "c"]);
     }

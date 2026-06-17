@@ -519,11 +519,7 @@ fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
     let mut items: Vec<ListItem> = Vec::new();
     for (pi, pillar) in tour.pillars.iter().enumerate() {
         let is_selected = pi == tour.selected_pillar;
-        let (start, end) = tour
-            .pillar_file_ranges
-            .get(pi)
-            .copied()
-            .unwrap_or((0, 0));
+        let (start, end) = tour.pillar_file_ranges.get(pi).copied().unwrap_or((0, 0));
         let files = tour.files.get(start..end).unwrap_or(&[]);
         let reviewed = files
             .iter()

@@ -1396,8 +1396,7 @@ impl TabState {
             for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
                 if file_idx == tour.selected_file && hunk_idx == tour.current_hunk {
                     line_offset += tour.current_line.unwrap_or(0);
-                    tour.diff_scroll =
-                        line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
+                    tour.diff_scroll = line_offset.saturating_sub(1).min(u16::MAX as usize) as u16;
                     return;
                 }
                 line_offset += 1 + hunk.lines.len() + 1;
@@ -1443,7 +1442,11 @@ impl TabState {
     /// Toggle reviewed state for the tour's currently selected file. Shares the
     /// branch `reviewed` set.
     pub fn tour_toggle_reviewed(&mut self) {
-        let path = match self.tour.as_ref().and_then(|t| t.files.get(t.selected_file)) {
+        let path = match self
+            .tour
+            .as_ref()
+            .and_then(|t| t.files.get(t.selected_file))
+        {
             Some(f) => f.path.clone(),
             None => return,
         };
