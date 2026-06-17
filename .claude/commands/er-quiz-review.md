@@ -1,1 +1,0 @@
-../../skills/er-quiz-review/SKILL.md
