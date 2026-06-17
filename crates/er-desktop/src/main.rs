@@ -119,11 +119,7 @@ fn upstream_url_for_proxy(uri: &tauri::http::Uri, upstream_scheme: &str) -> Stri
 
 const PROXY_HTML_SIZE_LIMIT: usize = 10 * 1024 * 1024; // 10 MB
 
-fn reveal_main_window(
-    window: &tauri::WebviewWindow,
-    app: &tauri::AppHandle,
-    reason: &str,
-) -> tauri::Result<()> {
+fn reveal_main_window(window: &tauri::WebviewWindow, reason: &str) -> tauri::Result<()> {
     if let Err(e) = window_placement::ensure_window_visible(window) {
         log::warn!("window placement failed during {reason}, recentering: {e}");
         if let Err(center_err) = window.center() {
@@ -139,9 +135,11 @@ fn reveal_main_window(
     if let Err(e) = window.set_focus() {
         log::warn!("window focus failed during {reason}: {e}");
     }
+    // Bringing the whole app forward (vs. just the window) is a macOS concept —
+    // it un-hides the app after a Cmd+H / dock-hide.
     #[cfg(target_os = "macos")]
     {
-        if let Err(e) = app.show() {
+        if let Err(e) = window.app_handle().show() {
             log::warn!("app show failed during {reason}: {e}");
         }
     }
@@ -149,10 +147,13 @@ fn reveal_main_window(
     Ok(())
 }
 
+// Only the macOS `Reopen` (dock-icon click) run-event reaches the app via an
+// `AppHandle` rather than a `WebviewWindow`, so this wrapper is macOS-only.
+#[cfg(target_os = "macos")]
 fn reveal_main_window_from_handle(app: &tauri::AppHandle, reason: &str) {
     match app.get_webview_window("main") {
         Some(window) => {
-            if let Err(e) = reveal_main_window(&window, app, reason) {
+            if let Err(e) = reveal_main_window(&window, reason) {
                 log::warn!("main window reveal failed during {reason}: {e}");
             }
         }
@@ -1390,7 +1391,7 @@ fn main() {
                 | StateFlags::FULLSCREEN
                 | StateFlags::DECORATIONS;
             window.restore_state(flags)?;
-            reveal_main_window(&window, app.handle(), "startup")?;
+            reveal_main_window(&window, "startup")?;
 
             Ok(())
         })
@@ -1552,7 +1553,9 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error building tauri application");
 
-    tauri_app.run(move |handle, event| {
+    // `_handle` is only consumed by the macOS-only `Reopen` arm below; the
+    // underscore keeps it warning-free on platforms where that arm is absent.
+    tauri_app.run(move |_handle, event| {
         match event {
             tauri::RunEvent::ExitRequested { .. } => {
                 if let Ok(guard) = persist_app.lock() {
@@ -1572,7 +1575,7 @@ fn main() {
                 log::info!(
                     "macOS reopen event received; has_visible_windows={has_visible_windows}"
                 );
-                reveal_main_window_from_handle(handle, "macos_reopen");
+                reveal_main_window_from_handle(_handle, "macos_reopen");
             }
             _ => {}
         }
