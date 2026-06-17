@@ -118,9 +118,50 @@ fn upstream_url_for_proxy(uri: &tauri::http::Uri, upstream_scheme: &str) -> Stri
 }
 
 const PROXY_HTML_SIZE_LIMIT: usize = 10 * 1024 * 1024; // 10 MB
-                                                       // Vite/SvelteKit dev-server JS dependency chunks can be large, especially when
-                                                       // source maps or prebundled dependencies are served through the dev server.
-                                                       // Non-HTML assets are still bounded to avoid unbounded memory use during proxying.
+
+fn reveal_main_window(
+    window: &tauri::WebviewWindow,
+    app: &tauri::AppHandle,
+    reason: &str,
+) -> tauri::Result<()> {
+    if let Err(e) = window_placement::ensure_window_visible(window) {
+        log::warn!("window placement failed during {reason}, recentering: {e}");
+        if let Err(center_err) = window.center() {
+            log::warn!("window recenter failed during {reason}: {center_err}");
+        }
+    }
+
+    window.show()?;
+
+    if let Err(e) = window.unminimize() {
+        log::warn!("window unminimize failed during {reason}: {e}");
+    }
+    if let Err(e) = window.set_focus() {
+        log::warn!("window focus failed during {reason}: {e}");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = app.show() {
+            log::warn!("app show failed during {reason}: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+fn reveal_main_window_from_handle(app: &tauri::AppHandle, reason: &str) {
+    match app.get_webview_window("main") {
+        Some(window) => {
+            if let Err(e) = reveal_main_window(&window, app, reason) {
+                log::warn!("main window reveal failed during {reason}: {e}");
+            }
+        }
+        None => log::warn!("main window missing during {reason}"),
+    }
+}
+// Vite/SvelteKit dev-server JS dependency chunks can be large, especially when
+// source maps or prebundled dependencies are served through the dev server.
+// Non-HTML assets are still bounded to avoid unbounded memory use during proxying.
 const PROXY_ASSET_SIZE_LIMIT: usize = 128 * 1024 * 1024; // 128 MB
 
 fn proxy_size_limit(is_html: bool) -> usize {
@@ -1349,17 +1390,7 @@ fn main() {
                 | StateFlags::FULLSCREEN
                 | StateFlags::DECORATIONS;
             window.restore_state(flags)?;
-            if let Err(e) = window_placement::ensure_window_visible(&window) {
-                log::warn!("window placement failed, recentering: {e}");
-                let _ = window.center();
-            }
-            window.show()?;
-            let _ = window.unminimize();
-            let _ = window.set_focus();
-            #[cfg(target_os = "macos")]
-            {
-                let _ = app.handle().show();
-            }
+            reveal_main_window(&window, app.handle(), "startup")?;
 
             Ok(())
         })
@@ -1521,16 +1552,29 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error building tauri application");
 
-    tauri_app.run(move |_handle, event| {
-        if let tauri::RunEvent::ExitRequested { .. } = event {
-            if let Ok(guard) = persist_app.lock() {
-                tabs::persist_app_tabs(&guard);
+    tauri_app.run(move |handle, event| {
+        match event {
+            tauri::RunEvent::ExitRequested { .. } => {
+                if let Ok(guard) = persist_app.lock() {
+                    tabs::persist_app_tabs(&guard);
+                }
+                // Kill any live shell sessions. Drop runs PtySession::drop on
+                // each, which kills + reaps the child.
+                if let Ok(mut map) = terminals_for_exit.lock() {
+                    map.clear();
+                }
             }
-            // Kill any live shell sessions. Drop runs PtySession::drop on
-            // each, which kills + reaps the child.
-            if let Ok(mut map) = terminals_for_exit.lock() {
-                map.clear();
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } => {
+                log::info!(
+                    "macOS reopen event received; has_visible_windows={has_visible_windows}"
+                );
+                reveal_main_window_from_handle(handle, "macos_reopen");
             }
+            _ => {}
         }
     });
 }
