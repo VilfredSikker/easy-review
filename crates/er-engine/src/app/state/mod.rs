@@ -4523,6 +4523,8 @@ impl App {
             .questions
             .as_ref()
             .is_some_and(|q| !q.questions.is_empty());
+        let has_notes = self.tab().ai.has_notes();
+        let has_questions_or_notes = has_questions || has_notes;
         let has_unresolved_questions = self
             .tab()
             .ai
@@ -4699,16 +4701,16 @@ impl App {
                 enabled: true,
             },
             HubItem {
-                label: "Cleanup questions".into(),
+                label: "Cleanup questions & notes".into(),
                 hint: "z".into(),
-                description: if has_questions {
-                    "Delete .er/questions.json".into()
+                description: if has_questions_or_notes {
+                    "Delete .er/questions.json + notes.json".into()
                 } else {
-                    "no questions to clean up".into()
+                    "no questions or notes to clean up".into()
                 },
                 action: HubAction::CleanupQuestions,
                 is_header: false,
-                enabled: has_questions,
+                enabled: has_questions_or_notes,
             },
             HubItem {
                 label: "Cleanup reviews".into(),
@@ -5270,7 +5272,7 @@ impl App {
             HubItem {
                 label: "z / Z".into(),
                 hint: "".into(),
-                description: "Cleanup questions / all AI data".into(),
+                description: "Cleanup questions & notes / all AI data".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -6434,10 +6436,14 @@ fn truncate_str(s: &str, max: usize) -> String {
 pub use crate::sync::chrono_now;
 
 /// Delete personal questions sidecar files. Errors are ignored (files may not exist).
-pub fn cleanup_questions(er_dir: &str) {
+/// Remove the private local-draft sidecars: questions and notes. Both are
+/// user-authored, never-pushed drafts, so the `z` cleanup clears them together.
+pub fn cleanup_questions_and_notes(er_dir: &str) {
     let base = std::path::Path::new(er_dir);
     let _ = std::fs::remove_file(base.join("questions.json"));
     let _ = std::fs::remove_file(base.join("questions.prev.json"));
+    let _ = std::fs::remove_file(base.join("notes.json"));
+    let _ = std::fs::remove_file(base.join("notes.prev.json"));
 }
 
 /// Remove AI-generated answers from questions.json, keeping human questions intact.

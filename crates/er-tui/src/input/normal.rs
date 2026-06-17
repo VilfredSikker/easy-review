@@ -182,7 +182,8 @@ pub fn handle_normal_input(
                 .ai
                 .questions
                 .as_ref()
-                .map_or(0, |q| q.questions.len());
+                .map_or(0, |q| q.questions.len())
+                + app.tab().ai.notes.as_ref().map_or(0, |n| n.notes.len());
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
             return Ok(());
         }

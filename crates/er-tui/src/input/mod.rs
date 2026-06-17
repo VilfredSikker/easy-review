@@ -2,8 +2,8 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::app;
 use er_engine::app::{
-    cleanup_question_answers, cleanup_questions, cleanup_reviews, AiActionKind, App, ConfirmAction,
-    DiffMode, HubAction, InputMode,
+    cleanup_question_answers, cleanup_questions_and_notes, cleanup_reviews, AiActionKind, App,
+    ConfirmAction, DiffMode, HubAction, InputMode,
 };
 use er_engine::{git, github};
 
@@ -201,7 +201,8 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 .ai
                 .questions
                 .as_ref()
-                .map_or(0, |q| q.questions.len());
+                .map_or(0, |q| q.questions.len())
+                + app.tab().ai.notes.as_ref().map_or(0, |n| n.notes.len());
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
         }
         HubAction::CleanupReviews => {
@@ -575,9 +576,9 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if let InputMode::Confirm(ConfirmAction::CleanupQuestions { .. }) = action {
                 app.input_mode = InputMode::Normal;
                 let er_dir = app.tab().er_dir();
-                cleanup_questions(&er_dir);
+                cleanup_questions_and_notes(&er_dir);
                 app.tab_mut().reload_ai_state();
-                app.notify("Questions cleared");
+                app.notify("Questions & notes cleared");
             } else if let InputMode::Confirm(ConfirmAction::DeleteWatchedFile { ref path }) = action
             {
                 let full_path = format!("{}/{}", app.tab().repo_root, path);

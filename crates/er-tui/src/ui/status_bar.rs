@@ -641,8 +641,8 @@ fn build_hints(app: &App) -> Vec<Hint> {
                     hints.push(Hint::new("J/K", " comments "));
                 }
             }
-            if tab.ai.has_questions() {
-                hints.push(Hint::new("z", " clear questions "));
+            if tab.ai.has_questions() || tab.ai.has_notes() {
+                hints.push(Hint::new("z", " clear questions & notes "));
             }
             if tab.ai.has_data() {
                 hints.push(Hint::new("Z", " clear reviews "));
@@ -758,7 +758,7 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                 }
                 ConfirmAction::Push => "Push branch to remote? (y/n)".to_string(),
                 ConfirmAction::CleanupQuestions { count } => {
-                    format!("Clear {} question(s)? (y/n)", count)
+                    format!("Clear {} question(s) & note(s)? (y/n)", count)
                 }
                 ConfirmAction::CleanupReviews { count } => {
                     format!("Clear {} review file(s)? (y/n)", count)
