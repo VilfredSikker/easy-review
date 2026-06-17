@@ -2339,6 +2339,10 @@ impl TabState {
             let t_ai_reload = Instant::now();
             self.reload_ai_state();
             log_branch_profile_phase(self, "local_branch_ai_reload", t_ai_reload);
+            // Tour reorders this branch diff into pillars — rebuild after re-parse.
+            if self.mode == DiffMode::Tour {
+                self.rebuild_tour_state();
+            }
             log_branch_profile_phase(self, "refresh_diff_impl_total", t_total);
             return Ok(());
         }
@@ -2400,6 +2404,10 @@ impl TabState {
                 self.relocate_all_comments();
                 if self.ai.is_stale {
                     self.compute_stale_files(&raw);
+                }
+                // Tour reorders this branch diff into pillars — rebuild after re-parse.
+                if self.mode == DiffMode::Tour {
+                    self.rebuild_tour_state();
                 }
 
                 return Ok(());

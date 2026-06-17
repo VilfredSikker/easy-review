@@ -3,7 +3,15 @@
 Generate a guided **Tour** of the current git diff — an AI analysis that groups
 the changed files into ordered **pillars** (foundation first, then importance),
 each with a description and its relevant files. Writes a single `.er/tour.json`
-sidecar that the `er` TUI (Tour mode) and desktop (Guide tab) read.
+sidecar read by the `er` TUI (Tour mode) and desktop (Guide tab).
+
+> **Where the output lands.** This skill writes `.er/tour.json` in the repo root
+> (like `er-review` and the other `er-*` skills). The app reads review artifacts
+> from managed storage (`~/.local/share/easy-review/...`) by default, so a
+> manually-run `/er-tour` surfaces in the app only when `ER_REPO_LOCAL=1` is set,
+> or on first open before managed storage is populated. The reliable in-app path
+> is the desktop **"Generate tour"** button, which runs this analysis and writes
+> `tour.json` directly into the branch's managed bucket.
 
 **Apply [`../REVIEW_RULES.md`](../REVIEW_RULES.md)** for the diff command,
 anchors, and caps. This skill is additive: it writes **only** `.er/tour.json`

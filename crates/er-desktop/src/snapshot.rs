@@ -1344,6 +1344,15 @@ pub(crate) fn build_file_snapshot(
 
 /// Build the guided-tour wire snapshot from the loaded `tour.json`, including
 /// per-pillar reviewed/total counts (shared branch `reviewed` set).
+///
+/// When the tab shows the branch diff (Branch/Tour/PrDiff — the modes that share
+/// the branch bucket and load the branch diff into `tab.files`), this mirrors the
+/// TUI's `rebuild_tour_state`: files absent from the diff are dropped, each file
+/// appears in only its first pillar, empty pillars are skipped, and unreferenced
+/// diff files collect into a trailing "Other changes" pillar. In other scopes
+/// (unstaged/staged/history) `tab.files` is a different diff, so the raw pillars
+/// are passed through unfiltered — only `available`/pillar-count is consumed
+/// there (the pillar nav renders in Tour mode only).
 fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
     let Some(tour) = tab.ai.tour.as_ref() else {
         return TourSnapshot::default();
@@ -1351,36 +1360,98 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
     if tour.pillars.is_empty() {
         return TourSnapshot::default();
     }
-    let pillars = tour
-        .ordered_pillars()
-        .into_iter()
-        .map(|p| {
-            let total_count = p.files.len();
-            let reviewed_count = p
-                .files
-                .iter()
-                .filter(|f| tab.reviewed.contains_key(&f.path))
-                .count();
-            PillarSnapshot {
+
+    let branch_scope = matches!(
+        tab.mode,
+        DiffMode::Branch | DiffMode::Tour | DiffMode::PrDiff
+    );
+
+    let make_file = |f: &er_engine::ai::TourFile| TourFileRef {
+        path: f.path.clone(),
+        reason: f.reason.clone(),
+        finding_ids: f.finding_ids.clone(),
+    };
+    let count_reviewed = |files: &[TourFileRef]| {
+        files
+            .iter()
+            .filter(|f| tab.reviewed.contains_key(&f.path))
+            .count()
+    };
+
+    let mut pillars: Vec<PillarSnapshot> = Vec::new();
+
+    if branch_scope {
+        // Filter to files actually in the diff; dedup so a file shows once.
+        let diff_paths: std::collections::HashSet<&str> =
+            tab.files.iter().map(|f| f.path.as_str()).collect();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for p in tour.ordered_pillars() {
+            let mut files: Vec<TourFileRef> = Vec::new();
+            for f in &p.files {
+                if !diff_paths.contains(f.path.as_str()) || !seen.insert(f.path.clone()) {
+                    continue;
+                }
+                files.push(make_file(f));
+            }
+            if files.is_empty() {
+                continue;
+            }
+            let reviewed_count = count_reviewed(&files);
+            let total_count = files.len();
+            pillars.push(PillarSnapshot {
                 id: p.id.clone(),
                 title: p.title.clone(),
                 description_markdown: p.description.clone(),
                 importance: p.importance,
                 foundation: p.foundation,
-                files: p
-                    .files
-                    .iter()
-                    .map(|f| TourFileRef {
-                        path: f.path.clone(),
-                        reason: f.reason.clone(),
-                        finding_ids: f.finding_ids.clone(),
-                    })
-                    .collect(),
+                files,
                 reviewed_count,
                 total_count,
-            }
-        })
-        .collect();
+            });
+        }
+        // Trailing "Other changes" pillar for diff files no pillar referenced.
+        let other: Vec<TourFileRef> = tab
+            .files
+            .iter()
+            .filter(|f| !seen.contains(&f.path))
+            .map(|f| TourFileRef {
+                path: f.path.clone(),
+                reason: String::new(),
+                finding_ids: Vec::new(),
+            })
+            .collect();
+        if !other.is_empty() {
+            let reviewed_count = count_reviewed(&other);
+            let total_count = other.len();
+            pillars.push(PillarSnapshot {
+                id: "__other__".to_string(),
+                title: "Other changes".to_string(),
+                description_markdown: "Files not assigned to a tour pillar.".to_string(),
+                importance: 0,
+                foundation: false,
+                files: other,
+                reviewed_count,
+                total_count,
+            });
+        }
+    } else {
+        for p in tour.ordered_pillars() {
+            let files: Vec<TourFileRef> = p.files.iter().map(&make_file).collect();
+            let reviewed_count = count_reviewed(&files);
+            let total_count = files.len();
+            pillars.push(PillarSnapshot {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                description_markdown: p.description.clone(),
+                importance: p.importance,
+                foundation: p.foundation,
+                files,
+                reviewed_count,
+                total_count,
+            });
+        }
+    }
+
     TourSnapshot {
         available: true,
         fresh: !tab.ai.is_stale,

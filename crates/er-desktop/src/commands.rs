@@ -960,13 +960,42 @@ pub fn unmark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapsh
     Ok(chrome_snap_from(&app, &state))
 }
 
-/// Paths of a tour pillar's files (from the loaded tour.json).
+/// Paths of a tour pillar's files that are present in the current diff. The
+/// synthetic `__other__` pillar resolves to diff files no pillar references.
+/// Filtering to in-diff files keeps stale-tour entries out of the shared branch
+/// `reviewed` set (mirrors `mark_reviewed`'s `active_diff_files` guard).
 fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<String> {
-    tab.ai
-        .tour
-        .as_ref()
-        .and_then(|t| t.pillars.iter().find(|p| p.id == pillar_id))
-        .map(|p| p.files.iter().map(|f| f.path.clone()).collect())
+    let diff_paths: std::collections::HashSet<&str> = tab
+        .active_diff_files()
+        .iter()
+        .map(|f| f.path.as_str())
+        .collect();
+    let Some(tour) = tab.ai.tour.as_ref() else {
+        return Vec::new();
+    };
+    if pillar_id == "__other__" {
+        let assigned: std::collections::HashSet<&str> = tour
+            .pillars
+            .iter()
+            .flat_map(|p| p.files.iter().map(|f| f.path.as_str()))
+            .collect();
+        return tab
+            .active_diff_files()
+            .iter()
+            .map(|f| f.path.clone())
+            .filter(|p| !assigned.contains(p.as_str()))
+            .collect();
+    }
+    tour.pillars
+        .iter()
+        .find(|p| p.id == pillar_id)
+        .map(|p| {
+            p.files
+                .iter()
+                .map(|f| f.path.clone())
+                .filter(|p| diff_paths.contains(p.as_str()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
