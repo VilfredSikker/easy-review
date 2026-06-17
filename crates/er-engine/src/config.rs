@@ -403,6 +403,23 @@ impl AiHubConfig {
                 .min_by_key(|m| m.avg_latency_ms.unwrap_or(u32::MAX))
                 .map(|m| m.id.clone());
         }
+        if reviewer_kind == "tour" {
+            // Tour generation is clustering + short descriptions — Opus is
+            // overkill. Default to a Sonnet-class model (good quality, far
+            // cheaper/faster); fall back to the fastest model when none exists.
+            if let Some(m) = provider
+                .models
+                .iter()
+                .find(|m| m.id.to_lowercase().contains("sonnet"))
+            {
+                return Some(m.id.clone());
+            }
+            return provider
+                .models
+                .iter()
+                .min_by_key(|m| m.avg_latency_ms.unwrap_or(u32::MAX))
+                .map(|m| m.id.clone());
+        }
         None
     }
 
@@ -1843,6 +1860,51 @@ args = ["--model", "gpt-5.4"]
         assert_eq!(
             hub.resolve_reviewer_model("triage", "claude").as_deref(),
             Some("haiku-4.5")
+        );
+    }
+
+    #[test]
+    fn resolve_reviewer_model_tour_defaults_to_sonnet() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "claude".into(),
+            AiProviderConfig {
+                models: vec![
+                    AiModelConfig {
+                        id: "claude-opus-4-8".into(),
+                        avg_latency_ms: Some(20_000),
+                        ..Default::default()
+                    },
+                    AiModelConfig {
+                        id: "claude-sonnet-4-6".into(),
+                        avg_latency_ms: Some(12_000),
+                        ..Default::default()
+                    },
+                    AiModelConfig {
+                        id: "claude-haiku-4-5".into(),
+                        avg_latency_ms: Some(5_000),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        // No override → defaults to the Sonnet-class model (not Opus, not Haiku).
+        assert_eq!(
+            hub.resolve_reviewer_model("tour", "claude").as_deref(),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(
+            hub.resolve_spawn_model_id("claude", Some("claude-opus-4-8"), "tour")
+                .as_deref(),
+            Some("claude-sonnet-4-6")
+        );
+        // Explicit override is honored.
+        hub.reviewer_models
+            .insert("tour".into(), "claude-haiku-4-5".into());
+        assert_eq!(
+            hub.resolve_reviewer_model("tour", "claude").as_deref(),
+            Some("claude-haiku-4-5")
         );
     }
 }

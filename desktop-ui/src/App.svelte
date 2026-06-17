@@ -331,7 +331,9 @@
             style="flex: {diffColumnFlex};"
           >
             {#if app.mainView === "diff"}
-              <FileTree collapsed={!panels?.tree} />
+              {#if app.snapshot?.mode !== "tour"}
+                <FileTree collapsed={!panels?.tree} />
+              {/if}
               <DiffView />
             {:else if app.mainView === "agent-output"}
               <AgentOutputView />

@@ -67,6 +67,17 @@ pipe into `shasum` — use file-based hashing).
 4. Writes `.er/tour.json` (atomic) and persists a cached copy at
    `.er/reviews/<branch>/<commit>/tour.json`.
 
+## Model
+
+When the desktop "Generate tour" button spawns this analysis, it defaults to a
+**Sonnet-class model** (clustering + short descriptions don't need Opus). Override
+per repo in `.er-config.toml`:
+
+```toml
+[ai_hub.reviewer_models]
+tour = "claude-haiku-4-5"   # faster/cheaper, or any configured model id
+```
+
 ## Speed budget
 
 **Target: ≤8 tool calls, ≤60 seconds.** Read the diff into context once; do all
