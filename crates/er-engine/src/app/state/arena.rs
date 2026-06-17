@@ -497,8 +497,7 @@ mod tests {
     fn arena_er_dir_for_run_resolves_via_active_map() {
         let ta = tempfile::tempdir().unwrap();
         let tb = tempfile::tempdir().unwrap();
-        let mut app =
-            app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
         let er_b = app.tabs[1].er_dir();
         app.active_arena_runs
             .entry(er_b.clone())
