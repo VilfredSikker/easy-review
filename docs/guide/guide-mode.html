@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guide Mode — easy-review docs</title>
+  <meta name="description" content="Guide mode in easy-review: an AI-generated guided walkthrough that groups a diff into ordered pillars (foundation first, then importance) so you review changes in the order that makes them easiest to understand. Works in the terminal and desktop apps.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Core Concepts</p>
+    <h1>Guide Mode</h1>
+    <p class="lead">
+      A diff lists files in whatever order git emits them — usually alphabetical, which is almost never the order that
+      makes a change easy to understand. <strong>Guide mode</strong> fixes that. It is an AI-generated walkthrough that
+      groups the changed files into ordered <strong>pillars</strong> — foundational changes first, then by importance —
+      so you read the change as a story instead of an alphabetised pile. It works in both the terminal UI (where it is
+      a <em>Tour</em> tab) and the desktop app (where it is the <em>Guide</em> toggle), and both read the same file.
+    </p>
+
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p><code>er</code> never runs AI itself. Guide mode <em>renders</em> a walkthrough that an AI tool you run
+      writes to disk as <code>.er/tour.json</code>. Generating one is a single skill call (or one button in the
+      desktop app); see <a href="#generating-a-guide">Generating a guide</a> below.</p></div>
+    </div>
+
+    <h2>What a guide is made of</h2>
+    <p>
+      A guide is a small JSON sidecar (<code>tour.json</code>) describing a self-contained reading plan for the current
+      diff. It never reorders or overwrites your other review data — it keeps its own grouping and only <em>references</em>
+      the files (and optionally AI findings) already in the diff. It has three parts:
+    </p>
+    <ul>
+      <li><strong>A title and overview</strong> — a one-line title and a short markdown intro for the whole change.</li>
+      <li><strong>Pillars</strong> — ordered groups of related files. Each pillar has a title, a markdown description
+      (the &ldquo;why&rdquo; for that group), and the list of files it covers in intended reading order.</li>
+      <li><strong>Per-file reasons</strong> — within a pillar, each file can carry a short reason it belongs there and
+      links to any AI review findings that touch it.</li>
+    </ul>
+
+    <h3>How pillars are ordered</h3>
+    <p>Pillars are sorted so you always read the groundwork before the things built on top of it. The ordering is:</p>
+    <ol>
+      <li><strong>Explicit order</strong> — a lower <code>order</code> value sorts earlier.</li>
+      <li><strong>Foundation first</strong> — at equal order, pillars marked <em>foundation</em> (shown with a
+      <code>◆</code> marker) come before the rest. These are the schema changes, new types, and core plumbing that the
+      rest of the diff depends on.</li>
+      <li><strong>Importance</strong> — a <code>0&ndash;100</code> reviewer-attention weight breaks remaining ties (higher
+      first) and doubles as a badge.</li>
+      <li><strong>Title</strong> — alphabetical, as a final tie-break.</li>
+    </ol>
+    <p>
+      Any changed file the guide does not place into a pillar is collected into a trailing <strong>&ldquo;Other
+      changes&rdquo;</strong> pillar, so the walkthrough always covers the whole diff — nothing silently disappears.
+      Guide mode only applies to the <strong>branch</strong> diff; that is the scope a walkthrough is generated against.
+    </p>
+
+    <h2>Generating a guide</h2>
+    <p>There are two ways to produce a tour, and they share the same prompt and output format.</p>
+
+    <h3>From the desktop app <span class="pill desktop">desktop</span></h3>
+    <p>
+      Open the <strong>AI action palette</strong> and choose <strong>Generate tour</strong> (it reads
+      <strong>Regenerate tour</strong> once one exists). This spawns the <code>er-tour</code> agent as a background task;
+      when it finishes, the tour is written straight into the branch's <a href="storage.html">shared storage</a> and the
+      <strong>Guide</strong> toggle appears automatically — no manual step. This works because the desktop spawns the
+      agent as a normal child process, so it can write shared storage directly.
+    </p>
+
+    <h3>With the <code>/er-tour</code> skill <span class="pill both">both</span></h3>
+    <p>Run the skill from your AI assistant in the repo you are reviewing:</p>
+    <pre><code>/er-tour</code></pre>
+    <p>
+      It analyses the current diff, groups the files into pillars, and writes a single <code>.er/tour.json</code> in the
+      repo. Skills run inside your AI assistant's sandbox, which can write the repo's <code>.er/</code> directory but not
+      the shared storage the apps read from — so a hand-run tour lands in <code>.er/</code> and needs one more step to go
+      live: <strong>import</strong> it.
+    </p>
+
+    <h3>Importing <code>.er/</code> files into shared storage <span class="pill both">both</span></h3>
+    <p>
+      <code>er</code> itself runs outside that sandbox, so it can move skill-written sidecars into
+      <a href="storage.html">shared storage</a> for you. Whenever <code>.er/</code> holds review files that are newer
+      than — or missing from — shared storage, the apps offer to import them:
+    </p>
+    <ul>
+      <li><span class="pill desktop">desktop</span> an <strong>Import local review files</strong> action appears in the
+      AI action palette.</li>
+      <li><span class="pill tui">terminal</span> press <kbd>I</kbd> to import.</li>
+    </ul>
+    <p>
+      Import copies <code>tour.json</code> (and any other skill output — <code>review.json</code>, <code>summary.md</code>,
+      <code>checklist.json</code>, and the rest) into the bucket the apps read from, and the <em>Tour</em> tab / Guide
+      toggle appears on the next refresh. If a file would <strong>overwrite</strong> an existing copy in shared storage,
+      <code>er</code> asks you to confirm first and tells you <strong>which copy is newer</strong> — your <code>.er/</code>
+      version or the one already in storage — so you never silently clobber fresher data.
+    </p>
+
+    <h2>Guide mode in the terminal <span class="pill tui">terminal</span></h2>
+    <p>
+      In the TUI, the guide is a numbered <strong>Tour</strong> tab that only shows when a tour exists for the branch
+      (and the feature is enabled — see <a href="#enabling-and-disabling">Enabling &amp; disabling</a>). Because tab
+      numbers are assigned dynamically, the Tour tab takes whatever number is next in your enabled-modes list. Switch to
+      it with that number key, the same way you switch any <a href="diff-modes.html">diff mode</a>.
+    </p>
+    <p>The view is two panels:</p>
+    <ul>
+      <li><strong>Left — the pillar list.</strong> Every pillar with its title, a <code>◆</code> marker if it is
+      foundational, and a progress badge: a green <code>✓</code> when all its files are reviewed, otherwise
+      <code>reviewed / total</code>. Files are nested under each pillar with a <code>✓</code> beside the ones you have
+      reviewed.</li>
+      <li><strong>Right — the diff, reordered.</strong> The branch diff laid out in pillar order rather than file order,
+      with a sticky header showing the current pillar (<code>TOUR · pillar N/M</code>) and its description above the
+      changes.</li>
+    </ul>
+
+    <h3>Navigating a guide</h3>
+    <table>
+      <thead><tr><th>Key</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>Previous / next pillar (jumps to the pillar's first file).</td></tr>
+        <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>Next / previous file, crossing pillar boundaries.</td></tr>
+        <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Move line by line through the diff.</td></tr>
+        <tr><td><kbd>u</kbd> / <kbd>d</kbd></td><td>Page up / down; the selected pillar re-syncs to what is on screen.</td></tr>
+        <tr><td><kbd>h</kbd> / <kbd>l</kbd></td><td>Scroll the diff horizontally for long lines.</td></tr>
+        <tr><td><kbd>Space</kbd></td><td>Toggle the current file as reviewed.</td></tr>
+        <tr><td><kbd>b</kbd></td><td>Bulk-review: mark every file in the selected pillar as reviewed.</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Reviewed state is shared with the rest of <code>er</code> — files you mark reviewed in Guide mode stay reviewed in
+      Branch mode and vice versa. If no tour exists yet, the panel shows
+      <em>&ldquo;No tour available — run /er-tour to generate one.&rdquo;</em>
+    </p>
+
+    <h2>Guide mode in the desktop <span class="pill desktop">desktop</span></h2>
+    <p>
+      In the desktop app the guide is a <strong>Guide / Diff</strong> toggle in the top-right of the diff header. The
+      toggle only appears once a tour exists for the branch; click <strong>Guide</strong> to enter the walkthrough and
+      <strong>Diff</strong> to return to the normal branch diff.
+    </p>
+    <p>Guide mode turns the diff into a <strong>Split View</strong>:</p>
+    <ul>
+      <li><strong>A pillar rail on the left.</strong> A sticky lane that pins each pillar's header to the top of the
+      viewport while its files scroll past. Each pillar shows its title, a foundation badge (<code>◆</code>), its
+      description, a <code>reviewed / total</code> count (or a green <strong>Reviewed</strong> badge when complete), a
+      <strong>Review all / Unreview all</strong> button, and the file list with a <code>✓</code> and ± line counts per
+      file.</li>
+      <li><strong>The diff, reordered by pillar.</strong> Files are laid out in the pillar sequence rather than
+      alphabetically, with the &ldquo;Other changes&rdquo; group last.</li>
+      <li><strong>Auto-collapse on review.</strong> When you mark a file reviewed in Guide mode it collapses to a compact
+      row, keeping your attention on what is left. Already-reviewed files start collapsed; you can always expand one
+      manually.</li>
+    </ul>
+
+    <h2>Staying fresh</h2>
+    <p>
+      A guide is generated against a specific snapshot of the diff. Each <code>tour.json</code> records the hash of the
+      diff it was built from; when the underlying diff changes — a watched file is saved, something is staged or
+      committed — <code>er</code> can tell the guide no longer matches. The walkthrough still renders (files that have
+      since vanished from the diff are simply dropped), but the grouping may be out of date. Regenerate it — re-run
+      <code>/er-tour</code> or hit <strong>Regenerate tour</strong> — to bring the pillars back in line with the current
+      change.
+    </p>
+
+    <h2 id="enabling-and-disabling">Enabling &amp; disabling</h2>
+    <p>
+      Guide mode is gated behind the <strong>Tour</strong> feature flag, which is <strong>on by default</strong>. You can
+      toggle it from the settings overlay (<kbd>S</kbd> in the terminal, the settings screen in the desktop) or in
+      <a href="configuration.html">configuration</a>:
+    </p>
+    <pre><code>[features]
+view_tour = true   # "Show AI guided tour mode (when a tour exists)"</code></pre>
+    <p>
+      Turning it off hides the Tour tab and the Guide toggle regardless of whether a <code>tour.json</code> is present.
+      With it on, the tab/toggle still only appears when a guide actually exists for the branch — so it never adds
+      clutter to a diff you have not generated a walkthrough for.
+    </p>
+
+    <div class="callout tip">
+      <span class="ico">●</span>
+      <div><p>Guide mode pairs well with <a href="ai-review.html">AI Review</a>: pillars can link directly to review
+      findings, so a walkthrough doubles as a route through the riskiest parts of the change. Generate the review
+      first, then the tour, to get findings threaded into the pillars.</p></div>
+    </div>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

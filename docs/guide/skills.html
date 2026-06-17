@@ -25,9 +25,14 @@
     </p>
     <div class="callout note">
       <span class="ico">◆</span>
-      <div><p>The skills document their output as <code>.er/&lt;file&gt;</code> relative to the repo. With default
-      managed storage, run reviews through <code>er</code>'s own agent commands, or set <code>ER_REPO_LOCAL=1</code> so
-      skill output lands where <code>er</code> reads it. See <a href="storage.html">Review Storage</a>.</p></div>
+      <div><p>Skills write their output to the repo's <code>.er/</code> directory, because they run inside your AI
+      assistant's sandbox — which can write the repo but not the <a href="storage.html">shared storage</a> the apps read
+      from. To pull a hand-run skill's output into <code>er</code>, use the <strong>Import</strong> action: the desktop
+      AI palette's <strong>Import local review files</strong>, or <kbd>I</kbd> in the terminal. It copies the
+      <code>.er/</code> sidecars into shared storage, asking before it overwrites a copy that's already there (and telling
+      you which is newer). The desktop's in-app <strong>Generate</strong> buttons skip the round-trip by writing storage
+      directly. <code>ER_REPO_LOCAL=1</code> still forces <code>er</code> to read and write repo <code>.er/</code>
+      directly, for debugging.</p></div>
     </div>
 
     <h2>The standard loop</h2>
@@ -75,6 +80,7 @@
     <table>
       <thead><tr><th>Skill</th><th>What it does</th></tr></thead>
       <tbody>
+        <tr><td><code>/er-tour</code></td><td>Group the diff into an ordered guided walkthrough — foundation-first “pillars” → <code>tour.json</code> (see <a href="guide-mode.html">Guide Mode</a>)</td></tr>
         <tr><td><code>/er-professor</code></td><td>Learning agent: teaching insights → <code>professor.json</code></td></tr>
         <tr><td><code>/er-risk-sort</code></td><td>Re-sort the file review order by P0 → P1 → P2, cosmetic files last</td></tr>
         <tr><td><code>/er-summary</code></td><td>Regenerate the markdown summary (P0/P1 focus, no cosmetic noise)</td></tr>

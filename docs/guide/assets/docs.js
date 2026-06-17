@@ -21,6 +21,7 @@
       { file: 'reviewing.html', title: 'Reviewing & Navigation' },
       { file: 'comments.html', title: 'Comments & Questions' },
       { file: 'ai-review.html', title: 'AI Review' },
+      { file: 'guide-mode.html', title: 'Guide Mode' },
       { file: 'github.html', title: 'GitHub & Pull Requests' },
       { file: 'configuration.html', title: 'Configuration' },
       { file: 'storage.html', title: 'Review Storage' },
