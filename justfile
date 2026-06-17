@@ -11,6 +11,12 @@
 #
 # Env passthrough still works, e.g.  ER_DEBUG=1 just run   |   just dev --logs arena
 # Pass extra args after the recipe name where it takes `*ARGS`.
+#
+# Recipes are grouped DEVELOPMENT (dev/tui, dev/desktop) and
+# PRODUCTION (prod/tui, prod/desktop). For shipping the desktop app:
+#   just build-desktop      bundle the release .app only
+#   just install-desktop    bundle + copy to /Applications
+#   just release-desktop    bundle + install + DMG
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
@@ -25,62 +31,79 @@ alias l := lint
 _default:
     @just --list
 
-# ─────────────────────────────── run (local / dev) ───────────────────────────────
+# ════════════════════════════════ DEVELOPMENT ════════════════════════════════════
+# Local dev builds and dev servers. Fast, unoptimized, never installs anything.
+
+# ───────────────────────────────────── TUI ───────────────────────────────────────
 
 # Run the TUI from the current git repo (dev build). Needs a real terminal.
-[group('run')]
+[group('dev/tui')]
 run *ARGS:
     ./scripts/er-tui.sh run -p er-tui -- {{ARGS}}
 
+# Build the `er` TUI (debug, unoptimized).
+[group('dev/tui')]
+build:
+    ./scripts/er-tui.sh build -p er-tui
+
+# ─────────────────────────────────── DESKTOP ─────────────────────────────────────
+
 # Run the desktop app in dev mode (Tauri + Vite). `just dev --logs arena` for log groups.
-[group('run')]
+[group('dev/desktop')]
 dev *ARGS:
     ./scripts/tauri-dev.sh {{ARGS}}
 
 # Run only the desktop frontend (Vite dev server, no Tauri shell).
-[group('run')]
+[group('dev/desktop')]
 dev-ui:
     cd desktop-ui && bun run dev
 
-# Launch Storybook for the desktop UI components.
-[group('run')]
-storybook:
-    cd desktop-ui && bun run storybook
-
-# ─────────────────────────────────── build ───────────────────────────────────────
-
-# Build the `er` TUI (debug).
-[group('build')]
-build:
-    ./scripts/er-tui.sh build -p er-tui
-
-# Build the `er` TUI (release, optimized).
-[group('build')]
-build-release:
-    ./scripts/er-tui.sh build --release -p er-tui
-
-# Build the desktop frontend bundle (Vite).
-[group('build')]
+# Build just the desktop frontend bundle (Vite) — does NOT build the Tauri shell.
+[group('dev/desktop')]
 build-ui:
     cd desktop-ui && bun run build
 
-# Build the headless engine the way CI does (no UI features, then +highlight).
-[group('build')]
-build-engine-headless:
-    cargo build -p er-engine --no-default-features
-    cargo build -p er-engine --no-default-features --features highlight
+# Launch Storybook for the desktop UI components.
+[group('dev/desktop')]
+storybook:
+    cd desktop-ui && bun run storybook
 
-# ──────────────────────────────── production ─────────────────────────────────────
+# ══════════════════════════ PRODUCTION · RELEASE · INSTALL ════════════════════════
+# Optimized, shippable artifacts. The desktop trio is build → install → release.
 
-# Install the `er` binary to ~/.cargo/bin (release). The TUI "production" artifact.
-[group('production')]
+# ───────────────────────────────────── TUI ───────────────────────────────────────
+
+# Build the `er` TUI binary (release, optimized) — leaves it in target/tui, no install.
+[group('prod/tui')]
+build-release:
+    ./scripts/er-tui.sh build --release -p er-tui
+
+# Build + install the `er` binary to ~/.cargo/bin (release). The TUI production install.
+[group('prod/tui')]
 install:
     ./scripts/er-tui.sh install --path crates/er-tui
 
-# Build the production desktop bundle (.app / install). The desktop "production" artifact.
-[group('production')]
+# ─────────────────────────────────── DESKTOP ─────────────────────────────────────
+# All three shell out to scripts/tauri-build.sh (release .app in target/desktop).
+# They differ only in what happens after the bundle is built:
+#   build-desktop   → bundle only             (ER_SKIP_INSTALL=1)
+#   install-desktop → bundle + copy to /Applications
+#   release-desktop → bundle + install + DMG  (ER_SKIP_DMG=0)
+
+# Build the release desktop .app bundle only — does NOT install or make a DMG.
+[group('prod/desktop')]
 build-desktop *ARGS:
+    ER_SKIP_INSTALL=1 ./scripts/tauri-build.sh {{ARGS}}
+
+# Build + install the desktop app to /Applications (ad-hoc signed, quarantine cleared).
+[group('prod/desktop')]
+install-desktop *ARGS:
     ./scripts/tauri-build.sh {{ARGS}}
+
+# Build + install + produce a distributable DMG under target/desktop/release/bundle/dmg.
+[group('prod/desktop')]
+release-desktop *ARGS:
+    ER_SKIP_DMG=0 ./scripts/tauri-build.sh {{ARGS}}
 
 # ──────────────────────────────────── test ───────────────────────────────────────
 
@@ -140,6 +163,12 @@ lint: fmt-check clippy check-ui
 # Mirror the GitHub CI gate: format, clippy, tests, headless engine builds.
 [group('ci')]
 ci: fmt-check clippy test build-engine-headless
+
+# Build the headless engine the way CI does (no UI features, then +highlight).
+[group('ci')]
+build-engine-headless:
+    cargo build -p er-engine --no-default-features
+    cargo build -p er-engine --no-default-features --features highlight
 
 # Fast local pre-commit gate: format the tree, clippy, then TUI/engine tests.
 [group('ci')]
