@@ -349,41 +349,6 @@ fn expert_review_output_section(output_dir: &str, expert_id: &str) -> String {
     )
 }
 
-/// Build the review prompt with repo context substituted.
-///
-/// The prompt instructs the agent to:
-/// 1. Read the diff via `git diff`
-/// 2. Analyse all files
-/// 3. Write `.er/review.json`, `.er/order.json`, `.er/checklist.json`, `.er/summary.md`
-pub fn build_review_prompt(base_branch: &str, scope: &str) -> String {
-    let safe_base_branch = sanitize_for_shell(base_branch);
-    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
-    let base_branch = base_branch.replace('{', "{{").replace('}', "}}");
-    let diff_args = match scope {
-        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
-        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
-        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
-    };
-    let capture = format!(
-        "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
-    );
-    let preamble = review_rules_preamble(".er", false, FindingCaps::general(), Some(&capture));
-    let outputs = general_review_outputs_section(".er", scope, &base_branch, "<current branch>");
-
-    format!(
-        r#"You are a code reviewer. Perform a thorough review of the current git diff and write results to `.er/`.
-
-Ensure `.er/` exists: `mkdir -p .er`
-
-{preamble}
-
-{analyze}
-
-{outputs}"#,
-        analyze = general_review_instructions_read_analyze(),
-    )
-}
-
 /// Build the review prompt for Desktop local-managed mode.
 ///
 /// Same review logic as `build_review_prompt` but uses absolute `output_dir` paths
@@ -447,38 +412,6 @@ pub fn build_review_prompt_prepared_diff(scope: &str, output_dir: &str) -> Strin
 {analyze}
 
 {outputs}"#,
-        analyze = general_review_instructions_read_analyze(),
-    )
-}
-
-/// Specialized expert review (TUI / skill path — runs `git diff`).
-pub fn build_expert_review_prompt(base_branch: &str, scope: &str, expert_id: &str) -> String {
-    let _ = expert_by_id(expert_id).expect("unknown expert_id");
-    let safe_base_branch = sanitize_for_shell(base_branch);
-    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
-    let diff_args = match scope {
-        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
-        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
-        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
-    };
-    let capture = format!(
-        "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
-    );
-    let preamble = review_rules_preamble(".er", false, FindingCaps::expert(), Some(&capture));
-    let lens = expert_lens_instructions(expert_id);
-    let output = expert_review_output_section(".er", expert_id);
-    format!(
-        r#"You are a specialized code reviewer. Write expert findings to `.er/experts/`.
-
-Ensure `.er/` exists: `mkdir -p .er/experts`
-
-{preamble}
-
-{lens}
-
-{analyze}
-
-{output}"#,
         analyze = general_review_instructions_read_analyze(),
     )
 }
@@ -707,42 +640,6 @@ fn professor_output_section(output_dir: &str) -> String {
     )
 }
 
-/// Professor learning agent (TUI / skill — runs `git diff`).
-pub fn build_professor_review_prompt(
-    base_branch: &str,
-    scope: &str,
-    user_focus: Option<&str>,
-) -> String {
-    let safe_base_branch = sanitize_for_shell(base_branch);
-    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
-    let diff_args = match scope {
-        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
-        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
-        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
-    };
-    let capture = format!(
-        "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
-    );
-    let preamble = professor_rules_preamble(".er", false, Some(&capture));
-    let lens = professor_lens_instructions(user_focus);
-    let output = professor_output_section(".er");
-    let file_scope = file_scope_if_present(".er");
-    format!(
-        r#"You are a code professor. Teach what this diff implements; write insights to `.er/professor.json`.
-
-Ensure `.er/` exists: `mkdir -p .er`
-
-{preamble}
-
-{lens}
-
-{analyze}
-
-{output}{file_scope}"#,
-        analyze = general_review_instructions_read_analyze(),
-    )
-}
-
 /// Professor learning agent for local-managed app/TUI runs.
 pub fn build_professor_review_prompt_local_managed(
     base_branch: &str,
@@ -887,46 +784,6 @@ Skill reference: `/{TRIAGE_SKILL}`."#,
     )
 }
 
-/// Triage scan (TUI / skill — runs `git diff`).
-pub fn build_triage_review_prompt(base_branch: &str, scope: &str) -> String {
-    let safe_base_branch = sanitize_for_shell(base_branch);
-    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
-    let diff_args = match scope {
-        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
-        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
-        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
-    };
-    let capture = format!(
-        "git diff {diff_args} > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)"
-    );
-    let preamble = review_rules_preamble(
-        ".er",
-        false,
-        FindingCaps {
-            per_file: 0,
-            total: 2,
-            is_expert: true,
-        },
-        Some(&capture),
-    );
-    let lens = triage_lens_instructions();
-    let output = triage_output_section(".er");
-    format!(
-        r#"You are a code review triage agent. Scan the branch diff broadly and write routing guidance to `.er/triage.json`.
-
-Ensure `.er/` exists: `mkdir -p .er`
-
-{preamble}
-
-{lens}
-
-{analyze}
-
-{output}"#,
-        analyze = general_review_instructions_read_analyze(),
-    )
-}
-
 /// Triage scan for local-managed app/TUI runs.
 pub fn build_triage_review_prompt_local_managed(
     base_branch: &str,
@@ -1001,67 +858,6 @@ pub fn build_triage_review_prompt_prepared_diff(scope: &str, output_dir: &str) -
 
 {output}"#,
         analyze = general_review_instructions_read_analyze(),
-    )
-}
-
-/// Build the questions-answering prompt.
-///
-/// The prompt instructs the agent to:
-/// 1. Read `.er/questions.json`
-/// 2. Read the diff
-/// 3. Answer each unresolved question
-/// 4. Write updated `.er/questions.json`
-pub fn build_questions_prompt(base_branch: &str, scope: &str) -> String {
-    let safe_base_branch = sanitize_for_shell(base_branch);
-    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
-    let diff_args = match scope {
-        "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
-        "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
-        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
-    };
-    let annotate = annotate_diff_command(".er/diff-tmp", ".er/diff-annotated");
-
-    format!(
-        r#"You are answering code review questions. Read the questions file and the diff, then provide answers.
-
-## Instructions
-
-1. Read `.er/questions.json`
-   - If it doesn't exist or has no unresolved questions: print "No questions to answer" and stop.
-2. Run: `git diff {diff_args} > .er/diff-tmp`
-3. Annotate with file line numbers: `{annotate}`
-4. Read `.er/diff-annotated` — each content line carries `[h<hunk> L<file_line>]` tags matching `Question.hunk_index` and `Question.line_start`
-5. For each question where `resolved == false` and no existing reply (no entry with `in_reply_to` == that question's `id`):
-   a. Locate the relevant code in the diff (using `file`, `hunk_index`, `line_start`)
-   b. Write a thoughtful answer as a NEW entry appended to the `questions` array:
-      ```json
-      {{
-        "id": "a-<timestamp>-<seq>",
-        "timestamp": "<ISO 8601>",
-        "file": "<same as question>",
-        "hunk_index": <same as question>,
-        "line_start": <same as question>,
-        "line_content": "<same as question>",
-        "text": "<your answer referencing actual code from the diff>",
-        "resolved": false,
-        "in_reply_to": "<question.id>",
-        "author": "Claude"
-      }}
-      ```
-   c. Set the original question's `resolved` field to `true`
-6. Write the updated `.er/questions.json`
-7. Back up: `cp .er/questions.json .er/questions.prev.json`
-
-## Answer Quality
-
-- Actually read the code the human is asking about. Don't give generic answers.
-- If they ask "why?", explain with specifics from the diff.
-- Keep responses concise — they render in a TUI with limited width.
-- Never be defensive. If the code is fine, say so.
-
-## Speed
-
-Target: complete in under 60 seconds. Read the diff once, answer all questions in-context."#
     )
 }
 
@@ -1272,81 +1068,6 @@ Do not add new review comments in this action.
 ## Speed
 
 Target: complete in under 5 minutes."#
-    )
-}
-
-pub fn build_validate_prompt(base_branch: &str, scope: &str) -> String {
-    let safe_base_branch = sanitize_for_shell(base_branch);
-    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
-    let diff_args = match scope {
-        "unstaged" => "--unified=20 --no-color --no-ext-diff".to_string(),
-        "staged" => "--staged --unified=20 --no-color --no-ext-diff".to_string(),
-        _ => format!("{safe_base_branch} --unified=20 --no-color --no-ext-diff"),
-    };
-    let annotate = annotate_diff_command(".er/diff-tmp", ".er/diff-annotated");
-
-    format!(
-        r#"You are validating and re-anchoring an existing code review.
-Do not create unrelated new findings in this action.
-
-## Instructions
-
-1. Read `.er/review.json`. If it does not exist, print "No review to validate" and stop.
-2. Refresh the annotated diff so line numbers stay current:
-   - `git diff {diff_args} > .er/diff-tmp`
-   - `{annotate}`
-3. For each active finding, read existing replies (`responses`) before deciding the outcome.
-4. For each finding, choose exactly one result:
-   - `RESOLVED_OR_INVALID`: concern no longer applies. Remove it from active `files[].findings`.
-   - `PERSISTS`: concern still applies. Keep it and update title/description/suggestion if needed.
-   - `SHIFTED`: concern still applies but moved. Keep it and update `hunk_index`, `line_start`, `line_end`.
-5. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
-   `informational`, `dropped`) based on current code.
-6. Preserve `diff_hash`, `version`, and unchanged file entries unless your existing refresh workflow recomputes them.
-7. Write updated `.er/review.json`.
-8. Append a one-line note to `.er/summary.md` in this exact format:
-   `Refresh: N removed, M updated, K re-anchored.`
-9. Do not discover unrelated new findings in this action.
-
-## Budget
-
-- ~10 file reads per finding (no global session cap).
-
-## Speed
-
-Target: complete in under 5 minutes. Each evidence read should map to a specific finding."#
-    )
-}
-
-/// Build the summary-only prompt with repo context substituted.
-pub fn build_summary_prompt(base_branch: &str, scope: &str) -> String {
-    let safe_base_branch = sanitize_for_shell(base_branch);
-    let safe_base_branch = safe_base_branch.replace('{', "{{").replace('}', "}}");
-    let diff_args = match scope {
-        "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
-        "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
-        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
-    };
-
-    format!(
-        r#"Summarize the current git diff and write the result to `.er/summary.md`.
-
-## Instructions
-
-1. Ensure `.er/` exists: `mkdir -p .er`
-2. Run: `git diff {diff_args} > .er/diff-tmp`
-3. Read `.er/diff-tmp`
-4. Write `.er/summary.md` as 3-5 short markdown paragraphs covering:
-   - what changed
-   - the most important files or subsystems touched
-   - the main implementation risks or things a reviewer should pay attention to
-
-## Guidelines
-
-- Be concrete and reference actual changes from the diff.
-- Focus on behavior and review relevance, not commit-style fluff.
-- Do not write any other files.
-- Do NOT read individual source files — the diff contains everything needed."#
     )
 }
 
@@ -1702,11 +1423,11 @@ mod tests {
         assert!(is_safe_shell_value(""));
     }
 
-    // ── build_review_prompt ──
+    // ── build_review_prompt_local_managed ──
 
     #[test]
     fn review_prompt_branch_scope_includes_base_branch() {
-        let prompt = build_review_prompt("main", "branch");
+        let prompt = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(
             prompt.contains("'main'"),
             "should include sanitized base branch"
@@ -1717,13 +1438,13 @@ mod tests {
 
     #[test]
     fn review_prompt_staged_scope_uses_staged_flag() {
-        let prompt = build_review_prompt("main", "staged");
+        let prompt = build_review_prompt_local_managed("main", "staged", "/tmp/er-test");
         assert!(prompt.contains("--staged --unified=20 --no-color --no-ext-diff"));
     }
 
     #[test]
     fn review_prompt_unstaged_scope_no_base_branch() {
-        let prompt = build_review_prompt("main", "unstaged");
+        let prompt = build_review_prompt_local_managed("main", "unstaged", "/tmp/er-test");
         assert!(prompt.contains("--unified=20 --no-color --no-ext-diff"));
         assert!(!prompt.contains("'main' --unified"));
         assert!(!prompt.contains("--staged"));
@@ -1731,22 +1452,22 @@ mod tests {
 
     #[test]
     fn review_prompt_dangerous_branch_name_sanitized() {
-        let prompt = build_review_prompt("main; rm -rf /", "branch");
+        let prompt = build_review_prompt_local_managed("main; rm -rf /", "branch", "/tmp/er-test");
         assert!(prompt.contains("'main; rm -rf /'"));
         assert!(!prompt.contains("main; rm -rf / --unified"));
     }
 
-    // ── build_questions_prompt ──
+    // ── build_questions_prompt_local_managed ──
 
     #[test]
     fn questions_prompt_branch_scope_includes_base() {
-        let prompt = build_questions_prompt("develop", "branch");
+        let prompt = build_questions_prompt_local_managed("develop", "branch", "/tmp/er-test");
         assert!(prompt.contains("'develop'"));
     }
 
     #[test]
     fn questions_prompt_staged_scope() {
-        let prompt = build_questions_prompt("main", "staged");
+        let prompt = build_questions_prompt_local_managed("main", "staged", "/tmp/er-test");
         assert!(prompt.contains("--staged"));
     }
 
@@ -1788,13 +1509,13 @@ mod tests {
 
     #[test]
     fn review_prompt_includes_annotation_step() {
-        let prompt = build_review_prompt("main", "branch");
+        let prompt = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(
-            prompt.contains("'.er/diff-tmp'"),
+            prompt.contains("'/tmp/er-test/diff-tmp'"),
             "annotation reads raw diff"
         );
         assert!(
-            prompt.contains("'.er/diff-annotated'"),
+            prompt.contains("'/tmp/er-test/diff-annotated'"),
             "annotation writes annotated diff"
         );
         assert!(prompt.contains("[h<hunk> L<file_line>]"));
@@ -1803,8 +1524,8 @@ mod tests {
 
     #[test]
     fn questions_prompt_includes_annotation_step() {
-        let prompt = build_questions_prompt("main", "branch");
-        assert!(prompt.contains("'.er/diff-annotated'"));
+        let prompt = build_questions_prompt_local_managed("main", "branch", "/tmp/er-test");
+        assert!(prompt.contains("'/tmp/er-test/diff-annotated'"));
         assert!(prompt.contains("[h<hunk> L<file_line>]"));
     }
 
@@ -1826,14 +1547,14 @@ mod tests {
 
     #[test]
     fn review_prompt_uses_unified_20() {
-        let prompt = build_review_prompt("main", "branch");
+        let prompt = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(prompt.contains("--unified=20"));
         assert!(!prompt.contains("--unified=3"));
     }
 
     #[test]
     fn review_prompt_allows_reading_source_files() {
-        let prompt = build_review_prompt("main", "branch");
+        let prompt = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         // No "Do NOT read individual source files" — that rule is removed for review.
         assert!(!prompt.contains("Do NOT read individual source files"));
         // Must explicitly invite agentic verification.
@@ -1842,13 +1563,13 @@ mod tests {
 
     #[test]
     fn review_prompt_requires_findings_to_anchor_to_plus_or_minus() {
-        let prompt = build_review_prompt("main", "branch");
+        let prompt = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(prompt.contains("Findings **only** on `+` or `-` lines"));
     }
 
     #[test]
     fn review_prompt_per_finding_read_budget_no_global_cap() {
-        let prompt = build_review_prompt("main", "branch");
+        let prompt = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(prompt.contains("~10 reads per finding"));
         assert!(!prompt.contains("~30 total"));
         assert!(!prompt.contains("~50 total"));
@@ -1856,7 +1577,7 @@ mod tests {
 
     #[test]
     fn review_prompt_includes_confidence_and_evidence() {
-        let prompt = build_review_prompt("main", "branch");
+        let prompt = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(prompt.contains("\"confidence\""));
         assert!(prompt.contains("\"evidence\""));
         assert!(prompt.contains("\"verification_plan\""));
@@ -1873,7 +1594,7 @@ mod tests {
         assert!(prompt.contains("\"verification_plan\""));
     }
 
-    // ── build_validate_prompt ──
+    // ── build_validate_prompt_local_managed ──
 
     #[test]
     fn validate_github_comments_prompt_reads_github_comments_json() {
@@ -1885,20 +1606,20 @@ mod tests {
 
     #[test]
     fn validate_prompt_reads_review_and_diff_annotated() {
-        let prompt = build_validate_prompt("main", "branch");
-        assert!(prompt.contains(".er/review.json"));
-        assert!(prompt.contains(".er/diff-annotated"));
+        let prompt = build_validate_prompt_local_managed("main", "branch", "/tmp/er-test");
+        assert!(prompt.contains("'/tmp/er-test'/review.json"));
+        assert!(prompt.contains("'/tmp/er-test/diff-annotated'"));
     }
 
     #[test]
     fn validate_prompt_uses_unified_20_for_refresh() {
-        let prompt = build_validate_prompt("main", "branch");
+        let prompt = build_validate_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(prompt.contains("--unified=20"));
     }
 
     #[test]
     fn validate_prompt_explains_confidence_transitions() {
-        let prompt = build_validate_prompt("main", "branch");
+        let prompt = build_validate_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(prompt.contains("confirmed"));
         assert!(prompt.contains("informational"));
         assert!(prompt.contains("dropped"));
@@ -1906,13 +1627,13 @@ mod tests {
 
     #[test]
     fn validate_prompt_branch_scope_includes_base() {
-        let prompt = build_validate_prompt("develop", "branch");
+        let prompt = build_validate_prompt_local_managed("develop", "branch", "/tmp/er-test");
         assert!(prompt.contains("'develop'"));
     }
 
     #[test]
     fn validate_prompt_staged_scope_uses_staged_flag() {
-        let prompt = build_validate_prompt("main", "staged");
+        let prompt = build_validate_prompt_local_managed("main", "staged", "/tmp/er-test");
         assert!(prompt.contains("--staged --unified=20"));
     }
 
@@ -2038,21 +1759,28 @@ mod tests {
 
     #[test]
     fn testing_expert_prompt_asks_for_test_coverage_summary() {
-        let prompt = build_expert_review_prompt("main", "branch", "testing");
+        let prompt =
+            build_expert_review_prompt_local_managed("main", "branch", "/tmp/er-test", "testing");
         assert!(prompt.contains("test coverage"));
         assert!(prompt.contains("\"summary\""));
     }
 
     #[test]
     fn patterns_expert_prompt_requires_grep() {
-        let prompt = build_expert_review_prompt("main", "branch", "patterns");
+        let prompt =
+            build_expert_review_prompt_local_managed("main", "branch", "/tmp/er-test", "patterns");
         assert!(prompt.contains("grep"));
         assert!(prompt.contains("Expert lens: Patterns"));
     }
 
     #[test]
     fn simplifying_expert_prompt_mentions_comments() {
-        let prompt = build_expert_review_prompt("main", "branch", "simplifying");
+        let prompt = build_expert_review_prompt_local_managed(
+            "main",
+            "branch",
+            "/tmp/er-test",
+            "simplifying",
+        );
         assert!(prompt.contains("Expert lens: Simplifying"));
         assert!(prompt.contains("brief comment"));
     }
@@ -2097,7 +1825,8 @@ mod tests {
 
     #[test]
     fn triage_prompt_targets_triage_json_only() {
-        let prompt = build_triage_review_prompt("main", "branch");
+        let prompt =
+            build_triage_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(prompt.contains("triage.json"));
         assert!(prompt.contains("verdict"));
         assert!(prompt.contains("≤8 tool calls"));
