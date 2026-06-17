@@ -8330,6 +8330,48 @@ mod tests {
     }
 
     #[test]
+    fn submit_note_persists_to_notes_json_with_n_prefix() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_string_lossy().into_owned();
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(
+                LineType::Add,
+                "let x = 1;",
+                Some(1),
+            )])],
+            1,
+            0,
+        )];
+        let mut tab = make_test_tab(files);
+        // Route the note sidecar into the TempDir's .er/ dir.
+        tab.er_root = ErRoot::RepoLocal(root.clone());
+        tab.repo_root = root.clone();
+        let mut app = make_test_app(tab);
+
+        // Author a note via the composer (the TUI reaches Note through Ctrl+t).
+        app.start_comment(CommentType::Note);
+        app.tab_mut().comment_textarea = TextArea::new(vec!["Refactor this helper".to_string()]);
+        app.submit_comment().unwrap();
+
+        // notes.json holds the new note with an n- prefixed id.
+        let content = std::fs::read_to_string(format!("{root}/.er/notes.json"))
+            .expect("notes.json should be written");
+        let notes: crate::ai::ErNotes = serde_json::from_str(&content).unwrap();
+        assert_eq!(notes.notes.len(), 1);
+        assert!(
+            notes.notes[0].id.starts_with("n-"),
+            "note id must use n- prefix"
+        );
+        assert_eq!(notes.notes[0].text, "Refactor this helper");
+        assert_eq!(notes.notes[0].file, "src/main.rs");
+
+        // The reloaded state reflects the note in the per-file count (counts.2).
+        assert_eq!(app.tab().ai.file_note_count("src/main.rs"), 1);
+        assert!(app.tab().ai.has_notes());
+    }
+
+    #[test]
     fn submit_comment_empty_text_returns_to_normal() {
         let files = vec![make_file(
             "src/main.rs",
