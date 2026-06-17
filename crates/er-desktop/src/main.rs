@@ -119,6 +119,8 @@ fn upstream_url_for_proxy(uri: &tauri::http::Uri, upstream_scheme: &str) -> Stri
 
 const PROXY_HTML_SIZE_LIMIT: usize = 10 * 1024 * 1024; // 10 MB
 
+// `app` is only used inside the `#[cfg(target_os = "macos")]` block below.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 fn reveal_main_window(
     window: &tauri::WebviewWindow,
     app: &tauri::AppHandle,
@@ -149,6 +151,8 @@ fn reveal_main_window(
     Ok(())
 }
 
+// Only reachable from the macOS `Reopen` run event.
+#[cfg(target_os = "macos")]
 fn reveal_main_window_from_handle(app: &tauri::AppHandle, reason: &str) {
     match app.get_webview_window("main") {
         Some(window) => {
@@ -1555,7 +1559,7 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error building tauri application");
 
-    tauri_app.run(move |handle, event| {
+    tauri_app.run(move |_handle, event| {
         match event {
             tauri::RunEvent::ExitRequested { .. } => {
                 if let Ok(guard) = persist_app.lock() {
@@ -1575,7 +1579,7 @@ fn main() {
                 log::info!(
                     "macOS reopen event received; has_visible_windows={has_visible_windows}"
                 );
-                reveal_main_window_from_handle(handle, "macos_reopen");
+                reveal_main_window_from_handle(_handle, "macos_reopen");
             }
             _ => {}
         }

@@ -429,6 +429,8 @@ export interface AppSnapshot {
   arena_runs?: import("./types/arena").ArenaRunSummary[];
   /** Guided tour for the active tab. `available` drives the Guide tab. */
   tour?: TourSnapshot;
+  /** Active arena runs across all tabs (tab-independent background runs). */
+  background_arena_runs?: import("./types/arena").ArenaRunSummary[];
 }
 
 export interface InboxTargetSnapshot {

@@ -415,6 +415,10 @@ pub struct AppSnapshot {
     /// Guided tour (Guide tab). `available` drives whether the Guide tab shows.
     #[serde(default)]
     pub tour: TourSnapshot,
+    /// Active arena runs across ALL tabs (tab-independent background runs).
+    /// Lets the UI keep a run visible/controllable after switching branches.
+    #[serde(default)]
+    pub background_arena_runs: Vec<ArenaRunSummaryWire>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1936,6 +1940,7 @@ fn build_snapshot_inner(
             app.arena_list_summaries(Some(&branch)).unwrap_or_default()
         },
         tour: build_tour_snapshot(tab),
+        background_arena_runs: app.background_arena_runs(),
     };
     if crate::profile_log::profile_enabled() {
         let total_lines: usize = out
