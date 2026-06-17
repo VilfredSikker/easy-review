@@ -210,6 +210,28 @@
   let overlayHeights = $state(new Map<string, number>());
   let overlaySerial = $state(0);
 
+  // Guide mode: measured rendered height of each pillar's rail (keyed by pillar
+  // id). Drives pillarPadByRowIdentity so a pillar's region is never shorter
+  // than its rail (no overlap when files are short/collapsed).
+  let railHeights = $state(new Map<string, number>());
+  function setRailHeight(pillarId: string, px: number) {
+    if ((railHeights.get(pillarId) ?? -1) === px) return;
+    const next = new Map(railHeights);
+    next.set(pillarId, px);
+    railHeights = next;
+  }
+  /** Svelte action: report a node's rendered height (ResizeObserver). */
+  function measureHeight(node: HTMLElement, onHeight: (px: number) => void) {
+    let cb = onHeight;
+    const ro = new ResizeObserver(() => cb(node.offsetHeight));
+    ro.observe(node);
+    cb(node.offsetHeight);
+    return {
+      update(next: (px: number) => void) { cb = next; },
+      destroy() { ro.disconnect(); },
+    };
+  }
+
   // Evict stale overlay entries when the model changes to prevent unbounded growth.
   $effect(() => {
     const validIds = new Set(crossFileModel.rows.map((r) => r.identity));
@@ -233,7 +255,10 @@
   }
 
   // ── Effective geometry (model + overlay) ──────────────────────────────────
-  const effectiveGeometry = $derived.by<EffectiveGeometry>(() => {
+  // baseGeometry = model row heights + measured overlay heights (threads/findings),
+  // WITHOUT the Guide pillar padding (so pillar-pad can be derived from it without
+  // feeding back into itself).
+  const baseGeometry = $derived.by<EffectiveGeometry>(() => {
     overlaySerial; // reactive on overlay changes
     const model = crossFileModel;
     if (model.rows.length === 0) {
@@ -251,6 +276,61 @@
     for (let i = 0; i < model.rows.length; i++) {
       const h = overlayHeights.get(model.rows[i].identity) ?? model.rows[i].height;
       offsets[i + 1] = offsets[i] + h;
+    }
+    return {
+      cumulativeOffsets: offsets,
+      totalHeight: offsets[model.rows.length],
+      rowCount: model.rows.length,
+    };
+  });
+
+  // Guide mode: extra bottom padding for each pillar's LAST row so the pillar's
+  // region is at least as tall as its (measured) rail — keyed by that row's
+  // identity. Derived from baseGeometry (never effectiveGeometry) to avoid a
+  // feedback loop. Empty outside tour mode.
+  const pillarPadByRowIdentity = $derived.by<Map<string, number>>(() => {
+    const pad = new Map<string, number>();
+    if (!tourActive || railHeights.size === 0) return pad;
+    const model = crossFileModel;
+    const offsets = baseGeometry.cumulativeOffsets;
+    // Pillar boundaries: first in-diff file's start row, in pillar order.
+    const bounds: { pillarId: string; startRow: number }[] = [];
+    const present = new Set(files.map((f) => f.path));
+    for (const p of snapshot?.tour?.pillars ?? []) {
+      const firstPath = p.files.map((tf) => tf.path).find((path) => present.has(path));
+      if (!firstPath) continue;
+      const startRow = model.fileStartRow.get(firstPath);
+      if (startRow === undefined) continue;
+      bounds.push({ pillarId: p.id, startRow });
+    }
+    bounds.sort((a, b) => a.startRow - b.startRow);
+    for (let i = 0; i < bounds.length; i++) {
+      const startRow = bounds[i].startRow;
+      const endRow = i + 1 < bounds.length ? bounds[i + 1].startRow : model.rows.length; // exclusive
+      if (endRow <= startRow) continue;
+      const diffSpanPx = (offsets[endRow] ?? 0) - (offsets[startRow] ?? 0);
+      const railPx = railHeights.get(bounds[i].pillarId) ?? 0;
+      const extra = Math.max(0, railPx - diffSpanPx);
+      if (extra > 0) {
+        const lastRow = model.rows[endRow - 1];
+        if (lastRow) pad.set(lastRow.identity, extra);
+      }
+    }
+    return pad;
+  });
+
+  // effectiveGeometry = baseGeometry + Guide pillar padding. Everything
+  // downstream (virtual window, pillarSpans, scroll mapping) uses this.
+  const effectiveGeometry = $derived.by<EffectiveGeometry>(() => {
+    const base = baseGeometry;
+    const pad = pillarPadByRowIdentity;
+    if (pad.size === 0) return base;
+    const model = crossFileModel;
+    const offsets = new Array<number>(model.rows.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < model.rows.length; i++) {
+      const baseH = base.cumulativeOffsets[i + 1] - base.cumulativeOffsets[i];
+      offsets[i + 1] = offsets[i] + baseH + (pad.get(model.rows[i].identity) ?? 0);
     }
     return {
       cumulativeOffsets: offsets,
@@ -419,6 +499,25 @@
       m.set(p.id, list);
     }
     return m;
+  });
+
+  // Guide mode: auto-collapse a file to a compact row once it's reviewed. Acts
+  // only on the false→true transition (and on already-reviewed files when Guide
+  // is first entered), so a user who manually re-expands a reviewed file isn't
+  // fought.
+  let _prevReviewedTour = new Set<string>();
+  $effect(() => {
+    if (snapshot?.mode !== "tour") {
+      _prevReviewedTour = new Set();
+      return;
+    }
+    const cur = new Set<string>();
+    for (const f of files) {
+      if (!f.reviewed) continue;
+      cur.add(f.path);
+      if (!_prevReviewedTour.has(f.path)) diffFileCollapse.collapse(f.path);
+    }
+    _prevReviewedTour = cur;
   });
 
   // ── Selection validation ─────────────────────────────────────────────────
@@ -1694,7 +1793,10 @@
         >
           {#each pillarSpans as span (span.info.pillarId)}
             <div style="position:absolute;left:0;right:0;top:{span.topPx}px;height:{span.heightPx}px;">
-              <div style="position:sticky;top:0;">
+              <div
+                style="position:sticky;top:0;"
+                use:measureHeight={(px) => setRailHeight(span.info.pillarId, px)}
+              >
                 <PillarRail
                   info={span.info}
                   fileRows={pillarFileRows.get(span.info.pillarId) ?? []}
@@ -1772,6 +1874,11 @@
               {#if finding}
                 <FindingRow {row} {finding} {thread} />
               {/if}
+            {/if}
+            {#if tourActive && pillarPadByRowIdentity.get(row.identity)}
+              <!-- Guide mode: pad the pillar's last row down to the rail height so
+                   the next pillar's files start below the (taller) rail. -->
+              <div style="height:{pillarPadByRowIdentity.get(row.identity)}px"></div>
             {/if}
           {/each}
         </div>
