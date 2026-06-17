@@ -92,8 +92,6 @@ export interface FileSnapshot {
    * snapshot is stored; never true on stored snapshots.
    */
   hunks_omitted?: boolean;
-  /** Id of the tour pillar this file belongs to (Guide tab grouping), if any. */
-  pillar_id?: string | null;
 }
 
 export interface TourFileRef {

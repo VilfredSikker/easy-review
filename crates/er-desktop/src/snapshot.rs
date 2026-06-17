@@ -663,11 +663,6 @@ pub struct FileSnapshot {
     /// holds identical content for `delta_key`. Reuse prior hunks, or fall
     /// back to the lazy-stub fetch when no match is found.
     pub hunks_omitted: bool,
-    /// Id of the tour pillar this file belongs to, if a tour exists. Lets the
-    /// Guide tab group/reorder files without a second lookup. `None` when no
-    /// tour, or the file isn't assigned to any pillar.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pillar_id: Option<String>,
 }
 
 /// Lightweight commit metadata for the file viewer's history scroller.
@@ -1314,13 +1309,6 @@ pub(crate) fn build_file_snapshot(
     let lines_key = file_lines_key(f);
     let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
 
-    let pillar_id = tab
-        .ai
-        .tour
-        .as_ref()
-        .and_then(|t| t.file_pillar(&f.path))
-        .map(|p| p.id.clone());
-
     FileSnapshot {
         path: f.path.clone(),
         status: status_str(&f.status),
@@ -1338,7 +1326,6 @@ pub(crate) fn build_file_snapshot(
         cache_key: format!("{lines_key:016x}"),
         delta_key: format!("{delta_key:016x}"),
         hunks_omitted: false,
-        pillar_id,
     }
 }
 
