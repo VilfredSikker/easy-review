@@ -515,7 +515,10 @@ class ArenaStore {
 
   closeOverlay() {
     this.overlayOpen = false;
-    const active = app.snapshot?.active_arena_run ?? this.backgroundRuns[0]?.id;
+    const active =
+      app.snapshot?.active_arena_run ??
+      this.liveRunId ??
+      this.backgroundRuns[0]?.id;
     if (active && this.hasLiveRun) {
       this.liveRunId = active;
       this.runningOpen = true;
@@ -544,9 +547,15 @@ class ArenaStore {
   }
 
   syncFromSnapshot() {
-    // Fall back to a background run on another tab so a live run survives a branch switch.
+    // Prefer the run we're already tracking; only adopt a background run on
+    // another tab when nothing is tracked yet (keeps a live run visible across
+    // a branch switch without hijacking it to the newest run when several run
+    // concurrently).
     const active =
-      app.snapshot?.active_arena_run ?? this.backgroundRuns[0]?.id ?? null;
+      app.snapshot?.active_arena_run ??
+      this.liveRunId ??
+      this.backgroundRuns[0]?.id ??
+      null;
     if (active === this.liveRunId) return;
 
     if (!active && this.liveRunId && (this.runningOpen || this.runningMinimized)) {

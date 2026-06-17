@@ -13,6 +13,45 @@ use std::sync::Arc;
 use super::App;
 use super::TabState;
 
+/// Load a run's summary, memoized by `run.json` mtime+size.
+///
+/// `App::background_arena_runs` runs inside the desktop's per-poll
+/// `build_snapshot`, so re-reading + parsing every active run's `run.json`
+/// each tick would violate the "per-poll disk reads are mtime-cached"
+/// convention. When the file is unchanged we reuse the parsed summary after a
+/// single `stat`; a changed mtime/size (new finding, completion) re-parses.
+/// Status is intentionally not authoritative here — callers overlay the live
+/// registry status, which can lead the on-disk value.
+fn load_run_summary_cached(paths: &ArenaPaths) -> Option<crate::arena::ArenaRunSummary> {
+    type Key = Option<(std::time::SystemTime, u64)>;
+    type SummaryCache =
+        std::collections::HashMap<std::path::PathBuf, (Key, crate::arena::ArenaRunSummary)>;
+    static CACHE: std::sync::LazyLock<std::sync::Mutex<SummaryCache>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    let json = paths.run_json();
+    let key: Key = std::fs::metadata(&json)
+        .ok()
+        .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+
+    let mut cache = match CACHE.lock() {
+        Ok(g) => g,
+        Err(_) => return load_run(paths).ok().map(|r| r.summary()),
+    };
+    if let Some((cached_key, summary)) = cache.get(&json) {
+        if *cached_key == key {
+            return Some(summary.clone());
+        }
+    }
+    let summary = load_run(paths).ok()?.summary();
+    // Bounded: one entry per run.json path; drop everything if it grows.
+    if cache.len() > 256 {
+        cache.clear();
+    }
+    cache.insert(json, (key, summary.clone()));
+    Some(summary)
+}
+
 impl TabState {
     /// Arena uses the same diff as AI review ([`raw_diff_for_review`]); optional path filter.
     pub fn raw_diff_for_arena(
@@ -172,11 +211,15 @@ impl App {
         for run_id in self.arena_registry.active_run_ids() {
             let er_dir = self.arena_er_dir_for_run(&run_id);
             let paths = ArenaPaths::for_run(&er_dir, &run_id);
-            if let Ok(mut run) = load_run(&paths) {
+            // `build_snapshot` calls this every poll; memoize the disk read by
+            // run.json mtime so we don't re-parse each active run every tick.
+            if let Some(mut summary) = load_run_summary_cached(&paths) {
+                // Status is the registry's live value, not the (possibly older)
+                // on-disk one — overlay it after the cached disk read.
                 if let Some(live) = self.arena_registry.get_status(&run_id) {
-                    run.status = live;
+                    summary.status = live;
                 }
-                out.push(run.summary());
+                out.push(summary);
             }
         }
         out.sort_by_key(|r| std::cmp::Reverse(r.created_at.clone()));
