@@ -1023,7 +1023,11 @@ pub fn bulk_review_pillar(
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(chrome_snap_from(&app, &state))
+    // Full snapshot (not chrome-only): this command is invoked via the generic
+    // `app.cmd` path, which replaces the whole snapshot. A chrome-only snapshot
+    // carries `files: []`, which would blank the diff. snap_from keeps files
+    // (hunks differential-omitted + spliced by the frontend).
+    Ok(snap_from(&app, &state))
 }
 
 #[tauri::command]
@@ -1046,7 +1050,7 @@ pub fn unbulk_review_pillar(
             let _ = tab.save_reviewed_files();
         }
     }
-    Ok(chrome_snap_from(&app, &state))
+    Ok(snap_from(&app, &state))
 }
 
 // ── Editor ────────────────────────────────────────────────────────────────────
