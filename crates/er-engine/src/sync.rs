@@ -24,11 +24,18 @@ use crate::github::ReviewThreadState;
 /// Kept in ISO format so .er-feedback.json timestamps are human-readable.
 pub fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now()
+    let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
+        .unwrap_or_default()
+        .as_secs();
+    format_iso8601(secs)
+}
 
+/// Format a Unix timestamp (seconds since the epoch) as an ISO 8601 UTC string.
+///
+/// Pure calendar math — no external crate and no system clock — so the leap-year
+/// and month-walking logic is unit-testable with known inputs.
+fn format_iso8601(secs: u64) -> String {
     let days = secs / 86400;
     let remaining = secs % 86400;
     let hours = remaining / 3600;
@@ -565,5 +572,327 @@ mod tests {
         };
 
         assert!(merged_outdated_state(state, true));
+    }
+
+    #[test]
+    fn merged_outdated_state_false_when_neither_outdated() {
+        let state = ReviewThreadState {
+            resolved: true,
+            outdated: false,
+        };
+
+        assert!(!merged_outdated_state(state, false));
+    }
+
+    // ── format_iso8601 ────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_iso8601_epoch() {
+        assert_eq!(format_iso8601(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn format_iso8601_end_of_first_day() {
+        assert_eq!(format_iso8601(86_399), "1970-01-01T23:59:59Z");
+    }
+
+    #[test]
+    fn format_iso8601_rolls_into_second_day() {
+        assert_eq!(format_iso8601(86_400), "1970-01-02T00:00:00Z");
+    }
+
+    #[test]
+    fn format_iso8601_year_boundary_non_leap() {
+        // 1970 has 365 days (not a leap year), so 365 days lands on 1971-01-01.
+        assert_eq!(format_iso8601(31_536_000), "1971-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn format_iso8601_leap_day_1972() {
+        // 1972 is a leap year — exercises the Feb 29 branch.
+        assert_eq!(format_iso8601(68_169_600), "1972-02-29T00:00:00Z");
+        assert_eq!(format_iso8601(68_256_000), "1972-03-01T00:00:00Z");
+    }
+
+    #[test]
+    fn format_iso8601_modern_timestamp() {
+        assert_eq!(format_iso8601(1_700_000_000), "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn format_iso8601_leap_day_2024() {
+        // 2024 is divisible by 4 and not by 100 — a leap year.
+        assert_eq!(format_iso8601(1_709_251_199), "2024-02-29T23:59:59Z");
+        assert_eq!(format_iso8601(1_709_251_200), "2024-03-01T00:00:00Z");
+    }
+
+    #[test]
+    fn chrono_now_is_well_formed() {
+        let now = chrono_now();
+        // YYYY-MM-DDTHH:MM:SSZ
+        assert_eq!(now.len(), 20, "got {now}");
+        assert!(now.ends_with('Z'));
+        let bytes = now.as_bytes();
+        assert_eq!(bytes[4], b'-');
+        assert_eq!(bytes[7], b'-');
+        assert_eq!(bytes[10], b'T');
+        assert_eq!(bytes[13], b':');
+        assert_eq!(bytes[16], b':');
+        // Year is at least the project's lifetime — sanity that the math isn't wildly off.
+        let year: i64 = now[0..4].parse().unwrap();
+        assert!(year >= 2024, "got year {year}");
+    }
+
+    // ── extract_anchor_from_diff_hunk ─────────────────────────────────────────
+
+    #[test]
+    fn extract_anchor_single_line_has_no_context() {
+        let hunk = "@@ -1,1 +1,1 @@\n only";
+        let (content, before) = extract_anchor_from_diff_hunk(hunk);
+        assert_eq!(content, "only");
+        assert!(before.is_empty());
+    }
+
+    #[test]
+    fn extract_anchor_filters_deleted_lines() {
+        let hunk = "@@ -1,4 +1,3 @@\n keep1\n-removed\n keep2\n+added3";
+        let (content, before) = extract_anchor_from_diff_hunk(hunk);
+        // Last new-side line is the target; deleted lines never appear on the new side.
+        assert_eq!(content, "added3");
+        assert_eq!(before, vec!["keep1".to_string(), "keep2".to_string()]);
+    }
+
+    #[test]
+    fn extract_anchor_caps_context_at_three_lines() {
+        let hunk = "@@ -1,5 +1,5 @@\n a\n b\n c\n d\n e";
+        let (content, before) = extract_anchor_from_diff_hunk(hunk);
+        assert_eq!(content, "e");
+        // Only the three lines immediately before the target are kept.
+        assert_eq!(
+            before,
+            vec!["b".to_string(), "c".to_string(), "d".to_string()]
+        );
+    }
+
+    // ── find_local_line_for_diff_hunk ─────────────────────────────────────────
+
+    fn parse_one(raw: &str) -> git::DiffFile {
+        let mut files = git::parse_diff(raw);
+        assert_eq!(files.len(), 1, "fixture should parse to exactly one file");
+        files.remove(0)
+    }
+
+    #[test]
+    fn find_local_line_unique_match() {
+        let file = parse_one(
+            "diff --git a/src/lib.rs b/src/lib.rs\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -1,4 +1,5 @@\n\
+             \x20alpha\n\
+             \x20beta\n\
+             +gamma\n\
+             \x20delta\n\
+             \x20epsilon\n",
+        );
+        let diff_hunk = "@@ -1,2 +1,3 @@\n alpha\n beta\n+gamma";
+        // gamma is the new-side line 3 in our local diff.
+        assert_eq!(find_local_line_for_diff_hunk(diff_hunk, &file), Some((0, 3)));
+    }
+
+    #[test]
+    fn find_local_line_header_only_hunk_is_none() {
+        let file = parse_one(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+x\n",
+        );
+        assert_eq!(find_local_line_for_diff_hunk("@@ -1,1 +1,1 @@", &file), None);
+    }
+
+    #[test]
+    fn find_local_line_all_deleted_window_is_none() {
+        let file = parse_one(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+x\n",
+        );
+        // diff_hunk has only deleted lines → empty new side → cannot anchor.
+        let diff_hunk = "@@ -1,2 +0,0 @@\n-gone1\n-gone2";
+        assert_eq!(find_local_line_for_diff_hunk(diff_hunk, &file), None);
+    }
+
+    #[test]
+    fn find_local_line_ambiguous_match_is_none() {
+        let file = parse_one(
+            "diff --git a/a.rs b/a.rs\n\
+             --- a/a.rs\n\
+             +++ b/a.rs\n\
+             @@ -1,3 +1,3 @@\n\
+             \x20repeat\n\
+             \x20middle\n\
+             \x20repeat\n",
+        );
+        // Single-line window "repeat" appears twice → refuse to guess.
+        let diff_hunk = "@@ -1,1 +1,1 @@\n repeat";
+        assert_eq!(find_local_line_for_diff_hunk(diff_hunk, &file), None);
+    }
+
+    #[test]
+    fn find_local_line_skips_deleted_lines_on_both_sides() {
+        let file = parse_one(
+            "diff --git a/a.rs b/a.rs\n\
+             --- a/a.rs\n\
+             +++ b/a.rs\n\
+             @@ -1,4 +1,4 @@\n\
+             \x20keep1\n\
+             -oldline\n\
+             +newline\n\
+             \x20keep2\n",
+        );
+        // The window [keep1, newline, keep2] matches the new side, ignoring deletions.
+        let diff_hunk = "@@ -1,4 +1,3 @@\n keep1\n-removed\n+newline\n keep2";
+        assert_eq!(find_local_line_for_diff_hunk(diff_hunk, &file), Some((0, 3)));
+    }
+
+    #[test]
+    fn find_local_line_reports_correct_hunk_index() {
+        let file = parse_one(
+            "diff --git a/a.rs b/a.rs\n\
+             --- a/a.rs\n\
+             +++ b/a.rs\n\
+             @@ -1,2 +1,2 @@\n\
+             \x20a1\n\
+             \x20a2\n\
+             @@ -10,2 +10,3 @@\n\
+             \x20b1\n\
+             +b2\n\
+             \x20b3\n",
+        );
+        let diff_hunk = "@@ -10,1 +10,2 @@\n b1\n+b2";
+        // Match is in the second hunk (index 1), new line 11.
+        assert_eq!(
+            find_local_line_for_diff_hunk(diff_hunk, &file),
+            Some((1, 11))
+        );
+    }
+
+    // ── resolve_anchor ────────────────────────────────────────────────────────
+
+    fn empty_anchor() -> (
+        Option<usize>,
+        String,
+        Vec<String>,
+        Vec<String>,
+        Option<usize>,
+        String,
+    ) {
+        (None, String::new(), Vec::new(), Vec::new(), None, String::new())
+    }
+
+    #[test]
+    fn resolve_anchor_none_line_returns_empty() {
+        let files: Vec<git::DiffFile> = Vec::new();
+        assert_eq!(resolve_anchor(None, "a.rs", &files, None), empty_anchor());
+    }
+
+    #[test]
+    fn resolve_anchor_missing_file_returns_empty() {
+        let file = parse_one(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+x\n",
+        );
+        let files = vec![file];
+        assert_eq!(
+            resolve_anchor(Some(1), "other.rs", &files, None),
+            empty_anchor()
+        );
+    }
+
+    #[test]
+    fn resolve_anchor_line_outside_hunks_returns_empty() {
+        let file = parse_one(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,3 @@\n+x\n y\n z\n",
+        );
+        let files = vec![file];
+        assert_eq!(
+            resolve_anchor(Some(100), "a.rs", &files, None),
+            empty_anchor()
+        );
+    }
+
+    #[test]
+    fn resolve_anchor_exact_match_collects_context() {
+        let file = parse_one(
+            "diff --git a/a.rs b/a.rs\n\
+             --- a/a.rs\n\
+             +++ b/a.rs\n\
+             @@ -1,5 +1,6 @@\n\
+             \x20ctxA\n\
+             \x20ctxB\n\
+             +added\n\
+             \x20ctxC\n\
+             \x20ctxD\n\
+             \x20ctxE\n",
+        );
+        let files = vec![file];
+        // ctxC is new line 4; old line 3.
+        let (hunk_idx, lc, before, after, old_ln, header) =
+            resolve_anchor(Some(4), "a.rs", &files, None);
+        assert_eq!(hunk_idx, Some(0));
+        assert_eq!(lc, "ctxC");
+        assert_eq!(
+            before,
+            vec!["ctxA".to_string(), "ctxB".to_string(), "added".to_string()]
+        );
+        assert_eq!(after, vec!["ctxD".to_string(), "ctxE".to_string()]);
+        assert_eq!(old_ln, Some(3));
+        assert_eq!(header, "@@ -1,5 +1,6 @@");
+    }
+
+    /// Build a single-hunk file whose middle context lines are folded away
+    /// (new line numbers 12–16 have no `DiffLine`), so a comment anchored there
+    /// cannot find an exact line and must fall back.
+    fn folded_file() -> Vec<git::DiffFile> {
+        let mut raw = String::from(
+            "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,25 +1,26 @@\n+line1\n",
+        );
+        for n in 2..=26 {
+            raw.push_str(&format!(" line{n}\n"));
+        }
+        let files = git::parse_diff(&raw);
+        // Sanity: the 25-line context run should have folded (no new line 14).
+        let has_line_14 = files[0]
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.new_num == Some(14));
+        assert!(!has_line_14, "fixture must fold out the middle context run");
+        files
+    }
+
+    #[test]
+    fn resolve_anchor_falls_back_to_nearest_line_without_diff_hunk() {
+        let files = folded_file();
+        // Line 13 is inside the folded region; nearest present new line is 11 ("line11").
+        let (hunk_idx, lc, before, after, old_ln, header) =
+            resolve_anchor(Some(13), "f.txt", &files, None);
+        assert_eq!(hunk_idx, Some(0));
+        assert_eq!(lc, "line11");
+        assert!(before.is_empty());
+        assert!(after.is_empty());
+        assert_eq!(old_ln, Some(10));
+        assert_eq!(header, "@@ -1,25 +1,26 @@");
+    }
+
+    #[test]
+    fn resolve_anchor_falls_back_to_diff_hunk_when_provided() {
+        let files = folded_file();
+        let diff_hunk = "@@ -1,3 +1,3 @@\n foo\n bar\n baz";
+        let (hunk_idx, lc, before, after, old_ln, header) =
+            resolve_anchor(Some(13), "f.txt", &files, Some(diff_hunk));
+        assert_eq!(hunk_idx, Some(0));
+        // Content + context come from the supplied diff_hunk, not the local lines.
+        assert_eq!(lc, "baz");
+        assert_eq!(before, vec!["foo".to_string(), "bar".to_string()]);
+        assert!(after.is_empty());
+        assert_eq!(old_ln, None);
+        // Header is still the local hunk's header.
+        assert_eq!(header, "@@ -1,25 +1,26 @@");
     }
 }
