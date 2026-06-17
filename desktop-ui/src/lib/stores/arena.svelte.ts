@@ -114,8 +114,11 @@ class ArenaStore {
   }
 
   get hasLiveRun(): boolean {
-    // A background run on any tab keeps the indicator alive after switching branches.
-    if (this.backgroundRuns.length > 0) return true;
+    // A background run on any tab keeps the indicator alive after switching
+    // branches — but only while it is genuinely active. Gating on status
+    // (rather than list length) avoids a stale indicator in the brief window
+    // where a run is Complete on disk but not yet pruned from active_run_ids().
+    if (this.backgroundRuns.some((s) => isArenaRunActive(s.status))) return true;
     const id = app.snapshot?.active_arena_run ?? this.liveRunId;
     if (!id) return false;
     const sum = this.summaries.find((s) => s.id === id);

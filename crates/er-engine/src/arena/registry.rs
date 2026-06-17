@@ -153,6 +153,22 @@ impl ArenaRegistry {
             .ok()
             .is_some_and(|m| m.contains_key(run_id))
     }
+
+    /// Register a run as active with a given status, without spawning a
+    /// supervisor thread. Test-only: lets unit tests exercise the
+    /// active-run-driven paths (e.g. `App::background_arena_runs`).
+    #[cfg(test)]
+    pub fn insert_active_for_test(&self, run_id: &str, status: RunStatus) {
+        self.insert(
+            run_id.to_string(),
+            ArenaRunHandle {
+                cancel: Arc::new(AtomicBool::new(false)),
+                children: Arc::new(Mutex::new(Vec::new())),
+                status: Arc::new(Mutex::new(status)),
+                join: None,
+            },
+        );
+    }
 }
 
 pub fn new_run_id() -> String {

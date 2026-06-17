@@ -590,4 +590,106 @@ mod tests {
         let snap = app.arena_get_snapshot("arena-z").unwrap();
         assert_eq!(snap.run.id, "arena-z");
     }
+
+    #[test]
+    fn arena_override_finding_resolves_nonactive_tab() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let mut app =
+            app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-ov");
+        crate::arena::save_run(&paths, &sample_run("arena-ov")).unwrap();
+
+        // Active tab is A; the mutating wrapper must still resolve B's er_dir.
+        let f = app
+            .arena_override_finding("arena-ov", "f1", Verdict::Kept, "looks fine".into())
+            .unwrap();
+        assert_eq!(f.id, "f1");
+        // The override must have been persisted under tab B's er_dir.
+        let reloaded = load_run(&paths).unwrap();
+        assert!(
+            reloaded.findings[0].override_.is_some(),
+            "override should persist to the run's own er_dir, not the active tab's"
+        );
+    }
+
+    // ── background_arena_runs (the headline tab-independent surface) ──────
+
+    #[test]
+    fn background_arena_runs_surfaces_nonactive_tab_run_with_live_status() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        // On disk the run is Complete; the registry says it is mid-flight.
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "bg-run");
+        crate::arena::save_run(&paths, &sample_run("bg-run")).unwrap();
+        app.arena_registry
+            .insert_active_for_test("bg-run", crate::arena::RunStatus::Running { round: 2 });
+
+        // Active tab is A, but the run lives under tab B.
+        let runs = app.background_arena_runs();
+        assert_eq!(runs.len(), 1, "run on a non-active tab must surface");
+        assert_eq!(runs[0].id, "bg-run");
+        assert_eq!(
+            runs[0].status,
+            crate::arena::RunStatus::Running { round: 2 },
+            "live registry status must override the (older) on-disk status"
+        );
+    }
+
+    #[test]
+    fn background_arena_runs_sorts_newest_first() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+
+        let mut older = sample_run("old");
+        older.created_at = "2026-06-17T00:00:00Z".into();
+        let mut newer = sample_run("new");
+        newer.created_at = "2026-06-17T12:00:00Z".into();
+        crate::arena::save_run(&ArenaPaths::for_run(Path::new(&er_b), "old"), &older).unwrap();
+        crate::arena::save_run(&ArenaPaths::for_run(Path::new(&er_b), "new"), &newer).unwrap();
+        app.arena_registry
+            .insert_active_for_test("old", crate::arena::RunStatus::Running { round: 1 });
+        app.arena_registry
+            .insert_active_for_test("new", crate::arena::RunStatus::Running { round: 1 });
+
+        let ids: Vec<String> = app
+            .background_arena_runs()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec!["new".to_string(), "old".to_string()]);
+    }
+
+    #[test]
+    fn background_arena_runs_reparses_when_runjson_changes() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "cache-run");
+        app.arena_registry
+            .insert_active_for_test("cache-run", crate::arena::RunStatus::Running { round: 1 });
+
+        // First read: one finding, populates the mtime cache.
+        crate::arena::save_run(&paths, &sample_run("cache-run")).unwrap();
+        assert_eq!(app.background_arena_runs()[0].finding_count, 1);
+
+        // Rewrite run.json with a second finding; the size/mtime change must
+        // invalidate the cached summary so the new count is re-parsed.
+        let mut run = sample_run("cache-run");
+        let mut second = run.findings[0].clone();
+        second.id = "f2".into();
+        run.findings.push(second);
+        crate::arena::save_run(&paths, &run).unwrap();
+        assert_eq!(
+            app.background_arena_runs()[0].finding_count,
+            2,
+            "changed run.json must invalidate the mtime-keyed summary cache"
+        );
+    }
 }
