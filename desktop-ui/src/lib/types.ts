@@ -400,6 +400,8 @@ export interface AppSnapshot {
   arena_enabled?: boolean;
   active_arena_run?: string | null;
   arena_runs?: import("./types/arena").ArenaRunSummary[];
+  /** Active arena runs across all tabs (tab-independent background runs). */
+  background_arena_runs?: import("./types/arena").ArenaRunSummary[];
 }
 
 export interface InboxTargetSnapshot {

@@ -140,13 +140,57 @@ impl App {
         Ok(run_ids)
     }
 
+    /// Resolve the storage `er_dir` for a run independent of the active tab.
+    ///
+    /// Arena supervisor threads run in the background regardless of which tab is
+    /// in view, so per-run operations must address a run by its own `er_dir`,
+    /// not `self.tab().er_dir()`. Resolution order:
+    /// (a) invert `active_arena_runs` (run_id → er_dir);
+    /// (b) scan each tab's `er_dir` for an on-disk `arena/<run_id>` dir;
+    /// (c) fall back to the active tab (covers a brand-new run before lookup).
+    fn arena_er_dir_for_run(&self, run_id: &str) -> std::path::PathBuf {
+        for (er, ids) in &self.active_arena_runs {
+            if ids.iter().any(|id| id == run_id) {
+                return std::path::PathBuf::from(er);
+            }
+        }
+        for tab in &self.tabs {
+            let er = tab.er_dir();
+            if ArenaPaths::for_run(Path::new(&er), run_id).root.is_dir() {
+                return std::path::PathBuf::from(er);
+            }
+        }
+        std::path::PathBuf::from(self.tab().er_dir())
+    }
+
+    /// Active arena runs across ALL tabs (tab-independent background runs).
+    ///
+    /// Driven by the registry's globally-tracked active run ids, so it surfaces
+    /// in-flight runs regardless of which tab is in view. Newest first.
+    pub fn background_arena_runs(&self) -> Vec<crate::arena::ArenaRunSummary> {
+        let mut out = Vec::new();
+        for run_id in self.arena_registry.active_run_ids() {
+            let er_dir = self.arena_er_dir_for_run(&run_id);
+            let paths = ArenaPaths::for_run(&er_dir, &run_id);
+            if let Ok(mut run) = load_run(&paths) {
+                if let Some(live) = self.arena_registry.get_status(&run_id) {
+                    run.status = live;
+                }
+                out.push(run.summary());
+            }
+        }
+        out.sort_by_key(|r| std::cmp::Reverse(r.created_at.clone()));
+        out
+    }
+
     pub fn arena_accept_findings(
         &mut self,
         run_id: &str,
         finding_ids: Option<Vec<String>>,
     ) -> Result<usize> {
-        let er_path = self.tab().er_dir();
-        let paths = ArenaPaths::for_run(Path::new(&er_path), run_id);
+        let er_dir = self.arena_er_dir_for_run(run_id);
+        let er_path = er_dir.to_string_lossy().into_owned();
+        let paths = ArenaPaths::for_run(&er_dir, run_id);
         let mut run = load_run(&paths)?;
         let ids = finding_ids.as_deref();
         let n = import_arena_findings_to_review(&er_path, &mut run, ids)?;
@@ -160,14 +204,14 @@ impl App {
         if !self.arena_registry.cancel(run_id) {
             anyhow::bail!("no active arena run {run_id}");
         }
-        let er_path = self.tab().er_dir();
-        let paths = ArenaPaths::for_run(Path::new(&er_path), run_id);
+        let er_dir = self.arena_er_dir_for_run(run_id);
+        let er_key = er_dir.to_string_lossy().into_owned();
+        let paths = ArenaPaths::for_run(&er_dir, run_id);
         if let Ok(mut run) = load_run(&paths) {
             run.status = crate::arena::RunStatus::Cancelled;
             run.completed_at = Some(super::chrono_now());
             let _ = crate::arena::save_run(&paths, &run);
         }
-        let er_key = self.tab().er_dir();
         if let Some(ids) = self.active_arena_runs.get_mut(&er_key) {
             ids.retain(|id| id != run_id);
             if ids.is_empty() {
@@ -192,14 +236,14 @@ impl App {
     }
 
     pub fn arena_progress(&self, run_id: &str) -> Result<ArenaProgressState> {
-        let er_path = self.tab().er_dir();
-        let paths = ArenaPaths::for_run(Path::new(&er_path), run_id);
+        let er_dir = self.arena_er_dir_for_run(run_id);
+        let paths = ArenaPaths::for_run(&er_dir, run_id);
         Ok(parse_progress_state(&paths))
     }
 
     pub fn arena_get_snapshot(&self, run_id: &str) -> Result<ArenaRunSnapshot> {
-        let er_path = self.tab().er_dir();
-        let paths = ArenaPaths::for_run(Path::new(&er_path), run_id);
+        let er_dir = self.arena_er_dir_for_run(run_id);
+        let paths = ArenaPaths::for_run(&er_dir, run_id);
         let mut run = load_run(&paths)?;
         if let Some(live) = self.arena_registry.get_status(run_id) {
             run.status = live;
@@ -238,9 +282,9 @@ impl App {
         if self.arena_registry.is_active(run_id) {
             anyhow::bail!("cannot delete active arena run {run_id}; cancel it first");
         }
-        let er_path = self.tab().er_dir();
-        let er_key = er_path.clone();
-        delete_run_dir(Path::new(&er_path), run_id)?;
+        let er_dir = self.arena_er_dir_for_run(run_id);
+        let er_key = er_dir.to_string_lossy().into_owned();
+        delete_run_dir(&er_dir, run_id)?;
         if let Some(ids) = self.active_arena_runs.get_mut(&er_key) {
             ids.retain(|id| id != run_id);
             if ids.is_empty() {
@@ -259,8 +303,8 @@ impl App {
         verdict: Verdict,
         note: String,
     ) -> Result<crate::arena::ArenaFinding> {
-        let er_path = self.tab().er_dir();
-        let paths = ArenaPaths::for_run(Path::new(&er_path), run_id);
+        let er_dir = self.arena_er_dir_for_run(run_id);
+        let paths = ArenaPaths::for_run(&er_dir, run_id);
         let mut run = load_run(&paths)?;
         let f = run
             .findings
@@ -368,5 +412,140 @@ mod tests {
             arena.contains("feature"),
             "arena should use branch-view diff"
         );
+    }
+
+    // ── Tab-independent run resolution (background runs) ──────────────────
+
+    fn app_with_two_tabs(root_a: &str, root_b: &str) -> App {
+        use crate::paths::ErRoot;
+        let mut a = TabState::new_for_test(vec![]);
+        a.er_root = ErRoot::RepoLocal(root_a.to_string());
+        a.repo_root = root_a.to_string();
+        let mut b = TabState::new_for_test(vec![]);
+        b.er_root = ErRoot::RepoLocal(root_b.to_string());
+        b.repo_root = root_b.to_string();
+        let mut app = App::new_for_test(vec![]);
+        app.tabs = vec![a, b];
+        app.active_tab = 0; // tab A is in view; runs may belong to tab B
+        app
+    }
+
+    fn sample_run(id: &str) -> crate::arena::ArenaRun {
+        use crate::ai::RiskLevel;
+        use crate::arena::{
+            ArenaConfig, ArenaFinding, ArenaRun, ArenaRunKind, CostEstimate, RunStatus,
+        };
+        use std::collections::BTreeMap;
+        ArenaRun {
+            id: id.to_string(),
+            title: None,
+            branch_ref: "feature".into(),
+            base_branch: "main".into(),
+            scope: ArenaScope::Branch,
+            diff_hash: "abc".into(),
+            created_at: "2026-06-17T00:00:00Z".into(),
+            completed_at: None,
+            status: RunStatus::Complete,
+            config: ArenaConfig {
+                reviewers: vec![ReviewerRef {
+                    provider_id: "anthropic".into(),
+                    model_id: "sonnet".into(),
+                    agent_kind: None,
+                }],
+                rounds: 3,
+                arbiter: ReviewerRef {
+                    provider_id: "anthropic".into(),
+                    model_id: "opus".into(),
+                    agent_kind: None,
+                },
+                auto_accept_threshold: 0.75,
+                scope: ArenaScope::Branch,
+                files: None,
+                run_kind: ArenaRunKind::Models,
+                agent_kind: None,
+                effort: None,
+            },
+            reviewers: vec![],
+            accepted_finding_ids: vec![],
+            findings: vec![ArenaFinding {
+                id: "f1".into(),
+                file: "src/a.rs".into(),
+                line: Some(1),
+                title: "t".into(),
+                body: "b".into(),
+                severity_by_round: BTreeMap::from([(1, RiskLevel::High)]),
+                raised_by: vec!["r1".into()],
+                verdict: Verdict::Kept,
+                confidence: 0.9,
+                rationale: "ok".into(),
+                rounds: vec![],
+                merge_candidates: vec![],
+                merged_children: vec![],
+                evidence: vec![],
+                override_: None,
+                accepted_at: None,
+            }],
+            cost_estimate: CostEstimate {
+                tokens_in: 0,
+                tokens_out: 0,
+                usd: 0.0,
+            },
+        }
+    }
+
+    #[test]
+    fn arena_er_dir_for_run_resolves_via_active_map() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let mut app =
+            app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        app.active_arena_runs
+            .entry(er_b.clone())
+            .or_default()
+            .push("arena-x".to_string());
+        assert_eq!(
+            app.arena_er_dir_for_run("arena-x"),
+            std::path::PathBuf::from(&er_b)
+        );
+    }
+
+    #[test]
+    fn arena_er_dir_for_run_falls_back_to_disk_scan() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-y");
+        std::fs::create_dir_all(&paths.root).unwrap();
+        assert_eq!(
+            app.arena_er_dir_for_run("arena-y"),
+            std::path::PathBuf::from(&er_b)
+        );
+    }
+
+    #[test]
+    fn arena_er_dir_for_run_falls_back_to_active_tab() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_a = app.tabs[0].er_dir();
+        assert_eq!(
+            app.arena_er_dir_for_run("missing"),
+            std::path::PathBuf::from(&er_a)
+        );
+    }
+
+    #[test]
+    fn arena_get_snapshot_reads_run_from_nonactive_tab() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-z");
+        crate::arena::save_run(&paths, &sample_run("arena-z")).unwrap();
+        // Active tab is A; before the fix this resolved A's er_dir and errored.
+        let snap = app.arena_get_snapshot("arena-z").unwrap();
+        assert_eq!(snap.run.id, "arena-z");
     }
 }

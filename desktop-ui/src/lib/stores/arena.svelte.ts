@@ -108,7 +108,14 @@ class ArenaStore {
     return this.summaries.filter((s) => s.branch_ref === branch);
   }
 
+  /** Active arena runs across ALL tabs (tab-independent background runs). */
+  get backgroundRuns(): ArenaRunSummary[] {
+    return app.snapshot?.background_arena_runs ?? [];
+  }
+
   get hasLiveRun(): boolean {
+    // A background run on any tab keeps the indicator alive after switching branches.
+    if (this.backgroundRuns.length > 0) return true;
     const id = app.snapshot?.active_arena_run ?? this.liveRunId;
     if (!id) return false;
     const sum = this.summaries.find((s) => s.id === id);
@@ -406,7 +413,8 @@ class ArenaStore {
   }
 
   showRunningProgress() {
-    const active = app.snapshot?.active_arena_run ?? this.liveRunId;
+    const active =
+      app.snapshot?.active_arena_run ?? this.liveRunId ?? this.backgroundRuns[0]?.id ?? null;
     if (!active) return;
     this.liveRunId = active;
     this.runningOpen = true;
@@ -507,7 +515,7 @@ class ArenaStore {
 
   closeOverlay() {
     this.overlayOpen = false;
-    const active = app.snapshot?.active_arena_run;
+    const active = app.snapshot?.active_arena_run ?? this.backgroundRuns[0]?.id;
     if (active && this.hasLiveRun) {
       this.liveRunId = active;
       this.runningOpen = true;
@@ -536,7 +544,9 @@ class ArenaStore {
   }
 
   syncFromSnapshot() {
-    const active = app.snapshot?.active_arena_run ?? null;
+    // Fall back to a background run on another tab so a live run survives a branch switch.
+    const active =
+      app.snapshot?.active_arena_run ?? this.backgroundRuns[0]?.id ?? null;
     if (active === this.liveRunId) return;
 
     if (!active && this.liveRunId && (this.runningOpen || this.runningMinimized)) {
