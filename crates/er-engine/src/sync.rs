@@ -697,22 +697,26 @@ mod tests {
         );
         let diff_hunk = "@@ -1,2 +1,3 @@\n alpha\n beta\n+gamma";
         // gamma is the new-side line 3 in our local diff.
-        assert_eq!(find_local_line_for_diff_hunk(diff_hunk, &file), Some((0, 3)));
+        assert_eq!(
+            find_local_line_for_diff_hunk(diff_hunk, &file),
+            Some((0, 3))
+        );
     }
 
     #[test]
     fn find_local_line_header_only_hunk_is_none() {
-        let file = parse_one(
-            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+x\n",
+        let file =
+            parse_one("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+x\n");
+        assert_eq!(
+            find_local_line_for_diff_hunk("@@ -1,1 +1,1 @@", &file),
+            None
         );
-        assert_eq!(find_local_line_for_diff_hunk("@@ -1,1 +1,1 @@", &file), None);
     }
 
     #[test]
     fn find_local_line_all_deleted_window_is_none() {
-        let file = parse_one(
-            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+x\n",
-        );
+        let file =
+            parse_one("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+x\n");
         // diff_hunk has only deleted lines → empty new side → cannot anchor.
         let diff_hunk = "@@ -1,2 +0,0 @@\n-gone1\n-gone2";
         assert_eq!(find_local_line_for_diff_hunk(diff_hunk, &file), None);
@@ -748,7 +752,10 @@ mod tests {
         );
         // The window [keep1, newline, keep2] matches the new side, ignoring deletions.
         let diff_hunk = "@@ -1,4 +1,3 @@\n keep1\n-removed\n+newline\n keep2";
-        assert_eq!(find_local_line_for_diff_hunk(diff_hunk, &file), Some((0, 3)));
+        assert_eq!(
+            find_local_line_for_diff_hunk(diff_hunk, &file),
+            Some((0, 3))
+        );
     }
 
     #[test]
@@ -783,7 +790,14 @@ mod tests {
         Option<usize>,
         String,
     ) {
-        (None, String::new(), Vec::new(), Vec::new(), None, String::new())
+        (
+            None,
+            String::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            String::new(),
+        )
     }
 
     #[test]
@@ -794,9 +808,8 @@ mod tests {
 
     #[test]
     fn resolve_anchor_missing_file_returns_empty() {
-        let file = parse_one(
-            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+x\n",
-        );
+        let file =
+            parse_one("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+x\n");
         let files = vec![file];
         assert_eq!(
             resolve_anchor(Some(1), "other.rs", &files, None),
