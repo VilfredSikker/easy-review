@@ -35,6 +35,42 @@
       The arena runs multiple AI reviewers over the same diff and reconciles their findings — think of it as a panel of
       reviewers rather than a single pass.
     </p>
+
+    <figure class="fig">
+      <div class="arena">
+        <div class="stage">
+          <div class="n c-cyan">14</div>
+          <div class="k">Proposed</div>
+          <div class="sub">findings from<br>4 reviewers</div>
+          <div class="pill-row">
+            <span class="ag sec">Security</span>
+            <span class="ag perf">Performance</span>
+            <span class="ag test">Testing</span>
+            <span class="ag rel">Reliability</span>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="stage">
+          <div class="n c-yellow">11</div>
+          <div class="k">Challenged</div>
+          <div class="sub">fresh skeptics<br>try to refute</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="stage">
+          <div class="n c-accent">R2</div>
+          <div class="k">Arbiter</div>
+          <div class="sub">rules each:<br>keep · drop · merge</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="stage">
+          <div class="n c-green">6</div>
+          <div class="k">Final</div>
+          <div class="sub"><span class="c-green">6 kept</span> · <span class="c-muted">8 dropped</span></div>
+        </div>
+      </div>
+      <figcaption>The arena <strong>funnel</strong>: reviewers propose findings, fresh same-lens skeptics try to refute them across rounds, and an arbiter rules each one kept, dropped, or merged. The desktop app also renders a <em>bracket</em> of how verdicts flowed and a <em>matrix</em> of reviewers against findings.</figcaption>
+    </figure>
+
     <ul>
       <li><strong>Configure a run</strong> — pick reviewers (models and/or specialized agents like Security, Performance,
       Testing), choose a scope (full branch, unstaged, staged, or selected files), set the number of rounds, and pick an

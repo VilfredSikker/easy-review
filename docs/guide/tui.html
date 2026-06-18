@@ -43,6 +43,108 @@ er --filter '*.rs'                        <span class="cmt"># pre-filter the fil
 
     <h2>The layout</h2>
     <p>The screen has a top bar, three columns, and a bottom bar.</p>
+
+    <figure class="fig">
+      <div class="shot">
+        <div class="chrome">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="ttl">er — easy-review · feat/auth-refactor</span>
+          <span class="right c-green">● WATCH</span>
+        </div>
+        <div class="erbar">
+          <div class="modes">
+            <span class="c-accent bold">er</span>
+            <span class="c-muted">·</span>
+            <span class="mode on">1 Branch</span>
+            <span class="mode">2 Unstaged</span>
+            <span class="mode">3 Staged</span>
+            <span class="mode">4 History</span>
+            <span class="c-muted">·</span>
+            <span class="c-blue">PR #42</span>
+            <span class="c-green">✓3</span><span class="c-red">✗1</span>
+          </div>
+          <div class="stat">
+            <span class="c-cyan">💬 4</span>
+            <span class="c-orange">⚠ 3</span>
+          </div>
+        </div>
+        <div class="body">
+          <div class="tree">
+            <div class="lbl">Files · 7</div>
+            <div class="f sel"><span class="c-red">●</span><span class="nm">src/auth/login.rs</span><span class="b c-orange">⚠1</span><span class="b c-cyan">💬2</span></div>
+            <div class="f"><span class="c-yellow">●</span><span class="nm">src/api/handler.rs</span><span class="b c-orange">⚠1</span></div>
+            <div class="f"><span class="c-green">●</span><span class="nm">src/ui/panel.rs</span></div>
+            <div class="f"><span class="c-green">●</span><span class="nm">src/config.rs</span><span class="b c-cyan">💬1</span></div>
+            <div class="f"><span class="c-green">●</span><span class="nm">src/github.rs</span></div>
+            <div class="f"><span class="c-muted">·</span><span class="nm c-muted">Cargo.toml</span></div>
+            <div class="f"><span class="c-muted">·</span><span class="nm c-muted">src/auth/legacy.rs</span></div>
+            <div class="meta-foot">Reviewed: <span class="c-green">1</span>/7</div>
+          </div>
+          <div class="diff">
+            <div class="dhead"><span>src/auth/login.rs</span><span class="c-yellow">+42 −8</span></div>
+            <div class="code">
+              <div class="dl"><span class="ln">18</span><span class="tx"><span class="c-blue">use</span> crate::config::AuthConfig;</span></div>
+              <div class="dl hunk"><span class="ln">@@</span><span class="tx">@@ -20,6 +20,18 @@ impl AuthService {</span></div>
+              <div class="dl del"><span class="ln">20</span><span class="tx c-red">−   pub fn login(&self, user: &str) -&gt; bool {</span></div>
+              <div class="dl add"><span class="ln">20</span><span class="tx c-green">+   pub async fn login(&self, creds: Credentials) -&gt; Result&lt;Session&gt; {</span></div>
+              <div class="dl add"><span class="ln">21</span><span class="tx c-green">+       let user = self.validate(&creds).await?;</span></div>
+              <div class="card gh">
+                <div class="hd"><span class="c-cyan">💬 @reviewer</span><span class="c-muted">2h ago</span></div>
+                <div class="c-dim">Should this validate the token format before issuing?</div>
+                <div class="reply">↳ @author: Good point — added a format check</div>
+              </div>
+              <div class="dl add"><span class="ln">22</span><span class="tx c-green">+       let token = self.issue_token(&user)?;</span></div>
+              <div class="card ai">
+                <div class="hd"><span class="c-orange">⚠ Security</span><span class="c-muted">AI finding · P1</span></div>
+                <div class="c-dim">Token TTL not checked — expired tokens still validate.</div>
+              </div>
+              <div class="dl add"><span class="ln">23</span><span class="tx c-green">+       Ok(Session::new(user, token))</span></div>
+              <div class="card q">
+                <div class="hd"><span class="c-yellow">? private question</span></div>
+                <div class="c-dim">What happens if the store write fails mid-session?</div>
+              </div>
+              <div class="dl"><span class="ln">24</span><span class="tx c-muted">    }</span></div>
+            </div>
+            <div class="bottom">
+              <span><b>j/k</b> files</span><span class="sep">·</span>
+              <span><b>n/N</b> hunks</span><span class="sep">·</span>
+              <span><b>↑/↓</b> line</span><span class="sep">·</span>
+              <span><b>c</b> comment</span><span class="sep">·</span>
+              <span><b>q</b> question</span><span class="sep">·</span>
+              <span><b>v</b> AI view</span><span class="sep">·</span>
+              <span><b>Tab</b> focus</span><span class="sep">·</span>
+              <span><b>U</b> next unreviewed</span><span class="sep">·</span>
+              <span><b>G</b> pull</span><span class="sep">·</span>
+              <span><b>P</b> push</span>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="grp">
+              <div class="t">PR #42 · Refactor auth login</div>
+              <div class="c-muted">feat/auth-refactor → main</div>
+            </div>
+            <div class="grp">
+              <div class="t">CI checks</div>
+              <div class="row"><span class="c-green">✓</span><span class="c-dim">Build · 2m14s</span></div>
+              <div class="row"><span class="c-green">✓</span><span class="c-dim">Tests · 1m32s</span></div>
+              <div class="row"><span class="c-yellow">⟳</span><span class="c-dim">Deploy · running</span></div>
+            </div>
+            <div class="grp">
+              <div class="t">Reviewers</div>
+              <div class="row"><span class="c-green">✓</span><span class="c-dim">alice approved</span></div>
+              <div class="row"><span class="c-red">✗</span><span class="c-dim">bob changes req.</span></div>
+              <div class="row"><span class="c-muted">○</span><span class="c-dim">carol pending</span></div>
+            </div>
+            <div class="grp">
+              <div class="t">Labels</div>
+              <div class="row"><span class="chip c-red">bug</span><span class="chip c-blue">auth</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <figcaption>The <code>er</code> terminal UI — top bar with diff modes and PR status, the file list, a syntax-highlighted diff with inline GitHub comments (cyan), AI findings (orange) and private questions (yellow), and the PR context panel on the right.</figcaption>
+    </figure>
+
     <table>
       <thead><tr><th>Region</th><th>Shows</th></tr></thead>
       <tbody>
