@@ -55,6 +55,44 @@
       where the code is.
     </p>
 
+    <figure class="fig">
+      <div class="shot">
+        <div class="chrome">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="ttl">src/auth/login.rs</span>
+          <span class="right c-cyan">💬 3</span>
+        </div>
+        <div class="diff">
+          <div class="code">
+            <div class="dl add"><span class="ln">22</span><span class="tx c-green">+       let token = self.issue_token(&user)?;</span></div>
+            <div class="card gh">
+              <div class="hd"><span class="c-cyan">💬 @reviewer</span><span class="c-muted">GitHub · 1h ago</span></div>
+              <div class="c-dim">Should we validate the token format before issuing?</div>
+              <div class="reply">↳ @author: good call — added a format check in the next commit</div>
+            </div>
+            <div class="dl add"><span class="ln">23</span><span class="tx c-green">+       let session = Session::new(user, token);</span></div>
+            <div class="card q">
+              <div class="hd"><span class="c-yellow">? private question</span><span class="c-muted">local only</span></div>
+              <div class="c-dim">What happens if the token expires mid-session?</div>
+            </div>
+            <div class="dl add"><span class="ln">24</span><span class="tx c-green">+       self.store.save(&session).await?;</span></div>
+            <div class="card gh stale">
+              <div class="hd"><span class="c-cyan">💬 @bob</span><span class="c-yellow">⚠ stale</span></div>
+              <div class="c-dim">Line moved — this comment may be misplaced.</div>
+            </div>
+          </div>
+          <div class="bottom">
+            <span><b>c</b>/<b>C</b> GitHub comment</span><span class="sep">·</span>
+            <span><b>q</b>/<b>Q</b> question</span><span class="sep">·</span>
+            <span><b>r</b> reply</span><span class="sep">·</span>
+            <span><b>d</b> delete</span><span class="sep">·</span>
+            <span><b>Tab</b> focus comments</span>
+          </div>
+        </div>
+      </div>
+      <figcaption>Two streams, never confused: <span style="color:var(--cyan)">cyan</span> GitHub comments (with single-level replies) sync to the PR, while <span style="color:var(--yellow)">yellow</span> private questions stay local for your AI. A comment whose target line vanished is dimmed and marked <strong>stale</strong>.</figcaption>
+    </figure>
+
     <h2>Comment focus mode</h2>
     <p>
       To act on existing notes rather than the diff, enter <strong>comment focus mode</strong> with <kbd>Tab</kbd>. Now

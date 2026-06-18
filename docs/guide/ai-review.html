@@ -54,6 +54,63 @@
     <p>Findings render as inline banners attached to the relevant lines, color-coded by the agent that produced them.
     See <a href="storage.html">Review Storage</a> for the complete file list and where it lives on disk.</p>
 
+    <figure class="fig">
+      <div class="shot">
+        <div class="chrome">
+          <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+          <span class="ttl">er — AI review</span>
+          <span class="right c-orange">⚠ 3 findings</span>
+        </div>
+        <div class="body">
+          <div class="diff">
+            <div class="dhead"><span>src/auth/token.rs</span><span class="c-muted">v · AI view ON</span></div>
+            <div class="code">
+              <div class="dl del"><span class="ln">14</span><span class="tx c-red">−   fn verify(t: Token) -&gt; bool {</span></div>
+              <div class="dl add"><span class="ln">14</span><span class="tx c-green">+   async fn verify(t: Token) -&gt; Result&lt;()&gt; {</span></div>
+              <div class="card ai">
+                <div class="hd"><span class="c-orange">⚠ Security</span><span class="c-muted">P0 · high</span></div>
+                <div class="c-dim">Expiry is never checked — an expired token still verifies.</div>
+              </div>
+              <div class="dl add"><span class="ln">15</span><span class="tx c-green">+       self.store.save(&t).await?;</span></div>
+              <div class="card ai">
+                <div class="hd"><span class="c-orange">⚠ Performance</span><span class="c-muted">P2 · low</span></div>
+                <div class="c-dim">Blocking store write on the hot path — consider batching.</div>
+              </div>
+              <div class="dl"><span class="ln">16</span><span class="tx c-muted">        Ok(())</span></div>
+              <div class="card ai">
+                <div class="hd"><span class="c-blue">🎓 Professor</span><span class="c-muted">teaching</span></div>
+                <div class="c-dim"><code>Result&lt;()&gt;</code> lets the caller decide how to handle failure — see the error-handling chapter.</div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="grp">
+              <div class="t">AI summary</div>
+              <div class="c-dim">Risk · <span class="c-red bold">High</span></div>
+              <div class="bar"><i style="width:84%;background:var(--red)"></i></div>
+            </div>
+            <div class="grp">
+              <div class="t">Findings · 3</div>
+              <div class="row"><span class="c-red">●</span><span class="c-dim">1 · P0 high</span></div>
+              <div class="row"><span class="c-yellow">●</span><span class="c-dim">1 · P2 low</span></div>
+              <div class="row"><span class="c-blue">●</span><span class="c-dim">1 · professor</span></div>
+            </div>
+            <div class="grp">
+              <div class="t">Experts run</div>
+              <div class="row"><span class="chip c-red">security</span><span class="chip c-blue">performance</span></div>
+            </div>
+            <div class="grp">
+              <div class="t">Checklist</div>
+              <div class="row"><span class="c-green">✓</span><span class="c-dim">Error handling</span></div>
+              <div class="row"><span class="c-muted">○</span><span class="c-muted">Token expiry</span></div>
+              <div class="row"><span class="c-muted">○</span><span class="c-muted">Tests</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <figcaption>Findings appear as inline banners on the lines they touch — color-coded by agent (Security/Performance in orange, <strong>Professor</strong> in blue) — beside an AI summary panel with the risk rating, finding counts, and checklist. Press <kbd>v</kbd> to dial how much of this is shown.</figcaption>
+    </figure>
+
     <h2>Severity model</h2>
     <p>All the review skills share one severity scale and a “what not to flag” list:</p>
     <table>

@@ -35,6 +35,75 @@
 
     <h2>The layout</h2>
     <p>The window is organized into several regions:</p>
+
+    <figure class="fig">
+      <div class="shot">
+        <div class="tabstrip">
+          <span class="tab">er-engine</span>
+          <span class="tab on">er-tui · feat/auth</span>
+          <span class="tab c-blue">PR #42</span>
+        </div>
+        <div class="ctxbar">
+          <span class="c-accent bold">feat/auth-refactor</span>
+          <span class="c-muted">→ main</span>
+          <span class="c-yellow">+42 −8</span>
+          <span style="margin-left:auto"></span>
+          <span class="toggle"><span class="on">Local Branch</span><span>PR Diff</span></span>
+          <span class="toggle"><span class="on">Split</span><span>Unified</span></span>
+        </div>
+        <div class="body">
+          <div class="tree">
+            <div class="lbl">Files · 7</div>
+            <div class="f sel"><span class="c-red">●</span><span class="nm">auth/login.rs</span><span class="b c-orange">⚠1</span></div>
+            <div class="f"><span class="c-yellow">●</span><span class="nm">api/handler.rs</span></div>
+            <div class="f"><span class="c-green">●</span><span class="nm">ui/panel.rs</span></div>
+            <div class="f"><span class="c-green">●</span><span class="nm">config.rs</span><span class="b c-cyan">💬1</span></div>
+          </div>
+          <div class="diff">
+            <div class="dhead"><span>src/auth/login.rs · side-by-side</span><span class="c-muted">word diff</span></div>
+            <div class="split">
+              <div class="col code">
+                <div class="dl del"><span class="ln">20</span><span class="tx c-red">pub fn <span class="w-del">login</span>(self, <span class="w-del">user: &str</span>)</span></div>
+                <div class="dl"><span class="ln">21</span><span class="tx c-muted">  self.check(user)</span></div>
+              </div>
+              <div class="col code">
+                <div class="dl add"><span class="ln">20</span><span class="tx c-green">pub <span class="w-add">async</span> fn <span class="w-add">login</span>(self, <span class="w-add">creds: Credentials</span>)</span></div>
+                <div class="dl"><span class="ln">21</span><span class="tx c-muted">  self.check(creds).await</span></div>
+              </div>
+            </div>
+            <div class="code" style="border-top:1px solid var(--border)">
+              <div class="card ai">
+                <div class="hd"><span class="c-orange">⚠ Security</span><span class="c-muted">inline thread · Ask AI ↗</span></div>
+                <div class="c-dim">Token TTL not checked — promote to GitHub?</div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="grp">
+              <div class="row"><span class="chip c-accent">Branch</span><span class="chip">Review</span><span class="chip">Notes</span></div>
+            </div>
+            <div class="grp">
+              <div class="t">CI checks</div>
+              <div class="row"><span class="c-green">✓</span><span class="c-dim">Build · Tests</span></div>
+              <div class="row"><span class="c-yellow">⟳</span><span class="c-dim">Deploy</span></div>
+            </div>
+            <div class="grp">
+              <div class="t">Arena · last run</div>
+              <div class="row"><span class="c-green">6 kept</span><span class="c-muted">/ 14</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="bottom">
+          <span><b>⌘K</b> commands</span><span class="sep">·</span>
+          <span><b>⌘A</b> AI hub</span><span class="sep">·</span>
+          <span><b>⌘F</b> find usages</span><span class="sep">·</span>
+          <span><b>d</b> split ↔ unified</span><span class="sep">·</span>
+          <span><b>⌘T</b> terminal drawer</span>
+        </div>
+      </div>
+      <figcaption>The desktop app — persistent tabs, a branch context bar with a Local&nbsp;↔&nbsp;PR toggle, a side-by-side split diff with intra-line <span style="color:var(--green)">word-diff</span> highlighting, inline AI threads with “Ask AI” / “promote to GitHub”, and a three-tab right panel (Branch · Review · Notes).</figcaption>
+    </figure>
+
     <table>
       <thead><tr><th>Region</th><th>Purpose</th></tr></thead>
       <tbody>

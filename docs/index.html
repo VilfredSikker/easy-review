@@ -412,8 +412,9 @@
       <div class="flex items-center gap-6">
         <a href="#features" class="text-sm text-text-dim hover:text-text transition">Features</a>
         <a href="#demo" class="text-sm text-text-dim hover:text-text transition">Demo</a>
+        <a href="#arena" class="text-sm text-text-dim hover:text-text transition">AI Arena</a>
         <a href="#install" class="text-sm text-text-dim hover:text-text transition">Install</a>
-        <a href="guide/index.html" class="text-sm text-accent hover:text-text transition">Docs</a>
+        <a href="guide/index.html" class="text-sm text-accent hover:text-text transition">Guide</a>
         <a href="https://github.com/VilfredSikker/easy-review" target="_blank" class="flex items-center gap-1.5 text-sm text-text-dim hover:text-text transition">
           <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
           <span class="hidden sm:inline">GitHub</span>
@@ -430,7 +431,7 @@
     <div class="max-w-4xl mx-auto text-center relative">
       <div class="fade-up fade-up-1 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-border text-xs text-text-dim font-mono mb-8">
         <span class="w-1.5 h-1.5 rounded-full bg-green animate-pulse"></span>
-        v1.4 — now open source
+        v1.5 — now open source
       </div>
 
       <h1 class="fade-up fade-up-2 text-4xl sm:text-5xl md:text-6xl font-body font-600 tracking-tight leading-[1.1] mb-6">
@@ -447,6 +448,18 @@
         <span class="text-text-muted">$</span>
         <span class="text-text">cargo install --git https://github.com/VilfredSikker/easy-review</span>
         <button onclick="navigator.clipboard.writeText('cargo install --git https://github.com/VilfredSikker/easy-review');this.textContent='✓';setTimeout(()=>this.textContent='⎘',1500)" class="text-text-muted hover:text-accent transition cursor-pointer ml-1" title="Copy">⎘</button>
+      </div>
+
+      <!-- Secondary CTAs -->
+      <div class="fade-up fade-up-5 flex flex-wrap items-center justify-center gap-3 mb-5">
+        <a href="guide/index.html" class="inline-flex items-center gap-2 bg-accent/15 border border-accent/30 text-accent rounded-lg px-4 py-2 text-sm font-medium hover:bg-accent/25 transition">
+          Read the Guide
+          <span aria-hidden="true">→</span>
+        </a>
+        <a href="#arena" class="inline-flex items-center gap-2 border border-border text-text-dim rounded-lg px-4 py-2 text-sm hover:text-text hover:border-border-bright transition">
+          Explore the AI Arena
+          <span aria-hidden="true">↓</span>
+        </a>
       </div>
 
       <p class="fade-up fade-up-5 text-xs text-text-muted font-mono">
@@ -623,9 +636,9 @@
                 <span class="text-text-dim">·</span>
                 <span class="text-text-dim"><span class="text-text">q</span> question</span>
                 <span class="text-text-dim">·</span>
-                <span class="text-text-dim"><span class="text-text">a</span> AI</span>
+                <span class="text-text-dim"><span class="text-text">v</span> AI view</span>
                 <span class="text-text-dim">·</span>
-                <span class="text-text-dim"><span class="text-text">p</span> panel</span>
+                <span class="text-text-dim"><span class="text-text">V</span> back</span>
                 <span class="text-text-dim">·</span>
                 <span class="text-text-dim"><span class="text-text">Tab</span> focus</span>
                 <span class="text-text-dim">·</span>
@@ -987,7 +1000,7 @@
                 <!-- toggle -->
                 <div class="flex items-center gap-2 mb-2 px-1">
                   <span class="text-text-muted text-xs">[</span>
-                  <span class="sc4-toggle text-xs font-mono font-bold">a</span>
+                  <span class="sc4-toggle text-xs font-mono font-bold">v</span>
                   <span class="text-text-muted text-xs">] AI:</span>
                   <span class="sc4-toggle text-xs font-bold">ON</span>
                 </div>
@@ -1049,7 +1062,7 @@
           <span class="font-mono text-xs text-orange uppercase tracking-widest">AI review</span>
           <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">AI reads the diff<br>so you don't have<br>to guess</h2>
           <p class="text-text-dim leading-relaxed mb-6">
-            Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code. Risk ratings and hunk-level findings appear inline. Press <span class="keycap">a</span> to toggle the AI layer. Press <span class="keycap">p</span> for the AI Summary panel. Run <span class="font-mono text-accent text-sm">/er-questions</span> standalone to get answers to your private questions without a full review.
+            Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code. Risk ratings and hunk-level findings appear inline. Press <span class="keycap">v</span> to cycle AI views — from a plain diff, to findings inline, to a side panel with the summary and risk breakdown. Run <span class="font-mono text-accent text-sm">/er-questions</span> standalone to get answers to your private questions without a full review.
           </p>
           <ul class="space-y-3 text-sm text-text-dim mb-7">
             <li class="flex gap-3">
@@ -1058,7 +1071,7 @@
             </li>
             <li class="flex gap-3">
               <span class="text-orange mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">AI Summary panel</strong> — press <span class="keycap">p</span> to see risk rating, findings count, and a file-by-file risk breakdown side-by-side with your diff</span>
+              <span><strong class="text-text">AI Summary panel</strong> — cycle with <span class="keycap">v</span> to the panel view: risk rating, findings count, and a file-by-file risk breakdown side-by-side with your diff</span>
             </li>
             <li class="flex gap-3">
               <span class="text-orange mt-0.5 shrink-0">✓</span>
@@ -1067,8 +1080,8 @@
           </ul>
           <div class="flex flex-wrap gap-2 items-center">
             <span class="text-xs text-text-muted">Keys:</span>
-            <span class="keycap">a</span>
-            <span class="keycap">p</span>
+            <span class="keycap">v</span>
+            <span class="keycap">V</span>
             <span class="keycap">z</span>
             <span class="keycap">Z</span>
           </div>
@@ -1272,6 +1285,106 @@
     </div>
   </section>
 
+  <!-- ===== AI ARENA ===== -->
+  <section id="arena" class="py-24 px-6 border-t border-border/50 scroll-mt-20">
+    <div class="max-w-5xl mx-auto">
+      <div class="text-center mb-4 reveal-up">
+        <span class="font-mono text-xs text-accent uppercase tracking-widest">AI Arena · Desktop</span>
+        <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3">One diff. A panel of reviewers.</h2>
+        <p class="text-text-dim max-w-2xl mx-auto mt-5 leading-relaxed">
+          A single model's first pass misses things and over-flags others. The desktop app's <strong class="text-text">AI Arena</strong>
+          runs several reviewers over the same diff, has <em class="text-text-dim">fresh skeptics</em> challenge every finding across
+          rounds, and lets an arbiter rule each one <span class="text-green">kept</span>, <span class="text-text-muted">dropped</span>, or
+          merged — so what reaches you is the analysis that survived scrutiny.
+        </p>
+      </div>
+
+      <!-- Desktop window: the arena funnel -->
+      <div class="reveal-up bg-surface border border-border rounded-xl overflow-hidden glow-box mt-10">
+        <div class="flex items-center gap-2 px-4 py-3 border-b border-border bg-surface-2">
+          <div class="w-3 h-3 rounded-full bg-red/60"></div>
+          <div class="w-3 h-3 rounded-full bg-yellow/60"></div>
+          <div class="w-3 h-3 rounded-full bg-green/60"></div>
+          <span class="ml-3 text-xs text-text-muted font-mono">er — review arena</span>
+          <span class="ml-auto text-xs font-mono text-yellow flex items-center gap-1.5">
+            <span class="spin">⟳</span> round 2 / 3
+          </span>
+        </div>
+
+        <!-- Funnel -->
+        <div class="p-6 sm:p-8 font-mono">
+          <div class="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] gap-4 sm:gap-2 items-center text-center">
+            <!-- Proposed -->
+            <div>
+              <div class="text-4xl font-bold text-cyan leading-none">14</div>
+              <div class="text-[0.62rem] uppercase tracking-widest text-text-muted mt-2">Proposed</div>
+              <div class="text-xs text-text-dim mt-2 leading-snug">findings from<br>4 reviewers</div>
+              <div class="flex flex-wrap gap-1 justify-center mt-3">
+                <span class="text-[0.6rem] px-1.5 py-0.5 rounded-full border border-red/40 text-red">Security</span>
+                <span class="text-[0.6rem] px-1.5 py-0.5 rounded-full border border-blue/40 text-blue">Performance</span>
+                <span class="text-[0.6rem] px-1.5 py-0.5 rounded-full border border-green/40 text-green">Testing</span>
+                <span class="text-[0.6rem] px-1.5 py-0.5 rounded-full border border-cyan/40 text-cyan">Reliability</span>
+              </div>
+            </div>
+            <div class="text-text-muted text-xl rotate-90 sm:rotate-0 justify-self-center">→</div>
+            <!-- Challenged -->
+            <div>
+              <div class="text-4xl font-bold text-yellow leading-none">11</div>
+              <div class="text-[0.62rem] uppercase tracking-widest text-text-muted mt-2">Challenged</div>
+              <div class="text-xs text-text-dim mt-2 leading-snug">fresh skeptics<br>try to refute</div>
+            </div>
+            <div class="text-text-muted text-xl rotate-90 sm:rotate-0 justify-self-center">→</div>
+            <!-- Arbiter -->
+            <div>
+              <div class="text-4xl font-bold text-accent leading-none">⚖</div>
+              <div class="text-[0.62rem] uppercase tracking-widest text-text-muted mt-2">Arbiter</div>
+              <div class="text-xs text-text-dim mt-2 leading-snug">rules each:<br>keep · drop · merge</div>
+            </div>
+            <div class="text-text-muted text-xl rotate-90 sm:rotate-0 justify-self-center">→</div>
+            <!-- Final -->
+            <div>
+              <div class="text-4xl font-bold text-green leading-none">6</div>
+              <div class="text-[0.62rem] uppercase tracking-widest text-text-muted mt-2">Final</div>
+              <div class="text-xs mt-2 leading-snug"><span class="text-green">6 kept</span> <span class="text-text-muted">· 8 dropped</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Result layouts + cost gate -->
+        <div class="border-t border-border px-4 sm:px-6 py-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-mono">
+          <span class="text-text-muted">Result views:</span>
+          <span class="text-text-dim flex items-center gap-1.5"><span class="text-accent">◫</span> Bracket</span>
+          <span class="text-text-dim flex items-center gap-1.5"><span class="text-accent">▦</span> Matrix</span>
+          <span class="text-text-dim flex items-center gap-1.5"><span class="text-accent">▽</span> Funnel</span>
+          <span class="text-text-muted ml-auto">Est. cost <span class="text-text-dim">$0.42</span> · approval required before run</span>
+        </div>
+      </div>
+
+      <!-- Feature bullets -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-8">
+        <div class="reveal-up bg-surface border border-border rounded-lg px-5 py-4">
+          <div class="text-accent text-sm font-500 mb-1">Pick your panel</div>
+          <div class="text-xs text-text-dim leading-relaxed">Choose models and specialized agents — Security, Performance, Testing — set the number of rounds, and pick an arbiter.</div>
+        </div>
+        <div class="reveal-up bg-surface border border-border rounded-lg px-5 py-4" style="transition-delay: 80ms;">
+          <div class="text-accent text-sm font-500 mb-1">Cost gate</div>
+          <div class="text-xs text-text-dim leading-relaxed">A per-model estimate with an approval step before anything runs. A process-wide cap keeps concurrent runs in check.</div>
+        </div>
+        <div class="reveal-up bg-surface border border-border rounded-lg px-5 py-4" style="transition-delay: 160ms;">
+          <div class="text-accent text-sm font-500 mb-1">Three result views</div>
+          <div class="text-xs text-text-dim leading-relaxed">A bracket of how verdicts flowed, a matrix of reviewers against findings, and a funnel from proposed to final.</div>
+        </div>
+      </div>
+
+      <div class="text-center mt-8 reveal-up">
+        <a href="guide/desktop-features.html#arena" class="inline-flex items-center gap-2 text-sm text-accent hover:text-text transition">
+          How the arena works, in the Guide
+          <span aria-hidden="true">→</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
   <!-- ===== SMALL THINGS THAT ADD UP ===== -->
   <section class="py-16 px-6 border-t border-border/50">
     <div class="max-w-5xl mx-auto">
@@ -1323,13 +1436,13 @@
         <div class="timeline-step" style="transition-delay: 400ms;">
           <div class="timeline-node key"><span class="font-mono text-xs text-accent font-bold">3</span></div>
           <h3 class="font-body font-500 text-base mb-1">Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code</h3>
-          <p class="text-text-dim text-sm leading-relaxed">Risk ratings, hunk-level findings, and a review checklist appear inline. Press <span class="keycap">a</span> to toggle the AI layer independently of your comments and panel.</p>
+          <p class="text-text-dim text-sm leading-relaxed">Risk ratings, hunk-level findings, and a review checklist appear inline. Press <span class="keycap">v</span> to cycle how much AI context is shown — from a plain diff to findings inline to a side panel.</p>
         </div>
 
         <div class="timeline-step" style="transition-delay: 600ms;">
           <div class="timeline-node"><span class="font-mono text-xs text-text-muted">4</span></div>
           <h3 class="font-body font-500 text-base mb-1">Comment and iterate</h3>
-          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">c</span> for GitHub comments or <span class="keycap">q</span> for private questions on any line. Open the context panel with <span class="keycap">p</span> for a PR overview alongside your diff. Re-run <span class="font-mono text-accent text-sm">/er-review</span> — the AI reads your questions and updates its analysis.</p>
+          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">c</span> for GitHub comments or <span class="keycap">q</span> for private questions on any line. Cycle with <span class="keycap">v</span> to a side panel for the AI summary and PR overview alongside your diff. Re-run <span class="font-mono text-accent text-sm">/er-review</span> — the AI reads your questions and updates its analysis.</p>
         </div>
 
         <div class="timeline-step" style="transition-delay: 800ms;">
