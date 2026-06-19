@@ -138,8 +138,14 @@ where
     }
 
     // Each expert merges findings with its own id prefix (`sec-`, `api-`, …).
+    // Skip unknown experts: the loader (`merge_experts_into_review`) never merges
+    // their findings into the in-memory review, so they can't be a validation
+    // target — and matching with a `None` prefix would collapse to bare-id
+    // equality and risk writing to the wrong sidecar.
     for expert in load_expert_reviews(er_dir) {
-        let prefix = expert_by_id(&expert.expert_id).map(|d| d.id_prefix);
+        let Some(def) = expert_by_id(&expert.expert_id) else {
+            continue;
+        };
         let path = er
             .join("experts")
             .join(format!("{}.json", expert.expert_id));
@@ -149,7 +155,7 @@ where
             .values_mut()
             .map(|efr| &mut efr.findings)
             .collect();
-        if apply_to_findings(&mut files, finding_id, prefix, &mut f)? {
+        if apply_to_findings(&mut files, finding_id, Some(def.id_prefix), &mut f)? {
             write_json_atomic(&path, &review)?;
             return Ok(());
         }
@@ -617,5 +623,75 @@ mod tests {
             loaded.files["a.rs"].findings[0].responses[0].text,
             "validated"
         );
+    }
+
+    // An unknown expert (not in the registry) is never merged into the in-memory
+    // review, so it must be skipped on write too — a bare-id collision with a
+    // general finding must not corrupt the unknown sidecar.
+    #[test]
+    fn unknown_expert_sidecar_is_skipped() {
+        use crate::ai::experts::{ExpertFileReview, ExpertReview};
+
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::create_dir_all(er.join("experts")).unwrap();
+
+        let review = ErReview {
+            version: 1,
+            diff_hash: "h".to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: [(
+                "a.rs".to_string(),
+                ErFileReview {
+                    risk: RiskLevel::Low,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings: vec![bare_finding("1")],
+                },
+            )]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+            file_hashes: HashMap::new(),
+        };
+        write_json_atomic(&er.join("review.json"), &review).unwrap();
+
+        // Unknown expert id with a colliding bare finding id "1".
+        let unknown = ExpertReview {
+            version: 1,
+            expert_id: "made-up".to_string(),
+            diff_hash: "h".to_string(),
+            diff_scope: String::new(),
+            created_at: String::new(),
+            summary: String::new(),
+            files: [(
+                "a.rs".to_string(),
+                ExpertFileReview {
+                    findings: vec![bare_finding("1")],
+                },
+            )]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+        };
+        write_json_atomic(&er.join("experts/made-up.json"), &unknown).unwrap();
+
+        append_finding_response(er.to_str().unwrap(), "1", "general-reply").unwrap();
+
+        // The reply lands in review.json…
+        let r: ErReview =
+            serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            r.files["a.rs"].findings[0].responses[0].text,
+            "general-reply"
+        );
+
+        // …and the unknown sidecar is left untouched (no responses written).
+        let u: ExpertReview = serde_json::from_str(
+            &std::fs::read_to_string(er.join("experts/made-up.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(u.files["a.rs"].findings[0].responses.is_empty());
     }
 }
