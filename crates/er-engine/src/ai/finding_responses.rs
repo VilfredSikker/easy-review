@@ -103,13 +103,15 @@ where
     let er = Path::new(er_dir);
     let mut f = Some(f);
 
-    // General findings keep their original id in `review.json` (no prefix).
+    // General findings keep their original id in `review.json` (no prefix). A
+    // corrupt/unreadable review.json falls through to the other sidecars rather
+    // than aborting — the finding may live in an expert/professor file (mirrors
+    // `remove_finding_from_sidecars`).
     let review_path = er.join("review.json");
-    if review_path.is_file() {
-        let content = std::fs::read_to_string(&review_path)
-            .map_err(|e| anyhow::anyhow!("Failed to read review.json: {e}"))?;
-        let mut review: ErReview = serde_json::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse review.json: {e}"))?;
+    if let Some(mut review) = std::fs::read_to_string(&review_path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<ErReview>(&c).ok())
+    {
         let mut files: Vec<&mut Vec<Finding>> = review
             .files
             .values_mut()
@@ -535,6 +537,85 @@ mod tests {
         assert_eq!(
             e.files["a.rs"].findings[0].responses[0].text,
             "expert-reply"
+        );
+    }
+
+    // A corrupt review.json must not block validation of a finding that lives in
+    // an expert sidecar — routing falls through to experts/*.json.
+    #[test]
+    fn corrupt_review_json_still_routes_to_expert() {
+        use crate::ai::experts::{ExpertFileReview, ExpertReview};
+
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::create_dir_all(er.join("experts")).unwrap();
+        std::fs::write(er.join("review.json"), "{ not valid json").unwrap();
+
+        let expert = ExpertReview {
+            version: 1,
+            expert_id: "security".to_string(),
+            diff_hash: "h".to_string(),
+            diff_scope: String::new(),
+            created_at: String::new(),
+            summary: String::new(),
+            files: [(
+                "a.rs".to_string(),
+                ExpertFileReview {
+                    findings: vec![bare_finding("3")],
+                },
+            )]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+        };
+        write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
+
+        append_finding_response(er.to_str().unwrap(), "sec-3", "validated").unwrap();
+
+        let loaded: ExpertReview = serde_json::from_str(
+            &std::fs::read_to_string(er.join("experts/security.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.files["a.rs"].findings[0].responses[0].text,
+            "validated"
+        );
+    }
+
+    // Professor insights merge with a `prof-` id prefix and persist in
+    // professor.json — replies must route there.
+    #[test]
+    fn append_response_routes_to_professor_sidecar() {
+        use crate::ai::professor::{ProfessorFileReview, ProfessorReview};
+
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+
+        let prof = ProfessorReview {
+            version: 1,
+            diff_hash: "h".to_string(),
+            diff_scope: String::new(),
+            created_at: String::new(),
+            focus_prompt: String::new(),
+            summary: String::new(),
+            files: [(
+                "a.rs".to_string(),
+                ProfessorFileReview {
+                    findings: vec![bare_finding("1")],
+                },
+            )]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+        };
+        write_json_atomic(&er.join("professor.json"), &prof).unwrap();
+
+        append_finding_response(er.to_str().unwrap(), "prof-1", "validated").unwrap();
+
+        let loaded: ProfessorReview =
+            serde_json::from_str(&std::fs::read_to_string(er.join("professor.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            loaded.files["a.rs"].findings[0].responses[0].text,
+            "validated"
         );
     }
 }
