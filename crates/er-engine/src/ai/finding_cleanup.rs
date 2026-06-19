@@ -39,7 +39,11 @@ pub fn find_finding_thread_root(ai: &AiState, finding_id: &str) -> Option<String
     None
 }
 
-fn matches_finding_id(stored_id: &str, target_id: &str, id_prefix: Option<&str>) -> bool {
+/// True when `stored_id` (as written in a sidecar) refers to the same finding
+/// as `target_id` (the merged/prefixed id the UI works with). Findings merged
+/// from experts/professor get an `id_prefix` (`sec-`, `prof-`, …) added at load
+/// time; this replays that mapping so a write can find the original record.
+pub(crate) fn matches_finding_id(stored_id: &str, target_id: &str, id_prefix: Option<&str>) -> bool {
     if stored_id == target_id {
         return true;
     }

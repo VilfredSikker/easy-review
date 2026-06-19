@@ -1,6 +1,9 @@
 //! Read/write `Finding.responses` in `review.json` (AI validation replies on findings).
 
-use super::review::{AiResponse, AiState, ErReview};
+use super::experts::{expert_by_id, load_expert_reviews, ExpertReview};
+use super::finding_cleanup::matches_finding_id;
+use super::professor::{load_professor_review, PROFESSOR_ID_PREFIX};
+use super::review::{AiResponse, AiState, ErReview, Finding};
 use std::path::Path;
 
 fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
@@ -60,28 +63,86 @@ fn iso_now() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
-fn with_finding_mut<F>(er_dir: &str, finding_id: &str, f: F) -> anyhow::Result<()>
+/// Find the first finding matching `finding_id` (replaying the `id_prefix`
+/// applied at merge time) and apply `f` to it. Returns whether it was found.
+fn apply_to_findings<F>(
+    files: &mut [&mut Vec<Finding>],
+    finding_id: &str,
+    id_prefix: Option<&str>,
+    f: &mut Option<F>,
+) -> anyhow::Result<bool>
 where
-    F: FnOnce(&mut super::review::Finding) -> anyhow::Result<()>,
+    F: FnOnce(&mut Finding) -> anyhow::Result<()>,
 {
-    let review_path = Path::new(er_dir).join("review.json");
-    let content = std::fs::read_to_string(&review_path)
-        .map_err(|e| anyhow::anyhow!("Failed to read review.json: {e}"))?;
-    let mut review: ErReview = serde_json::from_str(&content)
-        .map_err(|e| anyhow::anyhow!("Failed to parse review.json: {e}"))?;
-    let mut found = false;
-    for fr in review.files.values_mut() {
-        if let Some(finding) = fr.findings.iter_mut().find(|f| f.id == finding_id) {
+    for findings in files.iter_mut() {
+        if let Some(finding) = findings
+            .iter_mut()
+            .find(|f| matches_finding_id(&f.id, finding_id, id_prefix))
+        {
+            let f = f.take().expect("apply_to_findings called after finding matched");
             f(finding)?;
-            found = true;
-            break;
+            return Ok(true);
         }
     }
-    if !found {
-        anyhow::bail!("Finding not found: {finding_id}");
+    Ok(false)
+}
+
+/// Locate the finding across all sidecars (`review.json`, `professor.json`,
+/// `experts/*.json`) and apply `f` to it in whichever file it lives in.
+///
+/// Expert and professor findings are merged into the in-memory review with a
+/// prefixed id and a rewritten `category`, but they are persisted in their own
+/// sidecars — so a validation reply for `sec-1` must be written back to
+/// `experts/security.json`, not `review.json` (which may not even exist).
+fn with_finding_mut<F>(er_dir: &str, finding_id: &str, f: F) -> anyhow::Result<()>
+where
+    F: FnOnce(&mut Finding) -> anyhow::Result<()>,
+{
+    let er = Path::new(er_dir);
+    let mut f = Some(f);
+
+    // General findings keep their original id in `review.json` (no prefix).
+    let review_path = er.join("review.json");
+    if review_path.is_file() {
+        let content = std::fs::read_to_string(&review_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read review.json: {e}"))?;
+        let mut review: ErReview = serde_json::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse review.json: {e}"))?;
+        let mut files: Vec<&mut Vec<Finding>> =
+            review.files.values_mut().map(|fr| &mut fr.findings).collect();
+        if apply_to_findings(&mut files, finding_id, None, &mut f)? {
+            write_json_atomic(&review_path, &review)?;
+            return Ok(());
+        }
     }
-    write_json_atomic(&review_path, &review)?;
-    Ok(())
+
+    // Professor insights merge with a `prof-` id prefix.
+    let prof_path = er.join("professor.json");
+    if let Some(mut prof) = load_professor_review(er_dir) {
+        let mut files: Vec<&mut Vec<Finding>> =
+            prof.files.values_mut().map(|pfr| &mut pfr.findings).collect();
+        if apply_to_findings(&mut files, finding_id, Some(PROFESSOR_ID_PREFIX), &mut f)? {
+            write_json_atomic(&prof_path, &prof)?;
+            return Ok(());
+        }
+    }
+
+    // Each expert merges findings with its own id prefix (`sec-`, `api-`, …).
+    for expert in load_expert_reviews(er_dir) {
+        let prefix = expert_by_id(&expert.expert_id).map(|d| d.id_prefix);
+        let path = er
+            .join("experts")
+            .join(format!("{}.json", expert.expert_id));
+        let mut review: ExpertReview = expert;
+        let mut files: Vec<&mut Vec<Finding>> =
+            review.files.values_mut().map(|efr| &mut efr.findings).collect();
+        if apply_to_findings(&mut files, finding_id, prefix, &mut f)? {
+            write_json_atomic(&path, &review)?;
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("Finding not found: {finding_id}");
 }
 
 /// Append an AI validation reply to a finding. Returns the new response id.
@@ -330,5 +391,131 @@ mod tests {
             loaded.files["a.rs"].findings[0].responses[0].text,
             "updated"
         );
+    }
+
+    fn bare_finding(id: &str) -> Finding {
+        Finding {
+            id: id.to_string(),
+            severity: RiskLevel::High,
+            category: String::new(),
+            title: "t".to_string(),
+            description: "d".to_string(),
+            hunk_index: None,
+            line_start: None,
+            line_end: None,
+            suggestion: String::new(),
+            related_files: Vec::new(),
+            outside_diff: false,
+            confidence: Confidence::default(),
+            verification_plan: String::new(),
+            evidence: Vec::new(),
+            responses: Vec::new(),
+            resolved: false,
+            resolved_note: String::new(),
+            resolved_at: String::new(),
+            promoted_to: None,
+        }
+    }
+
+    // An expert finding lives in `experts/{id}.json`, not `review.json`. The UI
+    // works with the merged, prefixed id (`api-1`); the reply must be routed
+    // back to the expert sidecar — even when `review.json` does not exist.
+    #[test]
+    fn append_response_routes_to_expert_sidecar() {
+        use crate::ai::experts::{ExpertFileReview, ExpertReview};
+
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::create_dir_all(er.join("experts")).unwrap();
+
+        let expert = ExpertReview {
+            version: 1,
+            expert_id: "api".to_string(),
+            diff_hash: "h".to_string(),
+            diff_scope: String::new(),
+            created_at: String::new(),
+            summary: String::new(),
+            files: [(
+                "a.rs".to_string(),
+                ExpertFileReview {
+                    findings: vec![bare_finding("1")],
+                },
+            )]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+        };
+        write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
+
+        // No review.json at all — must not error with "No such file or directory".
+        append_finding_response(er.to_str().unwrap(), "api-1", "validated").unwrap();
+
+        let content = std::fs::read_to_string(er.join("experts/api.json")).unwrap();
+        let loaded: ExpertReview = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            loaded.files["a.rs"].findings[0].responses[0].text,
+            "validated"
+        );
+    }
+
+    // With both sidecars present, a general finding still lands in review.json
+    // and an expert finding still lands in the expert sidecar.
+    #[test]
+    fn routes_general_and_expert_findings_independently() {
+        use crate::ai::experts::{ExpertFileReview, ExpertReview};
+
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::create_dir_all(er.join("experts")).unwrap();
+
+        let review = ErReview {
+            version: 1,
+            diff_hash: "h".to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: [(
+                "a.rs".to_string(),
+                ErFileReview {
+                    risk: RiskLevel::Low,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings: vec![bare_finding("f-1")],
+                },
+            )]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+            file_hashes: HashMap::new(),
+        };
+        write_json_atomic(&er.join("review.json"), &review).unwrap();
+
+        let expert = ExpertReview {
+            version: 1,
+            expert_id: "security".to_string(),
+            diff_hash: "h".to_string(),
+            diff_scope: String::new(),
+            created_at: String::new(),
+            summary: String::new(),
+            files: [(
+                "a.rs".to_string(),
+                ExpertFileReview {
+                    findings: vec![bare_finding("2")],
+                },
+            )]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+        };
+        write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
+
+        append_finding_response(er.to_str().unwrap(), "f-1", "general-reply").unwrap();
+        append_finding_response(er.to_str().unwrap(), "sec-2", "expert-reply").unwrap();
+
+        let r: ErReview =
+            serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap()).unwrap();
+        assert_eq!(r.files["a.rs"].findings[0].responses[0].text, "general-reply");
+
+        let e: ExpertReview =
+            serde_json::from_str(&std::fs::read_to_string(er.join("experts/security.json")).unwrap())
+                .unwrap();
+        assert_eq!(e.files["a.rs"].findings[0].responses[0].text, "expert-reply");
     }
 }
