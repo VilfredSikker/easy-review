@@ -79,7 +79,9 @@ where
             .iter_mut()
             .find(|f| matches_finding_id(&f.id, finding_id, id_prefix))
         {
-            let f = f.take().expect("apply_to_findings called after finding matched");
+            let f = f
+                .take()
+                .expect("apply_to_findings called after finding matched");
             f(finding)?;
             return Ok(true);
         }
@@ -108,8 +110,11 @@ where
             .map_err(|e| anyhow::anyhow!("Failed to read review.json: {e}"))?;
         let mut review: ErReview = serde_json::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse review.json: {e}"))?;
-        let mut files: Vec<&mut Vec<Finding>> =
-            review.files.values_mut().map(|fr| &mut fr.findings).collect();
+        let mut files: Vec<&mut Vec<Finding>> = review
+            .files
+            .values_mut()
+            .map(|fr| &mut fr.findings)
+            .collect();
         if apply_to_findings(&mut files, finding_id, None, &mut f)? {
             write_json_atomic(&review_path, &review)?;
             return Ok(());
@@ -119,8 +124,11 @@ where
     // Professor insights merge with a `prof-` id prefix.
     let prof_path = er.join("professor.json");
     if let Some(mut prof) = load_professor_review(er_dir) {
-        let mut files: Vec<&mut Vec<Finding>> =
-            prof.files.values_mut().map(|pfr| &mut pfr.findings).collect();
+        let mut files: Vec<&mut Vec<Finding>> = prof
+            .files
+            .values_mut()
+            .map(|pfr| &mut pfr.findings)
+            .collect();
         if apply_to_findings(&mut files, finding_id, Some(PROFESSOR_ID_PREFIX), &mut f)? {
             write_json_atomic(&prof_path, &prof)?;
             return Ok(());
@@ -134,8 +142,11 @@ where
             .join("experts")
             .join(format!("{}.json", expert.expert_id));
         let mut review: ExpertReview = expert;
-        let mut files: Vec<&mut Vec<Finding>> =
-            review.files.values_mut().map(|efr| &mut efr.findings).collect();
+        let mut files: Vec<&mut Vec<Finding>> = review
+            .files
+            .values_mut()
+            .map(|efr| &mut efr.findings)
+            .collect();
         if apply_to_findings(&mut files, finding_id, prefix, &mut f)? {
             write_json_atomic(&path, &review)?;
             return Ok(());
@@ -510,12 +521,20 @@ mod tests {
         append_finding_response(er.to_str().unwrap(), "sec-2", "expert-reply").unwrap();
 
         let r: ErReview =
-            serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap()).unwrap();
-        assert_eq!(r.files["a.rs"].findings[0].responses[0].text, "general-reply");
-
-        let e: ExpertReview =
-            serde_json::from_str(&std::fs::read_to_string(er.join("experts/security.json")).unwrap())
+            serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
                 .unwrap();
-        assert_eq!(e.files["a.rs"].findings[0].responses[0].text, "expert-reply");
+        assert_eq!(
+            r.files["a.rs"].findings[0].responses[0].text,
+            "general-reply"
+        );
+
+        let e: ExpertReview = serde_json::from_str(
+            &std::fs::read_to_string(er.join("experts/security.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            e.files["a.rs"].findings[0].responses[0].text,
+            "expert-reply"
+        );
     }
 }
