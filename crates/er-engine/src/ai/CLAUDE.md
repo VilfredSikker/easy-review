@@ -72,5 +72,5 @@ suggestion, hunk references.
 
 - Global staleness (`is_stale`) dims the AI overlay; per-file staleness dims individual files/comments
 - `AiState` preserves panel/review focus and cursor across reloads (handled by `TabState::reload_ai_state()`)
-- `er` writes only `questions.json` and `github-comments.json`; all other sidecars are read-only from `er`'s perspective
+- `er` writes `questions.json`, `notes.json`, and `github-comments.json` in full; all other sidecars are AI-owned (read-only as a whole). The exception is the finding *lifecycle*: `finding_responses.rs` (validation replies) and `finding_cleanup.rs` (resolve/remove) mutate findings in place across `review.json`, `professor.json`, and `experts/*.json`, routing each write to the sidecar that owns the finding (matched by the merge-time id prefix)
 - Findings link to hunks via `hunk_index: Option<usize>`, enabling inline display in the diff view

@@ -1825,8 +1825,7 @@ mod tests {
 
     #[test]
     fn triage_prompt_targets_triage_json_only() {
-        let prompt =
-            build_triage_review_prompt_local_managed("main", "branch", "/tmp/er-test");
+        let prompt = build_triage_review_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(prompt.contains("triage.json"));
         assert!(prompt.contains("verdict"));
         assert!(prompt.contains("≤8 tool calls"));
