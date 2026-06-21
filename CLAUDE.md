@@ -16,6 +16,12 @@ er                    # run from any git repo
 
 No runtime dependencies beyond git. Single binary. (`gh` CLI optional for GitHub PR features.)
 
+## Branching & Release Workflow
+
+- **PRs to `main` are for bug fixes only.** Only point a PR at `main` when it is a bug fix.
+- **Everything else goes on a release branch.** New features and other non-bugfix work are developed on (and PR'd into) a release branch, not `main`.
+- **Release branches must include release notes.** Every release branch ships with release notes describing what changed.
+
 ## Architecture
 
 Rust + Ratatui TUI. Six modules + a standalone GitHub integration file:
