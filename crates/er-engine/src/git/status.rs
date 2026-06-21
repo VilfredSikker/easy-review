@@ -10,7 +10,6 @@ pub struct CommitInfo {
     pub short_hash: String,
     pub subject: String,
     pub author: String,
-    #[allow(dead_code)]
     pub date: String,
     pub relative_date: String,
     #[allow(dead_code)]

@@ -676,7 +676,9 @@ pub struct CommitSummary {
     pub sha: String,
     pub title: String,
     pub author: String,
-    pub age: String,
+    /// ISO 8601 commit timestamp; the frontend renders it as a relative
+    /// "time ago" string (uniform across local and remote-PR commits).
+    pub committed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2039,7 +2041,7 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
             sha: c.hash,
             title: c.subject,
             author: c.author,
-            age: c.relative_date,
+            committed_at: c.date,
         })
         .collect()
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import type { CommitSummary } from "$lib/types";
+  import { timeAgo } from "$lib/time";
 
   interface Props {
     mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden" | "tour";
@@ -212,7 +213,7 @@
                       ? 'color: var(--color-accent); background: var(--color-accent-soft); border: 1px solid var(--color-accent-border);'
                       : 'color: var(--color-muted); background: var(--color-card); border: 1px solid var(--color-hairline);'}"
                   >{commit.sha.slice(0, 7)}</span>
-                  <span class="text-[10px] text-muted">{commit.age}</span>
+                  <span class="text-[10px] text-muted">{timeAgo(commit.committed_at)}</span>
                   <!-- +/- and local badge: CommitSummary lacks additions/deletions/is_pushed fields — omitted until backend exposes them -->
                 </div>
               </div>

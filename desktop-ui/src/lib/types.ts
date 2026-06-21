@@ -298,7 +298,8 @@ export interface CommitSummary {
   sha: string;
   title: string;
   author: string;
-  age: string;
+  /** ISO 8601 commit timestamp; render via `timeAgo()` from `$lib/time`. */
+  committed_at: string;
 }
 
 export interface TabSummary {
