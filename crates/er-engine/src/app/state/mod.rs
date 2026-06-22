@@ -1830,26 +1830,26 @@ impl TabState {
             return;
         }
 
-        // PR-associated tabs share one bucket for branch-level review artifacts
-        // (triage, review.json, questions, reviewed) regardless of Branch vs PrDiff mode.
+        // Only the PR Diff view (head-vs-base) uses the shared PR bucket
+        // (prs/pr-<N>/). Its review artifacts — triage, review.json, questions,
+        // reviewed — stay separate from the local working-tree views. Remote tabs
+        // are always PrDiff (review_bucket() == Pr). Branch/Unstaged/Staged/History
+        // fall through to per-branch view buckets even on a local PR tab: the local
+        // branch diff is a different diff than the PR head-vs-base diff, so it is
+        // reviewed independently.
         if let Some(pr_num) = self.pr_number {
-            match self.review_bucket() {
-                ReviewBucket::Unstaged | ReviewBucket::Staged | ReviewBucket::History => {}
-                ReviewBucket::Branch | ReviewBucket::Pr => {
-                    let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
-                        crate::storage::slug_branch(&remote_repo.to_lowercase())
-                    } else {
-                        match crate::github::canonical_owner_repo_slug(&self.repo_root) {
-                            Some(slug) => slug,
-                            None => return,
-                        }
-                    };
-                    self.er_root = crate::storage::resolve_managed_root_for_pr_bucket(
-                        &owner_repo_slug,
-                        pr_num,
-                    );
-                    return;
-                }
+            if self.review_bucket() == ReviewBucket::Pr {
+                let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
+                    crate::storage::slug_branch(&remote_repo.to_lowercase())
+                } else {
+                    match crate::github::canonical_owner_repo_slug(&self.repo_root) {
+                        Some(slug) => slug,
+                        None => return,
+                    }
+                };
+                self.er_root =
+                    crate::storage::resolve_managed_root_for_pr_bucket(&owner_repo_slug, pr_num);
+                return;
             }
         }
 
@@ -1937,8 +1937,9 @@ impl TabState {
     // ── PR Diff mode ──
 
     /// Switch to `PrDiff` mode: fetch the PR head + base refs (first entry only),
-    /// resolve storage to the shared PR bucket, reload reviewed markers and AI state,
-    /// then refresh the diff.
+    /// resolve storage to the PR bucket (`prs/pr-<N>/`, separate from the local
+    /// working-tree view buckets), reload reviewed markers and AI state, then
+    /// refresh the diff.
     ///
     /// On the first call (`pr_refs_fetched == false`) the function fetches the PR head
     /// and base refs from git/gh and stores them, then sets `pr_refs_fetched = true`.
@@ -9717,9 +9718,12 @@ mod tests {
         std::env::remove_var("ER_STORAGE_ROOT");
     }
 
-    /// Local PR tabs in Branch mode must share the PR bucket (not the branch view-bucket).
+    /// A local PR tab (remote_repo = None) must split its review artifacts by view:
+    /// Branch mode reviews the local branch diff and routes to the per-branch view
+    /// bucket — NOT the shared PR bucket. Only the PR Diff view (head-vs-base) uses
+    /// the PR bucket, so triage generated in one view does not leak into the other.
     #[test]
-    fn pr_number_branch_mode_routes_to_pr_bucket() {
+    fn local_pr_branch_mode_routes_to_view_bucket_not_pr_bucket() {
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -9727,17 +9731,31 @@ mod tests {
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
 
         let mut tab = TabState::new_for_test(vec![]);
-        tab.remote_repo = Some("owner/repo".to_string());
-        tab.pr_number = Some(42);
-        tab.mode = DiffMode::Branch;
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "feat/foo".to_string();
         tab.local_branch_view = Some("feat/foo".to_string());
+        tab.pr_number = Some(42);
+        tab.remote_repo = None;
+        tab.mode = DiffMode::Branch;
         tab.apply_managed_root();
 
-        let expected = crate::storage::resolve_managed_root_for_pr_bucket(
-            &crate::storage::slug_branch("owner/repo"),
-            42,
+        let expected = crate::storage::view_bucket_dir(
+            &crate::storage::slug_repo(&tab.repo_root),
+            &crate::storage::slug_branch("feat/foo"),
+            "branch",
+        )
+        .to_string_lossy()
+        .into_owned();
+        assert_eq!(
+            tab.er_dir(),
+            expected,
+            "local PR tab in Branch mode must use the per-branch view bucket, not the PR bucket"
         );
-        assert_eq!(tab.er_dir(), expected.er_dir());
+        assert!(
+            !tab.er_dir().contains("prs/pr-42"),
+            "local PR tab in Branch mode must not route to the PR bucket: {}",
+            tab.er_dir()
+        );
 
         std::env::remove_var("ER_STORAGE_ROOT");
     }
