@@ -1813,8 +1813,13 @@
       <div class="flex items-center justify-center h-full text-muted text-sm">No changes</div>
     {:else}
       <!-- Sticky file path overlay: hides when real file-header is in viewport top band.
-           In Guide mode the pillar rail lane (column 1) replaces it. -->
-      <StickyFileHeader row={visibleFileHeaderRow} hidden={stickyHeaderHidden || tourActive} />
+           In Guide mode it's inset past the pillar rail lane so it pins over the
+           diff column (column 2) without covering the rail. -->
+      <StickyFileHeader
+        row={visibleFileHeaderRow}
+        hidden={stickyHeaderHidden}
+        offsetLeftPx={tourActive ? RAIL_W : 0}
+      />
 
       {#if tourActive}
         <!-- Column 1: pillar rail lane. Each pillar block aligns to its diffs in
