@@ -2609,7 +2609,13 @@ impl TabState {
                 self.branch_diff_hash = ai::compute_diff_hash(&raw);
             }
             branch_raw_owned = Some(raw.clone());
-        } else if recompute_branch_hash && (self.ai.has_data() || self.ai.has_questions()) {
+        } else if recompute_branch_hash
+            && (self.ai.has_data() || self.ai.has_questions() || self.ai.has_tour())
+        {
+            // A guided tour is branch-scoped and its freshness (the "Re-run guide"
+            // affordance) baselines on `branch_diff_hash`, so it must be kept
+            // current even when the tour is the *only* AI artifact — otherwise a
+            // branch tour viewed from Unstaged/Staged/History never reports stale.
             let br = git::git_diff_raw(
                 "branch",
                 &self.base_branch,
@@ -9769,6 +9775,44 @@ mod tests {
             &branch_hash,
             false
         ));
+    }
+
+    /// A guided tour must count toward the `branch_diff_hash` recompute guard in
+    /// `refresh_diff_impl` so a branch tour stays staleness-accurate even when it
+    /// is the *only* AI artifact. Regression guard for the Unstaged/Staged/History
+    /// freeze: `has_data()`/`has_questions()` exclude tours, so the guard relies on
+    /// `has_tour()`.
+    #[test]
+    fn tour_only_ai_state_triggers_branch_hash_recompute_guard() {
+        use crate::ai::{ErTour, TourPillar};
+        let mut ai = crate::ai::AiState::default();
+        assert!(!ai.has_data());
+        assert!(!ai.has_questions());
+        assert!(!ai.has_tour());
+
+        ai.tour = Some(ErTour {
+            version: 1,
+            diff_hash: "h".into(),
+            created_at: String::new(),
+            title: "t".into(),
+            overview: String::new(),
+            pillars: vec![TourPillar {
+                id: "p-1".into(),
+                title: "Foundation".into(),
+                description: String::new(),
+                order: 0,
+                importance: 0,
+                foundation: true,
+                files: vec![],
+            }],
+        });
+
+        // A tour is not counted by has_data/has_questions, so the recompute guard
+        // must fire via has_tour — otherwise branch_diff_hash freezes.
+        assert!(!ai.has_data());
+        assert!(!ai.has_questions());
+        assert!(ai.has_tour());
+        assert!(ai.has_data() || ai.has_questions() || ai.has_tour());
     }
 
     /// Entering Tour mode records whether the originating view was the PR diff,
