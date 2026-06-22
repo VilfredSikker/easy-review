@@ -320,13 +320,20 @@ pub fn gh_pr_branch_names(pr_number: u64, repo_root: &str) -> Result<(String, St
 }
 
 /// Fetch PR head to a local ref without checking out. Returns the local ref name.
+///
+/// Uses a force refspec (`+`): PR heads are force-pushable, so when a PR branch
+/// is rebased or force-pushed the new head is no longer a descendant of the
+/// previously fetched commit. A plain fetch rejects that as non-fast-forward,
+/// leaving the stale `refs/er/pr/<n>/head` and breaking re-entry into PR diff.
+/// The `+` only affects this `refs/er/` destination ref — never local branches
+/// (`refs/heads/`), remote-tracking refs, HEAD, or the working tree.
 pub fn fetch_pr_head(number: u64, root: &str) -> Result<String> {
     let ref_name = format!("refs/er/pr/{}/head", number);
     let output = std::process::Command::new("git")
         .args([
             "fetch",
             "origin",
-            &format!("pull/{}/head:{}", number, ref_name),
+            &format!("+pull/{}/head:{}", number, ref_name),
         ])
         .current_dir(root)
         .output()
