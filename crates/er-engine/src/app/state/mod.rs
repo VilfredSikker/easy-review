@@ -9694,7 +9694,10 @@ mod tests {
         tab.mode = DiffMode::PrDiff;
         tab.tour_is_pr = false;
         tab.set_mode(DiffMode::Tour);
-        assert!(tab.tour_is_pr, "Tour entered from PR Diff must be PR-scoped");
+        assert!(
+            tab.tour_is_pr,
+            "Tour entered from PR Diff must be PR-scoped"
+        );
 
         // From the local branch → Tour is branch-scoped.
         tab.mode = DiffMode::Branch;
