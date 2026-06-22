@@ -21,9 +21,7 @@
     void app.cmd("select_file", { idx: f.source_index });
   }
 
-  function toggleReviewed(e: Event, f: FileSnapshot) {
-    e.stopPropagation();
-    e.preventDefault();
+  function toggleReviewed(f: FileSnapshot) {
     // Guide mode auto-collapses a file on its reviewed false→true transition
     // (see FlatDiffView), so no explicit collapse is needed here.
     void app.cmd(f.reviewed ? "unmark_reviewed" : "mark_reviewed", { path: f.path });
@@ -62,20 +60,11 @@
   <div class="flex flex-col gap-0.5 mt-1">
     {#each fileRows as f (f.path)}
       {@const isSelected = f.path === selectedPath}
-      <!-- Row is a clickable div (not a button) so it can hold the nested
-           reviewed-toggle button — button-in-button is invalid HTML. -->
+      <!-- Row is a plain container holding two sibling buttons (reviewed-toggle
+           + jump-to-file). Mirrors FileHeaderContent: no role=button wrapping an
+           interactive control, so each button keeps native keyboard activation. -->
       <div
-        role="button"
-        tabindex="0"
-        class="w-full text-left px-1.5 py-[3px] rounded flex items-center gap-1.5 relative cursor-pointer {isSelected ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
-        title={f.path}
-        onclick={() => jumpToFile(f)}
-        onkeydown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            jumpToFile(f);
-          }
-        }}
+        class="w-full px-1.5 py-[3px] rounded flex items-center gap-1.5 relative {isSelected ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
       >
         {#if isSelected}
           <span class="absolute left-0 top-[3px] bottom-[3px] w-[2px] rounded-r bg-accent"></span>
@@ -87,15 +76,22 @@
           title={f.reviewed ? "Marked reviewed — click to unmark" : "Mark file reviewed"}
           aria-label={f.reviewed ? "Unmark as reviewed" : "Mark as reviewed"}
           aria-pressed={f.reviewed}
-          onclick={(e) => toggleReviewed(e, f)}
+          onclick={() => toggleReviewed(f)}
         >
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
             <polyline points="20 6 9 17 4 12" />
           </svg>
         </button>
-        <span class="text-[11px] truncate flex-1 {f.reviewed ? 'text-fg-3 line-through' : ''}">{basename(f.path)}</span>
-        {#if f.additions > 0}<span class="mono text-[9px] text-add-fg">+{f.additions}</span>{/if}
-        {#if f.deletions > 0}<span class="mono text-[9px] text-del-fg">−{f.deletions}</span>{/if}
+        <button
+          type="button"
+          class="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+          title={f.path}
+          onclick={() => jumpToFile(f)}
+        >
+          <span class="text-[11px] truncate flex-1 {f.reviewed ? 'text-fg-3 line-through' : ''}">{basename(f.path)}</span>
+          {#if f.additions > 0}<span class="mono text-[9px] text-add-fg">+{f.additions}</span>{/if}
+          {#if f.deletions > 0}<span class="mono text-[9px] text-del-fg">−{f.deletions}</span>{/if}
+        </button>
       </div>
     {/each}
   </div>
