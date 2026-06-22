@@ -2141,7 +2141,13 @@ impl TabState {
         match scope {
             "unstaged" => self.mode == DiffMode::Unstaged,
             "staged" => self.mode == DiffMode::Staged,
-            _ => self.mode == DiffMode::Branch || self.mode == DiffMode::PrDiff,
+            // Tour is the branch diff regrouped, so its cached raw_diff is the
+            // branch diff and matches a "branch"-scoped review.
+            _ => {
+                self.mode == DiffMode::Branch
+                    || self.mode == DiffMode::PrDiff
+                    || self.mode == DiffMode::Tour
+            }
         }
     }
 
@@ -8698,6 +8704,18 @@ mod tests {
         let mut tab = TabState::new_for_test(vec![]);
         tab.remote_repo = Some("owner/repo".to_string());
         assert!(tab.is_remote());
+    }
+
+    #[test]
+    fn review_scope_matches_cached_diff_treats_tour_as_branch() {
+        // Tour is the branch diff regrouped, so its cached raw_diff satisfies a
+        // "branch"-scoped review — no redundant git diff refetch.
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.mode = DiffMode::Tour;
+        assert!(tab.review_scope_matches_cached_diff("branch"));
+        // Working-tree scopes still don't match a Tour cache.
+        assert!(!tab.review_scope_matches_cached_diff("unstaged"));
+        assert!(!tab.review_scope_matches_cached_diff("staged"));
     }
 
     #[test]

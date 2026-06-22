@@ -2858,7 +2858,8 @@ fn resolve_review_scope(scope: &str, tab: &er_engine::app::TabState) -> Result<S
             DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
                 tab.mode.git_mode().to_string()
             }
-            DiffMode::PrDiff => "branch".to_string(),
+            // Guide (tour) reviews the branch diff it was built from.
+            DiffMode::PrDiff | DiffMode::Tour => "branch".to_string(),
             _ => {
                 return Err(format!(
                     "AI review not available in {} view — switch to All changes, PR Diff, Unstaged, or Staged",
@@ -2887,7 +2888,11 @@ pub fn list_diff_paths(state: State<AppState>) -> Result<Vec<String>, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab = app.tab();
     match tab.mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {}
+        DiffMode::Branch
+        | DiffMode::Unstaged
+        | DiffMode::Staged
+        | DiffMode::PrDiff
+        | DiffMode::Tour => {}
         _ => {
             return Err(format!(
                 "File list not available in {} view",
@@ -7660,6 +7665,15 @@ mod tests {
         assert_eq!(resolve_review_scope("branch", &tab).unwrap(), "branch");
         assert_eq!(resolve_review_scope("current", &tab).unwrap(), "branch");
         assert_eq!(resolve_review_scope("pr", &tab).unwrap(), "branch");
+    }
+
+    #[test]
+    fn resolve_review_scope_accepts_tour_mode() {
+        // Guide (tour) reviews the branch diff it was regrouped from.
+        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
+        tab.mode = er_engine::app::DiffMode::Tour;
+        assert_eq!(resolve_review_scope("branch", &tab).unwrap(), "branch");
+        assert_eq!(resolve_review_scope("current", &tab).unwrap(), "branch");
     }
 
     #[test]
