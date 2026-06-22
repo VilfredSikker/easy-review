@@ -37,7 +37,8 @@
     return null;
   });
   const wdSpans = $derived(wdU ? (line.kind === "del" ? wdU.old : wdU.new) : null);
-  const wdBg = $derived(line.kind === "del" ? "bg-del-fg/30" : "bg-add-fg/30");
+  const wdBg = $derived(line.kind === "del" ? "wd-change-del" : "wd-change-add");
+  const bgKind = $derived(line.kind === "add" ? "add" : line.kind === "del" ? "del" : "context");
 
   const isSelected = $derived(ln !== null && diffSel.file === filePath && diffSel.sel(ln, side));
   const isAnchorRange = $derived(
@@ -104,6 +105,7 @@
       wordSpans={wdSpans}
       syntaxSpans={line.spans}
       changedBgClass={wdBg}
+      kind={bgKind}
     />
   </div>
 </div>

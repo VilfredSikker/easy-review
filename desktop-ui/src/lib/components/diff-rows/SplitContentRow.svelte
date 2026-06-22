@@ -124,7 +124,8 @@
         text={left.text}
         wordSpans={wd?.old ?? null}
         syntaxSpans={left.spans}
-        changedBgClass="bg-del-fg/30"
+        changedBgClass="wd-change-del"
+        kind={left.kind === "del" ? "del" : left.kind === "add" ? "add" : "context"}
       />
     {:else}
       <span>&nbsp;</span>
@@ -157,7 +158,8 @@
         text={right.text}
         wordSpans={wd?.new ?? null}
         syntaxSpans={right.spans}
-        changedBgClass="bg-add-fg/30"
+        changedBgClass="wd-change-add"
+        kind={right.kind === "add" ? "add" : right.kind === "del" ? "del" : "context"}
       />
     {:else}
       <span>&nbsp;</span>
