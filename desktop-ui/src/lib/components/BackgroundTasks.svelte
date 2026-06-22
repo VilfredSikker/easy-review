@@ -109,7 +109,7 @@
 
   function dotColor(status: Pill["status"]): string {
     if (status === "running") return "bg-accent animate-pulse";
-    if (status === "queued") return "bg-arena-warn";
+    if (status === "queued") return "bg-warning";
     if (status === "done") return "bg-add-fg";
     return "bg-del-fg";
   }
