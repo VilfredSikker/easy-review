@@ -173,13 +173,15 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
         }
     }
 
-    // Load .er/tour.json (guided walkthrough — its own ordering/grouping)
+    // Load .er/tour.json (guided walkthrough — its own ordering/grouping).
+    // The tour is a separate, context-scoped view; track its staleness in
+    // `tour_stale` rather than the global `is_stale` so a stale tour never dims
+    // the review/findings overlays. `TabState::reload_ai_state` re-routes the
+    // tour to the PR- or branch-scoped sidecar and recomputes `tour_stale`.
     let tour_path = Path::new(er_dir).join("tour.json");
     if let Ok(content) = read_sidecar(&tour_path) {
         if let Ok(tour) = serde_json::from_str::<ErTour>(&content) {
-            if !state.is_stale && tour.diff_hash != current_diff_hash {
-                state.is_stale = true;
-            }
+            state.tour_stale = tour.diff_hash != current_diff_hash;
             state.tour = Some(tour);
         }
     }
@@ -442,18 +444,22 @@ mod tests {
         )
         .unwrap();
 
-        // Matching hash → fresh tour loaded.
+        // Matching hash → fresh tour loaded. Tour staleness is tracked in
+        // `tour_stale`, independent of the global `is_stale`.
         let state = load_ai_state(er_dir, "abc", None);
         assert!(state.has_tour());
         assert!(!state.is_stale);
+        assert!(!state.tour_stale);
         let loaded = state.tour.as_ref().unwrap();
         assert_eq!(loaded.pillars.len(), 1);
         assert_eq!(loaded.file_pillar("src/a.rs").unwrap().id, "p-1");
 
-        // Mismatched hash → tour still loaded but marked stale.
+        // Mismatched hash → tour still loaded and marked stale via `tour_stale`,
+        // but the global `is_stale` stays false (tour is a separate view).
         let stale = load_ai_state(er_dir, "different", None);
         assert!(stale.has_tour());
-        assert!(stale.is_stale);
+        assert!(!stale.is_stale);
+        assert!(stale.tour_stale);
     }
 
     #[test]

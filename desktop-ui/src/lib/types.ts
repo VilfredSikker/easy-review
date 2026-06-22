@@ -112,10 +112,13 @@ export interface PillarSnapshot {
 }
 
 export interface TourSnapshot {
-  /** True when a tour.json exists for this branch (drives the Guide tab). */
+  /** True when a guided tour exists for the current view context (PR vs branch). */
   available: boolean;
-  /** True when the tour matches the current diff. */
+  /** True when the tour matches the current diff. When false and `available`,
+   *  the UI offers a "Re-run guide" affordance. */
   fresh: boolean;
+  /** Which diff the tour is attached to: `"pr"` or `"branch"`. */
+  scope: "pr" | "branch" | "";
   title: string;
   overviewMarkdown: string;
   pillars: PillarSnapshot[];

@@ -385,6 +385,11 @@ pub struct AiState {
     pub feedback: Option<ErFeedback>,
     /// Whether the loaded data matches the current diff
     pub is_stale: bool,
+    /// Whether the loaded guided tour (`tour`) no longer matches the current
+    /// view's diff. Tracked independently from `is_stale` because the tour is a
+    /// separate, context-scoped view (branch vs PR) and its staleness should not
+    /// dim the other AI overlays. Drives the "Re-run guide" affordance.
+    pub tour_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
     pub stale_files: HashSet<String>,
     /// Lazily-built comment index for O(1) lookups.
@@ -407,6 +412,7 @@ impl Default for AiState {
             triage: None,
             feedback: None,
             is_stale: false,
+            tour_stale: false,
             stale_files: HashSet::new(),
             comment_index: RefCell::new(None),
         }

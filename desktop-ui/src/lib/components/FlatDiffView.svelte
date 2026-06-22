@@ -149,10 +149,31 @@
   const treeHidden = $derived(!snapshot?.panels.tree);
   const viewMode = $derived<DiffViewMode>(viewModeOverride ?? app.diffViewMode);
   const mode = $derived(snapshot?.mode ?? "branch");
-  /** Guide/Diff toggle is offered once a tour exists for this branch. */
+  /** Guide/Diff toggle is offered once a tour exists for the current view
+   *  context (PR vs local branch). */
   const tourAvailable = $derived(
     (snapshot?.features?.viewTour ?? true) && (snapshot?.tour?.available ?? false),
   );
+  /** Whether the current view's guide is attached to the PR diff. Drives where
+   *  the Diff toggle returns to so leaving the Guide doesn't switch diffs. */
+  const tourIsPr = $derived(snapshot?.tour?.scope === "pr");
+  /** False when new changes have landed since the guide was generated. */
+  const tourFresh = $derived(snapshot?.tour?.fresh ?? true);
+  /** PR number for returning to the PR diff from a PR-scoped guide. */
+  const tourPrNumber = $derived(
+    snapshot?.detected_pr_number ??
+      snapshot?.github?.number ??
+      snapshot?.pr?.number ??
+      null,
+  );
+  function exitGuideToDiff() {
+    if (mode !== "tour") return;
+    if (tourIsPr) {
+      void app.cmd("set_mode", { mode: "pr_diff", prNumber: tourPrNumber });
+    } else {
+      void app.cmd("set_mode", { mode: "branch" });
+    }
+  }
 
   let settingsOpen = $state(false);
 
@@ -1624,12 +1645,23 @@
       {/if}
       <span class="mono text-xs text-fg-3">{files.length} {files.length === 1 ? "file" : "files"}</span>
       <div class="ml-auto flex items-center gap-1">
+        {#if tourAvailable && !tourFresh}
+          <!-- New changes landed since the guide was generated — offer a re-run. -->
+          <button
+            class="flex items-center gap-1 h-[22px] px-2 mr-1 rounded text-[11px] font-medium border border-risk-med/40 text-risk-med hover:bg-risk-med/10 transition-colors shrink-0"
+            onclick={() => { app.showToast("info", "Regenerating guide…"); void app.cmd("generate_tour"); }}
+            title="The diff changed since this guide was generated — regenerate it"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            Re-run guide
+          </button>
+        {/if}
         {#if tourAvailable}
           <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 mr-1 shrink-0">
             <button
               role="tab"
               aria-selected={mode !== "tour"}
-              onclick={() => { if (mode === "tour") void app.cmd("set_mode", { mode: "branch" }); }}
+              onclick={exitGuideToDiff}
               class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {mode !== 'tour' ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
             >
               Diff
