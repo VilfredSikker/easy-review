@@ -97,44 +97,32 @@
   --color-syntax-string:  #86efac;
   --color-syntax-punct:   #6b6b6b;
   --color-syntax-comment: #5e5e5e;
-
-  /* Arena overlay (design-polish/Arena-design/tokens.css — DM Sans / JetBrains Mono) */
-  --color-arena-bg-app: #0c121f;
-  --color-arena-bg-0: #0e1420;
-  --color-arena-bg-1: #131927;
-  --color-arena-bg-2: #181f2e;
-  --color-arena-bg-3: #1e2536;
-  --color-arena-bg-4: #252c3e;
-  --color-arena-fg: #e6e8ed;
-  --color-arena-fg-muted: #aab0bd;
-  --color-arena-fg-subtle: #6d7384;
-  --color-arena-fg-faint: #4a5163;
-  --color-arena-orange: #ff7a2b;
-  --color-arena-periwinkle: #7f87ff;
-  --color-arena-ok: #4ec9a4;
-  --color-arena-warn: #ffc457;
-  --color-arena-err: #ff6b6b;
-  --color-arena-info: #5fb7ff;
 }
 
 :root {
-  --arena-bg-app: var(--color-arena-bg-app);
-  --arena-bg-0: var(--color-arena-bg-0);
-  --arena-bg-1: var(--color-arena-bg-1);
-  --arena-bg-2: var(--color-arena-bg-2);
-  --arena-bg-3: var(--color-arena-bg-3);
-  --arena-bg-4: var(--color-arena-bg-4);
-  --arena-fg: var(--color-arena-fg);
-  --arena-fg-muted: var(--color-arena-fg-muted);
-  --arena-fg-subtle: var(--color-arena-fg-subtle);
-  --arena-fg-faint: var(--color-arena-fg-faint);
-  --arena-orange: var(--color-arena-orange);
-  --arena-periwinkle: var(--color-arena-periwinkle);
-  --arena-ok: var(--color-arena-ok);
-  --arena-warn: var(--color-arena-warn);
-  --arena-err: var(--color-arena-err);
-  --arena-info: var(--color-arena-info);
-  --arena-border: rgba(255, 255, 255, 0.06);
+  /* Arena tokens alias the shared themed palette (the --color-ink-* surface
+   * ladder + semantic accents) so the arena card and overlay follow
+   * display.theme. applyTheme()/cssVarsFor() in themes.ts override those base
+   * tokens per theme, and the arena inherits the change for free — no per-theme
+   * arena values to maintain. (Categorical reviewer/agent identity colors are
+   * intentionally NOT themed; they stay distinct — see lib/arena/agents.ts.) */
+  --arena-bg-app: var(--color-ink-900);
+  --arena-bg-0: var(--color-ink-880);
+  --arena-bg-1: var(--color-ink-850);
+  --arena-bg-2: var(--color-ink-800);
+  --arena-bg-3: var(--color-ink-700);
+  --arena-bg-4: var(--color-ink-600);
+  --arena-fg: var(--color-ink-50);
+  --arena-fg-muted: var(--color-ink-200);
+  --arena-fg-subtle: var(--color-ink-300);
+  --arena-fg-faint: var(--color-ink-400);
+  --arena-orange: var(--color-emphasis);
+  --arena-periwinkle: var(--color-periwinkle);
+  --arena-ok: var(--color-success);
+  --arena-warn: var(--color-warning);
+  --arena-err: var(--color-error);
+  --arena-info: var(--color-info);
+  --arena-border: var(--color-hairline);
   --arena-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --arena-d-fast: 120ms;
   --arena-d-base: 200ms;
