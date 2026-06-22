@@ -173,18 +173,9 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
         }
     }
 
-    // Load .er/tour.json (guided walkthrough — its own ordering/grouping).
-    // The tour is a separate, context-scoped view; track its staleness in
-    // `tour_stale` rather than the global `is_stale` so a stale tour never dims
-    // the review/findings overlays. `TabState::reload_ai_state` re-routes the
-    // tour to the PR- or branch-scoped sidecar and recomputes `tour_stale`.
-    let tour_path = Path::new(er_dir).join("tour.json");
-    if let Ok(content) = read_sidecar(&tour_path) {
-        if let Ok(tour) = serde_json::from_str::<ErTour>(&content) {
-            state.tour_stale = tour.diff_hash != current_diff_hash;
-            state.tour = Some(tour);
-        }
-    }
+    // The guided tour (`tour.json` / `tour.pr.json`) is context-scoped (branch
+    // vs PR) and is loaded by `TabState::reload_ai_state` → `reload_context_tour`,
+    // which knows the active view. It is intentionally not loaded here.
 
     // Load .er/summary.md
     let summary_path = Path::new(er_dir).join("summary.md");
@@ -298,6 +289,15 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
     state
 }
 
+/// Read and parse a guided-tour sidecar (`tour.json` / `tour.pr.json`) from a
+/// directory, honoring the shared sidecar size guard. Returns `None` if absent
+/// or malformed.
+pub fn load_tour_sidecar(dir: &str, name: &str) -> Option<ErTour> {
+    let path = Path::new(dir).join(name);
+    let content = read_sidecar(&path).ok()?;
+    serde_json::from_str::<ErTour>(&content).ok()
+}
+
 /// Get the mtime of the most recently modified .er-* file
 pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
     let er_dir = Path::new(er_dir);
@@ -305,6 +305,9 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
         "review.json",
         "order.json",
         "tour.json",
+        // PR-scoped guided tour — must be polled too, else a generated PR guide
+        // never auto-surfaces (the mtime poll drives `reload_ai_state`).
+        "tour.pr.json",
         "summary.md",
         "checklist.json",
         "feedback.json",
@@ -420,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn load_ai_state_reads_tour_and_sets_freshness() {
+    fn load_tour_sidecar_parses_pillars_and_load_ai_state_ignores_tour() {
         let dir = tempfile::tempdir().unwrap();
         let er_dir = dir.path().to_str().unwrap();
         let tour = serde_json::json!({
@@ -444,22 +447,20 @@ mod tests {
         )
         .unwrap();
 
-        // Matching hash → fresh tour loaded. Tour staleness is tracked in
-        // `tour_stale`, independent of the global `is_stale`.
-        let state = load_ai_state(er_dir, "abc", None);
-        assert!(state.has_tour());
-        assert!(!state.is_stale);
-        assert!(!state.tour_stale);
-        let loaded = state.tour.as_ref().unwrap();
+        // The tour is context-scoped and loaded by TabState (via the size-guarded
+        // `load_tour_sidecar`), not by `load_ai_state`.
+        let loaded = load_tour_sidecar(er_dir, "tour.json").unwrap();
         assert_eq!(loaded.pillars.len(), 1);
         assert_eq!(loaded.file_pillar("src/a.rs").unwrap().id, "p-1");
+        assert_eq!(loaded.diff_hash, "abc");
 
-        // Mismatched hash → tour still loaded and marked stale via `tour_stale`,
-        // but the global `is_stale` stays false (tour is a separate view).
-        let stale = load_ai_state(er_dir, "different", None);
-        assert!(stale.has_tour());
-        assert!(!stale.is_stale);
-        assert!(stale.tour_stale);
+        assert!(load_tour_sidecar(er_dir, "tour.pr.json").is_none());
+
+        // load_ai_state does not load the tour and leaves staleness defaulted.
+        let state = load_ai_state(er_dir, "abc", None);
+        assert!(!state.has_tour());
+        assert!(!state.is_stale);
+        assert!(!state.tour_stale);
     }
 
     #[test]

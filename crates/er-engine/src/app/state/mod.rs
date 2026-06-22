@@ -45,12 +45,31 @@ fn log_branch_profile_phase(tab: &TabState, phase: &str, started_at: Instant) {
     );
 }
 
-/// Read and parse a guided-tour sidecar (`tour.json` / `tour.pr.json`) from a
-/// directory. Returns `None` if absent or malformed.
-fn read_tour_file(dir: &str, name: &str) -> Option<ai::ErTour> {
-    let path = std::path::Path::new(dir).join(name);
-    let content = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str::<ai::ErTour>(&content).ok()
+/// Decide whether a loaded guided tour is stale relative to the diff it is
+/// scoped to.
+///
+/// - Branch-scoped tours (`want_pr == false`) baseline against `branch_diff_hash`,
+///   which is always a SHA-256 of the branch diff and is valid in every
+///   working-tree mode. In Unstaged/Staged/History `diff_hash` is a *different*
+///   scope's diff, so using it would mark a fresh branch tour stale.
+/// - PR-scoped tours baseline against the current `diff_hash` (the PR diff's
+///   SHA-256 after a full refresh). On a fast-hash refresh (`diff_hash` is the
+///   16-char non-cryptographic hash) keep the previous result rather than
+///   compare against an incompatible hash.
+fn tour_stale_for(
+    tour_hash: &str,
+    want_pr: bool,
+    diff_hash: &str,
+    branch_diff_hash: &str,
+    prev: bool,
+) -> bool {
+    if !want_pr {
+        return tour_hash != branch_diff_hash;
+    }
+    if diff_hash.len() == 64 {
+        return tour_hash != diff_hash;
+    }
+    prev
 }
 
 /// Anchor data captured at comment creation time for later relocation
@@ -2724,28 +2743,27 @@ impl TabState {
             // tour — fall back to it for backward compatibility. Local tabs keep
             // branch and PR guides strictly separate (a branch `tour.json` must
             // not surface in the PR view).
-            read_tour_file(&dir, "tour.pr.json").or_else(|| {
+            ai::load_tour_sidecar(&dir, "tour.pr.json").or_else(|| {
                 if self.remote_repo.is_some() {
-                    read_tour_file(&dir, "tour.json")
+                    ai::load_tour_sidecar(&dir, "tour.json")
                 } else {
                     None
                 }
             })
         } else {
-            read_tour_file(&dir, "tour.json")
+            ai::load_tour_sidecar(&dir, "tour.json")
         };
         self.ai.tour = tour;
 
-        // Compare the tour's diff hash against the current view's diff hash.
-        // `self.diff_hash` is the SHA-256 of the current context diff after a
-        // full refresh; on fast-hash refreshes (len != 64) fall back to the
-        // always-SHA-256 `branch_diff_hash` for branch context, or keep the
-        // previous value for PR context (no reliable SHA-256 handy).
         self.ai.tour_stale = match self.ai.tour.as_ref() {
             None => false,
-            Some(t) if self.diff_hash.len() == 64 => t.diff_hash != self.diff_hash,
-            Some(t) if !want_pr => t.diff_hash != self.branch_diff_hash,
-            Some(_) => prev_tour_stale,
+            Some(t) => tour_stale_for(
+                &t.diff_hash,
+                want_pr,
+                &self.diff_hash,
+                &self.branch_diff_hash,
+                prev_tour_stale,
+            ),
         };
     }
 
@@ -9682,6 +9700,57 @@ mod tests {
         remote.mode = DiffMode::PrDiff;
         assert!(remote.tour_context_is_pr());
         assert_eq!(remote.tour_filename(), "tour.pr.json");
+    }
+
+    /// Branch-scoped tour freshness must baseline against `branch_diff_hash`,
+    /// never the active view's `diff_hash` — otherwise a fresh branch guide
+    /// reads as stale in Unstaged/Staged/History (where `diff_hash` is a
+    /// different scope's diff), spuriously surfacing "Re-run guide".
+    #[test]
+    fn tour_stale_for_branch_uses_branch_hash() {
+        let branch_hash = "b".repeat(64);
+        let unstaged_hash = "u".repeat(64); // a full SHA-256 of a *different* diff
+
+        // Fresh branch tour, viewed in a mode whose diff_hash != branch_hash.
+        assert!(
+            !tour_stale_for(&branch_hash, false, &unstaged_hash, &branch_hash, false),
+            "fresh branch tour must not read stale when diff_hash is another scope"
+        );
+        // Genuinely stale branch tour.
+        assert!(tour_stale_for(
+            "old",
+            false,
+            &unstaged_hash,
+            &branch_hash,
+            false
+        ));
+
+        // PR context: baseline against diff_hash (the PR diff) when it's SHA-256.
+        let pr_hash = "p".repeat(64);
+        assert!(!tour_stale_for(
+            &pr_hash,
+            true,
+            &pr_hash,
+            &branch_hash,
+            false
+        ));
+        assert!(tour_stale_for("old", true, &pr_hash, &branch_hash, false));
+
+        // PR context, fast-hash refresh (len != 64) → keep previous value.
+        assert!(tour_stale_for(
+            &pr_hash,
+            true,
+            "deadbeefdeadbeef",
+            &branch_hash,
+            true
+        ));
+        assert!(!tour_stale_for(
+            &pr_hash,
+            true,
+            "deadbeefdeadbeef",
+            &branch_hash,
+            false
+        ));
     }
 
     /// Entering Tour mode records whether the originating view was the PR diff,
