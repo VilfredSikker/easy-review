@@ -2888,7 +2888,11 @@ pub fn list_diff_paths(state: State<AppState>) -> Result<Vec<String>, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab = app.tab();
     match tab.mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {}
+        DiffMode::Branch
+        | DiffMode::Unstaged
+        | DiffMode::Staged
+        | DiffMode::PrDiff
+        | DiffMode::Tour => {}
         _ => {
             return Err(format!(
                 "File list not available in {} view",
