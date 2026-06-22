@@ -45,6 +45,33 @@ fn log_branch_profile_phase(tab: &TabState, phase: &str, started_at: Instant) {
     );
 }
 
+/// Decide whether a loaded guided tour is stale relative to the diff it is
+/// scoped to.
+///
+/// - Branch-scoped tours (`want_pr == false`) baseline against `branch_diff_hash`,
+///   which is always a SHA-256 of the branch diff and is valid in every
+///   working-tree mode. In Unstaged/Staged/History `diff_hash` is a *different*
+///   scope's diff, so using it would mark a fresh branch tour stale.
+/// - PR-scoped tours baseline against the current `diff_hash` (the PR diff's
+///   SHA-256 after a full refresh). On a fast-hash refresh (`diff_hash` is the
+///   16-char non-cryptographic hash) keep the previous result rather than
+///   compare against an incompatible hash.
+fn tour_stale_for(
+    tour_hash: &str,
+    want_pr: bool,
+    diff_hash: &str,
+    branch_diff_hash: &str,
+    prev: bool,
+) -> bool {
+    if !want_pr {
+        return tour_hash != branch_diff_hash;
+    }
+    if diff_hash.len() == 64 {
+        return tour_hash != diff_hash;
+    }
+    prev
+}
+
 /// Anchor data captured at comment creation time for later relocation
 #[derive(Default)]
 pub(crate) struct LineAnchor {
@@ -661,6 +688,14 @@ pub struct TabState {
     /// Tour mode state (only populated when mode == Tour)
     pub tour: Option<TourState>,
 
+    /// Whether the active Tour reflects the PR diff (true) or the local branch
+    /// diff (false). Set when entering Tour mode from the originating view, so a
+    /// guide generated while viewing the PR stays attached to the PR diff (and
+    /// the Diff/PR toggle keeps PR Diff highlighted). Drives which tour sidecar
+    /// (`tour.pr.json` vs `tour.json`) loads and which mode the Diff toggle
+    /// returns to.
+    pub tour_is_pr: bool,
+
     // ── Watched files state ──
     /// Configuration for watched files
     pub watched_config: WatchedConfig,
@@ -1239,6 +1274,7 @@ impl TabState {
             pr_number: Some(pr_ref.number),
             history: None,
             tour: None,
+            tour_is_pr: false,
             watched_config: er_config.watched.clone(),
             watched_files: Vec::new(),
             selected_watched: None,
@@ -1358,6 +1394,7 @@ impl TabState {
             pr_number: Some(pr_ref.number),
             history: None,
             tour: None,
+            tour_is_pr: false,
             watched_config: er_config.watched.clone(),
             watched_files: Vec::new(),
             selected_watched: None,
@@ -1473,6 +1510,7 @@ impl TabState {
             pr_number: None,
             history: None,
             tour: None,
+            tour_is_pr: false,
             watched_config,
             watched_files: Vec::new(),
             selected_watched: None,
@@ -1588,6 +1626,7 @@ impl TabState {
             pr_number: None,
             history: None,
             tour: None,
+            tour_is_pr: false,
             watched_config: WatchedConfig::default(),
             watched_files: Vec::new(),
             selected_watched: None,
@@ -1913,6 +1952,32 @@ impl TabState {
         self.current_branch = git_branch.to_string();
         self.sync_managed_storage();
         Ok(())
+    }
+
+    /// Whether the current view's guided tour belongs to the PR diff (vs the
+    /// local branch diff). Remote tabs and PR Diff mode are always PR-scoped;
+    /// Tour mode follows whichever view it was entered from (`tour_is_pr`).
+    /// All other modes (Branch/Unstaged/Staged/History) are branch-scoped.
+    pub fn tour_context_is_pr(&self) -> bool {
+        if self.remote_repo.is_some() {
+            return true;
+        }
+        match self.mode {
+            DiffMode::PrDiff => true,
+            DiffMode::Tour => self.tour_is_pr,
+            _ => false,
+        }
+    }
+
+    /// Sidecar filename for the guided tour in the current view context.
+    /// PR-scoped tours live in `tour.pr.json`; branch-scoped tours in `tour.json`.
+    /// Both share the branch bucket directory (`branch_bucket_er_dir`).
+    pub fn tour_filename(&self) -> &'static str {
+        if self.tour_context_is_pr() {
+            "tour.pr.json"
+        } else {
+            "tour.json"
+        }
     }
 
     /// Branch name used to resolve managed storage for this tab (for sidecar validation).
@@ -2640,22 +2705,14 @@ impl TabState {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         let er_dir = self.er_dir();
         let branch_scope = self.storage_branch_scope().map(str::to_string);
+        let prev_tour_stale = self.ai.tour_stale;
         self.ai = ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref());
-        // The guided tour lives in the "branch" bucket. When the active bucket is a
-        // different view (unstaged/staged/history), load tour.json from the branch
-        // bucket so the Tour tab stays discoverable from any mode.
-        if self.ai.tour.is_none() {
-            if let Some(branch_dir) = self.branch_bucket_er_dir() {
-                if branch_dir != er_dir {
-                    let tour_path = std::path::Path::new(&branch_dir).join("tour.json");
-                    if let Ok(content) = std::fs::read_to_string(&tour_path) {
-                        if let Ok(tour) = serde_json::from_str::<ai::ErTour>(&content) {
-                            self.ai.tour = Some(tour);
-                        }
-                    }
-                }
-            }
-        }
+        // The guided tour lives in the "branch" bucket and is context-scoped:
+        // the PR diff loads `tour.pr.json`, the local branch diff loads
+        // `tour.json`. Route to the right sidecar (remote PR tabs fall back to a
+        // legacy `tour.json`) and recompute the tour's own staleness, regardless
+        // of the active view bucket.
+        self.reload_context_tour(&er_dir, prev_tour_stale);
         // Finding IDs may change after review reload — clear stale reference
         self.focused_finding_id = None;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
@@ -2672,6 +2729,48 @@ impl TabState {
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
         self.review_cursor = self.review_cursor.min(max_cursor);
         self.last_ai_check = ai::latest_er_mtime(&er_dir);
+    }
+
+    /// Load the guided tour for the current view context (PR vs branch) and
+    /// recompute its staleness. Tour sidecars live in the branch-bucket dir
+    /// (shared by Branch/PR/Tour modes), so the tour stays discoverable from any
+    /// view. PR context prefers `tour.pr.json` and falls back to the legacy
+    /// `tour.json` (tours written before the branch/PR split). Overrides
+    /// whatever `load_ai_state` loaded from the active bucket.
+    fn reload_context_tour(&mut self, er_dir: &str, prev_tour_stale: bool) {
+        let dir = self
+            .branch_bucket_er_dir()
+            .unwrap_or_else(|| er_dir.to_string());
+        let want_pr = self.tour_context_is_pr();
+
+        let tour = if want_pr {
+            // PR context loads `tour.pr.json`. Remote PR tabs have no branch
+            // context, so a legacy `tour.json` there is unambiguously the PR
+            // tour — fall back to it for backward compatibility. Local tabs keep
+            // branch and PR guides strictly separate (a branch `tour.json` must
+            // not surface in the PR view).
+            ai::load_tour_sidecar(&dir, "tour.pr.json").or_else(|| {
+                if self.remote_repo.is_some() {
+                    ai::load_tour_sidecar(&dir, "tour.json")
+                } else {
+                    None
+                }
+            })
+        } else {
+            ai::load_tour_sidecar(&dir, "tour.json")
+        };
+        self.ai.tour = tour;
+
+        self.ai.tour_stale = match self.ai.tour.as_ref() {
+            None => false,
+            Some(t) => tour_stale_for(
+                &t.diff_hash,
+                want_pr,
+                &self.diff_hash,
+                &self.branch_diff_hash,
+                prev_tour_stale,
+            ),
+        };
     }
 
     /// Reload github comments from cache in remote mode.
@@ -3408,6 +3507,14 @@ impl TabState {
 
             // Capture bucket BEFORE changing mode so we can detect a bucket change.
             let prev_bucket = self.review_bucket();
+            let prev_mode = self.mode;
+
+            // Entering Tour: remember whether the originating view was the PR diff
+            // so the guide stays attached to the PR (vs the local branch) and the
+            // Diff toggle returns to the right view. Remote tabs are always PR.
+            if mode == DiffMode::Tour {
+                self.tour_is_pr = prev_mode == DiffMode::PrDiff || self.remote_repo.is_some();
+            }
 
             self.mode = mode;
             self.committed_unpushed = false;
@@ -6826,6 +6933,7 @@ mod tests {
             pr_number: None,
             history: None,
             tour: None,
+            tour_is_pr: false,
             watched_config: WatchedConfig::default(),
             watched_files: Vec::new(),
             selected_watched: None,
@@ -9568,6 +9676,123 @@ mod tests {
         tab.mode = DiffMode::PrDiff;
         assert_eq!(tab.mode, DiffMode::PrDiff);
         assert_eq!(tab.review_bucket(), ReviewBucket::Pr);
+    }
+
+    /// The guided tour's context (and thus which sidecar it loads/writes) follows
+    /// the view being looked at: PR Diff → `tour.pr.json`, local branch →
+    /// `tour.json`. Tour mode follows whichever view it was entered from.
+    #[test]
+    fn tour_context_and_filename_follow_view() {
+        let mut tab = make_test_tab(vec![]);
+
+        // Local branch diff → branch-scoped tour.
+        tab.mode = DiffMode::Branch;
+        assert!(!tab.tour_context_is_pr());
+        assert_eq!(tab.tour_filename(), "tour.json");
+
+        // PR diff → PR-scoped tour. Entering the Guide from here must keep it
+        // attached to the PR (the bug: it flipped to the local branch).
+        tab.mode = DiffMode::PrDiff;
+        assert!(tab.tour_context_is_pr());
+        assert_eq!(tab.tour_filename(), "tour.pr.json");
+
+        // Tour mode follows the originating view via tour_is_pr.
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = false;
+        assert!(!tab.tour_context_is_pr());
+        assert_eq!(tab.tour_filename(), "tour.json");
+        tab.tour_is_pr = true;
+        assert!(tab.tour_context_is_pr());
+        assert_eq!(tab.tour_filename(), "tour.pr.json");
+
+        // Working-tree scopes are always branch-scoped, regardless of tour_is_pr.
+        for m in [DiffMode::Unstaged, DiffMode::Staged, DiffMode::History] {
+            tab.mode = m;
+            assert!(!tab.tour_context_is_pr(), "{m:?} must be branch-scoped");
+            assert_eq!(tab.tour_filename(), "tour.json");
+        }
+
+        // Remote PR tabs are always PR-scoped.
+        let mut remote = make_test_tab(vec![]);
+        remote.remote_repo = Some("owner/repo".into());
+        remote.mode = DiffMode::PrDiff;
+        assert!(remote.tour_context_is_pr());
+        assert_eq!(remote.tour_filename(), "tour.pr.json");
+    }
+
+    /// Branch-scoped tour freshness must baseline against `branch_diff_hash`,
+    /// never the active view's `diff_hash` — otherwise a fresh branch guide
+    /// reads as stale in Unstaged/Staged/History (where `diff_hash` is a
+    /// different scope's diff), spuriously surfacing "Re-run guide".
+    #[test]
+    fn tour_stale_for_branch_uses_branch_hash() {
+        let branch_hash = "b".repeat(64);
+        let unstaged_hash = "u".repeat(64); // a full SHA-256 of a *different* diff
+
+        // Fresh branch tour, viewed in a mode whose diff_hash != branch_hash.
+        assert!(
+            !tour_stale_for(&branch_hash, false, &unstaged_hash, &branch_hash, false),
+            "fresh branch tour must not read stale when diff_hash is another scope"
+        );
+        // Genuinely stale branch tour.
+        assert!(tour_stale_for(
+            "old",
+            false,
+            &unstaged_hash,
+            &branch_hash,
+            false
+        ));
+
+        // PR context: baseline against diff_hash (the PR diff) when it's SHA-256.
+        let pr_hash = "p".repeat(64);
+        assert!(!tour_stale_for(
+            &pr_hash,
+            true,
+            &pr_hash,
+            &branch_hash,
+            false
+        ));
+        assert!(tour_stale_for("old", true, &pr_hash, &branch_hash, false));
+
+        // PR context, fast-hash refresh (len != 64) → keep previous value.
+        assert!(tour_stale_for(
+            &pr_hash,
+            true,
+            "deadbeefdeadbeef",
+            &branch_hash,
+            true
+        ));
+        assert!(!tour_stale_for(
+            &pr_hash,
+            true,
+            "deadbeefdeadbeef",
+            &branch_hash,
+            false
+        ));
+    }
+
+    /// Entering Tour mode records whether the originating view was the PR diff,
+    /// so the Diff toggle returns to the right view and the right tour loads.
+    #[test]
+    fn set_mode_tour_records_origin_view() {
+        let mut tab = make_test_tab(vec![]);
+
+        // From PR Diff → Tour is PR-scoped.
+        tab.mode = DiffMode::PrDiff;
+        tab.tour_is_pr = false;
+        tab.set_mode(DiffMode::Tour);
+        assert!(
+            tab.tour_is_pr,
+            "Tour entered from PR Diff must be PR-scoped"
+        );
+
+        // From the local branch → Tour is branch-scoped.
+        tab.mode = DiffMode::Branch;
+        tab.set_mode(DiffMode::Tour);
+        assert!(
+            !tab.tour_is_pr,
+            "Tour entered from the local branch must be branch-scoped"
+        );
     }
 
     /// pr_refs_fetched starts false on all non-remote constructors and on test tabs.

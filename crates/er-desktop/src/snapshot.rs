@@ -285,10 +285,14 @@ pub struct PillarSnapshot {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TourSnapshot {
-    /// True when a tour.json exists for this branch.
+    /// True when a guided tour exists for the current view context (PR vs branch).
     pub available: bool,
-    /// True when the tour matches the current diff (not stale).
+    /// True when the tour matches the current diff (not stale). When false and
+    /// `available` is true, the UI offers a "Re-run guide" affordance.
     pub fresh: bool,
+    /// Which diff the tour is attached to: `"pr"` or `"branch"`. Drives the
+    /// Diff/PR header toggle state and where the Diff toggle returns to.
+    pub scope: String,
     pub title: String,
     pub overview_markdown: String,
     pub pillars: Vec<PillarSnapshot>,
@@ -1445,7 +1449,12 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
 
     TourSnapshot {
         available: true,
-        fresh: !tab.ai.is_stale,
+        fresh: !tab.ai.tour_stale,
+        scope: if tab.tour_context_is_pr() {
+            "pr".to_string()
+        } else {
+            "branch".to_string()
+        },
         title: tour.title.clone(),
         overview_markdown: tour.overview.clone(),
         pillars,

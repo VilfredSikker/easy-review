@@ -3013,16 +3013,29 @@ fn spawn_ai_review_with_diff(
     Ok(())
 }
 
-/// Generate a guided Tour with AI: captures the branch diff and spawns the
-/// er-tour agent, which writes `tour.json` into the branch bucket. The mtime
-/// poll reloads it automatically on completion, surfacing the Guide tab.
+/// Generate a guided Tour with AI: captures the current view's diff (PR or local
+/// branch) and spawns the er-tour agent, which writes the context-scoped tour
+/// sidecar (`tour.pr.json` for the PR diff, `tour.json` for the branch diff)
+/// into the branch bucket. The mtime poll reloads it automatically on
+/// completion, surfacing the Guide for that view.
 #[tauri::command]
 pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    // Tour always walks the branch diff (shares the branch bucket).
+    // The diff capture uses branch mechanics; for PR-associated tabs this
+    // resolves to the PR diff (vs base) automatically (see raw_diff_for_review).
     let scope = "branch".to_string();
 
-    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+    let (
+        repo_root,
+        branch_label,
+        base_branch,
+        er_dir,
+        pr_number,
+        remote_repo,
+        is_remote,
+        tour_file,
+        is_pr,
+    ) = {
         let tab = app.tab();
         let branch_label = tab
             .local_branch_view
@@ -3032,11 +3045,13 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
             tab.repo_root.clone(),
             branch_label,
             tab.base_branch.clone(),
-            // tour.json lives in the branch bucket; resolve it regardless of mode.
+            // Tour sidecars live in the branch bucket; resolve it regardless of mode.
             tab.branch_bucket_er_dir().unwrap_or_else(|| tab.er_dir()),
             tab.pr_number,
             tab.remote_repo.clone(),
             tab.remote_repo.is_some(),
+            tab.tour_filename().to_string(),
+            tab.tour_context_is_pr(),
         )
     };
 
@@ -3057,7 +3072,9 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
     std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
         .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
 
-    let prompt = er_engine::ai::prompts::build_tour_prompt_prepared_diff(&scope, &er_dir);
+    let scope_label = if is_pr { "PR diff" } else { "branch diff" };
+    let prompt =
+        er_engine::ai::prompts::build_tour_prompt_prepared_diff(scope_label, &er_dir, &tour_file);
     let target = er_engine::app::BackgroundTaskTarget {
         repo_root,
         er_dir: er_dir.clone(),
