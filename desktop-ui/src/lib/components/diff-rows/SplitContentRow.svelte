@@ -1,6 +1,7 @@
 <script lang="ts">
   import { lineHasAnchorRangeHighlight, type AnnotationIndex } from "$lib/diffAnnotations";
   import type { CommentVisibility } from "$lib/diffAnnotations";
+  import { diffBgKind } from "$lib/diffContrast";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import { caretTextOffset, identifierAt } from "$lib/referenceHighlight";
@@ -125,7 +126,7 @@
         wordSpans={wd?.old ?? null}
         syntaxSpans={left.spans}
         changedBgClass="wd-change-del"
-        kind={left.kind === "del" ? "del" : left.kind === "add" ? "add" : "context"}
+        kind={diffBgKind(left.kind)}
       />
     {:else}
       <span>&nbsp;</span>
@@ -159,7 +160,7 @@
         wordSpans={wd?.new ?? null}
         syntaxSpans={right.spans}
         changedBgClass="wd-change-add"
-        kind={right.kind === "add" ? "add" : right.kind === "del" ? "del" : "context"}
+        kind={diffBgKind(right.kind)}
       />
     {:else}
       <span>&nbsp;</span>

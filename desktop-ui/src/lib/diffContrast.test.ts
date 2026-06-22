@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   contrastRatio,
   correctSyntaxColor,
+  diffBgKind,
   MIN_DIFF_CONTRAST,
   type DiffBgKind,
 } from "./diffContrast";
@@ -125,5 +126,12 @@ describe("diffContrast — behavior", () => {
   it("passes through empty/undefined colors", () => {
     expect(correctSyntaxColor(undefined, daylight, "add", true)).toBeUndefined();
     expect(correctSyntaxColor("", daylight, "add", true)).toBe("");
+  });
+
+  it("diffBgKind maps add/del through and folds everything else to context", () => {
+    expect(diffBgKind("add")).toBe("add");
+    expect(diffBgKind("del")).toBe("del");
+    expect(diffBgKind("context")).toBe("context");
+    expect(diffBgKind("fold")).toBe("context");
   });
 });

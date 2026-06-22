@@ -20,6 +20,11 @@ import type { AppTheme } from "./themes";
 
 export type DiffBgKind = "add" | "del" | "context";
 
+/** Map a diff line kind (add/del/context/fold) to the background it renders on. */
+export function diffBgKind(kind: string): DiffBgKind {
+  return kind === "add" || kind === "del" ? kind : "context";
+}
+
 /** WCAG AA contrast for normal-size text. Diff code is not "large text". */
 const TARGET_CONTRAST = 4.5;
 

@@ -296,9 +296,18 @@ const THEME_ALIASES: Record<string, string> = {
   "tokyo-night-day": "paper",
 };
 
+// Single-entry memo: the active theme name is the same for every caller in a
+// frame (one per visible diff row, plus chrome), so this collapses the alias
+// lookup + linear scan to O(1) on the row-render hot path.
+let lastThemeName: string | null | undefined;
+let lastTheme: AppTheme = APP_THEMES[0];
+
 export function themeByName(name: string | null | undefined): AppTheme {
+  if (name === lastThemeName) return lastTheme;
   const resolved = (name && THEME_ALIASES[name]) || name;
-  return APP_THEMES.find((t) => t.name === resolved) ?? APP_THEMES[0];
+  lastTheme = APP_THEMES.find((t) => t.name === resolved) ?? APP_THEMES[0];
+  lastThemeName = name;
+  return lastTheme;
 }
 
 function alpha(hex: string, a: number): string {
