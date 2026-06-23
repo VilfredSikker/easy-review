@@ -21,7 +21,9 @@ inside a markdown link, a code span, or an existing anchor is never
 double-wrapped, and the existing href-escaping guard (quotes → `&quot;`) is
 preserved. Query strings keep their escaped `&amp;` inside a single href, and
 trailing sentence punctuation / unbalanced closing parens are peeled out of the
-link so they don't get swallowed.
+link so they don't get swallowed — except a trailing `;` that terminates an
+escaped HTML entity (`&amp;`, `&gt;`, …), which is kept so the URL isn't
+corrupted.
 
 ## Scope note: PR description images
 

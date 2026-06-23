@@ -107,4 +107,17 @@ describe("renderInline bare URLs", () => {
   it("does not link a URL inside a code span", () => {
     expect(renderInline("`https://e.com`")).toBe("<code>https://e.com</code>");
   });
+
+  it("keeps the ';' that terminates an escaped entity at the end of a URL", () => {
+    // A URL ending in '&' escapes to '...&amp;'; peeling the ';' would corrupt it.
+    expect(renderInline("https://e.com/x?ref=&")).toBe(
+      '<a href="https://e.com/x?ref=&amp;" rel="noreferrer">https://e.com/x?ref=&amp;</a>',
+    );
+  });
+
+  it("still peels a real trailing semicolon (not part of an entity)", () => {
+    expect(renderInline("see https://e.com/x;")).toBe(
+      'see <a href="https://e.com/x" rel="noreferrer">https://e.com/x</a>;',
+    );
+  });
 });

@@ -142,7 +142,11 @@ function linkifyUrls(html: string): string {
     // sentence punctuation always, and a closing paren only when unbalanced
     // (so URLs that legitimately contain `(...)` survive).
     for (;;) {
-      if (/[.,;:!?]$/.test(url)) {
+      const punct = url.match(/[.,;:!?]$/);
+      if (punct) {
+        // Never strip the `;` that terminates an HTML entity (e.g. `&amp;`,
+        // `&gt;`, `&#39;`) produced by escaping — doing so corrupts the URL.
+        if (punct[0] === ";" && /&(?:#x?)?\w+;$/.test(url)) break;
         trail = url.slice(-1) + trail;
         url = url.slice(0, -1);
         continue;
