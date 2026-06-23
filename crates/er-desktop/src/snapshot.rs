@@ -2605,7 +2605,8 @@ fn build_projects_from_file(
                         .collect();
 
                     // "To review" = open PRs not authored by me that I haven't
-                    // already reviewed. Excluding PRs I've already approved or
+                    // already reviewed. Drafts are excluded — they aren't ready
+                    // for review yet. Excluding PRs I've already approved or
                     // requested changes on keeps the list to what still needs my
                     // attention (GitHub clears the review request once I review,
                     // but the PR stays open).
@@ -2613,6 +2614,7 @@ fn build_projects_from_file(
                         .iter()
                         .filter(|pr| {
                             pr.state == "OPEN"
+                                && !pr.is_draft
                                 && me.as_deref().is_none_or(|login| pr.author != login)
                                 && !pr.approved_by_me
                                 && me.as_deref().is_none_or(|login| {
