@@ -2596,10 +2596,15 @@ impl TabState {
         }
 
         // Branch diff hash for AI staleness detection.
-        // In Branch mode, reuse — no second git call needed.
-        // In other modes, only run the extra git diff when AI data is loaded AND it's a full refresh.
-        // Skipping when no AI data exists avoids a redundant git diff call with no consumer.
-        if self.mode == DiffMode::Branch {
+        // Branch and Tour modes both view the branch-scope diff (Tour reorders it
+        // into pillars), so `raw` already *is* the branch diff — reuse it, no
+        // second git call. This keeps a branch guide's "Re-run guide" staleness
+        // accurate while it's displayed (branch-tour staleness baselines on
+        // `branch_diff_hash`; see `tour_stale_for`).
+        // Other modes (Unstaged/Staged/History/…) don't show a guide and only
+        // need `branch_diff_hash` when review/question data is loaded — running the
+        // extra git diff otherwise would have no consumer.
+        if matches!(self.mode, DiffMode::Branch | DiffMode::Tour) {
             // Always use SHA-256 for branch_diff_hash (used by .er/questions.json).
             // diff_hash may be a fast hash during quick refresh, but branch_diff_hash
             // must always be SHA-256 for compatibility with external skills.
@@ -2609,13 +2614,7 @@ impl TabState {
                 self.branch_diff_hash = ai::compute_diff_hash(&raw);
             }
             branch_raw_owned = Some(raw.clone());
-        } else if recompute_branch_hash
-            && (self.ai.has_data() || self.ai.has_questions() || self.ai.has_tour())
-        {
-            // A guided tour is branch-scoped and its freshness (the "Re-run guide"
-            // affordance) baselines on `branch_diff_hash`, so it must be kept
-            // current even when the tour is the *only* AI artifact — otherwise a
-            // branch tour viewed from Unstaged/Staged/History never reports stale.
+        } else if recompute_branch_hash && (self.ai.has_data() || self.ai.has_questions()) {
             let br = git::git_diff_raw(
                 "branch",
                 &self.base_branch,
@@ -9777,42 +9776,20 @@ mod tests {
         ));
     }
 
-    /// A guided tour must count toward the `branch_diff_hash` recompute guard in
-    /// `refresh_diff_impl` so a branch tour stays staleness-accurate even when it
-    /// is the *only* AI artifact. Regression guard for the Unstaged/Staged/History
-    /// freeze: `has_data()`/`has_questions()` exclude tours, so the guard relies on
-    /// `has_tour()`.
+    /// `refresh_diff_impl` reuses the in-hand `raw` for `branch_diff_hash` in both
+    /// Branch and Tour modes instead of issuing a second git diff. That's only
+    /// valid because Tour fetches the branch-scope diff (it reorders the branch
+    /// diff into pillars), so `raw` already is the branch diff. This is what keeps
+    /// a branch guide's staleness fresh while it's displayed. The working-tree
+    /// modes use their own scope and don't show a guide, so they deliberately
+    /// don't recompute `branch_diff_hash` for a tour.
     #[test]
-    fn tour_only_ai_state_triggers_branch_hash_recompute_guard() {
-        use crate::ai::{ErTour, TourPillar};
-        let mut ai = crate::ai::AiState::default();
-        assert!(!ai.has_data());
-        assert!(!ai.has_questions());
-        assert!(!ai.has_tour());
-
-        ai.tour = Some(ErTour {
-            version: 1,
-            diff_hash: "h".into(),
-            created_at: String::new(),
-            title: "t".into(),
-            overview: String::new(),
-            pillars: vec![TourPillar {
-                id: "p-1".into(),
-                title: "Foundation".into(),
-                description: String::new(),
-                order: 0,
-                importance: 0,
-                foundation: true,
-                files: vec![],
-            }],
-        });
-
-        // A tour is not counted by has_data/has_questions, so the recompute guard
-        // must fire via has_tour — otherwise branch_diff_hash freezes.
-        assert!(!ai.has_data());
-        assert!(!ai.has_questions());
-        assert!(ai.has_tour());
-        assert!(ai.has_data() || ai.has_questions() || ai.has_tour());
+    fn tour_shares_branch_scope_so_branch_hash_reuses_raw() {
+        assert_eq!(DiffMode::Tour.fetch_scope(), "branch");
+        assert_eq!(DiffMode::Branch.fetch_scope(), "branch");
+        assert_eq!(DiffMode::Unstaged.fetch_scope(), "unstaged");
+        assert_eq!(DiffMode::Staged.fetch_scope(), "staged");
+        assert_eq!(DiffMode::History.fetch_scope(), "history");
     }
 
     /// Entering Tour mode records whether the originating view was the PR diff,
