@@ -2858,7 +2858,8 @@ fn resolve_review_scope(scope: &str, tab: &er_engine::app::TabState) -> Result<S
             DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
                 tab.mode.git_mode().to_string()
             }
-            DiffMode::PrDiff => "branch".to_string(),
+            // Guide (tour) reviews the branch diff it was built from.
+            DiffMode::PrDiff | DiffMode::Tour => "branch".to_string(),
             _ => {
                 return Err(format!(
                     "AI review not available in {} view — switch to All changes, PR Diff, Unstaged, or Staged",
@@ -2887,7 +2888,11 @@ pub fn list_diff_paths(state: State<AppState>) -> Result<Vec<String>, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab = app.tab();
     match tab.mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {}
+        DiffMode::Branch
+        | DiffMode::Unstaged
+        | DiffMode::Staged
+        | DiffMode::PrDiff
+        | DiffMode::Tour => {}
         _ => {
             return Err(format!(
                 "File list not available in {} view",
@@ -3020,7 +3025,17 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
     // head-vs-base diff in PrDiff mode), so only the destination bucket differs.
     let scope = "branch".to_string();
 
-    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+    let (
+        repo_root,
+        branch_label,
+        base_branch,
+        er_dir,
+        pr_number,
+        remote_repo,
+        is_remote,
+        tour_file,
+        is_pr,
+    ) = {
         let tab = app.tab();
         let branch_label = tab
             .local_branch_view
@@ -3041,6 +3056,9 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
             tab.pr_number,
             tab.remote_repo.clone(),
             tab.remote_repo.is_some(),
+            // Per-view buckets disambiguate, so the sidecar is always `tour.json`.
+            "tour.json".to_string(),
+            tab.tour_context_is_pr(),
         )
     };
 
@@ -3061,7 +3079,9 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
     std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
         .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
 
-    let prompt = er_engine::ai::prompts::build_tour_prompt_prepared_diff(&scope, &er_dir);
+    let scope_label = if is_pr { "PR diff" } else { "branch diff" };
+    let prompt =
+        er_engine::ai::prompts::build_tour_prompt_prepared_diff(scope_label, &er_dir, &tour_file);
     let target = er_engine::app::BackgroundTaskTarget {
         repo_root,
         er_dir: er_dir.clone(),
@@ -7669,6 +7689,15 @@ mod tests {
         assert_eq!(resolve_review_scope("branch", &tab).unwrap(), "branch");
         assert_eq!(resolve_review_scope("current", &tab).unwrap(), "branch");
         assert_eq!(resolve_review_scope("pr", &tab).unwrap(), "branch");
+    }
+
+    #[test]
+    fn resolve_review_scope_accepts_tour_mode() {
+        // Guide (tour) reviews the branch diff it was regrouped from.
+        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
+        tab.mode = er_engine::app::DiffMode::Tour;
+        assert_eq!(resolve_review_scope("branch", &tab).unwrap(), "branch");
+        assert_eq!(resolve_review_scope("current", &tab).unwrap(), "branch");
     }
 
     #[test]

@@ -113,6 +113,22 @@ function mergeChromeSnapshot(prev: AppSnapshot, next: AppSnapshot): AppSnapshot 
   };
 }
 
+/**
+ * Optimistically adjust the `reviewedCount` of every Guide-tour pillar that
+ * contains `path` by `delta` (clamped to [0, totalCount]). Lets the rail badge
+ * track a file's reviewed flip before the backend round-trip lands; the next
+ * `mergeChromeSnapshot` overwrites `tour` with the authoritative backend value.
+ */
+function bumpPillarReviewedCounts(snap: AppSnapshot, path: string, delta: number): void {
+  const pillars = snap.tour?.pillars;
+  if (!pillars) return;
+  for (const p of pillars) {
+    if (p.files.some((tf) => tf.path === path)) {
+      p.reviewedCount = Math.max(0, Math.min(p.totalCount, p.reviewedCount + delta));
+    }
+  }
+}
+
 function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === "function") {
@@ -456,6 +472,10 @@ class AppStore {
     // touched file's header block (cache_key unchanged → other blocks/spans stable).
     file.reviewed = newReviewed;
     snap.reviewed_count += newReviewed ? 1 : -1;
+    // Keep the Guide rail's per-pillar "NN/NN reviewed" badge in sync with the
+    // optimistic flip; mergeChromeSnapshot pulls the authoritative tour from the
+    // backend response, so this only spans the in-flight window.
+    bumpPillarReviewedCounts(snap, path, newReviewed ? 1 : -1);
 
     try {
       const returned = await invoke<AppSnapshot>(command, { path });
@@ -472,6 +492,7 @@ class AppStore {
         const f = this.snapshot.files.find((ff) => ff.path === path);
         if (f) f.reviewed = wasReviewed;
         this.snapshot.reviewed_count -= newReviewed ? 1 : -1;
+        bumpPillarReviewedCounts(this.snapshot, path, newReviewed ? -1 : 1);
       }
       console.error(`${command} failed:`, e);
       this.pushLog("error", command, String(e));

@@ -483,11 +483,16 @@ pub fn build_expert_review_prompt_prepared_diff(
 }
 
 /// Guided tour generation when `{output_dir}/diff-tmp` is already prepared
-/// (desktop "Generate tour"). Writes only `{output_dir}/tour.json`.
-pub fn build_tour_prompt_prepared_diff(scope: &str, output_dir: &str) -> String {
+/// (desktop "Generate tour"). Writes only `{output_dir}/{output_file}`.
+///
+/// `output_file` is the context-scoped sidecar name: `tour.json` for the local
+/// branch diff, `tour.pr.json` for the PR diff. The tour stays attached to
+/// whichever diff was being viewed when generated.
+pub fn build_tour_prompt_prepared_diff(scope: &str, output_dir: &str, output_file: &str) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
+    let safe_output_file = output_file.replace('{', "{{").replace('}', "}}");
     format!(
         r#"You are preparing a guided **Tour** of a code diff for a reviewer. A diff for scope `{scope}` is already captured at `{safe_output_dir}/diff-tmp`.
 
@@ -500,7 +505,7 @@ pub fn build_tour_prompt_prepared_diff(scope: &str, output_dir: &str) -> String 
    - `importance` (0–100) ranks reviewer attention; higher sorts earlier among non-foundation.
    - Each pillar: a short `title`, a 1–3 sentence markdown `description` (what it is and what to look for), and its `files` (new-side paths) in reading order, each with a one-line `reason`.
    - Every changed file appears in exactly one pillar. 3–7 pillars is ideal.
-5. Write `{safe_output_dir}/tour.json` (and nothing else) with this exact shape:
+5. Write `{safe_output_dir}/{safe_output_file}` (and nothing else) with this exact shape:
 
 ```json
 {{
@@ -525,7 +530,7 @@ pub fn build_tour_prompt_prepared_diff(scope: &str, output_dir: &str) -> String 
 }}
 ```
 
-Do NOT modify `review.json`, `order.json`, or any other file. Write only `tour.json`."#
+Do NOT modify `review.json`, `order.json`, or any other file. Write only `{safe_output_file}`."#
     )
 }
 

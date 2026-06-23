@@ -285,10 +285,14 @@ pub struct PillarSnapshot {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TourSnapshot {
-    /// True when a tour.json exists for this branch.
+    /// True when a guided tour exists for the current view context (PR vs branch).
     pub available: bool,
-    /// True when the tour matches the current diff (not stale).
+    /// True when the tour matches the current diff (not stale). When false and
+    /// `available` is true, the UI offers a "Re-run guide" affordance.
     pub fresh: bool,
+    /// Which diff the tour is attached to: `"pr"` or `"branch"`. Drives the
+    /// Diff/PR header toggle state and where the Diff toggle returns to.
+    pub scope: String,
     pub title: String,
     pub overview_markdown: String,
     pub pillars: Vec<PillarSnapshot>,
@@ -676,7 +680,9 @@ pub struct CommitSummary {
     pub sha: String,
     pub title: String,
     pub author: String,
-    pub age: String,
+    /// ISO 8601 commit timestamp; the frontend renders it as a relative
+    /// "time ago" string (uniform across local and remote-PR commits).
+    pub committed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1445,10 +1451,15 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
 
     TourSnapshot {
         available: true,
-        // Fresh when this tour was generated against the active view's diff. When the
-        // Local branch and PR Diff drift, a tour reused from the other bucket (or a
-        // pre-drift tour) won't match — the UI shows a stale pill + Regenerate button.
-        fresh: !tab.branch_diff_hash.is_empty() && tour.diff_hash == tab.branch_diff_hash,
+        // Staleness is computed per-context in `reload_ai_state` (`tour_stale_for`);
+        // `scope` tells the frontend which guide (branch vs PR) is showing so the Guide
+        // tab is context-aware and the Diff toggle returns to the right diff.
+        fresh: !tab.ai.tour_stale,
+        scope: if tab.tour_context_is_pr() {
+            "pr".to_string()
+        } else {
+            "branch".to_string()
+        },
         title: tour.title.clone(),
         overview_markdown: tour.overview.clone(),
         pillars,
@@ -2042,7 +2053,7 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
             sha: c.hash,
             title: c.subject,
             author: c.author,
-            age: c.relative_date,
+            committed_at: c.date,
         })
         .collect()
 }
@@ -2599,7 +2610,8 @@ fn build_projects_from_file(
                         .collect();
 
                     // "To review" = open PRs not authored by me that I haven't
-                    // already reviewed. Excluding PRs I've already approved or
+                    // already reviewed. Drafts are excluded — they aren't ready
+                    // for review yet. Excluding PRs I've already approved or
                     // requested changes on keeps the list to what still needs my
                     // attention (GitHub clears the review request once I review,
                     // but the PR stays open).
@@ -2607,6 +2619,7 @@ fn build_projects_from_file(
                         .iter()
                         .filter(|pr| {
                             pr.state == "OPEN"
+                                && !pr.is_draft
                                 && me.as_deref().is_none_or(|login| pr.author != login)
                                 && !pr.approved_by_me
                                 && me.as_deref().is_none_or(|login| {

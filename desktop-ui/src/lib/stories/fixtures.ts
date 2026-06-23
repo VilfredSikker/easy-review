@@ -418,11 +418,13 @@ export const worktreesMulti: WorktreeSnapshot[] = [
   { path: "/Users/vilfred/Projects/.codex/worktrees/c175", branch: "c175", is_current: false, is_pr: false, pr_number: null, is_merged: true },
 ];
 
+const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
+
 export const commitsRich: CommitSummary[] = [
-  { sha: "2afab9e0", title: "Fix lint errors in variant warning copy typings", author: "Vilfred", age: "45m" },
-  { sha: "d1a60769", title: "Add experiment-option resolver to combobox", author: "Claude", age: "1d" },
-  { sha: "54a9a3d2", title: "Wire warning metadata through dropdowns", author: "Vilfred", age: "2h" },
-  { sha: "2356d55a", title: "Merge branch 'main' into show-experiment-params", author: "Vilfred", age: "1h" },
+  { sha: "2afab9e0", title: "Fix lint errors in variant warning copy typings", author: "Vilfred", committed_at: isoAgo(45 * 60_000) },
+  { sha: "d1a60769", title: "Add experiment-option resolver to combobox", author: "Claude", committed_at: isoAgo(24 * 60 * 60_000) },
+  { sha: "54a9a3d2", title: "Wire warning metadata through dropdowns", author: "Vilfred", committed_at: isoAgo(2 * 60 * 60_000) },
+  { sha: "2356d55a", title: "Merge branch 'main' into show-experiment-params", author: "Vilfred", committed_at: isoAgo(60 * 60_000) },
 ];
 
 /** Active working-tree tab — ScopeSelector shows unstaged/staged/commits even when pr is set. */

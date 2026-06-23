@@ -53,6 +53,10 @@ export interface AppTheme {
   delBg: string;
   delText: string;
   hunkBg: string;
+  /** Opaque background under a changed-word highlight box on an add line. */
+  addChangedBg: string;
+  /** Opaque background under a changed-word highlight box on a del line. */
+  delChangedBg: string;
 
   // Interactive layer
   selectedBg: string;
@@ -121,7 +125,20 @@ function overAt(fg: string, t: number, bg: string): string {
   ]);
 }
 
+/**
+ * Opacity of the intra-line "changed word" highlight box (`--color-wd-*-bg`),
+ * composited over the add/del line background. Single-sourced here so the CSS
+ * var, the derived `addChangedBg`/`delChangedBg` anchors, and the syntax
+ * contrast corrector (`diffContrast.ts`) all agree on the same background.
+ */
+export const WORD_DIFF_HIGHLIGHT_ALPHA = 0.3;
+
+/** Opacity of the add/del line tint composited over the canvas. */
+const DIFF_LINE_ALPHA = 0.15;
+
 function buildTheme(t: ThemeTokens): AppTheme {
+  const addBg = overAt(t.add, DIFF_LINE_ALPHA, t.bg);
+  const delBg = overAt(t.del, DIFF_LINE_ALPHA, t.bg);
   return {
     name: t.name,
     light: t.light,
@@ -147,11 +164,13 @@ function buildTheme(t: ThemeTokens): AppTheme {
     purple: t.purple,
     orange: t.accent,
 
-    addBg: overAt(t.add, 0.15, t.bg),
+    addBg,
     addText: t.add,
-    delBg: overAt(t.del, 0.15, t.bg),
+    delBg,
     delText: t.del,
     hunkBg: overAt(t.blue, 0.1, t.bg),
+    addChangedBg: overAt(t.add, WORD_DIFF_HIGHLIGHT_ALPHA, addBg),
+    delChangedBg: overAt(t.del, WORD_DIFF_HIGHLIGHT_ALPHA, delBg),
 
     selectedBg: t.bg3,
   };
@@ -277,9 +296,18 @@ const THEME_ALIASES: Record<string, string> = {
   "tokyo-night-day": "paper",
 };
 
+// Single-entry memo: the active theme name is the same for every caller in a
+// frame (one per visible diff row, plus chrome), so this collapses the alias
+// lookup + linear scan to O(1) on the row-render hot path.
+let lastThemeName: string | null | undefined;
+let lastTheme: AppTheme = APP_THEMES[0];
+
 export function themeByName(name: string | null | undefined): AppTheme {
+  if (name === lastThemeName) return lastTheme;
   const resolved = (name && THEME_ALIASES[name]) || name;
-  return APP_THEMES.find((t) => t.name === resolved) ?? APP_THEMES[0];
+  lastTheme = APP_THEMES.find((t) => t.name === resolved) ?? APP_THEMES[0];
+  lastThemeName = name;
+  return lastTheme;
 }
 
 function alpha(hex: string, a: number): string {
@@ -338,6 +366,10 @@ export function cssVarsFor(t: AppTheme): Record<string, string> {
     "--color-add-fg": t.addText,
     "--color-del-bg": t.delBg,
     "--color-del-fg": t.delText,
+
+    // Intra-line "changed word" highlight boxes (composited over the line bg).
+    "--color-wd-add-bg": alpha(t.addText, WORD_DIFF_HIGHLIGHT_ALPHA),
+    "--color-wd-del-bg": alpha(t.delText, WORD_DIFF_HIGHLIGHT_ALPHA),
 
     "--color-risk-high": t.red,
     "--color-risk-med": t.yellow,

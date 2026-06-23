@@ -33,7 +33,12 @@
   );
 
   const mode = $derived(snapshot?.mode ?? "branch");
-  const prActive = $derived(mode === "pr");
+  /** PR Diff is "active" in PR mode, and also in Guide mode when the guide is
+   *  attached to the PR diff — entering the Guide must not flip the toggle to
+   *  Local Branch. */
+  const prActive = $derived(
+    mode === "pr" || (mode === "tour" && snapshot?.tour?.scope === "pr"),
+  );
   /** Show the [Local Branch | PR Diff] toggle when the branch has a PR and the
    *  tab is local (remote-only tabs are implicitly PR Diff). */
   const showSourceToggle = $derived(prNumber != null && activeTab?.kind !== "remote_pr");
