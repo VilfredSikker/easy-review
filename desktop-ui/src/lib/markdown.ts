@@ -128,16 +128,50 @@ export function parseMarkdown(md: string): MarkdownNode[] {
   return out;
 }
 
-/** Render inline markdown (bold, italic, code, links) to safe HTML. */
+/**
+ * Wrap bare http(s) URLs in anchors. Runs last, over already-generated HTML,
+ * so it must skip URLs that are part of a tag we emitted: the preceding char
+ * must not be `"` (an href value), `>` (anchor text / a code span), `=` (an
+ * attribute), or a word char (mid-token). `^` covers the start of the string.
+ */
+function linkifyUrls(html: string): string {
+  return html.replace(/(^|[^"=>\w])(https?:\/\/[^\s<]+)/g, (_full, pre: string, rawUrl: string) => {
+    let url = rawUrl;
+    let trail = "";
+    // Peel trailing characters that are unlikely to belong to the URL:
+    // sentence punctuation always, and a closing paren only when unbalanced
+    // (so URLs that legitimately contain `(...)` survive).
+    for (;;) {
+      if (/[.,;:!?]$/.test(url)) {
+        trail = url.slice(-1) + trail;
+        url = url.slice(0, -1);
+        continue;
+      }
+      const opens = (url.match(/\(/g) ?? []).length;
+      const closes = (url.match(/\)/g) ?? []).length;
+      if (url.endsWith(")") && closes > opens) {
+        trail = ")" + trail;
+        url = url.slice(0, -1);
+        continue;
+      }
+      break;
+    }
+    return `${pre}<a href="${url}" rel="noreferrer">${url}</a>${trail}`;
+  });
+}
+
+/** Render inline markdown (bold, italic, code, links, bare URLs) to safe HTML. */
 export function renderInline(s: string): string {
   const escaped = s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-  return escaped
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>');
+  return linkifyUrls(
+    escaped
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>'),
+  );
 }

@@ -68,3 +68,43 @@ describe("parseMarkdown tables", () => {
     expect(html).toContain("&quot;onmouseover=");
   });
 });
+
+describe("renderInline bare URLs", () => {
+  it("linkifies a bare http(s) URL", () => {
+    expect(renderInline("see https://example.com/x for more")).toBe(
+      'see <a href="https://example.com/x" rel="noreferrer">https://example.com/x</a> for more',
+    );
+  });
+
+  it("keeps query strings (escaped &) inside a single href", () => {
+    const html = renderInline("https://e.com/p?a=1&b=2");
+    expect(html).toBe(
+      '<a href="https://e.com/p?a=1&amp;b=2" rel="noreferrer">https://e.com/p?a=1&amp;b=2</a>',
+    );
+  });
+
+  it("peels trailing sentence punctuation out of the link", () => {
+    expect(renderInline("go to https://e.com.")).toBe(
+      'go to <a href="https://e.com" rel="noreferrer">https://e.com</a>.',
+    );
+  });
+
+  it("peels an unbalanced closing paren but keeps balanced ones", () => {
+    expect(renderInline("(https://e.com/x)")).toBe(
+      '(<a href="https://e.com/x" rel="noreferrer">https://e.com/x</a>)',
+    );
+    expect(renderInline("https://e.com/foo_(bar)")).toBe(
+      '<a href="https://e.com/foo_(bar)" rel="noreferrer">https://e.com/foo_(bar)</a>',
+    );
+  });
+
+  it("does not double-link a URL already inside a markdown link", () => {
+    expect(renderInline("[site](https://e.com)")).toBe(
+      '<a href="https://e.com" rel="noreferrer">site</a>',
+    );
+  });
+
+  it("does not link a URL inside a code span", () => {
+    expect(renderInline("`https://e.com`")).toBe("<code>https://e.com</code>");
+  });
+});
