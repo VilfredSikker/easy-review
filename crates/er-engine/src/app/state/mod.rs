@@ -1873,16 +1873,18 @@ impl TabState {
         if let Some(pr_num) = self.pr_number {
             if self.review_bucket() == ReviewBucket::Pr {
                 let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
-                    crate::storage::slug_branch(&remote_repo.to_lowercase())
+                    Some(crate::storage::slug_branch(&remote_repo.to_lowercase()))
                 } else {
-                    match crate::github::canonical_owner_repo_slug(&self.repo_root) {
-                        Some(slug) => slug,
-                        None => return,
-                    }
+                    crate::github::canonical_owner_repo_slug(&self.repo_root)
                 };
-                self.er_root =
-                    crate::storage::resolve_managed_root_for_pr_bucket(&owner_repo_slug, pr_num);
-                return;
+                // Only the PR bucket needs the owner/repo slug. If it can't be resolved
+                // (no usable git remote), fall through to the local view bucket rather
+                // than leaving er_root pointing at a previous mode's bucket.
+                if let Some(slug) = owner_repo_slug {
+                    self.er_root =
+                        crate::storage::resolve_managed_root_for_pr_bucket(&slug, pr_num);
+                    return;
+                }
             }
         }
 
@@ -2559,10 +2561,11 @@ impl TabState {
             self.diff_hash = format!("{:016x}", ai::compute_diff_hash_fast(&raw));
         }
 
-        // Branch diff hash for AI staleness detection.
+        // Branch diff hash for AI staleness detection (and tour freshness).
         // In Branch mode, reuse — no second git call needed.
-        // In other modes, only run the extra git diff when AI data is loaded AND it's a full refresh.
-        // Skipping when no AI data exists avoids a redundant git diff call with no consumer.
+        // In other modes, only run the extra git diff on a full refresh when there's a
+        // consumer — AI data, questions, or a tour (whose stale pill compares against it).
+        // Skipping otherwise avoids a redundant git diff call with no consumer.
         if self.mode == DiffMode::Branch {
             // Always use SHA-256 for branch_diff_hash (used by .er/questions.json).
             // diff_hash may be a fast hash during quick refresh, but branch_diff_hash
@@ -2573,7 +2576,9 @@ impl TabState {
                 self.branch_diff_hash = ai::compute_diff_hash(&raw);
             }
             branch_raw_owned = Some(raw.clone());
-        } else if recompute_branch_hash && (self.ai.has_data() || self.ai.has_questions()) {
+        } else if recompute_branch_hash
+            && (self.ai.has_data() || self.ai.has_questions() || self.ai.has_tour())
+        {
             let br = git::git_diff_raw(
                 "branch",
                 &self.base_branch,
@@ -10040,6 +10045,45 @@ mod tests {
         assert!(
             tab.ai.github_comments.is_none(),
             "GitHub comments must be hidden in the Unstaged view"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    /// When the PR bucket can't be resolved (no usable git remote), apply_managed_root
+    /// must fall through to the local view bucket — never leave er_root pointing at a
+    /// previous mode's bucket.
+    #[test]
+    fn apply_managed_root_pr_view_falls_back_to_view_bucket_without_remote() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        // Git repo with NO origin remote → canonical_owner_repo_slug returns None.
+        run_git_for_history_test(repo.path(), &["init", "-q"]);
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = repo.path().to_string_lossy().to_string();
+        tab.current_branch = "feat/foo".to_string();
+        tab.local_branch_view = Some("feat/foo".to_string());
+        tab.pr_number = Some(7);
+        tab.remote_repo = None;
+        tab.mode = DiffMode::PrDiff;
+        // Sentinel: a clearly-wrong previous er_root that must be replaced.
+        tab.er_root = ErRoot::RepoLocal("/sentinel".to_string());
+        tab.apply_managed_root();
+
+        let dir = tab.er_dir();
+        assert!(dir.contains("view-buckets/branch"), "fell through: {dir}");
+        assert!(
+            !dir.contains("prs/pr-7"),
+            "must not be the PR bucket: {dir}"
+        );
+        assert!(
+            !dir.contains("sentinel"),
+            "stale er_root not replaced: {dir}"
         );
 
         std::env::remove_var("ER_STORAGE_ROOT");
