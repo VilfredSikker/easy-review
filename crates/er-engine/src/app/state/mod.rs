@@ -691,9 +691,8 @@ pub struct TabState {
     /// Whether the active Tour reflects the PR diff (true) or the local branch
     /// diff (false). Set when entering Tour mode from the originating view, so a
     /// guide generated while viewing the PR stays attached to the PR diff (and
-    /// the Diff/PR toggle keeps PR Diff highlighted). Drives which tour sidecar
-    /// (`tour.pr.json` vs `tour.json`) loads and which mode the Diff toggle
-    /// returns to.
+    /// the Diff/PR toggle keeps PR Diff highlighted). Drives which bucket the tour
+    /// loads from (`tour_bucket_er_dir`) and which mode the Diff toggle returns to.
     pub tour_is_pr: bool,
 
     // ── Watched files state ──
@@ -2004,17 +2003,6 @@ impl TabState {
         }
     }
 
-    /// Sidecar filename for the guided tour in the current view context.
-    /// PR-scoped tours live in `tour.pr.json`; branch-scoped tours in `tour.json`.
-    /// Both share the branch bucket directory (`branch_bucket_er_dir`).
-    pub fn tour_filename(&self) -> &'static str {
-        if self.tour_context_is_pr() {
-            "tour.pr.json"
-        } else {
-            "tour.json"
-        }
-    }
-
     /// Branch name used to resolve managed storage for this tab (for sidecar validation).
     pub fn storage_branch_scope(&self) -> Option<&str> {
         if self.local_branch_view.is_some() {
@@ -2745,6 +2733,20 @@ impl TabState {
         ai::load_tour_sidecar(dir, "tour.json")
     }
 
+    /// Storage bucket for the tour attached to the current view context: the PR bucket
+    /// when the active context is the PR diff (PrDiff, remote, or a Guide tab opened from
+    /// the PR view — see `tour_context_is_pr`), otherwise the branch bucket. Both
+    /// `generate_tour` (write) and `resolve_view_tour` (read) route through this, so a
+    /// tour is always written where it will be read — including when "Re-run guide" is
+    /// clicked from inside the Guide (Tour mode), where the active mode alone is ambiguous.
+    pub fn tour_bucket_er_dir(&self) -> Option<String> {
+        if self.tour_context_is_pr() {
+            self.pr_bucket_er_dir()
+        } else {
+            self.branch_bucket_er_dir()
+        }
+    }
+
     /// Pick the tour to show in the active view (option C).
     ///
     /// The Local branch tour lives in the branch bucket, the PR Diff tour in the PR
@@ -2756,10 +2758,11 @@ impl TabState {
     /// affordance shows. Returns `None` only when no tour exists in either bucket.
     fn resolve_view_tour(&self) -> Option<ai::ErTour> {
         let want_pr = self.tour_context_is_pr();
-        let (own_dir, cross_dir) = if want_pr {
-            (self.pr_bucket_er_dir(), self.branch_bucket_er_dir())
+        let own_dir = self.tour_bucket_er_dir();
+        let cross_dir = if want_pr {
+            self.branch_bucket_er_dir()
         } else {
-            (self.branch_bucket_er_dir(), self.pr_bucket_er_dir())
+            self.pr_bucket_er_dir()
         };
         let own = own_dir.as_deref().and_then(Self::load_tour_from_dir);
         // Avoid re-reading the same file when both buckets resolve to one dir.
@@ -9759,38 +9762,33 @@ mod tests {
         assert_eq!(tab.review_bucket(), ReviewBucket::Pr);
     }
 
-    /// The guided tour's context (and thus which sidecar it loads/writes) follows
-    /// the view being looked at: PR Diff → `tour.pr.json`, local branch →
-    /// `tour.json`. Tour mode follows whichever view it was entered from.
+    /// The guided tour's context (which bucket it loads/writes) follows the view:
+    /// PR Diff → PR-scoped, local branch → branch-scoped; Tour mode follows whichever
+    /// view it was entered from (`tour_is_pr`).
     #[test]
-    fn tour_context_and_filename_follow_view() {
+    fn tour_context_follows_view() {
         let mut tab = make_test_tab(vec![]);
 
         // Local branch diff → branch-scoped tour.
         tab.mode = DiffMode::Branch;
         assert!(!tab.tour_context_is_pr());
-        assert_eq!(tab.tour_filename(), "tour.json");
 
         // PR diff → PR-scoped tour. Entering the Guide from here must keep it
         // attached to the PR (the bug: it flipped to the local branch).
         tab.mode = DiffMode::PrDiff;
         assert!(tab.tour_context_is_pr());
-        assert_eq!(tab.tour_filename(), "tour.pr.json");
 
         // Tour mode follows the originating view via tour_is_pr.
         tab.mode = DiffMode::Tour;
         tab.tour_is_pr = false;
         assert!(!tab.tour_context_is_pr());
-        assert_eq!(tab.tour_filename(), "tour.json");
         tab.tour_is_pr = true;
         assert!(tab.tour_context_is_pr());
-        assert_eq!(tab.tour_filename(), "tour.pr.json");
 
         // Working-tree scopes are always branch-scoped, regardless of tour_is_pr.
         for m in [DiffMode::Unstaged, DiffMode::Staged, DiffMode::History] {
             tab.mode = m;
             assert!(!tab.tour_context_is_pr(), "{m:?} must be branch-scoped");
-            assert_eq!(tab.tour_filename(), "tour.json");
         }
 
         // Remote PR tabs are always PR-scoped.
@@ -9798,7 +9796,46 @@ mod tests {
         remote.remote_repo = Some("owner/repo".into());
         remote.mode = DiffMode::PrDiff;
         assert!(remote.tour_context_is_pr());
-        assert_eq!(remote.tour_filename(), "tour.pr.json");
+    }
+
+    /// `tour_bucket_er_dir` (the single write+read tour bucket) follows the context,
+    /// so a PR guide regenerated from inside the Guide (Tour mode) targets the PR
+    /// bucket — not the branch bucket the active mode would otherwise imply.
+    #[test]
+    fn tour_bucket_follows_context() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut tab = local_pr_tab_with_remote(repo.path(), 42);
+
+        tab.mode = DiffMode::Branch;
+        let d = tab.tour_bucket_er_dir().unwrap();
+        assert!(
+            d.contains("view-buckets/branch") && !d.contains("prs/pr-42"),
+            "{d}"
+        );
+
+        tab.mode = DiffMode::PrDiff;
+        assert!(tab.tour_bucket_er_dir().unwrap().contains("prs/pr-42"));
+
+        // Guide opened from the PR view (Tour mode + tour_is_pr) must target the PR
+        // bucket — the regenerate write/read mismatch this guards against.
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = true;
+        assert!(
+            tab.tour_bucket_er_dir().unwrap().contains("prs/pr-42"),
+            "PR guide regenerated from Tour mode must target the PR bucket"
+        );
+        tab.tour_is_pr = false;
+        assert!(tab
+            .tour_bucket_er_dir()
+            .unwrap()
+            .contains("view-buckets/branch"));
+
+        std::env::remove_var("ER_STORAGE_ROOT");
     }
 
     /// Branch-scoped tour freshness must baseline against `branch_diff_hash`,

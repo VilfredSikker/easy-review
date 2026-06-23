@@ -485,9 +485,9 @@ pub fn build_expert_review_prompt_prepared_diff(
 /// Guided tour generation when `{output_dir}/diff-tmp` is already prepared
 /// (desktop "Generate tour"). Writes only `{output_dir}/{output_file}`.
 ///
-/// `output_file` is the context-scoped sidecar name: `tour.json` for the local
-/// branch diff, `tour.pr.json` for the PR diff. The tour stays attached to
-/// whichever diff was being viewed when generated.
+/// `output_dir` is the active view's per-view tour bucket (`tour_bucket_er_dir`) and
+/// `output_file` is `tour.json` — the branch bucket holds the branch tour, the PR
+/// bucket holds the PR tour, so the tour stays attached to whichever diff was viewed.
 pub fn build_tour_prompt_prepared_diff(scope: &str, output_dir: &str, output_file: &str) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")

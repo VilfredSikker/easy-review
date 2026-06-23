@@ -3041,13 +3041,9 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
             .local_branch_view
             .clone()
             .unwrap_or_else(|| tab.current_branch.clone());
-        // PR Diff view → PR bucket; working-tree (Local branch) views → branch bucket.
-        let is_pr_view = matches!(tab.mode, DiffMode::PrDiff) || tab.is_remote();
-        let er_dir = if is_pr_view {
-            tab.er_dir()
-        } else {
-            tab.branch_bucket_er_dir().unwrap_or_else(|| tab.er_dir())
-        };
+        // Route to the active context's tour bucket (PR vs branch), matching where
+        // `resolve_view_tour` reads — including a PR guide regenerated from the Guide tab.
+        let er_dir = tab.tour_bucket_er_dir().unwrap_or_else(|| tab.er_dir());
         (
             tab.repo_root.clone(),
             branch_label,

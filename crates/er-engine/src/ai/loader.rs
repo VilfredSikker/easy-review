@@ -173,9 +173,9 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
         }
     }
 
-    // The guided tour (`tour.json` / `tour.pr.json`) is context-scoped (branch
-    // vs PR) and is loaded by `TabState::reload_ai_state` → `reload_context_tour`,
-    // which knows the active view. It is intentionally not loaded here.
+    // The guided tour (`tour.json`, one per view bucket) is context-scoped (branch
+    // vs PR) and is loaded by `TabState::reload_ai_state` → `resolve_view_tour`,
+    // which knows the active view's bucket. It is intentionally not loaded here.
 
     // Load .er/summary.md
     let summary_path = Path::new(er_dir).join("summary.md");
@@ -305,9 +305,6 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
         "review.json",
         "order.json",
         "tour.json",
-        // PR-scoped guided tour — must be polled too, else a generated PR guide
-        // never auto-surfaces (the mtime poll drives `reload_ai_state`).
-        "tour.pr.json",
         "summary.md",
         "checklist.json",
         "feedback.json",
