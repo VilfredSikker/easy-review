@@ -2664,6 +2664,44 @@ impl TabState {
         Ok(())
     }
 
+    /// Parse `tour.json` from a directory, if present and valid.
+    fn load_tour_from_dir(dir: &str) -> Option<ai::ErTour> {
+        let content = std::fs::read_to_string(std::path::Path::new(dir).join("tour.json")).ok()?;
+        serde_json::from_str::<ai::ErTour>(&content).ok()
+    }
+
+    /// Pick the tour to show in the active view (option C).
+    ///
+    /// The Local branch tour lives in the branch bucket (shown across the working-tree
+    /// views); the PR Diff tour lives in the PR bucket. Prefer a tour whose `diff_hash`
+    /// matches the active diff — the view's own bucket first, then the other bucket, so
+    /// an identical-diff tour is reused across the two without copying. When neither is
+    /// fresh, keep a stale tour (own bucket first) so the Regenerate affordance shows.
+    /// Returns `None` only when no tour exists in either bucket.
+    fn resolve_view_tour(&self) -> Option<ai::ErTour> {
+        let (own_dir, cross_dir) = match self.review_bucket() {
+            ReviewBucket::Pr => (self.pr_bucket_er_dir(), self.branch_bucket_er_dir()),
+            _ => (self.branch_bucket_er_dir(), self.pr_bucket_er_dir()),
+        };
+        let own = own_dir.as_deref().and_then(Self::load_tour_from_dir);
+        // Avoid re-reading the same file when both buckets resolve to one dir.
+        let cross = match (&own_dir, &cross_dir) {
+            (Some(o), Some(c)) if o == c => None,
+            _ => cross_dir.as_deref().and_then(Self::load_tour_from_dir),
+        };
+        let hash = self.branch_diff_hash.as_str();
+        let is_fresh = |t: &ai::ErTour| !hash.is_empty() && t.diff_hash.as_str() == hash;
+        let own_fresh = own.as_ref().is_some_and(is_fresh);
+        let cross_fresh = cross.as_ref().is_some_and(is_fresh);
+        if own_fresh {
+            own
+        } else if cross_fresh {
+            cross
+        } else {
+            own.or(cross)
+        }
+    }
+
     /// Reload AI state from .er-* files (preserving current nav state)
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
@@ -2671,36 +2709,33 @@ impl TabState {
         let branch_scope = self.storage_branch_scope().map(str::to_string);
         self.ai = ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref());
 
-        // GitHub PR comments are PR-scoped: they belong to the PR and are shared
-        // across every view of a PR tab. `load_ai_state` read them from the active
-        // bucket; when the PR bucket differs, override with its copy (or clear, so a
-        // stray copy in the active bucket never leaks into a non-PR view).
-        let gh_dir = self.github_comments_dir();
-        if gh_dir != er_dir {
-            let gh_path = std::path::Path::new(&gh_dir).join("github-comments.json");
-            self.ai.github_comments = std::fs::read_to_string(&gh_path)
-                .ok()
-                .and_then(|c| serde_json::from_str::<ai::ErGitHubComments>(&c).ok());
-            self.ai.rebuild_comment_index();
-        }
-
-        // The guided tour walks the branch diff. It is shared across the working-tree
-        // views (Branch/Unstaged/Staged/History/Tour) via the branch bucket, but the
-        // PR Diff view reviews a different diff (head-vs-base) and must not show it.
-        if self.review_bucket() == ReviewBucket::Pr {
-            self.ai.tour = None;
-        } else if self.ai.tour.is_none() {
-            if let Some(branch_dir) = self.branch_bucket_er_dir() {
-                if branch_dir != er_dir {
-                    let tour_path = std::path::Path::new(&branch_dir).join("tour.json");
-                    if let Ok(content) = std::fs::read_to_string(&tour_path) {
-                        if let Ok(tour) = serde_json::from_str::<ai::ErTour>(&content) {
-                            self.ai.tour = Some(tour);
-                        }
-                    }
+        // GitHub PR comments are PR-scoped: stored in the shared PR bucket and shown
+        // only in the Local branch (Branch) and PR Diff views — hidden in Unstaged/
+        // Staged/History, where PR-line comments don't apply.
+        if self.pr_number.is_some() {
+            if matches!(
+                self.review_bucket(),
+                ReviewBucket::Branch | ReviewBucket::Pr
+            ) {
+                let gh_dir = self.github_comments_dir();
+                if gh_dir != er_dir {
+                    let gh_path = std::path::Path::new(&gh_dir).join("github-comments.json");
+                    self.ai.github_comments = std::fs::read_to_string(&gh_path)
+                        .ok()
+                        .and_then(|c| serde_json::from_str::<ai::ErGitHubComments>(&c).ok());
+                    self.ai.rebuild_comment_index();
                 }
+            } else if self.ai.github_comments.take().is_some() {
+                self.ai.rebuild_comment_index();
             }
         }
+
+        // Guided tour: the Local branch tour (branch bucket) is shown across the
+        // working-tree views; the PR Diff view shows its own tour (PR bucket). A tour
+        // whose diff_hash matches the active diff is reused across the two buckets, so
+        // when the branch and PR diffs are identical one tour serves both; once they
+        // drift, each view keeps its own (shown stale until regenerated).
+        self.ai.tour = self.resolve_view_tour();
         // Finding IDs may change after review reload — clear stale reference
         self.focused_finding_id = None;
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
@@ -9847,10 +9882,44 @@ mod tests {
         assert!(dir.contains("owner-repo"), "dir = {dir}");
     }
 
-    /// The PR Diff view (Pr bucket) must never surface a tour — even if an old
-    /// tour.json lingers in the PR bucket from before the split.
+    fn write_tour_json(dir: &str, diff_hash: &str, title: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let tour = serde_json::json!({
+            "version": 1, "diff_hash": diff_hash, "title": title,
+            "pillars": [{"id": "p1", "title": "P1"}]
+        });
+        std::fs::write(
+            format!("{dir}/tour.json"),
+            serde_json::to_string(&tour).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Local PR tab backed by a real git repo with a GitHub origin, so
+    /// `canonical_owner_repo_slug` resolves the PR bucket. Caller sets ER_STORAGE_ROOT.
+    fn local_pr_tab_with_remote(root: &std::path::Path, pr: u64) -> TabState {
+        run_git_for_history_test(root, &["init", "-q"]);
+        run_git_for_history_test(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/widget.git",
+            ],
+        );
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = root.to_string_lossy().to_string();
+        tab.current_branch = "feat/foo".to_string();
+        tab.local_branch_view = Some("feat/foo".to_string());
+        tab.pr_number = Some(pr);
+        tab.remote_repo = None;
+        tab
+    }
+
+    /// The PR Diff view shows its own tour (PR bucket) — option C, each view its own.
     #[test]
-    fn reload_clears_tour_in_pr_diff_view() {
+    fn reload_pr_diff_shows_own_tour() {
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -9863,29 +9932,121 @@ mod tests {
         tab.mode = DiffMode::PrDiff;
         tab.apply_managed_root();
 
-        let er_dir = tab.er_dir();
-        std::fs::create_dir_all(&er_dir).unwrap();
-        let tour = serde_json::json!({
-            "version": 1, "diff_hash": "x",
-            "pillars": [{"id": "p1", "title": "P1"}]
-        });
-        std::fs::write(
-            format!("{er_dir}/tour.json"),
-            serde_json::to_string(&tour).unwrap(),
-        )
-        .unwrap();
-
+        write_tour_json(&tab.er_dir(), "x", "PR tour");
         tab.reload_ai_state();
-        assert!(
-            tab.ai.tour.is_none(),
-            "PR Diff view must not surface the branch tour"
+        assert!(tab.ai.has_tour(), "PR Diff view must show its own tour");
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    /// Auto-share when identical: a branch tour whose hash matches the active diff is
+    /// reused in the PR Diff view (no separate PR tour needed).
+    #[test]
+    fn reload_reuses_branch_tour_in_pr_diff_when_diff_matches() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut tab = local_pr_tab_with_remote(repo.path(), 99);
+
+        // Branch tour (branch bucket), generated against diff hash "h".
+        tab.mode = DiffMode::Branch;
+        tab.apply_managed_root();
+        write_tour_json(&tab.er_dir(), "h", "Branch tour");
+
+        // PR Diff view, identical diff (same hash) → reuse the branch tour.
+        tab.mode = DiffMode::PrDiff;
+        tab.apply_managed_root();
+        tab.branch_diff_hash = "h".to_string();
+        tab.reload_ai_state();
+        assert_eq!(
+            tab.ai.tour.as_ref().map(|t| t.title.as_str()),
+            Some("Branch tour"),
+            "PR Diff must reuse the branch tour when the diffs are identical"
         );
 
         std::env::remove_var("ER_STORAGE_ROOT");
     }
 
-    /// The tour stays discoverable from the working-tree views: from Unstaged it is
-    /// loaded out of the branch bucket via the fallback.
+    /// When both buckets have a tour, the PR Diff view prefers its own (PR bucket).
+    #[test]
+    fn reload_pr_diff_prefers_own_tour() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut tab = local_pr_tab_with_remote(repo.path(), 99);
+
+        tab.mode = DiffMode::Branch;
+        tab.apply_managed_root();
+        write_tour_json(&tab.er_dir(), "hbr", "Branch tour");
+
+        tab.mode = DiffMode::PrDiff;
+        tab.apply_managed_root();
+        write_tour_json(&tab.er_dir(), "hpr", "PR tour");
+        tab.branch_diff_hash = "hpr".to_string();
+        tab.reload_ai_state();
+        assert_eq!(
+            tab.ai.tour.as_ref().map(|t| t.title.as_str()),
+            Some("PR tour"),
+            "PR Diff must prefer its own tour over the branch tour"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    /// GitHub PR comments are hidden in the Unstaged view (shown only in Local branch
+    /// and PR Diff), even though they live in the shared PR bucket.
+    #[test]
+    fn github_comments_hidden_in_unstaged_view() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut tab = local_pr_tab_with_remote(repo.path(), 99);
+
+        tab.mode = DiffMode::Branch;
+        tab.apply_managed_root();
+        let pr_dir = tab.github_comments_dir();
+        std::fs::create_dir_all(&pr_dir).unwrap();
+        let gc = serde_json::json!({
+            "version": 1, "diff_hash": "h",
+            "comments": [{
+                "id": "gc-1", "file": "a.rs", "comment": "x",
+                "source": "github", "author": "o", "resolved": false, "synced": true
+            }]
+        });
+        std::fs::write(
+            format!("{pr_dir}/github-comments.json"),
+            serde_json::to_string(&gc).unwrap(),
+        )
+        .unwrap();
+
+        tab.reload_ai_state();
+        assert!(
+            tab.ai.github_comments.is_some(),
+            "GitHub comments visible in the Local branch view"
+        );
+
+        tab.mode = DiffMode::Unstaged;
+        tab.apply_managed_root();
+        tab.reload_ai_state();
+        assert!(
+            tab.ai.github_comments.is_none(),
+            "GitHub comments must be hidden in the Unstaged view"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    /// The Local branch tour is shown across the working-tree views (here: Unstaged),
+    /// loaded out of the branch bucket.
     #[test]
     fn reload_loads_tour_from_branch_bucket_in_unstaged_view() {
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK

@@ -3008,13 +3008,16 @@ fn spawn_ai_review_with_diff(
     Ok(())
 }
 
-/// Generate a guided Tour with AI: captures the branch diff and spawns the
-/// er-tour agent, which writes `tour.json` into the branch bucket. The mtime
-/// poll reloads it automatically on completion, surfacing the Guide tab.
+/// Generate a guided Tour with AI: captures the active view's diff and spawns the
+/// er-tour agent, which writes `tour.json` into that view's bucket. The PR Diff view
+/// tours the PR head-vs-base diff (PR bucket); the Local branch / working-tree views
+/// tour the branch diff (branch bucket). The mtime poll reloads it automatically on
+/// completion, surfacing the Guide tab.
 #[tauri::command]
 pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    // Tour always walks the branch diff (shares the branch bucket).
+    // `raw_diff_for_review("branch")` returns the active view's diff (the PR
+    // head-vs-base diff in PrDiff mode), so only the destination bucket differs.
     let scope = "branch".to_string();
 
     let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
@@ -3023,12 +3026,18 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
             .local_branch_view
             .clone()
             .unwrap_or_else(|| tab.current_branch.clone());
+        // PR Diff view → PR bucket; working-tree (Local branch) views → branch bucket.
+        let is_pr_view = matches!(tab.mode, DiffMode::PrDiff) || tab.is_remote();
+        let er_dir = if is_pr_view {
+            tab.er_dir()
+        } else {
+            tab.branch_bucket_er_dir().unwrap_or_else(|| tab.er_dir())
+        };
         (
             tab.repo_root.clone(),
             branch_label,
             tab.base_branch.clone(),
-            // tour.json lives in the branch bucket; resolve it regardless of mode.
-            tab.branch_bucket_er_dir().unwrap_or_else(|| tab.er_dir()),
+            er_dir,
             tab.pr_number,
             tab.remote_repo.clone(),
             tab.remote_repo.is_some(),
@@ -3036,7 +3045,7 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
     };
 
     std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+        .map_err(|e| format!("Failed to create tour managed directory: {e}"))?;
 
     let mut raw = app
         .tab()

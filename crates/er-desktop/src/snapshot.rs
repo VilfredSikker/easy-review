@@ -1445,7 +1445,10 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
 
     TourSnapshot {
         available: true,
-        fresh: !tab.ai.is_stale,
+        // Fresh when this tour was generated against the active view's diff. When the
+        // Local branch and PR Diff drift, a tour reused from the other bucket (or a
+        // pre-drift tour) won't match — the UI shows a stale pill + Regenerate button.
+        fresh: !tab.branch_diff_hash.is_empty() && tour.diff_hash == tab.branch_diff_hash,
         title: tour.title.clone(),
         overview_markdown: tour.overview.clone(),
         pillars,

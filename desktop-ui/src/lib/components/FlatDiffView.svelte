@@ -153,6 +153,18 @@
   const tourAvailable = $derived(
     (snapshot?.features?.viewTour ?? true) && (snapshot?.tour?.available ?? false),
   );
+  /** The tour was generated against a different diff than the one in view. */
+  const tourStale = $derived(tourAvailable && snapshot?.tour?.fresh === false);
+  let regeneratingTour = $state(false);
+  async function regenerateTour() {
+    if (regeneratingTour) return;
+    regeneratingTour = true;
+    try {
+      await app.cmd("generate_tour");
+    } finally {
+      regeneratingTour = false;
+    }
+  }
 
   let settingsOpen = $state(false);
 
@@ -1644,6 +1656,26 @@
               Guide
             </button>
           </div>
+          {#if tourStale}
+            <div class="flex items-center gap-1 mr-1 shrink-0">
+              <span
+                class="text-[9px] uppercase tracking-wider text-warning"
+                title="The diff changed since this Guide was generated"
+              >Stale</span>
+              <button
+                type="button"
+                onclick={regenerateTour}
+                disabled={regeneratingTour}
+                title="Regenerate the Guide for the current diff"
+                class="flex items-center gap-1 h-[20px] px-1.5 rounded text-[11px] font-medium text-muted hover:text-fg-2 hover:bg-hover transition-colors disabled:opacity-50"
+              >
+                {#if regeneratingTour}
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="animate-spin shrink-0"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+                {/if}
+                Regenerate
+              </button>
+            </div>
+          {/if}
         {/if}
         <button
           type="button"
