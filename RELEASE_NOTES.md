@@ -13,6 +13,7 @@ _TBD — summarize the headline features once the release is cut._
 ### Features
 - PR-cache: persist the top-10 "My PRs" / "To Review" PRs for instant sidebar render and checkout (stale-while-revalidate). (#74)
 - Preemptive "To Review" triage: background cheap-model triage scans for new non-draft PRs, surfaced in the Inbox. (#58)
+- Clickable bare URLs in the PR description (desktop) — plain `https://…` links in the Description block now render as anchors that open in the system browser, not just markdown-style `[text](url)` links.
 
 ### Fixes
 - _none yet_
