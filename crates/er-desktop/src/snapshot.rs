@@ -1451,6 +1451,9 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
 
     TourSnapshot {
         available: true,
+        // Staleness is computed per-context in `reload_ai_state` (`tour_stale_for`);
+        // `scope` tells the frontend which guide (branch vs PR) is showing so the Guide
+        // tab is context-aware and the Diff toggle returns to the right diff.
         fresh: !tab.ai.tour_stale,
         scope: if tab.tour_context_is_pr() {
             "pr".to_string()

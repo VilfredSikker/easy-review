@@ -3013,16 +3013,16 @@ fn spawn_ai_review_with_diff(
     Ok(())
 }
 
-/// Generate a guided Tour with AI: captures the current view's diff (PR or local
-/// branch) and spawns the er-tour agent, which writes the context-scoped tour
-/// sidecar (`tour.pr.json` for the PR diff, `tour.json` for the branch diff)
-/// into the branch bucket. The mtime poll reloads it automatically on
-/// completion, surfacing the Guide for that view.
+/// Generate a guided Tour with AI: captures the active view's diff and spawns the
+/// er-tour agent, which writes `tour.json` into that view's bucket. The PR Diff view
+/// tours the PR head-vs-base diff (PR bucket); the Local branch / working-tree views
+/// tour the branch diff (branch bucket). The mtime poll reloads it automatically on
+/// completion, surfacing the Guide tab.
 #[tauri::command]
 pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    // The diff capture uses branch mechanics; for PR-associated tabs this
-    // resolves to the PR diff (vs base) automatically (see raw_diff_for_review).
+    // `raw_diff_for_review("branch")` returns the active view's diff (the PR
+    // head-vs-base diff in PrDiff mode), so only the destination bucket differs.
     let scope = "branch".to_string();
 
     let (
@@ -3041,22 +3041,25 @@ pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
             .local_branch_view
             .clone()
             .unwrap_or_else(|| tab.current_branch.clone());
+        // Route to the active context's tour bucket (PR vs branch), matching where
+        // `resolve_view_tour` reads — including a PR guide regenerated from the Guide tab.
+        let er_dir = tab.tour_bucket_er_dir().unwrap_or_else(|| tab.er_dir());
         (
             tab.repo_root.clone(),
             branch_label,
             tab.base_branch.clone(),
-            // Tour sidecars live in the branch bucket; resolve it regardless of mode.
-            tab.branch_bucket_er_dir().unwrap_or_else(|| tab.er_dir()),
+            er_dir,
             tab.pr_number,
             tab.remote_repo.clone(),
             tab.remote_repo.is_some(),
-            tab.tour_filename().to_string(),
+            // Per-view buckets disambiguate, so the sidecar is always `tour.json`.
+            "tour.json".to_string(),
             tab.tour_context_is_pr(),
         )
     };
 
     std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+        .map_err(|e| format!("Failed to create tour managed directory: {e}"))?;
 
     let mut raw = app
         .tab()

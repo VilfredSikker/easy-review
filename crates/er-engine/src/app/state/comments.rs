@@ -532,8 +532,8 @@ impl App {
             side,
         });
 
-        // Write atomically
-        let comments_dir = self.tab().comments_dir();
+        // Write atomically (github-comments.json is PR-scoped — shared PR bucket)
+        let comments_dir = self.tab().github_comments_dir();
         std::fs::create_dir_all(&comments_dir)?;
         let json = serde_json::to_string_pretty(&gh_comments)?;
         let tmp_path = format!("{}.tmp", comments_path);
