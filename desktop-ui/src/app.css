@@ -334,6 +334,9 @@ body {
 .gutter { color: var(--color-muted); user-select: none; position: relative; }
 .diff-add { background-color: var(--color-add-bg); }
 .diff-del { background-color: var(--color-del-bg); }
+/* Intra-line "changed word" highlight boxes (theme-derived, see themes.ts). */
+.wd-change-add { background-color: var(--color-wd-add-bg); }
+.wd-change-del { background-color: var(--color-wd-del-bg); }
 /* First gutter per panel gets the left accent border — unified nth-child(1), split left nth-child(1), split right nth-child(3) */
 .diff-row > .gutter:nth-child(1).diff-add,
 .diff-row > .gutter:nth-child(3).diff-add { box-shadow: inset 3px 0 0 0 var(--color-add-fg); }

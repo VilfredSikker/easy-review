@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { correctSyntaxColor, type DiffBgKind } from "$lib/diffContrast";
   import { hasColoredSyntaxSpans } from "$lib/highlightPlan";
   import { mergeWordDiffWithSyntax, type RenderSegment } from "$lib/mergeWordDiffWithSyntax";
   import { splitSegmentsByIdentifier, type RefSegment } from "$lib/referenceHighlight";
+  import { app } from "$lib/stores/app.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
-  import { remapSpanColor } from "$lib/spanColorRemap";
+  import { themeByName } from "$lib/themes";
   import type { SpanSnapshot } from "$lib/types";
   import type { Span as WordSpan } from "$lib/wordDiff";
 
@@ -12,8 +14,12 @@
     wordSpans: WordSpan[] | null;
     syntaxSpans: SpanSnapshot[] | undefined;
     changedBgClass: string;
+    /** Diff background this line renders on — drives syntax contrast correction. */
+    kind: DiffBgKind;
   }
-  const { text, wordSpans, syntaxSpans, changedBgClass }: Props = $props();
+  const { text, wordSpans, syntaxSpans, changedBgClass, kind }: Props = $props();
+
+  const theme = $derived(themeByName(app.snapshot?.theme));
 
   const coloredSyntaxSpans = $derived(
     hasColoredSyntaxSpans(syntaxSpans) ? syntaxSpans : undefined,
@@ -47,7 +53,7 @@
   {#if seg.changed || seg.ref || seg.color}
     <span
       class="{seg.changed ? changedBgClass : ''}{seg.ref ? ' ref-highlight' : ''}"
-      style={seg.color ? `color: ${remapSpanColor(seg.color)}` : undefined}
+      style={seg.color ? `color: ${correctSyntaxColor(seg.color, theme, kind, seg.changed)}` : undefined}
     >{seg.text}</span>
   {:else}{seg.text}{/if}
 {/each}
