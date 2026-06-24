@@ -535,6 +535,21 @@ pub fn dismiss_pr(project_id: &str, pr_number: u64) {
     }
 }
 
+pub fn undismiss_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
+    let mut file = load();
+    let proj = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+    let before = proj.dismissed_prs.len();
+    proj.dismissed_prs.retain(|n| n != &pr_number);
+    if proj.dismissed_prs.len() != before {
+        save(&file)?;
+    }
+    Ok(())
+}
+
 pub fn track_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
     let mut file = load();
     let proj = file

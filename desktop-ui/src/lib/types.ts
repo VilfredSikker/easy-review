@@ -295,6 +295,8 @@ export interface ProjectSnapshot {
   auto_triage_max_diff_kb?: number;
   /** Glob patterns excluded from AI review diffs. */
   review_ignore_globs?: string[];
+  /** PR numbers hidden via sidebar Ignore. */
+  dismissed_prs?: number[];
 }
 
 export interface CommitSummary {
@@ -378,6 +380,8 @@ export interface AppSnapshot {
   staged_stat?: { additions: number; deletions: number };
   /** PR detected for the active branch (PR-list cache). Drives the Local|PR Diff toggle. */
   detected_pr_number?: number | null;
+  /** Set when the active diff is behind origin. Drives the "stale" pill + Sync. */
+  diff_stale?: { kind: string; message: string } | null;
   branch: string;
   base: string;
   input_mode: "normal" | "search" | "comment" | "filter" | "commit" | "confirm";
@@ -641,9 +645,6 @@ export interface DesktopSettingsSnapshot {
   app: ConfigHubField[];
   terminal: ConfigHubField[];
   agentEffort: string;
-  hasLocalConfig: boolean;
-  /** Repo `.er-config.toml` `[display].theme` — overrides global for the TUI. */
-  localThemeOverride?: string | null;
   repoRoot: string;
 }
 

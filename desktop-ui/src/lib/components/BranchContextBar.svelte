@@ -43,6 +43,20 @@
    *  tab is local (remote-only tabs are implicitly PR Diff). */
   const showSourceToggle = $derived(prNumber != null && activeTab?.kind !== "remote_pr");
 
+  /** Set when the open diff is behind origin (PR head or base advanced). */
+  const diffStale = $derived(snapshot?.diff_stale ?? null);
+
+  let syncing = $state(false);
+  async function syncStale() {
+    if (syncing) return;
+    syncing = true;
+    try {
+      await app.cmd("force_refresh_diff");
+    } finally {
+      syncing = false;
+    }
+  }
+
   async function copyBranchName() {
     const name = snapshot?.branch ?? "";
     if (!name) return;
@@ -167,6 +181,37 @@
   </div>
 
   <div class="flex-1 min-w-0"></div>
+
+  <!-- Stale-diff pill + Sync (right side, before the source toggle) -->
+  {#if diffStale}
+    <div
+      class="flex items-center gap-1 h-[22px] pl-2 pr-1 rounded-md bg-warning/15 border border-warning/40 shrink-0"
+      title={diffStale.message}
+    >
+      <span class="text-[10px] font-medium uppercase tracking-wide text-warning">Stale</span>
+      <button
+        class="w-5 h-5 rounded flex items-center justify-center text-warning hover:bg-warning/20 transition-colors disabled:opacity-50 disabled:cursor-default"
+        title={diffStale.message}
+        disabled={syncing}
+        onclick={syncStale}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          class={syncing ? "animate-spin" : ""}
+        >
+          <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+          <path d="M21 3v5h-5" />
+          <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+          <path d="M3 21v-5h5" />
+        </svg>
+      </button>
+    </div>
+  {/if}
 
   <!-- Local Branch | PR Diff segmented toggle (right side) -->
   {#if showSourceToggle}

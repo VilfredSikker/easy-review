@@ -59,23 +59,16 @@ pub struct DesktopSettingsSnapshot {
     pub app: Vec<ConfigHubFieldDto>,
     pub terminal: Vec<ConfigHubFieldDto>,
     pub agent_effort: String,
-    pub has_local_config: bool,
-    /// When set, repo `.er-config.toml` `[display].theme` overrides global (what `er` uses).
-    pub local_theme_override: Option<String>,
     pub repo_root: String,
 }
 
 pub fn desktop_settings_snapshot(config: &ErConfig, repo_root: &str) -> DesktopSettingsSnapshot {
-    let local_path = format!("{repo_root}/.er-config.toml");
-    let has_local_config = std::path::Path::new(&local_path).exists();
     let grouped = settings_fields_grouped(config);
     DesktopSettingsSnapshot {
         general: grouped.general,
         app: grouped.app,
         terminal: grouped.terminal,
         agent_effort: agent_effort_label(&config.agent.effort),
-        has_local_config,
-        local_theme_override: super::local_display_theme_override(repo_root),
         repo_root: repo_root.to_string(),
     }
 }

@@ -60,6 +60,8 @@
   let pendingPrKey = $state<string | null>(null);
   let triagingPrKey = $state<string | null>(null);
   let triagingBranchKey = $state<string | null>(null);
+  let syncingPrKey = $state<string | null>(null);
+  let syncingBranchKey = $state<string | null>(null);
   let prRevealCountByProject = $state<Record<string, number>>({});
   let prSavedRevealCountByProject = $state<Record<string, number>>({});
   let prRecentRevealCountByProject = $state<Record<string, number>>({});
@@ -78,6 +80,7 @@
 
   const PROJECT_MENU_EST_HEIGHT = 200;
   const BRANCH_PICKER_EST_HEIGHT = 256;
+  const ROW_MENU_EST_HEIGHT = 176;
   /** Settings footer + gap — keep menus above it when flipping. */
   const SIDEBAR_FOOTER_RESERVE_PX = 52;
   // Per-project sync loading state
@@ -356,6 +359,29 @@
       : project.recently_merged;
   }
 
+  type SidebarSection =
+    | "tracked"
+    | "saved"
+    | "my_prs"
+    | "to_review"
+    | "recent"
+    | "recently_merged";
+  let sectionCollapsed = $state<Record<string, boolean>>({});
+
+  function sectionCollapseKey(projectId: string, section: SidebarSection): string {
+    return `${projectId}:${section}`;
+  }
+
+  function isSectionOpen(projectId: string, section: SidebarSection): boolean {
+    if (searchActive) return true;
+    return !sectionCollapsed[sectionCollapseKey(projectId, section)];
+  }
+
+  function toggleSection(projectId: string, section: SidebarSection) {
+    const key = sectionCollapseKey(projectId, section);
+    sectionCollapsed = { ...sectionCollapsed, [key]: !sectionCollapsed[key] };
+  }
+
   function toggleProject(p: ProjectSnapshot) {
     expandedProject = expandedProject === p.id ? null : p.id;
   }
@@ -411,8 +437,7 @@
     );
   }
 
-  async function runPrTriage(project: ProjectSnapshot, pr: PrInfo, e: MouseEvent) {
-    e.stopPropagation();
+  async function runPrTriage(project: ProjectSnapshot, pr: PrInfo) {
     const key = `${project.id}:${pr.number}`;
     if (triagingPrKey === key) return;
     triagingPrKey = key;
@@ -423,8 +448,7 @@
     }
   }
 
-  async function runBranchTriage(project: ProjectSnapshot, name: string, e: MouseEvent) {
-    e.stopPropagation();
+  async function runBranchTriage(project: ProjectSnapshot, name: string) {
     const key = `${project.id}:${name}`;
     if (triagingBranchKey === key) return;
     triagingBranchKey = key;
@@ -435,8 +459,157 @@
     }
   }
 
+  // Row action menu — one "..." trigger per PR/branch row, hoisted dropdown.
+  type RowActionMenu =
+    | {
+        kind: "pr";
+        project: ProjectSnapshot;
+        pr: PrInfo;
+        anchor: MenuAnchor;
+        flip: boolean;
+      }
+    | {
+        kind: "branch";
+        project: ProjectSnapshot;
+        branch: string;
+        isActiveView: boolean;
+        isCurrent: boolean;
+        anchor: MenuAnchor;
+        flip: boolean;
+      };
+  let rowActionMenu = $state<RowActionMenu | null>(null);
+
+  function closeRowActionMenu() {
+    rowActionMenu = null;
+  }
+
+  function isPrRowMenuOpen(projectId: string, prNumber: number): boolean {
+    return (
+      rowActionMenu?.kind === "pr" &&
+      rowActionMenu.project.id === projectId &&
+      rowActionMenu.pr.number === prNumber
+    );
+  }
+
+  function isBranchRowMenuOpen(projectId: string, branch: string): boolean {
+    return (
+      rowActionMenu?.kind === "branch" &&
+      rowActionMenu.project.id === projectId &&
+      rowActionMenu.branch === branch
+    );
+  }
+
+  function openPrRowMenu(project: ProjectSnapshot, pr: PrInfo, e: MouseEvent) {
+    e.stopPropagation();
+    closeProjectMenu();
+    if (isPrRowMenuOpen(project.id, pr.number)) {
+      closeRowActionMenu();
+      return;
+    }
+    const btn = e.currentTarget as HTMLElement;
+    const { anchor, flip } = anchorFromButton(btn, ROW_MENU_EST_HEIGHT);
+    rowActionMenu = { kind: "pr", project, pr, anchor, flip };
+  }
+
+  function openBranchRowMenu(
+    project: ProjectSnapshot,
+    branch: string,
+    isActiveView: boolean,
+    isCurrent: boolean,
+    e: MouseEvent,
+  ) {
+    e.stopPropagation();
+    closeProjectMenu();
+    if (isBranchRowMenuOpen(project.id, branch)) {
+      closeRowActionMenu();
+      return;
+    }
+    // Sync is always available for a branch row; Triage needs a remote; Remove
+    // only shows for non-current, non-active branches.
+    const itemCount =
+      1 + (project.remote ? 1 : 0) + (!isCurrent && !isActiveView ? 1 : 0);
+    if (itemCount === 0) return;
+    const btn = e.currentTarget as HTMLElement;
+    const { anchor, flip } = anchorFromButton(btn, itemCount * 32 + 8);
+    rowActionMenu = {
+      kind: "branch",
+      project,
+      branch,
+      isActiveView,
+      isCurrent,
+      anchor,
+      flip,
+    };
+  }
+
+  async function triagePrFromMenu(project: ProjectSnapshot, pr: PrInfo) {
+    closeRowActionMenu();
+    await runPrTriage(project, pr);
+  }
+
+  async function triageBranchFromMenu(project: ProjectSnapshot, name: string) {
+    closeRowActionMenu();
+    await runBranchTriage(project, name);
+  }
+
+  function removeBranchFromMenu(projectId: string, name: string) {
+    closeRowActionMenu();
+    app.cmd("remove_tracked_branch", { projectId, name });
+  }
+
+  function isPrPinned(project: ProjectSnapshot, prNumber: number): boolean {
+    return (project.saved_prs ?? []).some((p) => p.number === prNumber);
+  }
+
+  function isPrIgnored(project: ProjectSnapshot, prNumber: number): boolean {
+    return (project.dismissed_prs ?? []).includes(prNumber);
+  }
+
+  async function togglePinPr(project: ProjectSnapshot, pr: PrInfo) {
+    closeRowActionMenu();
+    if (isPrPinned(project, pr.number)) {
+      await app.cmd("unsave_pr", { projectId: project.id, prNumber: pr.number });
+    } else {
+      await app.cmd("save_pr", { projectId: project.id, prNumber: pr.number, title: pr.title });
+    }
+  }
+
+  async function syncPr(project: ProjectSnapshot, pr: PrInfo) {
+    closeRowActionMenu();
+    const key = `${project.id}:${pr.number}`;
+    if (syncingPrKey === key) return;
+    syncingPrKey = key;
+    try {
+      await app.cmd("sync_pr", { projectId: project.id, prNumber: pr.number });
+    } finally {
+      if (syncingPrKey === key) syncingPrKey = null;
+    }
+  }
+
+  async function syncBranch(project: ProjectSnapshot, name: string) {
+    closeRowActionMenu();
+    const key = `${project.id}:${name}`;
+    if (syncingBranchKey === key) return;
+    syncingBranchKey = key;
+    try {
+      await app.cmd("sync_branch", { projectId: project.id, branch: name });
+    } finally {
+      if (syncingBranchKey === key) syncingBranchKey = null;
+    }
+  }
+
+  async function toggleIgnorePr(project: ProjectSnapshot, pr: PrInfo) {
+    closeRowActionMenu();
+    if (isPrIgnored(project, pr.number)) {
+      await app.cmd("undismiss_remote_pr", { projectId: project.id, prNumber: pr.number });
+    } else {
+      await app.cmd("dismiss_remote_pr", { projectId: project.id, prNumber: pr.number });
+    }
+  }
+
   function openProjectMenu(projectId: string, e: MouseEvent) {
     e.stopPropagation();
+    closeRowActionMenu();
     if (projectMenuOpen === projectId) {
       closeProjectMenu();
       return;
@@ -451,11 +624,6 @@
   function closeProjectMenu() {
     projectMenuOpen = null;
     projectMenuAnchor = null;
-  }
-
-  function branchRowAction(projectId: string, name: string, e: MouseEvent) {
-    e.stopPropagation();
-    app.cmd("remove_tracked_branch", { projectId, name });
   }
 
   /** Plain click replaces the active tab. Cmd/Ctrl-click or middle-click opens
@@ -1095,9 +1263,118 @@
                   {/if}
                 </div>
               {/if}
+              {#snippet collapsibleSectionHeader(section: SidebarSection, label: string, count: number, showLoading = false)}
+                {@const sectionOpen = isSectionOpen(project.id, section)}
+                <button
+                  type="button"
+                  onclick={() => toggleSection(project.id, section)}
+                  class="w-full flex items-center gap-1.5 px-2 pt-3 pb-1.5 text-left rounded-md hover:bg-hover/60 transition-colors"
+                  aria-expanded={sectionOpen}
+                >
+                  <span class="flex h-3 w-3 shrink-0 items-center justify-center">
+                    <svg
+                      width="8"
+                      height="8"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      class="text-muted transition-transform {sectionOpen ? '' : '-rotate-90'}"
+                    >
+                      <path d="M6 9l6 6 6-6"/>
+                    </svg>
+                  </span>
+                  <span class="text-[9px] font-semibold uppercase tracking-[0.07em] text-muted/70 leading-none">
+                    {label} - {count}
+                  </span>
+                  {#if showLoading && loadingPrList}
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+                  {/if}
+                </button>
+              {/snippet}
+
+              {#snippet prRow(pr: PrInfo)}
+                {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number && project.is_active) ||
+                  (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
+                {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
+                {@const prTriaging = triagingPrKey === `${project.id}:${pr.number}` || isPrTriageRunning(project, pr.number)}
+                {@const prMenuOpen = isPrRowMenuOpen(project.id, pr.number)}
+                {@const prSyncing = syncingPrKey === `${project.id}:${pr.number}`}
+                {@const prBusy = prTriaging || prSyncing}
+                <div class="group relative flex items-center">
+                  <button
+                    type="button"
+                    title="{pr.title} #{pr.number}"
+                    onclick={(e) => openPr(project, pr.number, pr.head_ref, e, pr)}
+                    onauxclick={(e) => { if (e.button === 1) openPr(project, pr.number, pr.head_ref, e, pr); }}
+                    onmouseenter={() => { if (!project.remote_only) schedulePrPrefetch(project.id, pr); }}
+                    onmouseleave={() => { if (!project.remote_only) cancelPrPrefetch(project.id, pr.number); }}
+                    class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left pr-7 {(isActivePr || prPending) ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="{prIconColor(pr)} shrink-0">
+                      <line x1="6" y1="3" x2="6" y2="15"/>
+                      <circle cx="18" cy="6" r="3"/>
+                      <circle cx="6" cy="18" r="3"/>
+                      <path d="M18 9a9 9 0 0 1-9 9"/>
+                    </svg>
+                    <span class="truncate text-[12px]">{pr.title}</span>
+                    {#if prPending}
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0">
+                        <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
+                        <path d="M21 3v5h-5"/>
+                      </svg>
+                    {/if}
+                    <span class="shrink-0 text-[10px] mono text-muted">#{pr.number}</span>
+                  </button>
+                  {#if project.remote}
+                    <span class="absolute right-1 inset-y-0 flex items-center {isActivePr || prMenuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity">
+                      <button
+                        type="button"
+                        onclick={(e) => openPrRowMenu(project, pr, e)}
+                        disabled={prBusy}
+                        title="Actions"
+                        aria-label="Actions for PR #{pr.number}"
+                        aria-expanded={prMenuOpen}
+                        aria-haspopup="menu"
+                        class="w-5 h-5 rounded flex items-center justify-center text-muted hover:text-fg hover:bg-ink-600 disabled:opacity-50"
+                      >
+                        {#if prBusy}
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="animate-spin"><path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 7.8 4.5"/><polyline points="21 3 21 8 16 8"/></svg>
+                        {:else}
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" class="shrink-0" aria-hidden="true">
+                            <circle cx="5" cy="12" r="1.5"/>
+                            <circle cx="12" cy="12" r="1.5"/>
+                            <circle cx="19" cy="12" r="1.5"/>
+                          </svg>
+                        {/if}
+                      </button>
+                    </span>
+                  {/if}
+                </div>
+              {/snippet}
+
+              {#if visibleSavedPrs(project).length > 0}
+                {@render collapsibleSectionHeader("saved", "Saved", visibleSavedPrs(project).length)}
+                {#if isSectionOpen(project.id, "saved")}
+                {@const savedVisible = visibleSavedPrs(project).slice(0, revealCount(prSavedRevealCountByProject, project.id))}
+                {#each savedVisible as pr (pr.number)}
+                  {@render prRow(pr)}
+                {/each}
+                {#if visibleSavedPrs(project).length > savedVisible.length}
+                  <button
+                    type="button"
+                    onclick={() => (prSavedRevealCountByProject = revealMore(prSavedRevealCountByProject, project.id))}
+                    class="w-full text-left px-2 py-1 rounded-md text-[12px] text-fg-3 hover:bg-hover"
+                  >
+                    Show more
+                  </button>
+                {/if}
+                {/if}
+              {/if}
+
               {#if visibleBranches(project).length > 0}
-                <!-- Sub-head: 9px uppercase 0.07em font-semibold text-muted/70 (dimmer than eyebrow) -->
-                <div class="text-[9px] font-semibold uppercase tracking-[0.07em] text-muted/70 px-2 pt-3 pb-1">Tracked</div>
+                {@render collapsibleSectionHeader("tracked", "Tracked", visibleBranches(project).length)}
+                {#if isSectionOpen(project.id, "tracked")}
                 {#each visibleBranches(project) as br (br.name)}
                   {@const isActiveView = activeTab?.branch === br.name && activeTab?.repo_root === project.root_path}
                   {@const branchPending = pendingBranchKey === `${project.id}:${br.name}`}
@@ -1112,7 +1389,7 @@
                       title={br.name}
                       onclick={(e) => openBranch(project.id, br.name, e)}
                       onauxclick={(e) => { if (e.button === 1) openBranch(project.id, br.name, e); }}
-                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left pr-6 {(isActiveView || branchPending) ? 'bg-hover text-fg font-medium' : 'text-fg-3 hover:bg-hover'}"
+                      class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left pr-7 {(isActiveView || branchPending) ? 'bg-hover text-fg font-medium' : 'text-fg-3 hover:bg-hover'}"
                     >
                       {#if isActiveView}
                         <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-periwinkle' : 'bg-accent'} shrink-0"></span>
@@ -1125,129 +1402,54 @@
                           <span class="truncate text-[10px] text-muted font-mono">{br.worktree_path.split("/").slice(-2).join("/")}</span>
                         {/if}
                       </div>
-                      {#if branchPending || branchTriaging}
+                      {#if branchPending}
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0 ml-auto">
                           <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
                           <path d="M21 3v5h-5"/>
                         </svg>
                       {/if}
                     </button>
-                    <span class="absolute right-1 flex items-center gap-0.5 {isActiveView || br.is_current ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity">
-                      {#if project.remote}
+                    {#if project.remote || (!br.is_current && !isActiveView)}
+                      <span class="absolute right-1 inset-y-0 flex items-center {isActiveView || br.is_current || isBranchRowMenuOpen(project.id, br.name) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity">
                         <button
                           type="button"
-                          onclick={(e) => runBranchTriage(project, br.name, e)}
+                          onclick={(e) => openBranchRowMenu(project, br.name, isActiveView, br.is_current, e)}
                           disabled={branchTriaging}
-                          title="Run triage on this branch"
-                          aria-label="Run triage on branch {br.name}"
-                          class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-info hover:bg-ink-600 disabled:opacity-50"
+                          title="Actions"
+                          aria-label="Actions for branch {br.name}"
+                          aria-expanded={isBranchRowMenuOpen(project.id, br.name)}
+                          aria-haspopup="menu"
+                          class="w-5 h-5 rounded flex items-center justify-center text-muted hover:text-fg hover:bg-ink-600 disabled:opacity-50"
                         >
                           {#if branchTriaging}
                             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="animate-spin"><path d="M21 12a9 9 0 1 1-9-9 9 9 0 0 1 7.8 4.5"/><polyline points="21 3 21 8 16 8"/></svg>
                           {:else}
-                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" class="shrink-0" aria-hidden="true">
+                              <circle cx="5" cy="12" r="1.5"/>
+                              <circle cx="12" cy="12" r="1.5"/>
+                              <circle cx="19" cy="12" r="1.5"/>
+                            </svg>
                           {/if}
                         </button>
-                      {/if}
-                      {#if !br.is_current && !isActiveView}
-                        <button
-                          type="button"
-                          onclick={(e) => branchRowAction(project.id, br.name, e)}
-                          title="Remove from view"
-                          aria-label="Remove branch {br.name} from view"
-                          class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-del-fg hover:bg-ink-600"
-                        >
-                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                        </button>
-                      {/if}
-                    </span>
+                      </span>
+                    {/if}
                   </div>
                 {/each}
-              {/if}
-
-              {#snippet prRow(pr: PrInfo)}
-                {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number && project.is_active) ||
-                  (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
-                {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
-                {@const prTriaging = triagingPrKey === `${project.id}:${pr.number}` || isPrTriageRunning(project, pr.number)}
-                <div class="group relative flex items-center">
-                  <button
-                    type="button"
-                    title="{pr.title} #{pr.number}"
-                    onclick={(e) => openPr(project, pr.number, pr.head_ref, e, pr)}
-                    onauxclick={(e) => { if (e.button === 1) openPr(project, pr.number, pr.head_ref, e, pr); }}
-                    onmouseenter={() => { if (!project.remote_only) schedulePrPrefetch(project.id, pr); }}
-                    onmouseleave={() => { if (!project.remote_only) cancelPrPrefetch(project.id, pr.number); }}
-                    class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left pr-6 {(isActivePr || prPending) ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
-                  >
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="{prIconColor(pr)} shrink-0">
-                      <line x1="6" y1="3" x2="6" y2="15"/>
-                      <circle cx="18" cy="6" r="3"/>
-                      <circle cx="6" cy="18" r="3"/>
-                      <path d="M18 9a9 9 0 0 1-9 9"/>
-                    </svg>
-                    <span class="truncate text-[12px]">{pr.title}</span>
-                    {#if prPending || prTriaging}
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0">
-                        <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
-                        <path d="M21 3v5h-5"/>
-                      </svg>
-                    {/if}
-                    <span class="shrink-0 text-[10px] mono text-muted">#{pr.number}</span>
-                  </button>
-                  {#if project.remote}
-                    <span class="absolute right-1 flex items-center {isActivePr ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity">
-                      <button
-                        type="button"
-                        onclick={(e) => runPrTriage(project, pr, e)}
-                        disabled={prTriaging}
-                        title="Run triage on this PR"
-                        aria-label="Run triage on PR #{pr.number}"
-                        class="w-4 h-4 rounded flex items-center justify-center text-muted hover:text-info hover:bg-ink-600 disabled:opacity-50"
-                      >
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-                      </button>
-                    </span>
-                  {/if}
-                </div>
-              {/snippet}
-
-              {#snippet prSectionLabel(text: string)}
-                <!-- Sub-heads: 9px uppercase 0.07em font-semibold text-muted/70 (dimmer than eyebrow) -->
-                <div class="flex items-center gap-1.5 px-2 pt-3 pb-1">
-                  <span class="text-[9px] font-semibold uppercase tracking-[0.07em] text-muted/70">{text}</span>
-                  {#if loadingPrList}
-                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
-                  {/if}
-                </div>
-              {/snippet}
-
-              {#if visibleSavedPrs(project).length > 0}
-                {@render prSectionLabel("Saved")}
-                {@const savedVisible = visibleSavedPrs(project).slice(0, revealCount(prSavedRevealCountByProject, project.id))}
-                {#each savedVisible as pr (pr.number)}
-                  {@render prRow(pr)}
-                {/each}
-                {#if visibleSavedPrs(project).length > savedVisible.length}
-                  <button
-                    type="button"
-                    onclick={() => (prSavedRevealCountByProject = revealMore(prSavedRevealCountByProject, project.id))}
-                    class="w-full text-left px-2 py-1 rounded-md text-[12px] text-fg-3 hover:bg-hover"
-                  >
-                    Show more
-                  </button>
                 {/if}
               {/if}
 
               {#if visibleMyPrs(project).length > 0 || (loadingPrList && project.my_prs?.length === 0 && !searchActive)}
-                {@render prSectionLabel("My PRs")}
+                {@render collapsibleSectionHeader("my_prs", "My PRs", visibleMyPrs(project).length, true)}
+                {#if isSectionOpen(project.id, "my_prs")}
                 {#each visibleMyPrs(project) as pr (pr.number)}
                   {@render prRow(pr)}
                 {/each}
+                {/if}
               {/if}
 
               {#if visibleToReviewPrs(project).length > 0 || (loadingPrList && project.prs_to_review?.length === 0 && !searchActive)}
-                {@render prSectionLabel("To Review")}
+                {@render collapsibleSectionHeader("to_review", "To Review", visibleToReviewPrs(project).length, true)}
+                {#if isSectionOpen(project.id, "to_review")}
                 {@const toReviewVisible = visibleToReviewPrs(project).slice(0, revealCount(prRevealCountByProject, project.id))}
                 {#each toReviewVisible as pr (pr.number)}
                   {@render prRow(pr)}
@@ -1261,10 +1463,12 @@
                     Show more
                   </button>
                 {/if}
+                {/if}
               {/if}
 
               {#if visibleRecentPrs(project).length > 0}
-                {@render prSectionLabel("Recent")}
+                {@render collapsibleSectionHeader("recent", "Recent", visibleRecentPrs(project).length)}
+                {#if isSectionOpen(project.id, "recent")}
                 {@const recentVisible = visibleRecentPrs(project).slice(0, revealCount(prRecentRevealCountByProject, project.id))}
                 {#each recentVisible as pr (pr.number)}
                   {@render prRow(pr)}
@@ -1278,13 +1482,16 @@
                     Show more
                   </button>
                 {/if}
+                {/if}
               {/if}
 
               {#if visibleRecentlyMergedPrs(project).length > 0 || (loadingPrList && project.recently_merged?.length === 0 && !searchActive)}
-                {@render prSectionLabel("Recently Merged")}
+                {@render collapsibleSectionHeader("recently_merged", "Recently Merged", visibleRecentlyMergedPrs(project).length, true)}
+                {#if isSectionOpen(project.id, "recently_merged")}
                 {#each visibleRecentlyMergedPrs(project) as pr (pr.number)}
                   {@render prRow(pr)}
                 {/each}
+                {/if}
               {/if}
             </div>
           {/if}
@@ -1304,6 +1511,186 @@
     </div>
   </div>
   </div>
+
+  {#if rowActionMenu}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="fixed inset-0 z-[140]" onclick={closeRowActionMenu}></div>
+    <div
+      class="fixed z-[141] w-40 rounded-md border border-border bg-card shadow-xl py-1"
+      role="menu"
+      style={floatingMenuStyle(rowActionMenu.anchor, rowActionMenu.flip)}
+    >
+      {#if rowActionMenu.kind === "pr"}
+        {@const menuProject = rowActionMenu.project}
+        {@const menuPr = rowActionMenu.pr}
+        {@const menuPrTriaging =
+          triagingPrKey === `${menuProject.id}:${menuPr.number}` ||
+          isPrTriageRunning(menuProject, menuPr.number)}
+        {@const menuPrSyncing = syncingPrKey === `${menuProject.id}:${menuPr.number}`}
+        <button
+          type="button"
+          role="menuitem"
+          onclick={() => togglePinPr(menuProject, menuPr)}
+          class="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] text-fg-2 hover:bg-hover"
+        >
+          <svg
+            class="shrink-0 text-muted"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="12" cy="10" r="3" />
+            <path d="M12 13v8" />
+            <path d="M7 6h10l-1 4H8L7 6Z" />
+          </svg>
+          {isPrPinned(menuProject, menuPr.number) ? "Unpin" : "Pin"}
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          onclick={() => syncPr(menuProject, menuPr)}
+          disabled={menuPrSyncing}
+          class="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] text-fg-2 hover:bg-hover disabled:opacity-50"
+        >
+          <svg
+            class="shrink-0 text-muted"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+            <path d="M3 21v-5h5" />
+          </svg>
+          Sync
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          onclick={() => triagePrFromMenu(menuProject, menuPr)}
+          disabled={menuPrTriaging}
+          class="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] text-fg-2 hover:bg-hover disabled:opacity-50"
+        >
+          <svg
+            class="shrink-0 text-muted"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
+          </svg>
+          Triage
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          onclick={() => toggleIgnorePr(menuProject, menuPr)}
+          class="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] text-fg-2 hover:bg-hover"
+        >
+          <svg
+            class="shrink-0 text-muted"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+            <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+            <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+            <line x1="2" y1="2" x2="22" y2="22" />
+          </svg>
+          {isPrIgnored(menuProject, menuPr.number) ? "Unignore" : "Ignore"}
+        </button>
+      {:else}
+        {@const menuProject = rowActionMenu.project}
+        {@const menuBranch = rowActionMenu.branch}
+        {@const menuBranchTriaging =
+          triagingBranchKey === `${menuProject.id}:${menuBranch}` ||
+          isBranchTriageRunning(menuProject, menuBranch)}
+        {#if menuProject.remote}
+          <button
+            type="button"
+            role="menuitem"
+            onclick={() => triageBranchFromMenu(menuProject, menuBranch)}
+            disabled={menuBranchTriaging}
+            class="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] text-fg-2 hover:bg-hover disabled:opacity-50"
+          >
+            <svg
+              class="shrink-0 text-muted"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
+            </svg>
+            Triage
+          </button>
+        {/if}
+        <button
+          type="button"
+          role="menuitem"
+          onclick={() => syncBranch(menuProject, menuBranch)}
+          disabled={syncingBranchKey === `${menuProject.id}:${menuBranch}`}
+          class="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] text-fg-2 hover:bg-hover disabled:opacity-50"
+        >
+          <svg
+            class="shrink-0 text-muted"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+            <path d="M3 21v-5h5" />
+          </svg>
+          Sync
+        </button>
+        {#if !rowActionMenu.isCurrent && !rowActionMenu.isActiveView}
+          <button
+            type="button"
+            role="menuitem"
+            onclick={() => removeBranchFromMenu(menuProject.id, menuBranch)}
+            class="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[12px] text-del-fg hover:bg-hover"
+          >
+            <svg
+              class="shrink-0"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                d="M3 6h18M19 6l-1 14H6L5 6M10 11v6M14 11v6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+              />
+            </svg>
+            Remove from view
+          </button>
+        {/if}
+      {/if}
+    </div>
+  {/if}
 
   <!-- Footer: er + Settings — fixed at bottom by being a sibling of the flex-1 scroll area. -->
   <button

@@ -13,8 +13,6 @@ use er_engine::app::{
     build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
     BrowserLayout, CardAiContextParams, DiffMode, InputMode,
 };
-use er_engine::config::ErConfig;
-
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects::{self, normalize_remote_slug};
@@ -105,9 +103,12 @@ pub struct OpenSourceResult {
 #[derive(Clone)]
 pub struct AppState {
     pub app: Arc<Mutex<App>>,
-    pub config_edit_baseline: Arc<Mutex<Option<ErConfig>>>,
     pub pr_cache: Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     pub pr_cache_fetched_at: PrCacheFetchedAtMap,
+    /// Background-probed remote oid of the active branch tab's base branch,
+    /// keyed by "{repo_root}\0{base_short}". Compared in build_snapshot against
+    /// the local origin/<base> oid to detect a stale ("behind main") branch diff.
+    pub branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>>,
     pub pr_open_cache: Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     pub meta_cache: MetaCache,
     pub gh_user: GhUser,
@@ -149,30 +150,30 @@ pub struct AppState {
     pub sent_files: crate::snapshot::SentFilesHandle,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PrOpenCacheKey {
-    project_id: String,
-    repo_root: String,
-    pr_number: u64,
+    pub(crate) project_id: String,
+    pub(crate) repo_root: String,
+    pub(crate) pr_number: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrOpenFreshness {
-    base_branch: String,
-    head_branch: String,
-    head_oid: String,
-    updated_at: String,
+    pub(crate) base_branch: String,
+    pub(crate) head_branch: String,
+    pub(crate) head_oid: String,
+    pub(crate) updated_at: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrOpenCacheEntry {
-    freshness: PrOpenFreshness,
-    raw_diff: String,
+    pub(crate) freshness: PrOpenFreshness,
+    pub(crate) raw_diff: String,
     /// Cached PR overview so a click after a hover-prefetch can render the
     /// right panel without re-running `gh pr view`.
-    pr_data: Option<er_engine::github::PrOverviewData>,
+    pub(crate) pr_data: Option<er_engine::github::PrOverviewData>,
     /// Cached GitHub PR commits, newest first, keyed by the same freshness.
-    pr_commits: Option<Vec<er_engine::git::CommitInfo>>,
+    pub(crate) pr_commits: Option<Vec<er_engine::git::CommitInfo>>,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +252,7 @@ pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
         Some(&state.watch_status),
         Some(&state.inbox),
         Some(&state.sent_files),
+        Some(&state.branch_base_remote_oid),
     )
 }
 
@@ -266,6 +268,7 @@ fn chrome_snap_from(app: &App, state: &AppState) -> AppSnapshot {
         Some(&state.loading),
         Some(&state.watch_status),
         Some(&state.inbox),
+        Some(&state.branch_base_remote_oid),
     )
 }
 
@@ -2307,15 +2310,69 @@ pub fn refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
     Ok(snap_from(&app, &state))
 }
 
+/// Latest known PR `head_oid` for `pr_number` from the PR-list cache. This is
+/// the exact source the stale-pill compares against (see `build_snapshot`), so
+/// callers can align a tab's `last_diff_head_oid` with it to clear the pill.
+fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> {
+    state.pr_cache.lock().ok().and_then(|cache| {
+        cache
+            .values()
+            .flat_map(|prs| prs.iter())
+            .find(|p| p.number == pr_number)
+            .map(|p| p.head_oid.clone())
+            .filter(|s| !s.is_empty())
+    })
+}
+
 #[tauri::command]
-pub fn force_refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.tab_mut()
-        .refetch_and_refresh_diff()
-        .map_err(|e| e.to_string())?;
-    crate::tabs::persist_app_tabs(&app);
-    kick_meta_refresh(&state, app.tab().repo_root.clone());
-    Ok(snap_from(&app, &state))
+pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    // Heavy: shells out to git/gh fetches. Run off the main thread so the
+    // window stays responsive (it previously froze for the whole fetch).
+    run_blocking(move || {
+        let root = {
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            app.tab_mut()
+                .refetch_and_refresh_diff()
+                .map_err(|e| e.to_string())?;
+
+            // Clear the stale pill on a completed sync by aligning the tab's
+            // freshness baseline with the exact source the pill compares against
+            // (see `build_snapshot`'s `diff_stale`). Without this the pill stays
+            // stuck "stale" after a successful sync, because the value recorded
+            // during refresh comes from a different source than the comparison.
+            let pr_number = app.tab().pr_number;
+            let is_branch_diff = app.tab().shows_branch_base_diff();
+            let base_branch = app.tab().base_branch.clone();
+            let repo_root = app.tab().repo_root.clone();
+
+            if let Some(pr_number) = pr_number {
+                // PR pill compares pr_cache `head_oid` (gh) vs `last_diff_head_oid`,
+                // but refresh records the latter from the local pull/<n>/head ref.
+                // Mirror the remote loop and adopt the cache value.
+                if let Some(oid) = pr_cache_head_oid_for_pr(&state, pr_number) {
+                    app.tab_mut().last_diff_head_oid = Some(oid);
+                }
+            } else if is_branch_diff {
+                // Branch pill compares the ls-remote probe cache vs the local
+                // `origin/<base>` oid. After the sync just fetched `origin/<base>`,
+                // adopt that oid as the probed value so the two agree.
+                let base_short = base_branch.trim_start_matches("origin/").to_string();
+                if let Some(oid) = er_engine::github::rev_parse_oid(&repo_root, &base_branch) {
+                    let key = format!("{repo_root}\u{0}{base_short}");
+                    if let Ok(mut cache) = state.branch_base_remote_oid.lock() {
+                        cache.insert(key, oid);
+                    }
+                }
+            }
+
+            crate::tabs::persist_app_tabs(&app);
+            repo_root
+        };
+        kick_meta_refresh(&state, root);
+        snap!(state)
+    })
+    .await
 }
 
 /// Trigger an immediate background refresh of the GitHub status for the active tab.
@@ -3481,8 +3538,7 @@ pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnaps
 pub fn set_ai_model(model: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
 
-    let repo_root = app.tab().repo_root.clone();
-    let mut cfg = er_engine::config::load_config(&repo_root);
+    let mut cfg = er_engine::config::load_global_config();
     cfg.agent.model = model;
     er_engine::config::save_config(&cfg).map_err(|e| e.to_string())?;
 
@@ -3592,12 +3648,8 @@ pub fn set_ai_effort(
         .map(|e| e.trim().to_string())
         .filter(|e| !e.is_empty());
     app.current_ai_effort = normalized.clone();
-
-    let repo_root = app.tab().repo_root.clone();
-    let mut cfg = er_engine::config::load_config(&repo_root);
-    cfg.ai_hub.default_effort = normalized;
-    er_engine::config::save_config_local(&cfg, &repo_root).map_err(|e| e.to_string())?;
-    app.config.ai_hub.default_effort = app.current_ai_effort.clone();
+    app.config.ai_hub.default_effort = normalized;
+    er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
 
     state
         .desktop_revision
@@ -4042,7 +4094,7 @@ pub fn ask_ai(
         finding_description: finding_description.as_deref(),
     });
 
-    let cfg = er_engine::config::load_config(&repo_root);
+    let cfg = er_engine::config::load_global_config();
     let invocation = plan_card_ai_invocation(
         &cfg,
         provider_id.as_deref(),
@@ -4267,7 +4319,7 @@ fn ask_ai_for_finding(
         finding_description: Some(finding_description.as_str()),
     });
 
-    let cfg = er_engine::config::load_config(&repo_root);
+    let cfg = er_engine::config::load_global_config();
     let invocation = plan_card_ai_invocation(
         &cfg,
         provider_id.as_deref(),
@@ -4956,16 +5008,6 @@ fn cached_pr_open_entry(
         .map(|entry| (entry.raw_diff, entry.pr_data, entry.pr_commits))
 }
 
-#[cfg(test)]
-fn remember_pr_open_diff(
-    cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
-    key: PrOpenCacheKey,
-    freshness: PrOpenFreshness,
-    raw_diff: String,
-) {
-    remember_pr_open_entry(cache, key, freshness, raw_diff, None, None);
-}
-
 fn remember_pr_open_entry(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: PrOpenCacheKey,
@@ -5005,6 +5047,7 @@ fn remember_pr_open_entry(
             }
         }
     }
+    crate::pr_open_cache::save_persisted_pr_open_cache(cache);
 }
 
 fn run_gh_pr_view_for_open(repo_root: &str, pr_number: u64) -> Result<PrOpenMetadata, String> {
@@ -6057,7 +6100,129 @@ pub fn dismiss_remote_pr(
         .map(|a| a.tab().repo_root.clone())
         .unwrap_or_default();
     kick_meta_refresh(&state, root);
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     snap!(state)
+}
+
+#[tauri::command]
+pub fn undismiss_remote_pr(
+    project_id: String,
+    pr_number: u64,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    projects::undismiss_pr(&project_id, pr_number).map_err(|e| e.to_string())?;
+    let root = state
+        .app
+        .lock()
+        .ok()
+        .map(|a| a.tab().repo_root.clone())
+        .unwrap_or_default();
+    kick_meta_refresh(&state, root);
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    snap!(state)
+}
+
+#[tauri::command]
+pub async fn sync_pr(
+    project_id: String,
+    pr_number: u64,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let proj = projects::load()
+            .projects
+            .into_iter()
+            .find(|p| p.id == project_id);
+        let (remote, root_path) = match proj {
+            Some(p) => (
+                p.remote
+                    .ok_or_else(|| "Project has no remote configured".to_string())?,
+                p.root_path,
+            ),
+            None => return Err("Project not found".to_string()),
+        };
+        cache_single_pr_for_remote(&state, &remote, pr_number)?;
+
+        // sync_pr alone only refreshes the metadata cache. If this PR is open in
+        // any tab, force-refresh that tab's diff so the view reflects origin.
+        if let Ok(mut app) = state.app.lock() {
+            let indices: Vec<usize> = app
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    t.pr_number == Some(pr_number)
+                        && (t.remote_repo.as_deref() == Some(remote.as_str())
+                            || t.repo_root == root_path)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            for i in indices {
+                if let Some(tab) = app.tabs.get_mut(i) {
+                    if let Err(e) = tab.refetch_and_refresh_diff() {
+                        log::warn!("sync_pr: diff refresh failed for tab {i}: {e}");
+                    }
+                }
+            }
+        }
+
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        snap!(state)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn sync_branch(
+    project_id: String,
+    branch: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let root_path = projects::load()
+            .projects
+            .into_iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.root_path)
+            .ok_or_else(|| "Project not found".to_string())?;
+
+        if let Ok(mut app) = state.app.lock() {
+            let indices: Vec<usize> = app
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    !t.is_remote()
+                        && t.pr_number.is_none()
+                        && t.repo_root == root_path
+                        && (t.local_branch_view.as_deref() == Some(branch.as_str())
+                            || (t.local_branch_view.is_none() && t.current_branch == branch))
+                })
+                .map(|(i, _)| i)
+                .collect();
+            for i in indices {
+                if let Some(tab) = app.tabs.get_mut(i) {
+                    if let Err(e) = tab.refetch_and_refresh_diff() {
+                        log::warn!("sync_branch: diff refresh failed for tab {i}: {e}");
+                    }
+                }
+            }
+        }
+
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        snap!(state)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -7696,6 +7861,25 @@ mod tests {
         assert_eq!(resolve_review_scope("current", &tab).unwrap(), "branch");
     }
 
+    /// Insert directly into the cache map for read-side gating tests, bypassing
+    /// `remember_pr_open_entry` so the test never triggers a real disk write.
+    fn insert_pr_open_test_entry(
+        cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
+        key: PrOpenCacheKey,
+        freshness: PrOpenFreshness,
+        raw_diff: String,
+    ) {
+        cache.lock().unwrap().insert(
+            key,
+            PrOpenCacheEntry {
+                freshness,
+                raw_diff,
+                pr_data: None,
+                pr_commits: None,
+            },
+        );
+    }
+
     #[test]
     fn pr_open_cache_returns_matching_fresh_diff() {
         let cache = Arc::new(Mutex::new(HashMap::new()));
@@ -7706,7 +7890,7 @@ mod tests {
             head_oid: "abc".into(),
             updated_at: "2026-05-17T10:00:00Z".into(),
         };
-        remember_pr_open_diff(&cache, key.clone(), freshness.clone(), "diff --git".into());
+        insert_pr_open_test_entry(&cache, key.clone(), freshness.clone(), "diff --git".into());
 
         assert_eq!(
             cached_pr_open_diff(&cache, &key, &freshness).as_deref(),
@@ -7724,7 +7908,7 @@ mod tests {
             head_oid: "abc".into(),
             updated_at: "2026-05-17T10:00:00Z".into(),
         };
-        remember_pr_open_diff(&cache, key.clone(), freshness.clone(), "old diff".into());
+        insert_pr_open_test_entry(&cache, key.clone(), freshness.clone(), "old diff".into());
 
         let stale_probe = PrOpenFreshness {
             head_oid: "def".into(),

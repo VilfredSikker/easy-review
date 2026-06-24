@@ -36,8 +36,6 @@
   let generalFields = $state<ConfigHubField[]>([]);
   let terminalFields = $state<ConfigHubField[]>([]);
   let providers = $state<AiProviderInfo[]>([]);
-  let hasLocalConfig = $state(false);
-  let localThemeOverride = $state<string | null>(null);
   let repoRoot = $state("");
   let addPattern = $state("");
   let textWarnings = $state<Record<string, string | null>>({});
@@ -82,17 +80,13 @@
     generalFields = res.settings.general;
     terminalFields = res.settings.terminal;
     providers = res.providers;
-    hasLocalConfig = res.settings.hasLocalConfig;
-    localThemeOverride = res.settings.localThemeOverride ?? null;
     repoRoot = res.settings.repoRoot;
   }
 
-  async function reload(resetBaseline = false) {
+  async function reload() {
     loading = true;
     try {
-      const res = await invoke<GetConfigHubResponse>("get_config_hub", {
-        resetBaseline,
-      });
+      const res = await invoke<GetConfigHubResponse>("get_config_hub", {});
       applySettings(res);
     } catch (e) {
       app.showToast("error", `get_config_hub: ${e}`);
@@ -117,19 +111,19 @@
     if (!p) return;
     if (p.models.length === 0) {
       await invoke("set_ai_selection", { providerId, modelId: null });
-      await reload(false);
+      await reload();
       return;
     }
     const model = p.models.find((m) => m.is_selected) ?? p.models[0];
     await invoke("set_ai_selection", { providerId, modelId: model?.id ?? null });
-    await reload(false);
+    await reload();
   }
 
   async function selectModel(modelId: string) {
     const p = selectedProvider;
     if (!p) return;
     await invoke("set_ai_selection", { providerId: p.id, modelId });
-    await reload(false);
+    await reload();
   }
 
   async function saveDefaults() {
@@ -148,27 +142,6 @@
     }
   }
 
-  async function revert() {
-    try {
-      const res = await invoke<GetConfigHubResponse>("reset_config_draft");
-      applySettings(res);
-      app.showToast("info", "Reverted unsaved changes");
-    } catch (e) {
-      app.showToast("error", `reset_config_draft: ${e}`);
-    }
-  }
-
-  async function saveLocal() {
-    try {
-      const snap = await invoke<AppSnapshot>("save_config_local_cmd");
-      app.ingestCommandSnapshot(snap);
-      hasLocalConfig = true;
-      await reload(false);
-    } catch (e) {
-      app.showToast("error", `save_config_local_cmd: ${e}`);
-    }
-  }
-
   async function patchProjectReviewSettings(
     projectId: string,
     patch: Record<string, unknown>,
@@ -184,15 +157,6 @@
     }
   }
 
-  async function saveGlobal() {
-    try {
-      const snap = await invoke<AppSnapshot>("save_config_global_cmd");
-      app.ingestCommandSnapshot(snap);
-    } catch (e) {
-      app.showToast("error", `save_config_global_cmd: ${e}`);
-    }
-  }
-
   function validateText(key: string, value: string) {
     if (key === "agent.args" && !value.includes("{prompt}")) {
       textWarnings[key] = "Include {prompt} in args so the agent receives user input.";
@@ -204,7 +168,7 @@
   }
 
   $effect(() => {
-    void reload(true);
+    void reload();
   });
 </script>
 
@@ -225,10 +189,10 @@
       title={repoRoot}
     >
       <span
-        class="w-1.5 h-1.5 rounded-full shrink-0 {hasLocalConfig ? 'bg-accent' : 'bg-ink-300'}"
+        class="w-1.5 h-1.5 rounded-full shrink-0 bg-ink-300"
         aria-hidden="true"
       ></span>
-      {hasLocalConfig ? ".er-config.toml" : "global defaults"}
+      global defaults
     </span>
   </header>
 
@@ -264,20 +228,6 @@
           {/each}
         </div>
         <p class="text-xs text-muted mt-3 mb-5">{tabBlurb}</p>
-
-        {#if activeTab === "general" && localThemeOverride}
-          <div
-            class="flex gap-2.5 text-xs text-question/90 mb-5 border border-question-border rounded-lg px-3.5 py-2.5 bg-question-surface"
-          >
-            <span aria-hidden="true" class="shrink-0">⚠</span>
-            <p>
-              This repo’s <code class="font-mono">.er-config.toml</code> sets theme to
-              <code class="font-mono">{localThemeOverride}</code>, which overrides your global config for this repo
-              (app and <code class="font-mono">er</code>). Use “Save to repo” after changing theme, or remove
-              <code class="font-mono">[display].theme</code> from the repo file to follow global only.
-            </p>
-          </div>
-        {/if}
 
         {#if activeTab === "projects"}
           {#if projects.length === 0}
@@ -427,7 +377,7 @@
             <div class="border border-dashed border-border rounded-xl px-6 py-8 text-center">
               <p class="text-xs text-muted">
                 No <code class="font-mono">[ai_hub]</code> providers in config. Add providers in
-                <code class="font-mono">.er-config.toml</code>.
+                <code class="font-mono">~/.config/er/config.toml</code>.
               </p>
             </div>
           {/if}
@@ -435,15 +385,10 @@
       </div>
     </div>
 
-    <footer class="shrink-0 flex flex-wrap items-center gap-2 px-5 py-3 border-t border-hairline bg-surface">
-      <div class="flex gap-2 max-w-2xl mx-auto w-full items-center px-1">
-        <Button variant="primary" onclick={() => void saveLocal()}>Save to repo</Button>
-        <Button onclick={() => void saveGlobal()}>Save globally</Button>
-        <Button variant="ghost" onclick={() => void revert()}>Revert</Button>
-        <span class="ml-auto text-[10px] font-mono text-muted hidden sm:block">
-          {hasLocalConfig ? ".er-config.toml" : "~/.config/er/config.toml"}
-        </span>
-      </div>
+    <footer class="shrink-0 flex items-center px-5 py-2 border-t border-hairline bg-surface">
+      <span class="max-w-2xl mx-auto w-full px-1 text-[10px] font-mono text-muted">
+        Saved automatically to ~/.config/er/config.toml
+      </span>
     </footer>
   {/if}
 </div>

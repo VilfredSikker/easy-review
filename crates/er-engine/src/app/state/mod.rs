@@ -45,6 +45,16 @@ fn log_branch_profile_phase(tab: &TabState, phase: &str, started_at: Instant) {
     );
 }
 
+/// Apply a freshly-fetched PR commit list, best-effort. An empty `fetched` is the
+/// failure signal for a real PR (which always has ≥1 commit), so it is dropped
+/// rather than clobbering a good existing list. Shared decision with the remote
+/// path (`RemoteDiffResult.commits`), kept in one place so both stay in sync.
+pub(crate) fn apply_pr_commit_refresh(existing: &mut Vec<CommitInfo>, fetched: Vec<CommitInfo>) {
+    if !fetched.is_empty() {
+        *existing = fetched;
+    }
+}
+
 /// Decide whether a loaded guided tour is stale relative to the diff it is
 /// scoped to.
 ///
@@ -1444,7 +1454,7 @@ impl TabState {
         refresh_initial_diff: bool,
     ) -> Result<Self> {
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
-        let er_config = config::load_config(&repo_root);
+        let er_config = config::load_global_config();
         let watched_config = er_config.watched.clone();
         let has_watched = !watched_config.paths.is_empty();
         let merge_active = git::is_merge_in_progress(&repo_root);
@@ -1735,6 +1745,14 @@ impl TabState {
     /// Like remote, only the Branch mode is offered and write commands are hidden.
     pub fn is_local_branch_view(&self) -> bool {
         self.local_branch_view.is_some()
+    }
+
+    /// Whether the active diff is a local branch-vs-base diff (the "Local Diff"):
+    /// the main checked-out branch OR a read-only branch view, in Branch mode,
+    /// not a PR. These are the tabs whose `origin/<base>` can go stale ("behind
+    /// main"). Drives both the base re-fetch on sync and the stale-pill probe.
+    pub fn shows_branch_base_diff(&self) -> bool {
+        !self.is_remote() && self.pr_number.is_none() && self.mode == DiffMode::Branch
     }
 
     /// Which review bucket this tab belongs to.
@@ -2049,6 +2067,10 @@ impl TabState {
                 &self.repo_root,
                 base.trim_start_matches("origin/"),
             )?;
+            // Record the oid the diff is computed against so the desktop
+            // freshness check has a baseline on the normal open path (not just
+            // after a manual sync). The ref oid is stable until re-fetched.
+            self.last_diff_head_oid = crate::github::rev_parse_oid(&self.repo_root, &head_ref);
             self.pr_head_ref = Some(head_ref);
             self.base_branch = base_ref;
             self.pr_refs_fetched = true;
@@ -2086,8 +2108,36 @@ impl TabState {
                 crate::github::fetch_base_branch_ref(&self.repo_root, &base_branch)?;
             log_branch_profile_phase(self, "fetch_pr_base_ref", t);
 
-            self.pr_head_ref = Some(head_ref);
+            self.pr_head_ref = Some(head_ref.clone());
             self.base_branch = resolved_base;
+            // Record the oid the diff was computed against so the desktop
+            // freshness check can compare it to the latest PR head_oid.
+            self.last_diff_head_oid = crate::github::rev_parse_oid(&self.repo_root, &head_ref);
+
+            // Refresh the PR commit list so the COMMITS panel follows the synced
+            // head. Best-effort: a fetch error keeps the existing list; an empty
+            // result (the failure signal for a real PR, which always has ≥1
+            // commit) is also kept — see `apply_pr_commit_refresh`.
+            let t = Instant::now();
+            match crate::github::gh_pr_commits(&self.repo_root, pr_number, 250) {
+                Ok(commits) => apply_pr_commit_refresh(&mut self.pr_commits, commits),
+                Err(e) => eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}"),
+            }
+            log_branch_profile_phase(self, "refetch_pr_commits", t);
+        } else if self.shows_branch_base_diff() {
+            // Branch ("Local Diff") view — main checkout or read-only branch view:
+            // the diff base is origin/<base>. Re-fetch
+            // it so the comparison reflects current origin (e.g. main advanced).
+            // Best-effort: if the fetch fails (e.g. offline), keep the existing
+            // base ref and still recompute the diff rather than erroring out.
+            let base = self.base_branch.clone();
+            let base_short = base.strip_prefix("origin/").unwrap_or(&base);
+            let t = Instant::now();
+            match crate::github::fetch_base_branch_ref(&self.repo_root, base_short) {
+                Ok(resolved_base) => self.base_branch = resolved_base,
+                Err(e) => eprintln!("sync: base re-fetch failed for '{base_short}': {e}"),
+            }
+            log_branch_profile_phase(self, "fetch_branch_base_ref", t);
         }
 
         let t = Instant::now();
@@ -3670,8 +3720,8 @@ impl TabState {
                 self.current_line = None;
                 self.selected_watched = None;
                 self.diff_scroll = 0;
-                // Reload config to pick up any .er-config.toml changes
-                let er_config = crate::config::load_config(&self.repo_root);
+                // Reload watched paths from the global config
+                let er_config = crate::config::load_global_config();
                 self.watched_config = er_config.watched;
                 // Hidden mode shows only watched/gitignored files — clear regular diff
                 self.files.clear();
@@ -3745,7 +3795,7 @@ impl TabState {
     /// Reload config from .er-config.toml
     #[allow(dead_code)]
     pub fn reload_config(&mut self) {
-        let er_config = config::load_config(&self.repo_root);
+        let er_config = config::load_global_config();
         self.watched_config = er_config.watched;
         let has_paths = !self.watched_config.paths.is_empty();
         if !has_paths {
@@ -4286,10 +4336,8 @@ impl App {
             tabs
         };
 
-        // Config comes from the first tab's repo root and applies to all tabs —
-        // other tabs' .er-config.toml files are ignored.
-        let repo_root = tabs.first().map(|t| t.repo_root.as_str()).unwrap_or(".");
-        let er_config = config::load_config(repo_root);
+        // Config is global-only; every tab shares the same settings.
+        let er_config = config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         let arena_registry = App::init_arena_registry(Arc::new(|| {}));
@@ -4333,7 +4381,7 @@ impl App {
     pub fn new_unloaded(repo_root: String) -> Result<Self> {
         let base = git::detect_base_branch_in(&repo_root)?;
         let tab = TabState::new_with_base_unloaded(repo_root.clone(), base)?;
-        let er_config = crate::config::load_config(&repo_root);
+        let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
         Ok(App {
@@ -4721,10 +4769,13 @@ impl App {
         idx
     }
 
-    /// Reload shared `App.config` from the active tab's repo (global + `.er-config.toml`).
+    /// Push the global watched-file config onto the focused tab. Config is
+    /// global-only, so this no longer reloads theme/display/features from disk —
+    /// the old wholesale reload here is what silently reverted in-flight settings.
     pub fn sync_config_from_active_tab(&mut self) {
-        if let Some(tab) = self.tabs.get(self.active_tab) {
-            self.config = config::load_config(&tab.repo_root);
+        let watched = self.config.watched.clone();
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.watched_config = watched;
         }
     }
 
@@ -6206,20 +6257,6 @@ impl App {
                 self.config.watched.paths.remove(path_idx);
                 self.config_hub_rebuild_items();
             }
-        }
-    }
-
-    /// Save config to the repo-local `.er-config.toml` and close the hub
-    pub fn config_hub_save_local(&mut self) {
-        let repo_root = self.tab().repo_root.clone();
-        if let Err(e) = config::save_config_local(&self.config, &repo_root) {
-            self.notify(&format!("Failed to save: {}", e));
-        } else {
-            // Sync watched config to active tab so W key sees updated paths
-            self.tab_mut().watched_config = self.config.watched.clone();
-            self.tab_mut().refresh_watched_files();
-            self.notify("Config saved to .er-config.toml");
-            self.overlay = None;
         }
     }
 
@@ -9679,6 +9716,105 @@ mod tests {
             history.commit_files.iter().any(|f| f.path == "file.txt"),
             "older commit diff should be loaded from the selected cached PR commit"
         );
+    }
+
+    // ── local PR commit refresh decision (the seam shared with the remote path) ──
+
+    /// A non-empty fetch (the synced commit list) replaces the existing one —
+    /// this is the wiring the local `refetch_and_refresh_diff` branch relies on.
+    #[test]
+    fn apply_pr_commit_refresh_replaces_with_nonempty() {
+        let mut existing = vec![
+            history_commit_info("a".repeat(40), "old 0"),
+            history_commit_info("b".repeat(40), "old 1"),
+            history_commit_info("c".repeat(40), "old 2"),
+        ];
+        let fresh: Vec<_> = (0..5)
+            .map(|i| history_commit_info(format!("{:040x}", i), &format!("new {i}")))
+            .collect();
+
+        apply_pr_commit_refresh(&mut existing, fresh);
+
+        assert_eq!(existing.len(), 5);
+        assert_eq!(existing[0].subject, "new 0");
+        assert_eq!(existing[4].subject, "new 4");
+    }
+
+    /// An empty fetch is the failure signal for a real PR — keep the existing
+    /// list rather than clobbering a good one with nothing.
+    #[test]
+    fn apply_pr_commit_refresh_keeps_existing_on_empty() {
+        let mut existing = vec![
+            history_commit_info("a".repeat(40), "old 0"),
+            history_commit_info("b".repeat(40), "old 1"),
+            history_commit_info("c".repeat(40), "old 2"),
+        ];
+
+        apply_pr_commit_refresh(&mut existing, Vec::new());
+
+        assert_eq!(existing.len(), 3);
+        assert_eq!(existing[0].subject, "old 0");
+    }
+
+    // ── remote diff apply: pr_commits refresh ──
+
+    fn remote_pr_app_with_commits(commit_count: usize) -> App {
+        let mut app = App::new_for_test(vec![]);
+        let tab = app.tab_mut();
+        tab.repo_root = "/tmp/test".to_string();
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.pr_number = Some(42);
+        tab.pr_commits = (0..commit_count)
+            .map(|i| history_commit_info(format!("{:040x}", i), &format!("commit {i}")))
+            .collect();
+        app
+    }
+
+    fn remote_diff_result(
+        commits: Option<Vec<crate::git::CommitInfo>>,
+    ) -> crate::sync::RemoteDiffResult {
+        crate::sync::RemoteDiffResult {
+            raw_diff: String::new(),
+            files: Vec::new(),
+            branch_diff_hash: "hash".to_string(),
+            diff_hash: "hash".to_string(),
+            head_oid: Some("newhead".to_string()),
+            commits,
+            tab_key: ("/tmp/test".to_string(), Some(42), true),
+        }
+    }
+
+    /// A remote diff refresh that carries a fresh commit list replaces the
+    /// frozen `pr_commits` so the COMMITS panel follows the synced head.
+    #[test]
+    fn apply_remote_diff_replaces_pr_commits_when_present() {
+        let mut app = remote_pr_app_with_commits(3);
+        assert_eq!(app.tab().pr_commits.len(), 3);
+
+        let fresh: Vec<_> = (0..5)
+            .map(|i| history_commit_info(format!("{:040x}", i + 100), &format!("fresh {i}")))
+            .collect();
+        app.apply_remote_diff_result(remote_diff_result(Some(fresh)));
+
+        let commits = &app.tab().pr_commits;
+        assert_eq!(commits.len(), 5);
+        assert_eq!(commits[0].subject, "fresh 0");
+        assert_eq!(commits[4].subject, "fresh 4");
+        // Head oid advances alongside the commit list.
+        assert_eq!(app.tab().last_diff_head_oid.as_deref(), Some("newhead"));
+    }
+
+    /// A failed/empty commit fetch (`None`) keeps the existing list intact —
+    /// best-effort, never clobber a good list with an empty one.
+    #[test]
+    fn apply_remote_diff_keeps_pr_commits_when_none() {
+        let mut app = remote_pr_app_with_commits(3);
+
+        app.apply_remote_diff_result(remote_diff_result(None));
+
+        let commits = &app.tab().pr_commits;
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0].subject, "commit 0");
     }
 
     // ── visible_modes / PrDiff wiring ──

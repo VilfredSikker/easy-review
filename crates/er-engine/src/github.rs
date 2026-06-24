@@ -14,7 +14,7 @@ pub struct PrRef {
 }
 
 /// Fetched PR overview data for the PrOverview panel
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrOverviewData {
     pub number: u64,
     pub title: String,
@@ -28,14 +28,14 @@ pub struct PrOverviewData {
     pub reviewers: Vec<ReviewerStatus>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CiCheck {
     pub name: String,
     pub status: String,
     pub conclusion: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReviewerStatus {
     pub login: String,
     pub state: String,
@@ -359,6 +359,24 @@ pub fn ref_exists_locally(repo_root: &str, ref_name: &str) -> bool {
         .current_dir(repo_root)
         .output();
     out.map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Resolve a git ref to its commit oid (full sha). Returns None on any failure.
+pub fn rev_parse_oid(repo_root: &str, ref_name: &str) -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--verify", ref_name])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if oid.is_empty() {
+        None
+    } else {
+        Some(oid)
+    }
 }
 
 /// Force-fetch a base branch from origin, updating `origin/<base>` even if it already exists.

@@ -18,6 +18,7 @@ _TBD — summarize the headline features once the release is cut._
 
 ### Fixes
 - Guide freshness: recompute the branch diff hash when a tour exists so a freshly generated Guide isn't shown stale; deterministic storage fallback when the PR bucket can't be resolved.
+- Settings are now global-only and save instantly. Changing the theme (or any setting) in the desktop app persists immediately to `~/.config/er/config.toml`, so opening the AI picker, the Arena launcher, or a new tab no longer reverts it. Per-repo `.er-config.toml` config is no longer read or written (fixes the theme occasionally resetting on its own).
 
 ### Docs / Internal
 - Establish branching & release workflow: PRs to `main` are bug-fix-only; feature work ships on release branches with release notes.

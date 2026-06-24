@@ -73,6 +73,11 @@
 
   const COMPOSER_APPROX_HEIGHT_PX = 160;
 
+  /** Empty scroll space below the last row so the last file's final lines clear
+   *  the bottom chrome. Render-only — added to the .hscroll height, never to the
+   *  geometry object (which drives the virtual window, ruler marks, and clamps). */
+  const MIN_BOTTOM_PAD_PX = 320;
+
   const FIXED_HEIGHT_ROW_TYPES = new Set<CrossFileFlatRow["type"]>([
     "file-header",
     "hunk-header",
@@ -419,6 +424,9 @@
    * pixels keeps the window ahead of the native scroll regardless of row heights.
    */
   const OVERSCAN_PX = $derived(Math.round(viewportHeightPx * 1.5));
+  /** A screenful of empty scroll space appended below the last row (floored so
+   *  it's never 0 before the viewport is measured). */
+  const bottomPadPx = $derived(Math.max(MIN_BOTTOM_PAD_PX, viewportHeightPx));
   /** Sticky file-path bar in .vscroll (h-10) — row offsets live inside .hscroll below it. */
   const STICKY_HEADER_PX = 40;
   const rowScrollTopPx = $derived(Math.max(0, scrollTopPx - STICKY_HEADER_PX));
@@ -1849,7 +1857,7 @@
       <div
         bind:this={hscrollEl}
         class="hscroll"
-        style="height:{effectiveGeometry.totalHeight}px;overflow-x:auto;overflow-y:hidden;position:relative;{tourActive
+        style="height:{effectiveGeometry.totalHeight + bottomPadPx}px;overflow-x:auto;overflow-y:hidden;position:relative;{tourActive
           ? `margin-left:${RAIL_W}px;width:calc(100% - ${RAIL_W}px);`
           : 'width:100%;'}"
       >

@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::SystemTime;
 
 /// Metadata for a single commit (used in History mode)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommitInfo {
     pub hash: String,
     pub short_hash: String,

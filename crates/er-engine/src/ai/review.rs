@@ -451,11 +451,14 @@ impl AiState {
                             .push((CommentSource::Question, i));
                     }
                 }
-                // File count: all questions (matching file_question_count behavior)
-                let counts = file_comment_counts
-                    .entry(q.file.clone())
-                    .or_insert((0, 0, 0));
-                counts.0 += 1;
+                // File count: top-level, active (non-resolved, non-stale) questions
+                // only — drives the file-tree annotation badge.
+                if q.in_reply_to.is_none() && !q.resolved && !q.stale {
+                    let counts = file_comment_counts
+                        .entry(q.file.clone())
+                        .or_insert((0, 0, 0));
+                    counts.0 += 1;
+                }
             }
         }
 
@@ -474,10 +477,13 @@ impl AiState {
                             .push((CommentSource::Note, i));
                     }
                 }
-                let counts = file_comment_counts
-                    .entry(n.file.clone())
-                    .or_insert((0, 0, 0));
-                counts.2 += 1;
+                // Active, top-level notes only — same badge semantics as questions.
+                if n.in_reply_to.is_none() && !n.resolved && !n.stale {
+                    let counts = file_comment_counts
+                        .entry(n.file.clone())
+                        .or_insert((0, 0, 0));
+                    counts.2 += 1;
+                }
             }
         }
 
@@ -497,11 +503,17 @@ impl AiState {
                             .push((CommentSource::GitHubComment, i));
                     }
                 }
-                // File count: top-level only, excluding finding replies
-                let counts = file_comment_counts
-                    .entry(c.file.clone())
-                    .or_insert((0, 0, 0));
-                if c.in_reply_to.is_none() && c.finding_ref.is_none() {
+                // File count: top-level, active (non-resolved, non-stale, non-outdated)
+                // comments only, excluding finding replies — drives the file-tree badge.
+                if c.in_reply_to.is_none()
+                    && c.finding_ref.is_none()
+                    && !c.resolved
+                    && !c.stale
+                    && !c.outdated
+                {
+                    let counts = file_comment_counts
+                        .entry(c.file.clone())
+                        .or_insert((0, 0, 0));
                     counts.1 += 1;
                 }
             }
@@ -2501,6 +2513,46 @@ mod tests {
         assert_eq!(state.file_github_comment_count("a.rs"), 2);
         assert_eq!(state.file_github_comment_count("b.rs"), 1);
         assert_eq!(state.file_github_comment_count("c.rs"), 0);
+    }
+
+    #[test]
+    fn file_question_count_excludes_resolved_stale_and_replies() {
+        let mut state = AiState::default();
+        let mut resolved = make_question("q1", "a.rs", Some(0));
+        resolved.resolved = true;
+        let mut stale = make_question("q2", "a.rs", Some(0));
+        stale.stale = true;
+        let mut reply = make_question("q3", "a.rs", Some(0));
+        reply.in_reply_to = Some("q-parent".to_string());
+        let active = make_question("q4", "a.rs", Some(0));
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![resolved, stale, reply, active],
+        });
+        // Only the single active, top-level question drives the badge.
+        assert_eq!(state.file_question_count("a.rs"), 1);
+    }
+
+    #[test]
+    fn file_github_comment_count_excludes_resolved_stale_outdated() {
+        let mut state = AiState::default();
+        let mut resolved = make_github_comment("c1", "a.rs", Some(0), None);
+        resolved.resolved = true;
+        let mut stale = make_github_comment("c2", "a.rs", Some(0), None);
+        stale.stale = true;
+        let mut outdated = make_github_comment("c3", "a.rs", Some(0), None);
+        outdated.outdated = true;
+        let active = make_github_comment("c4", "a.rs", Some(0), None);
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![resolved, stale, outdated, active],
+        });
+        // Resolved / stale / outdated comments are hidden everywhere, so they
+        // must not light the file badge either — only the active one counts.
+        assert_eq!(state.file_github_comment_count("a.rs"), 1);
     }
 
     // ── AiState::all_hints_ordered ──

@@ -13,6 +13,7 @@ mod frame_script;
 mod inbox;
 mod main_webview_policy;
 mod pr_cache;
+mod pr_open_cache;
 mod profile_log;
 mod projects;
 mod snapshot;
@@ -631,7 +632,12 @@ fn main() {
     let pr_cache_fetched_at: Arc<Mutex<HashMap<String, u64>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let pr_open_cache: Arc<Mutex<HashMap<commands::PrOpenCacheKey, commands::PrOpenCacheEntry>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+        Arc::new(Mutex::new(
+            pr_open_cache::load_persisted_pr_open_cache()
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        ));
     let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> = Arc::new(Mutex::new(HashMap::new()));
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     #[allow(clippy::type_complexity)]
@@ -686,11 +692,13 @@ fn main() {
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let last_sent_reviewed_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+    let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let state = AppState {
-        config_edit_baseline: Arc::new(Mutex::new(None)),
         app: Arc::clone(&app_arc),
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
+        branch_base_remote_oid: Arc::clone(&branch_base_remote_oid),
         pr_open_cache: Arc::clone(&pr_open_cache),
         meta_cache: Arc::clone(&meta_cache),
         gh_user: Arc::clone(&gh_user),
@@ -805,6 +813,86 @@ fn main() {
                     // head_oid unchanged — nothing to do.
                 }
                 Err(e) => log::error!("remote PR diff refresh failed: {e}"),
+            }
+        });
+    }
+
+    // Background base-branch staleness probe on a 60s cadence. The ONLY new
+    // network cost for branch ("Local Diff") freshness. Mirrors the remote-PR
+    // loop's three-phase shape so we never hold the App mutex across `git`:
+    //   Phase 1 (brief lock) — read the active tab's identity; bail unless it's
+    //                          a branch view (not remote, no PR, has a view).
+    //   Phase 2 (no lock)    — `git ls-remote origin <base>` to learn origin's
+    //                          tip. ANY failure (error/non-zero/empty) no-ops.
+    //   Phase 3 (brief lock) — cache the oid; bump the revision ONLY when it
+    //                          actually changed, so we don't churn polls.
+    {
+        let probe_app = Arc::clone(&app_arc);
+        let probe_cache = Arc::clone(&branch_base_remote_oid);
+        let probe_rev = Arc::clone(&desktop_revision);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+
+            // Phase 1: brief lock — capture the active branch tab's identity.
+            let identity = {
+                let guard = match probe_app.try_lock() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                let tab = guard.tab();
+                if !tab.shows_branch_base_diff() {
+                    None
+                } else {
+                    let base_short = tab
+                        .base_branch
+                        .trim_start_matches("origin/")
+                        .to_string();
+                    Some((tab.repo_root.clone(), base_short))
+                }
+            };
+            let Some((repo_root, base_short)) = identity else {
+                continue;
+            };
+            if base_short.is_empty() {
+                continue;
+            }
+
+            // Phase 2: no lock — ask origin for the base branch tip.
+            let out = std::process::Command::new("git")
+                .args(["ls-remote", "origin", &base_short])
+                .current_dir(&repo_root)
+                .output();
+            let oid = match out {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    stdout
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().next())
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                }
+                _ => None,
+            };
+            let Some(oid) = oid else {
+                continue;
+            };
+
+            // Phase 3: brief lock — store + bump only on a real change.
+            let key = format!("{repo_root}\u{0}{base_short}");
+            let changed = match probe_cache.lock() {
+                Ok(mut cache) => {
+                    if cache.get(&key).map(|v| v.as_str()) == Some(oid.as_str()) {
+                        false
+                    } else {
+                        cache.insert(key, oid);
+                        true
+                    }
+                }
+                Err(_) => false,
+            };
+            if changed {
+                profile_log::bump_desktop_revision(&probe_rev, "branch_stale_probe");
             }
         });
     }
@@ -1473,8 +1561,6 @@ fn main() {
             commands::set_ai_selection,
             config_commands::get_config_hub,
             config_commands::apply_config_patch,
-            config_commands::reset_config_draft,
-            config_commands::save_config_local_cmd,
             config_commands::save_config_global_cmd,
             config_commands::set_ai_hub_defaults,
             commands::set_ai_effort,
@@ -1512,6 +1598,9 @@ fn main() {
             commands::clear_read_inbox_items,
             commands::refresh_notifications,
             commands::dismiss_remote_pr,
+            commands::undismiss_remote_pr,
+            commands::sync_pr,
+            commands::sync_branch,
             commands::track_pr,
             commands::untrack_pr,
             commands::save_pr,
