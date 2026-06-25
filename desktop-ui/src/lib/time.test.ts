@@ -40,4 +40,10 @@ describe("timeAgo", () => {
   it("echoes a non-timestamp string unchanged", () => {
     expect(timeAgo("not-a-date")).toBe("not-a-date");
   });
+
+  it("clamps a future timestamp to 'just now'", () => {
+    // Clock skew or a future-dated commit must not leak a negative duration.
+    expect(timeAgo(ago(-30_000))).toBe("just now");
+    expect(timeAgo(ago(-3 * HOUR))).toBe("just now");
+  });
 });

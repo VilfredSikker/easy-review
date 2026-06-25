@@ -174,6 +174,11 @@ pub struct PrOpenCacheEntry {
     pub(crate) pr_data: Option<er_engine::github::PrOverviewData>,
     /// Cached GitHub PR commits, newest first, keyed by the same freshness.
     pub(crate) pr_commits: Option<Vec<er_engine::git::CommitInfo>>,
+    /// Monotonic tick from `pr_open_clock()` recording the last read or write.
+    /// Drives LRU eviction (`evict_lru`) when the cache exceeds its entry cap.
+    /// Older persisted entries deserialize to 0 (treated as least-recent).
+    #[serde(default)]
+    pub(crate) last_touched: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -4982,12 +4987,20 @@ fn cached_pr_open_diff(
     key: &PrOpenCacheKey,
     freshness: &PrOpenFreshness,
 ) -> Option<String> {
-    cache
-        .lock()
-        .ok()
-        .and_then(|guard| guard.get(key).cloned())
-        .filter(|entry| entry.freshness == *freshness)
-        .map(|entry| entry.raw_diff)
+    let mut guard = cache.lock().ok()?;
+    let entry = guard.get(key)?;
+    if entry.freshness != *freshness {
+        return None;
+    }
+    // Clone the payload before the mutable recency bump below (can't hold an
+    // immutable borrow across `get_mut`).
+    let raw_diff = entry.raw_diff.clone();
+    // Bump recency so a read counts toward LRU ordering (a hit is a use).
+    let tick = pr_open_clock();
+    if let Some(e) = guard.get_mut(key) {
+        e.last_touched = tick;
+    }
+    Some(raw_diff)
 }
 
 /// Same as `cached_pr_open_diff` but also returns cached `pr_data` when present.
@@ -5000,12 +5013,54 @@ fn cached_pr_open_entry(
     Option<er_engine::github::PrOverviewData>,
     Option<Vec<er_engine::git::CommitInfo>>,
 )> {
-    cache
-        .lock()
-        .ok()
-        .and_then(|guard| guard.get(key).cloned())
-        .filter(|entry| entry.freshness == *freshness)
-        .map(|entry| (entry.raw_diff, entry.pr_data, entry.pr_commits))
+    let mut guard = cache.lock().ok()?;
+    let entry = guard.get(key)?;
+    if entry.freshness != *freshness {
+        return None;
+    }
+    // Clone the payload before the mutable recency bump below (can't hold an
+    // immutable borrow across `get_mut`).
+    let out = (
+        entry.raw_diff.clone(),
+        entry.pr_data.clone(),
+        entry.pr_commits.clone(),
+    );
+    // Bump recency so a read counts toward LRU ordering (a hit is a use).
+    let tick = pr_open_clock();
+    if let Some(e) = guard.get_mut(key) {
+        e.last_touched = tick;
+    }
+    Some(out)
+}
+
+/// Monotonic counter for `PrOpenCacheEntry::last_touched`. Strictly increasing
+/// per process; only relative ordering matters for LRU eviction, never the
+/// absolute value.
+fn pr_open_clock() -> u64 {
+    static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Per-process cap on the open-diff cache. Over this, the least-recently-touched
+/// entry is evicted (LRU) so a hot PR survives a churn of one-off opens.
+pub(crate) const MAX_PR_OPEN_CACHE_ENTRIES: usize = 32;
+
+/// Evict the least-recently-touched entry when the map exceeds `MAX_PR_OPEN_CACHE_ENTRIES`.
+/// Pure (operates on the borrowed map) so the LRU policy is unit-testable without a lock.
+pub(crate) fn evict_lru(map: &mut HashMap<PrOpenCacheKey, PrOpenCacheEntry>) {
+    if map.len() <= MAX_PR_OPEN_CACHE_ENTRIES {
+        return;
+    }
+    // Remove the entry with the smallest `last_touched`. Touch times from
+    // `pr_open_clock()` are process-unique and increasing, so there is a strict
+    // minimum; the `HashMap` iteration order does not affect which key is chosen.
+    let evict_key = map
+        .iter()
+        .min_by_key(|(_, e)| e.last_touched)
+        .map(|(k, _)| k.clone());
+    if let Some(key) = evict_key {
+        map.remove(&key);
+    }
 }
 
 fn remember_pr_open_entry(
@@ -5038,14 +5093,10 @@ fn remember_pr_open_entry(
                 raw_diff,
                 pr_data,
                 pr_commits,
+                last_touched: pr_open_clock(),
             },
         );
-        const MAX_PR_OPEN_CACHE_ENTRIES: usize = 32;
-        if guard.len() > MAX_PR_OPEN_CACHE_ENTRIES {
-            if let Some(first_key) = guard.keys().next().cloned() {
-                guard.remove(&first_key);
-            }
-        }
+        evict_lru(&mut guard);
     }
     crate::pr_open_cache::save_persisted_pr_open_cache(cache);
 }
@@ -7876,6 +7927,7 @@ mod tests {
                 raw_diff,
                 pr_data: None,
                 pr_commits: None,
+                last_touched: 0,
             },
         );
     }
@@ -7915,6 +7967,114 @@ mod tests {
             ..freshness
         };
         assert!(cached_pr_open_diff(&cache, &key, &stale_probe).is_none());
+    }
+
+    #[test]
+    fn evict_lru_removes_oldest_touched_when_over_cap() {
+        // Fill the cache to the cap with distinct, ascending touch times so the
+        // first-inserted key (touch = 1) is the least-recent.
+        let mut map: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
+        let mk = |n: u64| pr_open_cache_key("p1", "/repo", n);
+        for n in 0..MAX_PR_OPEN_CACHE_ENTRIES as u64 {
+            map.insert(
+                mk(n),
+                PrOpenCacheEntry {
+                    freshness: PrOpenFreshness {
+                        base_branch: "main".into(),
+                        head_branch: "feature".into(),
+                        head_oid: format!("oid-{n}"),
+                        updated_at: "2026-05-17T10:00:00Z".into(),
+                    },
+                    raw_diff: format!("diff-{n}"),
+                    pr_data: None,
+                    pr_commits: None,
+                    last_touched: n + 1,
+                },
+            );
+        }
+        assert_eq!(map.len(), MAX_PR_OPEN_CACHE_ENTRIES);
+        evict_lru(&mut map); // at cap → no eviction
+        assert_eq!(map.len(), MAX_PR_OPEN_CACHE_ENTRIES);
+
+        // One more entry pushes over the cap; the oldest (touch=1, key=0) is evicted.
+        map.insert(
+            mk(99),
+            PrOpenCacheEntry {
+                freshness: PrOpenFreshness {
+                    base_branch: "main".into(),
+                    head_branch: "feature".into(),
+                    head_oid: "oid-99".into(),
+                    updated_at: "2026-05-17T10:00:00Z".into(),
+                },
+                raw_diff: "diff-99".into(),
+                pr_data: None,
+                pr_commits: None,
+                last_touched: 1000,
+            },
+        );
+        evict_lru(&mut map);
+        assert_eq!(
+            map.len(),
+            MAX_PR_OPEN_CACHE_ENTRIES,
+            "back to cap after one eviction"
+        );
+        assert!(
+            !map.contains_key(&mk(0)),
+            "least-recently-touched entry evicted"
+        );
+        assert!(map.contains_key(&mk(99)), "newly-inserted entry retained");
+        assert!(
+            map.contains_key(&mk(31)),
+            "most-recent of the originals retained"
+        );
+    }
+
+    #[test]
+    fn evict_lru_keeps_recently_read_entry_over_untouched_ones() {
+        // An entry that was *read* (touch bumped) must outlive one only written.
+        let mut map: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
+        let mk = |n: u64| pr_open_cache_key("p1", "/repo", n);
+        for n in 0..MAX_PR_OPEN_CACHE_ENTRIES as u64 {
+            map.insert(
+                mk(n),
+                PrOpenCacheEntry {
+                    freshness: PrOpenFreshness {
+                        base_branch: "main".into(),
+                        head_branch: "feature".into(),
+                        head_oid: format!("oid-{n}"),
+                        updated_at: "2026-05-17T10:00:00Z".into(),
+                    },
+                    raw_diff: format!("diff-{n}"),
+                    pr_data: None,
+                    pr_commits: None,
+                    last_touched: n + 1,
+                },
+            );
+        }
+        // Bump key 0 to be the most-recent (simulating a read hit), then overflow.
+        map.get_mut(&mk(0)).unwrap().last_touched = 10_000;
+        map.insert(
+            mk(99),
+            PrOpenCacheEntry {
+                freshness: PrOpenFreshness {
+                    base_branch: "main".into(),
+                    head_branch: "feature".into(),
+                    head_oid: "oid-99".into(),
+                    updated_at: "2026-05-17T10:00:00Z".into(),
+                },
+                raw_diff: "diff-99".into(),
+                pr_data: None,
+                pr_commits: None,
+                last_touched: 10_001,
+            },
+        );
+        evict_lru(&mut map);
+        assert!(
+            map.contains_key(&mk(0)),
+            "recently-read entry survives eviction"
+        );
+        // The least-recent untouched entry (touch=2, key=1) is the one evicted.
+        assert!(!map.contains_key(&mk(1)), "oldest untouched entry evicted");
     }
 
     #[test]

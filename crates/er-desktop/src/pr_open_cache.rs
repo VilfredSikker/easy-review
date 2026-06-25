@@ -142,6 +142,7 @@ mod tests {
                 make_commit("aaa1111", "first commit"),
                 make_commit("bbb2222", "second commit"),
             ]),
+            last_touched: 0,
         }
     }
 

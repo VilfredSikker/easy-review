@@ -6,7 +6,12 @@
 
 ## Highlights
 
-_TBD — summarize the headline features once the release is cut._
+- **Per-view review scoping.** A local PR tab now reviews two separate diffs — the local branch and the PR head-vs-base — with review artifacts (triage, review, questions/notes, reviewed, checklist) split per view. GitHub PR comments stay shared across both views (they belong to the PR), and the Guide tour is per-view with identical-diff reuse so a single generation serves both when the diffs match.
+- **Preemptive "To Review" triage.** A background cheap-model triage scans new non-draft PRs and surfaces them in the Inbox, so review-worthy PRs appear without a manual refresh.
+- **Instant PR open (stale-while-revalidate).** The top-10 "My PRs" / "To Review" PRs are cached to disk, so opening a PR renders instantly from cache and revalidates against `gh` in the background. A reliable "stale" pill lights when the PR head (or base branch) advanced on origin.
+- **Readability-corrected syntax on diff backgrounds (desktop).** Token colors are now nudged — hue preserved — only as far as needed to clear WCAG AA against the actual add/del/changed-word background, fixing faint comments and saturated strings on light themes. Replaces the hand-maintained hex table that only covered one-dark-pro.
+- **AI reviews in Guide mode + Guide attached to the viewed diff.** The Guide tab now supports the full AI review action set, and the tour is generated against whichever diff you're viewing (PR vs local branch) — including a "Re-run guide" affordance when it drifts.
+- **Quality-of-life.** Clickable bare URLs in PR descriptions; relative "time ago" commit timestamps; settings are global-only and persist instantly (fixes the theme occasionally resetting).
 
 ## What's Changed
 

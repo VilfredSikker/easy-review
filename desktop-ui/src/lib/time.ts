@@ -1,11 +1,15 @@
 /** Format an ISO 8601 timestamp as a compact "time ago" string (e.g. "16m ago",
  *  "3h ago", "5d ago", "2w ago", "4mo ago", "1y ago"). Returns the input
- *  unchanged if it isn't a parseable timestamp. */
+ *  unchanged if it isn't a parseable timestamp. A future timestamp (clock skew
+ *  or a future-dated commit) clamps to "just now" rather than producing a
+ *  negative-duration label. */
 export function timeAgo(iso: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return iso;
 
-  const sec = Math.floor((Date.now() - t) / 1000);
+  // Clamp future timestamps to now — a negative duration would otherwise leak
+  // through the `< 60` branch as "just now" by accident; make it explicit.
+  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
   if (sec < 60) return "just now";
 
   const min = Math.floor(sec / 60);
