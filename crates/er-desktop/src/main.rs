@@ -843,10 +843,7 @@ fn main() {
                 if !tab.shows_branch_base_diff() {
                     None
                 } else {
-                    let base_short = tab
-                        .base_branch
-                        .trim_start_matches("origin/")
-                        .to_string();
+                    let base_short = tab.base_branch.trim_start_matches("origin/").to_string();
                     Some((tab.repo_root.clone(), base_short))
                 }
             };

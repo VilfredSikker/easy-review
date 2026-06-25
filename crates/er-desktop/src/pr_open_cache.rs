@@ -148,8 +148,14 @@ mod tests {
     #[test]
     fn round_trip_preserves_entries() {
         let mut cache: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
-        cache.insert(make_key(11), make_entry("oid-11", "diff for 11".to_string()));
-        cache.insert(make_key(22), make_entry("oid-22", "diff for 22".to_string()));
+        cache.insert(
+            make_key(11),
+            make_entry("oid-11", "diff for 11".to_string()),
+        );
+        cache.insert(
+            make_key(22),
+            make_entry("oid-22", "diff for 22".to_string()),
+        );
 
         let payload = PersistedPrOpenFile {
             version: PR_OPEN_CACHE_SCHEMA_VERSION,
@@ -186,7 +192,10 @@ mod tests {
     #[test]
     fn size_guard_skips_oversized_entry() {
         let mut cache: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
-        cache.insert(make_key(1), make_entry("small-oid", "tiny diff".to_string()));
+        cache.insert(
+            make_key(1),
+            make_entry("small-oid", "tiny diff".to_string()),
+        );
         let huge = "x".repeat(PR_OPEN_CACHE_MAX_PERSISTED_DIFF_BYTES + 1);
         cache.insert(make_key(2), make_entry("huge-oid", huge));
 

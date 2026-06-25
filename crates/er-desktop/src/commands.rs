@@ -6,13 +6,6 @@ use std::sync::{Arc, Mutex};
 use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
-use er_engine::ai::CommentType;
-#[cfg(test)]
-use er_engine::app::CardAiInvocation;
-use er_engine::app::{
-    build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
-    BrowserLayout, CardAiContextParams, DiffMode, InputMode,
-};
 use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects::{self, normalize_remote_slug};
@@ -20,6 +13,13 @@ use crate::snapshot::{
     build_chrome_snapshot, build_file_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary,
     FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot,
     LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
+};
+use er_engine::ai::CommentType;
+#[cfg(test)]
+use er_engine::app::CardAiInvocation;
+use er_engine::app::{
+    build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
+    BrowserLayout, CardAiContextParams, DiffMode, InputMode,
 };
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";

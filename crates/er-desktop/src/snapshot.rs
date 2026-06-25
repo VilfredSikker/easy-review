@@ -448,9 +448,7 @@ pub fn compute_oid_staleness(
     message: &str,
 ) -> Option<DiffStaleSnapshot> {
     match (latest_oid, used_oid) {
-        (Some(latest), Some(used))
-            if !latest.is_empty() && !used.is_empty() && latest != used =>
-        {
+        (Some(latest), Some(used)) if !latest.is_empty() && !used.is_empty() && latest != used => {
             Some(DiffStaleSnapshot {
                 kind: kind.to_string(),
                 message: message.to_string(),
@@ -1287,6 +1285,9 @@ fn refresh_meta_cache_filtered(
     fp_before != fp_after
 }
 
+/// One PR-cache entry projected for fingerprinting: `(bucket key, pr count, [(pr number, head_oid)])`.
+type PrFingerprintEntry<'a> = (&'a String, usize, Vec<(u64, &'a str)>);
+
 /// Fingerprint of PR list cache + fetch timestamps (chrome-only poll input).
 pub fn pr_cache_fingerprint(
     pr_cache: Option<&PrCache>,
@@ -1301,7 +1302,7 @@ pub fn pr_cache_fingerprint(
         // forces a snapshot recompute (the stale pill compares against head_oid).
         // Without it, a push that keeps the PR count constant is masked until an
         // unrelated desktop_revision bump — a fragile coupling.
-        let mut entries: Vec<(&String, usize, Vec<(u64, &str)>)> = cache
+        let mut entries: Vec<PrFingerprintEntry<'_>> = cache
             .iter()
             .map(|(k, v)| {
                 (
@@ -3386,7 +3387,10 @@ mod tests {
         )
         .expect("differing oids must be stale");
         assert_eq!(stale.kind, "base");
-        assert_eq!(stale.message, "main has new commits on origin — Sync to refresh");
+        assert_eq!(
+            stale.message,
+            "main has new commits on origin — Sync to refresh"
+        );
 
         // PR-head kind threads through unchanged.
         let pr_stale = compute_oid_staleness(Some("head2"), Some("head1"), "pr_head", "msg")
@@ -3647,8 +3651,7 @@ mod tests {
     /// `shows_branch_base_diff` fallback (which requires `pr_number.is_none()`).
     #[test]
     fn pr_tab_in_branch_view_lights_pill_when_head_advanced() {
-        let (app, pr_cache) =
-            pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
+        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
 
         let stale = diff_stale_for(&app, &pr_cache).expect("pill should be lit");
         assert_eq!(stale.kind, "pr_head");
@@ -3658,8 +3661,7 @@ mod tests {
     /// Equal oids → no pill (the diff is already at the latest head).
     #[test]
     fn pr_tab_no_pill_when_head_matches() {
-        let (app, pr_cache) =
-            pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head1");
+        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head1");
 
         assert!(diff_stale_for(&app, &pr_cache).is_none());
     }
