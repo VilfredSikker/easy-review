@@ -6406,7 +6406,9 @@ pub async fn sync_pr(
                         None,
                     );
                 }
-                Err(e) => log::warn!("sync_pr: cache-persist diff fetch failed for #{pr_number}: {e}"),
+                Err(e) => {
+                    log::warn!("sync_pr: cache-persist diff fetch failed for #{pr_number}: {e}")
+                }
             }
         }
 
@@ -8258,7 +8260,10 @@ mod tests {
             "diffoid999"
         );
         assert_eq!(freshness_from_pr_info(&pr, None).head_oid, "headoid123");
-        assert_eq!(freshness_from_pr_info(&pr, Some("   ")).head_oid, "headoid123");
+        assert_eq!(
+            freshness_from_pr_info(&pr, Some("   ")).head_oid,
+            "headoid123"
+        );
 
         // Negative (timestamp): an advanced `updated_at` must be reflected in the
         // freshness value. (The head is unchanged, so the cached diff is identical —

@@ -46,9 +46,7 @@ fn build_persisted_entries(
 
 /// Parse persisted JSON into the live cache map. Pure (no I/O) so the version
 /// gate is testable. A wrong/missing version yields `None` (treated as no cache).
-fn parse_persisted(
-    content: &str,
-) -> Option<HashMap<(String, String, u64), GithubStatusSnapshot>> {
+fn parse_persisted(content: &str) -> Option<HashMap<(String, String, u64), GithubStatusSnapshot>> {
     let parsed: PersistedGhStatusFile = serde_json::from_str(content).ok()?;
     if parsed.version != GH_STATUS_CACHE_SCHEMA_VERSION {
         return None;
@@ -118,7 +116,11 @@ pub fn prune_gh_status_cache(
     keep: &HashSet<(String, String, u64)>,
 ) {
     map.retain(|(owner, repo, number), _| {
-        keep.contains(&(owner.to_ascii_lowercase(), repo.to_ascii_lowercase(), *number))
+        keep.contains(&(
+            owner.to_ascii_lowercase(),
+            repo.to_ascii_lowercase(),
+            *number,
+        ))
     });
 }
 
@@ -204,7 +206,9 @@ mod tests {
         assert_eq!(s42.recent_reviews[0].state, "APPROVED");
 
         let k7 = ("otherorg".to_string(), "otherrepo".to_string(), 7);
-        let s7 = loaded.get(&k7).expect("entry (otherorg, otherrepo, 7) present");
+        let s7 = loaded
+            .get(&k7)
+            .expect("entry (otherorg, otherrepo, 7) present");
         assert_eq!(s7.owner, "otherorg");
         assert_eq!(s7.number, 7);
     }
@@ -259,7 +263,11 @@ mod tests {
 
         prune_gh_status_cache(&mut map, &keep);
 
-        assert_eq!(map.len(), 1, "case-insensitive match retains the mixed-case key");
+        assert_eq!(
+            map.len(),
+            1,
+            "case-insensitive match retains the mixed-case key"
+        );
         assert!(
             map.contains_key(&mixed),
             "mixed-case cache key kept despite lowercase keep-set"

@@ -1053,10 +1053,7 @@ impl TabState {
     pub fn new_with_base_unloaded(repo_root: String, base_branch: String) -> Result<Self> {
         let t_cb = Instant::now(); // TEMP diagnostic
         let current_branch = git::get_current_branch_in(&repo_root)?;
-        eprintln!(
-            "pr_open phase=cur_branch ms={}",
-            t_cb.elapsed().as_millis()
-        ); // TEMP diagnostic
+        eprintln!("pr_open phase=cur_branch ms={}", t_cb.elapsed().as_millis()); // TEMP diagnostic
         Self::new_inner(repo_root, current_branch, base_branch, false)
     }
 
@@ -1464,10 +1461,7 @@ impl TabState {
         let watched_config = er_config.watched.clone();
         let has_watched = !watched_config.paths.is_empty();
         let merge_active = git::is_merge_in_progress(&repo_root);
-        eprintln!(
-            "pr_open phase=cfg_merge ms={}",
-            t_cfg.elapsed().as_millis()
-        ); // TEMP diagnostic
+        eprintln!("pr_open phase=cfg_merge ms={}", t_cfg.elapsed().as_millis()); // TEMP diagnostic
         let er_root = ErRoot::RepoLocal(repo_root.clone());
 
         let mut tab = TabState {

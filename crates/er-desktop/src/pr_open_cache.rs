@@ -235,12 +235,9 @@ mod tests {
         map.insert(make_key(22), make_entry("oid-22", "diff 22".to_string()));
         map.insert(make_key(33), make_entry("oid-33", "diff 33".to_string()));
 
-        let keep: HashSet<(String, u64)> = [
-            ("proj".to_string(), 11),
-            ("proj".to_string(), 33),
-        ]
-        .into_iter()
-        .collect();
+        let keep: HashSet<(String, u64)> = [("proj".to_string(), 11), ("proj".to_string(), 33)]
+            .into_iter()
+            .collect();
 
         prune_pr_open_cache(&mut map, &keep);
 
