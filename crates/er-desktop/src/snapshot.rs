@@ -2234,6 +2234,48 @@ fn build_agent_log(tab: &TabState) -> Vec<AgentLogSnapshot> {
         .collect()
 }
 
+#[derive(PartialEq, Eq)]
+struct WorktreesMetaKey {
+    repo_root: String,
+    base_branch: String,
+    fingerprint: u64,
+}
+
+/// Per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by worktree path.
+type WorktreeMetaMap = HashMap<String, (bool, Option<u64>, bool)>;
+
+/// Cached per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by path.
+///
+/// `build_worktrees` runs on every snapshot build (every ~2s poll). The cheap
+/// `list_worktrees` call stays live so add/remove/branch-switch is reflected
+/// within one poll, but `detect_pr_meta` spawns `git config` + `git merge-base`
+/// per worktree — ~2N subprocesses that dominate snapshot construction. The set
+/// rarely changes, so cache that meta keyed on a fingerprint of the worktree set:
+/// add/remove/switch changes the fingerprint → cache miss → recompute, and a TTL
+/// backstops `is_merged` drift when the set is unchanged.
+static WORKTREES_META_CACHE: Mutex<
+    Option<(WorktreesMetaKey, std::time::Instant, WorktreeMetaMap)>,
+> = Mutex::new(None);
+const WORKTREES_META_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn worktrees_meta_cached(
+    key: WorktreesMetaKey,
+    compute: impl FnOnce() -> WorktreeMetaMap,
+) -> WorktreeMetaMap {
+    if let Ok(guard) = WORKTREES_META_CACHE.lock() {
+        if let Some((cached_key, computed_at, value)) = guard.as_ref() {
+            if *cached_key == key && computed_at.elapsed() < WORKTREES_META_TTL {
+                return value.clone();
+            }
+        }
+    }
+    let value = compute();
+    if let Ok(mut guard) = WORKTREES_META_CACHE.lock() {
+        *guard = Some((key, std::time::Instant::now(), value.clone()));
+    }
+    value
+}
+
 fn build_worktrees(
     repo_root: &str,
     base_branch: &str,
@@ -2241,10 +2283,37 @@ fn build_worktrees(
 ) -> Vec<WorktreeSnapshot> {
     let wts = er_engine::git::list_worktrees(repo_root).unwrap_or_default();
     let skip_merged = wts.len() > 10;
+
+    let fingerprint = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for wt in &wts {
+            wt.path.hash(&mut h);
+            wt.branch.hash(&mut h);
+        }
+        h.finish()
+    };
+    let key = WorktreesMetaKey {
+        repo_root: repo_root.to_string(),
+        base_branch: base_branch.to_string(),
+        fingerprint,
+    };
+
+    let meta = worktrees_meta_cached(key, || {
+        wts.iter()
+            .map(|wt| {
+                (
+                    wt.path.clone(),
+                    detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged),
+                )
+            })
+            .collect()
+    });
+
     wts.into_iter()
         .map(|wt| {
             let (is_pr, pr_number, is_merged) =
-                detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged);
+                meta.get(&wt.path).copied().unwrap_or((false, None, false));
             WorktreeSnapshot {
                 is_current: wt.path == current_root,
                 branch: wt.branch,
@@ -3959,5 +4028,52 @@ mod tests {
         // Reset (frontend re-fetches from scratch) — full resend.
         sent.lock().unwrap().reset();
         assert!(!delta_snap(&app, &sent).files[0].hunks_omitted);
+    }
+
+    #[test]
+    fn worktrees_meta_cache_recomputes_only_on_key_change() {
+        use std::cell::Cell;
+
+        let calls = Cell::new(0u32);
+        let compute = || {
+            calls.set(calls.get() + 1);
+            let mut m = HashMap::new();
+            m.insert("/wt".to_string(), (true, Some(7u64), false));
+            m
+        };
+        let key = || WorktreesMetaKey {
+            repo_root: "/repo".to_string(),
+            base_branch: "main".to_string(),
+            // Unique fingerprint so this test never collides with cached state
+            // left by other suites touching the shared static.
+            fingerprint: 0xDEAD_BEEF,
+        };
+
+        // First call: cache miss → compute runs once, value flows through.
+        let v1 = worktrees_meta_cached(key(), compute);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(v1.get("/wt").copied(), Some((true, Some(7), false)));
+
+        // Same key within TTL: cache hit → no recompute, same value.
+        let v2 = worktrees_meta_cached(key(), compute);
+        assert_eq!(
+            calls.get(),
+            1,
+            "same worktree set within TTL must reuse cached meta, not respawn git subprocesses"
+        );
+        assert_eq!(v2.get("/wt").copied(), Some((true, Some(7), false)));
+
+        // Changed fingerprint (worktree added/removed/switched): miss → recompute.
+        let changed = WorktreesMetaKey {
+            repo_root: "/repo".to_string(),
+            base_branch: "main".to_string(),
+            fingerprint: 0xFEED_FACE,
+        };
+        let _ = worktrees_meta_cached(changed, compute);
+        assert_eq!(
+            calls.get(),
+            2,
+            "a changed worktree set must invalidate the cache and recompute"
+        );
     }
 }
