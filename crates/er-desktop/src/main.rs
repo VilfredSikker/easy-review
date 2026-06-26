@@ -10,9 +10,11 @@ mod dev_log;
 mod er_storage;
 mod export;
 mod frame_script;
+mod gh_status_cache;
 mod inbox;
 mod main_webview_policy;
 mod pr_cache;
+mod pr_open_cache;
 mod profile_log;
 mod projects;
 mod snapshot;
@@ -126,14 +128,40 @@ fn reveal_main_window(
     app: &tauri::AppHandle,
     reason: &str,
 ) -> tauri::Result<()> {
+    // Pre-show clamp: best-effort, avoids a visible flash at a stale position.
     if let Err(e) = window_placement::ensure_window_visible(window) {
         log::warn!("window placement failed during {reason}, recentering: {e}");
         if let Err(center_err) = window.center() {
             log::warn!("window recenter failed during {reason}: {center_err}");
         }
     }
+    if let Ok(p) = window.outer_position() {
+        log::info!(
+            "window placement {reason}: pre-show position ({}, {})",
+            p.x,
+            p.y
+        );
+    }
 
     window.show()?;
+
+    // Post-show clamp: a hidden macOS NSWindow can report a stale position, so
+    // the pre-show pass may no-op and `show()` then reveals the window at the
+    // restored (possibly off-screen) coordinates. Re-running after show reads
+    // the real position and reliably pulls it back onto a monitor.
+    if let Err(e) = window_placement::ensure_window_visible(window) {
+        log::warn!("post-show window placement failed during {reason}, recentering: {e}");
+        if let Err(center_err) = window.center() {
+            log::warn!("post-show window recenter failed during {reason}: {center_err}");
+        }
+    }
+    if let Ok(p) = window.outer_position() {
+        log::info!(
+            "window placement {reason}: post-show position ({}, {})",
+            p.x,
+            p.y
+        );
+    }
 
     if let Err(e) = window.unminimize() {
         log::warn!("window unminimize failed during {reason}: {e}");
@@ -511,6 +539,27 @@ fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Geometry the `window-state` plugin *saves*. MAXIMIZED is kept so the plugin
+/// detects the maximized state and preserves the last *windowed* size+position
+/// (it skips overwriting them while maximized) instead of persisting the zoomed
+/// dimensions as if they were the windowed size.
+fn window_state_save_flags() -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+    StateFlags::SIZE
+        | StateFlags::POSITION
+        | StateFlags::MAXIMIZED
+        | StateFlags::FULLSCREEN
+        | StateFlags::DECORATIONS
+}
+
+/// Geometry we *restore* on launch. MAXIMIZED is dropped so the window always
+/// reopens as a normal resizable window at its last windowed size+position,
+/// never auto-zoomed to fill the screen.
+fn window_state_restore_flags() -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+    StateFlags::SIZE | StateFlags::POSITION | StateFlags::FULLSCREEN | StateFlags::DECORATIONS
+}
+
 fn main() {
     er_engine::env_path::init_cli_path();
     dev_log::init();
@@ -631,12 +680,22 @@ fn main() {
     let pr_cache_fetched_at: Arc<Mutex<HashMap<String, u64>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let pr_open_cache: Arc<Mutex<HashMap<commands::PrOpenCacheKey, commands::PrOpenCacheEntry>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+        Arc::new(Mutex::new(
+            pr_open_cache::load_persisted_pr_open_cache()
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        ));
     let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> = Arc::new(Mutex::new(HashMap::new()));
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     #[allow(clippy::type_complexity)]
     let gh_status_cache: Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+        Arc::new(Mutex::new(
+            gh_status_cache::load_persisted_gh_status_cache()
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        ));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
     let inbox = Arc::new(Mutex::new(inbox::load_inbox_state()));
@@ -686,11 +745,13 @@ fn main() {
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let last_sent_reviewed_revision: Arc<std::sync::atomic::AtomicU64> =
         Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+    let branch_base_remote_oid: Arc<Mutex<HashMap<String, String>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let state = AppState {
-        config_edit_baseline: Arc::new(Mutex::new(None)),
         app: Arc::clone(&app_arc),
         pr_cache: Arc::clone(&pr_cache),
         pr_cache_fetched_at: Arc::clone(&pr_cache_fetched_at),
+        branch_base_remote_oid: Arc::clone(&branch_base_remote_oid),
         pr_open_cache: Arc::clone(&pr_open_cache),
         meta_cache: Arc::clone(&meta_cache),
         gh_user: Arc::clone(&gh_user),
@@ -727,84 +788,233 @@ fn main() {
         }
     }
 
+    // Prune both persisted caches to each project's `saved ∪ top-10 recent` PRs
+    // so the on-disk files stay small across launches. Skip entirely when no
+    // projects are known: an empty keep-set would wipe otherwise-valid caches
+    // (e.g. a missing/corrupt projects.json), and the in-memory caps
+    // (MAX_PR_OPEN_CACHE_ENTRIES; gh_status is memory-only at runtime) already
+    // bound in-session growth. The two caches live in different key spaces, so
+    // each is pruned against its own derived keep-set.
+    {
+        let projects_file = projects::load();
+        if !projects_file.projects.is_empty() {
+            use std::collections::HashSet;
+            const KEEP_RECENT: usize = 10;
+            let mut pr_open_keep: HashSet<(String, u64)> = HashSet::new();
+            let mut gh_status_keep: HashSet<(String, String, u64)> = HashSet::new();
+            for proj in &projects_file.projects {
+                // gh_status keep-set holds lowercased (owner, repo). Cache keys
+                // preserve the opening URL's casing (`tab.remote_repo`), so
+                // `prune_gh_status_cache` folds case before comparing — the
+                // keep-set must be lowercase, which `normalize_remote_slug` gives.
+                let owner_repo = proj
+                    .remote
+                    .as_deref()
+                    .map(projects::normalize_remote_slug)
+                    .and_then(|slug| {
+                        slug.split_once('/')
+                            .map(|(o, r)| (o.to_string(), r.to_string()))
+                    });
+                let kept_numbers = proj
+                    .saved_prs
+                    .iter()
+                    .map(|e| e.number)
+                    .chain(proj.recent_prs.iter().take(KEEP_RECENT).map(|e| e.number));
+                for number in kept_numbers {
+                    pr_open_keep.insert((proj.id.clone(), number));
+                    if let Some((owner, repo)) = owner_repo.as_ref() {
+                        gh_status_keep.insert((owner.clone(), repo.clone(), number));
+                    }
+                }
+            }
+            if let Ok(mut map) = pr_open_cache.lock() {
+                pr_open_cache::prune_pr_open_cache(&mut map, &pr_open_keep);
+            }
+            pr_open_cache::save_persisted_pr_open_cache(&pr_open_cache);
+            if let Ok(mut map) = gh_status_cache.lock() {
+                gh_status_cache::prune_gh_status_cache(&mut map, &gh_status_keep);
+            }
+            gh_status_cache::save_persisted_gh_status_cache(&gh_status_cache);
+        }
+    }
+
     // The 30s `gh_status` loop below runs its first iteration immediately and
     // shares dedup state via `gh_status_in_flight`, so a separate startup kick
     // here would be a redundant duplicate fetch on the same identity.
 
-    // Background remote-PR diff refresh on a 60s cadence. Three-phase design
-    // mirrors the comment-sync loop so we never hold the App mutex across
-    // network I/O:
-    //   Phase 1 (brief lock) — snapshot identity + last_head_oid from active tab.
-    //                          Cross-reference pr_cache to find expected head_oid.
-    //   Phase 2 (no lock)    — `fetch_remote_diff_data` (shells out to `gh pr diff`,
-    //                          parses, hashes). Returns Ok(None) on head_oid match.
-    //   Phase 3 (brief lock) — `apply_remote_diff_result` swaps files + raw_diff.
-    {
-        let remote_app = Arc::clone(&app_arc);
-        let remote_loading = Arc::clone(&loading);
-        let remote_desktop_rev = Arc::clone(&desktop_revision);
-        let remote_pr_cache = Arc::clone(&pr_cache);
-        std::thread::spawn(move || loop {
-            let interval_secs = remote_app
-                .try_lock()
-                .map(|g| if g.tab().is_remote() { 300 } else { 60 })
-                .unwrap_or(60);
-            std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+    // NOTE: a remote-PR auto-swap loop used to live here (300s for remote
+    // tabs, 60s otherwise), calling snapshot_for_remote_diff_refresh →
+    // fetch_remote_diff_data → apply_remote_diff_result. It was removed for
+    // consistency: it auto-swapped the live diff for remote tabs only, while
+    // local-PR tabs required manual Sync. Now BOTH require manual Sync, and
+    // the 30s PR-head probe (above, "pr_head_probe") lights the stale pill
+    // quickly for both. The underlying fetch/apply plumbing is retained in
+    // crates/er-engine/src/app/state/remote_diff_sync.rs and crates/er-engine/src/sync.rs
+    // for the manual Sync path (force_refresh_diff / refetch_and_refresh_diff).
 
-            // Phase 1: brief lock — snapshot identity + last_head_oid.
-            let ctx = {
-                let guard = match remote_app.try_lock() {
+    // Background base-branch staleness probe on a 60s cadence. The ONLY new
+    // network cost for branch ("Local Diff") freshness. Mirrors the remote-PR
+    // loop's three-phase shape so we never hold the App mutex across `git`:
+    //   Phase 1 (brief lock) — read the active tab's identity; bail unless it's
+    //                          a branch view (not remote, no PR, has a view).
+    //   Phase 2 (no lock)    — `git ls-remote origin <base>` to learn origin's
+    //                          tip. ANY failure (error/non-zero/empty) no-ops.
+    //   Phase 3 (brief lock) — cache the oid; bump the revision ONLY when it
+    //                          actually changed, so we don't churn polls.
+    {
+        let probe_app = Arc::clone(&app_arc);
+        let probe_cache = Arc::clone(&branch_base_remote_oid);
+        let probe_rev = Arc::clone(&desktop_revision);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+
+            // Phase 1: brief lock — capture the active branch tab's identity.
+            let identity = {
+                let guard = match probe_app.try_lock() {
                     Ok(g) => g,
                     Err(_) => continue,
                 };
-                let mut ctx = guard.snapshot_for_remote_diff_refresh();
-                drop(guard);
-                if let Some(ref mut c) = ctx {
-                    // Look up the expected head_oid from pr_cache. None ⇒ fetch
-                    // anyway (no cache entry yet means we have no comparison
-                    // point and shouldn't suppress the refresh).
-                    if let Ok(cache) = remote_pr_cache.lock() {
-                        let slug = format!("{}/{}", c.owner, c.repo);
-                        c.expected_head_oid = cache
-                            .get(&slug)
-                            .and_then(|prs| prs.iter().find(|p| p.number == c.pr_number))
-                            .map(|p| p.head_oid.clone())
-                            .filter(|s| !s.is_empty());
-                    }
+                let tab = guard.tab();
+                if !tab.shows_branch_base_diff() {
+                    None
+                } else {
+                    let base_short = tab.base_branch.trim_start_matches("origin/").to_string();
+                    Some((tab.repo_root.clone(), base_short))
                 }
-                ctx
             };
+            let Some((repo_root, base_short)) = identity else {
+                continue;
+            };
+            if base_short.is_empty() {
+                continue;
+            }
 
-            let Some(ctx) = ctx else {
+            // Phase 2: no lock — ask origin for the base branch tip.
+            let out = std::process::Command::new("git")
+                .args(["ls-remote", "origin", &base_short])
+                .current_dir(&repo_root)
+                .output();
+            let oid = match out {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    stdout
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().next())
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                }
+                _ => None,
+            };
+            let Some(oid) = oid else {
                 continue;
             };
 
-            // Phase 2: no lock — fetch or short-circuit on head_oid match.
-            if let Ok(mut f) = remote_loading.lock() {
-                f.remote_pr_diff = true;
-            }
-            let t = std::time::Instant::now();
-            let result = er_engine::app::fetch_remote_diff_data(&ctx);
-            if let Ok(mut f) = remote_loading.lock() {
-                f.remote_pr_diff = false;
-            }
-
-            match result {
-                Ok(Some(r)) => {
-                    // Phase 3: brief lock — apply.
-                    if let Ok(mut g) = remote_app.lock() {
-                        g.apply_remote_diff_result(r);
+            // Phase 3: brief lock — store + bump only on a real change.
+            let key = format!("{repo_root}\u{0}{base_short}");
+            let changed = match probe_cache.lock() {
+                Ok(mut cache) => {
+                    if cache.get(&key).map(|v| v.as_str()) == Some(oid.as_str()) {
+                        false
+                    } else {
+                        cache.insert(key, oid);
+                        true
                     }
-                    profile_log::bump_desktop_revision(&remote_desktop_rev, "remote_pr_diff_cache");
-                    profile_log::profile_log(
-                        "remote_pr_diff_refresh",
-                        &[("ms", t.elapsed().as_millis().to_string())],
-                    );
                 }
-                Ok(None) => {
-                    // head_oid unchanged — nothing to do.
+                Err(_) => false,
+            };
+            if changed {
+                profile_log::bump_desktop_revision(&probe_rev, "branch_stale_probe");
+            }
+        });
+    }
+
+    // Background PR-head staleness probe on a 30s cadence. Detection only —
+    // lights the "PR head updated on origin" pill fast (vs the 10-min pr_cache
+    // sweep) for BOTH remote and local-PR tabs. The actual diff swap stays
+    // manual (Sync button). Mirrors the branch-base probe's three-phase shape
+    // so the App mutex is never held across `gh`:
+    //   Phase 1 (brief lock) — read the active tab's identity; bail unless it's
+    //                          a PR tab (remote_repo set OR pr_number set).
+    //   Phase 2 (no lock)    — `gh pr view <n> --repo <owner/repo> --json
+    //                          headRefOid --jq .headRefOid`. ANY failure no-ops
+    //                          (preserves the "don't guess" stale-pill rule).
+    //   Phase 3 (brief lock) — `patch_pr_head_oid` updates the single cache
+    //                          entry in place; bump the revision ONLY when it
+    //                          actually changed. Does NOT persist to disk (the
+    //                          next 10-min sweep persists) so 30s is cheap.
+    {
+        let probe_app = Arc::clone(&app_arc);
+        let probe_pr_cache = Arc::clone(&pr_cache);
+        let probe_rev = Arc::clone(&desktop_revision);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+
+            // Phase 1: brief lock — capture the active PR tab's identity.
+            // `(repo_root, owner, repo, pr_number)`. For remote tabs use
+            // `remote_repo`; for local-PR tabs resolve owner/repo from origin.
+            let identity = {
+                let guard = match probe_app.try_lock() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                let tab = guard.tab();
+                let pr_number = match tab.pr_number {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if let Some(slug) = tab.remote_repo.as_ref() {
+                    if slug.split_once('/').is_some() {
+                        Some((tab.repo_root.clone(), slug.clone(), pr_number))
+                    } else {
+                        None
+                    }
+                } else if !tab.repo_root.is_empty() {
+                    match er_engine::github::get_repo_info(&tab.repo_root) {
+                        Ok((owner, repo)) => {
+                            Some((tab.repo_root.clone(), format!("{owner}/{repo}"), pr_number))
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    None
                 }
-                Err(e) => log::error!("remote PR diff refresh failed: {e}"),
+            };
+            let Some((_repo_root, slug, pr_number)) = identity else {
+                continue;
+            };
+
+            // Phase 2: no lock — ask gh for the PR's latest head oid.
+            let out = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "view",
+                    &pr_number.to_string(),
+                    "--repo",
+                    &slug,
+                    "--json",
+                    "headRefOid",
+                    "--jq",
+                    ".headRefOid",
+                ])
+                .output();
+            let oid = match out {
+                Ok(o) if o.status.success() => {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                }
+                _ => None,
+            };
+            let Some(oid) = oid else { continue };
+
+            // Phase 3: brief lock — patch the cache entry; bump only on change.
+            let changed = pr_cache::patch_pr_head_oid(&probe_pr_cache, &slug, pr_number, &oid);
+            if changed {
+                profile_log::bump_desktop_revision(&probe_rev, "pr_head_probe");
             }
         });
     }
@@ -1273,6 +1483,16 @@ fn main() {
 
     let persist_app = Arc::clone(&app_arc);
     let persist_app_on_close = Arc::clone(&app_arc);
+    // Throttles eager geometry saves on move/resize (see the on_window_event
+    // handler below). Init to now() so the programmatic resizes fired during the
+    // startup restore_state don't trigger a redundant save.
+    let window_geom_last_save = Arc::new(Mutex::new(std::time::Instant::now()));
+    // Gates eager saves until the window has been placed + shown. The plugin's
+    // restore_state fires Moved/Resized while it sets the (possibly off-screen,
+    // pre-clamp) position; saving then would persist that bad geometry. Flipped
+    // true at the end of the startup reveal.
+    let window_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let window_ready_event = Arc::clone(&window_ready);
     let tauri_app = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -1284,13 +1504,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED
-                        | tauri_plugin_window_state::StateFlags::FULLSCREEN
-                        | tauri_plugin_window_state::StateFlags::DECORATIONS,
-                )
+                .with_state_flags(window_state_save_flags())
                 .skip_initial_state("main")
                 .build(),
         )
@@ -1304,13 +1518,35 @@ fn main() {
             if window.label() != "main" {
                 return;
             }
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if let Ok(guard) = persist_app_on_close.lock() {
-                    tabs::persist_app_tabs(&guard);
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    if let Ok(guard) = persist_app_on_close.lock() {
+                        tabs::persist_app_tabs(&guard);
+                    }
                 }
+                // The window-state plugin only writes geometry to disk on a
+                // graceful RunEvent::Exit; move/resize merely update its in-memory
+                // cache. A `tauri dev` rebuild (or a crash) hard-kills the app, so
+                // that cache is lost and the window reopens at the last *cleanly*
+                // saved geometry. Persist eagerly here (throttled to one write per
+                // 400ms) so the last position+size survive rebuilds and crashes.
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    use tauri_plugin_window_state::AppHandleExt;
+                    if window_ready_event.load(std::sync::atomic::Ordering::Acquire) {
+                        if let Ok(mut last) = window_geom_last_save.lock() {
+                            if last.elapsed() >= std::time::Duration::from_millis(400) {
+                                *last = std::time::Instant::now();
+                                let _ = window
+                                    .app_handle()
+                                    .save_window_state(window_state_save_flags());
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());
@@ -1383,18 +1619,22 @@ fn main() {
                 })
                 .build()?;
 
-            use tauri_plugin_window_state::{StateFlags, WindowExt};
-            // Restore size+position+maximized only — NOT visibility. The
-            // window stays hidden (`.visible(false)`) until we've clamped it
-            // onto a valid monitor, then we show. Restoring VISIBLE would
-            // flash the window at the stale off-screen position.
-            let flags = StateFlags::SIZE
-                | StateFlags::POSITION
-                | StateFlags::MAXIMIZED
-                | StateFlags::FULLSCREEN
-                | StateFlags::DECORATIONS;
-            window.restore_state(flags)?;
+            use tauri_plugin_window_state::WindowExt;
+            // Restore size+position only — NOT visibility. The window stays
+            // hidden (`.visible(false)`) until we've clamped it onto a valid
+            // monitor, then we show. Restoring VISIBLE would flash the window at
+            // the stale off-screen position.
+            window.restore_state(window_state_restore_flags())?;
             reveal_main_window(&window, app.handle(), "startup")?;
+            // The window is placed and shown; eager geometry saves may now run.
+            window_ready.store(true, std::sync::atomic::Ordering::Release);
+            // Heal any stale off-screen/maximized geometry the restore clamped
+            // away: persist the now-valid on-screen position so the next launch
+            // restores it directly instead of re-clamping a poisoned prev_x.
+            {
+                use tauri_plugin_window_state::AppHandleExt;
+                let _ = app.handle().save_window_state(window_state_save_flags());
+            }
 
             Ok(())
         })
@@ -1473,8 +1713,6 @@ fn main() {
             commands::set_ai_selection,
             config_commands::get_config_hub,
             config_commands::apply_config_patch,
-            config_commands::reset_config_draft,
-            config_commands::save_config_local_cmd,
             config_commands::save_config_global_cmd,
             config_commands::set_ai_hub_defaults,
             commands::set_ai_effort,
@@ -1512,6 +1750,9 @@ fn main() {
             commands::clear_read_inbox_items,
             commands::refresh_notifications,
             commands::dismiss_remote_pr,
+            commands::undismiss_remote_pr,
+            commands::sync_pr,
+            commands::sync_branch,
             commands::track_pr,
             commands::untrack_pr,
             commands::save_pr,
@@ -1587,10 +1828,14 @@ fn main() {
 }
 
 /// Checkout root + branch for the active tab when that branch is checked out
-/// (project root HEAD or a linked worktree). Returns None for remote/read-only tabs.
+/// (project root HEAD or a linked worktree). Returns None for remote tabs or
+/// tabs whose branch isn't checked out anywhere. PR tabs are allowed: if their
+/// head branch happens to be checked out, the watcher attaches a checkout root
+/// so Unstaged/Staged/working-tree Branch views become available (matching the
+/// Tracked-branch entry point).
 fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
     let tab = app.tab();
-    if tab.remote_repo.is_some() || tab.pr_head_ref.is_some() {
+    if tab.remote_repo.is_some() {
         return None;
     }
 
@@ -1598,33 +1843,14 @@ fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
         .local_branch_view
         .clone()
         .unwrap_or_else(|| tab.current_branch.clone());
-    if branch.is_empty() {
-        return None;
-    }
-
-    // Project root checkout?
-    let head_out = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&tab.repo_root)
-        .output()
-        .ok()?;
-    if head_out.status.success() {
-        let head = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
-        if head == branch {
-            return Some((branch, tab.repo_root.clone()));
-        }
-    }
-
-    // Linked worktree checkout?
-    let worktrees = er_engine::git::list_worktrees(&tab.repo_root).ok()?;
-    let wt = worktrees.into_iter().find(|w| w.branch == branch)?;
-    Some((branch, wt.path))
+    let root = commands::resolve_head_checkout(&tab.repo_root, &branch)?;
+    Some((branch, root))
 }
 
 /// Branch name the active tab is reviewing (for watch refresh guard).
 fn active_tab_watched_branch(app: &App) -> Option<String> {
     let tab = app.tab();
-    if tab.remote_repo.is_some() || tab.pr_head_ref.is_some() {
+    if tab.remote_repo.is_some() {
         return None;
     }
     let branch = tab

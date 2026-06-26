@@ -54,7 +54,7 @@
   const scopeLabel = $derived(
     mode === "pr"
       ? "PR Diff"
-      : mode === "branch"
+      : mode === "branch" || mode === "tour"
         ? "All changes"
         : mode === "unstaged"
           ? "Unstaged"

@@ -127,8 +127,8 @@ impl App {
                 .unwrap_or_default()
         };
 
-        // Load existing github-comments.json (uses cache dir in remote mode)
-        let comments_dir = self.tab().comments_dir();
+        // Load existing github-comments.json (PR-scoped: shared PR bucket for PR tabs)
+        let comments_dir = self.tab().github_comments_dir();
         let _ = std::fs::create_dir_all(&comments_dir);
         let comments_path = self.tab().github_comments_path();
         let diff_hash = tab.branch_diff_hash.clone();

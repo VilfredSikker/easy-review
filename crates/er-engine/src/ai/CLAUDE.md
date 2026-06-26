@@ -27,7 +27,7 @@ paths below use the repo-local `.er/` names, which are identical.
 |------|--------|---------|
 | `review.json` | `ErReview` | Per-file risk levels, findings, suggestions |
 | `order.json` | `ErOrder` | Suggested file review order with groupings |
-| `tour.json` | `ErTour` | Guided walkthrough: ordered "pillars" (foundation→importance) with descriptions + files. Read-only to `er`; written by the `er-tour` skill / desktop "Generate tour". Self-contained — never mutates `order.json`/`review.json`. |
+| `tour.json` | `ErTour` | Guided walkthrough ("Guide"): ordered "pillars" (foundation→importance) with descriptions + files. **Per-view buckets**: the Local branch tour's `tour.json` lives in the branch bucket, the PR Diff tour's in the PR bucket. `TabState::resolve_view_tour()` picks the bucket from the active context (`tour_context_is_pr()`, which tracks via `tour_is_pr` which view the Guide tab was opened from) and reuses one across both when its `diff_hash` matches the active diff. Read-only to `er`; written by the `er-tour` skill / desktop "Generate tour" (which targets the active view's bucket). Self-contained — never mutates `order.json`/`review.json`. Staleness is per-context (`tour_stale_for` → `AiState::tour_stale`, independent of `is_stale`), driving the "Re-run guide" affordance. |
 | `summary.md` | (raw text) | Markdown summary of overall changes |
 | `checklist.json` | `ErChecklist` | Review checklist items |
 | `triage.json` | `TriageReview` | Fast branch scan / routing verdict |

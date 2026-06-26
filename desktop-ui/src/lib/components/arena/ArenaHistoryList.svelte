@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ArenaRunSummary, RunStatus } from "$lib/types/arena";
   import { isArenaRunActive } from "$lib/stores/arena.svelte";
+  import { timeAgo } from "$lib/time";
 
   interface Props {
     summaries: ArenaRunSummary[];
@@ -50,19 +51,6 @@
     return "text-[var(--arena-fg-muted)]";
   }
 
-  function formatWhen(iso: string): string {
-    const t = Date.parse(iso);
-    if (Number.isNaN(t)) return iso;
-    const diff = Date.now() - t;
-    const min = Math.floor(diff / 60_000);
-    if (min < 1) return "just now";
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    const day = Math.floor(hr / 24);
-    return `${day}d ago`;
-  }
-
   function shortId(id: string): string {
     return id.length > 20 ? `${id.slice(0, 18)}…` : id;
   }
@@ -97,7 +85,7 @@
             </p>
             <p class="text-[10px] text-[var(--arena-fg-subtle)]">
               <span class={statusClass(run.status)}>{statusLabel(run.status)}</span>
-              · {formatWhen(run.created_at)}
+              · {timeAgo(run.created_at)}
               · {run.finding_count} findings
               · {run.reviewer_count} reviewer{run.reviewer_count === 1 ? "" : "s"}
             </p>

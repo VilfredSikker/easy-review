@@ -36,6 +36,19 @@
 
   const snapshot = $derived(app.snapshot);
 
+  /** Accurate tooltip for the annotation badge — breaks out comments / questions
+   *  / findings so a question never reads as a "comment". */
+  function annotationTitle(file: FileSnapshot): string {
+    const parts: string[] = [];
+    if (file.comment_count > 0)
+      parts.push(`${file.comment_count} comment${file.comment_count !== 1 ? "s" : ""}`);
+    if (file.question_count > 0)
+      parts.push(`${file.question_count} question${file.question_count !== 1 ? "s" : ""}`);
+    if (file.finding_count > 0)
+      parts.push(`${file.finding_count} finding${file.finding_count !== 1 ? "s" : ""}`);
+    return parts.join(" · ");
+  }
+
   // ── Filter input state ────────────────────────────────────────────────────
   let filterDraft = $state("");
   let inputFocused = $state(false);
@@ -505,10 +518,11 @@
 
               <span class="truncate flex-1 min-w-0 text-[12px] {filenameClass(file, selected)}">{node.name}</span>
 
-              <!-- Comment/question badge -->
-              {#if !file.reviewed && (file.comment_count > 0 || file.question_count > 0)}
+              <!-- Comment/question/finding badge — shown for any active (non-stale,
+                   non-outdated, non-resolved) annotation regardless of reviewed state. -->
+              {#if file.comment_count > 0 || file.question_count > 0 || file.finding_count > 0}
                 <span
-                  title="{(file.comment_count + file.question_count)} comment{(file.comment_count + file.question_count) !== 1 ? 's' : ''}"
+                  title={annotationTitle(file)}
                   class="w-[13px] h-[13px] rounded-full shrink-0 flex items-center justify-center text-[9px] font-bold"
                   style="background: color-mix(in srgb, var(--color-comment) 15%, transparent); color: var(--color-comment); border: 1px solid color-mix(in srgb, var(--color-comment) 25%, transparent);"
                 >?</span>

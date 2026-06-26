@@ -2,8 +2,8 @@
 
 use er_engine::app::DiffMode;
 use er_engine::config::{
-    apply_config_field, desktop_settings_snapshot, save_config, save_config_local,
-    ConfigFieldValue, DesktopSettingsSnapshot, ErConfig, FeatureFlags,
+    apply_config_field, desktop_settings_snapshot, save_config, ConfigFieldValue,
+    DesktopSettingsSnapshot, FeatureFlags,
 };
 use tauri::State;
 
@@ -21,12 +21,6 @@ pub struct ConfigPatch {
 pub struct GetConfigHubResponse {
     pub settings: DesktopSettingsSnapshot,
     pub providers: Vec<AiProviderInfo>,
-}
-
-fn capture_baseline(state: &AppState, config: &ErConfig) {
-    if let Ok(mut g) = state.config_edit_baseline.lock() {
-        *g = Some(config.clone());
-    }
 }
 
 fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
@@ -103,17 +97,11 @@ fn list_providers_inner(app: &er_engine::app::App) -> Vec<AiProviderInfo> {
 }
 
 #[tauri::command]
-pub fn get_config_hub(
-    reset_baseline: Option<bool>,
-    state: State<AppState>,
-) -> Result<GetConfigHubResponse, String> {
+pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let repo_root = app.tab().repo_root.clone();
     let settings = desktop_settings_snapshot(&app.config, &repo_root);
     let providers = list_providers_inner(&app);
-    if reset_baseline.unwrap_or(true) {
-        capture_baseline(&state, &app.config);
-    }
     Ok(GetConfigHubResponse {
         settings,
         providers,
@@ -128,6 +116,7 @@ pub fn apply_config_patch(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     let repo_root = app.tab().repo_root.clone();
     let watched_changed = apply_config_field(&mut app.config, &patch.key, patch.value);
+    save_config(&app.config).map_err(|e| e.to_string())?;
     apply_config_side_effects(&mut app, watched_changed);
     state
         .desktop_revision
@@ -141,49 +130,9 @@ pub fn apply_config_patch(
 }
 
 #[tauri::command]
-pub fn reset_config_draft(state: State<AppState>) -> Result<GetConfigHubResponse, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let baseline = state
-        .config_edit_baseline
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone()
-        .ok_or_else(|| "No settings baseline — open settings first".to_string())?;
-    app.config = baseline;
-    let repo_root = app.tab().repo_root.clone();
-    app.tab_mut().watched_config = app.config.watched.clone();
-    app.tab_mut().refresh_watched_files();
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let settings = desktop_settings_snapshot(&app.config, &repo_root);
-    let providers = list_providers_inner(&app);
-    Ok(GetConfigHubResponse {
-        settings,
-        providers,
-    })
-}
-
-#[tauri::command]
-pub fn save_config_local_cmd(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let repo_root = app.tab().repo_root.clone();
-    save_config_local(&app.config, &repo_root).map_err(|e| e.to_string())?;
-    capture_baseline(&state, &app.config);
-    drop(app);
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.notify("Saved to .er-config.toml");
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
-}
-
-#[tauri::command]
 pub fn save_config_global_cmd(state: State<AppState>) -> Result<AppSnapshot, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     save_config(&app.config).map_err(|e| e.to_string())?;
-    capture_baseline(&state, &app.config);
     drop(app);
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.notify("Saved to global config");
@@ -215,6 +164,7 @@ pub fn set_ai_hub_defaults(
     app.config.ai_hub.default_model = model_id.clone();
     app.current_ai_provider = Some(provider_id);
     app.current_ai_model = model_id;
+    save_config(&app.config).map_err(|e| e.to_string())?;
     let repo_root = app.tab().repo_root.clone();
     state
         .desktop_revision

@@ -56,6 +56,11 @@ impl App {
         tab.branch_diff_hash = result.branch_diff_hash;
         tab.diff_hash = result.diff_hash;
         tab.last_diff_head_oid = result.head_oid;
+        // Refresh the COMMITS panel. Best-effort: `None` means the fetch failed
+        // or returned empty, so keep the tab's existing list.
+        if let Some(commits) = result.commits {
+            tab.pr_commits = commits;
+        }
         // Rebuild precomputed scroll offsets for the new file list.
         tab.rebuild_hunk_offsets();
         tab.reload_ai_state();

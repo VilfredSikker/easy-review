@@ -112,10 +112,13 @@ export interface PillarSnapshot {
 }
 
 export interface TourSnapshot {
-  /** True when a tour.json exists for this branch (drives the Guide tab). */
+  /** True when a guided tour exists for the current view context (PR vs branch). */
   available: boolean;
-  /** True when the tour matches the current diff. */
+  /** True when the tour matches the current diff. When false and `available`,
+   *  the UI offers a "Re-run guide" affordance. */
   fresh: boolean;
+  /** Which diff the tour is attached to: `"pr"` or `"branch"`. */
+  scope: "pr" | "branch" | "";
   title: string;
   overviewMarkdown: string;
   pillars: PillarSnapshot[];
@@ -292,13 +295,16 @@ export interface ProjectSnapshot {
   auto_triage_max_diff_kb?: number;
   /** Glob patterns excluded from AI review diffs. */
   review_ignore_globs?: string[];
+  /** PR numbers hidden via sidebar Ignore. */
+  dismissed_prs?: number[];
 }
 
 export interface CommitSummary {
   sha: string;
   title: string;
   author: string;
-  age: string;
+  /** ISO 8601 commit timestamp; render via `timeAgo()` from `$lib/time`. */
+  committed_at: string;
 }
 
 export interface TabSummary {
@@ -374,6 +380,8 @@ export interface AppSnapshot {
   staged_stat?: { additions: number; deletions: number };
   /** PR detected for the active branch (PR-list cache). Drives the Local|PR Diff toggle. */
   detected_pr_number?: number | null;
+  /** Set when the active diff is behind origin. Drives the "stale" pill + Sync. */
+  diff_stale?: { kind: string; message: string } | null;
   branch: string;
   base: string;
   input_mode: "normal" | "search" | "comment" | "filter" | "commit" | "confirm";
@@ -637,9 +645,6 @@ export interface DesktopSettingsSnapshot {
   app: ConfigHubField[];
   terminal: ConfigHubField[];
   agentEffort: string;
-  hasLocalConfig: boolean;
-  /** Repo `.er-config.toml` `[display].theme` — overrides global for the TUI. */
-  localThemeOverride?: string | null;
   repoRoot: string;
 }
 

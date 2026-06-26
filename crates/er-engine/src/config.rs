@@ -611,65 +611,6 @@ impl ErConfig {
     }
 }
 
-/// Theme set in repo-local `.er-config.toml` (overrides global for `load_config`).
-pub fn local_display_theme_override(repo_root: &str) -> Option<String> {
-    let local_path = format!("{repo_root}/.er-config.toml");
-    let content = std::fs::read_to_string(&local_path).ok()?;
-    let table: toml::Table = content.parse().ok()?;
-    table
-        .get("display")?
-        .get("theme")?
-        .as_str()
-        .map(|s| s.to_string())
-}
-
-/// Load config by merging global defaults with per-repo overrides.
-/// Priority: per-repo `.er-config.toml` > global `~/.config/er/config.toml` > built-in defaults.
-/// Merging is deep: individual fields within sections (e.g. `[features]`) override independently.
-pub fn load_config(repo_root: &str) -> ErConfig {
-    let local_path = format!("{repo_root}/.er-config.toml");
-    // Prefer XDG (~/.config/er/config.toml), fall back to dirs::config_dir()
-    let global_path = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .map(|xdg| format!("{xdg}/er/config.toml"))
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| format!("{h}/.config/er/config.toml"))
-        })
-        .filter(|p| std::path::Path::new(p).exists())
-        .or_else(|| {
-            dirs::config_dir().map(|d| d.join("er/config.toml").to_string_lossy().to_string())
-        });
-
-    let global_table = global_path
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|c| c.parse::<toml::Table>().ok());
-
-    let local_table = std::fs::read_to_string(&local_path)
-        .ok()
-        .and_then(|c| c.parse::<toml::Table>().ok());
-    let user_table = match (global_table, local_table) {
-        (Some(mut global), Some(local)) => {
-            deep_merge(&mut global, local);
-            global
-        }
-        (Some(global), None) => global,
-        (None, Some(local)) => local,
-        (None, None) => {
-            let mut config = ErConfig::default();
-            supplement_ai_hub(&mut config.ai_hub);
-            return config;
-        }
-    };
-
-    let mut config: ErConfig = toml::Value::Table(user_table)
-        .try_into()
-        .unwrap_or_default();
-    supplement_ai_hub(&mut config.ai_hub);
-    config
-}
-
 /// Split a string into args respecting single and double quotes.
 /// Unquoted segments are split on whitespace. Quoted segments preserve
 /// inner whitespace and strip the outer quotes.
@@ -715,24 +656,7 @@ pub fn split_shell_args(s: &str) -> Vec<String> {
     args
 }
 
-/// Recursively merge `overlay` into `base`. Overlay values win; nested tables are merged recursively.
-fn deep_merge(
-    base: &mut toml::map::Map<String, toml::Value>,
-    overlay: toml::map::Map<String, toml::Value>,
-) {
-    for (key, value) in overlay {
-        match (base.get_mut(&key), &value) {
-            (Some(toml::Value::Table(base_table)), toml::Value::Table(overlay_table)) => {
-                deep_merge(base_table, overlay_table.clone());
-            }
-            _ => {
-                base.insert(key, value);
-            }
-        }
-    }
-}
-
-/// Load only the global config (~/.config/er/config.toml), without applying any local overlay.
+/// Load the global config (~/.config/er/config.toml).
 pub fn load_global_config() -> ErConfig {
     let global_path = std::env::var("XDG_CONFIG_HOME")
         .ok()
@@ -1089,230 +1013,42 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
     ]
 }
 
-/// Save config to the repo-local `.er-config.toml` (atomic tmp+rename).
-pub fn save_config_local(config: &ErConfig, repo_root: &str) -> Result<()> {
-    let dir = std::path::Path::new(repo_root);
-    let path = dir.join(".er-config.toml");
-    let tmp_path = dir.join(".er-config.toml.tmp");
-    let content = toml::to_string_pretty(config)?;
-    std::fs::write(&tmp_path, content)?;
-    std::fs::rename(&tmp_path, &path)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── deep_merge ──
+    // ── ai_hub supplementation ──
 
     #[test]
-    fn deep_merge_empty_base_overwritten_by_overlay() {
-        let mut base = toml::map::Map::new();
-        let mut overlay = toml::map::Map::new();
-        overlay.insert("key".into(), toml::Value::String("value".into()));
-        deep_merge(&mut base, overlay);
-        assert_eq!(base.get("key").unwrap().as_str().unwrap(), "value");
+    fn supplement_ai_hub_populates_empty_hub_from_catalog() {
+        let mut hub = AiHubConfig::default();
+        assert!(hub.providers.is_empty());
+        supplement_ai_hub(&mut hub);
+        assert!(!hub.providers.is_empty());
     }
 
     #[test]
-    fn deep_merge_empty_overlay_preserves_base() {
-        let mut base = toml::map::Map::new();
-        base.insert("key".into(), toml::Value::String("original".into()));
-        let overlay = toml::map::Map::new();
-        deep_merge(&mut base, overlay);
-        assert_eq!(base.get("key").unwrap().as_str().unwrap(), "original");
-    }
-
-    #[test]
-    fn deep_merge_scalar_values_replaced() {
-        let mut base = toml::map::Map::new();
-        base.insert("key".into(), toml::Value::String("old".into()));
-        let mut overlay = toml::map::Map::new();
-        overlay.insert("key".into(), toml::Value::String("new".into()));
-        deep_merge(&mut base, overlay);
-        assert_eq!(base.get("key").unwrap().as_str().unwrap(), "new");
-    }
-
-    #[test]
-    fn deep_merge_nested_tables_merge_recursively() {
-        let mut inner_base = toml::map::Map::new();
-        inner_base.insert("a".into(), toml::Value::Boolean(true));
-        inner_base.insert("b".into(), toml::Value::Boolean(false));
-        let mut base = toml::map::Map::new();
-        base.insert("section".into(), toml::Value::Table(inner_base));
-
-        let mut inner_overlay = toml::map::Map::new();
-        inner_overlay.insert("b".into(), toml::Value::Boolean(true));
-        inner_overlay.insert("c".into(), toml::Value::Boolean(true));
-        let mut overlay = toml::map::Map::new();
-        overlay.insert("section".into(), toml::Value::Table(inner_overlay));
-
-        deep_merge(&mut base, overlay);
-
-        let section = base.get("section").unwrap().as_table().unwrap();
-        assert!(section.get("a").unwrap().as_bool().unwrap());
-        assert!(section.get("b").unwrap().as_bool().unwrap()); // overridden
-        assert!(section.get("c").unwrap().as_bool().unwrap()); // added
-    }
-
-    #[test]
-    fn deep_merge_three_levels_deep() {
-        let mut l3_base = toml::map::Map::new();
-        l3_base.insert("val".into(), toml::Value::Integer(1));
-        let mut l2_base = toml::map::Map::new();
-        l2_base.insert("inner".into(), toml::Value::Table(l3_base));
-        let mut base = toml::map::Map::new();
-        base.insert("outer".into(), toml::Value::Table(l2_base));
-
-        let mut l3_overlay = toml::map::Map::new();
-        l3_overlay.insert("val".into(), toml::Value::Integer(99));
-        let mut l2_overlay = toml::map::Map::new();
-        l2_overlay.insert("inner".into(), toml::Value::Table(l3_overlay));
-        let mut overlay = toml::map::Map::new();
-        overlay.insert("outer".into(), toml::Value::Table(l2_overlay));
-
-        deep_merge(&mut base, overlay);
-
-        let val = base["outer"].as_table().unwrap()["inner"]
-            .as_table()
-            .unwrap()["val"]
-            .as_integer()
-            .unwrap();
-        assert_eq!(val, 99);
-    }
-
-    #[test]
-    fn deep_merge_array_values_replaced_not_appended() {
-        let mut base = toml::map::Map::new();
-        base.insert(
-            "arr".into(),
-            toml::Value::Array(vec![toml::Value::Integer(1), toml::Value::Integer(2)]),
+    fn supplement_ai_hub_adds_catalog_models_to_user_provider() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "codex".into(),
+            AiProviderConfig {
+                command: "codex".into(),
+                models: vec![AiModelConfig {
+                    id: "gpt-5.4".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
         );
-        let mut overlay = toml::map::Map::new();
-        overlay.insert(
-            "arr".into(),
-            toml::Value::Array(vec![toml::Value::Integer(3)]),
-        );
-        deep_merge(&mut base, overlay);
-        let arr = base.get("arr").unwrap().as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0].as_integer().unwrap(), 3);
-    }
 
-    #[test]
-    fn deep_merge_type_mismatch_scalar_overwrites_table() {
-        let mut inner = toml::map::Map::new();
-        inner.insert("a".into(), toml::Value::Boolean(true));
-        let mut base = toml::map::Map::new();
-        base.insert("key".into(), toml::Value::Table(inner));
+        supplement_ai_hub(&mut hub);
 
-        let mut overlay = toml::map::Map::new();
-        overlay.insert("key".into(), toml::Value::String("replaced".into()));
-
-        deep_merge(&mut base, overlay);
-        assert_eq!(base.get("key").unwrap().as_str().unwrap(), "replaced");
-    }
-
-    #[test]
-    fn deep_merge_type_mismatch_table_overwrites_scalar() {
-        let mut base = toml::map::Map::new();
-        base.insert("key".into(), toml::Value::String("old".into()));
-
-        let mut inner = toml::map::Map::new();
-        inner.insert("a".into(), toml::Value::Boolean(true));
-        let mut overlay = toml::map::Map::new();
-        overlay.insert("key".into(), toml::Value::Table(inner));
-
-        deep_merge(&mut base, overlay);
-        assert!(base.get("key").unwrap().is_table());
-        assert!(base["key"].as_table().unwrap()["a"].as_bool().unwrap());
-    }
-
-    // ── load_config ──
-
-    #[test]
-    fn load_config_missing_files_produce_defaults() {
-        let config = load_config("/nonexistent/repo/path");
-        assert!(config.features.view_branch);
-        assert!(config.features.view_unstaged);
-        assert_eq!(config.display.tab_width, 4);
-        assert_eq!(config.agent.command, "claude");
-    }
-
-    #[test]
-    fn load_config_partial_toml_merges_with_defaults() {
-        let dir = std::env::temp_dir().join("er_test_partial_toml");
-        let _ = std::fs::create_dir_all(&dir);
-        let config_path = dir.join(".er-config.toml");
-        std::fs::write(&config_path, "[features]\nview_branch = false\n").unwrap();
-
-        let config = load_config(dir.to_str().unwrap());
-        assert!(!config.features.view_branch); // overridden
-        assert!(config.features.view_unstaged); // default preserved
-        assert_eq!(config.display.tab_width, 4); // default preserved
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_config_parses_ai_hub_presets() {
-        let dir = std::env::temp_dir().join("er_test_ai_hub_config");
-        let _ = std::fs::create_dir_all(&dir);
-        let config_path = dir.join(".er-config.toml");
-        std::fs::write(
-            &config_path,
-            r#"
-[ai_hub]
-default_provider = "codex"
-default_model = "gpt-5.4"
-
-[ai_hub.providers.codex]
-label = "Codex"
-command = "codex"
-args = ["exec", "{prompt}"]
-
-[[ai_hub.providers.codex.models]]
-id = "gpt-5.4"
-label = "GPT-5.4"
-args = ["--model", "gpt-5.4"]
-"#,
-        )
-        .unwrap();
-
-        let config = load_config(dir.to_str().unwrap());
-        assert_eq!(config.ai_hub.default_provider.as_deref(), Some("codex"));
-        assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.4"));
-        let codex = config.ai_hub.providers.get("codex").unwrap();
-        assert_eq!(codex.command, "codex");
-        // The user-defined model comes first and is NOT overwritten by the
-        // built-in catalog entry of the same id (the user's definition has no
-        // description; the catalog's does).
+        let codex = hub.providers.get("codex").unwrap();
+        // The user's model is preserved and stays first.
         assert_eq!(codex.models[0].id, "gpt-5.4");
-        assert!(codex.models[0].description.is_none());
-        // `supplement_ai_hub` adds the catalog's remaining codex models
-        // in-memory, so the picker shows them alongside the user's.
-        assert!(
-            codex.models.iter().any(|m| m.id == "gpt-5.3-codex"),
-            "catalog models should supplement user-defined providers"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_config_malformed_toml_falls_back_to_defaults() {
-        let dir = std::env::temp_dir().join("er_test_malformed_toml");
-        let _ = std::fs::create_dir_all(&dir);
-        let config_path = dir.join(".er-config.toml");
-        std::fs::write(&config_path, "this is not valid { toml ]]").unwrap();
-
-        let config = load_config(dir.to_str().unwrap());
-        // Should fall back to defaults
-        assert!(config.features.view_branch);
-        assert_eq!(config.display.tab_width, 4);
-
-        let _ = std::fs::remove_dir_all(&dir);
+        // The catalog supplements the remaining codex models in-memory.
+        assert!(codex.models.iter().any(|m| m.id == "gpt-5.3-codex"));
     }
 
     // ── Default values ──

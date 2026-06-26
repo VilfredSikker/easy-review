@@ -96,8 +96,7 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     };
                     app.config_hub_switch_tab(next);
                 }
-                KeyCode::Char('s') => app.config_hub_save_local(),
-                KeyCode::Char('S') => app.config_hub_save_global(),
+                KeyCode::Char('s') | KeyCode::Char('S') => app.config_hub_save_global(),
                 KeyCode::Esc | KeyCode::Char('q') => app.config_hub_cancel(),
                 _ => {}
             }
@@ -1104,8 +1103,8 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
         github::gh_pr_review_threads(&owner, &repo_name, pr_number, &repo_root).unwrap_or_default()
     };
 
-    // Load existing github-comments.json (uses cache dir in remote mode)
-    let comments_dir = app.tab().comments_dir();
+    // Load existing github-comments.json (PR-scoped: shared PR bucket for PR tabs)
+    let comments_dir = app.tab().github_comments_dir();
     let _ = std::fs::create_dir_all(&comments_dir);
     let comments_path = app.tab().github_comments_path();
     let diff_hash = tab.branch_diff_hash.clone();

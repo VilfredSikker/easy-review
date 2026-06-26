@@ -518,6 +518,10 @@ pub struct RemoteDiffResult {
     pub branch_diff_hash: String,
     pub diff_hash: String,
     pub head_oid: Option<String>,
+    /// Refreshed PR commit list for the COMMITS panel. `None` means the fetch
+    /// failed (or returned empty) — apply keeps the tab's existing list rather
+    /// than clobbering a good one.
+    pub commits: Option<Vec<git::CommitInfo>>,
     /// (repo_root, pr_number, is_remote) — used to find the right tab on apply.
     pub tab_key: (String, Option<u64>, bool),
 }
@@ -540,12 +544,19 @@ pub fn fetch_remote_diff_data(ctx: &RemoteDiffContext) -> Result<Option<RemoteDi
     let branch_diff_hash = crate::ai::compute_diff_hash(&raw);
     let diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
 
+    // Refresh the COMMITS panel alongside the diff. `gh_pr_commits_remote`
+    // returns an empty Vec on failure, so treat empty as "no fresh data" and
+    // leave the existing list intact on apply (a real PR has ≥1 commit).
+    let fetched = github::gh_pr_commits_remote(&ctx.owner, &ctx.repo, ctx.pr_number, 250);
+    let commits = (!fetched.is_empty()).then_some(fetched);
+
     Ok(Some(RemoteDiffResult {
         raw_diff: raw,
         files,
         branch_diff_hash,
         diff_hash,
         head_oid: ctx.expected_head_oid.clone(),
+        commits,
         tab_key: (ctx.repo_root.clone(), Some(ctx.pr_number), true),
     }))
 }

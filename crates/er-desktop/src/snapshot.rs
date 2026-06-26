@@ -5,7 +5,7 @@ use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
 use er_engine::arena::{ArenaRunSnapshot, ArenaRunSummary};
 use er_engine::git::{DiffFile, FileStatus, LineType};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::inbox::InboxHandle;
 use crate::projects::{self, normalize_remote_slug};
@@ -285,10 +285,14 @@ pub struct PillarSnapshot {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TourSnapshot {
-    /// True when a tour.json exists for this branch.
+    /// True when a guided tour exists for the current view context (PR vs branch).
     pub available: bool,
-    /// True when the tour matches the current diff (not stale).
+    /// True when the tour matches the current diff (not stale). When false and
+    /// `available` is true, the UI offers a "Re-run guide" affordance.
     pub fresh: bool,
+    /// Which diff the tour is attached to: `"pr"` or `"branch"`. Drives the
+    /// Diff/PR header toggle state and where the Diff toggle returns to.
+    pub scope: String,
     pub title: String,
     pub overview_markdown: String,
     pub pillars: Vec<PillarSnapshot>,
@@ -359,6 +363,11 @@ pub struct AppSnapshot {
     /// the Local|PR Diff toggle.
     #[serde(default)]
     pub detected_pr_number: Option<u64>,
+    /// Set when the active diff is behind origin (the open diff was computed
+    /// against an older head/base than what origin now has). Drives the "stale"
+    /// pill + manual Sync. None = up to date / unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_stale: Option<DiffStaleSnapshot>,
     /// Which background fetches are currently in-flight.
     pub bg_loading: LoadingFlags,
     /// Running/done/failed background AI commands for the active tab.
@@ -419,6 +428,34 @@ pub struct AppSnapshot {
     /// Lets the UI keep a run visible/controllable after switching branches.
     #[serde(default)]
     pub background_arena_runs: Vec<ArenaRunSummaryWire>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiffStaleSnapshot {
+    /// "pr_head" | "base"
+    pub kind: String,
+    /// Short human label for the pill tooltip.
+    pub message: String,
+}
+
+/// Returns Some(stale) only when both oids are known AND differ. None when
+/// either is unknown (we don't guess) or they match. Keeps the "no-op when
+/// equal / unknown" rule in one tested place.
+pub fn compute_oid_staleness(
+    latest_oid: Option<&str>,
+    used_oid: Option<&str>,
+    kind: &str,
+    message: &str,
+) -> Option<DiffStaleSnapshot> {
+    match (latest_oid, used_oid) {
+        (Some(latest), Some(used)) if !latest.is_empty() && !used.is_empty() && latest != used => {
+            Some(DiffStaleSnapshot {
+                kind: kind.to_string(),
+                message: message.to_string(),
+            })
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -571,6 +608,9 @@ pub struct ProjectSnapshot {
     /// Glob patterns excluded from AI review diffs.
     #[serde(default)]
     pub review_ignore_globs: Vec<String>,
+    /// PR numbers hidden via sidebar Ignore (for Unignore in action menu).
+    #[serde(default)]
+    pub dismissed_prs: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -676,7 +716,9 @@ pub struct CommitSummary {
     pub sha: String,
     pub title: String,
     pub author: String,
-    pub age: String,
+    /// ISO 8601 commit timestamp; the frontend renders it as a relative
+    /// "time ago" string (uniform across local and remote-PR commits).
+    pub committed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -828,7 +870,7 @@ pub struct TriageSnapshot {
     pub domains: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckSummary {
     pub name: String,
     pub status: String,
@@ -836,7 +878,7 @@ pub struct CheckSummary {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhCommentSummary {
     pub author: String,
     pub body: String,
@@ -844,7 +886,7 @@ pub struct GhCommentSummary {
     pub url: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhReviewSummary {
     pub author: String,
     pub state: String,
@@ -852,7 +894,7 @@ pub struct GhReviewSummary {
     pub submitted_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GithubStatusSnapshot {
     pub owner: String,
     pub repo: String,
@@ -1097,6 +1139,9 @@ fn build_replies(
 
 pub type PrCache = Arc<Mutex<HashMap<String, Vec<PrInfo>>>>;
 pub type GhUser = Arc<Mutex<Option<String>>>;
+/// Background-probed remote oids of branch tabs' base branches, keyed by
+/// "{repo_root}\0{base_short}". Populated by the 60s ls-remote probe.
+pub type BranchBaseRemoteOid = Arc<Mutex<HashMap<String, String>>>;
 
 /// Cache key: (owner, repo, pr_number). Stores the most recent `GithubStatusSnapshot`
 /// the background poller fetched.
@@ -1240,6 +1285,9 @@ fn refresh_meta_cache_filtered(
     fp_before != fp_after
 }
 
+/// One PR-cache entry projected for fingerprinting: `(bucket key, pr count, [(pr number, head_oid)])`.
+type PrFingerprintEntry<'a> = (&'a String, usize, Vec<(u64, &'a str)>);
+
 /// Fingerprint of PR list cache + fetch timestamps (chrome-only poll input).
 pub fn pr_cache_fingerprint(
     pr_cache: Option<&PrCache>,
@@ -1250,11 +1298,29 @@ pub fn pr_cache_fingerprint(
 
     let mut h = DefaultHasher::new();
     if let Some(cache) = pr_cache.and_then(|m| m.lock().ok()) {
-        let mut entries: Vec<(&String, usize)> = cache.iter().map(|(k, v)| (k, v.len())).collect();
+        // Fold each PR's head_oid into the fingerprint so a head change alone
+        // forces a snapshot recompute (the stale pill compares against head_oid).
+        // Without it, a push that keeps the PR count constant is masked until an
+        // unrelated desktop_revision bump — a fragile coupling.
+        let mut entries: Vec<PrFingerprintEntry<'_>> = cache
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    v.len(),
+                    v.iter().map(|p| (p.number, p.head_oid.as_str())).collect(),
+                )
+            })
+            .collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
-        for (k, n) in entries {
+        for (k, n, mut oids) in entries {
             k.hash(&mut h);
             n.hash(&mut h);
+            oids.sort_by_key(|(number, _)| *number);
+            for (number, head_oid) in oids {
+                number.hash(&mut h);
+                head_oid.hash(&mut h);
+            }
         }
     }
     if let Some(fetched) = pr_cache_fetched_at.and_then(|m| m.lock().ok()) {
@@ -1296,7 +1362,7 @@ pub(crate) fn build_file_snapshot(
         .map(|r| {
             r.files
                 .get(&f.path)
-                .map(|fr| fr.findings.len())
+                .map(|fr| fr.findings.iter().filter(|fd| fd.is_active()).count())
                 .unwrap_or(0)
         })
         .unwrap_or(0);
@@ -1445,7 +1511,15 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
 
     TourSnapshot {
         available: true,
-        fresh: !tab.ai.is_stale,
+        // Staleness is computed per-context in `reload_ai_state` (`tour_stale_for`);
+        // `scope` tells the frontend which guide (branch vs PR) is showing so the Guide
+        // tab is context-aware and the Diff toggle returns to the right diff.
+        fresh: !tab.ai.tour_stale,
+        scope: if tab.tour_context_is_pr() {
+            "pr".to_string()
+        } else {
+            "branch".to_string()
+        },
         title: tour.title.clone(),
         overview_markdown: tour.overview.clone(),
         pillars,
@@ -1468,6 +1542,7 @@ pub fn build_snapshot_with_delta(
     watch_status: Option<&WatchStatusState>,
     inbox: Option<&InboxHandle>,
     sent_files: Option<&SentFilesHandle>,
+    branch_base_remote_oid: Option<&BranchBaseRemoteOid>,
 ) -> AppSnapshot {
     build_snapshot_inner(
         app,
@@ -1482,6 +1557,7 @@ pub fn build_snapshot_with_delta(
         inbox,
         false,
         sent_files,
+        branch_base_remote_oid,
     )
 }
 
@@ -1497,6 +1573,7 @@ pub fn build_chrome_snapshot(
     loading: Option<&LoadingState>,
     watch_status: Option<&WatchStatusState>,
     inbox: Option<&InboxHandle>,
+    branch_base_remote_oid: Option<&BranchBaseRemoteOid>,
 ) -> AppSnapshot {
     build_snapshot_inner(
         app,
@@ -1511,6 +1588,7 @@ pub fn build_chrome_snapshot(
         inbox,
         true,
         None,
+        branch_base_remote_oid,
     )
 }
 
@@ -1528,6 +1606,7 @@ fn build_snapshot_inner(
     inbox: Option<&InboxHandle>,
     chrome_only: bool,
     sent_files: Option<&SentFilesHandle>,
+    branch_base_remote_oid: Option<&BranchBaseRemoteOid>,
 ) -> AppSnapshot {
     let t0 = std::time::Instant::now();
     let tab = app.tab();
@@ -1794,6 +1873,63 @@ fn build_snapshot_inner(
         })
     };
 
+    // Freshness check for the active diff. Cheap: PR case reads the already-fresh
+    // PR-list cache (gh pr list, 10-min cadence); branch case reads a background
+    // ls-remote cache + a local `git rev-parse`. Never fetches here. Any unknown
+    // oid yields None (we don't guess), so the pill never wedges "stale".
+    let diff_stale: Option<DiffStaleSnapshot> = {
+        // Fire whenever the tab represents a PR — including a local PR tab
+        // switched to Branch view (via set_mode), which matches neither
+        // `DiffMode::PrDiff` nor the `shows_branch_base_diff` fallback below
+        // (that one requires `pr_number.is_none()`), so its pill would otherwise
+        // be silently gated out.
+        let pr_showing =
+            tab.pr_number.is_some() || tab.is_remote() || matches!(tab.mode, DiffMode::PrDiff);
+        if pr_showing {
+            // PR case (FREE): compare the head_oid the open diff was computed
+            // against to the latest head_oid carried by the PR-list cache.
+            // Prefer the tab's own PR number — `detected_pr_number` is None for
+            // remote PR tabs, so keying off it alone would never light their pill.
+            tab.pr_number.or(detected_pr_number).and_then(|pr_number| {
+                let cached_head_oid = pr_cache.and_then(|pc| pc.lock().ok()).and_then(|cache| {
+                    cache
+                        .values()
+                        .flat_map(|prs| prs.iter())
+                        .find(|p| p.number == pr_number)
+                        .map(|p| p.head_oid.clone())
+                        .filter(|s| !s.is_empty())
+                });
+                compute_oid_staleness(
+                    cached_head_oid.as_deref(),
+                    tab.last_diff_head_oid.as_deref(),
+                    "pr_head",
+                    "PR head updated on origin — Sync to refresh",
+                )
+            })
+        } else if tab.shows_branch_base_diff() {
+            // Branch case (main checkout or read-only branch view): compare the
+            // background-probed remote tip of the base branch to the oid the diff's
+            // actual base ref currently points at. We resolve `tab.base_branch`
+            // directly (not a hardcoded `origin/<base>`) because the main checkout
+            // may diff against a local `main` — comparing that local ref to origin's
+            // tip is exactly the "behind main" signal.
+            let base_short = tab.base_branch.trim_start_matches("origin/");
+            let key = format!("{}\u{0}{}", tab.repo_root, base_short);
+            let latest = branch_base_remote_oid
+                .and_then(|c| c.lock().ok())
+                .and_then(|cache| cache.get(&key).cloned());
+            let used = er_engine::github::rev_parse_oid(&tab.repo_root, &tab.base_branch);
+            compute_oid_staleness(
+                latest.as_deref(),
+                used.as_deref(),
+                "base",
+                &format!("{base_short} has new commits on origin — Sync to refresh"),
+            )
+        } else {
+            None
+        }
+    };
+
     // Per-scope +/- counters for the scope selector. Only meaningful for a live
     // local checkout (working tree or checked-out branch view); skipped on remote
     // PR tabs, read-only branch views, and chrome-only rebuilds.
@@ -1867,6 +2003,7 @@ fn build_snapshot_inner(
         browser: browser_snapshot_from_tab(tab),
         github,
         detected_pr_number,
+        diff_stale,
         bg_loading: loading
             .and_then(|l| l.lock().ok().map(|g| g.clone()))
             .unwrap_or_default(),
@@ -2039,7 +2176,7 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
             sha: c.hash,
             title: c.subject,
             author: c.author,
-            age: c.relative_date,
+            committed_at: c.date,
         })
         .collect()
 }
@@ -2097,6 +2234,48 @@ fn build_agent_log(tab: &TabState) -> Vec<AgentLogSnapshot> {
         .collect()
 }
 
+#[derive(PartialEq, Eq)]
+struct WorktreesMetaKey {
+    repo_root: String,
+    base_branch: String,
+    fingerprint: u64,
+}
+
+/// Per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by worktree path.
+type WorktreeMetaMap = HashMap<String, (bool, Option<u64>, bool)>;
+
+/// Cached per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by path.
+///
+/// `build_worktrees` runs on every snapshot build (every ~2s poll). The cheap
+/// `list_worktrees` call stays live so add/remove/branch-switch is reflected
+/// within one poll, but `detect_pr_meta` spawns `git config` + `git merge-base`
+/// per worktree — ~2N subprocesses that dominate snapshot construction. The set
+/// rarely changes, so cache that meta keyed on a fingerprint of the worktree set:
+/// add/remove/switch changes the fingerprint → cache miss → recompute, and a TTL
+/// backstops `is_merged` drift when the set is unchanged.
+static WORKTREES_META_CACHE: Mutex<
+    Option<(WorktreesMetaKey, std::time::Instant, WorktreeMetaMap)>,
+> = Mutex::new(None);
+const WORKTREES_META_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn worktrees_meta_cached(
+    key: WorktreesMetaKey,
+    compute: impl FnOnce() -> WorktreeMetaMap,
+) -> WorktreeMetaMap {
+    if let Ok(guard) = WORKTREES_META_CACHE.lock() {
+        if let Some((cached_key, computed_at, value)) = guard.as_ref() {
+            if *cached_key == key && computed_at.elapsed() < WORKTREES_META_TTL {
+                return value.clone();
+            }
+        }
+    }
+    let value = compute();
+    if let Ok(mut guard) = WORKTREES_META_CACHE.lock() {
+        *guard = Some((key, std::time::Instant::now(), value.clone()));
+    }
+    value
+}
+
 fn build_worktrees(
     repo_root: &str,
     base_branch: &str,
@@ -2104,10 +2283,37 @@ fn build_worktrees(
 ) -> Vec<WorktreeSnapshot> {
     let wts = er_engine::git::list_worktrees(repo_root).unwrap_or_default();
     let skip_merged = wts.len() > 10;
+
+    let fingerprint = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for wt in &wts {
+            wt.path.hash(&mut h);
+            wt.branch.hash(&mut h);
+        }
+        h.finish()
+    };
+    let key = WorktreesMetaKey {
+        repo_root: repo_root.to_string(),
+        base_branch: base_branch.to_string(),
+        fingerprint,
+    };
+
+    let meta = worktrees_meta_cached(key, || {
+        wts.iter()
+            .map(|wt| {
+                (
+                    wt.path.clone(),
+                    detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged),
+                )
+            })
+            .collect()
+    });
+
     wts.into_iter()
         .map(|wt| {
             let (is_pr, pr_number, is_merged) =
-                detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged);
+                meta.get(&wt.path).copied().unwrap_or((false, None, false));
             WorktreeSnapshot {
                 is_current: wt.path == current_root,
                 branch: wt.branch,
@@ -2596,7 +2802,8 @@ fn build_projects_from_file(
                         .collect();
 
                     // "To review" = open PRs not authored by me that I haven't
-                    // already reviewed. Excluding PRs I've already approved or
+                    // already reviewed. Drafts are excluded — they aren't ready
+                    // for review yet. Excluding PRs I've already approved or
                     // requested changes on keeps the list to what still needs my
                     // attention (GitHub clears the review request once I review,
                     // but the PR stays open).
@@ -2604,6 +2811,7 @@ fn build_projects_from_file(
                         .iter()
                         .filter(|pr| {
                             pr.state == "OPEN"
+                                && !pr.is_draft
                                 && me.as_deref().is_none_or(|login| pr.author != login)
                                 && !pr.approved_by_me
                                 && me.as_deref().is_none_or(|login| {
@@ -2672,6 +2880,7 @@ fn build_projects_from_file(
                 auto_triage_when: p.auto_triage_when.clone(),
                 auto_triage_max_diff_kb: p.auto_triage_max_diff_kb,
                 review_ignore_globs: p.review_ignore_globs.clone(),
+                dismissed_prs: p.dismissed_prs.clone(),
             }
         })
         .collect()
@@ -3228,6 +3437,36 @@ mod tests {
     use super::*;
     use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
 
+    #[test]
+    fn compute_oid_staleness_rules() {
+        // Equal oids → up to date.
+        assert!(compute_oid_staleness(Some("abc"), Some("abc"), "base", "m").is_none());
+        // Either side unknown → don't guess.
+        assert!(compute_oid_staleness(None, Some("abc"), "base", "m").is_none());
+        assert!(compute_oid_staleness(Some("abc"), None, "base", "m").is_none());
+        // Empty strings are treated as unknown.
+        assert!(compute_oid_staleness(Some(""), Some("abc"), "base", "m").is_none());
+        assert!(compute_oid_staleness(Some("abc"), Some(""), "base", "m").is_none());
+        // Differing non-empty oids → stale, carrying kind + message.
+        let stale = compute_oid_staleness(
+            Some("newsha"),
+            Some("oldsha"),
+            "base",
+            "main has new commits on origin — Sync to refresh",
+        )
+        .expect("differing oids must be stale");
+        assert_eq!(stale.kind, "base");
+        assert_eq!(
+            stale.message,
+            "main has new commits on origin — Sync to refresh"
+        );
+
+        // PR-head kind threads through unchanged.
+        let pr_stale = compute_oid_staleness(Some("head2"), Some("head1"), "pr_head", "msg")
+            .expect("differing oids must be stale");
+        assert_eq!(pr_stale.kind, "pr_head");
+    }
+
     fn commit_info(hash: &str, subject: &str) -> er_engine::git::CommitInfo {
         er_engine::git::CommitInfo {
             hash: hash.to_string(),
@@ -3426,6 +3665,124 @@ mod tests {
         assert!(commits.is_empty());
     }
 
+    // ── Part B: stale-pill gate for PR tabs ──
+
+    /// Build an App whose single tab is a local PR (not remote) on the given
+    /// mode, with `last_diff_head_oid` set, plus a pr_cache entry for that PR.
+    fn pr_tab_app_with_cache(
+        pr_number: u64,
+        mode: DiffMode,
+        last_diff_head_oid: Option<&str>,
+        cached_head_oid: &str,
+    ) -> (App, PrCache) {
+        let mut app = App::new_for_test(vec![]);
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = "/tmp/test".to_string();
+            tab.remote_repo = None;
+            tab.pr_number = Some(pr_number);
+            tab.local_branch_view = Some("feature".to_string());
+            tab.mode = mode;
+            tab.last_diff_head_oid = last_diff_head_oid.map(str::to_string);
+        }
+        let mut pr = minimal_pr_info(pr_number, "PR");
+        pr.head_ref = "feature".to_string();
+        pr.state = "OPEN".to_string();
+        pr.head_oid = cached_head_oid.to_string();
+        let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([(
+            "owner/repo".to_string(),
+            vec![pr],
+        )])));
+        (app, pr_cache)
+    }
+
+    fn diff_stale_for(app: &App, pr_cache: &PrCache) -> Option<DiffStaleSnapshot> {
+        build_snapshot_with_delta(
+            app,
+            Some(pr_cache),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .diff_stale
+    }
+
+    /// A local PR tab switched to Branch view (via set_mode) must still light the
+    /// stale pill when the PR head advanced on origin. Before the gate was
+    /// broadened it matched neither the PrDiff branch nor the
+    /// `shows_branch_base_diff` fallback (which requires `pr_number.is_none()`).
+    #[test]
+    fn pr_tab_in_branch_view_lights_pill_when_head_advanced() {
+        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
+
+        let stale = diff_stale_for(&app, &pr_cache).expect("pill should be lit");
+        assert_eq!(stale.kind, "pr_head");
+        assert_eq!(stale.message, "PR head updated on origin — Sync to refresh");
+    }
+
+    /// Equal oids → no pill (the diff is already at the latest head).
+    #[test]
+    fn pr_tab_no_pill_when_head_matches() {
+        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head1");
+
+        assert!(diff_stale_for(&app, &pr_cache).is_none());
+    }
+
+    /// pr_cache has no entry for this PR → None. Preserves the "don't guess"
+    /// rule in `compute_oid_staleness` (an unknown latest oid never wedges stale).
+    #[test]
+    fn pr_tab_no_pill_when_cache_missing_pr() {
+        let (app, _) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
+        // pr_cache that only knows a *different* PR number.
+        let mut other = minimal_pr_info(99, "other");
+        other.head_oid = "headX".to_string();
+        let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([(
+            "owner/repo".to_string(),
+            vec![other],
+        )])));
+
+        assert!(diff_stale_for(&app, &pr_cache).is_none());
+    }
+
+    // ── Part D: pr_cache_fingerprint folds in head_oid ──
+
+    /// A head_oid change alone (same PR count, same fetch timestamps) must move
+    /// the fingerprint so a snapshot recompute fires — previously masked because
+    /// the fingerprint hashed only count + fetched_at.
+    #[test]
+    fn pr_cache_fingerprint_changes_when_head_oid_changes() {
+        let mut pr = minimal_pr_info(42, "PR");
+        pr.head_oid = "head1".to_string();
+        let cache_v1: PrCache = Arc::new(Mutex::new(HashMap::from([(
+            "owner/repo".to_string(),
+            vec![pr.clone()],
+        )])));
+
+        let mut pr2 = pr.clone();
+        pr2.head_oid = "head2".to_string();
+        let cache_v2: PrCache = Arc::new(Mutex::new(HashMap::from([(
+            "owner/repo".to_string(),
+            vec![pr2],
+        )])));
+
+        let fp_v1 = pr_cache_fingerprint(Some(&cache_v1), None);
+        let fp_v2 = pr_cache_fingerprint(Some(&cache_v2), None);
+
+        assert_ne!(
+            fp_v1, fp_v2,
+            "a head_oid change with constant PR count must change the fingerprint"
+        );
+        // Identical caches still fingerprint equal (no spurious churn).
+        assert_eq!(fp_v1, pr_cache_fingerprint(Some(&cache_v1), None));
+    }
+
     #[test]
     fn local_branch_commit_snapshot_still_uses_git_log_range() {
         let tmp = init_repo_with_feature_commit();
@@ -3566,6 +3923,7 @@ mod tests {
             None,
             None,
             Some(sent),
+            None,
         )
     }
 
@@ -3670,5 +4028,52 @@ mod tests {
         // Reset (frontend re-fetches from scratch) — full resend.
         sent.lock().unwrap().reset();
         assert!(!delta_snap(&app, &sent).files[0].hunks_omitted);
+    }
+
+    #[test]
+    fn worktrees_meta_cache_recomputes_only_on_key_change() {
+        use std::cell::Cell;
+
+        let calls = Cell::new(0u32);
+        let compute = || {
+            calls.set(calls.get() + 1);
+            let mut m = HashMap::new();
+            m.insert("/wt".to_string(), (true, Some(7u64), false));
+            m
+        };
+        let key = || WorktreesMetaKey {
+            repo_root: "/repo".to_string(),
+            base_branch: "main".to_string(),
+            // Unique fingerprint so this test never collides with cached state
+            // left by other suites touching the shared static.
+            fingerprint: 0xDEAD_BEEF,
+        };
+
+        // First call: cache miss → compute runs once, value flows through.
+        let v1 = worktrees_meta_cached(key(), compute);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(v1.get("/wt").copied(), Some((true, Some(7), false)));
+
+        // Same key within TTL: cache hit → no recompute, same value.
+        let v2 = worktrees_meta_cached(key(), compute);
+        assert_eq!(
+            calls.get(),
+            1,
+            "same worktree set within TTL must reuse cached meta, not respawn git subprocesses"
+        );
+        assert_eq!(v2.get("/wt").copied(), Some((true, Some(7), false)));
+
+        // Changed fingerprint (worktree added/removed/switched): miss → recompute.
+        let changed = WorktreesMetaKey {
+            repo_root: "/repo".to_string(),
+            base_branch: "main".to_string(),
+            fingerprint: 0xFEED_FACE,
+        };
+        let _ = worktrees_meta_cached(changed, compute);
+        assert_eq!(
+            calls.get(),
+            2,
+            "a changed worktree set must invalidate the cache and recompute"
+        );
     }
 }

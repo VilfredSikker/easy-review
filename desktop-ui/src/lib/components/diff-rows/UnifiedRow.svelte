@@ -1,6 +1,7 @@
 <script lang="ts">
   import { lineHasAnchorRangeHighlight, type AnnotationIndex } from "$lib/diffAnnotations";
   import type { CommentVisibility } from "$lib/diffAnnotations";
+  import { diffBgKind } from "$lib/diffContrast";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import { caretTextOffset, identifierAt } from "$lib/referenceHighlight";
@@ -37,7 +38,8 @@
     return null;
   });
   const wdSpans = $derived(wdU ? (line.kind === "del" ? wdU.old : wdU.new) : null);
-  const wdBg = $derived(line.kind === "del" ? "bg-del-fg/30" : "bg-add-fg/30");
+  const wdBg = $derived(line.kind === "del" ? "wd-change-del" : "wd-change-add");
+  const bgKind = $derived(diffBgKind(line.kind));
 
   const isSelected = $derived(ln !== null && diffSel.file === filePath && diffSel.sel(ln, side));
   const isAnchorRange = $derived(
@@ -104,6 +106,7 @@
       wordSpans={wdSpans}
       syntaxSpans={line.spans}
       changedBgClass={wdBg}
+      kind={bgKind}
     />
   </div>
 </div>

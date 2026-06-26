@@ -33,6 +33,9 @@ export default defineConfig({
     },
   },
   clearScreen: false,
-  server: { port: 5183, strictPort: true },
+  // Port is chosen by scripts/tauri-dev.sh (free-port scan starting at 5183) and
+  // passed here + to Tauri's devUrl so both agree. strictPort stays on: a silent
+  // drift would leave Tauri's devUrl pointing at the wrong server.
+  server: { port: Number(process.env.VITE_DEV_PORT) || 5183, strictPort: true },
   envPrefix: ["VITE_", "TAURI_"],
 });

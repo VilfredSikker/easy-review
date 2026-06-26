@@ -33,10 +33,36 @@
   );
 
   const mode = $derived(snapshot?.mode ?? "branch");
-  const prActive = $derived(mode === "pr");
-  /** Show the [Local Branch | PR Diff] toggle when the branch has a PR and the
-   *  tab is local (remote-only tabs are implicitly PR Diff). */
-  const showSourceToggle = $derived(prNumber != null && activeTab?.kind !== "remote_pr");
+  /** PR Diff is "active" in PR mode, and also in Guide mode when the guide is
+   *  attached to the PR diff — entering the Guide must not flip the toggle to
+   *  Local Branch. */
+  const prActive = $derived(
+    mode === "pr" || (mode === "tour" && snapshot?.tour?.scope === "pr"),
+  );
+  /** Show the [Local Branch | PR Diff] toggle when the branch has a PR, the
+   *  tab is local (remote-only tabs are implicitly PR Diff), AND the head
+   *  branch is checked out. Without a checkout there's no working-tree "Local
+   *  Branch" view distinct from PR Diff (both would be `gh pr diff`), so the
+   *  toggle is hidden and the tab is PR Diff only. */
+  const showSourceToggle = $derived(
+    prNumber != null
+      && activeTab?.kind !== "remote_pr"
+      && snapshot?.local_branch_checked_out === true,
+  );
+
+  /** Set when the open diff is behind origin (PR head or base advanced). */
+  const diffStale = $derived(snapshot?.diff_stale ?? null);
+
+  let syncing = $state(false);
+  async function syncStale() {
+    if (syncing) return;
+    syncing = true;
+    try {
+      await app.cmd("force_refresh_diff");
+    } finally {
+      syncing = false;
+    }
+  }
 
   async function copyBranchName() {
     const name = snapshot?.branch ?? "";
@@ -55,14 +81,23 @@
     }
   }
 
-  async function revealWorktree() {
-    const path = activeTab?.repo_root;
+  /** Resolved local worktree path for the active tab. Remote-only PR tabs
+   *  have no local checkout, so `repo_root` is empty and the button hides. */
+  const worktreePath = $derived(activeTab?.repo_root?.trim() || null);
+
+  async function handleWorktreeClick(e: MouseEvent) {
+    const path = worktreePath;
     if (!path) return;
-    try {
-      await invoke("reveal_path", { path });
-      app.showToast("success", "Revealed in Finder");
-    } catch (e) {
-      app.showToast("error", `Reveal failed: ${e}`);
+    if (e.metaKey || e.ctrlKey) {
+      try {
+        await invoke("reveal_path", { path });
+        app.showToast("success", "Revealed in Finder");
+      } catch (err) {
+        app.showToast("error", `Reveal failed: ${err}`);
+      }
+    } else {
+      await copyToClipboard(path);
+      app.showToast("success", "Worktree path copied");
     }
   }
 </script>
@@ -103,16 +138,19 @@
       </svg>
     </button>
 
-    <!-- Reveal worktree in Finder (stubbed — no backend command) -->
-    <button
-      class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 text-muted hover:text-fg-2 transition-colors shrink-0"
-      title="Reveal worktree in Finder (not yet available)"
-      onclick={revealWorktree}
-    >
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-      </svg>
-    </button>
+    <!-- Worktree path: click copies · ⌘-click reveals in Finder -->
+    {#if worktreePath}
+      <button
+        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 text-muted hover:text-fg-2 transition-colors shrink-0"
+        title="Click to copy worktree path · ⌘-click to reveal in Finder"
+        onclick={handleWorktreeClick}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M5 5a2 2 0 0 1 2-2h3l2 2h4a2 2 0 0 1 2 2"/>
+          <path d="M2 10a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z"/>
+        </svg>
+      </button>
+    {/if}
 
     <!-- Open PR (with inline #NNNN badge) -->
     {#if prUrl}
@@ -162,6 +200,37 @@
   </div>
 
   <div class="flex-1 min-w-0"></div>
+
+  <!-- Stale-diff pill + Sync (right side, before the source toggle) -->
+  {#if diffStale}
+    <div
+      class="flex items-center gap-1 h-[22px] pl-2 pr-1 rounded-md bg-warning/15 border border-warning/40 shrink-0"
+      title={diffStale.message}
+    >
+      <span class="text-[10px] font-medium uppercase tracking-wide text-warning">Stale</span>
+      <button
+        class="w-5 h-5 rounded flex items-center justify-center text-warning hover:bg-warning/20 transition-colors disabled:opacity-50 disabled:cursor-default"
+        title={diffStale.message}
+        disabled={syncing}
+        onclick={syncStale}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          class={syncing ? "animate-spin" : ""}
+        >
+          <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+          <path d="M21 3v5h-5" />
+          <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+          <path d="M3 21v-5h5" />
+        </svg>
+      </button>
+    </div>
+  {/if}
 
   <!-- Local Branch | PR Diff segmented toggle (right side) -->
   {#if showSourceToggle}
