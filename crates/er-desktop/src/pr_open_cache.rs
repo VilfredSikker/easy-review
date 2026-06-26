@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -61,6 +61,19 @@ fn parse_persisted(content: &str) -> Option<HashMap<PrOpenCacheKey, PrOpenCacheE
             .map(|e| (e.key, e.entry))
             .collect(),
     )
+}
+
+/// Retain only entries whose `(project_id, pr_number)` is in `keep`. Pure
+/// (operates on the borrowed map) so the policy is unit-testable without a lock,
+/// mirroring `evict_lru` in commands.rs. Startup prune keeps the on-disk cache
+/// small: callers build `keep` from each project's saved ∪ top-10-recent PRs.
+/// `repo_root` is intentionally not consulted — `project_id` already scopes the
+/// project, so the key's repo_root component never affects retention.
+pub fn prune_pr_open_cache(
+    map: &mut HashMap<PrOpenCacheKey, PrOpenCacheEntry>,
+    keep: &HashSet<(String, u64)>,
+) {
+    map.retain(|k, _| keep.contains(&(k.project_id.clone(), k.pr_number)));
 }
 
 /// Load the persisted open-diff cache. Missing file, version mismatch, or a
@@ -213,5 +226,40 @@ mod tests {
             !loaded.contains_key(&make_key(2)),
             "oversized entry is skipped"
         );
+    }
+
+    #[test]
+    fn prune_retains_only_kept() {
+        let mut map: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
+        map.insert(make_key(11), make_entry("oid-11", "diff 11".to_string()));
+        map.insert(make_key(22), make_entry("oid-22", "diff 22".to_string()));
+        map.insert(make_key(33), make_entry("oid-33", "diff 33".to_string()));
+
+        let keep: HashSet<(String, u64)> = [
+            ("proj".to_string(), 11),
+            ("proj".to_string(), 33),
+        ]
+        .into_iter()
+        .collect();
+
+        prune_pr_open_cache(&mut map, &keep);
+
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key(&make_key(11)));
+        assert!(map.contains_key(&make_key(33)));
+        assert!(!map.contains_key(&make_key(22)));
+    }
+
+    #[test]
+    fn prune_empty_keep_clears_all() {
+        let mut map: HashMap<PrOpenCacheKey, PrOpenCacheEntry> = HashMap::new();
+        map.insert(make_key(1), make_entry("oid-1", "diff 1".to_string()));
+        map.insert(make_key(2), make_entry("oid-2", "diff 2".to_string()));
+
+        let keep: HashSet<(String, u64)> = HashSet::new();
+
+        prune_pr_open_cache(&mut map, &keep);
+
+        assert!(map.is_empty());
     }
 }

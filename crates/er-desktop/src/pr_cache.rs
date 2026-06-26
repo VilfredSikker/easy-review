@@ -112,6 +112,30 @@ pub(crate) fn merge_pr_results(
     }
 }
 
+/// Patch a single PR's `head_oid` in place. Used by the 30s per-PR head probe
+/// (`main.rs`) so the stale pill can light without waiting for the 10-min
+/// `pr_cache` sweep. Returns `true` iff the oid actually changed (caller bumps
+/// the desktop revision only then, to avoid churning polls on every tick).
+///
+/// Does NOT persist to disk — the next full `refresh_pr_cache` sweep persists.
+/// Keeps the probe off the disk-write path so a 30s cadence is cheap.
+pub fn patch_pr_head_oid(cache: &PrCacheMap, remote: &str, pr_number: u64, head_oid: &str) -> bool {
+    let Some(mut guard) = cache.lock().ok() else {
+        return false;
+    };
+    let Some(prs) = guard.get_mut(remote) else {
+        return false;
+    };
+    let Some(pr) = prs.iter_mut().find(|p| p.number == pr_number) else {
+        return false;
+    };
+    if pr.head_oid == head_oid {
+        return false;
+    }
+    pr.head_oid = head_oid.to_string();
+    true
+}
+
 /// Whether the startup full PR sweep should run (any configured remote missing
 /// or older than [`PR_CACHE_STARTUP_MAX_AGE_MS`]).
 pub fn startup_full_refresh_due(fetched_at: &PrCacheFetchedAtMap) -> bool {
@@ -407,6 +431,63 @@ mod tests {
         // stale data survives
         assert_eq!(cache["org/repo"].len(), 1);
         assert_eq!(cache["org/repo"][0].number, 10);
+    }
+
+    // ── patch_pr_head_oid (30s probe writer) ──
+
+    fn pr_cache_with(pr: PrInfo) -> PrCacheMap {
+        Arc::new(Mutex::new(HashMap::from([(
+            "org/repo".to_string(),
+            vec![pr],
+        )])))
+    }
+
+    #[test]
+    fn patch_pr_head_oid_updates_matching_pr() {
+        let mut pr = make_pr(42, "feature");
+        pr.head_oid = "oldsha".to_string();
+        let cache = pr_cache_with(pr);
+
+        let changed = patch_pr_head_oid(&cache, "org/repo", 42, "newsha");
+
+        assert!(changed, "oid differed → should report changed");
+        assert_eq!(cache.lock().unwrap()["org/repo"][0].head_oid, "newsha");
+    }
+
+    #[test]
+    fn patch_pr_head_oid_noop_when_oid_equal() {
+        let mut pr = make_pr(42, "feature");
+        pr.head_oid = "same".to_string();
+        let cache = pr_cache_with(pr);
+
+        let changed = patch_pr_head_oid(&cache, "org/repo", 42, "same");
+
+        assert!(
+            !changed,
+            "oid unchanged → should report no change (no revision bump)"
+        );
+        assert_eq!(cache.lock().unwrap()["org/repo"][0].head_oid, "same");
+    }
+
+    #[test]
+    fn patch_pr_head_oid_noop_when_remote_missing() {
+        let cache: PrCacheMap = Arc::new(Mutex::new(HashMap::new()));
+
+        let changed = patch_pr_head_oid(&cache, "org/repo", 42, "newsha");
+
+        assert!(!changed, "remote not in cache → nothing to patch");
+    }
+
+    #[test]
+    fn patch_pr_head_oid_noop_when_pr_missing() {
+        // Cache knows the remote but a different PR number.
+        let cache = pr_cache_with(make_pr(99, "other"));
+
+        let changed = patch_pr_head_oid(&cache, "org/repo", 42, "newsha");
+
+        assert!(!changed, "PR not in cache → nothing to patch (don't guess)");
+        assert_eq!(cache.lock().unwrap()["org/repo"][0].number, 99);
+        assert_eq!(cache.lock().unwrap()["org/repo"][0].head_oid, "");
     }
 
     #[test]

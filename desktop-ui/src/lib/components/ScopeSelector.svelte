@@ -54,7 +54,8 @@
    * in `crates/er-engine/src/app/state/mod.rs`.
    *
    * - remote_pr tab → PR Diff only (no local working tree)
-   * - local read-only (non-checked-out branch) → Branch + PR Diff (if pr_number)
+   * - local PR tab, head branch not checked out → PR Diff only (handled in
+   *   BranchContextBar's toggle; ScopeSelector's working-tree rows are read-only-gated)
    * - local checked-out → Branch, Unstaged, Staged, PR Diff (if pr_number), History
    */
   const availableModes = $derived.by((): string[] => {

@@ -1033,13 +1033,47 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
     Ok(files)
 }
 
-/// Check if a path is gitignored
-pub fn verify_gitignored(repo_root: &str, path: &str) -> bool {
-    let output = Command::new("git")
-        .args(["check-ignore", "-q", path])
+/// Return the subset of `paths` that git treats as ignored, resolved in a single
+/// `git check-ignore -z --stdin` call rather than one subprocess per path (the
+/// former `verify_gitignored` spawned one `git` per watched file — ~15ms each, so
+/// a dozen watched files cost ~200ms on every tab open).
+///
+/// `-z` makes both stdin and stdout NUL-delimited and disables path quoting, so
+/// echoed paths match the inputs verbatim (no `core.quotePath` escaping on
+/// non-ASCII paths). A spawn or I/O failure yields an empty set — i.e. "nothing
+/// ignored" — matching the conservative fallback of the former per-path check.
+pub fn gitignored_paths(repo_root: &str, paths: &[String]) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    use std::io::Write;
+    use std::process::Stdio;
+
+    if paths.is_empty() {
+        return HashSet::new();
+    }
+    let mut child = match Command::new("git")
+        .args(["check-ignore", "-z", "--stdin"])
         .current_dir(repo_root)
-        .output();
-    matches!(output, Ok(o) if o.status.success())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return HashSet::new(),
+    };
+    // Watched-file lists are tiny (well under the pipe buffer), so writing all
+    // input before draining stdout can't deadlock. Dropping stdin signals EOF.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(paths.join("\0").as_bytes());
+    }
+    let Ok(output) = child.wait_with_output() else {
+        return HashSet::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Save a snapshot of a watched file for later diffing.
@@ -1397,5 +1431,77 @@ mod tests {
         assert_eq!(commits[0].subject, "fix(auth): handle 401 errors");
         assert_eq!(commits[0].author, "Author Name");
         assert_eq!(commits[0].adds, 5);
+    }
+
+    /// One `git check-ignore -q <path>` call — the per-path behavior the batched
+    /// `gitignored_paths` replaced. Used only to prove equivalence in the test below.
+    fn per_path_ignored(repo_root: &str, path: &str) -> bool {
+        let out = Command::new("git")
+            .args(["check-ignore", "-q", path])
+            .current_dir(repo_root)
+            .output();
+        matches!(out, Ok(o) if o.status.success())
+    }
+
+    #[test]
+    fn gitignored_paths_batches_and_matches_per_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::fs::write(root.join(".gitignore"), "ignored/\nsecret.txt\n").unwrap();
+        std::fs::create_dir(root.join("ignored")).unwrap();
+        std::fs::write(root.join("ignored/a.txt"), "x").unwrap();
+        std::fs::write(root.join("secret.txt"), "x").unwrap();
+        std::fs::write(root.join("visible.txt"), "x").unwrap();
+
+        let root_str = root.to_str().unwrap();
+        let paths = vec![
+            "ignored/a.txt".to_string(),
+            "secret.txt".to_string(),
+            "visible.txt".to_string(),
+        ];
+        let ignored = gitignored_paths(root_str, &paths);
+
+        // Exact ignored subset — not just "non-empty".
+        assert!(ignored.contains("ignored/a.txt"));
+        assert!(ignored.contains("secret.txt"));
+        assert!(!ignored.contains("visible.txt"));
+        assert_eq!(ignored.len(), 2);
+
+        // Equivalence: the batched result agrees with the former per-path check on
+        // every input — the optimization is behavior-preserving.
+        for p in &paths {
+            assert_eq!(
+                ignored.contains(p),
+                per_path_ignored(root_str, p),
+                "batched disagrees with per-path for {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn gitignored_paths_handles_non_ascii_paths() {
+        // `-z` disables `core.quotePath`, so a non-ASCII path echoes back verbatim.
+        // Line-based parsing would receive `"caf\303\251.txt"` (quoted+escaped) and
+        // fail the `contains` lookup — silently mis-flagging the file as not ignored.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::fs::write(root.join(".gitignore"), "*.txt\n").unwrap();
+        std::fs::write(root.join("café.txt"), "x").unwrap();
+
+        let ignored = gitignored_paths(root.to_str().unwrap(), &["café.txt".to_string()]);
+        assert!(
+            ignored.contains("café.txt"),
+            "non-ASCII path must round-trip verbatim under -z; got {ignored:?}"
+        );
     }
 }

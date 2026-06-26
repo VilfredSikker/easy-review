@@ -13,6 +13,7 @@ mod frame_script;
 mod inbox;
 mod main_webview_policy;
 mod pr_cache;
+mod gh_status_cache;
 mod pr_open_cache;
 mod profile_log;
 mod projects;
@@ -642,7 +643,12 @@ fn main() {
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     #[allow(clippy::type_complexity)]
     let gh_status_cache: Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+        Arc::new(Mutex::new(
+            gh_status_cache::load_persisted_gh_status_cache()
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        ));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
     let inbox = Arc::new(Mutex::new(inbox::load_inbox_state()));
@@ -735,87 +741,69 @@ fn main() {
         }
     }
 
+    // Prune both persisted caches to each project's `saved ∪ top-10 recent` PRs
+    // so the on-disk files stay small across launches. Skip entirely when no
+    // projects are known: an empty keep-set would wipe otherwise-valid caches
+    // (e.g. a missing/corrupt projects.json), and the in-memory caps
+    // (MAX_PR_OPEN_CACHE_ENTRIES; gh_status is memory-only at runtime) already
+    // bound in-session growth. The two caches live in different key spaces, so
+    // each is pruned against its own derived keep-set.
+    {
+        let projects_file = projects::load();
+        if !projects_file.projects.is_empty() {
+            use std::collections::HashSet;
+            const KEEP_RECENT: usize = 10;
+            let mut pr_open_keep: HashSet<(String, u64)> = HashSet::new();
+            let mut gh_status_keep: HashSet<(String, String, u64)> = HashSet::new();
+            for proj in &projects_file.projects {
+                // gh_status keep-set holds lowercased (owner, repo). Cache keys
+                // preserve the opening URL's casing (`tab.remote_repo`), so
+                // `prune_gh_status_cache` folds case before comparing — the
+                // keep-set must be lowercase, which `normalize_remote_slug` gives.
+                let owner_repo = proj
+                    .remote
+                    .as_deref()
+                    .map(projects::normalize_remote_slug)
+                    .and_then(|slug| {
+                        slug.split_once('/')
+                            .map(|(o, r)| (o.to_string(), r.to_string()))
+                    });
+                let kept_numbers = proj
+                    .saved_prs
+                    .iter()
+                    .map(|e| e.number)
+                    .chain(proj.recent_prs.iter().take(KEEP_RECENT).map(|e| e.number));
+                for number in kept_numbers {
+                    pr_open_keep.insert((proj.id.clone(), number));
+                    if let Some((owner, repo)) = owner_repo.as_ref() {
+                        gh_status_keep.insert((owner.clone(), repo.clone(), number));
+                    }
+                }
+            }
+            if let Ok(mut map) = pr_open_cache.lock() {
+                pr_open_cache::prune_pr_open_cache(&mut map, &pr_open_keep);
+            }
+            pr_open_cache::save_persisted_pr_open_cache(&pr_open_cache);
+            if let Ok(mut map) = gh_status_cache.lock() {
+                gh_status_cache::prune_gh_status_cache(&mut map, &gh_status_keep);
+            }
+            gh_status_cache::save_persisted_gh_status_cache(&gh_status_cache);
+        }
+    }
+
     // The 30s `gh_status` loop below runs its first iteration immediately and
     // shares dedup state via `gh_status_in_flight`, so a separate startup kick
     // here would be a redundant duplicate fetch on the same identity.
 
-    // Background remote-PR diff refresh on a 60s cadence. Three-phase design
-    // mirrors the comment-sync loop so we never hold the App mutex across
-    // network I/O:
-    //   Phase 1 (brief lock) — snapshot identity + last_head_oid from active tab.
-    //                          Cross-reference pr_cache to find expected head_oid.
-    //   Phase 2 (no lock)    — `fetch_remote_diff_data` (shells out to `gh pr diff`,
-    //                          parses, hashes). Returns Ok(None) on head_oid match.
-    //   Phase 3 (brief lock) — `apply_remote_diff_result` swaps files + raw_diff.
-    {
-        let remote_app = Arc::clone(&app_arc);
-        let remote_loading = Arc::clone(&loading);
-        let remote_desktop_rev = Arc::clone(&desktop_revision);
-        let remote_pr_cache = Arc::clone(&pr_cache);
-        std::thread::spawn(move || loop {
-            let interval_secs = remote_app
-                .try_lock()
-                .map(|g| if g.tab().is_remote() { 300 } else { 60 })
-                .unwrap_or(60);
-            std::thread::sleep(std::time::Duration::from_secs(interval_secs));
-
-            // Phase 1: brief lock — snapshot identity + last_head_oid.
-            let ctx = {
-                let guard = match remote_app.try_lock() {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
-                let mut ctx = guard.snapshot_for_remote_diff_refresh();
-                drop(guard);
-                if let Some(ref mut c) = ctx {
-                    // Look up the expected head_oid from pr_cache. None ⇒ fetch
-                    // anyway (no cache entry yet means we have no comparison
-                    // point and shouldn't suppress the refresh).
-                    if let Ok(cache) = remote_pr_cache.lock() {
-                        let slug = format!("{}/{}", c.owner, c.repo);
-                        c.expected_head_oid = cache
-                            .get(&slug)
-                            .and_then(|prs| prs.iter().find(|p| p.number == c.pr_number))
-                            .map(|p| p.head_oid.clone())
-                            .filter(|s| !s.is_empty());
-                    }
-                }
-                ctx
-            };
-
-            let Some(ctx) = ctx else {
-                continue;
-            };
-
-            // Phase 2: no lock — fetch or short-circuit on head_oid match.
-            if let Ok(mut f) = remote_loading.lock() {
-                f.remote_pr_diff = true;
-            }
-            let t = std::time::Instant::now();
-            let result = er_engine::app::fetch_remote_diff_data(&ctx);
-            if let Ok(mut f) = remote_loading.lock() {
-                f.remote_pr_diff = false;
-            }
-
-            match result {
-                Ok(Some(r)) => {
-                    // Phase 3: brief lock — apply.
-                    if let Ok(mut g) = remote_app.lock() {
-                        g.apply_remote_diff_result(r);
-                    }
-                    profile_log::bump_desktop_revision(&remote_desktop_rev, "remote_pr_diff_cache");
-                    profile_log::profile_log(
-                        "remote_pr_diff_refresh",
-                        &[("ms", t.elapsed().as_millis().to_string())],
-                    );
-                }
-                Ok(None) => {
-                    // head_oid unchanged — nothing to do.
-                }
-                Err(e) => log::error!("remote PR diff refresh failed: {e}"),
-            }
-        });
-    }
+    // NOTE: a remote-PR auto-swap loop used to live here (300s for remote
+    // tabs, 60s otherwise), calling snapshot_for_remote_diff_refresh →
+    // fetch_remote_diff_data → apply_remote_diff_result. It was removed for
+    // consistency: it auto-swapped the live diff for remote tabs only, while
+    // local-PR tabs required manual Sync. Now BOTH require manual Sync, and
+    // the 30s PR-head probe (above, "pr_head_probe") lights the stale pill
+    // quickly for both. The underlying fetch/apply plumbing is retained in
+    // crates/er-engine/src/app/state/remote_diff_sync.rs and crates/er-engine/src/sync.rs
+    // for the manual Sync path (force_refresh_diff / refetch_and_refresh_diff).
 
     // Background base-branch staleness probe on a 60s cadence. The ONLY new
     // network cost for branch ("Local Diff") freshness. Mirrors the remote-PR
@@ -890,6 +878,96 @@ fn main() {
             };
             if changed {
                 profile_log::bump_desktop_revision(&probe_rev, "branch_stale_probe");
+            }
+        });
+    }
+
+    // Background PR-head staleness probe on a 30s cadence. Detection only —
+    // lights the "PR head updated on origin" pill fast (vs the 10-min pr_cache
+    // sweep) for BOTH remote and local-PR tabs. The actual diff swap stays
+    // manual (Sync button). Mirrors the branch-base probe's three-phase shape
+    // so the App mutex is never held across `gh`:
+    //   Phase 1 (brief lock) — read the active tab's identity; bail unless it's
+    //                          a PR tab (remote_repo set OR pr_number set).
+    //   Phase 2 (no lock)    — `gh pr view <n> --repo <owner/repo> --json
+    //                          headRefOid --jq .headRefOid`. ANY failure no-ops
+    //                          (preserves the "don't guess" stale-pill rule).
+    //   Phase 3 (brief lock) — `patch_pr_head_oid` updates the single cache
+    //                          entry in place; bump the revision ONLY when it
+    //                          actually changed. Does NOT persist to disk (the
+    //                          next 10-min sweep persists) so 30s is cheap.
+    {
+        let probe_app = Arc::clone(&app_arc);
+        let probe_pr_cache = Arc::clone(&pr_cache);
+        let probe_rev = Arc::clone(&desktop_revision);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+
+            // Phase 1: brief lock — capture the active PR tab's identity.
+            // `(repo_root, owner, repo, pr_number)`. For remote tabs use
+            // `remote_repo`; for local-PR tabs resolve owner/repo from origin.
+            let identity = {
+                let guard = match probe_app.try_lock() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                let tab = guard.tab();
+                let pr_number = match tab.pr_number {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if let Some(slug) = tab.remote_repo.as_ref() {
+                    if slug.split_once('/').is_some() {
+                        Some((tab.repo_root.clone(), slug.clone(), pr_number))
+                    } else {
+                        None
+                    }
+                } else if !tab.repo_root.is_empty() {
+                    match er_engine::github::get_repo_info(&tab.repo_root) {
+                        Ok((owner, repo)) => {
+                            Some((tab.repo_root.clone(), format!("{owner}/{repo}"), pr_number))
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                }
+            };
+            let Some((_repo_root, slug, pr_number)) = identity else {
+                continue;
+            };
+
+            // Phase 2: no lock — ask gh for the PR's latest head oid.
+            let out = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "view",
+                    &pr_number.to_string(),
+                    "--repo",
+                    &slug,
+                    "--json",
+                    "headRefOid",
+                    "--jq",
+                    ".headRefOid",
+                ])
+                .output();
+            let oid = match out {
+                Ok(o) if o.status.success() => {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                }
+                _ => None,
+            };
+            let Some(oid) = oid else { continue };
+
+            // Phase 3: brief lock — patch the cache entry; bump only on change.
+            let changed = pr_cache::patch_pr_head_oid(&probe_pr_cache, &slug, pr_number, &oid);
+            if changed {
+                profile_log::bump_desktop_revision(&probe_rev, "pr_head_probe");
             }
         });
     }
@@ -1673,10 +1751,14 @@ fn main() {
 }
 
 /// Checkout root + branch for the active tab when that branch is checked out
-/// (project root HEAD or a linked worktree). Returns None for remote/read-only tabs.
+/// (project root HEAD or a linked worktree). Returns None for remote tabs or
+/// tabs whose branch isn't checked out anywhere. PR tabs are allowed: if their
+/// head branch happens to be checked out, the watcher attaches a checkout root
+/// so Unstaged/Staged/working-tree Branch views become available (matching the
+/// Tracked-branch entry point).
 fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
     let tab = app.tab();
-    if tab.remote_repo.is_some() || tab.pr_head_ref.is_some() {
+    if tab.remote_repo.is_some() {
         return None;
     }
 
@@ -1684,33 +1766,14 @@ fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
         .local_branch_view
         .clone()
         .unwrap_or_else(|| tab.current_branch.clone());
-    if branch.is_empty() {
-        return None;
-    }
-
-    // Project root checkout?
-    let head_out = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&tab.repo_root)
-        .output()
-        .ok()?;
-    if head_out.status.success() {
-        let head = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
-        if head == branch {
-            return Some((branch, tab.repo_root.clone()));
-        }
-    }
-
-    // Linked worktree checkout?
-    let worktrees = er_engine::git::list_worktrees(&tab.repo_root).ok()?;
-    let wt = worktrees.into_iter().find(|w| w.branch == branch)?;
-    Some((branch, wt.path))
+    let root = commands::resolve_head_checkout(&tab.repo_root, &branch)?;
+    Some((branch, root))
 }
 
 /// Branch name the active tab is reviewing (for watch refresh guard).
 fn active_tab_watched_branch(app: &App) -> Option<String> {
     let tab = app.tab();
-    if tab.remote_repo.is_some() || tab.pr_head_ref.is_some() {
+    if tab.remote_repo.is_some() {
         return None;
     }
     let branch = tab

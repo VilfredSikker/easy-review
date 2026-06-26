@@ -5,7 +5,7 @@ use er_engine::ai::{CommentRef, RiskLevel};
 use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
 use er_engine::arena::{ArenaRunSnapshot, ArenaRunSummary};
 use er_engine::git::{DiffFile, FileStatus, LineType};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::inbox::InboxHandle;
 use crate::projects::{self, normalize_remote_slug};
@@ -870,7 +870,7 @@ pub struct TriageSnapshot {
     pub domains: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckSummary {
     pub name: String,
     pub status: String,
@@ -878,7 +878,7 @@ pub struct CheckSummary {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhCommentSummary {
     pub author: String,
     pub body: String,
@@ -886,7 +886,7 @@ pub struct GhCommentSummary {
     pub url: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhReviewSummary {
     pub author: String,
     pub state: String,
@@ -894,7 +894,7 @@ pub struct GhReviewSummary {
     pub submitted_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GithubStatusSnapshot {
     pub owner: String,
     pub repo: String,

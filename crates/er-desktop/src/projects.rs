@@ -183,8 +183,15 @@ fn ensure_remote_project_in_file(file: &mut ProjectsFile, remote: &str) -> anyho
 
 pub fn ensure_remote_project(remote: &str) -> anyhow::Result<String> {
     let mut file = load();
+    let before = file.projects.len();
     let project_id = ensure_remote_project_in_file(&mut file, remote)?;
-    save(&file)?;
+    // Persist only when a new record was actually appended. The lookup path
+    // (a project for this remote already exists) is a pure no-op, and an
+    // unconditional save() here invalidates the mtime load cache on every PR
+    // open — forcing the next snapshot poll to re-parse projects.json.
+    if file.projects.len() != before {
+        save(&file)?;
+    }
     Ok(project_id)
 }
 
@@ -468,8 +475,29 @@ pub fn sync_projects_from_tabs(tabs: &[er_engine::app::TabState]) {
     }
 }
 
+/// Does registering `root_path` require a `gh repo view` lookup? Only when the
+/// project is unknown or its remote hasn't been resolved yet. A re-open of an
+/// already-registered project (the hot path, fired on every PR/branch open via
+/// `place_tab`) skips the subprocess entirely — `auto_register` only ever
+/// *backfills* a `None` remote, never refreshes one that is already set.
+fn needs_remote_query(file: &ProjectsFile, root_path: &str) -> bool {
+    match file.projects.iter().find(|p| p.root_path == root_path) {
+        Some(existing) => existing.remote.is_none(),
+        None => true,
+    }
+}
+
 pub fn auto_register(root_path: &str) -> ProjectRecord {
     let mut file = load();
+
+    // Fast path: already registered with a known remote. Skip both the
+    // `gh repo view` subprocess and the disk write — pure waste on re-open.
+    if !needs_remote_query(&file, root_path) {
+        if let Some(existing) = file.projects.iter().find(|p| p.root_path == root_path) {
+            return existing.clone();
+        }
+    }
+
     let folder = std::path::Path::new(root_path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -478,13 +506,18 @@ pub fn auto_register(root_path: &str) -> ProjectRecord {
     let id = sanitize_id(&folder);
     let remote = query_remote(root_path);
 
-    // Upsert by root_path
+    // Upsert by root_path — an existing row here has `remote == None` (the fast
+    // path returned otherwise), so save only when the remote is actually filled.
     if let Some(existing) = file.projects.iter_mut().find(|p| p.root_path == root_path) {
+        let mut changed = false;
         if existing.remote.is_none() && remote.is_some() {
             existing.remote = remote.clone();
+            changed = true;
         }
         let record = existing.clone();
-        let _ = save(&file);
+        if changed {
+            let _ = save(&file);
+        }
         return record;
     }
 
@@ -814,6 +847,41 @@ mod tests {
             auto_triage_max_diff_kb: 0,
             review_ignore_globs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn needs_remote_query_skips_when_remote_known() {
+        // The hot path: re-opening a PR/branch for an already-registered project
+        // whose remote is resolved must NOT trigger a `gh repo view` subprocess.
+        let file = ProjectsFile {
+            projects: vec![local_project("local", Some("owner/repo"))],
+            active_id: None,
+        };
+        assert!(
+            !needs_remote_query(&file, "/tmp/local"),
+            "registered project with a known remote must not re-query gh"
+        );
+    }
+
+    #[test]
+    fn needs_remote_query_runs_for_new_or_unresolved() {
+        // Unknown root → must query (new project). Registered but remote-less →
+        // must query so a missing remote gets backfilled.
+        let mut file = ProjectsFile {
+            projects: vec![local_project("local", None)],
+            active_id: None,
+        };
+        assert!(
+            needs_remote_query(&file, "/tmp/unknown"),
+            "unregistered root must query gh"
+        );
+        assert!(
+            needs_remote_query(&file, "/tmp/local"),
+            "registered root with no remote must query gh to backfill"
+        );
+        // Once the remote is filled in, subsequent registrations skip the query.
+        file.projects[0].remote = Some("owner/repo".to_string());
+        assert!(!needs_remote_query(&file, "/tmp/local"));
     }
 
     #[test]

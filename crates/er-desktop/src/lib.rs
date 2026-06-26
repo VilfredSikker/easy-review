@@ -7,6 +7,7 @@ pub mod dev_log;
 pub mod er_storage;
 pub mod export;
 pub mod frame_script;
+pub mod gh_status_cache;
 pub mod inbox;
 pub mod pr_cache;
 pub mod pr_open_cache;

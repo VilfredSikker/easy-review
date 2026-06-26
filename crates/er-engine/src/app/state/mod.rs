@@ -1051,7 +1051,12 @@ impl TabState {
     /// checkout diff refresh. Callers that immediately switch the tab to another
     /// diff target can avoid computing a throwaway diff before their real refresh.
     pub fn new_with_base_unloaded(repo_root: String, base_branch: String) -> Result<Self> {
+        let t_cb = Instant::now(); // TEMP diagnostic
         let current_branch = git::get_current_branch_in(&repo_root)?;
+        eprintln!(
+            "pr_open phase=cur_branch ms={}",
+            t_cb.elapsed().as_millis()
+        ); // TEMP diagnostic
         Self::new_inner(repo_root, current_branch, base_branch, false)
     }
 
@@ -1454,10 +1459,15 @@ impl TabState {
         refresh_initial_diff: bool,
     ) -> Result<Self> {
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
+        let t_cfg = Instant::now(); // TEMP diagnostic
         let er_config = config::load_global_config();
         let watched_config = er_config.watched.clone();
         let has_watched = !watched_config.paths.is_empty();
         let merge_active = git::is_merge_in_progress(&repo_root);
+        eprintln!(
+            "pr_open phase=cfg_merge ms={}",
+            t_cfg.elapsed().as_millis()
+        ); // TEMP diagnostic
         let er_root = ErRoot::RepoLocal(repo_root.clone());
 
         let mut tab = TabState {
@@ -1559,12 +1569,22 @@ impl TabState {
             pr_refs_fetched: false,
         };
 
+        let t_fs = Instant::now(); // TEMP diagnostic
         tab.finish_storage_setup();
+        eprintln!(
+            "pr_open phase=finish_storage ms={}",
+            t_fs.elapsed().as_millis()
+        ); // TEMP diagnostic
 
         if refresh_initial_diff {
             tab.refresh_diff()?;
         }
+        let t_w = Instant::now(); // TEMP diagnostic
         tab.refresh_watched_files();
+        eprintln!(
+            "pr_open phase=refresh_watched ms={}",
+            t_w.elapsed().as_millis()
+        ); // TEMP diagnostic
         Ok(tab)
     }
 
@@ -1791,6 +1811,16 @@ impl TabState {
     pub fn visible_modes(&self, config: &crate::config::ErConfig) -> Vec<DiffMode> {
         // Remote tabs have no local working tree — PR Diff is the only view.
         if self.is_remote() {
+            return vec![DiffMode::PrDiff];
+        }
+        // PR tabs without a checked-out head branch have no working tree to
+        // review either — their Branch mode would just re-show `gh pr diff`
+        // (the PR parity diff), which is what PR Diff already shows. So PR
+        // Diff is the only meaningful view, matching a remote tab. When the
+        // head branch IS checked out, the active-branch watcher (desktop) sets
+        // `local_branch_checkout_root` and we fall through to the working-tree
+        // mode list below — Saved/My PRs/Recent then behave like Tracked.
+        if self.pr_number.is_some() && self.local_branch_checkout_root.is_none() {
             return vec![DiffMode::PrDiff];
         }
 
@@ -2083,6 +2113,39 @@ impl TabState {
         self.refresh_diff()
     }
 
+    /// Switch to `PrDiff` mode trusting a diff that is **already loaded** into
+    /// this tab — the cached `gh pr diff` placed by
+    /// `new_local_pr_from_github_diff` from the desktop open-diff cache. Unlike
+    /// `enter_pr_diff`, this performs **no** `gh`/git round-trips: no
+    /// `fetch_pr_head`, no `fetch_base_branch_ref`, no `refresh_diff`.
+    ///
+    /// Safe because the cached `raw_diff`/`files`/`diff_hash` were produced by
+    /// the same `er_engine::github::gh_pr_diff` that `refresh_diff` would re-run,
+    /// so the `diff_hash` is identical — re-fetching could only reproduce it.
+    /// Leaving `diff_hash` untouched is what stops AI artifacts keyed to it from
+    /// being marked stale on a cache hit.
+    ///
+    /// `cache_head_oid` is the PR head oid the cached diff was computed against;
+    /// it seeds `last_diff_head_oid` so the desktop staleness probe has a
+    /// baseline without a network call. `pr_refs_fetched` is set so a later
+    /// `enter_pr_diff` (e.g. after a mode switch) reuses the cached refs instead
+    /// of re-fetching.
+    ///
+    /// Returns `Err` if no PR number is set on this tab.
+    pub fn enter_pr_diff_preloaded(&mut self, cache_head_oid: String) -> Result<()> {
+        self.pr_number
+            .ok_or_else(|| anyhow::anyhow!("No PR number set for this tab"))?;
+
+        self.last_diff_head_oid = Some(cache_head_oid);
+        self.pr_refs_fetched = true;
+
+        self.mode = DiffMode::PrDiff;
+        self.apply_managed_root();
+        self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+        self.reload_ai_state();
+        Ok(())
+    }
+
     // ── Diff ──
 
     /// Re-run git diff and update the file list
@@ -2292,10 +2355,21 @@ impl TabState {
     }
 
     /// GitHub PR diff for AI review when this tab is PR-associated. Skips local
-    /// working-tree scopes on a checked-out branch.
-    fn fetch_pr_diff_for_review(&self, scope: &str) -> Option<Result<String>> {
+    /// working-tree scopes on a checked-out branch so Branch/Unstaged/Staged
+    /// use the working tree (live edits) instead of `gh pr diff`. PrDiff and
+    /// Tour still use `gh pr diff` — PrDiff is the head-vs-base parity view by
+    /// design, and Tour walks the branch/PR diff (its cached raw_diff is the
+    /// parity diff).
+    fn fetch_pr_diff_for_review(&self, _scope: &str) -> Option<Result<String>> {
         let pr_number = self.pr_number?;
-        if matches!(scope, "unstaged" | "staged") && self.local_branch_checkout_root.is_some() {
+        // Checked-out PR tab: Branch/Unstaged/Staged review the working tree,
+        // not the PR parity diff. PrDiff/Tour keep the parity diff.
+        if self.local_branch_checkout_root.is_some()
+            && matches!(
+                self.mode,
+                DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged
+            )
+        {
             return None;
         }
         if let Some(ref repo_slug) = self.remote_repo {
@@ -2332,19 +2406,24 @@ impl TabState {
 
         if let Some(ref branch) = self.local_branch_view {
             let base = self.base_branch.clone();
-            return if let Some(head_ref) = self.pr_head_ref.clone() {
+            // A checked-out head branch (worktree or main tree) takes
+            // precedence over the fetched PR head ref: Branch/Unstaged/Staged
+            // review the live working tree, not `gh pr diff`. PrDiff already
+            // returned via `fetch_pr_diff_for_review` above (it keeps the
+            // parity diff), so reaching here means a working-tree scope.
+            return if let Some(checkout_root) = self.local_branch_checkout_root.clone() {
+                match scope {
+                    "unstaged" | "staged" => {
+                        crate::git::git_diff_raw(scope, &base, &checkout_root, None)
+                    }
+                    _ => crate::git::git_diff_checkout_against_base(&checkout_root, &base),
+                }
+            } else if let Some(head_ref) = self.pr_head_ref.clone() {
                 if let Some(pr_number) = self.pr_number {
                     crate::github::gh_pr_diff(pr_number, &self.repo_root)
                 } else {
                     crate::git::git_diff_against_branch(&self.repo_root, &base, &head_ref)
                 }
-            } else if let Some(checkout_root) = self.local_branch_checkout_root.clone() {
-                return match scope {
-                    "unstaged" | "staged" => {
-                        crate::git::git_diff_raw(scope, &base, &checkout_root, None)
-                    }
-                    _ => crate::git::git_diff_checkout_against_base(&checkout_root, &base),
-                };
             } else {
                 crate::git::git_diff_against_branch(&self.repo_root, &base, branch)
             };
@@ -3768,10 +3847,13 @@ impl TabState {
         }
         match git::discover_watched_files(&self.repo_root, &self.watched_config.paths) {
             Ok(files) => {
-                // Check gitignore status for warnings
+                // One batched `git check-ignore` instead of one subprocess per file —
+                // a dozen watched files used to cost ~200ms of spawns on every open.
+                let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+                let ignored = git::gitignored_paths(&self.repo_root, &paths);
                 self.watched_not_ignored = files
                     .iter()
-                    .filter(|f| !git::verify_gitignored(&self.repo_root, &f.path))
+                    .filter(|f| !ignored.contains(&f.path))
                     .map(|f| f.path.clone())
                     .collect();
                 self.watched_files = files;
@@ -8936,6 +9018,48 @@ mod tests {
     }
 
     #[test]
+    fn enter_pr_diff_preloaded_trusts_cached_diff_without_refetch() {
+        // A tab whose diff is already loaded from the desktop open-diff cache:
+        // files + raw_diff + diff_hash populated, mode still Branch (as
+        // `new_local_pr_from_github_diff` leaves it), no head oid yet. The body
+        // of `enter_pr_diff_preloaded` issues no gh/git calls, so this passing
+        // outside a git repo is itself proof that no fetch/refresh ran.
+        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut tab = TabState::new_for_test(vec![make_file(
+            "x",
+            vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
+            1,
+            1,
+        )]);
+        tab.pr_number = Some(42);
+        tab.raw_diff = Some(raw.to_string());
+        let cached_hash = crate::ai::compute_diff_hash(raw);
+        tab.diff_hash = cached_hash.clone();
+
+        tab.enter_pr_diff_preloaded("head-oid-abc".to_string())
+            .expect("preloaded entry succeeds when a PR number is set");
+
+        // Seeds the freshness baseline and marks refs as fetched — no round-trip.
+        assert_eq!(tab.last_diff_head_oid.as_deref(), Some("head-oid-abc"));
+        assert!(tab.pr_refs_fetched);
+        assert_eq!(tab.mode, DiffMode::PrDiff);
+        // The cached diff is trusted as-is: diff_hash is neither recomputed nor
+        // cleared, so AI artifacts keyed to this hash stay fresh on a cache hit.
+        assert_eq!(tab.diff_hash, cached_hash);
+        assert_eq!(tab.files.len(), 1, "cached files are left intact");
+    }
+
+    #[test]
+    fn enter_pr_diff_preloaded_errors_without_pr_number() {
+        let mut tab = TabState::new_for_test(vec![]);
+        assert!(tab.pr_number.is_none());
+        let err = tab
+            .enter_pr_diff_preloaded("oid".to_string())
+            .expect_err("missing PR number must error, not silently no-op");
+        assert!(err.to_string().contains("No PR number"));
+    }
+
+    #[test]
     fn review_scope_matches_cached_diff_treats_tour_as_branch() {
         // Tour is the branch diff regrouped, so its cached raw_diff satisfies a
         // "branch"-scoped review — no redundant git diff refetch.
@@ -9829,12 +9953,15 @@ mod tests {
         assert_eq!(tab.visible_modes(&config), vec![DiffMode::PrDiff]);
     }
 
-    /// A local tab with a PR number includes PrDiff in the correct position
-    /// (after Staged, before History) and still shows working-tree modes.
+    /// A local tab with a PR number whose head branch is checked out includes
+    /// PrDiff in the correct position (after Staged, before History) and still
+    /// shows working-tree modes. The checkout root is what unlocks the
+    /// working-tree views (set by the desktop active-branch watcher).
     #[test]
     fn visible_modes_local_pr_tab_includes_pr_diff() {
         let mut tab = make_test_tab(vec![]);
         tab.pr_number = Some(7);
+        tab.local_branch_checkout_root = Some("/tmp/test".into());
         let config = ErConfig::default();
         let modes = tab.visible_modes(&config);
         assert_eq!(
@@ -9849,6 +9976,18 @@ mod tests {
         );
     }
 
+    /// A local PR tab whose head branch is NOT checked out exposes only PR
+    /// Diff — Branch mode would just re-show `gh pr diff` (same as PrDiff), so
+    /// there's no working tree to review. Matches a remote tab.
+    #[test]
+    fn visible_modes_local_pr_tab_not_checked_out_returns_only_pr_diff() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_number = Some(7);
+        // local_branch_checkout_root stays None (not checked out).
+        let config = ErConfig::default();
+        assert_eq!(tab.visible_modes(&config), vec![DiffMode::PrDiff]);
+    }
+
     /// A local tab without a PR number must NOT include PrDiff.
     #[test]
     fn visible_modes_local_no_pr_excludes_pr_diff() {
@@ -9858,16 +9997,19 @@ mod tests {
         assert!(!modes.contains(&DiffMode::PrDiff));
     }
 
-    /// A live local checkout with pr_head_ref set (after enter_pr_diff) must still
-    /// expose Unstaged and Staged — those views belong to the working tree, not to the
-    /// PR diff view, and must not be gated on pr_head_ref.
+    /// A live local checkout with pr_head_ref set (after enter_pr_diff) must
+    /// still expose Unstaged and Staged — those views belong to the working
+    /// tree, not to the PR diff view, and must not be gated on pr_head_ref.
+    /// Requires `local_branch_checkout_root` (the head branch is checked out).
     #[test]
     fn visible_modes_live_local_checkout_keeps_unstaged_staged_after_enter_pr_diff() {
         let mut tab = make_test_tab(vec![]);
         // Simulate a working-tree tab: local_branch_view is None → read_only = false.
-        // Set pr_number + pr_head_ref as enter_pr_diff would.
+        // Set pr_number + pr_head_ref as enter_pr_diff would, plus the checkout
+        // root the desktop active-branch watcher attaches for a live checkout.
         tab.pr_number = Some(42);
         tab.pr_head_ref = Some("refs/er/pr/42/head".into());
+        tab.local_branch_checkout_root = Some("/tmp/test".into());
         let config = ErConfig::default();
         let modes = tab.visible_modes(&config);
         assert!(
@@ -9884,7 +10026,59 @@ mod tests {
         );
     }
 
-    /// new_remote and new_remote_stub constructors must set mode = PrDiff.
+    // ── fetch_pr_diff_for_review routing (checked-out PR tab) ──
+    //
+    // These assert the *routing decision* (skip → working tree vs. use →
+    // parity diff), not the gh call itself. The skip cases return `None`
+    // (no shell-out); the non-skip cases return `Some(_)` whose inner
+    // `Result` would shell out to `gh pr diff`, so we only assert `is_some`
+    // for those without evaluating the inner Result.
+
+    /// A checked-out PR tab in Branch/Unstaged/Staged mode must skip the PR
+    /// parity diff and fall through to the working-tree path (`None`).
+    #[test]
+    fn fetch_pr_diff_for_review_skips_working_tree_scopes_when_checked_out() {
+        for mode in [DiffMode::Branch, DiffMode::Unstaged, DiffMode::Staged] {
+            let mut tab = make_test_tab(vec![]);
+            tab.mode = mode;
+            tab.pr_number = Some(42);
+            tab.local_branch_checkout_root = Some("/tmp/test".into());
+            assert!(
+                tab.fetch_pr_diff_for_review("branch").is_none(),
+                "checked-out PR tab in {mode:?} must skip gh_pr_diff → working tree"
+            );
+        }
+    }
+
+    /// A checked-out PR tab in PrDiff/Tour mode must STILL use the PR parity
+    /// diff (returns `Some`) — those views are head-vs-base by design.
+    #[test]
+    fn fetch_pr_diff_for_review_keeps_parity_diff_for_prdiff_and_tour_when_checked_out() {
+        for mode in [DiffMode::PrDiff, DiffMode::Tour] {
+            let mut tab = make_test_tab(vec![]);
+            tab.mode = mode;
+            tab.pr_number = Some(42);
+            tab.local_branch_checkout_root = Some("/tmp/test".into());
+            assert!(
+                tab.fetch_pr_diff_for_review("branch").is_some(),
+                "checked-out PR tab in {mode:?} must keep the parity diff (Some)"
+            );
+        }
+    }
+
+    /// A non-checked-out PR tab must use the parity diff for Branch mode too
+    /// (no working tree exists) — returns `Some`.
+    #[test]
+    fn fetch_pr_diff_for_review_uses_parity_diff_when_not_checked_out() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::Branch;
+        tab.pr_number = Some(42);
+        // local_branch_checkout_root stays None.
+        assert!(
+            tab.fetch_pr_diff_for_review("branch").is_some(),
+            "non-checked-out PR tab in Branch must use the parity diff (Some)"
+        );
+    }
     /// We can't call the real constructors (network I/O), so we verify via
     /// new_for_test with remote_repo set and mode manually set — and separately
     /// verify the review_bucket() short-circuit still routes to Pr.

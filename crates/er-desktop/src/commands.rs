@@ -406,6 +406,8 @@ pub fn kick_github_status_refresh(
             if let Ok(mut g) = cache.lock() {
                 g.insert((owner.clone(), repo.clone(), number), snap);
             }
+            // Persist after the lock is released (the save helper re-locks).
+            crate::gh_status_cache::save_persisted_gh_status_cache(&cache);
             crate::profile_log::bump_desktop_revision(&desktop_revision, "gh_status_cache");
         }
         if let Some(loading) = &loading {
@@ -4447,6 +4449,36 @@ fn finding_fields_for_ref(
 
 // ── PR URL open ──────────────────────────────────────────────────────────────
 
+/// Resolve the working-tree path where `branch` is checked out: the project
+/// root (if `git rev-parse --abbrev-ref HEAD` == `branch`) or a linked
+/// worktree. Returns `None` when the branch isn't checked out anywhere.
+///
+/// Shared by the PR-open path (`open_pr_review_impl`) and the desktop
+/// active-branch watcher (`main.rs::desired_local_branch_watch`) so both
+/// attach a checkout root using the same logic — making Saved/My PRs/Recent
+/// behave like Tracked when the PR's head branch is checked out.
+pub(crate) fn resolve_head_checkout(repo_root: &str, branch: &str) -> Option<String> {
+    if branch.is_empty() {
+        return None;
+    }
+    // Project root checkout?
+    let head_out = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if head_out.status.success() {
+        let head = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
+        if head == branch {
+            return Some(repo_root.to_string());
+        }
+    }
+    // Linked worktree checkout?
+    let worktrees = er_engine::git::list_worktrees(repo_root).ok()?;
+    let wt = worktrees.into_iter().find(|w| w.branch == branch)?;
+    Some(wt.path)
+}
+
 /// Place `tab` into the app: replace the active slot when `replace` is true
 /// (Cmd-click / middle-click semantics), otherwise push a new tab.
 pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: bool) {
@@ -5003,25 +5035,38 @@ fn cached_pr_open_diff(
     Some(raw_diff)
 }
 
-/// Same as `cached_pr_open_diff` but also returns cached `pr_data` when present.
+/// Look up a cached open-diff for the hint path, treating it as a hit when the
+/// **base branch** matches — head/`updated_at` drift is allowed (J1: render the
+/// diff we already hold instantly; the 30s `pr_head_probe` lights the stale pill,
+/// Sync refreshes). A base **retarget** is the one hard miss: the staleness pill
+/// (`compute_oid_staleness`) watches only `head_oid`, so a silently re-based diff
+/// would render with no warning — re-fetch instead.
+///
+/// Returns the cached diff together with the entry's **own** freshness (and cached
+/// `pr_data`/`pr_commits` when present). The caller seeds the staleness probe with
+/// this freshness's `head_oid` — the oid the diff was actually built against — so a
+/// head that moved since lights the pill. Returning the newer *requested* oid would
+/// suppress the pill and silently show a stale diff (the bug this fixes).
 fn cached_pr_open_entry(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: &PrOpenCacheKey,
-    freshness: &PrOpenFreshness,
+    requested: &PrOpenFreshness,
 ) -> Option<(
     String,
+    PrOpenFreshness,
     Option<er_engine::github::PrOverviewData>,
     Option<Vec<er_engine::git::CommitInfo>>,
 )> {
     let mut guard = cache.lock().ok()?;
     let entry = guard.get(key)?;
-    if entry.freshness != *freshness {
+    if entry.freshness.base_branch != requested.base_branch {
         return None;
     }
     // Clone the payload before the mutable recency bump below (can't hold an
     // immutable borrow across `get_mut`).
     let out = (
         entry.raw_diff.clone(),
+        entry.freshness.clone(),
         entry.pr_data.clone(),
         entry.pr_commits.clone(),
     );
@@ -5232,6 +5277,28 @@ fn freshness_from_hint(hint: &PrOpenHint) -> PrOpenFreshness {
     }
 }
 
+/// Build the freshness key from a freshly-fetched `PrInfo` (the same metadata the
+/// sidebar carries). `sync_pr` uses this to persist the refreshed diff so the next
+/// open is a cache hit. It must agree field-for-field with `freshness_from_hint`
+/// (sidebar-hint open) and `run_gh_pr_view_for_open` (no-hint open) — otherwise a
+/// freshness mismatch makes every post-sync open a (safe) miss. `diff_head_oid` is
+/// the oid the cached diff was actually computed against (`tab.last_diff_head_oid`,
+/// set in `refetch_and_refresh_diff`); it falls back to the PR head oid. Pinning the
+/// diff's own oid keeps the post-Sync reopen a clean hit — the persisted oid matches
+/// the diff it was built against, so the staleness pill stays dark until the head
+/// actually moves again.
+fn freshness_from_pr_info(pr: &PrInfo, diff_head_oid: Option<&str>) -> PrOpenFreshness {
+    PrOpenFreshness {
+        base_branch: pr.base_ref.clone(),
+        head_branch: pr.head_ref.clone(),
+        head_oid: diff_head_oid
+            .filter(|oid| !oid.trim().is_empty())
+            .map(|oid| oid.to_string())
+            .unwrap_or_else(|| pr.head_oid.clone()),
+        updated_at: pr.updated_at.clone(),
+    }
+}
+
 /// Sidebar hints can omit fields (e.g. Recent entries resolved without pr_cache).
 /// Incomplete hints must not skip `gh pr view` — that leaves `base_branch` empty.
 fn pr_open_hint_is_complete(hint: &PrOpenHint) -> bool {
@@ -5263,9 +5330,13 @@ fn load_pr_open_inputs(
     if let Some(hint) = hint {
         let freshness = freshness_from_hint(hint);
 
-        // Cache hit on the hint's freshness key → reuse diff; backfill commits
-        // only if this older cache entry does not have them yet.
-        if let Some((raw_diff, cached_pr_data, cached_pr_commits)) =
+        // Cache hit when the base branch matches (J1: head/`updated_at` drift is
+        // allowed — render the diff we already hold instantly, the 30s stale pill
+        // catches a moved head). Reuse the **entry's own** freshness, not the
+        // hint's: it pins the oid the cached diff was built against, so seeding the
+        // staleness probe with it lights the pill when the live head has advanced.
+        // Backfill commits only if this older cache entry does not have them yet.
+        if let Some((raw_diff, entry_freshness, cached_pr_data, cached_pr_commits)) =
             cached_pr_open_entry(&state.pr_open_cache, &key, &freshness)
         {
             log::info!(
@@ -5274,18 +5345,23 @@ fn load_pr_open_inputs(
                 branch_label
             );
             let t_base = std::time::Instant::now();
-            let resolved_base =
-                er_engine::github::ensure_base_ref_available(&repo_root, &freshness.base_branch)
-                    .map_err(|e| e.to_string())?;
+            let resolved_base = er_engine::github::ensure_base_ref_available(
+                &repo_root,
+                &entry_freshness.base_branch,
+            )
+            .map_err(|e| e.to_string())?;
             log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
             let pr_data = cached_pr_data
                 .unwrap_or_else(|| pr_overview_from_hint(hint, pr_number, repo_slug.as_deref()));
             let pr_commits = cached_pr_commits
                 .unwrap_or_else(|| run_gh_pr_commits_for_open(&repo_root, pr_number));
+            // Re-write with the entry's own freshness so the diff↔oid pairing is
+            // preserved; remember_pr_open_entry keeps existing pr_data because the
+            // freshness still matches the stored entry.
             remember_pr_open_entry(
                 &state.pr_open_cache,
                 key,
-                freshness.clone(),
+                entry_freshness.clone(),
                 raw_diff.clone(),
                 None,
                 Some(pr_commits.clone()),
@@ -5293,7 +5369,7 @@ fn load_pr_open_inputs(
             return Ok(PrOpenInputs {
                 repo_root,
                 metadata: PrOpenMetadata {
-                    freshness,
+                    freshness: entry_freshness,
                     pr_data,
                     pr_commits,
                 },
@@ -5543,7 +5619,17 @@ pub async fn open_pr_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, hint, &state)).await
+    let t_cmd = std::time::Instant::now();
+    run_blocking(move || {
+        // TEMP diagnostic: spawn_blocking dispatch latency (candidate 2 — queue wait).
+        log::info!(
+            "open_pr_review pr={} phase=queue_wait ms={}",
+            pr_number,
+            t_cmd.elapsed().as_millis()
+        );
+        open_pr_review_impl(project_id, pr_number, replace, hint, &state)
+    })
+    .await
 }
 
 fn open_pr_review_impl(
@@ -5568,6 +5654,14 @@ fn open_pr_review_impl(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .unwrap_or_else(|| inputs.metadata.pr_data.title.clone());
+    // Head branch name for checkout detection. `new_local_pr_from_github_diff`
+    // moves `head_branch` into the tab's `local_branch_view`, so capture it now.
+    let head_branch_for_checkout = inputs.metadata.freshness.head_branch.clone();
+    // The oid the cached diff was computed against. On a cache hit we seed it into
+    // the tab via `enter_pr_diff_preloaded` so the staleness probe has a baseline
+    // without re-fetching. Captured before `inputs.metadata` is moved below.
+    let head_oid_for_preload = inputs.metadata.freshness.head_oid.clone();
+    let repo_root_for_checkout = inputs.repo_root.clone();
     let new_tab = er_engine::app::TabState::new_local_pr_from_github_diff(
         inputs.repo_root,
         pr_number,
@@ -5581,6 +5675,20 @@ fn open_pr_review_impl(
         log::error!("open_pr_review: pr=#{pr_number} project_id={project_id} err={e}");
         e.to_string()
     })?;
+    // If the PR's head branch is checked out locally (project root or a linked
+    // worktree), attach the checkout root now so Unstaged/Staged/working-tree
+    // Branch views are immediately available — matching the Tracked-branch
+    // entry point. Uses the same `resolve_head_checkout` the active-branch
+    // watcher uses, so subsequent focus switches re-attach consistently.
+    // Falls back to the tab's `local_branch_view` (a `pr/<n>` placeholder when
+    // the head branch name is unknown) which won't match a checkout → None.
+    let checkout_branch = if head_branch_for_checkout.is_empty() {
+        new_tab.local_branch_view.clone().unwrap_or_default()
+    } else {
+        head_branch_for_checkout
+    };
+    let checkout_root = resolve_head_checkout(&repo_root_for_checkout, &checkout_branch);
+    let tab_build_ms = t_tab_build.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "pr_tab_build", t_tab_build);
     log::info!(
         "branch_open project={} branch={} phase=pr_open_cache hit={}",
@@ -5590,20 +5698,62 @@ fn open_pr_review_impl(
     );
     let t_app_lock = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let app_lock_ms = t_app_lock.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
     place_tab(&mut app, new_tab, replace.unwrap_or(false));
+    let tab_place_ms = t_place_tab.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
+    // Attach the checkout root (if any) to the now-active tab before entering
+    // PR Diff, so the first snapshot already reflects the working-tree views.
+    if let Some(root) = checkout_root {
+        app.tab_mut().local_branch_checkout_root = Some(root);
+    }
     let t_pr_diff = std::time::Instant::now();
-    app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
+    // On a fresh cache hit the tab already holds the exact `gh pr diff` output
+    // (placed by `new_local_pr_from_github_diff` from `inputs.raw_diff`), so trust
+    // it and skip the redundant `gh pr diff` that `enter_pr_diff()` would run via
+    // `refresh_diff()`. A miss — or a hit whose head oid is unknown (empty), where
+    // seeding it would mislead the staleness probe — falls back to the full path.
+    if cache_hit && !head_oid_for_preload.trim().is_empty() {
+        app.tab_mut()
+            .enter_pr_diff_preloaded(head_oid_for_preload)
+            .map_err(|e| e.to_string())?;
+    } else {
+        app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
+    }
+    let pr_diff_enter_ms = t_pr_diff.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "pr_diff_enter", t_pr_diff);
+    let t_recent = std::time::Instant::now();
     let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
+    let record_recent_ms = t_recent.elapsed().as_millis();
     kick_meta_refresh(state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
     let snapshot = snap_from(&app, state);
+    let snap_build_ms = t_snapshot.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_label, "total", t_total);
     kick_active_gh_status(&app, state);
+    // TEMP diagnostic: serialize cost + payload size (candidate 1 — snapshot serialize/IPC).
+    // `ser_ms`/`ser_bytes` estimate Tauri's post-return serialization; the IPC transfer +
+    // JS parse is then `invoke_ms - queue_wait - total - ser_ms`. Remove after diagnosis.
+    let t_ser = std::time::Instant::now();
+    let ser_bytes = serde_json::to_vec(&snapshot).map(|v| v.len()).unwrap_or(0);
+    log::info!(
+        "open_pr_review pr={} phase=summary cache_hit={} files={} app_lock_ms={} tab_build_ms={} tab_place_ms={} pr_diff_enter_ms={} record_recent_ms={} snap_build_ms={} ser_bytes={} ser_ms={} total_ms={}",
+        pr_number,
+        cache_hit,
+        snapshot.files.len(),
+        app_lock_ms,
+        tab_build_ms,
+        tab_place_ms,
+        pr_diff_enter_ms,
+        record_recent_ms,
+        snap_build_ms,
+        ser_bytes,
+        t_ser.elapsed().as_millis(),
+        t_total.elapsed().as_millis(),
+    );
     Ok(snapshot)
 }
 
@@ -6197,10 +6347,14 @@ pub async fn sync_pr(
             ),
             None => return Err("Project not found".to_string()),
         };
-        cache_single_pr_for_remote(&state, &remote, pr_number)?;
+        let fetched_pr = cache_single_pr_for_remote(&state, &remote, pr_number)?;
 
         // sync_pr alone only refreshes the metadata cache. If this PR is open in
         // any tab, force-refresh that tab's diff so the view reflects origin.
+        // Capture a successfully-refreshed *local* PR tab's diff oid so we can
+        // persist the new diff into pr_open_cache below — making the next open of
+        // this PR an instant cache hit instead of another `gh pr diff`.
+        let mut refreshed_local_diff_oid: Option<Option<String>> = None;
         if let Ok(mut app) = state.app.lock() {
             let indices: Vec<usize> = app
                 .tabs
@@ -6215,10 +6369,44 @@ pub async fn sync_pr(
                 .collect();
             for i in indices {
                 if let Some(tab) = app.tabs.get_mut(i) {
-                    if let Err(e) = tab.refetch_and_refresh_diff() {
-                        log::warn!("sync_pr: diff refresh failed for tab {i}: {e}");
+                    match tab.refetch_and_refresh_diff() {
+                        Ok(()) => {
+                            // Remote tabs can't form the local open key (their
+                            // repo_root is the launch CWD, not the checkout) — and
+                            // the remote open path doesn't read the cache yet, so
+                            // only local PR tabs are worth persisting here.
+                            if !tab.is_remote() && refreshed_local_diff_oid.is_none() {
+                                refreshed_local_diff_oid = Some(tab.last_diff_head_oid.clone());
+                            }
+                        }
+                        Err(e) => log::warn!("sync_pr: diff refresh failed for tab {i}: {e}"),
                     }
                 }
+            }
+        }
+
+        // Persist the refreshed diff for the local PR tab (lock released). The key
+        // matches the local open path (`load_pr_open_inputs`: project_id + the
+        // project root + pr_number); the freshness matches a future open's, so the
+        // reopen hits. We re-run `gh pr diff` here rather than reuse the tab's
+        // view-dependent `raw_diff` (which may be the Local-Branch diff, not the PR
+        // diff) to store exactly the canonical bytes the open path caches. An
+        // `updated_at`/oid mismatch on a later open is a safe miss, never a stale hit.
+        if let Some(diff_oid) = refreshed_local_diff_oid {
+            let key = pr_open_cache_key(&project_id, &root_path, pr_number);
+            let freshness = freshness_from_pr_info(&fetched_pr, diff_oid.as_deref());
+            match run_gh_pr_diff_for_open(&root_path, pr_number) {
+                Ok(raw_diff) => {
+                    remember_pr_open_entry(
+                        &state.pr_open_cache,
+                        key,
+                        freshness,
+                        raw_diff,
+                        None,
+                        None,
+                    );
+                }
+                Err(e) => log::warn!("sync_pr: cache-persist diff fetch failed for #{pr_number}: {e}"),
             }
         }
 
@@ -7967,6 +8155,131 @@ mod tests {
             ..freshness
         };
         assert!(cached_pr_open_diff(&cache, &key, &stale_probe).is_none());
+    }
+
+    #[test]
+    fn pr_open_entry_renders_stale_head_but_rejects_rebase() {
+        // J1: when the head moved on origin (stale-by-head), the hint open is still a
+        // cache hit — we render the diff we already hold and let the 30s pill flag it.
+        // The lookup must return the ENTRY's own freshness (the oid the cached diff
+        // was built against), not the newer requested oid; seeding the staleness probe
+        // with the requested oid would suppress the pill and show a stale diff silently.
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+        let key = pr_open_cache_key("p1", "/repo", 1112);
+        let entry_freshness = PrOpenFreshness {
+            base_branch: "main".into(),
+            head_branch: "feature".into(),
+            head_oid: "OLD".into(),
+            updated_at: "2026-05-17T10:00:00Z".into(),
+        };
+        insert_pr_open_test_entry(
+            &cache,
+            key.clone(),
+            entry_freshness.clone(),
+            "cached diff".into(),
+        );
+
+        // Head advanced (OLD → NEW), same base → HIT returning the entry's OLD oid.
+        let requested_new_head = PrOpenFreshness {
+            head_oid: "NEW".into(),
+            ..entry_freshness.clone()
+        };
+        let (raw_diff, returned_freshness, pr_data, pr_commits) =
+            cached_pr_open_entry(&cache, &key, &requested_new_head)
+                .expect("stale-by-head with matching base must be a cache hit");
+        assert_eq!(raw_diff, "cached diff");
+        assert_eq!(
+            returned_freshness.head_oid, "OLD",
+            "must return the entry's own oid so the staleness pill lights on the moved head"
+        );
+        assert_eq!(returned_freshness.base_branch, "main");
+        assert!(pr_data.is_none(), "no pr_data was cached");
+        assert!(pr_commits.is_none(), "no pr_commits were cached");
+
+        // Base retargeted (main → develop) → MISS: the pill watches only head_oid, so
+        // a silently re-based diff would render with no warning. Re-fetch instead.
+        let requested_rebased = PrOpenFreshness {
+            base_branch: "develop".into(),
+            ..entry_freshness
+        };
+        assert!(
+            cached_pr_open_entry(&cache, &key, &requested_rebased).is_none(),
+            "a base retarget must be a hard cache miss"
+        );
+    }
+
+    #[test]
+    fn freshness_from_pr_info_matches_hint_open() {
+        // `sync_pr` persists the refreshed diff under `freshness_from_pr_info`. The
+        // hint open (base-only gate) renders it from cache and seeds the staleness
+        // pill with the entry's `head_oid`, so that oid must equal what the open path
+        // computes — `freshness_from_hint` (sidebar) and the equivalent `gh pr view`
+        // (no-hint). This test pins that field-for-field contract: divergence would
+        // falsely light the pill on a clean post-sync reopen.
+        let pr = PrInfo {
+            number: 1112,
+            title: "Add feature".into(),
+            head_ref: "feature".into(),
+            state: "OPEN".into(),
+            is_draft: false,
+            author: "alice".into(),
+            assignees: vec![],
+            reviewers: vec![],
+            checks_state: None,
+            review_decision: None,
+            merged_at: None,
+            approved_by_me: false,
+            base_ref: "main".into(),
+            head_oid: "headoid123".into(),
+            updated_at: "2026-05-17T10:00:00Z".into(),
+            latest_reviewer_states: vec![],
+        };
+        let hint = PrOpenHint {
+            base_ref: pr.base_ref.clone(),
+            head_ref: pr.head_ref.clone(),
+            head_oid: pr.head_oid.clone(),
+            updated_at: pr.updated_at.clone(),
+            title: pr.title.clone(),
+            author: String::new(),
+        };
+
+        // Same head → identical freshness → the post-sync reopen renders from cache
+        // with the staleness pill dark.
+        assert_eq!(
+            freshness_from_pr_info(&pr, Some(&pr.head_oid)),
+            freshness_from_hint(&hint),
+            "post-sync freshness must match the sidebar-hint open freshness"
+        );
+
+        // The diff's own oid wins (the cached diff was computed against it); an
+        // empty/whitespace oid falls back to the PR head oid.
+        assert_eq!(
+            freshness_from_pr_info(&pr, Some("diffoid999")).head_oid,
+            "diffoid999"
+        );
+        assert_eq!(freshness_from_pr_info(&pr, None).head_oid, "headoid123");
+        assert_eq!(freshness_from_pr_info(&pr, Some("   ")).head_oid, "headoid123");
+
+        // Negative (timestamp): an advanced `updated_at` must be reflected in the
+        // freshness value. (The head is unchanged, so the cached diff is identical —
+        // a benign clean hit; the pill, which watches head_oid, stays dark.)
+        let mut moved = pr.clone();
+        moved.updated_at = "2026-05-17T11:00:00Z".into();
+        assert_ne!(
+            freshness_from_pr_info(&moved, Some(&moved.head_oid)),
+            freshness_from_hint(&hint),
+            "an advanced updated_at must change the freshness value"
+        );
+
+        // Negative (oid): a moved head with the SAME timestamp must still change the
+        // freshness — it pins `head_oid`, so a post-sync entry carries the new oid and
+        // a reopen lights the stale pill if the head moves again. Guards against a
+        // regression that only compared `updated_at`.
+        assert_ne!(
+            freshness_from_pr_info(&pr, Some("newheadoid456")),
+            freshness_from_hint(&hint),
+            "a changed head_oid alone must change the freshness"
+        );
     }
 
     #[test]
