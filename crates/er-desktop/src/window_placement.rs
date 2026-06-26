@@ -42,16 +42,21 @@ fn monitor_rect(m: &Monitor) -> RectI32 {
     }
 }
 
-fn visible_fraction(window: RectI32, monitors: &[Monitor]) -> f64 {
+fn visible_fraction_rects(window: RectI32, monitors: &[RectI32]) -> f64 {
     let total = i64::from(window.w) * i64::from(window.h);
     if total <= 0 {
         return 0.0;
     }
     let visible = monitors
         .iter()
-        .map(|m| intersect_area(window, monitor_rect(m)))
+        .map(|m| intersect_area(window, *m))
         .sum::<i64>();
     visible as f64 / total as f64
+}
+
+fn visible_fraction(window: RectI32, monitors: &[Monitor]) -> f64 {
+    let rects: Vec<RectI32> = monitors.iter().map(monitor_rect).collect();
+    visible_fraction_rects(window, &rects)
 }
 
 /// Clamp `window` so all four sides fit inside `monitor`. If the window is
@@ -147,6 +152,49 @@ mod tests {
         let clamped = clamp_to_monitor(window, monitor);
         assert_eq!(clamped.x, -1920 + 1920 - 800);
         assert!(clamped.x + clamped.w <= monitor.x + monitor.w);
+    }
+
+    #[test]
+    fn offscreen_window_on_disconnected_monitor_triggers_recenter() {
+        // Regression: saved geometry pointed at a since-disconnected left-hand
+        // external monitor (x = -2992). The only connected monitor is at the
+        // origin, so the window has zero overlap and must be recentered, not
+        // clamped to an edge.
+        let connected = RectI32 {
+            x: 0,
+            y: 0,
+            w: 1512,
+            h: 982,
+        };
+        let offscreen_window = RectI32 {
+            x: -2992,
+            y: 66,
+            w: 1512,
+            h: 949,
+        };
+        let fraction = visible_fraction_rects(offscreen_window, &[connected]);
+        assert_eq!(fraction, 0.0);
+        assert!(fraction < RECENTER_FRACTION);
+    }
+
+    #[test]
+    fn partially_visible_window_above_threshold_is_clamped_not_recentered() {
+        // A window mostly on-screen (right edge spilling off) stays put for the
+        // clamp path rather than recentering.
+        let connected = RectI32 {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let window = RectI32 {
+            x: 1000,
+            y: 100,
+            w: 1400,
+            h: 900,
+        };
+        let fraction = visible_fraction_rects(window, &[connected]);
+        assert!(fraction >= RECENTER_FRACTION, "fraction was {fraction}");
     }
 
     #[test]

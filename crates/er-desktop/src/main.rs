@@ -128,14 +128,40 @@ fn reveal_main_window(
     app: &tauri::AppHandle,
     reason: &str,
 ) -> tauri::Result<()> {
+    // Pre-show clamp: best-effort, avoids a visible flash at a stale position.
     if let Err(e) = window_placement::ensure_window_visible(window) {
         log::warn!("window placement failed during {reason}, recentering: {e}");
         if let Err(center_err) = window.center() {
             log::warn!("window recenter failed during {reason}: {center_err}");
         }
     }
+    if let Ok(p) = window.outer_position() {
+        log::info!(
+            "window placement {reason}: pre-show position ({}, {})",
+            p.x,
+            p.y
+        );
+    }
 
     window.show()?;
+
+    // Post-show clamp: a hidden macOS NSWindow can report a stale position, so
+    // the pre-show pass may no-op and `show()` then reveals the window at the
+    // restored (possibly off-screen) coordinates. Re-running after show reads
+    // the real position and reliably pulls it back onto a monitor.
+    if let Err(e) = window_placement::ensure_window_visible(window) {
+        log::warn!("post-show window placement failed during {reason}, recentering: {e}");
+        if let Err(center_err) = window.center() {
+            log::warn!("post-show window recenter failed during {reason}: {center_err}");
+        }
+    }
+    if let Ok(p) = window.outer_position() {
+        log::info!(
+            "window placement {reason}: post-show position ({}, {})",
+            p.x,
+            p.y
+        );
+    }
 
     if let Err(e) = window.unminimize() {
         log::warn!("window unminimize failed during {reason}: {e}");
@@ -511,6 +537,27 @@ fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     });
 
     Ok(())
+}
+
+/// Geometry the `window-state` plugin *saves*. MAXIMIZED is kept so the plugin
+/// detects the maximized state and preserves the last *windowed* size+position
+/// (it skips overwriting them while maximized) instead of persisting the zoomed
+/// dimensions as if they were the windowed size.
+fn window_state_save_flags() -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+    StateFlags::SIZE
+        | StateFlags::POSITION
+        | StateFlags::MAXIMIZED
+        | StateFlags::FULLSCREEN
+        | StateFlags::DECORATIONS
+}
+
+/// Geometry we *restore* on launch. MAXIMIZED is dropped so the window always
+/// reopens as a normal resizable window at its last windowed size+position,
+/// never auto-zoomed to fill the screen.
+fn window_state_restore_flags() -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+    StateFlags::SIZE | StateFlags::POSITION | StateFlags::FULLSCREEN | StateFlags::DECORATIONS
 }
 
 fn main() {
@@ -1436,6 +1483,16 @@ fn main() {
 
     let persist_app = Arc::clone(&app_arc);
     let persist_app_on_close = Arc::clone(&app_arc);
+    // Throttles eager geometry saves on move/resize (see the on_window_event
+    // handler below). Init to now() so the programmatic resizes fired during the
+    // startup restore_state don't trigger a redundant save.
+    let window_geom_last_save = Arc::new(Mutex::new(std::time::Instant::now()));
+    // Gates eager saves until the window has been placed + shown. The plugin's
+    // restore_state fires Moved/Resized while it sets the (possibly off-screen,
+    // pre-clamp) position; saving then would persist that bad geometry. Flipped
+    // true at the end of the startup reveal.
+    let window_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let window_ready_event = Arc::clone(&window_ready);
     let tauri_app = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -1447,13 +1504,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED
-                        | tauri_plugin_window_state::StateFlags::FULLSCREEN
-                        | tauri_plugin_window_state::StateFlags::DECORATIONS,
-                )
+                .with_state_flags(window_state_save_flags())
                 .skip_initial_state("main")
                 .build(),
         )
@@ -1467,13 +1518,35 @@ fn main() {
             if window.label() != "main" {
                 return;
             }
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if let Ok(guard) = persist_app_on_close.lock() {
-                    tabs::persist_app_tabs(&guard);
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    if let Ok(guard) = persist_app_on_close.lock() {
+                        tabs::persist_app_tabs(&guard);
+                    }
                 }
+                // The window-state plugin only writes geometry to disk on a
+                // graceful RunEvent::Exit; move/resize merely update its in-memory
+                // cache. A `tauri dev` rebuild (or a crash) hard-kills the app, so
+                // that cache is lost and the window reopens at the last *cleanly*
+                // saved geometry. Persist eagerly here (throttled to one write per
+                // 400ms) so the last position+size survive rebuilds and crashes.
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    use tauri_plugin_window_state::AppHandleExt;
+                    if window_ready_event.load(std::sync::atomic::Ordering::Acquire) {
+                        if let Ok(mut last) = window_geom_last_save.lock() {
+                            if last.elapsed() >= std::time::Duration::from_millis(400) {
+                                *last = std::time::Instant::now();
+                                let _ = window
+                                    .app_handle()
+                                    .save_window_state(window_state_save_flags());
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());
@@ -1546,18 +1619,22 @@ fn main() {
                 })
                 .build()?;
 
-            use tauri_plugin_window_state::{StateFlags, WindowExt};
-            // Restore size+position+maximized only — NOT visibility. The
-            // window stays hidden (`.visible(false)`) until we've clamped it
-            // onto a valid monitor, then we show. Restoring VISIBLE would
-            // flash the window at the stale off-screen position.
-            let flags = StateFlags::SIZE
-                | StateFlags::POSITION
-                | StateFlags::MAXIMIZED
-                | StateFlags::FULLSCREEN
-                | StateFlags::DECORATIONS;
-            window.restore_state(flags)?;
+            use tauri_plugin_window_state::WindowExt;
+            // Restore size+position only — NOT visibility. The window stays
+            // hidden (`.visible(false)`) until we've clamped it onto a valid
+            // monitor, then we show. Restoring VISIBLE would flash the window at
+            // the stale off-screen position.
+            window.restore_state(window_state_restore_flags())?;
             reveal_main_window(&window, app.handle(), "startup")?;
+            // The window is placed and shown; eager geometry saves may now run.
+            window_ready.store(true, std::sync::atomic::Ordering::Release);
+            // Heal any stale off-screen/maximized geometry the restore clamped
+            // away: persist the now-valid on-screen position so the next launch
+            // restores it directly instead of re-clamping a poisoned prev_x.
+            {
+                use tauri_plugin_window_state::AppHandleExt;
+                let _ = app.handle().save_window_state(window_state_save_flags());
+            }
 
             Ok(())
         })
