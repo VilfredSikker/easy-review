@@ -5035,6 +5035,14 @@ fn cached_pr_open_diff(
     Some(raw_diff)
 }
 
+/// Cached PR-open entry: `(raw diff, freshness, optional overview, optional commits)`.
+type CachedPrOpenEntry = (
+    String,
+    PrOpenFreshness,
+    Option<er_engine::github::PrOverviewData>,
+    Option<Vec<er_engine::git::CommitInfo>>,
+);
+
 /// Look up a cached open-diff for the hint path, treating it as a hit when the
 /// **base branch** matches — head/`updated_at` drift is allowed (J1: render the
 /// diff we already hold instantly; the 30s `pr_head_probe` lights the stale pill,
@@ -5051,12 +5059,7 @@ fn cached_pr_open_entry(
     cache: &Arc<Mutex<HashMap<PrOpenCacheKey, PrOpenCacheEntry>>>,
     key: &PrOpenCacheKey,
     requested: &PrOpenFreshness,
-) -> Option<(
-    String,
-    PrOpenFreshness,
-    Option<er_engine::github::PrOverviewData>,
-    Option<Vec<er_engine::git::CommitInfo>>,
-)> {
+) -> Option<CachedPrOpenEntry> {
     let mut guard = cache.lock().ok()?;
     let entry = guard.get(key)?;
     if entry.freshness.base_branch != requested.base_branch {

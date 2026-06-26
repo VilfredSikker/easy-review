@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::snapshot::GithubStatusSnapshot;
 
+/// Live GitHub status cache: keyed by `(repo slug, branch, pr number)`.
+type GithubStatusCache = HashMap<(String, String, u64), GithubStatusSnapshot>;
+
 const GH_STATUS_CACHE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,9 +35,7 @@ fn gh_status_cache_path() -> Option<PathBuf> {
 /// Build the persisted records from the live cache. Pure (no I/O, no locks) so
 /// the serialisation logic is testable. Status snapshots are small, so no size
 /// guard is applied — every entry is persisted.
-fn build_persisted_entries(
-    cache: &HashMap<(String, String, u64), GithubStatusSnapshot>,
-) -> Vec<PersistedGhStatusEntry> {
+fn build_persisted_entries(cache: &GithubStatusCache) -> Vec<PersistedGhStatusEntry> {
     cache
         .iter()
         .map(|(key, entry)| PersistedGhStatusEntry {
@@ -46,7 +47,7 @@ fn build_persisted_entries(
 
 /// Parse persisted JSON into the live cache map. Pure (no I/O) so the version
 /// gate is testable. A wrong/missing version yields `None` (treated as no cache).
-fn parse_persisted(content: &str) -> Option<HashMap<(String, String, u64), GithubStatusSnapshot>> {
+fn parse_persisted(content: &str) -> Option<GithubStatusCache> {
     let parsed: PersistedGhStatusFile = serde_json::from_str(content).ok()?;
     if parsed.version != GH_STATUS_CACHE_SCHEMA_VERSION {
         return None;
@@ -62,8 +63,7 @@ fn parse_persisted(content: &str) -> Option<HashMap<(String, String, u64), Githu
 
 /// Load the persisted GitHub-status cache. Missing file, version mismatch, or a
 /// corrupt file all yield `Ok(None)` so a bad file never crashes startup.
-pub fn load_persisted_gh_status_cache(
-) -> Result<Option<HashMap<(String, String, u64), GithubStatusSnapshot>>> {
+pub fn load_persisted_gh_status_cache() -> Result<Option<GithubStatusCache>> {
     let Some(path) = gh_status_cache_path() else {
         return Ok(None);
     };
@@ -76,9 +76,7 @@ pub fn load_persisted_gh_status_cache(
 
 /// Persist the GitHub-status cache. Writes atomically via a tmp file + rename.
 /// Best-effort: failures are silent.
-pub fn save_persisted_gh_status_cache(
-    cache: &Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>>,
-) {
+pub fn save_persisted_gh_status_cache(cache: &Arc<Mutex<GithubStatusCache>>) {
     let Some(path) = gh_status_cache_path() else {
         return;
     };
@@ -111,10 +109,7 @@ pub fn save_persisted_gh_status_cache(
 /// Intended for startup pruning: callers build `keep` from each project's saved
 /// PRs plus its top-10 recently opened PRs, so entries for deleted or long-idle
 /// PRs age out automatically.
-pub fn prune_gh_status_cache(
-    map: &mut HashMap<(String, String, u64), GithubStatusSnapshot>,
-    keep: &HashSet<(String, String, u64)>,
-) {
+pub fn prune_gh_status_cache(map: &mut GithubStatusCache, keep: &HashSet<(String, String, u64)>) {
     map.retain(|(owner, repo, number), _| {
         keep.contains(&(
             owner.to_ascii_lowercase(),
@@ -179,7 +174,7 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_entries() {
-        let mut cache: HashMap<(String, String, u64), GithubStatusSnapshot> = HashMap::new();
+        let mut cache: GithubStatusCache = HashMap::new();
         cache.insert(
             ("myorg".to_string(), "myrepo".to_string(), 42),
             make_snapshot("myorg", "myrepo", 42),
@@ -225,7 +220,7 @@ mod tests {
 
     #[test]
     fn prune_retains_only_kept() {
-        let mut map: HashMap<(String, String, u64), GithubStatusSnapshot> = HashMap::new();
+        let mut map: GithubStatusCache = HashMap::new();
         let k1 = ("org".to_string(), "repo".to_string(), 1);
         let k2 = ("org".to_string(), "repo".to_string(), 2);
         let k3 = ("org".to_string(), "repo".to_string(), 3);
@@ -250,7 +245,7 @@ mod tests {
         // Cache keys preserve the casing of the URL a PR was opened with
         // (`tab.remote_repo` is built from the raw `PrRef`), so a mixed-case slug
         // lands a mixed-case key in the cache.
-        let mut map: HashMap<(String, String, u64), GithubStatusSnapshot> = HashMap::new();
+        let mut map: GithubStatusCache = HashMap::new();
         let mixed = ("MyOrg".to_string(), "MyRepo".to_string(), 5);
         let other = ("OtherOrg".to_string(), "OtherRepo".to_string(), 9);
         map.insert(mixed.clone(), make_snapshot("MyOrg", "MyRepo", 5));
