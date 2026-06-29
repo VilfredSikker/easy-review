@@ -119,16 +119,34 @@ fn json_string_literal(s: &str) -> String {
 }
 
 /// Pass an upstream redirect to the embedded WebView (rewrites `Location` to `erp(s)://`).
+///
+/// The `Location` value is upstream-controlled. A malformed redirect target
+/// containing a control character (a raw newline/CR — classic header injection —
+/// a NUL, etc.) is not a valid HTTP header value, so building the header fails.
+/// This handler runs synchronously inside the native URI-scheme callback, where
+/// a panic unwinds into non-Rust frames and aborts the whole app. So validate
+/// the value first and fall back to the HTML navigation handoff (which carries
+/// the URL in a JS-escaped body, not a header) when it is not header-safe.
 pub fn browser_redirect_response(status: u16, http_location: &str) -> http::Response<Vec<u8>> {
     let proxy_location = to_proxy_scheme_url(http_location);
-    log::info!("[erp] pass_redirect status={status} -> {proxy_location}");
-    http::Response::builder()
-        .status(status)
-        .header("Location", proxy_location)
-        .header("Cache-Control", "no-cache")
-        .header("Access-Control-Allow-Origin", "*")
-        .body(Vec::new())
-        .unwrap()
+    match http::HeaderValue::from_str(&proxy_location) {
+        Ok(value) => {
+            log::info!("[erp] pass_redirect status={status} -> {proxy_location}");
+            http::Response::builder()
+                .status(status)
+                .header("Location", value)
+                .header("Cache-Control", "no-cache")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(Vec::new())
+                .unwrap_or_else(|_| webview_navigation_handoff(http_location))
+        }
+        Err(_) => {
+            log::warn!(
+                "[erp] redirect Location not header-safe, using navigation handoff: {proxy_location}"
+            );
+            webview_navigation_handoff(http_location)
+        }
+    }
 }
 
 /// Cross-origin redirect via HTML `location.replace` — **deprecated for documents** (causes
@@ -308,5 +326,34 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap();
         assert_eq!(loc, "erps://auth.example.com/oauth?state=1");
+    }
+
+    #[test]
+    fn redirect_with_header_unsafe_location_falls_back_to_handoff() {
+        // A redirect target with a control character (here a raw newline) is not
+        // a valid HTTP header value. The old `.unwrap()` aborted the whole app
+        // here; now we degrade to the HTML navigation handoff instead of
+        // panicking. `HeaderValue` permits spaces and high bytes, so the unsafe
+        // case is specifically control characters.
+        let resp = browser_redirect_response(302, "https://tech-professor.com/a\nb");
+        assert_eq!(resp.status(), 200);
+        assert!(resp.headers().get("Location").is_none());
+        let body = String::from_utf8(resp.body().clone()).unwrap();
+        assert!(body.contains("location.replace("));
+        assert!(body.contains("erps://tech-professor.com/"));
+    }
+
+    #[test]
+    fn redirect_with_space_in_location_is_still_a_real_redirect() {
+        // Spaces and non-ASCII bytes are valid header-value bytes, so these stay
+        // a normal pass-through redirect (no handoff fallback needed).
+        let resp = browser_redirect_response(302, "https://tech-professor.com/path with space");
+        assert_eq!(resp.status(), 302);
+        let loc = resp
+            .headers()
+            .get("Location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!(loc, "erps://tech-professor.com/path with space");
     }
 }
