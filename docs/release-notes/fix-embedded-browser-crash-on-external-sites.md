@@ -6,10 +6,9 @@ Opening the in-app review browser and navigating to a real external site (e.g.
 `tech-professor.com`) could crash Easy Review. The `erp://` / `erps://` proxy
 that backs the embedded browser builds an HTTP redirect response from the
 upstream site's `Location` header. That value is fully controlled by the remote
-server, and real sites occasionally send redirect targets containing bytes that
-are not valid in an HTTP header value (raw UTF-8, control characters, spaces).
-Building the header with such a value fails, and the code then called
-`.unwrap()` on the result.
+server, and a malformed redirect target containing a control character (a raw
+newline/CR, a NUL, etc.) is not a valid HTTP header value. Building the header
+with such a value fails, and the code then called `.unwrap()` on the result.
 
 Because the proxy runs **synchronously inside the native webview's URI-scheme
 callback**, that panic unwound into non-Rust frames and aborted the entire app

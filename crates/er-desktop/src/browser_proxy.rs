@@ -120,14 +120,13 @@ fn json_string_literal(s: &str) -> String {
 
 /// Pass an upstream redirect to the embedded WebView (rewrites `Location` to `erp(s)://`).
 ///
-/// The `Location` value is upstream-controlled. Real sites occasionally emit a
-/// redirect target with bytes that are invalid in an HTTP header value (raw
-/// UTF-8, control characters, spaces). Building the header with such a value
-/// fails, and this handler runs synchronously inside the native URI-scheme
-/// callback — a panic there unwinds into non-Rust frames and aborts the whole
-/// app. So validate the value first and fall back to the HTML navigation handoff
-/// (which carries the URL in a JS-escaped body, not a header) when it is not
-/// header-safe.
+/// The `Location` value is upstream-controlled. A malformed redirect target
+/// containing a control character (a raw newline/CR — classic header injection —
+/// a NUL, etc.) is not a valid HTTP header value, so building the header fails.
+/// This handler runs synchronously inside the native URI-scheme callback, where
+/// a panic unwinds into non-Rust frames and aborts the whole app. So validate
+/// the value first and fall back to the HTML navigation handoff (which carries
+/// the URL in a JS-escaped body, not a header) when it is not header-safe.
 pub fn browser_redirect_response(status: u16, http_location: &str) -> http::Response<Vec<u8>> {
     let proxy_location = to_proxy_scheme_url(http_location);
     match http::HeaderValue::from_str(&proxy_location) {
@@ -331,14 +330,30 @@ mod tests {
 
     #[test]
     fn redirect_with_header_unsafe_location_falls_back_to_handoff() {
-        // A redirect target with a raw space / non-ASCII bytes is not a valid
-        // HTTP header value. The old `.unwrap()` aborted the whole app here;
-        // now we degrade to the HTML navigation handoff instead of panicking.
-        let resp = browser_redirect_response(302, "https://tech-professor.com/path with space?q=ä");
+        // A redirect target with a control character (here a raw newline) is not
+        // a valid HTTP header value. The old `.unwrap()` aborted the whole app
+        // here; now we degrade to the HTML navigation handoff instead of
+        // panicking. `HeaderValue` permits spaces and high bytes, so the unsafe
+        // case is specifically control characters.
+        let resp = browser_redirect_response(302, "https://tech-professor.com/a\nb");
         assert_eq!(resp.status(), 200);
         assert!(resp.headers().get("Location").is_none());
         let body = String::from_utf8(resp.body().clone()).unwrap();
         assert!(body.contains("location.replace("));
-        assert!(body.contains("erps://tech-professor.com/path"));
+        assert!(body.contains("erps://tech-professor.com/"));
+    }
+
+    #[test]
+    fn redirect_with_space_in_location_is_still_a_real_redirect() {
+        // Spaces and non-ASCII bytes are valid header-value bytes, so these stay
+        // a normal pass-through redirect (no handoff fallback needed).
+        let resp = browser_redirect_response(302, "https://tech-professor.com/path with space");
+        assert_eq!(resp.status(), 302);
+        let loc = resp
+            .headers()
+            .get("Location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!(loc, "erps://tech-professor.com/path with space");
     }
 }
