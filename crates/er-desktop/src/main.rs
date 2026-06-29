@@ -1547,7 +1547,9 @@ fn main() {
         .manage(BrowserWebviewState::default())
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
         // proxies `https://host/path`. HTML responses get the annotation script.
-        .register_uri_scheme_protocol("erp", |_app, request| safe_proxied_response(&request, "http"))
+        .register_uri_scheme_protocol("erp", |_app, request| {
+            safe_proxied_response(&request, "http")
+        })
         .register_uri_scheme_protocol("erps", |_app, request| {
             safe_proxied_response(&request, "https")
         })
