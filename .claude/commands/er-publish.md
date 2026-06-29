@@ -1,1 +1,0 @@
-../../skills/er-publish/SKILL.md

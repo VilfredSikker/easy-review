@@ -1,1 +1,0 @@
-../../skills/er-review-reliability/SKILL.md
