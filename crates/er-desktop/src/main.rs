@@ -426,6 +426,41 @@ fn proxied_response(
     })
 }
 
+/// Panic-isolated wrapper around [`proxied_response`].
+///
+/// The `erp(s)://` handlers run synchronously inside the native webview's
+/// URI-scheme callback. A panic there unwinds into non-Rust (objc/glib) frames,
+/// which is undefined behaviour and aborts the entire app — so a single bad
+/// upstream response (e.g. a header value the `http` crate rejects) would crash
+/// Easy Review rather than failing just the page load. Catch any panic and turn
+/// it into a 500 so the embedded browser can never take the app down with it.
+fn safe_proxied_response(
+    request: &tauri::http::Request<Vec<u8>>,
+    upstream_scheme: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        proxied_response(request, upstream_scheme)
+    }));
+    match result {
+        Ok(resp) => resp,
+        Err(_) => {
+            eprintln!("[erp] proxy handler panicked; returning 500 instead of crashing");
+            tauri::http::Response::builder()
+                .status(500)
+                .header("Content-Type", "text/html")
+                .body(
+                    b"<html><body><p>The embedded browser hit an internal error loading this page.</p></body></html>".to_vec(),
+                )
+                .unwrap_or_else(|_| {
+                    tauri::http::Response::builder()
+                        .status(500)
+                        .body(Vec::new())
+                        .unwrap()
+                })
+        }
+    }
+}
+
 /// Install a custom application menu. Mirrors Tauri's default menu but defines
 /// Select All as a custom item with no accelerator, so ⌘A is no longer claimed
 /// by macOS at the menu-bar level and can reach desktop-ui's JS handler
@@ -1512,8 +1547,10 @@ fn main() {
         .manage(BrowserWebviewState::default())
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
         // proxies `https://host/path`. HTML responses get the annotation script.
-        .register_uri_scheme_protocol("erp", |_app, request| proxied_response(&request, "http"))
-        .register_uri_scheme_protocol("erps", |_app, request| proxied_response(&request, "https"))
+        .register_uri_scheme_protocol("erp", |_app, request| safe_proxied_response(&request, "http"))
+        .register_uri_scheme_protocol("erps", |_app, request| {
+            safe_proxied_response(&request, "https")
+        })
         .on_window_event(move |window, event| {
             if window.label() != "main" {
                 return;
