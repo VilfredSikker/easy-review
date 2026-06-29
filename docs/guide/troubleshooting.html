@@ -28,11 +28,13 @@
     <h3>AI findings do not appear</h3>
     <ul>
       <li><strong>Check where the artifacts went.</strong> By default <code>er</code> reads from managed storage, not the
-      repo's <code>.er/</code>. If you ran a skill in Claude Code that wrote to <code>.er/</code>, either run reviews
-      through <code>er</code>'s own agent commands or launch <code>er</code> with <code>ER_REPO_LOCAL=1</code>. See
-      <a href="storage.html">Review Storage</a>.</li>
+      repo's <code>.er/</code>. External tools (such as TechProfessor) may write to <code>.er/</code> in the repo
+      instead. To bridge the gap: run reviews via the AI Hub (<kbd>a</kbd> in the TUI, <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd>
+      in the desktop), or launch <code>er</code> with <code>ER_REPO_LOCAL=1</code> to read the repo directory directly,
+      or import the sidecar files with <kbd>I</kbd> in the TUI (<strong>Import local review files</strong> in the desktop).
+      See <a href="storage.html">Review Storage</a>.</li>
       <li><strong>Check freshness.</strong> If the diff changed after the review ran, the data is dimmed as
-      <em>stale</em>. Re-run the relevant skill.</li>
+      <em>stale</em>. Re-run the relevant action from the AI Hub.</li>
       <li><strong>Cycle the view.</strong> In the terminal, press <kbd>v</kbd> to make sure you are in an AI view mode.</li>
       <li><strong>Try fixtures.</strong> Run <code>scripts/generate-test-fixtures.sh</code> in your repo to confirm the
       overlay renders at all.</li>

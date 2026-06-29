@@ -72,17 +72,21 @@
     <a href="comments.html">Comments &amp; Questions</a>.</p>
 
     <h2>6. Add AI analysis (optional)</h2>
-    <p>This is where <code>er</code> earns its name. The recommended setup is a split screen: your AI coding tool on
-    one side, <code>er</code> on the other.</p>
+    <p>This is where <code>er</code> earns its name. The quickest way is the built-in <strong>AI Hub</strong>: press
+    <kbd>a</kbd> to open it (<kbd>Cmd</kbd>+<kbd>A</kbd> in the desktop app) and run a review. <code>er</code> spawns your
+    AI tool for you — Claude Code by default, if the <code>claude</code> CLI is on your <code>PATH</code> — so you do not
+    need a second terminal.</p>
     <ol>
-      <li>In Claude Code (or your tool of choice), run <code>/er-review</code>. It writes review artifacts to disk.</li>
-      <li><code>er</code> notices the new data automatically. Press <kbd>v</kbd> to cycle through the AI view modes —
-      findings appear inline in the diff, with per-file risk levels in the file list.</li>
-      <li>Leave questions with <kbd>q</kbd>; run <code>/er-questions</code> to have the AI respond.</li>
-      <li>When you are happy, run <code>/er-publish</code> to post the review to your GitHub PR.</li>
+      <li>Press <kbd>a</kbd> and choose <strong>run review</strong>. Per-file risk levels, inline findings, and a
+      checklist appear as the agent writes them; press <kbd>v</kbd> to cycle how much AI context is shown.</li>
+      <li>Leave questions with <kbd>q</kbd>, then use the Hub's <strong>Answer questions</strong> action (TUI only — in the
+      desktop app, questions are managed in the Notes panel) to have the AI respond inline.</li>
+      <li>Re-open the Hub any time to re-run the review or launch a single expert, the professor, or a fast triage.</li>
     </ol>
-    <p>The whole loop is described in <a href="ai-review.html">AI Review</a> and the
-    <a href="skills.html">Claude Code Skills</a> catalog.</p>
+    <p>The Hub can drive Codex, Cursor, or another tool too — see <a href="ai-review.html#ai-hub">AI Review → the AI
+    Hub</a> for every action and how to configure providers.</p>
+    <p>See <a href="ai-review.html#ai-hub">AI Hub Actions</a> for the full list of Hub actions — review, specialized/expert
+    review, triage, professor — and what each one writes.</p>
 
     <h2>7. Watch it stay live</h2>
     <p>

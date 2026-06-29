@@ -84,14 +84,14 @@
       skills, or the desktop app's built-in agent spawns) write structured <strong>sidecar files</strong> — risk levels,
       findings, a checklist, a summary. <code>er</code> reads those files and renders them inline. The loop looks like this:
     </p>
-    <pre><code>  you / your AI tool                 er
-  ──────────────────                 ──
-  /er-review            ──writes──&gt;  review.json, checklist.json, …
-                                     reads &amp; renders findings inline
-  press q to ask        ──writes──&gt;  questions.json
-  /er-questions         ──reads───&gt;  responds, updates files
-                                     refreshes, shows answers inline
-  /er-publish           ──reads───&gt;  posts review to your GitHub PR</code></pre>
+    <pre><code>  you / AI Hub                             er
+  ────────────                             ──
+  AI Hub: Run review      ──writes──&gt;  review.json, checklist.json, …
+                                           reads &amp; renders findings inline
+  press q to ask          ──writes──&gt;  questions.json
+  AI Hub: Answer questions (TUI only) ──reads───&gt;  responds, updates files
+                                           refreshes, shows answers inline
+  publish (TUI P / desktop Push to GitHub) ──reads───&gt;  posts review to your GitHub PR</code></pre>
     <p>
       Each sidecar records a SHA-256 hash of the diff it was generated against. When the underlying diff changes, that
       AI data is dimmed with a <strong>stale</strong> warning, so you always know whether the analysis still matches the

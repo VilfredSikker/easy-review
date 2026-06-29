@@ -30,9 +30,9 @@
       </tbody>
     </table>
     <p>
-      Questions are your scratchpad: “why is this here?”, “does this handle the empty case?”. The
-      <code>/er-questions</code> skill reads them, answers, and updates the file in place. GitHub comments are the things
-      you actually want your team to see on the PR.
+      Questions are your scratchpad: “why is this here?”, “does this handle the empty case?”. In the TUI, the
+      AI Hub <strong>Answer questions</strong> action reads them, answers, and updates the file in place (in the desktop
+      app, questions live in the Notes panel). GitHub comments are the things you actually want your team to see on the PR.
     </p>
 
     <h2>Leaving a note</h2>
@@ -113,8 +113,8 @@
     <p>
       GitHub comments support a reply thread: a parent comment plus any number of replies. Replies cannot themselves
       have replies — the model is intentionally flat (parent + children, no recursive nesting) to keep it simple and to
-      match how GitHub PR review threads behave. Questions do not have replies; the way you “answer” a question is to run
-      <code>/er-questions</code> and let the AI respond.
+      match how GitHub PR review threads behave. Questions do not have replies; the way you “answer” a question is to use
+      the AI Hub <strong>Answer questions</strong> action (TUI) and let the AI respond.
     </p>
 
     <h2>Comments follow the code (and warn when stale)</h2>
@@ -145,8 +145,8 @@
     <div class="callout tip">
       <span class="ico">✦</span>
       <div><p>Rule of thumb: use <kbd>q</kbd> while you are still figuring out whether something is a problem, and
-      <kbd>c</kbd> once you are ready to say it out loud on the PR. <code>/er-publish</code> includes your GitHub comments
-      when it posts the review.</p></div>
+      <kbd>c</kbd> once you are ready to say it out loud on the PR. Publishing — <kbd>P</kbd> in the TUI, or the desktop
+      Comments card <strong>Push to GitHub</strong> — includes your GitHub comments when it posts the review.</p></div>
     </div>
   </main>
   <script src="assets/docs.js"></script>

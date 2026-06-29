@@ -174,7 +174,7 @@ Result: `blame_annotations = true` and `wrap_lines = true` from global, `tab_wid
 
 ## `.er/` AI artifacts
 
-General review (AI Hub **Run review** or `/er-review`) writes:
+General review (AI Hub **Run review**) writes:
 
 | File | Purpose |
 |------|---------|
@@ -183,13 +183,13 @@ General review (AI Hub **Run review** or `/er-review`) writes:
 | `.er/checklist.json` | Manual verification items |
 | `.er/summary.md` | Overall summary |
 
-**Specialized expert reviews** (AI Hub **Run specialized review** or `/er-review-<expert>`) write findings only to `.er/experts/<id>.json` (e.g. `security`, `patterns`). They do not overwrite general artifacts.
+**Specialized expert reviews** (AI Hub **Specialized review**) write findings only to `.er/experts/<id>.json` (e.g. `security`, `patterns`). They do not overwrite general artifacts.
 
 At load time, `er` merges fresh expert sidecars (matching `diff_hash`) into the in-memory review so expert findings appear as **additional inline banners** labeled by expert (e.g. "Security finding"). Order/checklist/summary panels still require a general review run.
 
 Expert ids (v1): `security`, `performance`, `reliability`, `testing`, `api`, `patterns`, `simplifying`, `mentorship`.
 
-**Professor** (AI Hub **Professor** or `/er-professor`) writes teaching insights to `.er/professor.json` (merged inline at load; labeled with agent pill **Professor**). Not a code review — see `skills/PROFESSOR_PHILOSOPHY.md`.
+**Professor** (AI Hub **Professor**) writes teaching insights to `.er/professor.json` (merged inline at load; labeled with agent pill **Professor**). Not a code review — see `skills/PROFESSOR_PHILOSOPHY.md`.
 
 **Multi-reviewer runs** (AI Hub **Run reviewers…** or **Review select files** → choose reviewers): spawn General + any experts + Professor concurrently. Each finding shows an agent pill (`General`, `Security`, …).
 

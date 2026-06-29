@@ -24,24 +24,43 @@
       those providers and responsible for their terms of use.</p></div>
     </div>
 
-    <h2>The loop</h2>
-    <p>The recommended setup is a split screen — your AI tool on one side, <code>er</code> on the other.</p>
+    <h2 id="ai-hub">Running a review: the AI Hub</h2>
+    <p>
+      Both apps have a built-in <strong>AI Hub</strong> that spawns the review agents for you — no second terminal
+      required. Open it with <kbd>a</kbd> in the terminal app or <kbd>Cmd</kbd>+<kbd>A</kbd> in the desktop app, then
+      choose an action: a full review, a single expert, the professor, a fast triage, answering your questions, or a
+      summary. The Hub runs your AI tool as a subprocess and writes the same sidecar artifacts described below, which
+      then render inline against the diff.
+    </p>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>The Hub drives <em>your</em> AI CLI — it does not bundle a model. It defaults to
+      <strong>Claude Code</strong> (the <code>claude</code> command on your <code>PATH</code>); point it at Codex,
+      Cursor, or another tool through the <code>[agent]</code> / <code>[ai_hub]</code> config. See
+      <a href="configuration.html#ai-hub">Configuration → AI Hub</a> for providers and per-reviewer model selection, and
+      <a href="desktop-features.html">Desktop Features</a> for the desktop Hub, review queue, and Arena.</p></div>
+    </div>
+    <p>
+      Reviews you run from the Hub write to where the app reads automatically. See <a href="storage.html">Review Storage</a>
+      for the full sidecar layout.
+    </p>
+
+    <h2>The review loop</h2>
+    <p>Open the AI Hub and work through the review without leaving the app.</p>
     <table>
       <thead><tr><th>Step</th><th>Where</th><th>What happens</th></tr></thead>
       <tbody>
-        <tr><td>1</td><td>Claude Code</td><td><code>/er-review</code> analyzes the diff and writes sidecar files.</td></tr>
+        <tr><td>1</td><td>AI Hub</td><td>Open the Hub (<kbd>a</kbd> / <kbd>Cmd</kbd>+<kbd>A</kbd>) and choose <strong>Run review</strong> (TUI: <code>Review work</code>). The agents analyze the diff and write sidecar files.</td></tr>
         <tr><td>2</td><td><code>er</code></td><td>Detects the new files automatically; press <kbd>v</kbd> to show findings inline.</td></tr>
         <tr><td>3</td><td><code>er</code></td><td>You read findings, leave questions with <kbd>q</kbd>, comments with <kbd>c</kbd>.</td></tr>
-        <tr><td>4</td><td>Claude Code</td><td><code>/er-questions</code> reads your feedback, responds, and updates the files.</td></tr>
+        <tr><td>4</td><td>AI Hub</td><td>TUI: open the Hub and choose <code>Answer questions</code> (enabled once you have added a question). Desktop: questions are managed in the Notes panel — no Hub action needed.</td></tr>
         <tr><td>5</td><td><code>er</code></td><td>Auto-refreshes; AI responses appear inline. Continue reviewing.</td></tr>
-        <tr><td>6</td><td>Claude Code</td><td><code>/er-publish</code> validates freshness and posts to your GitHub PR.</td></tr>
+        <tr><td>6</td><td><code>er</code></td><td>Publish to GitHub: TUI press <kbd>P</kbd> to push comments to the PR. Desktop: use the Comments card <strong>Push to GitHub</strong> → "Push as review" or push individual comments.</td></tr>
       </tbody>
     </table>
-    <p>The desktop app can spawn these same agents itself from its AI Hub, so you do not strictly need a second terminal
-    — see <a href="desktop-features.html">Desktop Features</a>.</p>
 
     <h2>What a review produces</h2>
-    <p>A full review (<code>/er-review</code>) writes several sidecar files. <code>er</code> reads them and turns them into UI:</p>
+    <p>A full review writes several sidecar files. <code>er</code> reads them and turns them into UI:</p>
     <table>
       <thead><tr><th>File</th><th>Becomes</th></tr></thead>
       <tbody>
@@ -112,7 +131,7 @@
     </figure>
 
     <h2>Severity model</h2>
-    <p>All the review skills share one severity scale and a “what not to flag” list:</p>
+    <p>All the review agents share one severity scale and a “what not to flag” list:</p>
     <table>
       <thead><tr><th>Level</th><th>Meaning</th></tr></thead>
       <tbody>
@@ -147,16 +166,19 @@
 
     <h2>The professor</h2>
     <p>
-      <code>/er-professor</code> is not a code review — it is a learning agent. It writes teaching insights to
-      <code>professor.json</code>, merged inline and labeled with a <strong>Professor</strong> pill. Use it to understand
-      <em>why</em> a change is shaped the way it is, rather than to find defects.
+      The Professor is not a code review — it is a learning agent. Open the AI Hub (<kbd>a</kbd> / <kbd>Cmd</kbd>+<kbd>A</kbd>)
+      and choose <strong>Professor</strong> (TUI: <code>Professor</code>; Desktop: <code>Professor</code>, which opens an
+      optional focus-prompt modal). It writes teaching insights to <code>professor.json</code>, merged inline and labeled
+      with a <strong>Professor</strong> pill. Use it to understand <em>why</em> a change is shaped the way it is, rather
+      than to find defects.
     </p>
 
     <h2>Triage</h2>
     <p>
-      <code>/er-triage</code> is a fast first pass: a quick branch scan that produces a first impression, a routing
-      verdict (run a general review? an expert? skip deep review?), and a priority file list, written to
-      <code>triage.json</code>. It is the cheapest way to decide how much review a branch actually warrants.
+      Triage is a fast first pass. Open the AI Hub and choose <strong>Triage branch</strong> (same label in both apps):
+      a quick branch scan that produces a first impression, a routing verdict (run a general review? an expert? skip deep
+      review?), and a priority file list, written to <code>triage.json</code>. It is the cheapest way to decide how much
+      review a branch actually warrants.
     </p>
 
     <h2>AI view modes <span class="pill tui">terminal</span></h2>
@@ -170,8 +192,8 @@
     <p>
       Every sidecar records the SHA-256 hash of the diff it was generated against. When the diff changes — which happens
       constantly in watch mode — any AI data whose hash no longer matches is dimmed with a <strong>stale</strong>
-      warning. You are never misled into trusting analysis of code that has since changed. Re-run the relevant skill to
-      refresh it.
+      warning. You are never misled into trusting analysis of code that has since changed. Re-run the relevant action
+      from the AI Hub to refresh it.
     </p>
 
     <h2>Choosing a model: the AI Hub</h2>
@@ -191,8 +213,8 @@ bash /path/to/easy-review/scripts/generate-test-fixtures.sh</code></pre>
 
     <div class="callout tip">
       <span class="ico">✦</span>
-      <div><p>The agents themselves are the <a href="skills.html">Claude Code Skills</a>. That page is the full catalog
-      of <code>/er-*</code> commands and what each one writes.</p></div>
+      <div><p>The full catalog of AI Hub Actions — what each one runs and what it writes — is on the
+      <a href="skills.html">AI Hub Actions</a> page.</p></div>
     </div>
   </main>
   <script src="assets/docs.js"></script>
