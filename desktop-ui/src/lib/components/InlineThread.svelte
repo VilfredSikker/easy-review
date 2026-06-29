@@ -6,7 +6,7 @@
   import ReplyActionBar from "$lib/components/ReplyActionBar.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { navigateToThread } from "$lib/dom";
-  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+  import { copyToClipboard } from "$lib/clipboard";
 
   interface Props {
     thread: ThreadSnapshot;
@@ -153,7 +153,7 @@
   async function copyThread() {
     const header = thread.line > 0 ? `${thread.file}:${thread.line}` : thread.file;
     const text = `**${header}**\n\n${buildPromoteBody()}`;
-    await writeText(text);
+    await copyToClipboard(text);
     justCopied = true;
     setTimeout(() => (justCopied = false), 1500);
   }
