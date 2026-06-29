@@ -213,6 +213,8 @@ export type CrossFileFlatRow =
       sourceIndex: number;
       height: number;
       identity: string;
+      /** Pure rename (no content change) — render "File renamed without changes." */
+      renamed: boolean;
     }
   | {
       type: "inline-thread";
@@ -419,6 +421,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
       sourceIndex: file.source_index,
       height: NO_CHANGES_HEIGHT,
       identity: `nochanges:${file.path}`,
+      renamed: file.status === "renamed",
     });
   } else {
     for (let hunkIdx = 0; hunkIdx < file.hunks.length; hunkIdx++) {

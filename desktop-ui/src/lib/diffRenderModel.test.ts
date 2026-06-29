@@ -250,6 +250,18 @@ describe("getFileBlock — bypass cases", () => {
     expect(block.rows[1].type).toBe("no-changes");
     expect(block.totalHeight).toBe(FILE_HEADER_HEIGHT + NO_CHANGES_HEIGHT);
   });
+
+  it("no-changes row flags a pure rename so the UI can label it", () => {
+    const renamed = file({ path: "moved.ts", hunks: [], status: "renamed" });
+    const renamedRow = getFileBlock(mkInputs(renamed, [renamed], emptyAi())).rows[1];
+    if (renamedRow.type !== "no-changes") throw new Error(`expected no-changes, got ${renamedRow.type}`);
+    expect(renamedRow.renamed).toBe(true);
+
+    const modified = file({ path: "empty.ts", hunks: [], status: "modified" });
+    const modifiedRow = getFileBlock(mkInputs(modified, [modified], emptyAi())).rows[1];
+    if (modifiedRow.type !== "no-changes") throw new Error(`expected no-changes, got ${modifiedRow.type}`);
+    expect(modifiedRow.renamed).toBe(false);
+  });
 });
 
 describe("getFileBlock — thread/finding injection", () => {
