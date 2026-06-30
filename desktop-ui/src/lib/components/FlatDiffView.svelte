@@ -1161,8 +1161,15 @@
     refHighlight.identifier ? collectUsageSources() : [],
   );
   // Rendered subset — drives the overview ruler and Cmd+F search, both of which
-  // can only scroll to a row that exists in the live render model.
-  const usageSources = $derived(usageSourcesAll.filter((s) => s.rowIdx >= 0));
+  // can only scroll to a row that exists in the live render model. Sorted by
+  // rowIdx because both consumers require ascending render order: the ruler's
+  // buildRulerMarks merges by increasing offset, and Cmd+F steps linearly. The
+  // full-diff order is file→hunk→line, which is non-monotonic in split view
+  // (a modify block's del and add lines share a row but are visited apart);
+  // the stable sort restores render order while keeping del before add.
+  const usageSources = $derived(
+    usageSourcesAll.filter((s) => s.rowIdx >= 0).sort((a, b) => a.rowIdx - b.rowIdx),
+  );
 
   // Identifier highlights and Cmd+F queries share this pipeline; the store's
   // matchOptions switch between whole-word and substring/smart-case matching.

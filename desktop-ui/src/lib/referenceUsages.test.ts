@@ -273,6 +273,22 @@ describe("usageContext", () => {
     expect(out.map((l) => l.isMatch)).toEqual([false, true]);
   });
 
+  it("uses the (hunkIdx, lineIdx) anchor to pick the right hunk in a collapsed file", () => {
+    // Same collapsed file, two hunks, a line with identical text + lineNum in
+    // each (rowIdx -1 everywhere). The anchor must select the hunk-1 line, not
+    // the first text/lineNum match in hunk 0.
+    const dup: UsageSource[] = [
+      { rowIdx: -1, filePath: "a.ts", lineNum: 3, text: "ctx", hunkIdx: 0, lineIdx: 0 },
+      { rowIdx: -1, filePath: "a.ts", lineNum: 4, text: "foo()", hunkIdx: 0, lineIdx: 1 },
+      { rowIdx: -1, filePath: "a.ts", lineNum: 4, text: "foo()", hunkIdx: 1, lineIdx: 0 },
+      { rowIdx: -1, filePath: "a.ts", lineNum: 5, text: "after", hunkIdx: 1, lineIdx: 1 },
+    ];
+    const out = usageContext(dup, dup[2], 1);
+    // Context must come from hunk 1 (the "after" line), never hunk 0's "ctx".
+    expect(out.map((l) => l.text)).toEqual(["foo()", "after"]);
+    expect(out.map((l) => l.isMatch)).toEqual([true, false]);
+  });
+
   it("falls back to the usage line alone when it is not in the sources", () => {
     const out = usageContext(sources, { rowIdx: 99, filePath: "z.ts", lineNum: 7, text: "gone" });
     expect(out).toEqual([{ rowIdx: 99, lineNum: 7, text: "gone", isMatch: true }]);

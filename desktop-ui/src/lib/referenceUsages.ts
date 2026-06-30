@@ -191,22 +191,27 @@ export interface UsageContextLine {
  * on screen but not in the file. At the first/last line of a hunk or of the
  * whole list, fewer lines are returned.
  *
- * The usage is located by `filePath` + `rowIdx` + `text` + `lineNum` (split
- * rows can share a `rowIdx` between their left and right sides; collapsed-file
- * usages all share `rowIdx === -1`, so `filePath` disambiguates them). When it
- * cannot be found (e.g. the diff refreshed underneath a stale reference), the
- * usage line itself is returned alone so callers always have something to
- * render.
+ * The usage is located by its `(filePath, hunkIdx, lineIdx)` anchor when those
+ * are known, falling back to `filePath` + `rowIdx` + `text` + `lineNum`. The
+ * anchor matters for collapsed files: every line there shares `rowIdx === -1`,
+ * so two lines with the same text and line number in different hunks would
+ * otherwise be indistinguishable. (Split rows can also share a `rowIdx` between
+ * their left and right sides, disambiguated by `text`/`lineNum`/`lineIdx`.)
+ * When the usage cannot be found (e.g. the diff refreshed underneath a stale
+ * reference), the usage line itself is returned alone so callers always have
+ * something to render.
  */
 export function usageContext(
   sources: UsageSource[],
-  usage: Pick<UsageSource, "rowIdx" | "filePath" | "lineNum" | "text">,
+  usage: Pick<UsageSource, "rowIdx" | "filePath" | "lineNum" | "text" | "hunkIdx" | "lineIdx">,
   contextLines = 2,
 ): UsageContextLine[] {
   const idx = sources.findIndex(
     (s) =>
       s.filePath === usage.filePath &&
       s.rowIdx === usage.rowIdx &&
+      s.hunkIdx === usage.hunkIdx &&
+      s.lineIdx === usage.lineIdx &&
       s.text === usage.text &&
       s.lineNum === usage.lineNum,
   );
