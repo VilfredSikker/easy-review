@@ -569,30 +569,27 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
     }
 }
 
-/// Fetch all GitHub status data for a PR. Runs the 4 gh calls in parallel.
-/// Returns None when the PR overview fetch fails (e.g. no network, gh not authed).
-/// Comments/reviews/checks failures are non-fatal — the snapshot still populates.
+/// Fetch all GitHub status data for a PR. Runs 2 gh calls in parallel: one
+/// combined `gh pr view --json` for overview+comments+reviews, one `gh pr
+/// checks` for CI status (separate subcommand, can't be merged into `pr view`).
+/// Returns None when the overview/status-bundle fetch fails (e.g. no network,
+/// gh not authed). Comments/reviews parse failures inside the bundle are
+/// non-fatal; checks failures are non-fatal — the snapshot still populates.
 pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<GithubStatusSnapshot> {
     let t = std::time::Instant::now();
-    // Run 4 independent gh calls concurrently — cuts wall time from ~3.5s to ~1s.
-    let (overview_res, checks, comments, reviews) = std::thread::scope(|s| {
-        let o = s.spawn(|| er_engine::github::gh_pr_overview_remote_full(owner, repo, number));
+    // Run 2 independent gh calls concurrently — cuts wall time and gh
+    // subprocess count from 4 to 2.
+    let (bundle_res, checks) = std::thread::scope(|s| {
+        let b = s.spawn(|| er_engine::github::gh_pr_status_remote(owner, repo, number));
         let c = s.spawn(|| {
             er_engine::github::gh_pr_checks_remote(owner, repo, number).unwrap_or_default()
         });
-        let cm = s.spawn(|| {
-            er_engine::github::gh_pr_comments_overview(owner, repo, number).unwrap_or_default()
-        });
-        let r =
-            s.spawn(|| er_engine::github::gh_pr_reviews(owner, repo, number).unwrap_or_default());
-        (
-            o.join().ok(),
-            c.join().unwrap_or_default(),
-            cm.join().unwrap_or_default(),
-            r.join().unwrap_or_default(),
-        )
+        (b.join().ok(), c.join().unwrap_or_default())
     });
-    let overview = overview_res?.ok()?;
+    let bundle = bundle_res?.ok()?;
+    let overview = bundle.overview;
+    let comments = bundle.comments;
+    let reviews = bundle.reviews;
     crate::profile_log::profile_log(
         "gh_status_fetch",
         &[
@@ -674,6 +671,21 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
 /// local-branch tabs where the viewed branch has an open PR in pr_cache.
 fn kick_active_gh_status(app: &App, state: &AppState) {
     if let Some((owner, repo, number)) = active_github_key(app, state) {
+        let last_updated = state.gh_status_cache.lock().ok().and_then(|cache| {
+            cache
+                .get(&(owner.clone(), repo.clone(), number))
+                .and_then(|snap| snap.last_updated.clone())
+        });
+        // The active tab's status is already fresh (<10s) — the 30s
+        // background loop or a recent kick already covered it. Don't fire a
+        // redundant 4-subprocess fan-out on every tab switch / open / close.
+        if crate::gh_status_cache::status_is_fresh(
+            last_updated.as_deref(),
+            crate::gh_status_cache::now_epoch_secs(),
+            10,
+        ) {
+            return;
+        }
         kick_github_status_refresh(
             state.gh_status_cache.clone(),
             Arc::clone(&state.gh_status_in_flight),
@@ -5717,13 +5729,18 @@ fn open_pr_review_impl(
     // (placed by `new_local_pr_from_github_diff` from `inputs.raw_diff`), so trust
     // it and skip the redundant `gh pr diff` that `enter_pr_diff()` would run via
     // `refresh_diff()`. A miss — or a hit whose head oid is unknown (empty), where
-    // seeding it would mislead the staleness probe — falls back to the full path.
+    // seeding it would mislead the staleness probe — still skips the redundant
+    // refetch via `enter_pr_diff_freshly_loaded()`: `new_local_pr_from_github_diff`
+    // (above) already parsed `inputs.raw_diff` into `tab.files`/`raw_diff`/
+    // `diff_hash`, the exact content a plain `enter_pr_diff()` would re-fetch.
     if cache_hit && !head_oid_for_preload.trim().is_empty() {
         app.tab_mut()
             .enter_pr_diff_preloaded(head_oid_for_preload)
             .map_err(|e| e.to_string())?;
     } else {
-        app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
+        app.tab_mut()
+            .enter_pr_diff_freshly_loaded()
+            .map_err(|e| e.to_string())?;
     }
     let pr_diff_enter_ms = t_pr_diff.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "pr_diff_enter", t_pr_diff);

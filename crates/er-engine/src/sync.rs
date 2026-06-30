@@ -261,7 +261,17 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
     std::fs::write(&tmp_path, &json)?;
     std::fs::rename(&tmp_path, &ctx.comments_path)?;
 
-    // Refresh PR overview (still outside app lock)
+    // Refresh PR overview (still outside app lock).
+    // Remote PRs already skip the CI-checks subprocess inside
+    // `gh_pr_overview_remote` (no local clone for `gh pr checks` to target).
+    // Local-clone PRs use the checks-free variant: the desktop's 30s
+    // gh-status loop (`fetch_github_status`, er-desktop/src/commands.rs)
+    // already polls `gh pr checks` for this same (owner, repo, pr_number)
+    // every tick — re-fetching checks here every 45s was pure duplication
+    // (~80 calls/hr per open local-clone PR tab). `tab.pr_data.checks` is
+    // not read by any desktop code path (the desktop snapshot drops
+    // `checks`/`reviewers` when building `PrSnapshot`); only the TUI reads
+    // `pr.checks`, and the TUI never calls this function.
     let pr_data = if ctx.is_remote {
         github::gh_pr_overview_remote(
             &ctx.owner,
@@ -269,7 +279,7 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
             ctx.pr_number_for_overview.unwrap_or(ctx.pr_number),
         )
     } else {
-        github::gh_pr_overview(&ctx.repo_root, ctx.pr_number_for_overview)
+        github::gh_pr_overview_no_checks(&ctx.repo_root, ctx.pr_number_for_overview)
     };
 
     Ok(CommentSyncResult {
