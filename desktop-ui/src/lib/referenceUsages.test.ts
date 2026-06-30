@@ -259,6 +259,36 @@ describe("usageContext", () => {
     expect(out.map((l) => l.lineNum)).toEqual([1, 2, 3]);
   });
 
+  it("disambiguates collapsed-file usages (shared rowIdx -1) by filePath", () => {
+    // Two collapsed files: every line has rowIdx -1 (no rendered row) and they
+    // happen to share a line number. filePath must pick the right anchor.
+    const collapsed: UsageSource[] = [
+      { rowIdx: -1, filePath: "a.ts", lineNum: 1, text: "before a", hunkIdx: 0, lineIdx: 0 },
+      { rowIdx: -1, filePath: "a.ts", lineNum: 2, text: "foo in a", hunkIdx: 0, lineIdx: 1 },
+      { rowIdx: -1, filePath: "b.ts", lineNum: 1, text: "before b", hunkIdx: 0, lineIdx: 0 },
+      { rowIdx: -1, filePath: "b.ts", lineNum: 2, text: "foo in b", hunkIdx: 0, lineIdx: 1 },
+    ];
+    const out = usageContext(collapsed, collapsed[3], 1);
+    expect(out.map((l) => l.text)).toEqual(["before b", "foo in b"]);
+    expect(out.map((l) => l.isMatch)).toEqual([false, true]);
+  });
+
+  it("uses the (hunkIdx, lineIdx) anchor to pick the right hunk in a collapsed file", () => {
+    // Same collapsed file, two hunks, a line with identical text + lineNum in
+    // each (rowIdx -1 everywhere). The anchor must select the hunk-1 line, not
+    // the first text/lineNum match in hunk 0.
+    const dup: UsageSource[] = [
+      { rowIdx: -1, filePath: "a.ts", lineNum: 3, text: "ctx", hunkIdx: 0, lineIdx: 0 },
+      { rowIdx: -1, filePath: "a.ts", lineNum: 4, text: "foo()", hunkIdx: 0, lineIdx: 1 },
+      { rowIdx: -1, filePath: "a.ts", lineNum: 4, text: "foo()", hunkIdx: 1, lineIdx: 0 },
+      { rowIdx: -1, filePath: "a.ts", lineNum: 5, text: "after", hunkIdx: 1, lineIdx: 1 },
+    ];
+    const out = usageContext(dup, dup[2], 1);
+    // Context must come from hunk 1 (the "after" line), never hunk 0's "ctx".
+    expect(out.map((l) => l.text)).toEqual(["foo()", "after"]);
+    expect(out.map((l) => l.isMatch)).toEqual([true, false]);
+  });
+
   it("falls back to the usage line alone when it is not in the sources", () => {
     const out = usageContext(sources, { rowIdx: 99, filePath: "z.ts", lineNum: 7, text: "gone" });
     expect(out).toEqual([{ rowIdx: 99, lineNum: 7, text: "gone", isMatch: true }]);
