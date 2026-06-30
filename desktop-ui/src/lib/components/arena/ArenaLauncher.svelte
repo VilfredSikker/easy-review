@@ -5,6 +5,7 @@
   import { openDiffFilePicker } from "$lib/components/AiReviewFilesModal.svelte";
   import { arena, type ArenaStartConfig } from "$lib/stores/arena.svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { triageRecommendedPaths } from "$lib/triageSuggestions";
   import ArenaAgentPicker from "$lib/components/arena/ArenaAgentPicker.svelte";
   import type { AiProviderInfo, ReviewerInfo } from "$lib/types";
   import type { ArenaEstimate, ArenaLauncherScope, ArenaScope, ReviewerRef } from "$lib/types/arena";
@@ -276,6 +277,24 @@
         arenaLog("launcher: files selected", { count: paths.length });
       },
     });
+  }
+
+  /** Files Triage flagged for review — a one-click scope for the current diff. */
+  const triagePaths = $derived(triageRecommendedPaths(app.snapshot?.ai.triage));
+
+  const triageSelected = $derived(
+    scope === "selected" &&
+      triagePaths.length > 0 &&
+      selectedPaths.length === triagePaths.length &&
+      triagePaths.every((p) => selectedPaths.includes(p)),
+  );
+
+  function useTriageFiles() {
+    if (triagePaths.length === 0) return;
+    selectedPaths = [...triagePaths];
+    scope = "selected";
+    costApproved = false;
+    arenaLog("launcher: used triage files", { count: triagePaths.length });
   }
 
   function selectScope(next: ArenaLauncherScope) {
@@ -688,6 +707,24 @@
             {/each}
           </div>
         </div>
+
+        {#if triagePaths.length > 0}
+          <button
+            type="button"
+            aria-pressed={triageSelected}
+            onclick={useTriageFiles}
+            class="flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-[11px] transition-colors
+              {triageSelected
+              ? 'border-[var(--arena-periwinkle)] bg-[var(--arena-bg-2)]'
+              : 'border-[var(--arena-border)] bg-[var(--arena-bg-0)] hover:bg-[var(--arena-bg-2)]'}"
+          >
+            <span class="text-[var(--arena-info)]">◎</span>
+            <span class="font-medium text-[var(--arena-fg)]">
+              Review {triagePaths.length} triage-recommended file{triagePaths.length === 1 ? "" : "s"}
+            </span>
+            <span class="ml-auto text-[var(--arena-fg-subtle)]">from Triage</span>
+          </button>
+        {/if}
 
         {#if isArena || (isAgentsMode && agentArenaCount > 0)}
           <div
