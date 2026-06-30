@@ -1,1 +1,0 @@
-../../skills/er-summary/SKILL.md

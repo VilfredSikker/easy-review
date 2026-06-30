@@ -1,1 +1,0 @@
-../../skills/er-review-security/SKILL.md

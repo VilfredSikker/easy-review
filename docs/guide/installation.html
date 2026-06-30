@@ -60,11 +60,21 @@ cd ~/some/git/repo
 er</code></pre>
 
     <h2 id="desktop-app">Desktop app <span class="pill desktop">desktop</span></h2>
-    <div class="callout warn">
-      <span class="ico">▲</span>
-      <div><p>The desktop app is in active development and is <strong>not</strong> part of the published GitHub
-      releases yet — only the <code>er</code> terminal binary is released. To run it today, build it from source.</p></div>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>A prebuilt macOS bundle now ships with releases. As of <strong>v0.4.0</strong>, the
+      <a href="https://github.com/VilfredSikker/easy-review/releases" target="_blank" rel="noopener">Releases page</a>
+      includes an <strong>Apple&nbsp;Silicon</strong> <code>.dmg</code> (e.g. <code>Easy.Review_0.4.0_aarch64.dmg</code>).
+      Intel Macs, Linux, and Windows are not packaged yet — build those from source (below). The install script and
+      <code>cargo install</code> only cover the <code>er</code> terminal binary.</p></div>
     </div>
+
+    <h3>Install the macOS bundle <span class="pill desktop">Apple Silicon</span></h3>
+    <p>Download the <code>.dmg</code> from the
+    <a href="https://github.com/VilfredSikker/easy-review/releases" target="_blank" rel="noopener">latest release</a>,
+    open it, and drag <strong>Easy Review</strong> into Applications. The bundle is not yet code-signed, so the first
+    time you launch it macOS may block it as being from an unidentified developer — right-click the app and choose
+    <strong>Open</strong> to bypass Gatekeeper once.</p>
 
     <h3>Run in development</h3>
     <pre><code>git clone https://github.com/VilfredSikker/easy-review.git

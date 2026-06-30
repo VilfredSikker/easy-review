@@ -45,16 +45,16 @@ Base branch is auto-detected from upstream tracking, falling back to main/master
 
 ### AI Review Workflow
 
-1. Split your terminal — Claude Code on one side, `er` on the other
-2. Run `/er-review` in Claude Code to generate AI analysis
-3. Press `v` in `er` to cycle AI views — findings appear inline in the diff
-4. Leave questions (`q`) or comments (`c`) — AI responds on next `/er-review` run
+1. Open the **AI Hub** — TUI: press `a`; Desktop: <kbd>Cmd+A</kbd> (macOS) / <kbd>Ctrl+A</kbd> (Windows/Linux)
+2. Run a review — TUI: select **Review work**; Desktop: select **Run review** — findings appear inline once complete
+3. Press `v` / `V` in the TUI to cycle AI view modes; Desktop switches views in the sidebar
+4. Leave questions (`q`) or comments (`c`). In the TUI, open the Hub and select **Answer questions** to get AI responses. On Desktop, questions are managed in the Notes panel (no Hub action for answering)
 5. Watch mode is on by default — diffs refresh automatically as code changes
 
 ## Features
 
 - **Live watch mode** — Auto-refreshes on file edits, staging, and commits. Reviewed files auto-unmark when their diff changes.
-- **AI-powered review** — `/er-review` generates per-file risk levels, inline findings, and a review checklist. Four view modes: Default, Overlay, Side Panel, AI Review.
+- **AI-powered review** — Open the **AI Hub** (`a` / <kbd>Cmd+A</kbd>) to run a full review (TUI: **Review work** / Desktop: **Run review**), a fast **Triage branch** scan, one of eight **Specialized review** lenses (Security, Performance, Reliability, Testing, API/Contracts, Patterns, Simplifying, Mentorship), or a **Professor** session for learning insights. Generates per-file risk levels, inline findings, and a review checklist. Four AI view modes: Default, Overlay, Side Panel, AI Review.
 - **Two comment types** — Personal questions (`q`/`Q`, yellow) for your own notes, and GitHub comments (`c`/`C`, cyan) for PR discussions. Reply with `r`, delete with `d`.
 - **GitHub PR sync** — Pull review comments with `G`, push yours back with `P`. Two-way sync via `gh` CLI.
 - **Six diff modes** — Branch diff (`1`), unstaged (`2`), staged (`3`), commit history (`4`), merge conflicts (`5`), hidden/ignored files (`6`). Sort by recency with `Shift+R`.
@@ -226,13 +226,13 @@ Filenames are the same in managed storage and repo-local `.er/`:
 
 | File | Written by | Purpose |
 |------|------------|---------|
-| `review.json` | `/er-review` | Per-file risk levels, inline findings |
-| `order.json` | `/er-review` | Suggested review order |
-| `checklist.json` | `/er-review` | Review checklist items |
-| `summary.md` | `/er-summary` | Markdown summary of changes |
-| `triage.json` | `/er-triage` | Fast branch scan / routing |
-| `professor.json` | `/er-professor` | Learning / teaching insights |
-| `experts/*.json` | `/er-review-*` experts | Domain-specific expert findings |
+| `review.json` | AI Hub: **Run review** | Per-file risk levels, inline findings |
+| `order.json` | AI Hub: **Run review** | Suggested review order |
+| `checklist.json` | AI Hub: **Run review** | Review checklist items |
+| `summary.md` | AI Hub: **Run review** (TUI also has standalone **Generate summary**) | Markdown summary of changes |
+| `triage.json` | AI Hub: **Triage branch** | Fast branch scan / routing |
+| `professor.json` | AI Hub: **Professor** | Learning / teaching insights |
+| `experts/*.json` | AI Hub: **Specialized review** | Domain-specific expert findings |
 | `questions.json` | `er` (`q`/`Q`) | Personal review questions |
 | `github-comments.json` | `er` (`c`/`C`) | GitHub PR comments |
 | `session.json` | `er` | Session metadata |
@@ -240,7 +240,7 @@ Filenames are the same in managed storage and repo-local `.er/`:
 
 Each JSON sidecar stores a SHA-256 `diff_hash` of the diff it was generated against. When the diff changes, AI data is dimmed with a stale warning.
 
-Claude Code skills in this repo still document output as `.er/<file>` relative to the repo; with default managed storage, run reviews through `er`’s agent commands (desktop/TUI) or use `ER_REPO_LOCAL=1` so skill output lands where `er` reads it.
+The AI Hub (TUI: `a` / Desktop: <kbd>Cmd+A</kbd>) writes all review artifacts directly to managed storage — no manual steps needed. If you use external tools that write to `<repo>/.er/` in the working tree, set `ER_REPO_LOCAL=1` so `er` reads from there instead, or import via TUI `I` / Desktop **Import local review files**.
 
 ## Development
 

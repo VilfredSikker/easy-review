@@ -1,1 +1,0 @@
-../../skills/er-checklist/SKILL.md

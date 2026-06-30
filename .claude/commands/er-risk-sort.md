@@ -1,1 +1,0 @@
-../../skills/er-risk-sort/SKILL.md

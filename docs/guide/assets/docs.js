@@ -24,7 +24,7 @@
       { file: 'github.html', title: 'GitHub & Pull Requests' },
       { file: 'configuration.html', title: 'Configuration' },
       { file: 'storage.html', title: 'Review Storage' },
-      { file: 'skills.html', title: 'Claude Code Skills' }
+      { file: 'skills.html', title: 'AI Hub Actions' }
     ]},
     { section: 'Terminal UI (er)', pages: [
       { file: 'tui.html', title: 'Overview' },

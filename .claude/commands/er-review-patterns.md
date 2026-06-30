@@ -1,1 +1,0 @@
-../../skills/er-review-patterns/SKILL.md

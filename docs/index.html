@@ -446,8 +446,8 @@
       <!-- Install command -->
       <div class="fade-up fade-up-4 inline-flex items-center gap-3 bg-surface border border-border rounded-lg px-5 py-3 font-mono text-sm mb-4">
         <span class="text-text-muted">$</span>
-        <span class="text-text">cargo install --git https://github.com/VilfredSikker/easy-review</span>
-        <button onclick="navigator.clipboard.writeText('cargo install --git https://github.com/VilfredSikker/easy-review');this.textContent='✓';setTimeout(()=>this.textContent='⎘',1500)" class="text-text-muted hover:text-accent transition cursor-pointer ml-1" title="Copy">⎘</button>
+        <span class="text-text">cargo install --git https://github.com/VilfredSikker/easy-review er-tui</span>
+        <button onclick="navigator.clipboard.writeText('cargo install --git https://github.com/VilfredSikker/easy-review er-tui');this.textContent='✓';setTimeout(()=>this.textContent='⎘',1500)" class="text-text-muted hover:text-accent transition cursor-pointer ml-1" title="Copy">⎘</button>
       </div>
 
       <!-- Secondary CTAs -->
@@ -1062,7 +1062,7 @@
           <span class="font-mono text-xs text-orange uppercase tracking-widest">AI review</span>
           <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">AI reads the diff<br>so you don't have<br>to guess</h2>
           <p class="text-text-dim leading-relaxed mb-6">
-            Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code. Risk ratings and hunk-level findings appear inline. Press <span class="keycap">v</span> to cycle AI views — from a plain diff, to findings inline, to a side panel with the summary and risk breakdown. Run <span class="font-mono text-accent text-sm">/er-questions</span> standalone to get answers to your private questions without a full review.
+            Open the AI Hub — press <span class="keycap">a</span> in the TUI or <kbd class="keycap">Cmd+A</kbd> in the desktop app — and run <strong class="text-text">Run review</strong>. Risk ratings and hunk-level findings appear inline. Press <span class="keycap">v</span> to cycle AI views — from a plain diff, to findings inline, to a side panel with the summary and risk breakdown. To get answers to your private questions without a full review, open the Hub and choose <strong class="text-text">Answer questions</strong> (TUI only; questions are managed in the Notes panel in the desktop app).
           </p>
           <ul class="space-y-3 text-sm text-text-dim mb-7">
             <li class="flex gap-3">
@@ -1423,8 +1423,8 @@
 
         <div class="timeline-step" style="transition-delay: 0ms;">
           <div class="timeline-node"><span class="font-mono text-xs text-text-muted">1</span></div>
-          <h3 class="font-body font-500 text-base mb-1">Split your terminal</h3>
-          <p class="text-text-dim text-sm leading-relaxed">Claude Code on the left, <span class="font-mono text-accent text-sm">er</span> on the right. Works with Ghostty, tmux, zellij — whatever you already use.</p>
+          <h3 class="font-body font-500 text-base mb-1">Keep <span class="font-mono text-accent text-sm">er</span> beside your editor</h3>
+          <p class="text-text-dim text-sm leading-relaxed">Run <span class="font-mono text-accent text-sm">er</span> in a split pane or a separate window alongside your editor. Works with Ghostty, tmux, zellij — whatever you already use.</p>
         </div>
 
         <div class="timeline-step" style="transition-delay: 200ms;">
@@ -1435,14 +1435,14 @@
 
         <div class="timeline-step" style="transition-delay: 400ms;">
           <div class="timeline-node key"><span class="font-mono text-xs text-accent font-bold">3</span></div>
-          <h3 class="font-body font-500 text-base mb-1">Run <span class="font-mono text-accent text-sm">/er-review</span> in Claude Code</h3>
-          <p class="text-text-dim text-sm leading-relaxed">Risk ratings, hunk-level findings, and a review checklist appear inline. Press <span class="keycap">v</span> to cycle how much AI context is shown — from a plain diff to findings inline to a side panel.</p>
+          <h3 class="font-body font-500 text-base mb-1">Run a review from the AI Hub</h3>
+          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">a</span> (TUI) or <kbd class="keycap">Cmd+A</kbd> (desktop) to open the AI Hub, then choose <strong class="text-text">Run review</strong>. Risk ratings, hunk-level findings, and a review checklist appear inline. Press <span class="keycap">v</span> to cycle how much AI context is shown — from a plain diff to findings inline to a side panel.</p>
         </div>
 
         <div class="timeline-step" style="transition-delay: 600ms;">
           <div class="timeline-node"><span class="font-mono text-xs text-text-muted">4</span></div>
           <h3 class="font-body font-500 text-base mb-1">Comment and iterate</h3>
-          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">c</span> for GitHub comments or <span class="keycap">q</span> for private questions on any line. Cycle with <span class="keycap">v</span> to a side panel for the AI summary and PR overview alongside your diff. Re-run <span class="font-mono text-accent text-sm">/er-review</span> — the AI reads your questions and updates its analysis.</p>
+          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">c</span> for GitHub comments or <span class="keycap">q</span> for private questions on any line. Cycle with <span class="keycap">v</span> to a side panel for the AI summary and PR overview alongside your diff. Re-run the review from the AI Hub (<span class="keycap">a</span> → <strong class="text-text">Run review</strong> in the TUI, or <kbd class="keycap">Cmd+A</kbd> → <strong class="text-text">Run review</strong> in the desktop app) — the AI reads your questions and updates its analysis.</p>
         </div>
 
         <div class="timeline-step" style="transition-delay: 800ms;">
@@ -1479,7 +1479,7 @@
         <div class="p-5 font-mono text-sm space-y-3">
           <div>
             <span class="text-text-muted">$</span>
-            <span class="text-text ml-2">cargo install --git https://github.com/VilfredSikker/easy-review</span>
+            <span class="text-text ml-2">cargo install --git https://github.com/VilfredSikker/easy-review er-tui</span>
           </div>
           <div class="text-text-muted text-xs">
             # Installs the `er` binary to ~/.cargo/bin

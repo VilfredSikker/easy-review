@@ -1,1 +1,0 @@
-../../skills/er-triage/SKILL.md
