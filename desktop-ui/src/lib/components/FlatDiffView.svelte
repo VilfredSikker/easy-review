@@ -232,6 +232,15 @@
     untrack(() => diffFileCollapse.clear());
   });
 
+  // Clear the reference highlight when the diff context changes (tab/branch/PR/
+  // mode). The store is a global singleton, so without this its query — and the
+  // ruler marks derived from it — would persist into the next diff, e.g. stale
+  // scroll-gutter marks carrying over when switching between PRs.
+  $effect(() => {
+    snapshotKey;
+    untrack(() => refHighlight.clear());
+  });
+
   // ── D10 measured-height overlay ───────────────────────────────────────────
   let overlayHeights = $state(new Map<string, number>());
   let overlaySerial = $state(0);
