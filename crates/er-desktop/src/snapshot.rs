@@ -1488,11 +1488,11 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
                         reason: r.reason.clone(),
                     })
                     .collect();
+                // Reuse `make_file` for the field copy, then swap in the
+                // diff-filtered/deduped related set (single construction site).
                 files.push(TourFileRef {
-                    path: f.path.clone(),
-                    reason: f.reason.clone(),
-                    finding_ids: f.finding_ids.clone(),
                     related,
+                    ..make_file(f)
                 });
             }
             if files.is_empty() {
@@ -1538,8 +1538,19 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
             });
         }
     } else {
+        // Unstaged/Staged/History show a different diff than the branch tour, so
+        // the tour's related metadata can't be validated against it. Drop related
+        // here (only `available`/pillar-count is consumed in these modes) so
+        // `count_total` isn't inflated by files absent from the visible diff.
         for p in tour.ordered_pillars() {
-            let files: Vec<TourFileRef> = p.files.iter().map(&make_file).collect();
+            let files: Vec<TourFileRef> = p
+                .files
+                .iter()
+                .map(|f| TourFileRef {
+                    related: Vec::new(),
+                    ..make_file(f)
+                })
+                .collect();
             let reviewed_count = count_reviewed(&files);
             let total_count = count_total(&files);
             pillars.push(PillarSnapshot {

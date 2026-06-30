@@ -606,8 +606,14 @@ fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 "  "
             };
-            let indent = if is_related { "     ↳ " } else { "   " };
-            let name = shorten_path(&fd.path, inner_width.saturating_sub(indent.len() + 3));
+            // `indent_cols` is the display width (not byte length — "↳" is a
+            // 3-byte, 1-column glyph, so `indent.len()` would over-truncate).
+            let (indent, indent_cols) = if is_related {
+                ("     ↳ ", 7)
+            } else {
+                ("   ", 3)
+            };
+            let name = shorten_path(&fd.path, inner_width.saturating_sub(indent_cols + 3));
             let fstyle = if is_file_selected {
                 ratatui::style::Style::default().fg(styles::BRIGHT())
             } else if tab.reviewed.contains_key(&fd.path) || is_related {

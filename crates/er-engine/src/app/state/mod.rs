@@ -3646,28 +3646,40 @@ impl TabState {
         let mut used: HashSet<String> = HashSet::new();
 
         // Push a diff file into the flat tour list once. `related` rows render
-        // indented under the primary file they belong to.
+        // indented under the primary file they belong to. Returns whether a row
+        // was pushed (false when the path is absent from the diff or already used).
         let push_file = |files: &mut Vec<DiffFile>,
                          file_is_related: &mut Vec<bool>,
                          used: &mut HashSet<String>,
                          path: &str,
-                         related: bool| {
+                         related: bool|
+         -> bool {
             if used.contains(path) {
-                return;
+                return false;
             }
             if let Some(df) = self.files.iter().find(|f| f.path == path) {
                 files.push(df.clone());
                 file_is_related.push(related);
                 used.insert(path.to_string());
+                return true;
             }
+            false
         };
 
         for p in &ordered {
             let start = files.len();
             for tf in &p.files {
-                push_file(&mut files, &mut file_is_related, &mut used, &tf.path, false);
-                for r in &tf.related {
-                    push_file(&mut files, &mut file_is_related, &mut used, &r.path, true);
+                // Only nest a file's related items when the primary itself is in
+                // this pillar; otherwise an orphaned `↳` row with no parent would
+                // appear. A related file whose primary is absent falls through to
+                // the "Other changes" pillar as a standalone row — matching the
+                // desktop snapshot (`build_tour_snapshot`).
+                let pushed_primary =
+                    push_file(&mut files, &mut file_is_related, &mut used, &tf.path, false);
+                if pushed_primary {
+                    for r in &tf.related {
+                        push_file(&mut files, &mut file_is_related, &mut used, &r.path, true);
+                    }
                 }
             }
             let end = files.len();
@@ -9797,6 +9809,58 @@ mod tests {
         assert_ne!(p1, tour.pillar_of_file(3), "c.ts falls into Other changes");
         // Two pillars: "Core" + "Other changes".
         assert_eq!(tour.pillars.len(), 2);
+    }
+
+    /// A related file whose primary is NOT in the diff must not nest as an
+    /// orphaned `↳` row; it falls through to "Other changes" as a standalone
+    /// file, matching the desktop snapshot's ownership rule.
+    #[test]
+    fn rebuild_tour_state_drops_related_when_primary_absent() {
+        use crate::ai::{ErTour, TourFile, TourPillar, TourRelatedFile};
+
+        // Only the test file is in the diff; its primary `a.ts` is unchanged/absent.
+        let mut tab = make_test_tab(vec![test_diff_file("a.test.ts")]);
+        tab.ai.tour = Some(ErTour {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            title: String::new(),
+            overview: String::new(),
+            pillars: vec![TourPillar {
+                id: "p-1".to_string(),
+                title: "Core".to_string(),
+                description: String::new(),
+                order: 0,
+                importance: 0,
+                foundation: false,
+                files: vec![TourFile {
+                    path: "a.ts".to_string(),
+                    reason: String::new(),
+                    finding_ids: Vec::new(),
+                    related: vec![TourRelatedFile {
+                        path: "a.test.ts".to_string(),
+                        kind: "test".to_string(),
+                        reason: String::new(),
+                    }],
+                }],
+            }],
+        });
+
+        tab.rebuild_tour_state();
+        let tour = tab.tour.as_ref().expect("tour state built");
+
+        // a.test.ts is the only row, rendered standalone (not a nested child).
+        assert_eq!(
+            tour.files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.test.ts"]
+        );
+        assert_eq!(tour.file_is_related, vec![false]);
+        // The "Core" pillar has no in-diff files, so only "Other changes" shows.
+        assert_eq!(tour.pillars.len(), 1);
+        assert_eq!(tour.pillars[0].id, "__other__");
     }
 
     /// `mark_reviewed` / `unmark_reviewed` must resolve paths via

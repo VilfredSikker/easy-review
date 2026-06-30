@@ -105,8 +105,10 @@ export interface TourFileRef {
   path: string;
   reason: string;
   findingIds: string[];
-  /** Co-located files (tests/styles/stories/snapshots) nested under this row. */
-  related: RelatedFileRef[];
+  /** Co-located files (tests/styles/stories/snapshots) nested under this row.
+   *  Optional: absent on tour snapshots produced before this field existed —
+   *  every reader must guard with `?? []`. */
+  related?: RelatedFileRef[];
 }
 
 export interface PillarSnapshot {

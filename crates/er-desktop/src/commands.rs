@@ -983,13 +983,30 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
     let Some(tour) = tab.ai.tour.as_ref() else {
         return Vec::new();
     };
+    // The diff-present paths a pillar owns, using the SAME rule as the desktop
+    // snapshot (`build_tour_snapshot`): a primary that is in the diff, plus that
+    // primary's related files that are in the diff. A related file whose primary
+    // is absent is NOT owned here — it surfaces standalone in "Other changes",
+    // exactly as the snapshot places it. Keeping the two in sync is what lets a
+    // pillar's "Review all" reach 100%.
+    let owned = |p: &er_engine::ai::TourPillar| -> Vec<String> {
+        let mut out = Vec::new();
+        for f in &p.files {
+            if !diff_paths.contains(f.path.as_str()) {
+                continue;
+            }
+            out.push(f.path.clone());
+            for r in &f.related {
+                if diff_paths.contains(r.path.as_str()) {
+                    out.push(r.path.clone());
+                }
+            }
+        }
+        out
+    };
     if pillar_id == "__other__" {
-        // A file is "assigned" if it is any pillar's primary or related file.
-        let assigned: std::collections::HashSet<&str> = tour
-            .pillars
-            .iter()
-            .flat_map(|p| p.all_file_paths())
-            .collect();
+        let assigned: std::collections::HashSet<String> =
+            tour.pillars.iter().flat_map(&owned).collect();
         return tab
             .active_diff_files()
             .iter()
@@ -1000,12 +1017,7 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
     tour.pillars
         .iter()
         .find(|p| p.id == pillar_id)
-        .map(|p| {
-            p.all_file_paths()
-                .map(|p| p.to_string())
-                .filter(|p| diff_paths.contains(p.as_str()))
-                .collect()
-        })
+        .map(&owned)
         .unwrap_or_default()
 }
 
