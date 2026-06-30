@@ -1159,9 +1159,15 @@
   });
   const usageLines = $derived(usageResult.lines);
 
+  /** Context window the Cmd+click popover reveals when a usage row is
+   *  expanded. Wider than the ruler-hover tooltip's compact peek so a
+   *  multi-line construct (a function definition, a block) shows its body
+   *  inline instead of just the signature's immediate neighbors. */
+  const POPOVER_CONTEXT_LINES = 8;
+
   /** Context lines around a usage (ruler hover popover, popover expansion). */
-  function contextForUsage(u: UsageLine): UsageContextLine[] {
-    return usageContext(usageSources, u);
+  function contextForUsage(u: UsageLine, contextLines?: number): UsageContextLine[] {
+    return usageContext(usageSources, u, contextLines);
   }
 
   /** First matched line at a ruler mark's row, with its surrounding context. */
@@ -1958,7 +1964,7 @@
       usages={usageLines}
       anchor={refHighlight.popoverAnchor}
       onJump={jumpToUsage}
-      getContext={contextForUsage}
+      getContext={(u) => contextForUsage(u, POPOVER_CONTEXT_LINES)}
     />
   {/if}
   </div>

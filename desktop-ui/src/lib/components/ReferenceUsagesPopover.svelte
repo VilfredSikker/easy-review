@@ -11,8 +11,10 @@
    *   (capped height) and horizontally (file-path headers and code previews
    *   are unwrappable single lines; the `min-w-full w-max` inner wrapper
    *   lets them extend past the popover width and scroll into view).
-   * - Each row has a chevron that expands ~2 adjacent context lines inline
-   *   under the row (match emphasized). Multiple rows can be expanded;
+   * - Each row has a chevron that expands a window of adjacent context lines
+   *   inline under the row (match emphasized) — wide enough to show a
+   *   referenced function's body, not just its signature. Multiple rows can be
+   *   expanded;
    *   expansion never affects keyboard navigation — arrows still move
    *   between usage rows and Enter still jumps.
    * - Esc closes the popover first (global handler in `keyboard.ts`); a
