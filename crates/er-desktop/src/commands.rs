@@ -423,28 +423,12 @@ pub fn kick_github_status_refresh(
 
 fn active_github_key(app: &App, state: &AppState) -> Option<(String, String, u64)> {
     let tab = app.tab();
-    if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-        return slug
-            .split_once('/')
-            .map(|(o, r)| (o.to_string(), r.to_string(), n));
-    }
-
-    let branch = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(&tab.current_branch)
-        .to_string();
-    state.pr_cache.lock().ok().and_then(|cache| {
-        cache.iter().find_map(|(slug, prs)| {
-            prs.iter()
-                .filter(|p| p.head_ref == branch)
-                .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-                .and_then(|p| {
-                    slug.split_once('/')
-                        .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-                })
-        })
-    })
+    // Prefer the tab's own PR number (remote or local PR tab) so the background
+    // gh-status fetch targets the PR that was actually opened, not an arbitrary
+    // head_ref match when a branch carries more than one open PR. Plain branch /
+    // working tabs fall back to head_ref matching inside the resolver.
+    let cache = state.pr_cache.lock().ok()?;
+    crate::snapshot::resolve_github_status_key(tab, &cache)
 }
 
 fn active_pr_author(

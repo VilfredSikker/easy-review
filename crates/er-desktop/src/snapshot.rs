@@ -674,6 +674,65 @@ pub struct Panels {
     pub right: bool,
 }
 
+/// Resolve the `(owner, repo, pr_number)` GitHub-status key for a tab.
+///
+/// The key drives both the live `github` card in the snapshot and the
+/// background `gh status` fetch. The resolution order matters:
+///
+/// 1. **Remote PR tab** — key directly off `remote_repo` + `pr_number`.
+/// 2. **Local PR tab** (`pr_number` set, no remote) — force the tab's OWN
+///    `pr_number` and resolve only the owner/repo slug from the PR-list cache.
+///    The slug is found by the matching PR number first, falling back to any PR
+///    on the viewed head branch. This is the fix for the "Branch view shows
+///    another PR" bug: a single head branch can have two open PRs (e.g. one
+///    targeting `main`, one targeting a stacked base), and matching purely by
+///    head_ref returned an arbitrary one — often not the PR that was opened.
+/// 3. **Plain branch / working tab** (no `pr_number`) — match the viewed
+///    branch's head_ref, preferring an OPEN PR.
+pub(crate) fn resolve_github_status_key(
+    tab: &TabState,
+    pr_cache: &HashMap<String, Vec<PrInfo>>,
+) -> Option<(String, String, u64)> {
+    // 1. Remote PR: slug + number directly.
+    if let (Some(slug), Some(number)) = (tab.remote_repo.as_ref(), tab.pr_number) {
+        return slug
+            .split_once('/')
+            .map(|(o, r)| (o.to_string(), r.to_string(), number));
+    }
+
+    let branch = tab
+        .local_branch_view
+        .as_deref()
+        .unwrap_or(&tab.current_branch);
+
+    // 2. Local PR tab: trust the tab's own pr_number; only resolve the slug.
+    if let Some(number) = tab.pr_number {
+        return pr_cache
+            .iter()
+            .find(|(_, prs)| prs.iter().any(|p| p.number == number))
+            .or_else(|| {
+                pr_cache
+                    .iter()
+                    .find(|(_, prs)| prs.iter().any(|p| p.head_ref == branch))
+            })
+            .and_then(|(slug, _)| {
+                slug.split_once('/')
+                    .map(|(o, r)| (o.to_string(), r.to_string(), number))
+            });
+    }
+
+    // 3. Plain branch / working tab: match by head_ref, prefer an OPEN PR.
+    pr_cache.iter().find_map(|(slug, prs)| {
+        prs.iter()
+            .filter(|p| p.head_ref == branch)
+            .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
+            .and_then(|p| {
+                slug.split_once('/')
+                    .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
+            })
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FileSnapshot {
     pub path: String,
@@ -1807,48 +1866,26 @@ fn build_snapshot_inner(
             .collect()
     };
 
-    // Resolve the active tab's GitHub status from the cache.
-    // For remote PR tabs: use remote_repo + pr_number directly.
-    // For working-tree / local-branch tabs: look up the current branch in pr_cache.
-    let github = if let (Some(slug), Some(number)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-        slug.split_once('/').and_then(|(o, r)| {
-            let key = (o.to_string(), r.to_string(), number);
+    // Resolve the active tab's GitHub status from the cache. The key prefers the
+    // tab's own PR number for PR tabs (remote or local) and only falls back to a
+    // head_ref match for plain branch/working tabs — see `resolve_github_status_key`.
+    // Matching purely by head_ref previously let a branch with two open PRs show
+    // an arbitrary one, so a freshly opened PR's Branch card could display a
+    // different PR entirely.
+    let github = pr_cache
+        .and_then(|pc| pc.lock().ok())
+        .and_then(|cache| resolve_github_status_key(tab, &cache))
+        .and_then(|key| {
             gh_status_cache
                 .and_then(|c| c.lock().ok())
                 .and_then(|g| g.get(&key).cloned())
         })
-    } else {
-        // Find a PR whose head_ref matches the viewed branch. Prefer open PRs,
-        // but keep merged/closed matches so the Sources card can show terminal
-        // PR state instead of looking disconnected.
-        let branch = tab
-            .local_branch_view
-            .as_deref()
-            .unwrap_or(&tab.current_branch);
-        let pr_key = pr_cache.and_then(|pc| pc.lock().ok()).and_then(|cache| {
-            cache.iter().find_map(|(slug, prs)| {
-                prs.iter()
-                    .filter(|p| p.head_ref == branch)
-                    .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-                    .and_then(|p| {
-                        slug.split_once('/')
-                            .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-                    })
-            })
+        .map(|mut status| {
+            if let Some(login) = gh_user.and_then(|g| g.lock().ok().and_then(|v| v.clone())) {
+                status.is_authored_by_me = status.author.eq_ignore_ascii_case(&login);
+            }
+            status
         });
-        pr_key.and_then(|(o, r, n)| {
-            let key = (o, r, n);
-            gh_status_cache
-                .and_then(|c| c.lock().ok())
-                .and_then(|g| g.get(&key).cloned())
-        })
-    }
-    .map(|mut status| {
-        if let Some(login) = gh_user.and_then(|g| g.lock().ok().and_then(|v| v.clone())) {
-            status.is_authored_by_me = status.author.eq_ignore_ascii_case(&login);
-        }
-        status
-    });
 
     // Detected PR number for the active branch — taken straight from the PR-list
     // cache (the same branch→PR match the sidebar badge uses). Unlike `github`,
@@ -3465,6 +3502,91 @@ mod tests {
         let pr_stale = compute_oid_staleness(Some("head2"), Some("head1"), "pr_head", "msg")
             .expect("differing oids must be stale");
         assert_eq!(pr_stale.kind, "pr_head");
+    }
+
+    fn pr_with(number: u64, head_ref: &str, state: &str) -> PrInfo {
+        let mut p = minimal_pr_info(number, "t");
+        p.head_ref = head_ref.to_string();
+        p.state = state.to_string();
+        p
+    }
+
+    /// A local PR tab (pr_number set, no remote) must key its GitHub status off
+    /// its OWN pr_number — even when the same head branch carries a second open
+    /// PR. Regression test for the "Branch view shows another PR entirely" bug.
+    #[test]
+    fn github_key_prefers_local_pr_number_over_head_ref_collision() {
+        let branch = "feature/shell-stores";
+        // One head branch, two OPEN PRs (e.g. targeting different bases).
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        cache.insert(
+            "octo/cat".to_string(),
+            vec![pr_with(1308, branch, "OPEN"), pr_with(117, branch, "OPEN")],
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some(branch.to_string());
+        tab.pr_number = Some(117);
+
+        let key = resolve_github_status_key(&tab, &cache);
+        assert_eq!(
+            key,
+            Some(("octo".to_string(), "cat".to_string(), 117)),
+            "must resolve the opened PR (#117), not the head_ref collision (#1308)"
+        );
+    }
+
+    /// Even if the tab's own PR isn't in the cache yet, the slug is recovered
+    /// from any PR on the head branch and the tab's number is forced.
+    #[test]
+    fn github_key_recovers_slug_when_own_pr_absent_from_cache() {
+        let branch = "feature/shell-stores";
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        cache.insert("octo/cat".to_string(), vec![pr_with(1308, branch, "OPEN")]);
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some(branch.to_string());
+        tab.pr_number = Some(117);
+
+        assert_eq!(
+            resolve_github_status_key(&tab, &cache),
+            Some(("octo".to_string(), "cat".to_string(), 117))
+        );
+    }
+
+    /// Remote PR tabs key straight off remote_repo + pr_number.
+    #[test]
+    fn github_key_remote_tab_uses_remote_repo() {
+        let cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("octo/cat".to_string());
+        tab.pr_number = Some(42);
+
+        assert_eq!(
+            resolve_github_status_key(&tab, &cache),
+            Some(("octo".to_string(), "cat".to_string(), 42))
+        );
+    }
+
+    /// A plain branch tab (no pr_number) still matches by head_ref, preferring
+    /// an OPEN PR over a closed one.
+    #[test]
+    fn github_key_branch_tab_matches_head_ref_preferring_open() {
+        let branch = "feature/x";
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        cache.insert(
+            "octo/cat".to_string(),
+            vec![pr_with(10, branch, "CLOSED"), pr_with(11, branch, "OPEN")],
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some(branch.to_string());
+        tab.pr_number = None;
+
+        assert_eq!(
+            resolve_github_status_key(&tab, &cache),
+            Some(("octo".to_string(), "cat".to_string(), 11))
+        );
     }
 
     fn commit_info(hash: &str, subject: &str) -> er_engine::git::CommitInfo {
