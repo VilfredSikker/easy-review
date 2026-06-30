@@ -274,6 +274,42 @@ pub struct TourFile {
     /// Optional links to `review.json` finding ids surfaced for this file.
     #[serde(default)]
     pub finding_ids: Vec<String>,
+    /// Co-located files that belong with this one (its tests, styles, stories,
+    /// snapshots). They render nested beneath the parent in the guide instead of
+    /// as standalone rows, so a reviewer sees a file and its tests together.
+    #[serde(default)]
+    pub related: Vec<TourRelatedFile>,
+}
+
+/// A file co-located with a `TourFile` (a test, style, story, or snapshot for
+/// it). Rendered as an indented child row under its parent in the guide.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TourRelatedFile {
+    /// New-side path; matches `DiffFile.path`. Only rendered when present in the
+    /// current diff.
+    pub path: String,
+    /// Relationship kind: `"test"`, `"style"`, `"story"`, `"snapshot"`, or
+    /// `"other"`. Drives the small label shown next to the nested row.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl TourFile {
+    /// This file's path followed by its related (co-located) file paths, in
+    /// reading order.
+    pub fn all_paths(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.path.as_str()).chain(self.related.iter().map(|r| r.path.as_str()))
+    }
+}
+
+impl TourPillar {
+    /// All paths assigned to this pillar — each file followed by its co-located
+    /// related files — in reading order.
+    pub fn all_file_paths(&self) -> impl Iterator<Item = &str> {
+        self.files.iter().flat_map(|f| f.all_paths())
+    }
 }
 
 impl ErTour {
@@ -290,11 +326,12 @@ impl ErTour {
         pillars
     }
 
-    /// The pillar a given file path belongs to, if any.
+    /// The pillar a given file path belongs to, if any. Matches both a pillar's
+    /// primary files and their co-located related files.
     pub fn file_pillar(&self, path: &str) -> Option<&TourPillar> {
         self.pillars
             .iter()
-            .find(|p| p.files.iter().any(|f| f.path == path))
+            .find(|p| p.all_file_paths().any(|fp| fp == path))
     }
 }
 
@@ -2757,5 +2794,96 @@ mod tests {
         assert_eq!(ordered.len(), 1);
         assert_eq!(ordered[0].1, Some(0));
         assert_eq!(ordered[0].3, "f_some");
+    }
+
+    // ── Tour related (co-located) files ──
+
+    fn tour_file_with_related(path: &str, related: Vec<(&str, &str)>) -> TourFile {
+        TourFile {
+            path: path.to_string(),
+            reason: String::new(),
+            finding_ids: Vec::new(),
+            related: related
+                .into_iter()
+                .map(|(p, kind)| TourRelatedFile {
+                    path: p.to_string(),
+                    kind: kind.to_string(),
+                    reason: String::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn pillar_with(id: &str, files: Vec<TourFile>) -> TourPillar {
+        TourPillar {
+            id: id.to_string(),
+            title: id.to_string(),
+            description: String::new(),
+            order: 0,
+            importance: 0,
+            foundation: false,
+            files,
+        }
+    }
+
+    #[test]
+    fn tour_file_all_paths_includes_related_in_order() {
+        let tf = tour_file_with_related(
+            "src/foo.ts",
+            vec![("src/foo.test.ts", "test"), ("src/foo.css", "style")],
+        );
+        let paths: Vec<&str> = tf.all_paths().collect();
+        assert_eq!(paths, vec!["src/foo.ts", "src/foo.test.ts", "src/foo.css"]);
+    }
+
+    #[test]
+    fn tour_pillar_all_file_paths_flattens_primaries_and_related() {
+        let pillar = pillar_with(
+            "p-1",
+            vec![
+                tour_file_with_related("a.ts", vec![("a.test.ts", "test")]),
+                tour_file_with_related("b.ts", vec![]),
+            ],
+        );
+        let paths: Vec<&str> = pillar.all_file_paths().collect();
+        assert_eq!(paths, vec!["a.ts", "a.test.ts", "b.ts"]);
+    }
+
+    #[test]
+    fn file_pillar_resolves_related_file_to_its_parent_pillar() {
+        let tour = ErTour {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            title: String::new(),
+            overview: String::new(),
+            pillars: vec![pillar_with(
+                "p-1",
+                vec![tour_file_with_related("a.ts", vec![("a.test.ts", "test")])],
+            )],
+        };
+        // Both the primary and its related file resolve to the same pillar.
+        assert_eq!(tour.file_pillar("a.ts").map(|p| p.id.as_str()), Some("p-1"));
+        assert_eq!(
+            tour.file_pillar("a.test.ts").map(|p| p.id.as_str()),
+            Some("p-1")
+        );
+        assert!(tour.file_pillar("missing.ts").is_none());
+    }
+
+    #[test]
+    fn tour_file_related_defaults_to_empty_when_absent() {
+        // Old tour.json without a `related` field still parses.
+        let json = r#"{"path": "a.ts", "reason": "r", "finding_ids": []}"#;
+        let tf: TourFile = serde_json::from_str(json).unwrap();
+        assert!(tf.related.is_empty());
+    }
+
+    #[test]
+    fn tour_related_file_kind_defaults_to_empty() {
+        let json = r#"{"path": "a.test.ts"}"#;
+        let r: TourRelatedFile = serde_json::from_str(json).unwrap();
+        assert_eq!(r.kind, "");
+        assert_eq!(r.reason, "");
     }
 }

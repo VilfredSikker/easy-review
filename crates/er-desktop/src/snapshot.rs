@@ -265,6 +265,19 @@ pub struct TourFileRef {
     pub path: String,
     pub reason: String,
     pub finding_ids: Vec<String>,
+    /// Co-located files (tests/styles/stories/snapshots) shown nested under this
+    /// row in the Guide. Only includes related files present in the diff.
+    pub related: Vec<RelatedFileRef>,
+}
+
+/// A co-located related file nested under a `TourFileRef` (wire form).
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedFileRef {
+    pub path: String,
+    /// `"test"`, `"style"`, `"story"`, `"snapshot"`, or `"other"`.
+    pub kind: String,
+    pub reason: String,
 }
 
 /// One tour pillar (wire form) with per-pillar review progress.
@@ -1427,13 +1440,27 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
         path: f.path.clone(),
         reason: f.reason.clone(),
         finding_ids: f.finding_ids.clone(),
+        related: f
+            .related
+            .iter()
+            .map(|r| RelatedFileRef {
+                path: r.path.clone(),
+                kind: r.kind.clone(),
+                reason: r.reason.clone(),
+            })
+            .collect(),
     };
+    // A pillar's review progress counts each primary file plus its co-located
+    // related files (they are real diff files the reviewer steps through).
     let count_reviewed = |files: &[TourFileRef]| {
         files
             .iter()
-            .filter(|f| tab.reviewed.contains_key(&f.path))
+            .flat_map(|f| std::iter::once(&f.path).chain(f.related.iter().map(|r| &r.path)))
+            .filter(|p| tab.reviewed.contains_key(p.as_str()))
             .count()
     };
+    let count_total =
+        |files: &[TourFileRef]| files.iter().map(|f| 1 + f.related.len()).sum::<usize>();
 
     let mut pillars: Vec<PillarSnapshot> = Vec::new();
 
@@ -1448,13 +1475,31 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
                 if !diff_paths.contains(f.path.as_str()) || !seen.insert(f.path.clone()) {
                     continue;
                 }
-                files.push(make_file(f));
+                // Keep only related files present in the diff and not already
+                // shown elsewhere; mark them seen so they don't also land in a
+                // later pillar or the "Other changes" bucket.
+                let related: Vec<RelatedFileRef> = f
+                    .related
+                    .iter()
+                    .filter(|r| diff_paths.contains(r.path.as_str()) && seen.insert(r.path.clone()))
+                    .map(|r| RelatedFileRef {
+                        path: r.path.clone(),
+                        kind: r.kind.clone(),
+                        reason: r.reason.clone(),
+                    })
+                    .collect();
+                files.push(TourFileRef {
+                    path: f.path.clone(),
+                    reason: f.reason.clone(),
+                    finding_ids: f.finding_ids.clone(),
+                    related,
+                });
             }
             if files.is_empty() {
                 continue;
             }
             let reviewed_count = count_reviewed(&files);
-            let total_count = files.len();
+            let total_count = count_total(&files);
             pillars.push(PillarSnapshot {
                 id: p.id.clone(),
                 title: p.title.clone(),
@@ -1475,11 +1520,12 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
                 path: f.path.clone(),
                 reason: String::new(),
                 finding_ids: Vec::new(),
+                related: Vec::new(),
             })
             .collect();
         if !other.is_empty() {
             let reviewed_count = count_reviewed(&other);
-            let total_count = other.len();
+            let total_count = count_total(&other);
             pillars.push(PillarSnapshot {
                 id: "__other__".to_string(),
                 title: "Other changes".to_string(),
@@ -1495,7 +1541,7 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
         for p in tour.ordered_pillars() {
             let files: Vec<TourFileRef> = p.files.iter().map(&make_file).collect();
             let reviewed_count = count_reviewed(&files);
-            let total_count = files.len();
+            let total_count = count_total(&files);
             pillars.push(PillarSnapshot {
                 id: p.id.clone(),
                 title: p.title.clone(),

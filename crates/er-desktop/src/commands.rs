@@ -984,10 +984,11 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
         return Vec::new();
     };
     if pillar_id == "__other__" {
+        // A file is "assigned" if it is any pillar's primary or related file.
         let assigned: std::collections::HashSet<&str> = tour
             .pillars
             .iter()
-            .flat_map(|p| p.files.iter().map(|f| f.path.as_str()))
+            .flat_map(|p| p.all_file_paths())
             .collect();
         return tab
             .active_diff_files()
@@ -1000,9 +1001,8 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
         .iter()
         .find(|p| p.id == pillar_id)
         .map(|p| {
-            p.files
-                .iter()
-                .map(|f| f.path.clone())
+            p.all_file_paths()
+                .map(|p| p.to_string())
                 .filter(|p| diff_paths.contains(p.as_str()))
                 .collect()
         })

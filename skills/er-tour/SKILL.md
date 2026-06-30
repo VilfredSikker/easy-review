@@ -62,8 +62,16 @@ pipe into `shasum` — use file-based hashing).
    - Each pillar gets a short `title`, a 1–3 sentence markdown `description`
      (what it is and why review it here), and its `files` in reading order with
      a one-line `reason` each.
-   - Every changed file should appear in exactly one pillar. Group trivial
-     files (lock files, generated, config) into a single low-importance pillar.
+   - **Co-locate tests and supporting files.** When a changed file has an
+     accompanying test, style, story, or snapshot in the diff (`foo.ts` +
+     `foo.test.ts`/`foo.spec.ts`, `foo.css`/`foo.scss`, `foo.stories.ts`,
+     `__snapshots__/foo.snap`), attach it to that source file's `related` array
+     with a `kind` (`test`/`style`/`story`/`snapshot`/`other`) instead of listing
+     it as a separate `files` entry. The reviewer then sees each file with its
+     tests nested beneath it.
+   - Every changed file should appear exactly once — as a pillar `files` entry
+     **or** as one file's `related` child. Group trivial files (lock files,
+     generated, config) into a single low-importance pillar.
 4. Writes `.er/tour.json` (atomic) and persists a cached copy at
    `.er/reviews/<branch>/<commit>/tour.json`.
 
@@ -133,7 +141,14 @@ Print a one-line summary: "Tour: N pillars, M files".
       "importance": 90,
       "foundation": true,
       "files": [
-        {"path": "src/auth/store.rs", "reason": "Defines TokenStore", "finding_ids": ["f-1"]}
+        {
+          "path": "src/auth/store.rs",
+          "reason": "Defines TokenStore",
+          "finding_ids": ["f-1"],
+          "related": [
+            {"path": "src/auth/store.test.ts", "kind": "test", "reason": "TokenStore tests"}
+          ]
+        }
       ]
     },
     {
@@ -160,6 +175,12 @@ Field notes:
   not present in the current diff are skipped by the UI; unassigned diff files
   fall into an "Other changes" pillar automatically.
 - `files[].finding_ids` — optional ids from `review.json` (omit if no review).
+- `files[].related` — optional co-located files (tests/styles/stories/snapshots)
+  for this file, each with `path`, `kind`
+  (`test`/`style`/`story`/`snapshot`/`other`), and an optional `reason`. They
+  render nested under the parent file in the guide. Only related files present
+  in the diff are shown; a related file must not also appear as a primary
+  `files` entry.
 
 ## Guidelines
 
@@ -167,7 +188,8 @@ Field notes:
 - Titles under ~40 characters (they render in the pillar nav).
 - Descriptions explain *why review this here* and *what to look for*, not a
   restatement of the diff.
-- Every changed file appears in exactly one pillar.
+- Every changed file appears exactly once — as a pillar `files` entry or as one
+  file's `related` child (its test/style/story/snapshot).
 
 ## .gitignore
 
