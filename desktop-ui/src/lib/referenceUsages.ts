@@ -29,6 +29,13 @@ export interface UsageSource {
    * the underlying file, so their lines are not real context for each other.
    */
   hunkIdx?: number;
+  /**
+   * Line index within its hunk, when known. Together with `filePath`/`hunkIdx`
+   * this is a stable anchor that survives collapse: a usage in a collapsed
+   * file has no rendered row (`rowIdx === -1`), so jumping re-resolves the row
+   * from this anchor after the file is expanded.
+   */
+  lineIdx?: number;
 }
 
 /** A line with at least one word-boundary match of the active identifier. */
@@ -184,10 +191,12 @@ export interface UsageContextLine {
  * on screen but not in the file. At the first/last line of a hunk or of the
  * whole list, fewer lines are returned.
  *
- * The usage is located by `rowIdx` + `text` + `lineNum` (split rows can share
- * a `rowIdx` between their left and right sides). When it cannot be found
- * (e.g. the diff refreshed underneath a stale reference), the usage line
- * itself is returned alone so callers always have something to render.
+ * The usage is located by `filePath` + `rowIdx` + `text` + `lineNum` (split
+ * rows can share a `rowIdx` between their left and right sides; collapsed-file
+ * usages all share `rowIdx === -1`, so `filePath` disambiguates them). When it
+ * cannot be found (e.g. the diff refreshed underneath a stale reference), the
+ * usage line itself is returned alone so callers always have something to
+ * render.
  */
 export function usageContext(
   sources: UsageSource[],
@@ -195,7 +204,11 @@ export function usageContext(
   contextLines = 2,
 ): UsageContextLine[] {
   const idx = sources.findIndex(
-    (s) => s.rowIdx === usage.rowIdx && s.text === usage.text && s.lineNum === usage.lineNum,
+    (s) =>
+      s.filePath === usage.filePath &&
+      s.rowIdx === usage.rowIdx &&
+      s.text === usage.text &&
+      s.lineNum === usage.lineNum,
   );
   if (idx === -1) {
     return [{ rowIdx: usage.rowIdx, lineNum: usage.lineNum, text: usage.text, isMatch: true }];

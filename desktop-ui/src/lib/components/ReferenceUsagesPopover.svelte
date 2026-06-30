@@ -2,11 +2,13 @@
   /**
    * Cmd+click usages popover (issue #69) — a fixed-position panel anchored
    * near the clicked token, listing every word-boundary usage of the
-   * highlighted identifier across the rendered diff, grouped by file.
+   * highlighted identifier across the whole diff (collapsed files included),
+   * grouped by file.
    *
-   * - Click a usage (or ArrowUp/Down + Enter) to jump via `onJump` — the
-   *   exact same shared jump (`jumpToUsage` in FlatDiffView) a ruler-mark
-   *   click uses, so the scroll + `.flash` ring are identical — then close.
+   * - Click a usage (or ArrowUp/Down + Enter) to jump via `onJump`
+   *   (`jumpToUsageLine` in FlatDiffView), which expands the file first when
+   *   it's collapsed, then routes through the same shared scroll + `.flash`
+   *   ring a ruler-mark click uses — then close.
    * - Long one-line content never truncates: the list scrolls vertically
    *   (capped height) and horizontally (file-path headers and code previews
    *   are unwrappable single lines; the `min-w-full w-max` inner wrapper
@@ -36,7 +38,9 @@
     identifier: string;
     usages: UsageLine[];
     anchor: { x: number; y: number } | null;
-    onJump: (rowIdx: number) => void;
+    /** Jump to a usage. The parent expands the file first when it's collapsed,
+     *  so the whole usage (with its stable anchor) is handed over, not a row. */
+    onJump: (usage: UsageLine) => void;
     /** Surrounding lines for a usage (shown when a row is expanded). */
     getContext: (u: UsageLine) => UsageContextLine[];
   }
@@ -99,7 +103,7 @@
     // to remove). The jump itself is the same shared call both entry points
     // bind — identical scroll centering and `.flash` ring.
     refHighlight.closePopover();
-    onJump(u.rowIdx);
+    onJump(u);
   }
 
   async function move(delta: number): Promise<void> {

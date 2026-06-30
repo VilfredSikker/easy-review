@@ -1093,45 +1093,46 @@
   // popover lists them. Only computed while a highlight is active.
   const RULER_MARK_HEIGHT_PX = 3;
 
+  // Collect usage sources from the FULL diff — every file, including ones the
+  // user has collapsed — so the references popover reflects the whole diff, not
+  // just what is currently rendered. Each line's `rowIdx` is its position in
+  // the live (post-collapse) render model, or -1 when its file is collapsed
+  // (and thus has no rendered row); the (filePath, hunkIdx, lineIdx) anchor
+  // lets `jumpToUsageLine` expand the file and re-resolve the row on click.
   function collectUsageSources(): UsageSource[] {
-    const rows = crossFileModel.rows;
+    // Map each rendered line's LineSnapshot to its current row index. Using
+    // object identity covers both unified rows and split rows (whose left/right
+    // sides reuse the same LineSnapshot objects from the hunk).
+    const lineToRow = new Map<LineSnapshot, number>();
     const byPath = new Map(files.map((f) => [f.path, f]));
-    const out: UsageSource[] = [];
+    const rows = crossFileModel.rows;
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (row.type === "content-unified") {
         const line = byPath.get(row.filePath)?.hunks[row.hunkIdx]?.lines[row.lineIdx];
-        if (line && line.kind !== "fold") {
-          out.push({
-            rowIdx: i,
-            filePath: row.filePath,
-            lineNum: line.new_num ?? line.old_num,
-            text: line.text,
-            hunkIdx: row.hunkIdx,
-          });
-        }
+        if (line) lineToRow.set(line, i);
       } else if (row.type === "content-split") {
         const sr =
           crossFileModel.splitRowsByFile.get(row.filePath)?.[row.hunkIdx]?.[row.splitRowIdx];
-        if (!sr) continue;
-        const { left, right } = sr;
-        if (left && left.kind !== "fold") {
+        if (sr?.left) lineToRow.set(sr.left, i);
+        if (sr?.right) lineToRow.set(sr.right, i);
+      }
+    }
+
+    const out: UsageSource[] = [];
+    for (const file of files) {
+      for (let h = 0; h < file.hunks.length; h++) {
+        const lines = file.hunks[h].lines;
+        for (let l = 0; l < lines.length; l++) {
+          const line = lines[l];
+          if (line.kind === "fold") continue;
           out.push({
-            rowIdx: i,
-            filePath: row.filePath,
-            lineNum: left.new_num ?? left.old_num,
-            text: left.text,
-            hunkIdx: row.hunkIdx,
-          });
-        }
-        // Context rows reuse the same LineSnapshot on both sides — count once.
-        if (right && right !== left && right.kind !== "fold") {
-          out.push({
-            rowIdx: i,
-            filePath: row.filePath,
-            lineNum: right.new_num ?? right.old_num,
-            text: right.text,
-            hunkIdx: row.hunkIdx,
+            rowIdx: lineToRow.get(line) ?? -1,
+            filePath: file.path,
+            lineNum: line.new_num ?? line.old_num,
+            text: line.text,
+            hunkIdx: h,
+            lineIdx: l,
           });
         }
       }
@@ -1139,16 +1140,29 @@
     return out;
   }
 
+  /** Current render-model row for a usage, re-resolved from its stable anchor
+   *  (filePath, hunkIdx, lineIdx). -1 when the line still has no rendered row
+   *  (file collapsed or not yet loaded). */
+  function resolveUsageRow(u: Pick<UsageSource, "filePath" | "hunkIdx" | "lineIdx">): number {
+    const match = usageSourcesAll.find(
+      (s) => s.filePath === u.filePath && s.hunkIdx === u.hunkIdx && s.lineIdx === u.lineIdx,
+    );
+    return match?.rowIdx ?? -1;
+  }
+
   /** Upper bound on collected matches — a one-letter Cmd+F query over a huge
    *  diff must not build an unbounded match list. */
   const SEARCH_MATCH_CAP = 5000;
 
-  // Flat line list in render order — shared by match collection and the
-  // context previews (ruler hover popover, popover row expansion). Only
-  // materialized while a highlight is active.
-  const usageSources = $derived.by((): UsageSource[] =>
+  // Flat line list, only materialized while a highlight is active.
+  // Full diff (all files, including collapsed) — drives the references popover
+  // and the context previews (popover row expansion, ruler hover).
+  const usageSourcesAll = $derived.by((): UsageSource[] =>
     refHighlight.identifier ? collectUsageSources() : [],
   );
+  // Rendered subset — drives the overview ruler and Cmd+F search, both of which
+  // can only scroll to a row that exists in the live render model.
+  const usageSources = $derived(usageSourcesAll.filter((s) => s.rowIdx >= 0));
 
   // Identifier highlights and Cmd+F queries share this pipeline; the store's
   // matchOptions switch between whole-word and substring/smart-case matching.
@@ -1159,15 +1173,25 @@
   });
   const usageLines = $derived(usageResult.lines);
 
+  // Popover usages span the whole diff (collapsed files included).
+  const usageLinesAll = $derived.by((): UsageLine[] => {
+    const ident = refHighlight.identifier;
+    if (!ident) return [];
+    return collectMatches(usageSourcesAll, ident, refHighlight.matchOptions, SEARCH_MATCH_CAP)
+      .lines;
+  });
+
   /** Context window the Cmd+click popover reveals when a usage row is
    *  expanded. Wider than the ruler-hover tooltip's compact peek so a
    *  multi-line construct (a function definition, a block) shows its body
    *  inline instead of just the signature's immediate neighbors. */
   const POPOVER_CONTEXT_LINES = 8;
 
-  /** Context lines around a usage (ruler hover popover, popover expansion). */
+  /** Context lines around a usage (ruler hover popover, popover expansion).
+   *  Resolved over the full-diff sources so context works for usages in
+   *  collapsed files too. */
   function contextForUsage(u: UsageLine, contextLines?: number): UsageContextLine[] {
-    return usageContext(usageSources, u, contextLines);
+    return usageContext(usageSourcesAll, u, contextLines);
   }
 
   /** First matched line at a ruler mark's row, with its surrounding context. */
@@ -1230,6 +1254,35 @@
     applyScrollTop(Math.max(0, top - viewportHeightPx / 2));
     await tick();
     requestAnimationFrame(() => flashRowEl(rowIdx));
+  }
+
+  /**
+   * Jump from a usage row in the references popover. A usage may live in a
+   * collapsed (or not-yet-loaded) file, which has no rendered row — expand and
+   * load it first, then re-resolve the row from the usage's stable anchor and
+   * route through the shared `jumpToUsage` so the scroll + flash are identical.
+   */
+  async function jumpToUsageLine(u: UsageLine): Promise<void> {
+    let rebuilt = false;
+    if (diffFileCollapse.isCollapsed(u.filePath)) {
+      diffFileCollapse.expand(u.filePath);
+      rebuilt = true;
+    }
+    const file = files.find((f) => f.path === u.filePath);
+    if (file?.is_lazy_stub) {
+      await requestLazyFiles([file.source_index]);
+      rebuilt = true;
+    }
+    if (rebuilt) {
+      // Let the model re-derive and the new rows lay out before reading offsets.
+      await tick();
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+    }
+    const rowIdx = rebuilt ? resolveUsageRow(u) : u.rowIdx;
+    if (rowIdx < 0) return;
+    await jumpToUsage(rowIdx);
   }
 
   // ── Cmd+F search navigation (PR #73) ──────────────────────────────────────
@@ -1961,9 +2014,9 @@
   {#if refHighlight.popoverOpen && refHighlight.identifier !== null}
     <ReferenceUsagesPopover
       identifier={refHighlight.identifier}
-      usages={usageLines}
+      usages={usageLinesAll}
       anchor={refHighlight.popoverAnchor}
-      onJump={jumpToUsage}
+      onJump={jumpToUsageLine}
       getContext={(u) => contextForUsage(u, POPOVER_CONTEXT_LINES)}
     />
   {/if}
