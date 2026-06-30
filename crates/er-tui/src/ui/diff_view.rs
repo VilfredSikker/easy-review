@@ -2196,6 +2196,19 @@ fn render_tour_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) 
                     .bg(file_header_bg),
             ),
         ];
+        // Mark co-located related files (tests/styles/…) with a "↳" so the
+        // nesting shown in the pillar list is also visible in the diff body.
+        if tour.file_is_related.get(file_idx).copied().unwrap_or(false) {
+            header_spans.insert(
+                1,
+                Span::styled(
+                    "↳ ",
+                    ratatui::style::Style::default()
+                        .fg(styles::DIM())
+                        .bg(file_header_bg),
+                ),
+            );
+        }
         if reviewed {
             header_spans.push(Span::styled(
                 "  ✓ reviewed",

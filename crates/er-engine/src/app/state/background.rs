@@ -43,7 +43,9 @@ impl BackgroundTaskTarget {
         )
     }
 
-    /// Human-readable label for UI ("branch-name", "owner/repo#123", etc.).
+    /// Human-readable label for the review *target* ("branch-name",
+    /// "owner/repo#123", etc.). This is the *where*, not the *what* — use
+    /// [`kind_label`] for the intent of the agent running against it.
     pub fn display_label(&self) -> String {
         if let (Some(slug), Some(n)) = (&self.remote_repo, self.pr_number) {
             return format!("{}#{}", slug, n);
@@ -52,6 +54,26 @@ impl BackgroundTaskTarget {
             self.repo_root.clone()
         } else {
             self.branch_label.clone()
+        }
+    }
+}
+
+/// Human-readable name for the *kind* of agent (the intent of the run) so
+/// concurrent tasks against the same target are distinguishable in the UI.
+/// Without this every agent on a branch shows the branch name and they look
+/// identical (e.g. a security pass and a professor pass running side by side).
+///
+/// Accepts the raw `BackgroundTask::kind` string: `"review"`/`"general"`,
+/// `"expert:<id>"`, `"professor"`, `"triage"`, or `"tour"`.
+pub fn kind_label(kind: &str) -> String {
+    match kind {
+        "" | "review" | "general" => "Review".to_string(),
+        "tour" => "Guide".to_string(),
+        other => {
+            // expert:<id>, professor, and triage all resolve through the
+            // shared finding-agent label map.
+            let id = other.strip_prefix("expert:").unwrap_or(other);
+            crate::ai::agent_label_for_category(id).to_string()
         }
     }
 }
@@ -154,7 +176,9 @@ impl BackgroundTaskSnapshot {
         Self {
             id: task.id.clone(),
             kind: task.kind.clone(),
-            label: task.target.display_label(),
+            // `label` is the agent's intent (what it's doing); `target_label`
+            // stays the branch/PR (where it's doing it) for secondary context.
+            label: kind_label(&task.kind),
             target_label: task.target.display_label(),
             scope: task.target.scope.clone(),
             repo_root: task.target.repo_root.clone(),
@@ -238,6 +262,37 @@ mod tests {
 
         let d = target("feat-a", "unstaged");
         assert_ne!(a, d);
+    }
+
+    #[test]
+    fn kind_label_shows_agent_intent() {
+        assert_eq!(kind_label("review"), "Review");
+        assert_eq!(kind_label("general"), "Review");
+        assert_eq!(kind_label(""), "Review");
+        assert_eq!(kind_label("tour"), "Guide");
+        assert_eq!(kind_label("professor"), "Professor");
+        assert_eq!(kind_label("triage"), "Triage");
+        assert_eq!(kind_label("expert:security"), "Security");
+        assert_eq!(kind_label("expert:performance"), "Performance");
+    }
+
+    #[test]
+    fn snapshot_label_is_intent_not_target() {
+        // Two agents on the same branch must produce distinct labels so the
+        // UI doesn't show the branch name twice.
+        let t = target("feat-a", "branch");
+        let sec = BackgroundTask::new("expert:security".to_string(), t.clone());
+        let prof = BackgroundTask::new("professor".to_string(), t.clone());
+
+        let sec_snap = BackgroundTaskSnapshot::from_task(&sec);
+        let prof_snap = BackgroundTaskSnapshot::from_task(&prof);
+
+        assert_eq!(sec_snap.label, "Security");
+        assert_eq!(prof_snap.label, "Professor");
+        assert_ne!(sec_snap.label, prof_snap.label);
+        // Target context is preserved separately.
+        assert_eq!(sec_snap.target_label, "feat-a");
+        assert_eq!(prof_snap.target_label, "feat-a");
     }
 
     #[test]

@@ -238,6 +238,10 @@ pub struct TourState {
     pub selected_pillar: usize,
     /// Flattened, pillar-ordered diff files for the whole tour.
     pub files: Vec<DiffFile>,
+    /// Per-`files` flag: `true` when this row is a co-located related file (a
+    /// test/style/story/snapshot nested under the preceding primary file).
+    /// Rendered indented in the pillar list. Always the same length as `files`.
+    pub file_is_related: Vec<bool>,
     /// `(start, end_exclusive)` index range into `files` for each pillar.
     pub pillar_file_ranges: Vec<(usize, usize)>,
     /// File navigation within `files`.
@@ -2916,6 +2920,48 @@ impl TabState {
     }
 
     /// Reload AI state from .er-* files (preserving current nav state)
+    /// Merge orphaned local GitHub comments (written to the branch bucket while a
+    /// tab had no `pr_number`) into the now-authoritative PR-bucket comments.
+    ///
+    /// Only `local` comments absent from the PR bucket (by id) are carried over;
+    /// `github`-sourced entries re-sync from GitHub and are never migrated.
+    /// Returns `true` when at least one comment was migrated, signalling the
+    /// caller to persist `pr_comments` and remove the orphan file.
+    fn migrate_orphaned_github_comments(
+        orphaned: Option<ai::ErGitHubComments>,
+        pr_comments: &mut Option<ai::ErGitHubComments>,
+    ) -> bool {
+        let orphaned = match orphaned {
+            Some(o) => o,
+            None => return false,
+        };
+        let to_migrate: Vec<ai::GitHubReviewComment> = orphaned
+            .comments
+            .into_iter()
+            .filter(|c| c.source == "local")
+            .collect();
+        if to_migrate.is_empty() {
+            return false;
+        }
+
+        let target = pr_comments.get_or_insert_with(|| ai::ErGitHubComments {
+            version: 1,
+            diff_hash: orphaned.diff_hash.clone(),
+            github: None,
+            comments: Vec::new(),
+        });
+
+        let mut migrated = false;
+        for comment in to_migrate {
+            if target.comments.iter().any(|c| c.id == comment.id) {
+                continue;
+            }
+            target.comments.push(comment);
+            migrated = true;
+        }
+        migrated
+    }
+
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         let er_dir = self.er_dir();
@@ -2933,10 +2979,31 @@ impl TabState {
             ) {
                 let gh_dir = self.github_comments_dir();
                 if gh_dir != er_dir {
+                    // `load_ai_state(er_dir)` may have loaded github comments from the
+                    // active (branch) bucket — these are orphans written while this tab
+                    // still had no `pr_number` (github_comments_dir() fell back to
+                    // er_dir then). The PR bucket is now authoritative, so migrate any
+                    // such local comments into it instead of discarding them.
+                    let orphaned = self.ai.github_comments.take();
                     let gh_path = std::path::Path::new(&gh_dir).join("github-comments.json");
-                    self.ai.github_comments = std::fs::read_to_string(&gh_path)
+                    let mut pr_comments = std::fs::read_to_string(&gh_path)
                         .ok()
                         .and_then(|c| serde_json::from_str::<ai::ErGitHubComments>(&c).ok());
+                    if Self::migrate_orphaned_github_comments(orphaned, &mut pr_comments) {
+                        if let Some(ref gc) = pr_comments {
+                            let _ = std::fs::create_dir_all(&gh_dir);
+                            if let Ok(json) = serde_json::to_string_pretty(gc) {
+                                let tmp = format!("{}.tmp", gh_path.to_string_lossy());
+                                let _ = std::fs::write(&tmp, json)
+                                    .and_then(|_| std::fs::rename(&tmp, &gh_path));
+                            }
+                        }
+                        // Drop the orphan file so the migration runs only once.
+                        let orphan_path =
+                            std::path::Path::new(&er_dir).join("github-comments.json");
+                        let _ = std::fs::remove_file(&orphan_path);
+                    }
+                    self.ai.github_comments = pr_comments;
                     self.ai.rebuild_comment_index();
                 }
             } else if self.ai.github_comments.take().is_some() {
@@ -3637,18 +3704,45 @@ impl TabState {
         let ordered = tour.ordered_pillars();
         let mut pillars: Vec<TourPillarView> = Vec::new();
         let mut files: Vec<DiffFile> = Vec::new();
+        let mut file_is_related: Vec<bool> = Vec::new();
         let mut ranges: Vec<(usize, usize)> = Vec::new();
         let mut used: HashSet<String> = HashSet::new();
+
+        // Push a diff file into the flat tour list once. `related` rows render
+        // indented under the primary file they belong to. Returns whether a row
+        // was pushed (false when the path is absent from the diff or already used).
+        let push_file = |files: &mut Vec<DiffFile>,
+                         file_is_related: &mut Vec<bool>,
+                         used: &mut HashSet<String>,
+                         path: &str,
+                         related: bool|
+         -> bool {
+            if used.contains(path) {
+                return false;
+            }
+            if let Some(df) = self.files.iter().find(|f| f.path == path) {
+                files.push(df.clone());
+                file_is_related.push(related);
+                used.insert(path.to_string());
+                return true;
+            }
+            false
+        };
 
         for p in &ordered {
             let start = files.len();
             for tf in &p.files {
-                if used.contains(&tf.path) {
-                    continue;
-                }
-                if let Some(df) = self.files.iter().find(|f| f.path == tf.path) {
-                    files.push(df.clone());
-                    used.insert(tf.path.clone());
+                // Only nest a file's related items when the primary itself is in
+                // this pillar; otherwise an orphaned `↳` row with no parent would
+                // appear. A related file whose primary is absent falls through to
+                // the "Other changes" pillar as a standalone row — matching the
+                // desktop snapshot (`build_tour_snapshot`).
+                let pushed_primary =
+                    push_file(&mut files, &mut file_is_related, &mut used, &tf.path, false);
+                if pushed_primary {
+                    for r in &tf.related {
+                        push_file(&mut files, &mut file_is_related, &mut used, &r.path, true);
+                    }
                 }
             }
             let end = files.len();
@@ -3671,6 +3765,7 @@ impl TabState {
         for df in &self.files {
             if !used.contains(&df.path) {
                 files.push(df.clone());
+                file_is_related.push(false);
             }
         }
         if files.len() > start {
@@ -3696,6 +3791,7 @@ impl TabState {
             pillars,
             selected_pillar,
             files,
+            file_is_related,
             pillar_file_ranges: ranges,
             selected_file,
             current_hunk: 0,
@@ -9709,6 +9805,125 @@ mod tests {
             compacted: false,
             raw_hunk_count: 0,
         }
+    }
+
+    /// rebuild_tour_state nests a file's co-located related files (its tests)
+    /// immediately after it, in the same pillar, flagged for indented rendering.
+    #[test]
+    fn rebuild_tour_state_nests_related_files_under_parent() {
+        use crate::ai::{ErTour, TourFile, TourPillar, TourRelatedFile};
+
+        let mut tab = make_test_tab(vec![
+            test_diff_file("a.ts"),
+            test_diff_file("a.test.ts"),
+            test_diff_file("b.ts"),
+            test_diff_file("c.ts"), // unassigned → "Other changes"
+        ]);
+
+        tab.ai.tour = Some(ErTour {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            title: String::new(),
+            overview: String::new(),
+            pillars: vec![TourPillar {
+                id: "p-1".to_string(),
+                title: "Core".to_string(),
+                description: String::new(),
+                order: 0,
+                importance: 0,
+                foundation: false,
+                files: vec![
+                    TourFile {
+                        path: "a.ts".to_string(),
+                        reason: String::new(),
+                        finding_ids: Vec::new(),
+                        related: vec![TourRelatedFile {
+                            path: "a.test.ts".to_string(),
+                            kind: "test".to_string(),
+                            reason: String::new(),
+                        }],
+                    },
+                    TourFile {
+                        path: "b.ts".to_string(),
+                        reason: String::new(),
+                        finding_ids: Vec::new(),
+                        related: Vec::new(),
+                    },
+                ],
+            }],
+        });
+
+        tab.rebuild_tour_state();
+        let tour = tab.tour.as_ref().expect("tour state built");
+
+        // a.test.ts is nested directly after a.ts, then b.ts, then the Other file.
+        let order: Vec<&str> = tour.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(order, vec!["a.ts", "a.test.ts", "b.ts", "c.ts"]);
+        assert_eq!(tour.file_is_related, vec![false, true, false, false]);
+
+        // The test file lives in the same pillar as its source, not "Other changes".
+        let p1 = tour.pillar_of_file(0);
+        assert_eq!(
+            p1,
+            tour.pillar_of_file(1),
+            "related file shares parent's pillar"
+        );
+        assert_ne!(p1, tour.pillar_of_file(3), "c.ts falls into Other changes");
+        // Two pillars: "Core" + "Other changes".
+        assert_eq!(tour.pillars.len(), 2);
+    }
+
+    /// A related file whose primary is NOT in the diff must not nest as an
+    /// orphaned `↳` row; it falls through to "Other changes" as a standalone
+    /// file, matching the desktop snapshot's ownership rule.
+    #[test]
+    fn rebuild_tour_state_drops_related_when_primary_absent() {
+        use crate::ai::{ErTour, TourFile, TourPillar, TourRelatedFile};
+
+        // Only the test file is in the diff; its primary `a.ts` is unchanged/absent.
+        let mut tab = make_test_tab(vec![test_diff_file("a.test.ts")]);
+        tab.ai.tour = Some(ErTour {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            title: String::new(),
+            overview: String::new(),
+            pillars: vec![TourPillar {
+                id: "p-1".to_string(),
+                title: "Core".to_string(),
+                description: String::new(),
+                order: 0,
+                importance: 0,
+                foundation: false,
+                files: vec![TourFile {
+                    path: "a.ts".to_string(),
+                    reason: String::new(),
+                    finding_ids: Vec::new(),
+                    related: vec![TourRelatedFile {
+                        path: "a.test.ts".to_string(),
+                        kind: "test".to_string(),
+                        reason: String::new(),
+                    }],
+                }],
+            }],
+        });
+
+        tab.rebuild_tour_state();
+        let tour = tab.tour.as_ref().expect("tour state built");
+
+        // a.test.ts is the only row, rendered standalone (not a nested child).
+        assert_eq!(
+            tour.files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.test.ts"]
+        );
+        assert_eq!(tour.file_is_related, vec![false]);
+        // The "Core" pillar has no in-diff files, so only "Other changes" shows.
+        assert_eq!(tour.pillars.len(), 1);
+        assert_eq!(tour.pillars[0].id, "__other__");
     }
 
     /// `mark_reviewed` / `unmark_reviewed` must resolve paths via

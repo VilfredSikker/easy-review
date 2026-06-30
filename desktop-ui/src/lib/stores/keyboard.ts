@@ -291,7 +291,7 @@ export function initKeyboard(): () => void {
     ) {
       return;
     }
-    if (e.key === "`" && !target.closest(".xterm")) {
+    if (e.key === "`" && !inField && !target.closest(".xterm")) {
       e.preventDefault();
       terminal.toggle();
       return;
