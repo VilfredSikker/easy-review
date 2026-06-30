@@ -2916,6 +2916,48 @@ impl TabState {
     }
 
     /// Reload AI state from .er-* files (preserving current nav state)
+    /// Merge orphaned local GitHub comments (written to the branch bucket while a
+    /// tab had no `pr_number`) into the now-authoritative PR-bucket comments.
+    ///
+    /// Only `local` comments absent from the PR bucket (by id) are carried over;
+    /// `github`-sourced entries re-sync from GitHub and are never migrated.
+    /// Returns `true` when at least one comment was migrated, signalling the
+    /// caller to persist `pr_comments` and remove the orphan file.
+    fn migrate_orphaned_github_comments(
+        orphaned: Option<ai::ErGitHubComments>,
+        pr_comments: &mut Option<ai::ErGitHubComments>,
+    ) -> bool {
+        let orphaned = match orphaned {
+            Some(o) => o,
+            None => return false,
+        };
+        let to_migrate: Vec<ai::GitHubReviewComment> = orphaned
+            .comments
+            .into_iter()
+            .filter(|c| c.source == "local")
+            .collect();
+        if to_migrate.is_empty() {
+            return false;
+        }
+
+        let target = pr_comments.get_or_insert_with(|| ai::ErGitHubComments {
+            version: 1,
+            diff_hash: orphaned.diff_hash.clone(),
+            github: None,
+            comments: Vec::new(),
+        });
+
+        let mut migrated = false;
+        for comment in to_migrate {
+            if target.comments.iter().any(|c| c.id == comment.id) {
+                continue;
+            }
+            target.comments.push(comment);
+            migrated = true;
+        }
+        migrated
+    }
+
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         let er_dir = self.er_dir();
@@ -2933,10 +2975,31 @@ impl TabState {
             ) {
                 let gh_dir = self.github_comments_dir();
                 if gh_dir != er_dir {
+                    // `load_ai_state(er_dir)` may have loaded github comments from the
+                    // active (branch) bucket — these are orphans written while this tab
+                    // still had no `pr_number` (github_comments_dir() fell back to
+                    // er_dir then). The PR bucket is now authoritative, so migrate any
+                    // such local comments into it instead of discarding them.
+                    let orphaned = self.ai.github_comments.take();
                     let gh_path = std::path::Path::new(&gh_dir).join("github-comments.json");
-                    self.ai.github_comments = std::fs::read_to_string(&gh_path)
+                    let mut pr_comments = std::fs::read_to_string(&gh_path)
                         .ok()
                         .and_then(|c| serde_json::from_str::<ai::ErGitHubComments>(&c).ok());
+                    if Self::migrate_orphaned_github_comments(orphaned, &mut pr_comments) {
+                        if let Some(ref gc) = pr_comments {
+                            let _ = std::fs::create_dir_all(&gh_dir);
+                            if let Ok(json) = serde_json::to_string_pretty(gc) {
+                                let tmp = format!("{}.tmp", gh_path.to_string_lossy());
+                                let _ = std::fs::write(&tmp, json)
+                                    .and_then(|_| std::fs::rename(&tmp, &gh_path));
+                            }
+                        }
+                        // Drop the orphan file so the migration runs only once.
+                        let orphan_path =
+                            std::path::Path::new(&er_dir).join("github-comments.json");
+                        let _ = std::fs::remove_file(&orphan_path);
+                    }
+                    self.ai.github_comments = pr_comments;
                     self.ai.rebuild_comment_index();
                 }
             } else if self.ai.github_comments.take().is_some() {
