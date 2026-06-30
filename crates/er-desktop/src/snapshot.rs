@@ -1394,10 +1394,7 @@ pub(crate) fn build_file_snapshot(
         // mode-only / binary change has no +/- lines, so it can never yield
         // hunks. Without the guard such files report as stubs forever and the
         // desktop spins on "Loading content…" with nothing left to fetch.
-        is_lazy_stub: (tab.lazy_mode
-            && f.hunks.is_empty()
-            && !f.compacted
-            && f.adds + f.dels > 0)
+        is_lazy_stub: (tab.lazy_mode && f.hunks.is_empty() && !f.compacted && f.adds + f.dels > 0)
             || budget_omitted,
         hunks,
         source_index,
