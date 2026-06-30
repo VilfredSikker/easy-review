@@ -1390,7 +1390,12 @@ pub(crate) fn build_file_snapshot(
         finding_count,
         comment_count,
         question_count,
-        is_lazy_stub: (tab.lazy_mode && f.hunks.is_empty() && !f.compacted) || budget_omitted,
+        // `adds + dels > 0` excludes the terminal-empty case: a pure rename /
+        // mode-only / binary change has no +/- lines, so it can never yield
+        // hunks. Without the guard such files report as stubs forever and the
+        // desktop spins on "Loading content…" with nothing left to fetch.
+        is_lazy_stub: (tab.lazy_mode && f.hunks.is_empty() && !f.compacted && f.adds + f.dels > 0)
+            || budget_omitted,
         hunks,
         source_index,
         cache_key: format!("{lines_key:016x}"),
@@ -3602,6 +3607,52 @@ mod tests {
             "omitted file must not carry hunks"
         );
         assert!(without.is_lazy_stub);
+    }
+
+    #[test]
+    fn lazy_pure_rename_is_not_a_stub_but_unparsed_content_is() {
+        // A `DiffFile` with no hunks and zero +/- lines: a pure rename (or
+        // mode-only / binary change). In lazy mode this used to report as a
+        // stub forever — parsing it can never yield hunks, so the desktop UI
+        // spun on "Loading content…" with nothing to fetch.
+        let rename = DiffFile {
+            path: "lib/components/qc/ReplicateDeviationSection.svelte".to_string(),
+            status: FileStatus::Renamed(
+                "routes/quality-control/component/ReplicateDeviationSection.svelte".to_string(),
+            ),
+            hunks: Vec::new(),
+            adds: 0,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+        };
+        // A genuinely-unparsed content file: empty hunks but real +/- counts
+        // from the header scan. This one *must* still read as a stub so the
+        // viewport loader fetches its hunks.
+        let unparsed = DiffFile {
+            path: "src/big.rs".to_string(),
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            adds: 40,
+            dels: 12,
+            compacted: false,
+            raw_hunk_count: 3,
+        };
+
+        let mut tab = TabState::new_for_test(vec![rename, unparsed]);
+        tab.lazy_mode = true;
+
+        let rename_snap = build_file_snapshot(0, &tab.files[0], &tab, None, true);
+        assert!(
+            !rename_snap.is_lazy_stub,
+            "a pure rename has nothing to load and must not be a perpetual stub"
+        );
+
+        let unparsed_snap = build_file_snapshot(1, &tab.files[1], &tab, None, true);
+        assert!(
+            unparsed_snap.is_lazy_stub,
+            "an unparsed content file must still be a stub so the loader fetches it"
+        );
     }
 
     #[test]

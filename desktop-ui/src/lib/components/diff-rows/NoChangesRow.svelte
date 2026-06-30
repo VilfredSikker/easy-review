@@ -12,5 +12,5 @@
   style="height:{row.height}px;display:flex;align-items:center"
   data-row-identity={row.identity}
 >
-  No changes
+  {row.renamed ? "File renamed without changes." : "No changes"}
 </div>
