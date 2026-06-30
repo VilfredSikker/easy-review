@@ -598,15 +598,25 @@ fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
         for (fi, fd) in files.iter().enumerate() {
             let abs_idx = start + fi;
             let is_file_selected = is_selected && abs_idx == tour.selected_file;
+            // Co-located related files (tests/styles/stories/snapshots) render
+            // indented under their primary file with a "↳" marker.
+            let is_related = tour.file_is_related.get(abs_idx).copied().unwrap_or(false);
             let reviewed_mark = if tab.reviewed.contains_key(&fd.path) {
                 "✓ "
             } else {
                 "  "
             };
-            let name = shorten_path(&fd.path, inner_width.saturating_sub(6));
+            // `indent_cols` is the display width (not byte length — "↳" is a
+            // 3-byte, 1-column glyph, so `indent.len()` would over-truncate).
+            let (indent, indent_cols) = if is_related {
+                ("     ↳ ", 7)
+            } else {
+                ("   ", 3)
+            };
+            let name = shorten_path(&fd.path, inner_width.saturating_sub(indent_cols + 3));
             let fstyle = if is_file_selected {
                 ratatui::style::Style::default().fg(styles::BRIGHT())
-            } else if tab.reviewed.contains_key(&fd.path) {
+            } else if tab.reviewed.contains_key(&fd.path) || is_related {
                 ratatui::style::Style::default().fg(styles::DIM())
             } else {
                 ratatui::style::Style::default().fg(styles::TEXT())
@@ -618,7 +628,7 @@ fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
                 styles::surface_style()
             };
             let line = Line::from(vec![
-                Span::raw("   "),
+                Span::styled(indent, ratatui::style::Style::default().fg(styles::DIM())),
                 Span::styled(reviewed_mark, mark_style),
                 Span::styled(name, fstyle),
             ]);

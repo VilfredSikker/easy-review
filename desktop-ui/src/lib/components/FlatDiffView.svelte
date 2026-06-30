@@ -128,13 +128,18 @@
     if (snapshot?.mode === "tour" && snapshot.tour?.pillars?.length) {
       const out: FileSnapshot[] = [];
       const seen = new Set<string>();
+      const pushPath = (path: string) => {
+        const f = byPath.get(path);
+        if (f && !seen.has(path)) {
+          out.push(f);
+          seen.add(path);
+        }
+      };
       for (const p of snapshot.tour.pillars) {
         for (const tf of p.files) {
-          const f = byPath.get(tf.path);
-          if (f && !seen.has(tf.path)) {
-            out.push(f);
-            seen.add(tf.path);
-          }
+          // Primary file, then its co-located related files directly after it.
+          pushPath(tf.path);
+          for (const r of tf.related ?? []) pushPath(r.path);
         }
       }
       for (const f of all) {
@@ -523,7 +528,9 @@
     },
   );
 
-  /** Per-pillar file rows for the rail (path + +/- + reviewed), in diff order. */
+  /** Per-pillar primary file rows for the rail (path + +/- + reviewed), in diff
+   *  order. Co-located related files are excluded here and rendered nested via
+   *  {@link relatedRows}. */
   const pillarFileRows = $derived.by((): Map<string, FileSnapshot[]> => {
     const m = new Map<string, FileSnapshot[]>();
     if (!tourActive || !snapshot?.tour?.pillars?.length) return m;
@@ -535,6 +542,25 @@
         if (f) list.push(f);
       }
       m.set(p.id, list);
+    }
+    return m;
+  });
+
+  /** Map of primary file path → its co-located related rows (test/style/…), for
+   *  nested rendering in the pillar rail. */
+  const relatedRows = $derived.by((): Map<string, { file: FileSnapshot; kind: string }[]> => {
+    const m = new Map<string, { file: FileSnapshot; kind: string }[]>();
+    if (!tourActive || !snapshot?.tour?.pillars?.length) return m;
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    for (const p of snapshot.tour.pillars) {
+      for (const tf of p.files) {
+        const children: { file: FileSnapshot; kind: string }[] = [];
+        for (const r of tf.related ?? []) {
+          const f = byPath.get(r.path);
+          if (f) children.push({ file: f, kind: r.kind });
+        }
+        if (children.length) m.set(tf.path, children);
+      }
     }
     return m;
   });
@@ -1920,6 +1946,7 @@
                 <PillarRail
                   info={span.info}
                   fileRows={pillarFileRows.get(span.info.pillarId) ?? []}
+                  {relatedRows}
                   selectedPath={visibleFilePath}
                 />
               </div>

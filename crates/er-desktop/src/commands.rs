@@ -967,11 +967,16 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
     let Some(tour) = tab.ai.tour.as_ref() else {
         return Vec::new();
     };
+    // Use the shared ownership rule (`ErTour::pillar_ownership`) so bulk-review
+    // attributes each file to exactly the pillar the desktop snapshot displays
+    // it under — including the global cross-pillar dedup that gives a shared
+    // related file to the first pillar that references it. Keeping these in sync
+    // is what lets a pillar's "Review all" reach 100%.
+    let ownership = tour.pillar_ownership(|p| diff_paths.contains(p));
     if pillar_id == "__other__" {
-        let assigned: std::collections::HashSet<&str> = tour
-            .pillars
+        let assigned: std::collections::HashSet<&str> = ownership
             .iter()
-            .flat_map(|p| p.files.iter().map(|f| f.path.as_str()))
+            .flat_map(|(_, paths)| paths.iter().map(String::as_str))
             .collect();
         return tab
             .active_diff_files()
@@ -980,16 +985,10 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
             .filter(|p| !assigned.contains(p.as_str()))
             .collect();
     }
-    tour.pillars
-        .iter()
-        .find(|p| p.id == pillar_id)
-        .map(|p| {
-            p.files
-                .iter()
-                .map(|f| f.path.clone())
-                .filter(|p| diff_paths.contains(p.as_str()))
-                .collect()
-        })
+    ownership
+        .into_iter()
+        .find(|(id, _)| id == pillar_id)
+        .map(|(_, paths)| paths)
         .unwrap_or_default()
 }
 
