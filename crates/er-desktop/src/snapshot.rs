@@ -1466,6 +1466,9 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
 
     if branch_scope {
         // Filter to files actually in the diff; dedup so a file shows once.
+        // This per-pillar primary+related assignment with a global `seen` is the
+        // same ownership rule as `ErTour::pillar_ownership` (which bulk-review
+        // uses via `pillar_file_paths`) — keep the two in sync.
         let diff_paths: std::collections::HashSet<&str> =
             tab.files.iter().map(|f| f.path.as_str()).collect();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();

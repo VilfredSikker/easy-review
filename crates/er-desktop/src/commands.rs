@@ -983,30 +983,17 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
     let Some(tour) = tab.ai.tour.as_ref() else {
         return Vec::new();
     };
-    // The diff-present paths a pillar owns, using the SAME rule as the desktop
-    // snapshot (`build_tour_snapshot`): a primary that is in the diff, plus that
-    // primary's related files that are in the diff. A related file whose primary
-    // is absent is NOT owned here — it surfaces standalone in "Other changes",
-    // exactly as the snapshot places it. Keeping the two in sync is what lets a
-    // pillar's "Review all" reach 100%.
-    let owned = |p: &er_engine::ai::TourPillar| -> Vec<String> {
-        let mut out = Vec::new();
-        for f in &p.files {
-            if !diff_paths.contains(f.path.as_str()) {
-                continue;
-            }
-            out.push(f.path.clone());
-            for r in &f.related {
-                if diff_paths.contains(r.path.as_str()) {
-                    out.push(r.path.clone());
-                }
-            }
-        }
-        out
-    };
+    // Use the shared ownership rule (`ErTour::pillar_ownership`) so bulk-review
+    // attributes each file to exactly the pillar the desktop snapshot displays
+    // it under — including the global cross-pillar dedup that gives a shared
+    // related file to the first pillar that references it. Keeping these in sync
+    // is what lets a pillar's "Review all" reach 100%.
+    let ownership = tour.pillar_ownership(|p| diff_paths.contains(p));
     if pillar_id == "__other__" {
-        let assigned: std::collections::HashSet<String> =
-            tour.pillars.iter().flat_map(&owned).collect();
+        let assigned: std::collections::HashSet<&str> = ownership
+            .iter()
+            .flat_map(|(_, paths)| paths.iter().map(String::as_str))
+            .collect();
         return tab
             .active_diff_files()
             .iter()
@@ -1014,10 +1001,10 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
             .filter(|p| !assigned.contains(p.as_str()))
             .collect();
     }
-    tour.pillars
-        .iter()
-        .find(|p| p.id == pillar_id)
-        .map(&owned)
+    ownership
+        .into_iter()
+        .find(|(id, _)| id == pillar_id)
+        .map(|(_, paths)| paths)
         .unwrap_or_default()
 }
 

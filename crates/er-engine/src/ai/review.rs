@@ -326,6 +326,40 @@ impl ErTour {
         pillars
     }
 
+    /// Assign each in-diff path to the single pillar that owns it, in display
+    /// order. A primary present in the diff claims itself plus its in-diff
+    /// related files; the **first** pillar (in display order) to reference a
+    /// path wins (global `seen`). This is the one ownership rule the desktop
+    /// snapshot (`build_tour_snapshot`) and bulk-review (`pillar_file_paths`)
+    /// must agree on, so it lives here as the single source of truth.
+    ///
+    /// Returns `(pillar_id, owned_paths)` per pillar, `owned_paths` in reading
+    /// order (each primary followed by its related). Paths owned by no pillar
+    /// are the caller's "Other changes".
+    pub fn pillar_ownership<F>(&self, in_diff: F) -> Vec<(String, Vec<String>)>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for p in self.ordered_pillars() {
+            let mut owned = Vec::new();
+            for f in &p.files {
+                if !in_diff(&f.path) || !seen.insert(f.path.clone()) {
+                    continue;
+                }
+                owned.push(f.path.clone());
+                for r in &f.related {
+                    if in_diff(&r.path) && seen.insert(r.path.clone()) {
+                        owned.push(r.path.clone());
+                    }
+                }
+            }
+            out.push((p.id.clone(), owned));
+        }
+        out
+    }
+
     /// The pillar a given file path belongs to, if any. Matches both a pillar's
     /// primary files and their co-located related files.
     pub fn file_pillar(&self, path: &str) -> Option<&TourPillar> {
@@ -2885,5 +2919,96 @@ mod tests {
         let r: TourRelatedFile = serde_json::from_str(json).unwrap();
         assert_eq!(r.kind, "");
         assert_eq!(r.reason, "");
+    }
+
+    #[test]
+    fn pillar_ownership_assigns_primary_and_related_per_pillar() {
+        let tour = ErTour {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            title: String::new(),
+            overview: String::new(),
+            pillars: vec![
+                pillar_with(
+                    "p-1",
+                    vec![tour_file_with_related("a.ts", vec![("a.test.ts", "test")])],
+                ),
+                pillar_with("p-2", vec![tour_file_with_related("b.ts", vec![])]),
+            ],
+        };
+        let in_diff = |p: &str| matches!(p, "a.ts" | "a.test.ts" | "b.ts");
+        let ownership = tour.pillar_ownership(in_diff);
+        assert_eq!(
+            ownership,
+            vec![
+                (
+                    "p-1".to_string(),
+                    vec!["a.ts".to_string(), "a.test.ts".to_string()]
+                ),
+                ("p-2".to_string(), vec!["b.ts".to_string()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn pillar_ownership_first_pillar_wins_for_shared_related() {
+        // The same related file listed under two pillars must be owned by the
+        // first pillar only — so bulk-review attribution can't double-count it.
+        let tour = ErTour {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            title: String::new(),
+            overview: String::new(),
+            pillars: vec![
+                pillar_with(
+                    "p-1",
+                    vec![tour_file_with_related(
+                        "a.ts",
+                        vec![("shared.snap", "snapshot")],
+                    )],
+                ),
+                pillar_with(
+                    "p-2",
+                    vec![tour_file_with_related(
+                        "b.ts",
+                        vec![("shared.snap", "snapshot")],
+                    )],
+                ),
+            ],
+        };
+        let in_diff = |p: &str| matches!(p, "a.ts" | "b.ts" | "shared.snap");
+        let ownership = tour.pillar_ownership(in_diff);
+        assert_eq!(
+            ownership,
+            vec![
+                (
+                    "p-1".to_string(),
+                    vec!["a.ts".to_string(), "shared.snap".to_string()]
+                ),
+                ("p-2".to_string(), vec!["b.ts".to_string()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn pillar_ownership_skips_related_when_primary_absent() {
+        let tour = ErTour {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            title: String::new(),
+            overview: String::new(),
+            pillars: vec![pillar_with(
+                "p-1",
+                vec![tour_file_with_related("a.ts", vec![("a.test.ts", "test")])],
+            )],
+        };
+        // Only the related file is in the diff; its primary is absent.
+        let in_diff = |p: &str| p == "a.test.ts";
+        let ownership = tour.pillar_ownership(in_diff);
+        // p-1 owns nothing → a.test.ts is unowned ("Other changes").
+        assert_eq!(ownership, vec![("p-1".to_string(), Vec::<String>::new())]);
     }
 }
