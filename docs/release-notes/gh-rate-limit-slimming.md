@@ -26,10 +26,11 @@ Steady state for one idle PR tab falls from ~900 calls/hr to well under ~50.
   to the standalone calls.
 - **Tab switches no longer re-burst.** `kick_active_gh_status` (fired on every tab open / switch /
   close) now returns early when the active tab's status is <10s old.
-- **Comment-sync loop is change-driven.** The 45s loop skips a tick when the PR's head commit
-  hasn't moved since the last successful sync and that sync was <5 min ago — turning an always-on
-  timer into one that only works when something actually changed. A real push moves the head OID
-  (detected within ≤60s) and the next tick syncs normally.
+- **Comment-sync loop is throttled.** The 45s loop skips a tick when the PR's head commit hasn't
+  moved since the last successful sync and that sync was <90s ago. Comments and reviews are posted
+  independently of any push, so this is a poll throttle (bounding comment-panel latency to ~90s on a
+  push-idle PR), not change-detection — a new push moves the head OID (detected within ≤60s) and
+  drops through the throttle so freshly-pushed review threads sync promptly.
 - **Dropped a duplicated CI fetch.** The comment-sync loop's local-clone PR-overview refresh was
   re-running `gh pr checks` every 45s — data the 30s status loop already owns. It now uses a
   checks-free overview variant (−~80 calls/hr per local-clone PR tab). Metadata (title / state /
@@ -55,7 +56,7 @@ Steady state for one idle PR tab falls from ~900 calls/hr to well under ~50.
 | Surface | Before | After (worst case) |
 |---|---|---|
 | CI / review status | ≤30s | **≤90s** when idle |
-| Auto-pull of teammate comments (no push) | ≤45s | **≤~5 min** when the head OID hasn't moved |
+| Auto-pull of teammate comments (no push) | ≤45s | **≤~90s** (poll throttle; a push resyncs within ~1–2 min) |
 | "PR head updated on origin" stale pill | ≤30s | **≤60s** |
 | Tab-switch status refresh | always | skipped if <10s old |
 

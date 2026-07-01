@@ -142,13 +142,19 @@ pub fn status_is_fresh(last_updated: Option<&str>, now_secs: u64, ttl_secs: u64)
 /// writes to `GithubStatusSnapshot.last_updated` (`commands.rs:642-645`).
 /// `now_secs` is a parameter on `status_is_fresh` (not called internally) so
 /// callers can pass a fixed value in tests; this just centralizes the
-/// `SystemTime` boilerplate for the three real call sites.
+/// `SystemTime` boilerplate for the two real call sites (`kick_active_gh_status`
+/// and the 30s background `gh_status` loop).
 pub fn now_epoch_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
+    // Fall back to u64::MAX (not 0) on a pre-epoch clock: an unrepresentable
+    // "now" then reads as maximally-OLD in `status_is_fresh` (age >= ttl →
+    // stale → fetch), preserving the fail-open contract. `unwrap_or(0)` would
+    // instead make every gate see age 0 and treat a real `last_updated` as
+    // fresh, wrongly skipping the fetch.
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -338,5 +344,13 @@ mod tests {
     #[test]
     fn status_is_fresh_one_second_inside_boundary_is_fresh() {
         assert!(status_is_fresh(Some("1000"), 1089, 90));
+    }
+
+    #[test]
+    fn status_is_fresh_max_now_sentinel_is_stale() {
+        // `now_epoch_secs()` returns u64::MAX on a pre-epoch clock fault. A real
+        // stored `last_updated` must then read as maximally-old (fail open →
+        // fetch), never as fresh — the opposite of the old `unwrap_or(0)`.
+        assert!(!status_is_fresh(Some("1750000000"), u64::MAX, 90));
     }
 }

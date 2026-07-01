@@ -578,11 +578,16 @@ fn cached_head_oid(pr_cache: &pr_cache::PrCacheMap, owner: &str, repo: &str, num
         .unwrap_or_default()
 }
 
-/// Whether the background comment-sync loop should SKIP this tick: the same PR
-/// head OID was already synced less than `ttl` ago, so nothing new can have been
-/// pushed. An empty/unknown `head_oid` never skips (fail open — keep syncing
-/// every tick until the probe loop populates a real OID). Pure so the skip
-/// decision is unit-testable without the surrounding thread/loop.
+/// Whether the background comment-sync loop should SKIP this tick: this PR's
+/// head OID is unchanged since the last successful sync AND that sync was less
+/// than `ttl` ago. This is a poll THROTTLE, not change-detection — PR comments
+/// and reviews are posted independently of any push, so an unchanged head OID
+/// does NOT mean "nothing new". `ttl` therefore bounds how stale the comment
+/// panel can get on a push-idle PR; the OID check only ACCELERATES resync after
+/// a push (a new head OID drops through the throttle so freshly-pushed review
+/// threads appear promptly). An empty/unknown `head_oid` never skips (fail open —
+/// keep syncing every tick until the probe loop populates a real OID). Pure so
+/// the skip decision is unit-testable without the surrounding thread/loop.
 fn comment_sync_recently_synced(
     last_entry: Option<&(String, std::time::Instant)>,
     head_oid: &str,
@@ -599,11 +604,11 @@ fn comment_sync_recently_synced(
 /// already probed this PR less than `ttl` ago (the throttle), regardless of
 /// whether the OID changed. Pure so the throttle is unit-testable.
 fn probe_recently_done(
-    last_entry: Option<&(String, std::time::Instant)>,
+    last_probe: Option<&std::time::Instant>,
     now: std::time::Instant,
     ttl: std::time::Duration,
 ) -> bool {
-    last_entry.is_some_and(|(_, last_at)| now.saturating_duration_since(*last_at) < ttl)
+    last_probe.is_some_and(|last_at| now.saturating_duration_since(*last_at) < ttl)
 }
 
 fn main() {
@@ -884,9 +889,12 @@ fn main() {
         }
     }
 
-    // The 30s `gh_status` loop below runs its first iteration immediately and
-    // shares dedup state via `gh_status_in_flight`, so a separate startup kick
-    // here would be a redundant duplicate fetch on the same identity.
+    // The 30s `gh_status` loop below now sleeps before its first iteration (to
+    // avoid a startup gh burst), so a cold-restored active PR tab shows its
+    // disk-cached status until that first tick (~30s) — an intentional tradeoff
+    // to keep launch gh-free. We deliberately don't kick a refresh here; an
+    // explicit tab open/switch/close still refreshes via `kick_active_gh_status`
+    // (itself 10s-gated, sharing dedup state through `gh_status_in_flight`).
 
     // NOTE: a remote-PR auto-swap loop used to live here (300s for remote
     // tabs, 60s otherwise), calling snapshot_for_remote_diff_refresh →
@@ -994,15 +1002,13 @@ fn main() {
         let probe_pr_cache = Arc::clone(&pr_cache);
         let probe_rev = Arc::clone(&desktop_revision);
         std::thread::spawn(move || {
-            // (slug, pr_number) -> (last-seen head OID, when we last actually
-            // probed). Throttles the gh subprocess to once per 60s per PR
-            // even though the loop ticks every 30s. The Instant is refreshed
-            // on EVERY successful probe, not only when the OID changed —
-            // recording it conditionally would make the throttle a no-op
-            // after the first window, since `elapsed()` would keep growing
+            // (slug, pr_number) -> when we last actually probed. Throttles the
+            // gh subprocess to once per 60s per PR even though the loop ticks
+            // every 30s. Refreshed on EVERY successful probe, not only when the
+            // OID changed — recording it conditionally would make the throttle a
+            // no-op after the first window, since `elapsed()` would keep growing
             // against a frozen Instant and never re-arm.
-            let mut probe_throttle: HashMap<(String, u64), (String, std::time::Instant)> =
-                HashMap::new();
+            let mut probe_throttle: HashMap<(String, u64), std::time::Instant> = HashMap::new();
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(30));
 
@@ -1087,19 +1093,8 @@ fn main() {
                 let changed =
                     pr_cache::patch_pr_head_oid(&probe_pr_cache, &slug, pr_number, &oid);
 
-                // Always re-arm the 60s throttle window on a successful
-                // probe. Only overwrite the stored OID when it actually
-                // changed — an unchanged OID is already correct in the map.
-                let now = std::time::Instant::now();
-                probe_throttle
-                    .entry((slug.clone(), pr_number))
-                    .and_modify(|(stored_oid, last_at)| {
-                        *last_at = now;
-                        if changed {
-                            *stored_oid = oid.clone();
-                        }
-                    })
-                    .or_insert((oid.clone(), now));
+                // Re-arm the 60s throttle window on every successful probe.
+                probe_throttle.insert((slug.clone(), pr_number), std::time::Instant::now());
 
                 if changed {
                     profile_log::bump_desktop_revision(&probe_rev, "pr_head_probe");
@@ -1211,14 +1206,16 @@ fn main() {
         let comments_loading = Arc::clone(&loading);
         let comments_desktop_rev = Arc::clone(&desktop_revision);
         std::thread::spawn(move || {
-            // (owner, repo, number) -> (head OID synced against, when). Lets
-            // the 45s tick skip network I/O when nothing has moved upstream
-            // since the last successful sync. A real push updates head_oid
-            // via the pr-head-probe loop (main.rs ~950), so the next tick
-            // sees a mismatch and syncs again. Manual sync (`G` key →
-            // `pull_github_comments` → `App::sync_github_comments`) calls a
-            // separate synchronous path that never touches this loop or map,
-            // so it is completely unaffected.
+            // (owner, repo, number) -> (head OID synced against, when).
+            // Throttles the comment/review pull: within `ttl` of a sync against
+            // the same head OID the 45s tick skips the network I/O. Comments and
+            // reviews are independent of pushes, so `ttl` is the worst-case
+            // comment-panel latency on a push-idle PR — NOT a "nothing changed"
+            // guarantee. A push changes head_oid (via the pr-head-probe loop,
+            // itself throttled to ~60s), so a fresh push resyncs within ~1-2 min
+            // instead of waiting out `ttl`. Manual sync (`G` key →
+            // `pull_github_comments` → `App::sync_github_comments`) is a separate
+            // synchronous path that never touches this loop or map, unaffected.
             let mut last_synced: HashMap<(String, String, u64), (String, std::time::Instant)> =
                 HashMap::new();
             loop {
@@ -1255,17 +1252,19 @@ fn main() {
                             })
                         };
 
-                    // Skip-if-unchanged gate: same head OID synced <5 min ago
-                    // → nothing new to pull. An empty/unknown OID never skips
-                    // (fail open — keep syncing every tick until the probe
-                    // loop populates pr_cache).
+                    // Throttle gate: same head OID already synced within the
+                    // window → skip this tick (bounds comment-panel latency to
+                    // ~90s on a push-idle PR; does not guarantee nothing
+                    // changed). An empty/unknown OID never skips (fail open —
+                    // keep syncing every tick until the probe loop populates
+                    // pr_cache).
                     identity.and_then(|(owner, repo, number)| {
                         let head_oid = cached_head_oid(&comments_pr_cache, &owner, &repo, number);
                         let recently_synced = comment_sync_recently_synced(
                             last_synced.get(&(owner.clone(), repo.clone(), number)),
                             &head_oid,
                             std::time::Instant::now(),
-                            std::time::Duration::from_secs(300),
+                            std::time::Duration::from_secs(90),
                         );
                         if recently_synced {
                             None
@@ -2096,9 +2095,8 @@ mod tests {
     #[test]
     fn probe_skips_within_throttle_window() {
         let base = Instant::now();
-        let entry = ("oid".to_string(), base);
         assert!(probe_recently_done(
-            Some(&entry),
+            Some(&base),
             base + Duration::from_secs(30),
             Duration::from_secs(60),
         ));
@@ -2107,9 +2105,8 @@ mod tests {
     #[test]
     fn probe_runs_after_throttle_window() {
         let base = Instant::now();
-        let entry = ("oid".to_string(), base);
         assert!(!probe_recently_done(
-            Some(&entry),
+            Some(&base),
             base + Duration::from_secs(90),
             Duration::from_secs(60),
         ));
@@ -2119,9 +2116,8 @@ mod tests {
     fn probe_at_exactly_ttl_boundary_runs() {
         // age == ttl → `<` excludes it → not throttled (probe runs).
         let base = Instant::now();
-        let entry = ("oid".to_string(), base);
         assert!(!probe_recently_done(
-            Some(&entry),
+            Some(&base),
             base + Duration::from_secs(60),
             Duration::from_secs(60),
         ));
