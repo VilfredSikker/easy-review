@@ -60,40 +60,52 @@
   const pills = $derived.by<Pill[]>(() => {
     const out: Pill[] = [];
     if (running.length === 1) {
+      const t = running[0];
       out.push({
-        key: `run-${running[0].id}`,
+        key: `run-${t.id}`,
         status: "running",
-        text: `Review running · ${truncate(running[0].label)}`,
+        text: t.target_label
+          ? `${t.label} running · ${truncate(t.target_label)}`
+          : `${t.label} running`,
       });
     } else if (running.length > 1) {
       out.push({
         key: "run-multi",
         status: "running",
         text: `${running.length} reviews running`,
-        title: running.map((t) => t.label).join(", "),
+        title: running
+          .map((t) => (t.target_label ? `${t.label} · ${t.target_label}` : t.label))
+          .join(", "),
       });
     }
     if (queued.length === 1) {
+      const t = queued[0];
       out.push({
-        key: `queue-${queued[0].id}`,
+        key: `queue-${t.id}`,
         status: "queued",
-        text: `Review queued · ${truncate(queued[0].label)}`,
+        text: t.target_label
+          ? `${t.label} queued · ${truncate(t.target_label)}`
+          : `${t.label} queued`,
         title: "Waiting for a free review slot — click ✕ to remove",
-        cancelTaskId: queued[0].id,
+        cancelTaskId: t.id,
       });
     } else if (queued.length > 1) {
       out.push({
         key: "queue-multi",
         status: "queued",
         text: `${queued.length} reviews queued`,
-        title: queued.map((t) => t.label).join(", "),
+        title: queued
+          .map((t) => (t.target_label ? `${t.label} · ${t.target_label}` : t.label))
+          .join(", "),
       });
     }
     for (const t of failed) {
       out.push({
         key: `fail-${t.id}`,
         status: "failed",
-        text: `Review failed · ${truncate(t.label)}`,
+        text: t.target_label
+          ? `${t.label} failed · ${truncate(t.target_label)}`
+          : `${t.label} failed`,
         title: t.error ?? undefined,
       });
     }
@@ -101,7 +113,9 @@
       out.push({
         key: `done-${t.id}`,
         status: "done",
-        text: `Review done · ${truncate(t.label)}`,
+        text: t.target_label
+          ? `${t.label} done · ${truncate(t.target_label)}`
+          : `${t.label} done`,
       });
     }
     return out;

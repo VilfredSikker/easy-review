@@ -423,28 +423,12 @@ pub fn kick_github_status_refresh(
 
 fn active_github_key(app: &App, state: &AppState) -> Option<(String, String, u64)> {
     let tab = app.tab();
-    if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-        return slug
-            .split_once('/')
-            .map(|(o, r)| (o.to_string(), r.to_string(), n));
-    }
-
-    let branch = tab
-        .local_branch_view
-        .as_deref()
-        .unwrap_or(&tab.current_branch)
-        .to_string();
-    state.pr_cache.lock().ok().and_then(|cache| {
-        cache.iter().find_map(|(slug, prs)| {
-            prs.iter()
-                .filter(|p| p.head_ref == branch)
-                .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-                .and_then(|p| {
-                    slug.split_once('/')
-                        .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-                })
-        })
-    })
+    // Prefer the tab's own PR number (remote or local PR tab) so the background
+    // gh-status fetch targets the PR that was actually opened, not an arbitrary
+    // head_ref match when a branch carries more than one open PR. Plain branch /
+    // working tabs fall back to head_ref matching inside the resolver.
+    let cache = state.pr_cache.lock().ok()?;
+    crate::snapshot::resolve_github_status_key(tab, &cache)
 }
 
 fn active_pr_author(
@@ -983,11 +967,16 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
     let Some(tour) = tab.ai.tour.as_ref() else {
         return Vec::new();
     };
+    // Use the shared ownership rule (`ErTour::pillar_ownership`) so bulk-review
+    // attributes each file to exactly the pillar the desktop snapshot displays
+    // it under — including the global cross-pillar dedup that gives a shared
+    // related file to the first pillar that references it. Keeping these in sync
+    // is what lets a pillar's "Review all" reach 100%.
+    let ownership = tour.pillar_ownership(|p| diff_paths.contains(p));
     if pillar_id == "__other__" {
-        let assigned: std::collections::HashSet<&str> = tour
-            .pillars
+        let assigned: std::collections::HashSet<&str> = ownership
             .iter()
-            .flat_map(|p| p.files.iter().map(|f| f.path.as_str()))
+            .flat_map(|(_, paths)| paths.iter().map(String::as_str))
             .collect();
         return tab
             .active_diff_files()
@@ -996,16 +985,10 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
             .filter(|p| !assigned.contains(p.as_str()))
             .collect();
     }
-    tour.pillars
-        .iter()
-        .find(|p| p.id == pillar_id)
-        .map(|p| {
-            p.files
-                .iter()
-                .map(|f| f.path.clone())
-                .filter(|p| diff_paths.contains(p.as_str()))
-                .collect()
-        })
+    ownership
+        .into_iter()
+        .find(|(id, _)| id == pillar_id)
+        .map(|(_, paths)| paths)
         .unwrap_or_default()
 }
 

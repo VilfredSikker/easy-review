@@ -94,10 +94,21 @@ export interface FileSnapshot {
   hunks_omitted?: boolean;
 }
 
+export interface RelatedFileRef {
+  path: string;
+  /** "test" | "style" | "story" | "snapshot" | "other" */
+  kind: string;
+  reason: string;
+}
+
 export interface TourFileRef {
   path: string;
   reason: string;
   findingIds: string[];
+  /** Co-located files (tests/styles/stories/snapshots) nested under this row.
+   *  Optional: absent on tour snapshots produced before this field existed —
+   *  every reader must guard with `?? []`. */
+  related?: RelatedFileRef[];
 }
 
 export interface PillarSnapshot {

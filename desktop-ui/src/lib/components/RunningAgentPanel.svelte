@@ -139,7 +139,9 @@
   {#if activeTask}
     <!-- Task header -->
     <div class="flex items-center gap-2 px-3 py-1.5 shrink-0">
-      <span class="text-[10px] font-mono text-ink-200 truncate flex-1">{activeTask.label}</span>
+      <span class="text-[10px] font-mono text-ink-200 truncate flex-1">
+        {activeTask.label}{#if activeTask.target_label}<span class="text-ink-400"> · {activeTask.target_label}</span>{/if}
+      </span>
       {#if activeTask.status === "failed" && activeTask.error}
         <span class="text-[10px] font-mono text-del-fg shrink-0 truncate max-w-[120px]">{activeTask.error}</span>
       {:else}
