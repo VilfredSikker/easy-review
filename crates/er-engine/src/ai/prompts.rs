@@ -7,9 +7,9 @@ Up to **~10** file/range reads for **this** finding or thread only; **no global 
 
 /// Embedded prompt templates for guided AI actions.
 ///
-/// These replicate the logic from the external Claude Code skills
-/// (`/er-review`, `/er-questions`) so the TUI can invoke them directly
-/// via the configured agent command without requiring skill files.
+/// Self-contained prompt strings for the built-in AI Hub. The TUI and desktop
+/// fill these into the configured agent command (`claude --print -p {prompt}`)
+/// to run reviews directly — no external skill files or slash commands involved.
 ///
 /// Shared rules live in `skills/REVIEW_RULES.md` and `review_rules_preamble()`.
 use super::experts::{expert_by_id, expert_summary_focus, FindingCaps};
@@ -572,7 +572,7 @@ fn professor_rules_preamble(
         r#"
 
 ### Professor mode (not a review)
-- **Do not** flag bugs, security issues, or style nits — `/er-review` covers those.
+- **Do not** flag bugs, security issues, or style nits — a general review covers those.
 - Teach: purpose, architecture, data flow, invariants, non-obvious design.
 - Every finding: `severity: "info"`, `confidence: "informational"`, `category: "professor"`.
 - Titles are concept labels; descriptions explain *how* and *why*."#,
@@ -751,7 +751,7 @@ Scan every changed file at **file + hunk-header** level. Do **not** hunt P0 bugs
 2. `diff_stats` — file count, `approx_risk` (`low`|`medium`|`high`), `domains` touched (e.g. auth, api, tests).
 3. `verdict` — route the human to the next review:
    - `skip` — cosmetic/docs/lockfiles only; no logic to review.
-   - `general` — mixed concerns; run full `/er-review`.
+   - `general` — mixed concerns; run a full general review.
    - `expert` — dominant lens; set `experts` to one or more ids: security, performance, reliability, testing, api, patterns, simplifying, mentorship.
    - `arena` — large/high-stakes diff or needs multi-model second opinion.
    - `professor` — novel subsystem the reader should learn first.
