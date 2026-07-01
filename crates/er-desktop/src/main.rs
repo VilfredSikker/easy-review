@@ -565,7 +565,12 @@ fn window_state_restore_flags() -> tauri_plugin_window_state::StateFlags {
 /// callers must treat that as "unknown" (fail open, never skip on it), since
 /// an empty OID is also `PrInfo::head_oid`'s `#[serde(default)]` value, not a
 /// real "no head" signal.
-fn cached_head_oid(pr_cache: &pr_cache::PrCacheMap, owner: &str, repo: &str, number: u64) -> String {
+fn cached_head_oid(
+    pr_cache: &pr_cache::PrCacheMap,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> String {
     pr_cache
         .lock()
         .ok()
@@ -1033,11 +1038,9 @@ fn main() {
                         }
                     } else if !tab.repo_root.is_empty() {
                         match er_engine::github::get_repo_info(&tab.repo_root) {
-                            Ok((owner, repo)) => Some((
-                                tab.repo_root.clone(),
-                                format!("{owner}/{repo}"),
-                                pr_number,
-                            )),
+                            Ok((owner, repo)) => {
+                                Some((tab.repo_root.clone(), format!("{owner}/{repo}"), pr_number))
+                            }
                             Err(_) => None,
                         }
                     } else {
@@ -1090,8 +1093,7 @@ fn main() {
                 let Some(oid) = oid else { continue };
 
                 // Phase 3: brief lock — patch the cache entry; bump only on change.
-                let changed =
-                    pr_cache::patch_pr_head_oid(&probe_pr_cache, &slug, pr_number, &oid);
+                let changed = pr_cache::patch_pr_head_oid(&probe_pr_cache, &slug, pr_number, &oid);
 
                 // Re-arm the 60s throttle window on every successful probe.
                 probe_throttle.insert((slug.clone(), pr_number), std::time::Instant::now());
@@ -1228,29 +1230,29 @@ fn main() {
                         Err(_) => continue,
                     };
                     let tab = guard.tab();
-                    let identity: Option<(String, String, u64)> =
-                        if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-                            slug.split_once('/')
-                                .map(|(o, r)| (o.to_string(), r.to_string(), n))
-                        } else {
-                            let branch = tab
-                                .local_branch_view
-                                .as_deref()
-                                .unwrap_or(&tab.current_branch)
-                                .to_string();
-                            comments_pr_cache.lock().ok().and_then(|cache| {
-                                cache.iter().find_map(|(slug, prs)| {
-                                    prs.iter()
-                                        .filter(|p| p.head_ref == branch)
-                                        .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-                                        .and_then(|p| {
-                                            slug.split_once('/').map(|(o, r)| {
-                                                (o.to_string(), r.to_string(), p.number)
-                                            })
-                                        })
-                                })
+                    let identity: Option<(String, String, u64)> = if let (Some(slug), Some(n)) =
+                        (tab.remote_repo.as_ref(), tab.pr_number)
+                    {
+                        slug.split_once('/')
+                            .map(|(o, r)| (o.to_string(), r.to_string(), n))
+                    } else {
+                        let branch = tab
+                            .local_branch_view
+                            .as_deref()
+                            .unwrap_or(&tab.current_branch)
+                            .to_string();
+                        comments_pr_cache.lock().ok().and_then(|cache| {
+                            cache.iter().find_map(|(slug, prs)| {
+                                prs.iter()
+                                    .filter(|p| p.head_ref == branch)
+                                    .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
+                                    .and_then(|p| {
+                                        slug.split_once('/')
+                                            .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
+                                    })
                             })
-                        };
+                        })
+                    };
 
                     // Throttle gate: same head OID already synced within the
                     // window → skip this tick (bounds comment-panel latency to
