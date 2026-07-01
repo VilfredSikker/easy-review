@@ -57,13 +57,13 @@
     <table>
       <thead><tr><th>File</th><th>Written by</th><th>Purpose</th></tr></thead>
       <tbody>
-        <tr><td><code>review.json</code></td><td><code>/er-review</code></td><td>Per-file risk levels and inline findings</td></tr>
-        <tr><td><code>order.json</code></td><td><code>/er-review</code></td><td>Suggested review order</td></tr>
-        <tr><td><code>checklist.json</code></td><td><code>/er-review</code></td><td>Review checklist items</td></tr>
-        <tr><td><code>summary.md</code></td><td><code>/er-summary</code></td><td>Markdown summary of changes</td></tr>
-        <tr><td><code>triage.json</code></td><td><code>/er-triage</code></td><td>Fast branch scan / routing</td></tr>
-        <tr><td><code>professor.json</code></td><td><code>/er-professor</code></td><td>Teaching / learning insights</td></tr>
-        <tr><td><code>experts/*.json</code></td><td><code>/er-review-*</code></td><td>Domain-specific expert findings</td></tr>
+        <tr><td><code>review.json</code></td><td>AI Hub: Run review</td><td>Per-file risk levels and inline findings</td></tr>
+        <tr><td><code>order.json</code></td><td>AI Hub: Run review</td><td>Suggested review order</td></tr>
+        <tr><td><code>checklist.json</code></td><td>AI Hub: Run review</td><td>Review checklist items</td></tr>
+        <tr><td><code>summary.md</code></td><td>AI Hub: Run review</td><td>Markdown summary of changes</td></tr>
+        <tr><td><code>triage.json</code></td><td>AI Hub: Triage branch</td><td>Fast branch scan / routing</td></tr>
+        <tr><td><code>professor.json</code></td><td>AI Hub: Professor</td><td>Teaching / learning insights</td></tr>
+        <tr><td><code>experts/*.json</code></td><td>AI Hub: Specialized review</td><td>Domain-specific expert findings</td></tr>
         <tr><td><code>questions.json</code></td><td><code>er</code> (<kbd>q</kbd>/<kbd>Q</kbd>)</td><td>Personal review questions</td></tr>
         <tr><td><code>github-comments.json</code></td><td><code>er</code> (<kbd>c</kbd>/<kbd>C</kbd>)</td><td>GitHub PR comments</td></tr>
         <tr><td><code>session.json</code></td><td><code>er</code></td><td>Session metadata</td></tr>
@@ -79,8 +79,8 @@
     <h2>Repo-local mode</h2>
     <p>
       Set <code>ER_REPO_LOCAL=1</code> to read and write a <code>.er/</code> directory inside the repository instead of
-      managed storage. This is useful for debugging, or to line up with Claude Code skills that document their output as
-      <code>.er/&lt;file&gt;</code> relative to the repo.
+      managed storage. This is useful for debugging, or for external tools (such as the TechProfessor integration) that
+      write sidecar files into <code>.er/</code> relative to the repo.
     </p>
     <pre><code>ER_REPO_LOCAL=1 er</code></pre>
     <div class="callout warn">
@@ -89,8 +89,9 @@
     </div>
     <div class="callout note">
       <span class="ico">◆</span>
-      <div><p>With default managed storage, run reviews through <code>er</code>'s own agent commands (in the desktop app
-      or TUI), or use <code>ER_REPO_LOCAL=1</code> so that skills run in Claude Code write where <code>er</code> reads.</p></div>
+      <div><p>With default managed storage, run reviews through <code>er</code>'s built-in AI Hub (TUI: <kbd>a</kbd> /
+      Desktop: <kbd>Cmd+A</kbd>). Use <code>ER_REPO_LOCAL=1</code> only when an external tool writes directly into
+      <code>.er/</code> and you want <code>er</code> to read from the same location.</p></div>
     </div>
 
     <h2>Migration from older versions</h2>

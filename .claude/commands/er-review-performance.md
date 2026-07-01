@@ -1,1 +1,0 @@
-../../skills/er-review-performance/SKILL.md

@@ -1,61 +1,35 @@
-# Easy Review v0.4.0
+# Easy Review v0.4.1
 
 ## In plain terms
 
 - **What this is.** Easy Review (`er`) is a fast diff reviewer for people who work with AI coding tools — a terminal UI and a desktop app that share the same review engine.
-- **What changed.** v0.4.0 makes reviewing a PR feel instant and guided. Re-opening a PR you've already seen now paints from a local cache instead of phoning GitHub twice. A local PR tab cleanly separates "my branch" from "the PR diff" so review notes no longer bleed between the two. A new AI-guided **Guide** walks you through a diff one focus area at a time, and AI **Arena** reviews keep running in the background while you work elsewhere. Eight themes now drive both the terminal and desktop apps, and syntax colors stay readable on top of the green/red diff backgrounds.
-- **Why it matters.** Less waiting, fewer mixed-up review artifacts, and a review surface you can actually read on any theme.
-- **TL;DR.** Faster PR opens, cleaner per-view review state, an AI guide + background AI reviews, and a proper theme system.
+- **What changed.** v0.4.1 is a focused follow-up to v0.4.0. The biggest win is invisible: reviewing a GitHub PR in the desktop app used to hammer GitHub with roughly **760–920 API calls per hour per open PR tab**; it now stays well under **~50**, so you're far less likely to trip GitHub's rate limits. On top of that, the AI **Guide** now tucks a file's tests/styles/stories directly under it, Triage's recommended files become a one-click review scope, and two nagging desktop bugs are fixed (Copy in inline threads, and purely-renamed files that got stuck on "Loading content…"). The external `/er-*` Claude Code skills are gone — you now run every review action from the built-in **AI Hub**.
+- **Why it matters.** Much less GitHub rate-limit pressure, a tidier guided review, faster review scoping, and fewer papercuts.
+- **TL;DR.** A big cut in GitHub API traffic, a cleaner Guide, one-click triage scoping, two desktop fixes, and reviews now run from the built-in AI Hub instead of external skills.
 
 ## Highlights
 
-- **Per-view review scoping (Local Branch vs PR Diff).** A local PR tab reviews two separate diffs — your local branch and the PR head-vs-base — and now keeps their review artifacts (triage, review, questions/notes, reviewed, checklist) split per view. GitHub PR comments stay shared across both views since they belong to the PR, and the Guide is per-view with identical-diff reuse so one generation serves both when the diffs match. (#102)
-- **New theme system + app icon.** A token-driven theme system with eight themes — Graphite (default), Slate, Midnight, Ember, Paper, Daylight, Contrast Dark, Contrast Light — shared across the terminal and desktop apps, plus a new Review List app icon. (#89)
-- **AI-guided Guide (tour) walkthrough.** A guided pillar-by-pillar review in both the TUI and desktop: sticky in-diff headers, mark-reviewed straight from the group rail, the full AI review action set inside Guide mode, and the tour attached to whichever diff you're viewing (PR vs local branch). (#93, #103, #105, #108)
-- **Background AI Arena runs.** Arena reviews are now tab-independent — start a run and switch tabs; it keeps going in the background and lands when it's done. (#95)
-- **Instant PR re-open (stale-while-revalidate).** The open-diff cache is persisted and trusted, and worktree PR metadata is cached in the snapshot build, so re-opening an unchanged PR renders from disk with no `gh` round-trips. A reliable "stale" pill lights when the PR head (or base branch) advanced on origin, and Sync re-saves so the next open is instant too.
-- **Readability-corrected syntax on diff backgrounds (desktop).** Token colors are nudged — hue preserved — only as far as needed to clear contrast against the actual add/del/changed-word background, fixing faint comments and washed-out strings on light themes. (#107)
-- **Quality-of-life.** Notes split from questions across desktop and TUI, with a Notes sidepanel (bulk Ask AI / Promote) and TUI Notes support; per-tab export buttons; GFM tables in desktop markdown; clickable bare URLs in PR descriptions; and relative "time ago" commit timestamps. (#86, #83, #92, #85, #84, #111, #110, #82)
+- **Far less GitHub rate-limit pressure (desktop).** The three background loops behind an open PR tab now check whether the data they already have is still fresh before re-fetching, the 30s status refresh collapses a four-call burst into two subprocesses, a duplicated CI fetch is dropped, and a cold PR open no longer fetches the diff twice. Steady state for one idle PR tab falls from ~900 calls/hr to under ~50, with intentional (and documented) small staleness tradeoffs — manual Sync stays immediate and a real push is still detected within ≤60s. (#128)
+- **Co-located tests in the Guide.** The AI Guide now nests a changed file's related files — its tests, styles, stories, and snapshots — directly beneath it in the pillar rail instead of scattering them across pillars or an "Other changes" bucket, so you read each file together with the tests that exercise it. Older tours keep loading unchanged. (#120)
+- **Triage-recommended files as a quick select.** When Triage has flagged specific files to review, the file picker shows a **Triage (N)** quick-select and the AI Arena launcher shows a **Review N triage-recommended files** button — scoping a review to exactly those files in one click. The button only appears for a fresh triage against the current diff. (#116)
+- **Reviews run from the built-in AI Hub.** The external `/er-*` Claude Code skills are removed; both apps already run the same review agents internally, so review, expert review, triage, and the professor now run from the AI Hub (<kbd>a</kbd> in the terminal, <kbd>Cmd</kbd>+<kbd>A</kbd> in desktop). The agent prompts are self-contained in the engine, so no binary, build, or bundle behavior changes. (#114)
 
 ## What's Changed
 
 ### Features
-- Split review artifacts between PR Diff and local Branch views (#102)
-- Adopt new theme system and Review List app icon (#89)
-- Tour walkthrough: AI-guided pillar review (TUI + desktop) (#93)
-- Guide view: sticky file headers + mark-reviewed from the group rail (#103)
-- Attach the Guide to the viewed diff (PR vs local branch) (#105)
-- Enable AI reviews in Guide (tour) mode (#108)
-- Make AI arena runs tab-independent (background runs) (#95)
-- Instant PR re-open: persist open-diff cache, cache worktree PR metadata, stale-while-revalidate with a reliable stale pill
-- Split local notes from questions (#86)
-- Notes sidepanel: bulk Ask AI / Promote, scrollable findings, parent-first preview (#83)
-- Add Notes support to the TUI (q → Ctrl+t) (#92)
-- Add comments/findings/questions visibility toggles to diff settings (#82)
-- Add per-tab export buttons to the right panel (#85)
-- Render GFM tables in desktop markdown (#84)
-- Linkify bare URLs in PR description (desktop) (#111)
-- Render commit timestamps as relative "time ago" in desktop (#110)
+- Co-locate a file's tests / styles / stories / snapshots under it in the Guide (#120)
+- Scope reviews to Triage-recommended files in one click (file picker + Arena) (#116)
+- Remove the external `/er-*` skills; run every review action from the built-in AI Hub (#114)
 
 ### Fixes
-- Keep syntax tokens legible on diff highlight backgrounds (desktop) (#107)
-- Make AI Review Arena follow the active theme (desktop) (#104)
-- Force-fetch PR head so rebased PRs swap cleanly (#106)
-- Fix finding validation failing for expert/professor findings (#99)
-- Fix batch review submit on local branch with explicit PR number (#88)
-- Show diff search bar below the sticky file header (desktop) (#87)
-- Address v0.4.0 review findings
+- Copy now works on inline comments, findings, notes, and questions (desktop) (#112)
+- Renamed / binary / mode-only files no longer stick on "Loading content…" in large diffs (desktop) (#125)
 
-### Docs & internal
-- Static documentation site for the terminal UI and desktop app (#81)
-- Product visuals + landing-page Guide & AI Arena (#98)
-- Add justfile task runner for build/run/test/lint commands (#91)
-- Remove bottom panel (#90)
-- Remove orphan code (#97)
-- Cover anchor resolution and ISO timestamp formatting in tests (#96)
+### Performance
+- Slim GitHub `gh` CLI rate-limit pressure in the desktop background loops (~900 → under ~50 calls/hr per idle PR tab) (#128)
 
 ## Contributors
 
 - @VilfredSikker
 
-**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.3.1...v0.4.0
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.0...v0.4.1

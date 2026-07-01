@@ -75,10 +75,12 @@ er https://github.com/owner/repo/pull/42</code></pre>
 
     <h2>Publishing an AI review to a PR</h2>
     <p>
-      The <code>/er-publish</code> skill takes your review — AI findings plus your GitHub comments — validates that it is
-      still fresh against the current diff, and posts it to the pull request as inline review comments. This is the
-      bridge from a local <code>er</code> session to a review your team sees on GitHub. See
-      <a href="skills.html">Claude Code Skills</a>.
+      Publishing happens inside <code>er</code> itself. In the <strong>TUI</strong>, press <kbd>P</kbd> to push your
+      comments to the PR; in the <strong>Desktop app</strong>, open the Comments card and use
+      <em>Push to GitHub</em> — either <em>Push as review</em> (all at once) or push individual comments. Both paths
+      validate freshness against the current diff before posting, and send your AI findings plus GitHub comments as
+      inline review comments — the bridge from a local <code>er</code> session to a review your team sees on GitHub.
+      See <a href="skills.html">AI Hub Actions</a>.
     </p>
 
     <h2>Staging, committing, and pushing <span class="pill tui">terminal</span></h2>

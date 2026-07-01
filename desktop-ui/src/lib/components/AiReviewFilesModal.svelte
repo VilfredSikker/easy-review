@@ -29,6 +29,7 @@
   import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
   import { filesByPathMap } from "$lib/treeFromPaths";
   import { reviewScopeFromMode } from "$lib/reviewScope";
+  import { triageRecommendedPaths } from "$lib/triageSuggestions";
   import type { FileSnapshot } from "$lib/types";
 
   type SubView = "files" | "reviewers";
@@ -65,6 +66,19 @@
 
   const selectedCount = $derived(selected.size);
   const reviewerCount = $derived(selectedReviewers.size);
+
+  // Triage-recommended files present in this view — drives the quick-select button.
+  const triagePaths = $derived.by(() => {
+    const recommended = triageRecommendedPaths(app.snapshot?.ai.triage);
+    if (recommended.length === 0) return [];
+    const available = new Set(pickerFiles.map((f) => f.path));
+    return recommended.filter((p) => available.has(p));
+  });
+
+  function selectTriage() {
+    if (triagePaths.length === 0) return;
+    selected = new Set(triagePaths);
+  }
 
   function pathsToFileSnapshots(paths: string[]): FileSnapshot[] {
     const byPath = filesByPathMap(app.snapshot?.files ?? []);
@@ -290,6 +304,18 @@
       >
         Unmark all
       </button>
+      {#if triagePaths.length > 0}
+        <span class="text-ink-600">·</span>
+        <button
+          type="button"
+          class="text-xs text-info hover:text-info/80 disabled:opacity-40"
+          disabled={loading}
+          onclick={selectTriage}
+          title="Select only the files Triage flagged for review"
+        >
+          Triage ({triagePaths.length})
+        </button>
+      {/if}
       <span class="ml-auto text-[10px] text-ink-400 font-mono">{selectedCount} selected</span>
     </div>
 

@@ -939,6 +939,24 @@ pub fn gh_pr_approve(
 /// Fetch PR overview data: title, body, state, author, branches, reviewers.
 /// If `pr_number` is Some, fetches that specific PR; otherwise auto-detects from current branch.
 pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
+    gh_pr_overview_impl(repo_root, pr_number, true)
+}
+
+/// Like `gh_pr_overview`, but skips the separate `gh pr checks` subprocess
+/// (`checks` is always empty in the result). Use this when the caller already
+/// has a fresher CI-checks source for the same PR — e.g. the desktop's 30s
+/// gh-status loop (`fetch_github_status` / `gh_status_cache`) — and only needs
+/// title/state/author/branch/reviewer metadata, to avoid a duplicate
+/// `gh pr checks` call on every tick.
+pub fn gh_pr_overview_no_checks(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverviewData> {
+    gh_pr_overview_impl(repo_root, pr_number, false)
+}
+
+fn gh_pr_overview_impl(
+    repo_root: &str,
+    pr_number: Option<u64>,
+    include_checks: bool,
+) -> Option<PrOverviewData> {
     // Fetch core PR fields
     let mut args = vec!["pr", "view"];
     let pr_num_str;
@@ -978,8 +996,14 @@ pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverv
         Vec::new()
     };
 
-    // Fetch CI checks (separate call — may fail if no checks configured)
-    let checks = gh_pr_checks_data(repo_root).unwrap_or_default();
+    // Fetch CI checks (separate call — may fail if no checks configured).
+    // Skipped when the caller already has a fresher checks source — see
+    // `gh_pr_overview_no_checks`.
+    let checks = if include_checks {
+        gh_pr_checks_data(repo_root).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     Some(PrOverviewData {
         number,
@@ -2012,32 +2036,25 @@ pub fn gh_pr_commits_remote(
     parse_pr_commits_view_json(&output.stdout, limit).unwrap_or_default()
 }
 
-/// Fetch a rich PR overview (state, draft, review decision, mergeable, labels)
-/// for a remote PR. No local clone required.
-pub fn gh_pr_overview_remote_full(owner: &str, repo: &str, number: u64) -> Result<PrOverviewFull> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "number,title,body,state,isDraft,author,reviewDecision,mergeable,headRefName,baseRefName,labels,url",
-        ])
-        .output()
-        .context("Failed to run gh pr view")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh pr view failed: {}", stderr.trim());
-    }
-    parse_pr_overview(&String::from_utf8_lossy(&output.stdout))
+/// Combined overview + conversation-comments + reviews for a remote PR, in
+/// ONE `gh pr view --json` subprocess. Collapses what used to be three
+/// separate `gh pr view` calls (`gh_pr_overview_remote_full` +
+/// `gh_pr_comments_overview` + `gh_pr_reviews`) into one GraphQL-backed call —
+/// verified empirically that requesting `comments`/`reviews` alongside other
+/// fields returns byte-identical data to requesting them alone (see
+/// internal-docs/gh-rate-limit-slimming.md, finding 5).
+///
+/// `gh pr checks` (CI status) is intentionally NOT folded in here — it's a
+/// different `gh` subcommand and must stay a separate call (`gh_pr_checks_remote`).
+pub struct PrStatusBundle {
+    pub overview: PrOverviewFull,
+    pub comments: Vec<PrComment>,
+    pub reviews: Vec<PrReview>,
 }
 
-/// Fetch general PR conversation comments (the issue-comments stream — NOT the
-/// per-line review comments fetched by `gh_pr_comments_remote`).
-pub fn gh_pr_comments_overview(owner: &str, repo: &str, number: u64) -> Result<Vec<PrComment>> {
+/// Fetch overview + comments + reviews for a remote PR in one `gh pr view` call.
+/// No local clone required.
+pub fn gh_pr_status_remote(owner: &str, repo: &str, number: u64) -> Result<PrStatusBundle> {
     let repo_slug = format!("{}/{}", owner, repo);
     let output = Command::new("gh")
         .args([
@@ -2047,37 +2064,27 @@ pub fn gh_pr_comments_overview(owner: &str, repo: &str, number: u64) -> Result<V
             "--repo",
             &repo_slug,
             "--json",
-            "comments",
+            "number,title,body,state,isDraft,author,reviewDecision,mergeable,headRefName,baseRefName,labels,url,comments,reviews",
         ])
         .output()
-        .context("Failed to run gh pr view (comments)")?;
+        .context("Failed to run gh pr view (status bundle)")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh pr view comments failed: {}", stderr.trim());
+        anyhow::bail!("gh pr view (status bundle) failed: {}", stderr.trim());
     }
-    parse_pr_comments(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// Fetch reviews (APPROVED / CHANGES_REQUESTED / COMMENTED) for a remote PR.
-pub fn gh_pr_reviews(owner: &str, repo: &str, number: u64) -> Result<Vec<PrReview>> {
-    let repo_slug = format!("{}/{}", owner, repo);
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "reviews",
-        ])
-        .output()
-        .context("Failed to run gh pr view (reviews)")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh pr view reviews failed: {}", stderr.trim());
-    }
-    parse_pr_reviews(&String::from_utf8_lossy(&output.stdout))
+    let json = String::from_utf8_lossy(&output.stdout);
+    // overview parse failure is fatal (matches old gh_pr_overview_remote_full
+    // behavior — caller treats a failed overview as "no status available").
+    let overview = parse_pr_overview(&json)?;
+    // comments/reviews failures are non-fatal (matches old call sites, which
+    // wrapped these in `.unwrap_or_default()` at the spawn closure).
+    let comments = parse_pr_comments(&json).unwrap_or_default();
+    let reviews = parse_pr_reviews(&json).unwrap_or_default();
+    Ok(PrStatusBundle {
+        overview,
+        comments,
+        reviews,
+    })
 }
 
 /// Fetch CI check runs for a remote PR.
@@ -2469,6 +2476,70 @@ mod tests {
         assert_eq!(commits[0].author, "Grace Hopper");
         assert_eq!(commits[1].hash, "1111111111111111111111111111111111111111");
         assert_eq!(commits[1].author, "ada");
+    }
+
+    #[test]
+    fn combined_status_json_parses_overview_comments_reviews_independently() {
+        let json = r#"{
+            "number": 42,
+            "title": "Fix the bug",
+            "body": "Detailed description",
+            "state": "OPEN",
+            "isDraft": false,
+            "author": { "login": "contributor" },
+            "reviewDecision": "APPROVED",
+            "mergeable": "MERGEABLE",
+            "headRefName": "fix/the-bug",
+            "baseRefName": "main",
+            "labels": [{ "name": "bug" }, { "name": "p1" }],
+            "url": "https://github.com/owner/repo/pull/42",
+            "comments": [
+                {
+                    "author": { "login": "alice" },
+                    "body": "looks good",
+                    "createdAt": "2026-06-01T10:00:00Z",
+                    "url": "https://github.com/owner/repo/pull/42#issuecomment-1"
+                },
+                {
+                    "author": { "login": "bob" },
+                    "body": "one nit",
+                    "createdAt": "2026-06-02T11:00:00Z",
+                    "url": "https://github.com/owner/repo/pull/42#issuecomment-2"
+                }
+            ],
+            "reviews": [
+                {
+                    "author": { "login": "carol" },
+                    "state": "CHANGES_REQUESTED",
+                    "body": "needs work",
+                    "submittedAt": "2026-06-01T12:00:00Z"
+                },
+                {
+                    "author": { "login": "carol" },
+                    "state": "APPROVED",
+                    "body": "lgtm now",
+                    "submittedAt": "2026-06-03T09:00:00Z"
+                }
+            ]
+        }"#;
+
+        let overview = parse_pr_overview(json).unwrap();
+        assert_eq!(overview.number, 42);
+        assert_eq!(overview.author, "contributor");
+        assert_eq!(overview.review_decision.as_deref(), Some("APPROVED"));
+        assert_eq!(overview.labels, vec!["bug".to_string(), "p1".to_string()]);
+
+        let comments = parse_pr_comments(json).unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].author, "alice");
+        assert_eq!(comments[1].author, "bob");
+        assert_eq!(comments[1].body, "one nit");
+
+        let reviews = parse_pr_reviews(json).unwrap();
+        assert_eq!(reviews.len(), 2);
+        assert_eq!(reviews[0].state, "CHANGES_REQUESTED");
+        assert_eq!(reviews[1].state, "APPROVED");
+        assert_eq!(reviews[1].submitted_at, "2026-06-03T09:00:00Z");
     }
 
     #[test]

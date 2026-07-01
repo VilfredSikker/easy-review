@@ -1,1 +1,0 @@
-../../skills/er-wizard/SKILL.md

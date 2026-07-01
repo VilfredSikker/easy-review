@@ -1,1 +1,0 @@
-../../skills/er-questions/SKILL.md

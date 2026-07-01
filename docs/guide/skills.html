@@ -3,104 +3,241 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Claude Code Skills — easy-review docs</title>
-  <meta name="description" content="The /er-* Claude Code skills that power easy-review's AI loop: review, experts, professor, triage, questions, publish, quiz, and the review philosophy behind them.">
+  <title>AI Hub Actions — easy-review docs</title>
+  <meta name="description" content="The built-in AI Hub actions in er: full review, expert lenses, triage, professor, tour generation, and more — with TUI and Desktop invocations for each.">
   <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
   <main class="content">
     <p class="eyebrow">Core Concepts</p>
-    <h1>Claude Code Skills</h1>
+    <h1>AI Hub Actions</h1>
     <p class="lead">
-      The AI half of <code>er</code>'s feedback loop is a set of Claude Code skills — slash commands like
-      <code>/er-review</code>. Each generates sidecar files that <code>er</code> reads and renders. This page is the full
-      catalog and how the skills fit together.
+      Open the AI Hub — press <kbd>a</kbd> in the TUI or <kbd>Cmd+A</kbd> (macOS) / <kbd>Ctrl+A</kbd> (Windows/Linux)
+      in the desktop app — to run any of these actions. Each writes sidecar files that <code>er</code> reads and
+      renders inline. The Hub is the primary way to trigger AI work; no external tool or command is needed.
     </p>
-
-    <h2>Setup</h2>
-    <p>
-      Skills are auto-discovered from <code>.claude/commands/</code> in the repository root, so anyone who clones the repo
-      and uses Claude Code gets them with no installation. The source of truth is the <code>skills/</code> directory;
-      the files in <code>.claude/commands/</code> are symlinks to each <code>skills/&lt;name&gt;/SKILL.md</code>.
-    </p>
-    <div class="callout note">
-      <span class="ico">◆</span>
-      <div><p>The skills document their output as <code>.er/&lt;file&gt;</code> relative to the repo. With default
-      managed storage, run reviews through <code>er</code>'s own agent commands, or set <code>ER_REPO_LOCAL=1</code> so
-      skill output lands where <code>er</code> reads it. See <a href="storage.html">Review Storage</a>.</p></div>
-    </div>
 
     <h2>The standard loop</h2>
     <table>
-      <thead><tr><th>Step</th><th>Where</th><th>Command</th><th>What happens</th></tr></thead>
+      <thead><tr><th>Step</th><th>AI Hub / App</th><th>Action</th><th>What happens</th></tr></thead>
       <tbody>
-        <tr><td>1</td><td>Claude Code</td><td><code>/er-review</code></td><td>Writes the review sidecar files</td></tr>
-        <tr><td>2</td><td><code>er</code></td><td><kbd>v</kbd></td><td>Detects new files; shows findings inline</td></tr>
-        <tr><td>3</td><td><code>er</code></td><td><kbd>q</kbd> / <kbd>c</kbd></td><td>Leave questions and comments</td></tr>
-        <tr><td>4</td><td>Claude Code</td><td><code>/er-questions</code></td><td>Reads feedback, responds, archives</td></tr>
-        <tr><td>5</td><td><code>er</code></td><td>—</td><td>Auto-refreshes; AI responses appear inline</td></tr>
-        <tr><td>6</td><td>Claude Code</td><td><code>/er-publish</code></td><td>Validates freshness, posts to the GitHub PR</td></tr>
+        <tr>
+          <td>1</td>
+          <td>AI Hub</td>
+          <td>TUI: <strong>Review work</strong> · Desktop: <strong>Run review</strong></td>
+          <td>Writes review sidecar files; findings appear inline</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><code>er</code></td>
+          <td><kbd>v</kbd></td>
+          <td>Cycle review panel; browse findings and inline comments</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><code>er</code></td>
+          <td><kbd>q</kbd> / <kbd>c</kbd></td>
+          <td>Leave questions and comments on lines</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td>AI Hub (TUI only)</td>
+          <td><strong>Answer questions</strong></td>
+          <td>
+            Reads your questions, responds, archives them.<br>
+            <em>Desktop: use the Notes panel instead — there is no Hub action for this.</em>
+          </td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td><code>er</code></td>
+          <td>—</td>
+          <td>Auto-refreshes; AI responses appear inline</td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td>Not a Hub action</td>
+          <td>
+            TUI: <kbd>P</kbd> key<br>
+            Desktop: Comments card → <strong>Push to GitHub</strong>
+          </td>
+          <td>Validates freshness, posts findings to the GitHub PR as inline comments</td>
+        </tr>
       </tbody>
     </table>
 
     <h2>Full catalog</h2>
-    <h3>Core review</h3>
-    <table>
-      <thead><tr><th>Skill</th><th>What it does</th></tr></thead>
-      <tbody>
-        <tr><td><code>/er-triage</code></td><td>Fast branch scan: first impression, routing verdict, priority files → <code>triage.json</code></td></tr>
-        <tr><td><code>/er-review</code></td><td>Full review: risk levels, findings, order, checklist, summary</td></tr>
-        <tr><td><code>/er-questions</code></td><td>Process human feedback, respond to comments, add new findings</td></tr>
-        <tr><td><code>/er-publish</code></td><td>Publish review findings to a GitHub PR as inline comments</td></tr>
-      </tbody>
-    </table>
+    <p>
+      All actions are available in both apps unless noted. Where TUI and Desktop differ, the difference is
+      called out explicitly.
+    </p>
 
-    <h3>Expert reviews</h3>
-    <p>Each expert looks at a single dimension and writes only to <code>experts/&lt;id&gt;.json</code>.</p>
+    <h3>Run review</h3>
     <table>
-      <thead><tr><th>Skill</th><th>Focus</th></tr></thead>
+      <thead><tr><th>App</th><th>Invocation</th></tr></thead>
       <tbody>
-        <tr><td><code>/er-review-security</code></td><td>Security findings</td></tr>
-        <tr><td><code>/er-review-performance</code></td><td>Performance</td></tr>
-        <tr><td><code>/er-review-reliability</code></td><td>Reliability</td></tr>
-        <tr><td><code>/er-review-testing</code></td><td>Testing</td></tr>
-        <tr><td><code>/er-review-api</code></td><td>API / contracts</td></tr>
-        <tr><td><code>/er-review-patterns</code></td><td>Pattern consistency</td></tr>
-        <tr><td><code>/er-review-simplifying</code></td><td>Readability / complexity</td></tr>
-        <tr><td><code>/er-review-mentorship</code></td><td>Exemplary patterns to foster</td></tr>
-      </tbody>
-    </table>
-
-    <h3>Learning &amp; housekeeping</h3>
-    <table>
-      <thead><tr><th>Skill</th><th>What it does</th></tr></thead>
-      <tbody>
-        <tr><td><code>/er-professor</code></td><td>Learning agent: teaching insights → <code>professor.json</code></td></tr>
-        <tr><td><code>/er-risk-sort</code></td><td>Re-sort the file review order by P0 → P1 → P2, cosmetic files last</td></tr>
-        <tr><td><code>/er-summary</code></td><td>Regenerate the markdown summary (P0/P1 focus, no cosmetic noise)</td></tr>
-        <tr><td><code>/er-checklist</code></td><td>Regenerate the review checklist (P0/P1 only, includes test-quality items)</td></tr>
-        <tr><td><code>/er-refresh</code></td><td>Refresh review artifacts against the current diff</td></tr>
-        <tr><td><code>/er-wizard</code></td><td>Guided setup / workflow helper</td></tr>
-      </tbody>
-    </table>
-
-    <h3>Comprehension quiz (optional)</h3>
-    <p>A workflow for checking that you actually understood a change before approving it.</p>
-    <table>
-      <thead><tr><th>Skill</th><th>What it does</th></tr></thead>
-      <tbody>
-        <tr><td><code>/er-quiz</code></td><td>Generate comprehension questions about the P0/P1 changes → <code>quiz.json</code></td></tr>
-        <tr><td><code>/er-quiz-review</code></td><td>Evaluate your answers and write teaching feedback → <code>quiz-feedback.json</code></td></tr>
+        <tr><td>TUI</td><td>Press <kbd>a</kbd> → select <strong>Review work</strong></td></tr>
+        <tr><td>Desktop</td><td>Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → select <strong>Run review</strong></td></tr>
       </tbody>
     </table>
     <p>
-      In the terminal, press <kbd>8</kbd> for quiz mode, answer the questions, then run <code>/er-quiz-review</code>.
-      Feedback appears inline after the next refresh.
+      Full review: risk levels, findings by severity, review order, checklist, and a markdown summary.
+      Writes <code>review.json</code>, <code>order.json</code>, <code>checklist.json</code>, and <code>summary.md</code>.
+    </p>
+
+    <h3>Specialized / expert review</h3>
+    <p>
+      Eight expert lenses, each focused on a single dimension and writing only to
+      <code>experts/&lt;id&gt;.json</code>. The TUI and Desktop offer the same experts but through different UI flows.
+    </p>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div>
+        <p>
+          <strong>TUI:</strong> Press <kbd>a</kbd> → <strong>Specialized review</strong> → a sub-menu lists all 8 experts; select one to run it.<br>
+          <strong>Desktop:</strong> Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Run reviewers…</strong> → a
+          <strong>Choose reviewers</strong> multi-select appears (General + 8 experts + Professor); toggle with
+          <kbd>Space</kbd> and confirm with <strong>Run N reviewer(s)</strong>. You can run multiple in one go.
+        </p>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>Expert</th><th>Focus</th><th>Writes</th></tr></thead>
+      <tbody>
+        <tr><td>Security</td><td>Auth, injection, data exposure</td><td><code>experts/security.json</code></td></tr>
+        <tr><td>Performance</td><td>Allocation, hot paths, complexity</td><td><code>experts/performance.json</code></td></tr>
+        <tr><td>Reliability</td><td>Error handling, resilience</td><td><code>experts/reliability.json</code></td></tr>
+        <tr><td>Testing</td><td>Coverage, assertion quality, mocks</td><td><code>experts/testing.json</code></td></tr>
+        <tr><td>API / contracts</td><td>Interface stability, breaking changes</td><td><code>experts/api.json</code></td></tr>
+        <tr><td>Patterns</td><td>Consistency with existing codebase conventions</td><td><code>experts/patterns.json</code></td></tr>
+        <tr><td>Simplifying</td><td>Readability and complexity reduction</td><td><code>experts/simplifying.json</code></td></tr>
+        <tr><td>Mentorship</td><td>Exemplary patterns worth fostering</td><td><code>experts/mentorship.json</code></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Triage</h3>
+    <table>
+      <thead><tr><th>App</th><th>Invocation</th></tr></thead>
+      <tbody>
+        <tr><td>TUI</td><td>Press <kbd>a</kbd> → <strong>Triage branch</strong></td></tr>
+        <tr><td>Desktop</td><td>Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Triage branch</strong></td></tr>
+      </tbody>
+    </table>
+    <p>
+      Fast branch scan: first impression, routing verdict (ready for full review / needs work / trivial),
+      priority files. Writes <code>triage.json</code>. Useful before committing to a full review.
+    </p>
+
+    <h3>Professor</h3>
+    <table>
+      <thead><tr><th>App</th><th>Invocation</th></tr></thead>
+      <tbody>
+        <tr><td>TUI</td><td>Press <kbd>a</kbd> → <strong>Professor</strong></td></tr>
+        <tr><td>Desktop</td><td>Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Professor</strong> (opens an optional focus-prompt modal before running)</td></tr>
+      </tbody>
+    </table>
+    <p>
+      A learning agent — it teaches rather than critiques. Surfaces concepts, patterns, and insights from
+      the diff. Writes <code>professor.json</code>. See <code>skills/PROFESSOR_PHILOSOPHY.md</code> for the
+      philosophy behind it.
+    </p>
+
+    <h3>Generate summary</h3>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div>
+        <p>
+          <strong>TUI only:</strong> Press <kbd>a</kbd> → <strong>Generate summary</strong> to regenerate
+          <code>summary.md</code> as a standalone action.<br>
+          <strong>Desktop:</strong> There is no standalone "Generate summary" action in the AI Actions palette.
+          <code>summary.md</code> is produced automatically as part of <strong>Run review</strong>.
+        </p>
+      </div>
+    </div>
+
+    <h3>Answer questions</h3>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div>
+        <p>
+          <strong>TUI only:</strong> Press <kbd>a</kbd> → <strong>Answer questions</strong>. This action is
+          disabled until you have added at least one question with the <kbd>q</kbd> key. It reads your
+          questions, generates AI responses, and updates <code>questions.json</code>.<br>
+          <strong>Desktop:</strong> There is no Hub action for answering questions. Questions are managed in
+          the <strong>Notes panel</strong> — add questions with <kbd>q</kbd> and AI responses appear there.
+        </p>
+      </div>
+    </div>
+
+    <h3>Validate / re-anchor findings</h3>
+    <table>
+      <thead><tr><th>App</th><th>Invocation</th></tr></thead>
+      <tbody>
+        <tr><td>TUI</td><td>Press <kbd>a</kbd> → <strong>Validate review</strong></td></tr>
+        <tr><td>Desktop</td><td>Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Validate / re-anchor</strong></td></tr>
+      </tbody>
+    </table>
+    <p>
+      Re-checks existing findings against the current diff and re-anchors line references that have moved.
+      Useful after making changes in response to review feedback.
+    </p>
+
+    <h3>Generate guided tour</h3>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div>
+        <p>
+          <strong>Desktop only:</strong> Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Generate tour</strong>
+          (or <strong>Regenerate tour</strong> if one already exists). A "Re-run guide" button also appears in the
+          Guide tab when the tour is stale. Writes <code>tour.json</code>.<br>
+          <strong>TUI:</strong> The TUI can navigate an existing tour in Guide / Tour mode, but it cannot
+          generate one. Generate the tour in the desktop app first.
+        </p>
+      </div>
+    </div>
+
+    <h3>Arena (multi-reviewer consensus)</h3>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div>
+        <p>
+          <strong>Desktop only — and not in the AI Actions palette.</strong> The Arena lives in the
+          <strong>Review panel</strong> Arena card: use <strong>Run as Arena</strong> or
+          <strong>Promote to Arena</strong> there.<br>
+          <strong>TUI:</strong> Arena is not available in the TUI.
+        </p>
+      </div>
+    </div>
+    <p>
+      Runs multiple reviewer agents in adversarial rounds: experts propose findings, fresh same-lens
+      skeptics try to refute them, an arbiter rules kept / dropped / merged. Higher-confidence results than
+      a single-pass review. See <a href="desktop-features.html#arena">Arena in the desktop features guide</a>.
+    </p>
+
+    <h3>Publish to GitHub (not a Hub action)</h3>
+    <p>
+      Publishing review comments to a GitHub PR is <strong>not</strong> an AI Hub action — it is a separate
+      operation in both apps:
+    </p>
+    <ul>
+      <li><strong>TUI:</strong> Press <kbd>P</kbd> to push local comments to the PR; press <kbd>G</kbd> to pull comments from GitHub.</li>
+      <li><strong>Desktop:</strong> Open the <strong>Comments card</strong> → <strong>Push to GitHub</strong>, then choose <strong>Push as review</strong> or push individual comments. Comments are pulled automatically when you open a PR tab.</li>
+    </ul>
+
+    <h2>Comprehension quiz</h2>
+    <p>
+      Quizzes have <strong>no in-app generation</strong>. Quiz content comes from the external
+      <strong>TechProfessor</strong> integration or from imported sidecar files. The TUI Quiz mode
+      (press <kbd>8</kbd>) only <em>renders</em> an existing <code>quiz.json</code> — it cannot create one.
+    </p>
+    <p>
+      To import quiz sidecars written by an external tool: press <kbd>I</kbd> in the TUI or use
+      <strong>Import local review files</strong> in the desktop app.
     </p>
 
     <h2>Review philosophy</h2>
     <p>
-      Every skill shares one severity model and a “what not to flag” list, documented in
+      Every reviewer shares one severity model and a "what not to flag" list, documented in
       <code>skills/REVIEW_PHILOSOPHY.md</code> and <code>skills/REVIEW_RULES.md</code>:
     </p>
     <ul>
@@ -114,11 +251,12 @@
       You can run the general review, any experts, and the professor concurrently. <code>er</code> merges each fresh
       sidecar (matching the current diff hash) into the in-memory review, and every finding carries an <strong>agent
       pill</strong> — <code>General</code>, <code>Security</code>, <code>Professor</code>, and so on — so you can tell at a
-      glance which agent raised it. The desktop app makes this a first-class flow with its multi-model
-      <a href="desktop-features.html#arena">review arena</a>.
+      glance which agent raised it. The desktop app makes this a first-class flow: use <strong>Run reviewers…</strong>
+      in the AI Actions palette to select and launch multiple reviewers at once, or use the
+      <a href="desktop-features.html#arena">review arena</a> for adversarial multi-model consensus.
     </p>
 
-    <h2>Testing without running skills</h2>
+    <h2>Testing without running a review</h2>
     <p>To see the overlays without invoking an AI tool, generate fixtures with a matching diff hash:</p>
     <pre><code>cd your-repo
 bash /path/to/easy-review/scripts/generate-test-fixtures.sh</code></pre>
