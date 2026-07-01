@@ -13,8 +13,9 @@
     <h1>Reviewing &amp; Navigation</h1>
     <p class="lead">
       The day-to-day of a review: moving through files and hunks, tracking what you have covered, narrowing the list to
-      what matters, and jumping out to your editor when you need to. Keys below are the terminal defaults; the desktop
-      app offers the same actions through its UI and its own shortcuts.
+      what matters, and jumping out to your editor when you need to. The concepts on this page apply to both apps;
+      the keys shown are the terminal defaults. The desktop app offers the same actions through its UI and its own
+      shortcuts — see <a href="desktop-features.html">Desktop Features</a>.
     </p>
 
     <h2>Navigating the diff</h2>
@@ -22,11 +23,11 @@
     <table>
       <thead><tr><th>Keys</th><th>Action</th></tr></thead>
       <tbody>
-        <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>Next / previous file</td></tr>
+        <tr><td><kbd>k</kbd> / <kbd>j</kbd></td><td>Next / previous file</td></tr>
         <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>Next / previous hunk</td></tr>
         <tr><td><kbd>↓</kbd> / <kbd>↑</kbd></td><td>Next / previous line within hunks</td></tr>
         <tr><td><kbd>h</kbd> / <kbd>l</kbd></td><td>Scroll the diff left / right</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>d</kbd> / <kbd>Ctrl</kbd>+<kbd>u</kbd></td><td>Half page down / up</td></tr>
+        <tr><td><kbd>d</kbd> / <kbd>u</kbd></td><td>Scroll down / up (also <kbd>Ctrl</kbd>+<kbd>d</kbd> / <kbd>Ctrl</kbd>+<kbd>u</kbd>)</td></tr>
       </tbody>
     </table>
     <p>
@@ -41,7 +42,7 @@
       <thead><tr><th>Key</th><th>Action</th></tr></thead>
       <tbody>
         <tr><td><kbd>Space</kbd></td><td>Toggle the current file as reviewed</td></tr>
-        <tr><td><kbd>u</kbd></td><td>Filter the list to unreviewed files only</td></tr>
+        <tr><td><kbd>!</kbd></td><td>Filter the list to unreviewed files only</td></tr>
         <tr><td><kbd>U</kbd></td><td>Jump to the next unreviewed file</td></tr>
       </tbody>
     </table>
@@ -88,11 +89,11 @@
 
     <h2>Sorting</h2>
     <ul>
-      <li><strong>By recency</strong> — <kbd>Shift</kbd>+<kbd>R</kbd> toggles modification-time sorting in any mode, so
+      <li><strong>By recency</strong> — <kbd>m</kbd> toggles modification-time sorting in any mode, so
       the files your AI just touched rise to the top.</li>
       <li><strong>By risk</strong> — when an AI review has run, files carry risk indicators (high / medium / low) in the
-      list. Running a review from the AI Hub also produces <code>order.json</code>, which reorders files highest-risk
-      first. See <a href="ai-review.html">AI Review</a>.</li>
+      list. Running a review from the AI Hub also produces <code>order.json</code>, a suggested review order with
+      groupings. See <a href="ai-review.html">AI Review</a>.</li>
     </ul>
 
     <h2>Editor &amp; clipboard integration</h2>
@@ -100,8 +101,8 @@
       <thead><tr><th>Key</th><th>Action</th></tr></thead>
       <tbody>
         <tr><td><kbd>e</kbd></td><td>Open the current file in <code>$EDITOR</code></td></tr>
-        <tr><td><kbd>y</kbd></td><td>Copy the current hunk to the clipboard</td></tr>
-        <tr><td><kbd>r</kbd></td><td>Manually refresh the diff</td></tr>
+        <tr><td><kbd>y</kbd></td><td>Open the copy hub — copy the file, its path, the current hunk, or the current line</td></tr>
+        <tr><td><kbd>R</kbd></td><td>Manually refresh the diff</td></tr>
       </tbody>
     </table>
     <p>
@@ -119,8 +120,7 @@
       <tbody>
         <tr><td><kbd>]</kbd> / <kbd>[</kbd></td><td>Next / previous tab</td></tr>
         <tr><td><kbd>x</kbd></td><td>Close the current tab</td></tr>
-        <tr><td><kbd>t</kbd></td><td>Worktree picker</td></tr>
-        <tr><td><kbd>o</kbd></td><td>Directory browser (open another repo)</td></tr>
+        <tr><td><kbd>o</kbd></td><td>Open hub — switch repository, worktree, or recent project</td></tr>
       </tbody>
     </table>
     <p>
@@ -129,10 +129,10 @@
       <a href="desktop-features.html">Desktop Features</a>.
     </p>
 
-    <h2>Settings overlay</h2>
+    <h2>Settings hub</h2>
     <p>
-      Press <kbd>S</kbd> to open the settings overlay and adjust display and feature options live. Changes apply
-      immediately; <kbd>s</kbd> persists them, <kbd>Esc</kbd> reverts. The full list of options is in
+      Press <kbd>,</kbd> to open the settings hub and adjust display and feature options live. Changes apply
+      immediately and can be persisted to the global config from inside the hub. The full list of options is in
       <a href="configuration.html">Configuration</a>.
     </p>
   </main>

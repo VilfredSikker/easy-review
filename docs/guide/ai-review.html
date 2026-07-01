@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI Review — easy-review docs</title>
-  <meta name="description" content="How easy-review's AI review loop works: sidecar artifacts, risk levels, inline findings, expert agents, the professor, view modes, staleness, and the AI Hub.">
+  <meta name="description" content="How easy-review's AI review loop works: sidecar artifacts, risk levels, inline findings, expert agents, the professor, triage, staleness, and the AI Hub.">
   <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
@@ -51,11 +51,11 @@
       <thead><tr><th>Step</th><th>Where</th><th>What happens</th></tr></thead>
       <tbody>
         <tr><td>1</td><td>AI Hub</td><td>Open the Hub (<kbd>a</kbd> / <kbd>Cmd</kbd>+<kbd>A</kbd>) and choose <strong>Run review</strong> (TUI: <code>Review work</code>). The agents analyze the diff and write sidecar files.</td></tr>
-        <tr><td>2</td><td><code>er</code></td><td>Detects the new files automatically; press <kbd>v</kbd> to show findings inline.</td></tr>
+        <tr><td>2</td><td><code>er</code></td><td>Detects the new files automatically; findings appear inline (toggle the layer with <kbd>A</kbd> in the TUI).</td></tr>
         <tr><td>3</td><td><code>er</code></td><td>You read findings, leave questions with <kbd>q</kbd>, comments with <kbd>c</kbd>.</td></tr>
-        <tr><td>4</td><td>AI Hub</td><td>TUI: open the Hub and choose <code>Answer questions</code> (enabled once you have added a question). Desktop: questions are managed in the Notes panel — no Hub action needed.</td></tr>
+        <tr><td>4</td><td>AI Hub</td><td>TUI: open the Hub and choose <code>Answer questions</code> (enabled once you have added a question). Desktop: questions are managed in the Notes panel — each has its own AI actions.</td></tr>
         <tr><td>5</td><td><code>er</code></td><td>Auto-refreshes; AI responses appear inline. Continue reviewing.</td></tr>
-        <tr><td>6</td><td><code>er</code></td><td>Publish to GitHub: TUI press <kbd>P</kbd> to push comments to the PR. Desktop: use the Comments card <strong>Push to GitHub</strong> → "Push as review" or push individual comments.</td></tr>
+        <tr><td>6</td><td><code>er</code></td><td>Publish to GitHub: TUI open the Git hub (<kbd>g</kbd>) → <strong>Push comments to GitHub</strong>. Desktop: use the Comments card <strong>Push to GitHub</strong> → "Push as review" or push individual comments.</td></tr>
       </tbody>
     </table>
 
@@ -82,7 +82,7 @@
         </div>
         <div class="body">
           <div class="diff">
-            <div class="dhead"><span>src/auth/token.rs</span><span class="c-muted">v · AI view ON</span></div>
+            <div class="dhead"><span>src/auth/token.rs</span><span class="c-muted">A · AI findings ON</span></div>
             <div class="code">
               <div class="dl del"><span class="ln">14</span><span class="tx c-red">−   fn verify(t: Token) -&gt; bool {</span></div>
               <div class="dl add"><span class="ln">14</span><span class="tx c-green">+   async fn verify(t: Token) -&gt; Result&lt;()&gt; {</span></div>
@@ -127,7 +127,7 @@
           </div>
         </div>
       </div>
-      <figcaption>Findings appear as inline banners on the lines they touch — color-coded by agent (Security/Performance in orange, <strong>Professor</strong> in blue) — beside an AI summary panel with the risk rating, finding counts, and checklist. Press <kbd>v</kbd> to dial how much of this is shown.</figcaption>
+      <figcaption>Findings appear as inline banners on the lines they touch — color-coded by agent (Security/Performance in orange, <strong>Professor</strong> in blue) — beside an AI summary panel with the risk rating, finding counts, and checklist. Toggle the findings layer with <kbd>A</kbd> and cycle the panel with <kbd>p</kbd> to dial how much of this is shown.</figcaption>
     </figure>
 
     <h2>Severity model</h2>
@@ -181,11 +181,14 @@
       review a branch actually warrants.
     </p>
 
-    <h2>AI view modes <span class="pill tui">terminal</span></h2>
+    <h2>Dialing AI context up and down <span class="pill tui">terminal</span></h2>
     <p>
-      In the terminal, press <kbd>v</kbd> (or <kbd>V</kbd> to cycle backward) to move through the AI presentation modes —
-      from a plain diff, to findings overlaid inline, to a side panel with the summary and risk breakdown, to a
-      dedicated AI review layout. Cycling lets you dial the amount of AI context up or down without leaving the diff.
+      In the terminal, inline AI findings are a toggleable <strong>layer</strong>: <kbd>A</kbd> shows or hides them
+      (comments and questions have their own layers on <kbd>C</kbd> and <kbd>Q</kbd>, and <kbd>X</kbd> hides resolved
+      items). The right-hand context panel cycles with <kbd>p</kbd> / <kbd>P</kbd> through file details, the AI
+      summary with the risk breakdown, and the PR overview. Together they let you move from a plain diff to a fully
+      annotated one without leaving the keyboard. In the desktop app the equivalent switches live in the diff
+      toolbar and right panel.
     </p>
 
     <h2>Staleness</h2>
@@ -208,8 +211,11 @@
     <h2>Trying it without an AI tool</h2>
     <p>To explore how the overlays render without running a real review, generate sample artifacts:</p>
     <pre><code>cd your-repo
-bash /path/to/easy-review/scripts/generate-test-fixtures.sh</code></pre>
-    <p>This writes <code>.er/</code> files with a matching diff hash so the AI views light up against your current diff.</p>
+bash /path/to/easy-review/scripts/generate-test-fixtures.sh
+ER_REPO_LOCAL=1 er   <span class="cmt"># read sidecars from the repo's .er/ directory</span></code></pre>
+    <p>The script writes repo-local <code>.er/</code> files with a matching diff hash, so run <code>er</code> with
+    <code>ER_REPO_LOCAL=1</code> (see <a href="storage.html">Review Storage</a>) and the AI views light up against
+    your current diff.</p>
 
     <div class="callout tip">
       <span class="ico">✦</span>

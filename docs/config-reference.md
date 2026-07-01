@@ -15,24 +15,24 @@ Per-repo only needs to specify fields that differ from your global config. Unspe
 
 ## Live Editing
 
-Press `S` inside `er` to open the settings overlay. Changes apply immediately. Press `s` to persist to `~/.config/er/config.toml`, or `Esc` to revert.
+Press `,` inside `er` to open the settings hub. Changes apply immediately and can be persisted to `~/.config/er/config.toml` from inside the hub.
 
 ## All Options
 
 ### `[features]`
 
-Feature toggles. All default to `true` except `blame_annotations`.
+Feature toggles. All default to `true`.
 
 ```toml
 [features]
-split_diff = true          # Side-by-side diff view
-exit_heatmap = true        # Show review heatmap on exit
-blame_annotations = false  # Show git blame inline (off by default)
-bookmarks = true           # Enable diff bookmarks
-view_branch = true         # Enable branch diff mode (key: 1)
-view_unstaged = true       # Enable unstaged diff mode (key: 2)
-view_staged = true         # Enable staged diff mode (key: 3)
-ai_overlays = true         # Enable AI overlay views (key: v/V)
+view_branch = true         # Enable branch diff mode
+view_unstaged = true       # Enable unstaged diff mode
+view_staged = true         # Enable staged diff mode
+view_history = true        # Enable commit history mode
+view_conflicts = true      # Enable merge conflicts mode (tab appears during a merge)
+view_hidden = true         # Enable hidden/watched files mode (tab appears when [watched] paths exist)
+view_tour = true           # Enable AI guided tour mode (tab appears when a tour.json exists)
+arena = true               # Enable the multi-reviewer arena (desktop)
 ```
 
 ### `[display]`
@@ -41,9 +41,11 @@ Rendering options.
 
 ```toml
 [display]
+theme = "graphite"   # graphite | slate | midnight | ember | paper | daylight | contrast-dark | contrast-light
 tab_width = 4        # Spaces per tab character (1-16)
 line_numbers = true  # Show line numbers in diff view
 wrap_lines = false   # Wrap long lines instead of horizontal scroll
+split_diff = false   # Side-by-side diff view
 ```
 
 ### `[agent]`
@@ -124,7 +126,7 @@ Rules:
 - Model `args` are appended after provider args.
 - If `[ai_hub]` is absent, `er` falls back to the single `[agent]` configuration.
 - On load, `er` merges any missing built-in catalog models (e.g. new Opus releases) into your config in memory without rewriting your TOML file.
-- The selected provider/model applies to AI Hub actions such as review, questions, quiz, wizard, and summary.
+- The selected provider/model applies to AI Hub actions such as review, triage, experts, professor, questions, and summary.
 - `[ai_hub.reviewer_models]` overrides the hub model for specific reviewer kinds. Triage uses `triage = "haiku-4.5"` by default in the example config; when unset, triage falls back to the fastest model in the active provider list.
 
 ### `[watched]`
@@ -147,7 +149,7 @@ Shared preferences across all repos:
 
 ```toml
 [features]
-blame_annotations = true
+view_conflicts = false
 
 [display]
 tab_width = 2
@@ -170,7 +172,7 @@ paths = [".work/**/*", ".er/**/*", "logs/**/*.log"]
 diff_mode = "snapshot"
 ```
 
-Result: `blame_annotations = true` and `wrap_lines = true` from global, `tab_width = 4` and extra watched paths from local.
+Result: `view_conflicts = false` and `wrap_lines = true` from global, `tab_width = 4` and extra watched paths from local.
 
 ## `.er/` AI artifacts
 

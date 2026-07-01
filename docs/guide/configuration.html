@@ -34,41 +34,50 @@
 
     <h2>Live editing <span class="pill tui">terminal</span></h2>
     <p>
-      Press <kbd>S</kbd> inside <code>er</code> to open the settings overlay. Changes apply immediately so you can see
-      the effect. Press <kbd>s</kbd> to persist them to your global config, or <kbd>Esc</kbd> to revert. The desktop app
-      has a dedicated settings page covering the same options plus desktop-only ones.
+      Press <kbd>,</kbd> inside <code>er</code> to open the settings hub. Changes apply immediately so you can see
+      the effect, and <kbd>s</kbd> persists them to your global config.
+    </p>
+
+    <h2>Settings GUI <span class="pill desktop">desktop</span></h2>
+    <p>
+      The desktop app has a dedicated settings page (command palette → <em>Open settings</em>) covering the same
+      options organized into scopes — general options shared with the terminal (theme, display, AI Hub providers
+      and models, concurrency), desktop-only options, and embedded-terminal options. Changes apply live and are
+      written back to the same TOML files, so the two apps always agree.
     </p>
 
     <h2><code>[features]</code> — which modes and features are on</h2>
-    <p>Feature toggles. All default to <code>true</code> except <code>blame_annotations</code>.</p>
+    <p>Feature toggles. All default to <code>true</code>.</p>
     <pre><code>[features]
-view_branch    = <span class="tok-key">true</span>   <span class="cmt"># Branch diff (key 1)</span>
-view_unstaged  = <span class="tok-key">true</span>   <span class="cmt"># Unstaged changes (key 2)</span>
-view_staged    = <span class="tok-key">true</span>   <span class="cmt"># Staged changes (key 3)</span>
-view_history   = <span class="tok-key">true</span>   <span class="cmt"># Commit history (key 4)</span>
-view_conflicts = <span class="tok-key">true</span>   <span class="cmt"># Merge conflicts (key 5)</span>
-view_hidden    = <span class="tok-key">true</span>   <span class="cmt"># Hidden / ignored files (key 6)</span>
-ai_overlays    = <span class="tok-key">true</span>   <span class="cmt"># AI view cycling (v / V)</span>
-split_diff        = <span class="tok-key">true</span>    <span class="cmt"># Side-by-side diff view</span>
-exit_heatmap      = <span class="tok-key">true</span>    <span class="cmt"># Review heatmap on exit</span>
-bookmarks         = <span class="tok-key">true</span>    <span class="cmt"># Diff bookmarks</span>
-blame_annotations = <span class="tok-key">false</span>   <span class="cmt"># Inline git blame (off by default)</span></code></pre>
+view_branch    = <span class="tok-key">true</span>   <span class="cmt"># Branch diff</span>
+view_unstaged  = <span class="tok-key">true</span>   <span class="cmt"># Unstaged changes</span>
+view_staged    = <span class="tok-key">true</span>   <span class="cmt"># Staged changes</span>
+view_history   = <span class="tok-key">true</span>   <span class="cmt"># Commit history</span>
+view_conflicts = <span class="tok-key">true</span>   <span class="cmt"># Merge conflicts (tab appears during a merge)</span>
+view_hidden    = <span class="tok-key">true</span>   <span class="cmt"># Hidden / watched files (tab appears when [watched] paths exist)</span>
+view_tour      = <span class="tok-key">true</span>   <span class="cmt"># Guided Tour walkthrough (tab appears when a tour.json exists)</span>
+arena          = <span class="tok-key">true</span>   <span class="cmt"># Multi-reviewer arena (desktop)</span></code></pre>
     <p>Disabling a view mode removes its tab and renumbers the rest — there are no gaps in the number keys.</p>
 
     <h2><code>[display]</code> — rendering</h2>
     <pre><code>[display]
-theme        = <span class="tok-str">"ocean-depth"</span>  <span class="cmt"># ocean-depth | moonlight | daybreak | high-contrast</span>
+theme        = <span class="tok-str">"graphite"</span>  <span class="cmt"># graphite (default) | slate | midnight | ember | paper | daylight | contrast-dark | contrast-light</span>
 line_numbers = <span class="tok-key">true</span>
-wrap_lines   = <span class="tok-key">false</span>         <span class="cmt"># wrap long lines instead of scrolling horizontally</span>
-split_diff   = <span class="tok-key">false</span>
-tab_width    = <span class="tok-key">4</span>             <span class="cmt"># spaces per tab (1–16)</span>
-auto_context_threshold = <span class="tok-key">50</span>  <span class="cmt"># auto-expand full context for files with ≤ N diff lines (0 disables)</span></code></pre>
-    <p>The theme drives both the terminal and desktop UIs. Each maps to a matching syntax-highlighting theme.</p>
+wrap_lines   = <span class="tok-key">false</span>       <span class="cmt"># wrap long lines instead of scrolling horizontally</span>
+split_diff   = <span class="tok-key">false</span>       <span class="cmt"># side-by-side diff view</span>
+tab_width    = <span class="tok-key">4</span>           <span class="cmt"># spaces per tab (1–16)</span>
+auto_context_threshold = <span class="tok-key">100</span>  <span class="cmt"># auto-expand context for small files, tiered by diff size (0 disables)</span></code></pre>
+    <p>
+      The theme drives both the terminal and desktop UIs: four dark themes (<strong>Graphite</strong>, the default,
+      plus Slate, Midnight, Ember), two light (Paper, Daylight), and two AAA high-contrast variants (Contrast Dark,
+      Contrast Light). Each maps to a matching syntax-highlighting theme. Older theme names (ocean-depth, moonlight,
+      daybreak, high-contrast, …) still resolve via aliases.
+    </p>
 
     <h2><code>[hints]</code> — bottom-bar key hints <span class="pill tui">terminal</span></h2>
     <pre><code>[hints]
 navigation = <span class="tok-key">true</span>   <span class="cmt"># j/k, n/N, Space, /</span>
-comments   = <span class="tok-key">true</span>   <span class="cmt"># r, d</span>
+comments   = <span class="tok-key">true</span>   <span class="cmt"># q, c, r, x</span>
 staging    = <span class="tok-key">true</span>   <span class="cmt"># s, commit</span>
 verbose    = <span class="tok-key">false</span>  <span class="cmt"># show all keybindings</span></code></pre>
 
@@ -88,6 +97,8 @@ args    = [<span class="tok-str">"--print"</span>, <span class="tok-str">"--outp
     <pre><code>[ai_hub]
 default_provider = <span class="tok-str">"claude"</span>
 default_model    = <span class="tok-str">"sonnet-4.6"</span>
+default_effort   = <span class="tok-str">"medium"</span>  <span class="cmt"># reasoning effort passed to providers that support it</span>
+max_concurrent_reviews = <span class="tok-key">3</span>  <span class="cmt"># queue further reviews beyond this many at once (1–16)</span>
 
 [ai_hub.reviewer_models]
 triage = <span class="tok-str">"haiku-4.5"</span>          <span class="cmt"># pin specific reviewer kinds to specific models</span>
@@ -108,7 +119,7 @@ args  = [<span class="tok-str">"--model"</span>, <span class="tok-str">"claude-s
       <li>On load, <code>er</code> merges any missing built-in catalog models into your config <em>in memory</em> — it does
       not rewrite your file.</li>
       <li>Providers in the example config include Claude, Codex, and Cursor.</li>
-      <li>The selected provider/model applies to AI Hub actions: review, questions, quiz, wizard, and summary.</li>
+      <li>The selected provider/model applies to AI Hub actions: review, triage, experts, professor, questions, and summary.</li>
     </ul>
 
     <h2><code>[summary]</code> — diff summaries</h2>
@@ -142,11 +153,16 @@ diff_mode = <span class="tok-str">"content"</span>                  <span class=
 <span class="cmt"># lint      = "cargo clippy"</span>
 <span class="cmt"># typecheck = "cargo check"</span>
 <span class="cmt"># security  = "cargo audit"</span></code></pre>
+    <p>
+      In a mono-repo, an optional <code>[packages]</code> section defines the same commands per package — each key
+      (e.g. <code>[packages.api]</code>) takes its own <code>label</code>, <code>test</code>, <code>lint</code>,
+      <code>typecheck</code>, and <code>security</code> commands, and the Verify hub groups them by package.
+    </p>
 
     <h2>Worked example</h2>
     <p>Global (<code>~/.config/er/config.toml</code>) holds preferences shared across repos:</p>
     <pre><code>[features]
-blame_annotations = <span class="tok-key">true</span>
+view_conflicts = <span class="tok-key">false</span>
 
 [display]
 tab_width  = <span class="tok-key">2</span>
@@ -162,7 +178,7 @@ tab_width = <span class="tok-key">4</span>
 paths     = [<span class="tok-str">".work/**/*"</span>, <span class="tok-str">".er/**/*"</span>, <span class="tok-str">"logs/**/*.log"</span>]
 diff_mode = <span class="tok-str">"snapshot"</span></code></pre>
     <p>
-      Result: <code>blame_annotations</code> and <code>wrap_lines</code> come from global; <code>tab_width = 4</code> and
+      Result: <code>view_conflicts</code> and <code>wrap_lines</code> come from global; <code>tab_width = 4</code> and
       the extra watched path come from the repo file.
     </p>
   </main>

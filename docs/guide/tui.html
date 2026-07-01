@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Terminal UI Overview — easy-review docs</title>
-  <meta name="description" content="The er terminal UI: launching, command-line flags, the three-panel layout, AI view modes, watch mode, and how it fits beside an AI coding assistant.">
+  <meta name="description" content="The er terminal UI: launching, command-line flags, the three-panel layout, inline layers and panels, watch mode, and how it fits beside an AI coding assistant.">
   <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
@@ -24,7 +24,8 @@
 er --pr 42                                <span class="cmt"># open a GitHub PR by number</span>
 er https://github.com/owner/repo/pull/42  <span class="cmt"># open a PR by URL</span>
 er ~/projects/api ~/projects/frontend     <span class="cmt"># open multiple repos as tabs</span>
-er --filter '*.rs'                        <span class="cmt"># pre-filter the file list</span></code></pre>
+er --filter '+*.rs,-*.lock'               <span class="cmt"># pre-filter the file list</span>
+er --target release/v2                    <span class="cmt"># diff against a specific base branch</span></code></pre>
     <table>
       <thead><tr><th>Flag / argument</th><th>Effect</th></tr></thead>
       <tbody>
@@ -32,6 +33,8 @@ er --filter '*.rs'                        <span class="cmt"># pre-filter the fil
         <tr><td>a PR URL</td><td>Open that pull request (any repo)</td></tr>
         <tr><td>one or more paths</td><td>Open each repository / worktree as a tab</td></tr>
         <tr><td><code>--filter &lt;expr&gt;</code></td><td>Apply a <a href="reviewing.html#filtering">filter</a> at startup</td></tr>
+        <tr><td><code>--remote</code></td><td>Review a PR from any directory, without a local clone (requires <code>gh</code>)</td></tr>
+        <tr><td><code>--target &lt;branch&gt;</code></td><td>Override the detected base branch (useful for stacked branches)</td></tr>
         <tr><td><code>--help</code></td><td>Show all options</td></tr>
       </tbody>
     </table>
@@ -111,11 +114,11 @@ er --filter '*.rs'                        <span class="cmt"># pre-filter the fil
               <span><b>↑/↓</b> line</span><span class="sep">·</span>
               <span><b>c</b> comment</span><span class="sep">·</span>
               <span><b>q</b> question</span><span class="sep">·</span>
-              <span><b>v</b> AI view</span><span class="sep">·</span>
+              <span><b>a</b> AI hub</span><span class="sep">·</span>
               <span><b>Tab</b> focus</span><span class="sep">·</span>
               <span><b>U</b> next unreviewed</span><span class="sep">·</span>
               <span><b>G</b> pull</span><span class="sep">·</span>
-              <span><b>P</b> push</span>
+              <span><b>p</b> panel</span>
             </div>
           </div>
           <div class="panel">
@@ -164,11 +167,22 @@ er --filter '*.rs'                        <span class="cmt"># pre-filter the fil
       the AI Hub with <kbd>a</kbd> and run a review — findings appear in <code>er</code> automatically.
     </p>
 
-    <h2>AI view modes</h2>
+    <h2>Layers and panels: dialing AI density up and down</h2>
     <p>
-      Press <kbd>v</kbd> (forward) or <kbd>V</kbd> (backward) to cycle how much AI context is shown — from a plain diff,
-      through inline findings, to a side panel with the summary and risk breakdown, to a dedicated AI review layout. This
-      is the terminal's way of dialing AI density up and down. See <a href="ai-review.html">AI Review</a>.
+      Inline annotations are organized as toggleable <strong>layers</strong>: <kbd>A</kbd> shows or hides AI findings,
+      <kbd>C</kbd> GitHub comments, <kbd>Q</kbd> questions and notes, and <kbd>X</kbd> hides resolved items. The
+      right-hand <strong>context panel</strong> cycles with <kbd>p</kbd> (backward with <kbd>P</kbd>) through file
+      details, the AI summary with the risk breakdown, and the PR overview. Together they are the terminal's way of
+      dialing review context up and down — from a plain diff to a fully annotated one. See
+      <a href="ai-review.html">AI Review</a>.
+    </p>
+
+    <h2>Hubs: everything else is one key away</h2>
+    <p>
+      Less frequent actions live in modal <strong>hubs</strong>: <kbd>a</kbd> opens the AI Hub (reviews, triage,
+      experts, professor), <kbd>g</kbd> the Git hub (push, stage, comment sync), <kbd>v</kbd> the Verify hub
+      (tests, linters, and other configured commands), <kbd>y</kbd> the copy hub, <kbd>o</kbd> the open hub
+      (repositories and worktrees), <kbd>,</kbd> the settings hub, and <kbd>?</kbd> the searchable help hub.
     </p>
 
     <h2>Syntax highlighting</h2>

@@ -57,12 +57,12 @@ er https://github.com/owner/repo/pull/42</code></pre>
     </ul>
 
     <h2>Two-way comment sync</h2>
-    <p>GitHub comments (the cyan <kbd>c</kbd>/<kbd>C</kbd> notes) sync in both directions:</p>
+    <p>GitHub comments (the cyan <kbd>c</kbd> notes) sync in both directions. In the terminal:</p>
     <table>
       <thead><tr><th>Key</th><th>Action</th></tr></thead>
       <tbody>
         <tr><td><kbd>G</kbd></td><td><strong>Pull</strong> review comments from the PR into your diff view</td></tr>
-        <tr><td><kbd>P</kbd></td><td><strong>Push</strong> your local comments up to the PR</td></tr>
+        <tr><td><kbd>g</kbd> → <em>Push comments to GitHub</em></td><td><strong>Push</strong> your local comments up to the PR — <kbd>r</kbd> posts them as one review, <kbd>i</kbd> as individual comments</td></tr>
       </tbody>
     </table>
     <p>
@@ -75,8 +75,8 @@ er https://github.com/owner/repo/pull/42</code></pre>
 
     <h2>Publishing an AI review to a PR</h2>
     <p>
-      Publishing happens inside <code>er</code> itself. In the <strong>TUI</strong>, press <kbd>P</kbd> to push your
-      comments to the PR; in the <strong>Desktop app</strong>, open the Comments card and use
+      Publishing happens inside <code>er</code> itself. In the <strong>TUI</strong>, open the Git hub (<kbd>g</kbd>)
+      and choose <strong>Push comments to GitHub</strong>; in the <strong>Desktop app</strong>, open the Comments card and use
       <em>Push to GitHub</em> — either <em>Push as review</em> (all at once) or push individual comments. Both paths
       validate freshness against the current diff before posting, and send your AI findings plus GitHub comments as
       inline review comments — the bridge from a local <code>er</code> session to a review your team sees on GitHub.

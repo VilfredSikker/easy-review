@@ -47,24 +47,24 @@ Base branch is auto-detected from upstream tracking, falling back to main/master
 
 1. Open the **AI Hub** — TUI: press `a`; Desktop: <kbd>Cmd+A</kbd> (macOS) / <kbd>Ctrl+A</kbd> (Windows/Linux)
 2. Run a review — TUI: select **Review work**; Desktop: select **Run review** — findings appear inline once complete
-3. Press `v` / `V` in the TUI to cycle AI view modes; Desktop switches views in the sidebar
+3. Findings appear inline — in the TUI toggle the findings layer with `A` and cycle the side panel with `p`; Desktop switches views in the sidebar
 4. Leave questions (`q`) or comments (`c`). In the TUI, open the Hub and select **Answer questions** to get AI responses. On Desktop, questions are managed in the Notes panel (no Hub action for answering)
 5. Watch mode is on by default — diffs refresh automatically as code changes
 
 ## Features
 
 - **Live watch mode** — Auto-refreshes on file edits, staging, and commits. Reviewed files auto-unmark when their diff changes.
-- **AI-powered review** — Open the **AI Hub** (`a` / <kbd>Cmd+A</kbd>) to run a full review (TUI: **Review work** / Desktop: **Run review**), a fast **Triage branch** scan, one of eight **Specialized review** lenses (Security, Performance, Reliability, Testing, API/Contracts, Patterns, Simplifying, Mentorship), or a **Professor** session for learning insights. Generates per-file risk levels, inline findings, and a review checklist. Four AI view modes: Default, Overlay, Side Panel, AI Review.
-- **Two comment types** — Personal questions (`q`/`Q`, yellow) for your own notes, and GitHub comments (`c`/`C`, cyan) for PR discussions. Reply with `r`, delete with `d`.
-- **GitHub PR sync** — Pull review comments with `G`, push yours back with `P`. Two-way sync via `gh` CLI.
-- **Six diff modes** — Branch diff (`1`), unstaged (`2`), staged (`3`), commit history (`4`), merge conflicts (`5`), hidden/ignored files (`6`). Sort by recency with `Shift+R`.
+- **AI-powered review** — Open the **AI Hub** (`a` / <kbd>Cmd+A</kbd>) to run a full review (TUI: **Review work** / Desktop: **Run review**), a fast **Triage branch** scan, one of eight **Specialized review** lenses (Security, Performance, Reliability, Testing, API/Contracts, Patterns, Simplifying, Mentorship), or a **Professor** session for learning insights. Generates per-file risk levels, inline findings, and a review checklist. Toggle inline layers with `A` (findings), `C` (comments), `Q` (questions); cycle the side panel with `p`.
+- **Three comment types** — Personal questions (`q`, yellow) and notes (cycle the draft type with `Ctrl+t`, 📝) stay local; GitHub comments (`c`, cyan) sync to PR discussions. Reply with `r`, delete a focused comment with `x`.
+- **GitHub PR sync** — Pull review comments with `G`; push yours back from the Git hub (`g` → **Push comments to GitHub**). Two-way sync via `gh` CLI.
+- **Six diff modes** — Branch diff (`1`), unstaged (`2`), staged (`3`), commit history (`4`), merge conflicts, hidden/watched files — plus PR Diff and an AI guided tour. Tabs are numbered dynamically. Sort by recency with `m`.
 - **Large diff performance** — Auto-compacts lock files and generated code. Lazy-parses 5,000+ line diffs. Viewport-based rendering only builds visible lines.
-- **Review tracking** — Mark files reviewed with `Space`, filter to unreviewed with `u`, jump to next unreviewed with `U`.
+- **Review tracking** — Mark files reviewed with `Space`, filter to unreviewed with `!`, jump to next unreviewed with `U`.
 - **Composable filters** — `f` to filter by glob/status/size (`+*.rs,-*.lock,>50`). `F` for presets and history.
 - **Multi-repo tabs** — Open multiple repos or worktrees as tabs. Switch with `]`/`[`.
 - **Syntax highlighting** — TUI: syntect with content-hash caching. Desktop: Shiki in a Web Worker with per-file LRU cache.
-- **Editor integration** — Jump to the current file in `$EDITOR` with `e`. Copy hunk with `y`.
-- **Configurable** — Per-repo or global `.er-config.toml`. In-app settings overlay (`S`) with live preview.
+- **Editor integration** — Jump to the current file in `$EDITOR` with `e`. Copy hub (file / path / hunk / line) with `y`.
+- **Configurable** — Per-repo or global `.er-config.toml`. In-app settings hub (`,`) with live preview.
 
 ## Keybindings
 
@@ -72,23 +72,20 @@ Base branch is auto-detected from upstream tracking, falling back to main/master
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Next / prev file |
+| `k` / `j` | Next / prev file |
 | `n` / `N` | Next / prev hunk |
 | `Down` / `Up` | Next / prev line (within hunks) |
 | `h` / `l` | Scroll left / right |
-| `Ctrl-d` / `Ctrl-u` | Half page down / up |
+| `d` / `u` (or `Ctrl-d` / `Ctrl-u`) | Scroll down / up |
+| `J` / `K` | Prev / next inline item (comments, findings) across files |
 
 ### Diff Modes
 
 | Key | Action |
 |-----|--------|
-| `1` | Branch diff (vs base branch) |
-| `2` | Unstaged changes |
-| `3` | Staged changes |
-| `4` | Commit history |
-| `5` | Merge conflicts |
-| `6` | Hidden / ignored files |
-| `Shift+R` | Toggle sort by recency |
+| `1`–`9` | Switch to the Nth visible mode tab (Branch, Unstaged, Staged, History, … — numbered dynamically) |
+| `m` | Toggle sort by recency |
+| `R` | Refresh diff |
 
 ### Actions
 
@@ -96,45 +93,49 @@ Base branch is auto-detected from upstream tracking, falling back to main/master
 |-----|--------|
 | `s` | Stage / unstage file |
 | `Space` | Toggle file as reviewed |
-| `u` | Filter to unreviewed files |
+| `!` | Filter to unreviewed files |
 | `U` | Jump to next unreviewed file |
 | `q` | Question on current line (personal, yellow) |
-| `Q` | Question on current hunk |
-| `c` | Comment on current line (GitHub, cyan) |
-| `C` | Comment on current hunk |
-| `y` | Copy current hunk to clipboard |
-| `e` | Open file in `$EDITOR` |
-| `r` | Refresh diff |
+| `c` | Comment on current line (GitHub, cyan) — commits in Staged mode |
+| `Ctrl+t` | While composing: cycle draft type (question → note → comment) |
+| `Q` / `C` / `A` | Toggle question / comment / AI-finding layer visibility |
+| `X` | Hide / show resolved items |
+| `y` | Copy hub (file, path, hunk, or line) |
+| `e` | Open file in `$EDITOR` (or edit focused own comment) |
 | `w` | Toggle watch mode |
 | `W` | Toggle watched files section |
 | `/` | Search files by name |
 | `f` | Filter files (glob, status, size) |
 | `F` | Filter presets & history |
 | `Enter` | Expand compacted file |
-| `S` | Open settings |
+| `,` | Open settings hub |
 
-### Comments (when focused with `Tab`)
+### Comments (when focused with `J` / `K`)
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Toggle comment focus mode |
-| `Down` / `Up` | Navigate between comments |
-| `r` | Reply to comment |
-| `d` | Delete comment |
-| `R` | Toggle resolved |
+| `J` / `K` | Focus prev / next inline item |
+| `r` | Reply to focused comment or finding |
+| `x` | Delete focused comment |
+| `e` | Edit focused comment (your own, top-level) |
 
 ### GitHub Sync (requires `gh` CLI)
 
 | Key | Action |
 |-----|--------|
 | `G` | Pull PR comments from GitHub |
-| `P` | Push local comments to GitHub |
+| `g` → Push comments to GitHub | Push local comments — as one review (`r`) or individually (`i`) |
+| `Ctrl+P` | Git push (Staged mode) |
 
-### AI Views
+### Hubs
 
 | Key | Action |
 |-----|--------|
-| `v` / `V` | Cycle AI view mode forward / backward |
+| `a` | AI Hub (review, triage, experts, professor, …) |
+| `g` | Git hub (push, stage, comment sync, PR actions) |
+| `v` | Verify hub (tests, lint, typecheck via `[commands]`) |
+| `o` | Open hub (repos, worktrees, recent projects) |
+| `?` | Help hub (all keys) |
 
 ### Tabs & Repos
 
@@ -142,8 +143,7 @@ Base branch is auto-detected from upstream tracking, falling back to main/master
 |-----|--------|
 | `]` / `[` | Next / prev tab |
 | `x` | Close tab |
-| `t` | Worktree picker |
-| `o` | Directory browser |
+| `o` | Open hub (repos, worktrees) |
 
 ### General
 
@@ -160,15 +160,15 @@ Base branch is auto-detected from upstream tracking, falling back to main/master
 2. `~/.config/er/config.toml` (global)
 3. Built-in defaults
 
-Press `S` to open the settings overlay. Changes apply immediately. Press `s` to save, `Esc` to revert.
+Press `,` to open the settings hub. Changes apply immediately and can be persisted to the global config.
 
 ```toml
 [features]
-view_branch = true        # branch diff mode (1)
-view_unstaged = true      # unstaged mode (2)
-view_staged = true        # staged mode (3)
-ai_overlays = true        # AI view cycling (v/V)
-blame_annotations = false # git blame on findings
+view_branch = true        # branch diff mode
+view_unstaged = true      # unstaged mode
+view_staged = true        # staged mode
+view_history = true       # commit history mode
+view_tour = true          # AI guided tour (tab appears when a tour exists)
 
 [display]
 tab_width = 4
@@ -240,7 +240,7 @@ Filenames are the same in managed storage and repo-local `.er/`:
 
 Each JSON sidecar stores a SHA-256 `diff_hash` of the diff it was generated against. When the diff changes, AI data is dimmed with a stale warning.
 
-The AI Hub (TUI: `a` / Desktop: <kbd>Cmd+A</kbd>) writes all review artifacts directly to managed storage — no manual steps needed. If you use external tools that write to `<repo>/.er/` in the working tree, set `ER_REPO_LOCAL=1` so `er` reads from there instead, or import via TUI `I` / Desktop **Import local review files**.
+The AI Hub (TUI: `a` / Desktop: <kbd>Cmd+A</kbd>) writes all review artifacts directly to managed storage — no manual steps needed. If you use external tools that write to `<repo>/.er/` in the working tree, set `ER_REPO_LOCAL=1` so `er` reads from there instead.
 
 ## Development
 

@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>easy-review — Terminal diff review for the AI era</title>
-  <meta name="description" content="A fast, keyboard-driven TUI for reviewing git diffs. Built for developers who work with AI coding assistants.">
+  <title>easy-review — Git diff review for the AI era</title>
+  <meta name="description" content="A fast git diff review tool — keyboard-driven terminal UI and a desktop app sharing one review engine. Built for developers who work with AI coding assistants.">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -440,7 +440,7 @@
       </h1>
 
       <p class="fade-up fade-up-3 text-lg sm:text-xl text-text-dim max-w-2xl mx-auto mb-10 font-light leading-relaxed">
-        A keyboard-driven terminal UI for reviewing git diffs — leave comments, sync with GitHub, and get AI-powered risk analysis. Built for developers who use Claude Code and need to review faster than they can code.
+        Review git diffs at speed — leave comments, sync with GitHub, and get AI-powered risk analysis. A keyboard-driven terminal UI and a desktop app sharing one review engine, built for developers who use Claude Code and need to review faster than they can code.
       </p>
 
       <!-- Install command -->
@@ -463,7 +463,7 @@
       </div>
 
       <p class="fade-up fade-up-5 text-xs text-text-muted font-mono">
-        Requires Rust 1.70+ · Single binary · Zero runtime dependencies
+        Prebuilt binaries, or build with Rust 1.85+ · Single binary · Zero runtime dependencies
       </p>
     </div>
   </section>
@@ -636,9 +636,9 @@
                 <span class="text-text-dim">·</span>
                 <span class="text-text-dim"><span class="text-text">q</span> question</span>
                 <span class="text-text-dim">·</span>
-                <span class="text-text-dim"><span class="text-text">v</span> AI view</span>
+                <span class="text-text-dim"><span class="text-text">a</span> AI hub</span>
                 <span class="text-text-dim">·</span>
-                <span class="text-text-dim"><span class="text-text">V</span> back</span>
+                <span class="text-text-dim"><span class="text-text">p</span> panel</span>
                 <span class="text-text-dim">·</span>
                 <span class="text-text-dim"><span class="text-text">Tab</span> focus</span>
                 <span class="text-text-dim">·</span>
@@ -646,7 +646,7 @@
                 <span class="text-text-dim">·</span>
                 <span class="text-text-dim"><span class="text-text">G</span> pull</span>
                 <span class="text-text-dim">·</span>
-                <span class="text-text-dim"><span class="text-text">P</span> push</span>
+                <span class="text-text-dim"><span class="text-text">g</span> git hub</span>
                 <span class="text-text-dim">·</span>
                 <span class="text-text-dim"><span class="text-text">^p</span> git push</span>
               </div>
@@ -695,7 +695,7 @@
   <section class="border-y border-border/50 reveal-up">
     <div class="max-w-5xl mx-auto stats-strip">
       <div class="stat-item">
-        <div class="stat-value" data-target="5" data-suffix="">5</div>
+        <div class="stat-value" data-target="6" data-suffix="">6</div>
         <div class="stat-label">diff modes</div>
       </div>
       <div class="stat-item">
@@ -733,7 +733,7 @@
             </li>
             <li class="flex gap-3">
               <span class="text-green mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">Five diff modes</strong> — Branch, Unstaged, Staged, History, Conflicts. Switch instantly with <span class="keycap">1</span>–<span class="keycap">5</span></span>
+              <span><strong class="text-text">Six diff modes</strong> — Branch, Unstaged, Staged, History, Conflicts, Hidden — plus PR Diff and an AI guided tour. Switch instantly with <span class="keycap">1</span>–<span class="keycap">6</span></span>
             </li>
             <li class="flex gap-3">
               <span class="text-green mt-0.5 shrink-0">✓</span>
@@ -875,12 +875,12 @@
           <span class="font-mono text-xs text-cyan uppercase tracking-widest">Comments</span>
           <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">Leave comments<br>where they matter</h2>
           <p class="text-text-dim leading-relaxed mb-6">
-            Two comment types, one keyboard. GitHub comments sync to your PR. Private questions go to AI review. Both anchor to the exact line — and follow it through 3-pass relocation when code shifts underneath.
+            Three comment types, one keyboard. GitHub comments sync to your PR. Private questions and notes stay local for you and your AI. All anchor to the exact line — and follow it through 3-pass relocation when code shifts underneath.
           </p>
           <ul class="space-y-3 text-sm text-text-dim mb-7">
             <li class="flex gap-3">
               <span class="text-cyan mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">Two comment types</strong> — <span class="keycap">c</span> for cyan GitHub comments that sync to your PR, <span class="keycap">q</span> for yellow private questions answered by AI</span>
+              <span><strong class="text-text">Three comment types</strong> — <span class="keycap">c</span> for cyan GitHub comments that sync to your PR, <span class="keycap">q</span> for yellow private questions answered by AI, and <span class="keycap">Ctrl+t</span> while composing to switch to a 📝 note for agent hand-off</span>
             </li>
             <li class="flex gap-3">
               <span class="text-cyan mt-0.5 shrink-0">✓</span>
@@ -888,7 +888,7 @@
             </li>
             <li class="flex gap-3">
               <span class="text-cyan mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">Line-level navigation</strong> — arrow keys move between lines. Comment on exact lines, not just hunks. Tab to enter comment focus mode</span>
+              <span><strong class="text-text">Line-level navigation</strong> — arrow keys move between lines. Comment on exact lines, not just hunks. <span class="keycap">J</span>/<span class="keycap">K</span> jump between existing comments</span>
             </li>
           </ul>
           <div class="flex flex-wrap gap-2 items-center">
@@ -917,7 +917,7 @@
             </li>
             <li class="flex gap-3">
               <span class="text-blue mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">Two-way GitHub sync</strong> — <span class="keycap">G</span> pulls review comments from GitHub into your diff view. <span class="keycap">P</span> pushes your local comments back. Powered by the <span class="font-mono text-xs text-cyan">gh</span> CLI</span>
+              <span><strong class="text-text">Two-way GitHub sync</strong> — <span class="keycap">G</span> pulls review comments from GitHub into your diff view; the Git hub (<span class="keycap">g</span>) pushes your local comments back. Powered by the <span class="font-mono text-xs text-cyan">gh</span> CLI</span>
             </li>
             <li class="flex gap-3">
               <span class="text-blue mt-0.5 shrink-0">✓</span>
@@ -927,7 +927,7 @@
           <div class="flex flex-wrap gap-2 items-center">
             <span class="text-xs text-text-muted">Keys:</span>
             <span class="keycap">G</span>
-            <span class="keycap">P</span>
+            <span class="keycap">g</span>
             <span class="keycap">p</span>
             <span class="keycap">Ctrl+P</span>
           </div>
@@ -1062,7 +1062,7 @@
           <span class="font-mono text-xs text-orange uppercase tracking-widest">AI review</span>
           <h2 class="text-3xl sm:text-4xl font-body font-500 mt-3 mb-5 leading-tight">AI reads the diff<br>so you don't have<br>to guess</h2>
           <p class="text-text-dim leading-relaxed mb-6">
-            Open the AI Hub — press <span class="keycap">a</span> in the TUI or <kbd class="keycap">Cmd+A</kbd> in the desktop app — and run <strong class="text-text">Run review</strong>. Risk ratings and hunk-level findings appear inline. Press <span class="keycap">v</span> to cycle AI views — from a plain diff, to findings inline, to a side panel with the summary and risk breakdown. To get answers to your private questions without a full review, open the Hub and choose <strong class="text-text">Answer questions</strong> (TUI only; questions are managed in the Notes panel in the desktop app).
+            Open the AI Hub — press <span class="keycap">a</span> in the TUI or <kbd class="keycap">Cmd+A</kbd> in the desktop app — and run a review (<strong class="text-text">Review work</strong> in the TUI, <strong class="text-text">Run review</strong> on desktop). Risk ratings and hunk-level findings appear inline — toggle the findings layer with <span class="keycap">A</span>, and cycle the side panel with <span class="keycap">p</span> for the summary and risk breakdown. To get answers to your private questions without a full review, open the Hub and choose <strong class="text-text">Answer questions</strong> (TUI only; questions are managed in the Notes panel in the desktop app).
           </p>
           <ul class="space-y-3 text-sm text-text-dim mb-7">
             <li class="flex gap-3">
@@ -1071,7 +1071,7 @@
             </li>
             <li class="flex gap-3">
               <span class="text-orange mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">AI Summary panel</strong> — cycle with <span class="keycap">v</span> to the panel view: risk rating, findings count, and a file-by-file risk breakdown side-by-side with your diff</span>
+              <span><strong class="text-text">AI Summary panel</strong> — cycle with <span class="keycap">p</span> to the panel view: risk rating, findings count, and a file-by-file risk breakdown side-by-side with your diff</span>
             </li>
             <li class="flex gap-3">
               <span class="text-orange mt-0.5 shrink-0">✓</span>
@@ -1080,8 +1080,9 @@
           </ul>
           <div class="flex flex-wrap gap-2 items-center">
             <span class="text-xs text-text-muted">Keys:</span>
-            <span class="keycap">v</span>
-            <span class="keycap">V</span>
+            <span class="keycap">a</span>
+            <span class="keycap">A</span>
+            <span class="keycap">p</span>
             <span class="keycap">z</span>
             <span class="keycap">Z</span>
           </div>
@@ -1108,7 +1109,7 @@
             </li>
             <li class="flex gap-3">
               <span class="text-cyan mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">Symbol references</strong> — press <span class="keycap">g</span> to run git grep for the word at cursor. Results appear in the context panel so you see all usages without leaving the diff</span>
+              <span><strong class="text-text">Copy hub</strong> — press <span class="keycap">y</span> to copy the file, its path, the current hunk, or the current line — ready to paste into a chat with your AI assistant</span>
             </li>
           </ul>
           <div class="flex flex-wrap gap-2 items-center">
@@ -1116,7 +1117,7 @@
             <span class="keycap">f</span>
             <span class="keycap">F</span>
             <span class="keycap">/</span>
-            <span class="keycap">g</span>
+            <span class="keycap">y</span>
           </div>
         </div>
 
@@ -1436,13 +1437,13 @@
         <div class="timeline-step" style="transition-delay: 400ms;">
           <div class="timeline-node key"><span class="font-mono text-xs text-accent font-bold">3</span></div>
           <h3 class="font-body font-500 text-base mb-1">Run a review from the AI Hub</h3>
-          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">a</span> (TUI) or <kbd class="keycap">Cmd+A</kbd> (desktop) to open the AI Hub, then choose <strong class="text-text">Run review</strong>. Risk ratings, hunk-level findings, and a review checklist appear inline. Press <span class="keycap">v</span> to cycle how much AI context is shown — from a plain diff to findings inline to a side panel.</p>
+          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">a</span> (TUI) or <kbd class="keycap">Cmd+A</kbd> (desktop) to open the AI Hub, then run a review (<strong class="text-text">Review work</strong> / <strong class="text-text">Run review</strong>). Risk ratings, hunk-level findings, and a review checklist appear inline. Toggle the findings layer with <span class="keycap">A</span> and cycle the side panel with <span class="keycap">p</span> to dial how much AI context is shown.</p>
         </div>
 
         <div class="timeline-step" style="transition-delay: 600ms;">
           <div class="timeline-node"><span class="font-mono text-xs text-text-muted">4</span></div>
           <h3 class="font-body font-500 text-base mb-1">Comment and iterate</h3>
-          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">c</span> for GitHub comments or <span class="keycap">q</span> for private questions on any line. Cycle with <span class="keycap">v</span> to a side panel for the AI summary and PR overview alongside your diff. Re-run the review from the AI Hub (<span class="keycap">a</span> → <strong class="text-text">Run review</strong> in the TUI, or <kbd class="keycap">Cmd+A</kbd> → <strong class="text-text">Run review</strong> in the desktop app) — the AI reads your questions and updates its analysis.</p>
+          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">c</span> for GitHub comments or <span class="keycap">q</span> for private questions on any line. Cycle with <span class="keycap">p</span> to a side panel for the AI summary and PR overview alongside your diff. Re-run the review from the AI Hub (<span class="keycap">a</span> → <strong class="text-text">Review work</strong> in the TUI, or <kbd class="keycap">Cmd+A</kbd> → <strong class="text-text">Run review</strong> in the desktop app) — the AI reads your questions and updates its analysis.</p>
         </div>
 
         <div class="timeline-step" style="transition-delay: 800ms;">
@@ -1454,7 +1455,7 @@
         <div class="timeline-step" style="transition-delay: 1000ms; padding-bottom: 0;">
           <div class="timeline-node key-cyan"><span class="font-mono text-xs text-cyan font-bold">6</span></div>
           <h3 class="font-body font-500 text-base mb-1">Sync with GitHub</h3>
-          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">G</span> to pull review comments from the PR into your diff view. Press <span class="keycap">P</span> to push your local comments back to GitHub. The full review loop, without leaving the terminal.</p>
+          <p class="text-text-dim text-sm leading-relaxed">Press <span class="keycap">G</span> to pull review comments from the PR into your diff view. Push your local comments back from the Git hub (<span class="keycap">g</span> → <strong class="text-text">Push comments to GitHub</strong>) — as one review or individually. The full review loop, without leaving the terminal.</p>
         </div>
 
       </div>
@@ -1495,7 +1496,7 @@
       </div>
 
       <p class="reveal-up text-sm text-text-muted mt-6">
-        Requires <span class="text-text-dim">Rust 1.70+</span> and <span class="text-text-dim">git</span>. Single binary, no runtime dependencies.
+        Requires <span class="text-text-dim">git</span>; building from source needs <span class="text-text-dim">Rust 1.85+</span>. Single binary, no runtime dependencies.
       </p>
     </div>
   </section>
