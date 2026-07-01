@@ -119,6 +119,44 @@ pub fn prune_gh_status_cache(map: &mut GithubStatusCache, keep: &HashSet<(String
     });
 }
 
+/// True only when `last_updated` parses as a u64 epoch-seconds string AND is
+/// less than `ttl_secs` old relative to `now_secs`. Fails open — `None`,
+/// non-numeric, or any other unparseable value returns `false` (= "stale, go
+/// fetch"), never panics, never silently treats unknown freshness as fresh.
+///
+/// `now_secs.saturating_sub(parsed)` means a `last_updated` that is in the
+/// future (clock skew) reads as age 0, i.e. "fresh" — both sides come from
+/// `SystemTime::now()` on the same machine, so this is intentionally
+/// permissive rather than a correctness gap worth guarding against here.
+pub fn status_is_fresh(last_updated: Option<&str>, now_secs: u64, ttl_secs: u64) -> bool {
+    let Some(raw) = last_updated else {
+        return false;
+    };
+    let Ok(parsed) = raw.parse::<u64>() else {
+        return false;
+    };
+    now_secs.saturating_sub(parsed) < ttl_secs
+}
+
+/// Current time as epoch seconds, in the same format `fetch_github_status`
+/// writes to `GithubStatusSnapshot.last_updated` (`commands.rs:642-645`).
+/// `now_secs` is a parameter on `status_is_fresh` (not called internally) so
+/// callers can pass a fixed value in tests; this just centralizes the
+/// `SystemTime` boilerplate for the two real call sites (`kick_active_gh_status`
+/// and the 30s background `gh_status` loop).
+pub fn now_epoch_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Fall back to u64::MAX (not 0) on a pre-epoch clock: an unrepresentable
+    // "now" then reads as maximally-OLD in `status_is_fresh` (age >= ttl →
+    // stale → fetch), preserving the fail-open contract. `unwrap_or(0)` would
+    // instead make every gate see age 0 and treat a real `last_updated` as
+    // fresh, wrongly skipping the fetch.
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +309,48 @@ mod tests {
             !map.contains_key(&other),
             "unkept entry dropped even though it is also mixed-case"
         );
+    }
+
+    // ── status_is_fresh ──
+
+    #[test]
+    fn status_is_fresh_within_ttl() {
+        assert!(status_is_fresh(Some("1000"), 1050, 90)); // 50s old, ttl 90s
+    }
+
+    #[test]
+    fn status_is_fresh_stale_beyond_ttl() {
+        assert!(!status_is_fresh(Some("1000"), 1200, 90)); // 200s old, ttl 90s
+    }
+
+    #[test]
+    fn status_is_fresh_none_is_stale() {
+        assert!(!status_is_fresh(None, 1000, 90));
+    }
+
+    #[test]
+    fn status_is_fresh_non_numeric_is_stale() {
+        // The ISO-string shape from the (unrepresentative) test fixture above —
+        // confirms a format mismatch fails open rather than panicking.
+        assert!(!status_is_fresh(Some("2024-01-02T11:00:00Z"), 1000, 90));
+    }
+
+    #[test]
+    fn status_is_fresh_exactly_at_ttl_boundary_is_stale() {
+        // age == ttl_secs exactly → `<` excludes it → stale, not fresh.
+        assert!(!status_is_fresh(Some("1000"), 1090, 90));
+    }
+
+    #[test]
+    fn status_is_fresh_one_second_inside_boundary_is_fresh() {
+        assert!(status_is_fresh(Some("1000"), 1089, 90));
+    }
+
+    #[test]
+    fn status_is_fresh_max_now_sentinel_is_stale() {
+        // `now_epoch_secs()` returns u64::MAX on a pre-epoch clock fault. A real
+        // stored `last_updated` must then read as maximally-old (fail open →
+        // fetch), never as fresh — the opposite of the old `unwrap_or(0)`.
+        assert!(!status_is_fresh(Some("1750000000"), u64::MAX, 90));
     }
 }

@@ -560,6 +560,57 @@ fn window_state_restore_flags() -> tauri_plugin_window_state::StateFlags {
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::FULLSCREEN | StateFlags::DECORATIONS
 }
 
+/// Look up the cached head commit OID for `(owner, repo, number)` in the
+/// shared PR cache. Returns `""` when the remote/PR isn't cached yet —
+/// callers must treat that as "unknown" (fail open, never skip on it), since
+/// an empty OID is also `PrInfo::head_oid`'s `#[serde(default)]` value, not a
+/// real "no head" signal.
+fn cached_head_oid(pr_cache: &pr_cache::PrCacheMap, owner: &str, repo: &str, number: u64) -> String {
+    pr_cache
+        .lock()
+        .ok()
+        .and_then(|cache| {
+            cache
+                .get(&format!("{owner}/{repo}"))
+                .and_then(|prs| prs.iter().find(|p| p.number == number))
+                .map(|p| p.head_oid.clone())
+        })
+        .unwrap_or_default()
+}
+
+/// Whether the background comment-sync loop should SKIP this tick: this PR's
+/// head OID is unchanged since the last successful sync AND that sync was less
+/// than `ttl` ago. This is a poll THROTTLE, not change-detection — PR comments
+/// and reviews are posted independently of any push, so an unchanged head OID
+/// does NOT mean "nothing new". `ttl` therefore bounds how stale the comment
+/// panel can get on a push-idle PR; the OID check only ACCELERATES resync after
+/// a push (a new head OID drops through the throttle so freshly-pushed review
+/// threads appear promptly). An empty/unknown `head_oid` never skips (fail open —
+/// keep syncing every tick until the probe loop populates a real OID). Pure so
+/// the skip decision is unit-testable without the surrounding thread/loop.
+fn comment_sync_recently_synced(
+    last_entry: Option<&(String, std::time::Instant)>,
+    head_oid: &str,
+    now: std::time::Instant,
+    ttl: std::time::Duration,
+) -> bool {
+    !head_oid.is_empty()
+        && last_entry.is_some_and(|(last_oid, last_at)| {
+            last_oid == head_oid && now.saturating_duration_since(*last_at) < ttl
+        })
+}
+
+/// Whether the pr-head-probe loop should SKIP the `gh` subprocess this tick: it
+/// already probed this PR less than `ttl` ago (the throttle), regardless of
+/// whether the OID changed. Pure so the throttle is unit-testable.
+fn probe_recently_done(
+    last_probe: Option<&std::time::Instant>,
+    now: std::time::Instant,
+    ttl: std::time::Duration,
+) -> bool {
+    last_probe.is_some_and(|last_at| now.saturating_duration_since(*last_at) < ttl)
+}
+
 fn main() {
     er_engine::env_path::init_cli_path();
     dev_log::init();
@@ -838,9 +889,12 @@ fn main() {
         }
     }
 
-    // The 30s `gh_status` loop below runs its first iteration immediately and
-    // shares dedup state via `gh_status_in_flight`, so a separate startup kick
-    // here would be a redundant duplicate fetch on the same identity.
+    // The 30s `gh_status` loop below now sleeps before its first iteration (to
+    // avoid a startup gh burst), so a cold-restored active PR tab shows its
+    // disk-cached status until that first tick (~30s) — an intentional tradeoff
+    // to keep launch gh-free. We deliberately don't kick a refresh here; an
+    // explicit tab open/switch/close still refreshes via `kick_active_gh_status`
+    // (itself 10s-gated, sharing dedup state through `gh_status_in_flight`).
 
     // NOTE: a remote-PR auto-swap loop used to live here (300s for remote
     // tabs, 60s otherwise), calling snapshot_for_remote_diff_refresh →
@@ -947,74 +1001,104 @@ fn main() {
         let probe_app = Arc::clone(&app_arc);
         let probe_pr_cache = Arc::clone(&pr_cache);
         let probe_rev = Arc::clone(&desktop_revision);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(30));
+        std::thread::spawn(move || {
+            // (slug, pr_number) -> when we last actually probed. Throttles the
+            // gh subprocess to once per 60s per PR even though the loop ticks
+            // every 30s. Refreshed on EVERY successful probe, not only when the
+            // OID changed — recording it conditionally would make the throttle a
+            // no-op after the first window, since `elapsed()` would keep growing
+            // against a frozen Instant and never re-arm.
+            let mut probe_throttle: HashMap<(String, u64), std::time::Instant> = HashMap::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(30));
 
-            // Phase 1: brief lock — capture the active PR tab's identity.
-            // `(repo_root, owner, repo, pr_number)`. For remote tabs use
-            // `remote_repo`; for local-PR tabs resolve owner/repo from origin.
-            let identity = {
-                let guard = match probe_app.try_lock() {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
-                let tab = guard.tab();
-                let pr_number = match tab.pr_number {
-                    Some(n) => n,
-                    None => continue,
-                };
-                if let Some(slug) = tab.remote_repo.as_ref() {
-                    if slug.split_once('/').is_some() {
-                        Some((tab.repo_root.clone(), slug.clone(), pr_number))
-                    } else {
-                        None
-                    }
-                } else if !tab.repo_root.is_empty() {
-                    match er_engine::github::get_repo_info(&tab.repo_root) {
-                        Ok((owner, repo)) => {
-                            Some((tab.repo_root.clone(), format!("{owner}/{repo}"), pr_number))
+                // Phase 1: brief lock — capture the active PR tab's identity.
+                // `(repo_root, owner, repo, pr_number)`. For remote tabs use
+                // `remote_repo`; for local-PR tabs resolve owner/repo from origin.
+                let identity = {
+                    let guard = match probe_app.try_lock() {
+                        Ok(g) => g,
+                        Err(_) => continue,
+                    };
+                    let tab = guard.tab();
+                    let pr_number = match tab.pr_number {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if let Some(slug) = tab.remote_repo.as_ref() {
+                        if slug.split_once('/').is_some() {
+                            Some((tab.repo_root.clone(), slug.clone(), pr_number))
+                        } else {
+                            None
                         }
-                        Err(_) => None,
-                    }
-                } else {
-                    None
-                }
-            };
-            let Some((_repo_root, slug, pr_number)) = identity else {
-                continue;
-            };
-
-            // Phase 2: no lock — ask gh for the PR's latest head oid.
-            let out = std::process::Command::new("gh")
-                .args([
-                    "pr",
-                    "view",
-                    &pr_number.to_string(),
-                    "--repo",
-                    &slug,
-                    "--json",
-                    "headRefOid",
-                    "--jq",
-                    ".headRefOid",
-                ])
-                .output();
-            let oid = match out {
-                Ok(o) if o.status.success() => {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if s.is_empty() {
-                        None
+                    } else if !tab.repo_root.is_empty() {
+                        match er_engine::github::get_repo_info(&tab.repo_root) {
+                            Ok((owner, repo)) => Some((
+                                tab.repo_root.clone(),
+                                format!("{owner}/{repo}"),
+                                pr_number,
+                            )),
+                            Err(_) => None,
+                        }
                     } else {
-                        Some(s)
+                        None
                     }
-                }
-                _ => None,
-            };
-            let Some(oid) = oid else { continue };
+                };
+                let Some((_repo_root, slug, pr_number)) = identity else {
+                    continue;
+                };
 
-            // Phase 3: brief lock — patch the cache entry; bump only on change.
-            let changed = pr_cache::patch_pr_head_oid(&probe_pr_cache, &slug, pr_number, &oid);
-            if changed {
-                profile_log::bump_desktop_revision(&probe_rev, "pr_head_probe");
+                // Throttle: skip the gh subprocess if this PR was probed
+                // within the last 60s, regardless of whether the OID changed
+                // last time.
+                if probe_recently_done(
+                    probe_throttle.get(&(slug.clone(), pr_number)),
+                    std::time::Instant::now(),
+                    std::time::Duration::from_secs(60),
+                ) {
+                    continue;
+                }
+
+                // Phase 2: no lock — ask gh for the PR's latest head oid.
+                let out = std::process::Command::new("gh")
+                    .args([
+                        "pr",
+                        "view",
+                        &pr_number.to_string(),
+                        "--repo",
+                        &slug,
+                        "--json",
+                        "headRefOid",
+                        "--jq",
+                        ".headRefOid",
+                    ])
+                    .output();
+                let oid = match out {
+                    Ok(o) if o.status.success() => {
+                        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s)
+                        }
+                    }
+                    _ => None,
+                };
+                // A failed/empty probe is NOT recorded into probe_throttle —
+                // a persistently-failing PR keeps retrying every 30s rather
+                // than being throttled to 60s on top of already being broken.
+                let Some(oid) = oid else { continue };
+
+                // Phase 3: brief lock — patch the cache entry; bump only on change.
+                let changed =
+                    pr_cache::patch_pr_head_oid(&probe_pr_cache, &slug, pr_number, &oid);
+
+                // Re-arm the 60s throttle window on every successful probe.
+                probe_throttle.insert((slug.clone(), pr_number), std::time::Instant::now());
+
+                if changed {
+                    profile_log::bump_desktop_revision(&probe_rev, "pr_head_probe");
+                }
             }
         });
     }
@@ -1032,6 +1116,10 @@ fn main() {
         let gh_status_in_flight_bg = Arc::clone(&gh_status_in_flight);
         let gh_status_desktop_rev = Arc::clone(&desktop_revision);
         std::thread::spawn(move || loop {
+            // Sleep FIRST: kills the startup burst (this loop used to fire
+            // immediately on launch because the sleep sat at the bottom).
+            std::thread::sleep(std::time::Duration::from_secs(30));
+
             // Snapshot identity in a short critical section.
             let key: Option<(String, String, u64)> = match app_bg.lock() {
                 Ok(g) => {
@@ -1062,7 +1150,22 @@ fn main() {
                 }
                 Err(_) => None,
             };
-            // Lock released. Register in-flight and shell out — skip if already fetching.
+            // Lock released. Skip the fetch entirely when the cached snapshot
+            // for this key is still fresh (<90s old) — most ticks on an idle
+            // PR now do nothing at all.
+            let key = key.filter(|(owner, repo, number)| {
+                let last_updated = gh_status_bg.lock().ok().and_then(|cache| {
+                    cache
+                        .get(&(owner.clone(), repo.clone(), *number))
+                        .and_then(|snap| snap.last_updated.clone())
+                });
+                !gh_status_cache::status_is_fresh(
+                    last_updated.as_deref(),
+                    gh_status_cache::now_epoch_secs(),
+                    90,
+                )
+            });
+            // Register in-flight and shell out — skip if already fetching.
             if let Some((owner, repo, number)) = key {
                 let registered = gh_status_in_flight_bg
                     .lock()
@@ -1089,7 +1192,6 @@ fn main() {
                         .map(|mut s| s.remove(&(owner, repo, number)));
                 }
             }
-            std::thread::sleep(std::time::Duration::from_secs(30));
         });
     }
 
@@ -1103,76 +1205,120 @@ fn main() {
         let comments_pr_cache = Arc::clone(&pr_cache);
         let comments_loading = Arc::clone(&loading);
         let comments_desktop_rev = Arc::clone(&desktop_revision);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(45));
+        std::thread::spawn(move || {
+            // (owner, repo, number) -> (head OID synced against, when).
+            // Throttles the comment/review pull: within `ttl` of a sync against
+            // the same head OID the 45s tick skips the network I/O. Comments and
+            // reviews are independent of pushes, so `ttl` is the worst-case
+            // comment-panel latency on a push-idle PR — NOT a "nothing changed"
+            // guarantee. A push changes head_oid (via the pr-head-probe loop,
+            // itself throttled to ~60s), so a fresh push resyncs within ~1-2 min
+            // instead of waiting out `ttl`. Manual sync (`G` key →
+            // `pull_github_comments` → `App::sync_github_comments`) is a separate
+            // synchronous path that never touches this loop or map, unaffected.
+            let mut last_synced: HashMap<(String, String, u64), (String, std::time::Instant)> =
+                HashMap::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(45));
 
-            // Phase 1: brief lock — snapshot identity + files, then release.
-            let ctx = {
-                let guard = match comments_app.try_lock() {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
-                let tab = guard.tab();
-                let identity: Option<(String, String, u64)> =
-                    if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-                        slug.split_once('/')
-                            .map(|(o, r)| (o.to_string(), r.to_string(), n))
-                    } else {
-                        let branch = tab
-                            .local_branch_view
-                            .as_deref()
-                            .unwrap_or(&tab.current_branch)
-                            .to_string();
-                        comments_pr_cache.lock().ok().and_then(|cache| {
-                            cache.iter().find_map(|(slug, prs)| {
-                                prs.iter()
-                                    .filter(|p| p.head_ref == branch)
-                                    .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-                                    .and_then(|p| {
-                                        slug.split_once('/')
-                                            .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-                                    })
-                            })
-                        })
+                // Phase 1: brief lock — snapshot identity + files, then release.
+                let resolved = {
+                    let guard = match comments_app.try_lock() {
+                        Ok(g) => g,
+                        Err(_) => continue,
                     };
-                // Snapshot all data needed for the fetch — releases lock after this block.
-                identity.map(|(owner, repo, number)| {
-                    guard.snapshot_for_comment_sync(owner, repo, number)
-                })
-            };
+                    let tab = guard.tab();
+                    let identity: Option<(String, String, u64)> =
+                        if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
+                            slug.split_once('/')
+                                .map(|(o, r)| (o.to_string(), r.to_string(), n))
+                        } else {
+                            let branch = tab
+                                .local_branch_view
+                                .as_deref()
+                                .unwrap_or(&tab.current_branch)
+                                .to_string();
+                            comments_pr_cache.lock().ok().and_then(|cache| {
+                                cache.iter().find_map(|(slug, prs)| {
+                                    prs.iter()
+                                        .filter(|p| p.head_ref == branch)
+                                        .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
+                                        .and_then(|p| {
+                                            slug.split_once('/').map(|(o, r)| {
+                                                (o.to_string(), r.to_string(), p.number)
+                                            })
+                                        })
+                                })
+                            })
+                        };
 
-            // Phase 2: network I/O — no lock held.
-            if let Some(ctx) = ctx {
-                if let Ok(mut f) = comments_loading.lock() {
-                    f.gh_comments = true;
-                }
-                let applied = match er_engine::app::fetch_comment_sync_data(&ctx) {
-                    Ok(result) => {
-                        // Phase 3: brief lock — apply pre-fetched results to the correct tab.
-                        match comments_app.lock() {
-                            Ok(mut g) => {
-                                g.apply_comment_sync_result(result);
-                                true
-                            }
-                            Err(e) => {
-                                log::error!("comment sync apply lock failed: {e}");
-                                false
+                    // Throttle gate: same head OID already synced within the
+                    // window → skip this tick (bounds comment-panel latency to
+                    // ~90s on a push-idle PR; does not guarantee nothing
+                    // changed). An empty/unknown OID never skips (fail open —
+                    // keep syncing every tick until the probe loop populates
+                    // pr_cache).
+                    identity.and_then(|(owner, repo, number)| {
+                        let head_oid = cached_head_oid(&comments_pr_cache, &owner, &repo, number);
+                        let recently_synced = comment_sync_recently_synced(
+                            last_synced.get(&(owner.clone(), repo.clone(), number)),
+                            &head_oid,
+                            std::time::Instant::now(),
+                            std::time::Duration::from_secs(90),
+                        );
+                        if recently_synced {
+                            None
+                        } else {
+                            // Snapshot all data needed for the fetch — releases
+                            // the lock after this block. Carry the gate-time
+                            // head_oid forward (instead of re-reading it after
+                            // the fetch) so a push landing mid-fetch isn't
+                            // mistaken for "already synced" on the next tick.
+                            Some((
+                                guard.snapshot_for_comment_sync(owner, repo, number),
+                                head_oid,
+                            ))
+                        }
+                    })
+                };
+
+                // Phase 2: network I/O — no lock held.
+                if let Some((ctx, head_oid)) = resolved {
+                    if let Ok(mut f) = comments_loading.lock() {
+                        f.gh_comments = true;
+                    }
+                    let applied = match er_engine::app::fetch_comment_sync_data(&ctx) {
+                        Ok(result) => {
+                            // Phase 3: brief lock — apply pre-fetched results to the correct tab.
+                            match comments_app.lock() {
+                                Ok(mut g) => {
+                                    g.apply_comment_sync_result(result);
+                                    true
+                                }
+                                Err(e) => {
+                                    log::error!("comment sync apply lock failed: {e}");
+                                    false
+                                }
                             }
                         }
+                        Err(e) => {
+                            log::error!("github comment sync failed: {e}");
+                            false
+                        }
+                    };
+                    if let Ok(mut f) = comments_loading.lock() {
+                        f.gh_comments = false;
                     }
-                    Err(e) => {
-                        log::error!("github comment sync failed: {e}");
-                        false
+                    if applied {
+                        last_synced.insert(
+                            (ctx.owner.clone(), ctx.repo_name.clone(), ctx.pr_number),
+                            (head_oid, std::time::Instant::now()),
+                        );
+                        profile_log::bump_desktop_revision(
+                            &comments_desktop_rev,
+                            "comment_sync_applied",
+                        );
                     }
-                };
-                if let Ok(mut f) = comments_loading.lock() {
-                    f.gh_comments = false;
-                }
-                if applied {
-                    profile_log::bump_desktop_revision(
-                        &comments_desktop_rev,
-                        "comment_sync_applied",
-                    );
                 }
             }
         });
@@ -1878,6 +2024,113 @@ fn active_root_from_projects() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    // ── comment_sync_recently_synced (finding 2a skip gate) ──
+    // `base` is the synced-at instant; `base + elapsed` is "now", so the gate
+    // sees exactly `elapsed` since the last sync without depending on wall time.
+
+    #[test]
+    fn comment_sync_skips_when_same_oid_within_ttl() {
+        let base = Instant::now();
+        let entry = ("oid-abc".to_string(), base);
+        assert!(comment_sync_recently_synced(
+            Some(&entry),
+            "oid-abc",
+            base + Duration::from_secs(100),
+            Duration::from_secs(300),
+        ));
+    }
+
+    #[test]
+    fn comment_sync_syncs_when_same_oid_but_ttl_expired() {
+        let base = Instant::now();
+        let entry = ("oid-abc".to_string(), base);
+        assert!(!comment_sync_recently_synced(
+            Some(&entry),
+            "oid-abc",
+            base + Duration::from_secs(400),
+            Duration::from_secs(300),
+        ));
+    }
+
+    #[test]
+    fn comment_sync_syncs_when_oid_differs_even_if_recent() {
+        // A new push (different head OID) must sync immediately regardless of TTL.
+        let base = Instant::now();
+        let entry = ("oid-old".to_string(), base);
+        assert!(!comment_sync_recently_synced(
+            Some(&entry),
+            "oid-new",
+            base + Duration::from_secs(5),
+            Duration::from_secs(300),
+        ));
+    }
+
+    #[test]
+    fn comment_sync_never_skips_on_empty_oid() {
+        // Fail open: an unknown/empty cached OID must keep syncing every tick.
+        let base = Instant::now();
+        let entry = ("".to_string(), base);
+        assert!(!comment_sync_recently_synced(
+            Some(&entry),
+            "",
+            base + Duration::from_secs(1),
+            Duration::from_secs(300),
+        ));
+    }
+
+    #[test]
+    fn comment_sync_never_skips_with_no_prior_entry() {
+        assert!(!comment_sync_recently_synced(
+            None,
+            "oid-abc",
+            Instant::now(),
+            Duration::from_secs(300),
+        ));
+    }
+
+    // ── probe_recently_done (finding 3 throttle) ──
+
+    #[test]
+    fn probe_skips_within_throttle_window() {
+        let base = Instant::now();
+        assert!(probe_recently_done(
+            Some(&base),
+            base + Duration::from_secs(30),
+            Duration::from_secs(60),
+        ));
+    }
+
+    #[test]
+    fn probe_runs_after_throttle_window() {
+        let base = Instant::now();
+        assert!(!probe_recently_done(
+            Some(&base),
+            base + Duration::from_secs(90),
+            Duration::from_secs(60),
+        ));
+    }
+
+    #[test]
+    fn probe_at_exactly_ttl_boundary_runs() {
+        // age == ttl → `<` excludes it → not throttled (probe runs).
+        let base = Instant::now();
+        assert!(!probe_recently_done(
+            Some(&base),
+            base + Duration::from_secs(60),
+            Duration::from_secs(60),
+        ));
+    }
+
+    #[test]
+    fn probe_runs_with_no_prior_entry() {
+        assert!(!probe_recently_done(
+            None,
+            Instant::now(),
+            Duration::from_secs(60),
+        ));
+    }
 
     #[test]
     fn bounded_read_under_limit_succeeds() {

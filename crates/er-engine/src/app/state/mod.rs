@@ -2083,6 +2083,33 @@ impl TabState {
     ///
     /// Returns `Err` if no PR number is set or the first-entry fetch fails.
     pub fn enter_pr_diff(&mut self) -> Result<()> {
+        self.enter_pr_diff_impl(false)
+    }
+
+    /// Same as `enter_pr_diff`, but for a caller that has *just* populated
+    /// `self.files`/`self.raw_diff`/`self.diff_hash` from the exact `gh pr diff`
+    /// output this entry would otherwise re-fetch — today only the desktop
+    /// cold-open path (`open_pr_review_impl` in `er-desktop/src/commands.rs`),
+    /// which builds the tab via `new_local_pr_from_github_diff` from a diff
+    /// fetched moments earlier in `load_pr_open_inputs`. Mirrors the trust
+    /// `enter_pr_diff_preloaded` already places in a cache-hit diff — this is
+    /// strictly weaker (it still does the first-entry ref fetch), so skipping
+    /// just the trailing `refresh_diff()` is no less safe.
+    ///
+    /// Skips `refresh_diff()` only when `self.files` is already non-empty;
+    /// falls back to a full refresh otherwise (e.g. a 0-file PR, or caller
+    /// misuse) so this can never silently leave a blank diff on screen.
+    ///
+    /// Do NOT use this for a mode switch on a tab whose `files` holds a
+    /// *different* diff (e.g. switching Unstaged → PR Diff) — `files` would be
+    /// non-empty but wrong-scope, and skipping would leave that stale diff on
+    /// screen. Use `enter_pr_diff` there instead (TUI `normal.rs`, desktop
+    /// `set_mode`).
+    pub fn enter_pr_diff_freshly_loaded(&mut self) -> Result<()> {
+        self.enter_pr_diff_impl(true)
+    }
+
+    fn enter_pr_diff_impl(&mut self, skip_refresh_if_loaded: bool) -> Result<()> {
         let pr_number = self
             .pr_number
             .ok_or_else(|| anyhow::anyhow!("No PR number set for this tab"))?;
@@ -2108,6 +2135,10 @@ impl TabState {
         self.apply_managed_root();
         self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
         self.reload_ai_state();
+
+        if skip_refresh_if_loaded && !self.files.is_empty() {
+            return Ok(());
+        }
         self.refresh_diff()
     }
 
@@ -9147,6 +9178,83 @@ mod tests {
             .enter_pr_diff_preloaded("oid".to_string())
             .expect_err("missing PR number must error, not silently no-op");
         assert!(err.to_string().contains("No PR number"));
+    }
+
+    #[test]
+    fn enter_pr_diff_freshly_loaded_skips_refresh_when_files_already_loaded() {
+        // Simulates the desktop cold-open path: `new_local_pr_from_github_diff`
+        // has already parsed `inputs.raw_diff` into files/raw_diff/diff_hash
+        // before this call. Pre-set `pr_refs_fetched` so the first-entry
+        // git-fetch block (a separate, out-of-scope concern) is also skipped —
+        // this isolates the `refresh_diff()` guard. Outside a real git repo any
+        // `gh pr diff` call here would fail, so `Ok(())` is itself proof no
+        // refetch ran.
+        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut tab = TabState::new_for_test(vec![make_file(
+            "x",
+            vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
+            1,
+            1,
+        )]);
+        tab.pr_number = Some(42);
+        tab.pr_refs_fetched = true;
+        tab.raw_diff = Some(raw.to_string());
+        let loaded_hash = crate::ai::compute_diff_hash(raw);
+        tab.diff_hash = loaded_hash.clone();
+
+        tab.enter_pr_diff_freshly_loaded()
+            .expect("freshly-loaded entry succeeds without a refetch");
+
+        assert_eq!(tab.mode, DiffMode::PrDiff);
+        assert_eq!(tab.files.len(), 1, "pre-loaded files are left intact");
+        assert_eq!(
+            tab.diff_hash, loaded_hash,
+            "diff_hash is not recomputed — refresh_diff() did not run"
+        );
+    }
+
+    #[test]
+    fn enter_pr_diff_freshly_loaded_falls_back_to_refresh_when_files_empty() {
+        // Defensive fallback: if `files` is empty (0-file PR, or caller
+        // misuse), the skip must not apply — a real refresh must still be
+        // attempted so the tab never silently shows a blank diff. Outside a
+        // real git repo this refetch attempt fails, which is itself proof the
+        // fallback path executed (not a silent no-op).
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_number = Some(42);
+        tab.pr_refs_fetched = true;
+        tab.local_branch_view = Some("pr/42".to_string());
+
+        let err = tab
+            .enter_pr_diff_freshly_loaded()
+            .expect_err("empty files must not silently skip the refresh");
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn enter_pr_diff_always_refreshes_even_when_files_already_loaded() {
+        // Guards against widening the skip to the general entry point: TUI
+        // (normal.rs) and desktop `set_mode` call `enter_pr_diff()` when
+        // switching from another mode (e.g. Unstaged) whose `files` holds a
+        // *different*, wrong-scope diff. `enter_pr_diff()` must always
+        // refresh, never trust pre-existing `files`.
+        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut tab = TabState::new_for_test(vec![make_file(
+            "x",
+            vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
+            1,
+            1,
+        )]);
+        tab.pr_number = Some(42);
+        tab.pr_refs_fetched = true;
+        tab.local_branch_view = Some("pr/42".to_string());
+        tab.raw_diff = Some(raw.to_string());
+        tab.diff_hash = crate::ai::compute_diff_hash(raw);
+
+        let err = tab
+            .enter_pr_diff()
+            .expect_err("must attempt a real refresh even with files already populated");
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]
