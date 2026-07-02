@@ -113,12 +113,22 @@ pub fn summary_declares_branch(summary: &str) -> Option<String> {
     None
 }
 
+/// True when a stored branch declaration carries real information. Review
+/// agents that can't determine the branch (prepared-diff reviews of remote
+/// PRs) write "unknown" or leave the prompt template's `<head branch if
+/// known>` placeholder — neither identifies another branch, so neither may
+/// disqualify the sidecar.
+fn branch_declaration_is_real(branch: &str) -> bool {
+    !branch.is_empty() && !branch.eq_ignore_ascii_case("unknown") && !branch.starts_with('<')
+}
+
 /// True when sidecars in `er_dir` clearly belong to another branch than `scope`.
 pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
     let review_path = er_dir.join("review.json");
     if let Ok(content) = read_sidecar(&review_path) {
         if let Ok(review) = serde_json::from_str::<ErReview>(&content) {
-            if !review.head_branch.is_empty() && !storage_branches_match(scope, &review.head_branch)
+            if branch_declaration_is_real(&review.head_branch)
+                && !storage_branches_match(scope, &review.head_branch)
             {
                 return true;
             }
@@ -127,7 +137,7 @@ pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
     let summary_path = er_dir.join("summary.md");
     if let Ok(content) = read_sidecar(&summary_path) {
         if let Some(declared) = summary_declares_branch(&content) {
-            if !storage_branches_match(scope, &declared) {
+            if branch_declaration_is_real(&declared) && !storage_branches_match(scope, &declared) {
                 return true;
             }
         }
@@ -379,6 +389,67 @@ mod tests {
         let state = load_ai_state(er_dir, "abc", Some("dependabot/npm_and_yarn/foo"));
         assert!(state.review.is_none());
         assert!(state.summary.is_none());
+    }
+
+    #[test]
+    fn load_ai_state_keeps_review_with_unknown_head_branch() {
+        // Regression: a prepared-diff review agent that can't determine the
+        // branch writes head_branch "unknown"; the branch-mismatch guard must
+        // not discard the review over it.
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc",
+            "head_branch": "unknown",
+            "files": {
+                "a.rs": {
+                    "risk": "low",
+                    "findings": [{
+                        "id": "f1",
+                        "title": "t",
+                        "description": "d",
+                        "severity": "low",
+                        "category": "logic",
+                        "hunk_index": 0
+                    }]
+                }
+            }
+        });
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::to_string(&review).unwrap(),
+        )
+        .unwrap();
+
+        let state = load_ai_state(er_dir, "abc", Some("mikkelam/dev-5713-add-outbox"));
+        let review = state
+            .review
+            .expect("review must survive unknown head_branch");
+        assert_eq!(review.files["a.rs"].findings.len(), 1);
+        assert!(!state.is_stale);
+    }
+
+    #[test]
+    fn load_ai_state_keeps_review_with_placeholder_head_branch() {
+        // An agent that copies the prompt template literally leaves
+        // "<head branch if known>" — also not a real declaration.
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc",
+            "head_branch": "<head branch if known>",
+            "files": {}
+        });
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::to_string(&review).unwrap(),
+        )
+        .unwrap();
+
+        let state = load_ai_state(er_dir, "abc", Some("feature/x"));
+        assert!(state.review.is_some());
     }
 
     #[test]
