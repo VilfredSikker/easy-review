@@ -393,17 +393,32 @@ pub fn build_review_prompt_local_managed(
 ///
 /// Desktop uses this after materializing the tab's UI diff. The agent must not
 /// run `git diff` or `gh pr diff` — it hashes and annotates the prepared file.
-pub fn build_review_prompt_prepared_diff(scope: &str, output_dir: &str) -> String {
+///
+/// `base_branch` / `head_branch` are baked verbatim into the review.json the
+/// agent writes. The head branch matters: `artifacts_branch_mismatch` discards
+/// the whole review when a stored `head_branch` doesn't match the tab's branch
+/// scope, so the agent must never have to guess it.
+pub fn build_review_prompt_prepared_diff(
+    scope: &str,
+    output_dir: &str,
+    base_branch: &str,
+    head_branch: &str,
+) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
+    let base_hint = if base_branch.trim().is_empty() {
+        "<base branch if known>".to_string()
+    } else {
+        base_branch.replace('{', "{{").replace('}', "}}")
+    };
+    let head_hint = if head_branch.trim().is_empty() {
+        "<head branch if known>".to_string()
+    } else {
+        head_branch.replace('{', "{{").replace('}', "}}")
+    };
     let preamble = review_rules_preamble(output_dir, true, FindingCaps::general(), None);
-    let outputs = general_review_outputs_section(
-        output_dir,
-        scope,
-        "<base branch if known>",
-        "<head branch if known>",
-    );
+    let outputs = general_review_outputs_section(output_dir, scope, &base_hint, &head_hint);
     format!(
         r#"You are a code reviewer. Perform a thorough review of the prepared diff and write results to `{safe_output_dir}/`.
 
@@ -1656,7 +1671,8 @@ mod tests {
 
     #[test]
     fn prepared_review_prompt_hashes_existing_diff_tmp() {
-        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/er-managed");
+        let prompt =
+            build_review_prompt_prepared_diff("branch", "/tmp/er-managed", "main", "feat/x");
         assert!(prompt.contains("'/tmp/er-managed/diff-tmp'"));
         assert!(prompt.contains("sha256sum"));
         assert!(prompt.contains("do **not** run `git diff`"));
@@ -1665,9 +1681,30 @@ mod tests {
 
     #[test]
     fn prepared_review_prompt_annotates_from_diff_tmp() {
-        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out");
+        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x");
         assert!(prompt.contains("'/tmp/out/diff-tmp'"));
         assert!(prompt.contains("'/tmp/out/diff-annotated'"));
+    }
+
+    #[test]
+    fn prepared_review_prompt_bakes_known_branches_into_template() {
+        let prompt = build_review_prompt_prepared_diff(
+            "branch",
+            "/tmp/out",
+            "main",
+            "mikkelam/dev-5713-add-outbox",
+        );
+        assert!(prompt.contains(r#""head_branch": "mikkelam/dev-5713-add-outbox""#));
+        assert!(prompt.contains(r#""base_branch": "main""#));
+        assert!(!prompt.contains("<head branch if known>"));
+        assert!(!prompt.contains("<base branch if known>"));
+    }
+
+    #[test]
+    fn prepared_review_prompt_falls_back_to_placeholders_when_unknown() {
+        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out", "", "  ");
+        assert!(prompt.contains(r#""head_branch": "<head branch if known>""#));
+        assert!(prompt.contains(r#""base_branch": "<base branch if known>""#));
     }
 
     #[test]
@@ -1752,7 +1789,7 @@ mod tests {
 
     #[test]
     fn general_prompt_still_requests_four_output_files() {
-        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out");
+        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x");
         assert!(prompt.contains("review.json"));
         assert!(prompt.contains("order.json"));
         assert!(prompt.contains("checklist.json"));

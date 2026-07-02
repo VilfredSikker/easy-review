@@ -3035,7 +3035,12 @@ fn spawn_ai_review_with_diff(
     std::fs::write(std::path::Path::new(er_dir).join("diff-tmp"), &raw)
         .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
 
-    let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(scope, er_dir);
+    let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
+        scope,
+        er_dir,
+        &base_branch,
+        &branch_label,
+    );
 
     let target = er_engine::app::BackgroundTaskTarget {
         repo_root,
@@ -3428,7 +3433,12 @@ fn spawn_scoped_reviewers(
                 app.spawn_background_triage_review(target.clone(), prompt, true)
             }
             ReviewerKind::General => {
-                let mut prompt = prompts::build_review_prompt_prepared_diff(scope, er_dir);
+                let mut prompt = prompts::build_review_prompt_prepared_diff(
+                    scope,
+                    er_dir,
+                    &target.base_branch,
+                    &target.branch_label,
+                );
                 if scoped_files {
                     prompt = prompts::append_file_scope_if_present(prompt, er_dir);
                 }
