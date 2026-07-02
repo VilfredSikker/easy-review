@@ -30,8 +30,8 @@
         <tr>
           <td>2</td>
           <td><code>er</code></td>
-          <td><kbd>v</kbd></td>
-          <td>Cycle review panel; browse findings and inline comments</td>
+          <td><kbd>A</kbd> / <kbd>J</kbd> / <kbd>K</kbd></td>
+          <td>Findings appear inline (toggle the layer with <kbd>A</kbd>); jump between them with <kbd>J</kbd>/<kbd>K</kbd></td>
         </tr>
         <tr>
           <td>3</td>
@@ -58,7 +58,7 @@
           <td>6</td>
           <td>Not a Hub action</td>
           <td>
-            TUI: <kbd>P</kbd> key<br>
+            TUI: Git hub (<kbd>g</kbd>) → <strong>Push comments to GitHub</strong><br>
             Desktop: Comments card → <strong>Push to GitHub</strong>
           </td>
           <td>Validates freshness, posts findings to the GitHub PR as inline comments</td>
@@ -220,20 +220,20 @@
       operation in both apps:
     </p>
     <ul>
-      <li><strong>TUI:</strong> Press <kbd>P</kbd> to push local comments to the PR; press <kbd>G</kbd> to pull comments from GitHub.</li>
+      <li><strong>TUI:</strong> Open the Git hub (<kbd>g</kbd>) → <strong>Push comments to GitHub</strong> to push local comments to the PR — as one review or as individual comments; press <kbd>G</kbd> to pull comments from GitHub.</li>
       <li><strong>Desktop:</strong> Open the <strong>Comments card</strong> → <strong>Push to GitHub</strong>, then choose <strong>Push as review</strong> or push individual comments. Comments are pulled automatically when you open a PR tab.</li>
     </ul>
 
-    <h2>Comprehension quiz</h2>
+    <h2>Per-item AI actions <span class="pill desktop">desktop</span></h2>
     <p>
-      Quizzes have <strong>no in-app generation</strong>. Quiz content comes from the external
-      <strong>TechProfessor</strong> integration or from imported sidecar files. The TUI Quiz mode
-      (press <kbd>8</kbd>) only <em>renders</em> an existing <code>quiz.json</code> — it cannot create one.
+      Beyond the Hub-level actions above, the desktop app attaches small AI actions to individual items:
     </p>
-    <p>
-      To import quiz sidecars written by an external tool: press <kbd>I</kbd> in the TUI or use
-      <strong>Import local review files</strong> in the desktop app.
-    </p>
+    <ul>
+      <li><strong>Elaborate</strong> — on a question or finding: ask the AI to expand on it and answer any question directly.</li>
+      <li><strong>Validate with AI</strong> — on a note or finding: check whether it still holds against the current diff.</li>
+      <li><strong>Promote to comment</strong> — turn a private question, note, or AI finding into a GitHub comment; the original keeps a "Promoted to" link. This is the deliberate one-way bridge from your private stream into the shared PR space.</li>
+    </ul>
+    <p>See <a href="comments.html">Comments &amp; Questions</a> for how questions, notes, and comments differ.</p>
 
     <h2>Review philosophy</h2>
     <p>
@@ -259,7 +259,8 @@
     <h2>Testing without running a review</h2>
     <p>To see the overlays without invoking an AI tool, generate fixtures with a matching diff hash:</p>
     <pre><code>cd your-repo
-bash /path/to/easy-review/scripts/generate-test-fixtures.sh</code></pre>
+bash /path/to/easy-review/scripts/generate-test-fixtures.sh
+ER_REPO_LOCAL=1 er   <span class="cmt"># read sidecars from the repo's .er/ directory</span></code></pre>
   </main>
   <script src="assets/docs.js"></script>
 </body>

@@ -57,15 +57,17 @@
     <table>
       <thead><tr><th>File</th><th>Written by</th><th>Purpose</th></tr></thead>
       <tbody>
-        <tr><td><code>review.json</code></td><td>AI Hub: Run review</td><td>Per-file risk levels and inline findings</td></tr>
-        <tr><td><code>order.json</code></td><td>AI Hub: Run review</td><td>Suggested review order</td></tr>
-        <tr><td><code>checklist.json</code></td><td>AI Hub: Run review</td><td>Review checklist items</td></tr>
-        <tr><td><code>summary.md</code></td><td>AI Hub: Run review</td><td>Markdown summary of changes</td></tr>
+        <tr><td><code>review.json</code></td><td>AI Hub: review (TUI “Review work” / desktop “Run review”)</td><td>Per-file risk levels and inline findings</td></tr>
+        <tr><td><code>order.json</code></td><td>AI Hub: review</td><td>Suggested review order</td></tr>
+        <tr><td><code>checklist.json</code></td><td>AI Hub: review</td><td>Review checklist items</td></tr>
+        <tr><td><code>summary.md</code></td><td>AI Hub: review</td><td>Markdown summary of changes</td></tr>
         <tr><td><code>triage.json</code></td><td>AI Hub: Triage branch</td><td>Fast branch scan / routing</td></tr>
         <tr><td><code>professor.json</code></td><td>AI Hub: Professor</td><td>Teaching / learning insights</td></tr>
         <tr><td><code>experts/*.json</code></td><td>AI Hub: Specialized review</td><td>Domain-specific expert findings</td></tr>
-        <tr><td><code>questions.json</code></td><td><code>er</code> (<kbd>q</kbd>/<kbd>Q</kbd>)</td><td>Personal review questions</td></tr>
-        <tr><td><code>github-comments.json</code></td><td><code>er</code> (<kbd>c</kbd>/<kbd>C</kbd>)</td><td>GitHub PR comments</td></tr>
+        <tr><td><code>tour.json</code></td><td>AI Hub: Generate tour (desktop)</td><td>Guided-tour pillars and file order</td></tr>
+        <tr><td><code>questions.json</code></td><td><code>er</code> (<kbd>q</kbd>)</td><td>Personal review questions</td></tr>
+        <tr><td><code>notes.json</code></td><td><code>er</code> (draft type cycled with <kbd>Ctrl</kbd>+<kbd>t</kbd>)</td><td>Local actionable notes for agent hand-off</td></tr>
+        <tr><td><code>github-comments.json</code></td><td><code>er</code> (<kbd>c</kbd>)</td><td>GitHub PR comments</td></tr>
         <tr><td><code>session.json</code></td><td><code>er</code></td><td>Session metadata</td></tr>
         <tr><td><code>reviewed</code></td><td><code>er</code></td><td>Per-file reviewed markers</td></tr>
       </tbody>
@@ -79,7 +81,7 @@
     <h2>Repo-local mode</h2>
     <p>
       Set <code>ER_REPO_LOCAL=1</code> to read and write a <code>.er/</code> directory inside the repository instead of
-      managed storage. This is useful for debugging, or for external tools (such as the TechProfessor integration) that
+      managed storage. This is useful for debugging, or for external tools that
       write sidecar files into <code>.er/</code> relative to the repo.
     </p>
     <pre><code>ER_REPO_LOCAL=1 er</code></pre>

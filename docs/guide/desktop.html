@@ -144,6 +144,15 @@
     </table>
     <p>Each of these is covered in depth on the next page.</p>
 
+    <h2>Working beside an AI assistant</h2>
+    <p>
+      The desktop app supports the same live loop as the terminal: watch mode keeps the diff current while an
+      assistant edits, stages, and commits. The embedded <strong>terminal drawer</strong> means the assistant can run
+      <em>inside</em> the app — open Claude Code in the drawer, review its changes in the diff above, and drop
+      questions or notes inline as they come up. Run reviews from the AI Hub (<kbd>Cmd</kbd>+<kbd>A</kbd>); findings,
+      triage, and the guided tour land in the Review panel and the Guide tab automatically.
+    </p>
+
     <h2>Running it</h2>
     <pre><code><span class="cmt"># development shell with hot reload</span>
 ./scripts/tauri-dev.sh
@@ -151,7 +160,7 @@
 <span class="cmt"># with extra logging (e.g. the review arena)</span>
 ./scripts/tauri-dev.sh --logs arena
 
-<span class="cmt"># build a release bundle (.app + .dmg on macOS)</span>
+<span class="cmt"># build a release bundle (.app on macOS; a .dmg is produced when ER_SKIP_DMG=0)</span>
 ./scripts/tauri-build.sh</code></pre>
 
     <div class="callout tip">

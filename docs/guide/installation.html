@@ -84,8 +84,9 @@ cd easy-review
 
     <h3>Build a release bundle</h3>
     <pre><code>./scripts/tauri-build.sh</code></pre>
-    <p>On macOS this produces an <code>Easy Review.app</code> and a <code>.dmg</code> under the desktop build target.
-    Building requires <code>cargo-tauri</code> and the platform WebView dependencies (WebKit/GTK on Linux).</p>
+    <p>On macOS this produces an <code>Easy Review.app</code> under the desktop build target (set
+    <code>ER_SKIP_DMG=0</code> to also produce a <code>.dmg</code>). Building requires <code>cargo-tauri</code> and
+    the platform WebView dependencies (WebKit/GTK on Linux).</p>
 
     <div class="callout tip">
       <span class="ico">✦</span>

@@ -12,9 +12,9 @@
     <p class="eyebrow">Core Concepts</p>
     <h1>Diff Modes</h1>
     <p class="lead">
-      A “mode” is simply <em>which set of changes</em> <code>er</code> is showing you. There are six built-in modes plus
-      a pull-request mode. In the terminal you switch with the number keys; in the desktop app you switch from the
-      branch context bar.
+      A “mode” is simply <em>which set of changes</em> <code>er</code> is showing you. There are six built-in modes
+      plus a pull-request mode and an AI-generated guided tour. In the terminal you switch with the number keys; in
+      the desktop app you switch from the branch context bar.
     </p>
 
     <figure class="fig">
@@ -38,7 +38,7 @@
         </div>
         <div class="bottom">
           <span><b>1</b>–<b>6</b> switch mode</span><span class="sep">·</span>
-          <span><b>Shift+R</b> sort by recency</span><span class="sep">·</span>
+          <span><b>m</b> sort by recency</span><span class="sep">·</span>
           <span class="c-muted">enabled modes are numbered in order — disabling one closes the gap</span>
         </div>
       </div>
@@ -54,7 +54,7 @@
         <tr><td><kbd>3</kbd></td><td>Staged</td><td>Changes in the index, ready to commit (<code>git diff --cached</code>).</td></tr>
         <tr><td><kbd>4</kbd></td><td>History</td><td>Commit-by-commit view of your branch's history.</td></tr>
         <tr><td><kbd>5</kbd></td><td>Conflicts</td><td>Files with unresolved merge conflicts.</td></tr>
-        <tr><td><kbd>6</kbd></td><td>Hidden</td><td>Hidden / git-ignored files that <code>er</code> can still surface.</td></tr>
+        <tr><td><kbd>6</kbd></td><td>Hidden</td><td>Watched git-ignored files that <code>er</code> can still surface (appears when <code>[watched]</code> paths are configured).</td></tr>
       </tbody>
     </table>
     <div class="callout note">
@@ -97,10 +97,11 @@
       rebase.
     </p>
 
-    <h2>Hidden / ignored <span class="pill both">both</span></h2>
+    <h2>Hidden / watched files <span class="pill both">both</span></h2>
     <p>
-      Files git normally hides — ignored paths and the like. This is distinct from the <strong>watched files</strong>
-      feature (configurable globs for git-ignored paths such as agent sync folders), which you toggle with <kbd>W</kbd>.
+      Files git normally hides: the git-ignored paths you listed in the <code>[watched]</code> config (agent sync
+      folders, generated docs, and the like). The tab only appears when watched paths are configured. In other
+      modes you can also toggle a watched-files section into the file tree with <kbd>W</kbd>.
       See <a href="configuration.html#watched">Watched files</a>.
     </p>
 
@@ -116,9 +117,19 @@ er https://github.com/owner/repo/pull/42</code></pre>
       refs without checking out the branch. See <a href="github.html">GitHub &amp; Pull Requests</a>.
     </p>
 
+    <h2>Guided tour <span class="pill both">both</span></h2>
+    <p>
+      When a guided tour exists for the branch (generated in the desktop app — see
+      <a href="skills.html">AI Hub Actions → Generate guided tour</a>), a <strong>Tour</strong> tab appears next to
+      the working-tree modes. It presents the same branch diff reordered and grouped into narrative
+      <em>pillars</em>, so you can walk the change story-first. In the terminal, <kbd>k</kbd>/<kbd>j</kbd> move
+      between pillars, <kbd>n</kbd>/<kbd>N</kbd> between files, <kbd>Space</kbd> marks a file reviewed, and
+      <kbd>b</kbd> marks the whole pillar reviewed. The desktop app presents the tour in its Guide tab.
+    </p>
+
     <h2>Sorting by recency</h2>
     <p>
-      In any mode, press <kbd>Shift</kbd>+<kbd>R</kbd> to toggle sorting files by modification time. When an AI tool just
+      In any mode, press <kbd>m</kbd> to toggle sorting files by modification time. When an AI tool just
       touched a handful of files, this floats them to the top of the list so you review the freshest changes first.
     </p>
 

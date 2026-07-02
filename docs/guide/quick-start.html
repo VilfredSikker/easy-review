@@ -33,10 +33,10 @@
     <table>
       <thead><tr><th>Keys</th><th>Move</th></tr></thead>
       <tbody>
-        <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>Next / previous file</td></tr>
+        <tr><td><kbd>k</kbd> / <kbd>j</kbd></td><td>Next / previous file</td></tr>
         <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>Next / previous hunk</td></tr>
         <tr><td><kbd>↓</kbd> / <kbd>↑</kbd></td><td>Next / previous line within hunks</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>d</kbd> / <kbd>Ctrl</kbd>+<kbd>u</kbd></td><td>Half page down / up</td></tr>
+        <tr><td><kbd>d</kbd> / <kbd>u</kbd></td><td>Scroll down / up</td></tr>
         <tr><td><kbd>/</kbd></td><td>Search files by name</td></tr>
       </tbody>
     </table>
@@ -53,22 +53,24 @@
     <p>As you finish a file, mark it reviewed:</p>
     <ul>
       <li><kbd>Space</kbd> — toggle the current file as reviewed.</li>
-      <li><kbd>u</kbd> — filter the list down to files you have <em>not</em> reviewed.</li>
+      <li><kbd>!</kbd> — filter the list down to files you have <em>not</em> reviewed.</li>
       <li><kbd>U</kbd> — jump straight to the next unreviewed file.</li>
     </ul>
     <p>If a file's diff changes underneath you (because watch mode picked up an edit), its reviewed mark clears
     automatically so you never miss new changes.</p>
 
     <h2>5. Leave notes</h2>
-    <p><code>er</code> has two kinds of inline notes, on two different keys:</p>
+    <p><code>er</code> has three kinds of inline annotations:</p>
     <table>
-      <thead><tr><th>Key</th><th>Note type</th><th>Goes to</th></tr></thead>
+      <thead><tr><th>Key</th><th>Type</th><th>Goes to</th></tr></thead>
       <tbody>
-        <tr><td><kbd>q</kbd> / <kbd>Q</kbd></td><td>Private <strong>question</strong> (yellow)</td><td>Stays local; read by your AI tools</td></tr>
-        <tr><td><kbd>c</kbd> / <kbd>C</kbd></td><td><strong>GitHub comment</strong> (cyan)</td><td>Syncs to a pull request</td></tr>
+        <tr><td><kbd>q</kbd></td><td>Private <strong>question</strong> (yellow)</td><td>Stays local; read by your AI tools</td></tr>
+        <tr><td><kbd>q</kbd> or <kbd>c</kbd>, then <kbd>Ctrl</kbd>+<kbd>t</kbd></td><td>Private <strong>note</strong> (yellow, 📝)</td><td>Stays local; an instruction to hand to an agent</td></tr>
+        <tr><td><kbd>c</kbd></td><td><strong>GitHub comment</strong> (cyan)</td><td>Syncs to a pull request</td></tr>
       </tbody>
     </table>
-    <p>Lowercase targets the current line; uppercase targets the whole hunk. Read more in
+    <p>Each anchors to the current line (extend the selection with <kbd>Shift</kbd>+<kbd>↓</kbd>/<kbd>↑</kbd>);
+    while composing, <kbd>Ctrl</kbd>+<kbd>t</kbd> cycles the draft type. Read more in
     <a href="comments.html">Comments &amp; Questions</a>.</p>
 
     <h2>6. Add AI analysis (optional)</h2>
@@ -77,16 +79,16 @@
     AI tool for you — Claude Code by default, if the <code>claude</code> CLI is on your <code>PATH</code> — so you do not
     need a second terminal.</p>
     <ol>
-      <li>Press <kbd>a</kbd> and choose <strong>run review</strong>. Per-file risk levels, inline findings, and a
-      checklist appear as the agent writes them; press <kbd>v</kbd> to cycle how much AI context is shown.</li>
+      <li>Press <kbd>a</kbd> and choose <strong>Review work</strong> (called <strong>Run review</strong> in the desktop
+      app). Per-file risk levels, inline findings, and a checklist appear as the agent writes them; toggle the findings
+      layer with <kbd>A</kbd> and cycle the side panel with <kbd>p</kbd>.</li>
       <li>Leave questions with <kbd>q</kbd>, then use the Hub's <strong>Answer questions</strong> action (TUI only — in the
       desktop app, questions are managed in the Notes panel) to have the AI respond inline.</li>
       <li>Re-open the Hub any time to re-run the review or launch a single expert, the professor, or a fast triage.</li>
     </ol>
     <p>The Hub can drive Codex, Cursor, or another tool too — see <a href="ai-review.html#ai-hub">AI Review → the AI
-    Hub</a> for every action and how to configure providers.</p>
-    <p>See <a href="ai-review.html#ai-hub">AI Hub Actions</a> for the full list of Hub actions — review, specialized/expert
-    review, triage, professor — and what each one writes.</p>
+    Hub</a> for how to configure providers, and <a href="skills.html">AI Hub Actions</a> for the full catalog of
+    actions — review, specialized/expert review, triage, professor — and what each one writes.</p>
 
     <h2>7. Watch it stay live</h2>
     <p>
