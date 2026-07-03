@@ -51,6 +51,14 @@ describe("uniqueAgentLabels", () => {
     ]);
     expect(labels).toEqual(["General", "Professor"]);
   });
+
+  it("includes experts that only contributed a summary, no findings", () => {
+    const labels = uniqueAgentLabels(
+      [mkFinding({ agent_label: "Patterns" })],
+      ["Patterns", "Testing"],
+    );
+    expect(labels).toEqual(["Testing", "Patterns"]);
+  });
 });
 
 describe("countBySeverity", () => {

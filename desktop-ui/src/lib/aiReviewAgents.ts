@@ -18,10 +18,16 @@ export const AGENT_LABEL_ORDER: readonly string[] = [
 export const ALL_REVIEWERS = "all" as const;
 export type AgentFilter = typeof ALL_REVIEWERS | string;
 
-export function uniqueAgentLabels(findings: FlatFinding[]): string[] {
+export function uniqueAgentLabels(
+  findings: FlatFinding[],
+  agentSummaryLabels: string[] = [],
+): string[] {
   const seen = new Set<string>();
   for (const f of findings) {
     seen.add(f.agent_label ?? f.expert_label ?? "General");
+  }
+  for (const label of agentSummaryLabels) {
+    seen.add(label);
   }
   return sortAgentLabels([...seen]);
 }

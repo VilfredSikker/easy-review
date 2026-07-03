@@ -35,11 +35,17 @@
   let staleHelpOpen = $state(false);
   let filter = $state<"all" | "high" | "med" | "low">("all");
 
-  const agentLabels = $derived(uniqueAgentLabels(ai.findings));
+  const agentLabels = $derived(
+    uniqueAgentLabels(ai.findings, Object.keys(ai.agent_summaries ?? {})),
+  );
 
   $effect(() => {
     ai.findings;
-    aiReviewFilter.syncFromFindings(ai.findings);
+    ai.agent_summaries;
+    aiReviewFilter.syncFromFindings(
+      ai.findings,
+      Object.keys(ai.agent_summaries ?? {}),
+    );
   });
 
   function basename(p: string): string {
@@ -55,7 +61,9 @@
     filterByAgent(ai.findings, aiReviewFilter.filter),
   );
   const scopedCounts = $derived(countBySeverity(agentScopedFindings));
-  const showAgentDropdown = $derived(ai.findings.length > 0);
+  const showAgentDropdown = $derived(
+    ai.findings.length > 0 || agentLabels.length > 1,
+  );
   const showAgentPills = $derived(
     aiReviewFilter.filter === ALL_REVIEWERS && agentLabels.length > 1,
   );
