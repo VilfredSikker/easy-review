@@ -10,8 +10,11 @@ class AiReviewFilterStore {
   filter = $state<AgentFilter>(ALL_REVIEWERS);
   private labelsKey = "";
 
-  syncFromFindings(findings: FlatFinding[]): void {
-    const labels = uniqueAgentLabels(findings);
+  syncFromFindings(
+    findings: FlatFinding[],
+    agentSummaryLabels: string[] = [],
+  ): void {
+    const labels = uniqueAgentLabels(findings, agentSummaryLabels);
     const key = labels.join("\0");
     if (key === this.labelsKey) return;
     this.labelsKey = key;
