@@ -1,6 +1,6 @@
 # easy-review (`er`)
 
-A git diff review tool built for developers who use AI coding assistants. Ships as a terminal TUI (`er`), with a Tauri desktop app in development.
+A git diff review tool built for developers who use AI coding assistants. Ships as a terminal TUI (`er`) and a desktop app (Tauri + Svelte) — both share the same review engine and data.
 
 AI writes code faster than you can review it. `er` makes review fast, navigable, and live-updating.
 
@@ -30,6 +30,23 @@ cargo install --path crates/er-tui
 ```
 
 Requires Rust 1.85+.
+
+## Desktop app
+
+A graphical front end for the same review engine — split diffs, an embedded terminal and browser, a multi-model review arena, and point-and-click settings. It reads and writes the same review data as the terminal, so you can use both side by side.
+
+As of **v0.4.0**, prebuilt Apple Silicon `.dmg` bundles are published on the [Releases page](https://github.com/VilfredSikker/easy-review/releases). Download it, open it, and drag **Easy Review** into Applications (right-click → **Open** the first time to bypass Gatekeeper, since the bundle isn't code-signed yet).
+
+Intel Macs, Linux, and Windows aren't packaged yet — build from source instead:
+
+```bash
+git clone https://github.com/VilfredSikker/easy-review.git
+cd easy-review
+./scripts/tauri-dev.sh     # dev shell with hot reload
+./scripts/tauri-build.sh   # release bundle
+```
+
+See [Installation](https://vilfredsikker.github.io/easy-review/guide/installation.html#desktop-app) for full details.
 
 ## Documentation
 
