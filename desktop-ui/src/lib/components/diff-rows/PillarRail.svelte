@@ -38,7 +38,9 @@
     void app.cmd("select_file", { idx: f.source_index });
   }
 
-  function toggleReviewed(f: FileSnapshot) {
+  function toggleReviewed(e: MouseEvent, f: FileSnapshot) {
+    e.stopPropagation();
+    e.preventDefault();
     // Guide mode auto-collapses a file on its reviewed false→true transition
     // (see FlatDiffView), so no explicit collapse is needed here.
     void app.cmd(f.reviewed ? "unmark_reviewed" : "mark_reviewed", { path: f.path });
@@ -109,7 +111,7 @@
       title={f.reviewed ? "Marked reviewed — click to unmark" : "Mark file reviewed"}
       aria-label={f.reviewed ? "Unmark as reviewed" : "Mark as reviewed"}
       aria-pressed={f.reviewed}
-      onclick={() => toggleReviewed(f)}
+      onclick={(e) => toggleReviewed(e, f)}
     >
       <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
         <polyline points="20 6 9 17 4 12" />

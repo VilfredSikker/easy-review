@@ -230,11 +230,11 @@
   });
 
   // Reset collapse state only when the diff context changes (tab/branch/mode).
-  // clear() reads collapsed.size, so run it untracked — otherwise this effect
-  // takes a dependency on `collapsed` and wipes every collapse the user makes.
+  // diffFileCollapse's mutators are internally untracked, so this doesn't
+  // need its own untrack() wrapper (see diffFileCollapse.svelte.ts).
   $effect(() => {
     snapshotKey;
-    untrack(() => diffFileCollapse.clear());
+    diffFileCollapse.clear();
   });
 
   // Clear the reference highlight when the diff context changes (tab/branch/PR/
@@ -579,6 +579,9 @@
     for (const f of files) {
       if (!f.reviewed) continue;
       cur.add(f.path);
+      // diffFileCollapse's mutators are internally untracked, so calling
+      // collapse() here doesn't make this effect depend on the collapse
+      // store (see diffFileCollapse.svelte.ts).
       if (!_prevReviewedTour.has(f.path)) diffFileCollapse.collapse(f.path);
     }
     _prevReviewedTour = cur;
