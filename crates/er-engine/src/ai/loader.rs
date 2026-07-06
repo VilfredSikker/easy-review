@@ -431,6 +431,93 @@ mod tests {
     }
 
     #[test]
+    fn load_ai_state_keeps_review_with_negative_line_anchor() {
+        // Real-world failure: the annotated diff tags deleted lines as
+        // `[h<N> L-<old>]` and a model copied the negative number into
+        // `line_start`. The whole review used to fail deserialization and the
+        // Review section showed "No findings written" despite a completed run.
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc",
+            "files": {
+                "a.rs": {
+                    "risk": "medium",
+                    "findings": [{
+                        "id": "f-1",
+                        "title": "deleted-line finding",
+                        "description": "d",
+                        "severity": "medium",
+                        "category": "testing",
+                        "hunk_index": 3,
+                        "line_start": -494
+                    }]
+                }
+            }
+        });
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::to_string(&review).unwrap(),
+        )
+        .unwrap();
+
+        let state = load_ai_state(er_dir, "abc", None);
+        let review = state
+            .review
+            .expect("review must survive a negative line anchor");
+        let finding = &review.files["a.rs"].findings[0];
+        // Anchor degrades to hunk level instead of poisoning the parse.
+        assert_eq!(finding.line_start, None);
+        assert_eq!(finding.hunk_index, Some(3));
+        assert!(!state.is_stale);
+    }
+
+    #[test]
+    fn load_ai_state_skips_malformed_finding_keeps_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc",
+            "files": {
+                "a.rs": {
+                    "risk": "low",
+                    "findings": [
+                        {
+                            "id": "f-bad",
+                            "title": "t",
+                            "severity": "catastrophic",
+                            "hunk_index": 0
+                        },
+                        {
+                            "id": "f-good",
+                            "title": "t",
+                            "description": "d",
+                            "severity": "low",
+                            "category": "logic",
+                            "hunk_index": 1,
+                            "line_start": 12
+                        }
+                    ]
+                }
+            }
+        });
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::to_string(&review).unwrap(),
+        )
+        .unwrap();
+
+        let state = load_ai_state(er_dir, "abc", None);
+        let review = state.review.expect("review must survive one bad finding");
+        let findings = &review.files["a.rs"].findings;
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "f-good");
+        assert_eq!(findings[0].line_start, Some(12));
+    }
+
+    #[test]
     fn load_ai_state_keeps_review_with_placeholder_head_branch() {
         // An agent that copies the prompt template literally leaves
         // "<head branch if known>" — also not a real declaration.

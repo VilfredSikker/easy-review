@@ -38,7 +38,11 @@ pub fn sanitize_for_shell(s: &str) -> String {
 ///
 /// The model reads the annotated file and copies these tags directly into `Finding.line_start`
 /// and `Finding.hunk_index`, eliminating the line-counting errors the prompt-side computation
-/// caused. The hash is still computed on the raw `input` so it matches what `er` itself sees.
+/// caused. Deleted-line tags (`L-<old>`) must not be copied into `line_start` — the prompt
+/// instructs the model to anchor those findings at hunk level (`line_start: null`), and
+/// `lenient_line_anchor` in `review.rs` degrades any negative value that slips through to
+/// `None` rather than failing the whole sidecar parse. The hash is still computed on the raw
+/// `input` so it matches what `er` itself sees.
 ///
 /// POSIX-compatible awk; works on macOS BSD awk and gawk alike. Paths are shell-quoted
 /// inside the helper, so callers pass raw paths.
@@ -109,6 +113,7 @@ pub fn review_rules_preamble(
 ### Annotate and anchor
 - Findings **only** on `+` or `-` lines in the annotated diff
 - Copy `hunk_index` from `[h<N>]` and `line_start` from `[h<N> L<M>]` — **never** count or infer line numbers
+- Deleted lines are tagged `[h<N> L-<M>]` (note the minus). For a finding on a deleted line, set `line_start: null` and anchor by `hunk_index` alone — **never** write a negative `line_start`
 - Set `outside_diff: false`; drop findings you cannot anchor to a tagged line
 
 ### Severity (P0 / P1 / P2)
