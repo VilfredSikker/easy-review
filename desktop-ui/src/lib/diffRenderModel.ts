@@ -1,4 +1,5 @@
 import { splitRows } from "$lib/splitRows";
+import { lineTotalCols, wrappedLineCount } from "$lib/lineWrap";
 import type { FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "$lib/types";
 import type { SplitRow } from "$lib/splitRows";
 import {
@@ -253,6 +254,17 @@ export type CrossFileFlatRow =
       identity: string;
     };
 
+/** Widest rendered line (in ch, marker prefix included) per diff side — sizes
+ *  the in-panel horizontal scroll range when word wrap is off. */
+export interface MaxLineCols {
+  /** Widest line overall (unified view's single panel). */
+  all: number;
+  /** Widest del/context line (split view left panel). */
+  left: number;
+  /** Widest add/context line (split view right panel). */
+  right: number;
+}
+
 export interface FileBlock {
   filePath: string;
   fileIndex: number;
@@ -262,6 +274,7 @@ export interface FileBlock {
   totalHeight: number;
   unifiedPairsByHunk: UnifiedPair[][];
   splitRowsByHunk: SplitRow[][];
+  maxCols: MaxLineCols;
 }
 
 export interface RenderModelInputs {
@@ -271,6 +284,9 @@ export interface RenderModelInputs {
   mode: string;
   annotationIndex: AnnotationIndex;
   commentVisibility: CommentVisibility;
+  /** Column capacity of a code cell when word wrap is on; null = no wrapping
+   *  (all content rows are one LINE_HEIGHT tall). */
+  wrapCols?: number | null;
 }
 
 export function estimateLazyStubHeight(file: FileSnapshot): number {
@@ -367,9 +383,33 @@ function pruneBlockCache(files: FileSnapshot[]): void {
   }
 }
 
+/** One pass over a file's lines: widest line per side (fold labels excluded). */
+function computeMaxCols(file: FileSnapshot): MaxLineCols {
+  let all = 0;
+  let left = 0;
+  let right = 0;
+  for (const hunk of file.hunks) {
+    for (const line of hunk.lines) {
+      if (line.kind === "fold") continue;
+      const cols = lineTotalCols(line.text);
+      if (cols > all) all = cols;
+      if (line.kind !== "add" && cols > left) left = cols;
+      if (line.kind !== "del" && cols > right) right = cols;
+    }
+  }
+  return { all, left, right };
+}
+
+/** Content-row height honoring word wrap (single line when wrap is off). */
+function contentRowHeight(text: string, wrapCols: number | null): number {
+  if (wrapCols === null) return LINE_HEIGHT;
+  return wrappedLineCount(text, wrapCols) * LINE_HEIGHT;
+}
+
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
-  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}`;
+  const wrapCols = input.wrapCols ?? null;
+  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}`;
 
   let perFile = _blockCache.get(file.path);
   if (!perFile) {
@@ -458,7 +498,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
             filePath: file.path,
             hunkIdx,
             lineIdx,
-            height: LINE_HEIGHT,
+            height: contentRowHeight(line.text, wrapCols),
             identity: `cu:${file.path}:${hunkIdx}:${lineIdx}`,
           });
           const ln = lineNumOf(line);
@@ -521,7 +561,11 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
             filePath: file.path,
             hunkIdx,
             splitRowIdx,
-            height: LINE_HEIGHT,
+            // Sides wrap independently; the row is as tall as the taller side.
+            height: Math.max(
+              r.left ? contentRowHeight(r.left.text, wrapCols) : LINE_HEIGHT,
+              r.right ? contentRowHeight(r.right.text, wrapCols) : LINE_HEIGHT,
+            ),
             identity: `cs:${file.path}:${hunkIdx}:${splitRowIdx}`,
           });
           const leftLn = r.left ? lineNumOf(r.left) : null;
@@ -652,6 +696,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
     totalHeight,
     unifiedPairsByHunk,
     splitRowsByHunk,
+    maxCols: computeMaxCols(file),
   };
   // Insertion-order eviction: oldest render variant goes first (typically a
   // stale annotation version or the other view mode).
@@ -679,6 +724,9 @@ export interface CrossFileModel {
   findingRowIndex(findingId: string): number | null;
   unifiedPairsByFile: Map<string, UnifiedPair[][]>;
   splitRowsByFile: Map<string, SplitRow[][]>;
+  /** Per-file widest-line columns — consumers aggregate over non-collapsed
+   *  files to size the in-panel horizontal scroll range. */
+  maxColsByFile: Map<string, MaxLineCols>;
 }
 
 export interface CrossFileInputs {
@@ -688,6 +736,8 @@ export interface CrossFileInputs {
   annotationIndex: AnnotationIndex;
   commentVisibility: CommentVisibility;
   snapshotKey: string;
+  /** See {@link RenderModelInputs.wrapCols}. */
+  wrapCols?: number | null;
 }
 
 const CROSS_FILE_LRU_LIMIT = 4;
@@ -706,12 +756,14 @@ function emptyCrossFileModel(identity: string): CrossFileModel {
     findingRowIndex: () => null,
     unifiedPairsByFile: new Map(),
     splitRowsByFile: new Map(),
+    maxColsByFile: new Map(),
   };
 }
 
 export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   const { files, viewMode, mode, annotationIndex, commentVisibility, snapshotKey } = input;
-  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${filesRenderFingerprint(files)}`;
+  const wrapCols = input.wrapCols ?? null;
+  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}`;
 
   const cached = _crossFileLru.get(identity);
   if (cached) {
@@ -738,6 +790,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
       mode,
       annotationIndex,
       commentVisibility,
+      wrapCols,
     });
     totalRowCount += blocks[i].rows.length;
   }
@@ -752,6 +805,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   const findingIdx = new Map<string, number>();
   const unifiedPairsByFile = new Map<string, UnifiedPair[][]>();
   const splitRowsByFile = new Map<string, SplitRow[][]>();
+  const maxColsByFile = new Map<string, MaxLineCols>();
 
   let writeIdx = 0;
   for (let fi = 0; fi < blocks.length; fi++) {
@@ -760,6 +814,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
     hunkStartRow.set(block.filePath, []);
     unifiedPairsByFile.set(block.filePath, block.unifiedPairsByHunk);
     splitRowsByFile.set(block.filePath, block.splitRowsByHunk);
+    maxColsByFile.set(block.filePath, block.maxCols);
     for (let j = 0; j < block.rows.length; j++) {
       const row = block.rows[j];
       rows[writeIdx] = row;
@@ -795,6 +850,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
     },
     unifiedPairsByFile,
     splitRowsByFile,
+    maxColsByFile,
   };
 
   insertLru(identity, model);
@@ -902,6 +958,7 @@ export function applyCollapsedFiles(
     },
     unifiedPairsByFile: model.unifiedPairsByFile,
     splitRowsByFile: model.splitRowsByFile,
+    maxColsByFile: model.maxColsByFile,
   };
 
   // Store in bounded LRU cache (newest at end, evict oldest when full).

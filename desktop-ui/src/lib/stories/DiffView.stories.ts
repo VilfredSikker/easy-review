@@ -128,9 +128,10 @@ export const WordDiffUnified: Story = {
 };
 
 /**
- * Long-line content that exceeds viewport width — exercises horizontal scroll
- * on the diff body. Verifies that add/del backgrounds extend as a single
- * unified-width block across all rows, not per-row, when scrolling right.
+ * Long-line content that exceeds viewport width — exercises word wrap (the
+ * default) and, with wrap toggled off, in-panel horizontal scrolling. The
+ * panel width never grows past the viewport; add/del backgrounds stay
+ * viewport-wide.
  */
 export const LongLinesHorizontalScroll: Story = {
   args: (() => {
@@ -196,6 +197,62 @@ export const SplitWithThreads: Story = {
         { ...commentThread, id: "thread-split-demo", line: 39 },
       ];
     }
+    return { snapshot: snap, viewModeOverride: "split" as const };
+  })(),
+};
+
+/**
+ * Split view with long lines — the 50/50 split must hold regardless of line
+ * length. With word wrap on (default) long lines wrap inside their panel;
+ * with wrap off each panel scrolls horizontally on its own.
+ */
+export const LongLinesSplit: Story = {
+  args: (() => {
+    const ctx = (o: number, n: number, t: string): LineSnapshot => ({
+      old_num: o, new_num: n, kind: "context", text: t, spans: [{ text: t, color: "" }],
+    });
+    const del = (o: number, t: string): LineSnapshot => ({
+      old_num: o, new_num: null, kind: "del", text: t, spans: [{ text: t, color: "" }],
+    });
+    const add = (n: number, t: string): LineSnapshot => ({
+      old_num: null, new_num: n, kind: "add", text: t, spans: [{ text: t, color: "" }],
+    });
+    const veryLong =
+      "const veryLongIdentifierName = await some.deeply.nested.module.invokeRemoteProcedureWithManyParameters(firstArgument, secondArgument, thirdArgument, fourthArgument, fifthArgument, sixthArgument, seventhArgument, eighthArgument);";
+    const veryLong2 =
+      "const renamedVeryLongIdentifierName = await some.deeply.nested.module.invokeRemoteProcedureWithManyParameters(firstArgument, secondArgument, thirdArgument, fourthArgument, fifthArgument, sixthArgument, seventhArgument, eighthArgument, ninthArgument);";
+    const hunk: HunkSnapshot = {
+      header: "@@ -1,8 +1,8 @@ long-line split demo",
+      old_start: 1, old_count: 8, new_start: 1, new_count: 8,
+      lines: [
+        ctx(1, 1, "function processBatch(items) {"),
+        ctx(2, 2, "  const results = [];"),
+        del(3, "    " + veryLong),
+        add(3, "    " + veryLong2),
+        ctx(4, 4, "  for (const item of items) {"),
+        del(5, "  return results.filter((r) => r !== null && r.status === 'ok' && r.value > 0);"),
+        add(5, "  return results.filter((r) => r !== null && r.status === 'ok' && r.value > 0 && r.timestamp > Date.now() - 86400000);"),
+        ctx(6, 6, "  }"),
+        ctx(7, 7, "}"),
+        ctx(8, 8, "// short trailing context line"),
+      ],
+      threads: [],
+    };
+    const file: FileSnapshot = {
+      path: "src/example/long-lines-split.ts",
+      status: "modified",
+      additions: 2, deletions: 2,
+      reviewed: false, compacted: false, risk: null,
+      finding_count: 0, comment_count: 0, question_count: 0,
+      hunks: [hunk],
+      source_index: 0,
+      cache_key: "",
+    };
+    const snap: AppSnapshot = JSON.parse(JSON.stringify(richSnapshot));
+    snap.files = [file];
+    snap.selected_file = 0;
+    snap.total_count = 1;
+    snap.reviewed_count = 0;
     return { snapshot: snap, viewModeOverride: "split" as const };
   })(),
 };

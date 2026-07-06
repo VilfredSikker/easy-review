@@ -6,6 +6,7 @@
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import { caretTextOffset, identifierAt } from "$lib/referenceHighlight";
   import { wordDiff } from "$lib/wordDiff";
+  import { hangingIndentStyle } from "$lib/lineWrap";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
   import DiffLineContent from "./DiffLineContent.svelte";
   import type { LineSnapshot } from "$lib/types";
@@ -18,9 +19,21 @@
     rowIdx: number;
     annotationIndex: AnnotationIndex;
     commentVisibility: CommentVisibility;
+    /** Cell column capacity when word wrap is on; null = no wrap (in-panel pan). */
+    wrapCols?: number | null;
   }
-  const { row, line, partner, filePath, rowIdx, annotationIndex, commentVisibility }: Props =
-    $props();
+  const {
+    row,
+    line,
+    partner,
+    filePath,
+    rowIdx,
+    annotationIndex,
+    commentVisibility,
+    wrapCols = null,
+  }: Props = $props();
+
+  const wrap = $derived(wrapCols !== null);
 
   function lineClass(kind: string) {
     if (kind === "add") return "diff-add";
@@ -67,20 +80,13 @@
     }
   }
 
-  function leadingWS(): string {
-    const t = line.text;
-    let n = 0;
-    while (n < t.length && (t[n] === " " || t[n] === "\t")) n++;
-    const cols = n + 2;
-    return `padding-left: calc(0.75rem + ${cols}ch); text-indent: -${cols}ch;`;
-  }
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="grid grid-cols-[40px_minmax(0,1fr)] diff-row {lineClass(line.kind)} {isSelected ? 'is-selected' : ''} {isAnchorRange ? 'is-anchor-range' : ''}"
-  style="height:{row.height}px"
+  style={wrap ? "min-height:24px" : `height:${row.height}px`}
   data-row-identity={row.identity}
   data-row-idx={rowIdx}
 >
@@ -93,20 +99,22 @@
       >+</button>
     {/if}
   </div>
-  <div class="leading-6 pr-3 whitespace-pre break-all {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}" style={leadingWS()} onclick={onCodeClick}>
-    {#if line.kind === "add"}
-      <span class="text-add-fg">+</span>
-    {:else if line.kind === "del"}
-      <span class="text-del-fg">-</span>
-    {:else}
-      <span>&nbsp;</span>
-    {/if}
-    <DiffLineContent
-      text={line.text}
-      wordSpans={wdSpans}
-      syntaxSpans={line.spans}
-      changedBgClass={wdBg}
-      kind={bgKind}
-    />
+  <div class="leading-6 pr-3 {wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}" onclick={onCodeClick}>
+    <div class={wrap ? "" : "pan-l"} style={hangingIndentStyle(line.text, wrapCols)}>
+      {#if line.kind === "add"}
+        <span class="text-add-fg">+</span>
+      {:else if line.kind === "del"}
+        <span class="text-del-fg">-</span>
+      {:else}
+        <span>&nbsp;</span>
+      {/if}
+      <DiffLineContent
+        text={line.text}
+        wordSpans={wdSpans}
+        syntaxSpans={line.spans}
+        changedBgClass={wdBg}
+        kind={bgKind}
+      />
+    </div>
   </div>
 </div>

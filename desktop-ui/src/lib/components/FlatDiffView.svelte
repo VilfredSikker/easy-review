@@ -44,6 +44,7 @@
   } from "$lib/diffRenderModel";
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { splitRows } from "$lib/splitRows";
+  import { MIN_WRAP_COLS } from "$lib/lineWrap";
   import {
     windowFromScrollVariable,
     rowIndexAtOffset,
@@ -213,6 +214,36 @@
   );
   const threadMap = $derived(annotationIndex.threadMap);
 
+  // ── 50/50 layout: panel geometry, word wrap, in-panel horizontal scroll ───
+  // The .band is always viewport-width (no min-width:max-content), so split
+  // panels are a fixed 50/50. Long lines either word-wrap (app.wrapLines, the
+  // default) or pan horizontally inside their own panel via --dx-l/--dx-r.
+  /** Line-number gutter width per panel (grid col 40px). */
+  const GUTTER_PX = 40;
+  /** Horizontal padding inside a code cell (0.75rem left + pr-3 right). */
+  const CELL_HPAD_PX = 24;
+
+  const wrapEnabled = $derived(app.wrapLines);
+  /** Measured monospace character width (px). 0 until the probe runs. */
+  let charWPx = $state(0);
+  /** Measured .hscroll (band) width (px). 0 until the observer fires. */
+  let bandWidthPx = $state(0);
+
+  /** Width of one code cell's text area (px) for the current view mode. */
+  const codeCellWidthPx = $derived.by(() => {
+    if (bandWidthPx <= 0) return 0;
+    const cellW =
+      viewMode === "split" ? (bandWidthPx - 2 * GUTTER_PX) / 2 : bandWidthPx - GUTTER_PX;
+    return Math.max(0, cellW - CELL_HPAD_PX);
+  });
+
+  /** Column capacity of a code cell — the render model's wrap input. Null when
+   *  wrapping is off or the panel/char widths aren't measured yet. */
+  const wrapCols = $derived.by(() => {
+    if (!wrapEnabled || codeCellWidthPx <= 0 || charWPx <= 0) return null;
+    return Math.max(MIN_WRAP_COLS, Math.floor(codeCellWidthPx / charWPx));
+  });
+
   // ── Cross-file model ───────────────────────────────────────────────────────
   const baseCrossFileModel = $derived(
     getCrossFileModel({
@@ -222,6 +253,7 @@
       annotationIndex,
       commentVisibility: app.commentVisibility,
       snapshotKey,
+      wrapCols,
     }),
   );
   const crossFileModel = $derived.by(() => {
@@ -282,6 +314,21 @@
       overlayHeights = next;
       overlaySerial++;
     }
+  });
+
+  // Word-wrap geometry changes (toggle, resize) invalidate measured heights —
+  // content rows measured at the old width would otherwise pin stale heights
+  // for rows that are currently off-screen. Rendered rows re-report on the
+  // next observe pass (ResizeObserver fires once per fresh observe()).
+  let _lastWrapCols: number | null | undefined = undefined;
+  $effect(() => {
+    const cols = wrapCols;
+    if (_lastWrapCols === cols) return;
+    const first = _lastWrapCols === undefined;
+    _lastWrapCols = cols;
+    if (first) return;
+    overlayHeights = new Map();
+    overlaySerial++;
   });
 
   function onHeightChange(identity: string, actualPx: number) {
@@ -427,6 +474,107 @@
     _deadStubs.clear();
     lastViewKey = snapshotKey;
     tick().then(() => { if (scrollEl) scrollEl.scrollTop = top; });
+  });
+
+  // ── In-panel horizontal scroll (word wrap off) ────────────────────────────
+  // Each panel pans its code text inside fixed 50/50 cells. The pan offset per
+  // side is mirrored into --dx-l/--dx-r on the .band (rows transform via CSS,
+  // no per-row re-render), and a slim native scrollbar per panel at the bottom
+  // of the viewport is the scroll source of truth.
+  let panLPx = $state(0);
+  let panRPx = $state(0);
+  let hbarLEl: HTMLDivElement | null = $state(null);
+  let hbarREl: HTMLDivElement | null = $state(null);
+
+  /** Widest line (ch, marker prefix included) per panel over expanded files. */
+  const panelMaxCols = $derived.by(() => {
+    if (wrapEnabled) return { left: 0, right: 0 };
+    diffFileCollapse.revision;
+    let left = 0;
+    let right = 0;
+    for (const [path, m] of baseCrossFileModel.maxColsByFile) {
+      if (diffFileCollapse.collapsed.has(path)) continue;
+      if (viewMode === "split") {
+        if (m.left > left) left = m.left;
+        if (m.right > right) right = m.right;
+      } else if (m.all > left) {
+        left = m.all;
+      }
+    }
+    return { left, right };
+  });
+
+  /** Horizontal overflow per panel: widest line vs the cell's text area. */
+  const maxPanLPx = $derived(
+    charWPx > 0 ? Math.max(0, Math.ceil(panelMaxCols.left * charWPx - codeCellWidthPx)) : 0,
+  );
+  const maxPanRPx = $derived(
+    viewMode === "split" && charWPx > 0
+      ? Math.max(0, Math.ceil(panelMaxCols.right * charWPx - codeCellWidthPx))
+      : 0,
+  );
+
+  // Reset pan when the diff context, view mode, or wrap setting changes.
+  $effect(() => {
+    void snapshotKey;
+    void viewMode;
+    void wrapEnabled;
+    panLPx = 0;
+    panRPx = 0;
+    if (hbarLEl) hbarLEl.scrollLeft = 0;
+    if (hbarREl) hbarREl.scrollLeft = 0;
+  });
+
+  // Clamp when the scrollable range shrinks (resize, collapse, refresh).
+  $effect(() => {
+    if (panLPx > maxPanLPx) panLPx = maxPanLPx;
+    if (panRPx > maxPanRPx) panRPx = maxPanRPx;
+  });
+
+  function hbarForClientX(clientX: number): HTMLDivElement | null {
+    if (viewMode !== "split" || !hscrollEl) return hbarLEl;
+    const rect = hscrollEl.getBoundingClientRect();
+    return clientX < rect.left + rect.width / 2 ? hbarLEl : hbarREl;
+  }
+
+  /** Route horizontal wheel/trackpad gestures (and shift+wheel) to the panel
+   *  under the pointer. Registered non-passive so preventDefault sticks. */
+  function onDiffWheel(e: WheelEvent) {
+    if (wrapEnabled) return;
+    const dx = e.deltaX !== 0 ? e.deltaX : e.shiftKey ? e.deltaY : 0;
+    if (dx === 0) return;
+    if (!e.shiftKey && Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+    const bar = hbarForClientX(e.clientX);
+    if (!bar) return;
+    e.preventDefault();
+    bar.scrollLeft += dx;
+  }
+
+  /** Measure the rendered monospace character width (drives wrap columns and
+   *  pan ranges). Re-run once webfonts finish loading. */
+  function measureCharWidth() {
+    if (!scrollEl) return;
+    const probe = document.createElement("span");
+    probe.className = "mono";
+    probe.style.cssText =
+      "position:absolute;visibility:hidden;white-space:pre;font-size:13px;line-height:1;";
+    probe.textContent = "0".repeat(100);
+    scrollEl.appendChild(probe);
+    const w = probe.getBoundingClientRect().width / 100;
+    probe.remove();
+    if (w > 0) charWPx = w;
+  }
+
+  // Track the band (.hscroll) width — panel geometry derives from it.
+  $effect(() => {
+    const el = hscrollEl;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      bandWidthPx = el.clientWidth;
+    });
+    ro.observe(el);
+    bandWidthPx = el.clientWidth;
+    return () => ro.disconnect();
   });
 
   // ── Virtual window ────────────────────────────────────────────────────────
@@ -1664,7 +1812,11 @@
         if (!identity) continue;
         const actual = Math.round(entry.contentRect.height);
         const row = crossFileModel.rows.find((r) => r.identity === identity);
-        if (!row || FIXED_HEIGHT_ROW_TYPES.has(row.type)) continue;
+        if (!row) continue;
+        // Content rows are only fixed-height while word wrap is off.
+        const isWrappedContent =
+          wrapCols !== null && (row.type === "content-unified" || row.type === "content-split");
+        if (FIXED_HEIGHT_ROW_TYPES.has(row.type) && !isWrappedContent) continue;
         const expected = overlayHeights.get(identity) ?? row.height;
         if (Math.abs(actual - expected) > 1) {
           console.error(`[er-dev] height mismatch: ${identity} expected=${expected} actual=${actual}`);
@@ -1697,14 +1849,20 @@
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) viewportHeightPx = entry.contentRect.height;
     });
-    if (scrollEl) {
-      ro.observe(scrollEl);
-      viewportHeightPx = scrollEl.clientHeight;
-      scrollTopLivePx = scrollEl.scrollTop;
+    const wheelEl = scrollEl;
+    if (wheelEl) {
+      ro.observe(wheelEl);
+      viewportHeightPx = wheelEl.clientHeight;
+      scrollTopLivePx = wheelEl.scrollTop;
+      // Svelte wheel handlers are passive — register manually so preventDefault works.
+      wheelEl.addEventListener("wheel", onDiffWheel, { passive: false });
     }
+    measureCharWidth();
+    void document.fonts?.ready?.then(() => measureCharWidth());
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      wheelEl?.removeEventListener("wheel", onDiffWheel);
       ro.disconnect();
     };
   });
@@ -1851,6 +2009,18 @@
                 </span>
                 Split
               </button>
+              <button
+                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                onclick={() => app.toggleWrapLines()}
+                title="Wrap long lines instead of scrolling them horizontally inside each panel"
+              >
+                <span class="w-3 inline-flex items-center justify-center">
+                  {#if app.wrapLines}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                  {/if}
+                </span>
+                Wrap long lines
+              </button>
               <div class="border-t border-ink-600 my-1"></div>
               <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Annotations</div>
               <button
@@ -1958,17 +2128,19 @@
         </div>
       {/if}
 
-      <!-- X-scroll surface: full-height absolute-positioned band (column 2 in Guide) -->
+      <!-- Row band surface: viewport-width (always a fixed 50/50 split in split
+           view). Long lines wrap or pan inside their panel — the band itself
+           never scrolls horizontally. (Column 2 in Guide.) -->
       <div
         bind:this={hscrollEl}
         class="hscroll"
-        style="height:{effectiveGeometry.totalHeight + bottomPadPx}px;overflow-x:auto;overflow-y:hidden;position:relative;{tourActive
+        style="height:{effectiveGeometry.totalHeight + bottomPadPx}px;overflow-x:hidden;overflow-y:hidden;position:relative;{tourActive
           ? `margin-left:${RAIL_W}px;width:calc(100% - ${RAIL_W}px);`
           : 'width:100%;'}"
       >
         <div
           class="band"
-          style="position:absolute;top:{vw.paddingTop}px;left:0;right:0;min-width:max-content"
+          style="position:absolute;top:{vw.paddingTop}px;left:0;right:0;--dx-l:{panLPx}px;--dx-r:{panRPx}px"
         >
           {#each windowedRows as row, localIdx (row.identity)}
             {@const rowIdx = vw.start + localIdx}
@@ -1993,6 +2165,7 @@
                   {rowIdx}
                   {annotationIndex}
                   commentVisibility={app.commentVisibility}
+                  {wrapCols}
                 />
               {/if}
             {:else if row.type === "content-split"}
@@ -2005,6 +2178,7 @@
                   {rowIdx}
                   {annotationIndex}
                   commentVisibility={app.commentVisibility}
+                  {wrapCols}
                 />
               {/if}
             {:else if row.type === "compacted-stub"}
@@ -2039,6 +2213,44 @@
       {/if}
     {/if}
   </div>
+
+  <!-- Per-panel horizontal scrollbars (word wrap off): pinned to the viewport
+       bottom, one per code panel. scrollLeft is the pan source of truth. -->
+  {#if !wrapEnabled && files.length > 0 && bandWidthPx > 0}
+    {@const railOffset = tourActive ? RAIL_W : 0}
+    {#if viewMode === "split"}
+      {@const panelW = bandWidthPx / 2}
+      {#if maxPanLPx > 0}
+        <div
+          class="diff-hbar"
+          style="left:{railOffset}px;width:{panelW}px"
+          bind:this={hbarLEl}
+          onscroll={() => (panLPx = hbarLEl?.scrollLeft ?? 0)}
+        >
+          <div style="width:{panelW + maxPanLPx}px"></div>
+        </div>
+      {/if}
+      {#if maxPanRPx > 0}
+        <div
+          class="diff-hbar"
+          style="left:{railOffset + panelW}px;width:{panelW}px"
+          bind:this={hbarREl}
+          onscroll={() => (panRPx = hbarREl?.scrollLeft ?? 0)}
+        >
+          <div style="width:{panelW + maxPanRPx}px"></div>
+        </div>
+      {/if}
+    {:else if maxPanLPx > 0}
+      <div
+        class="diff-hbar"
+        style="left:{railOffset}px;width:{bandWidthPx}px"
+        bind:this={hbarLEl}
+        onscroll={() => (panLPx = hbarLEl?.scrollLeft ?? 0)}
+      >
+        <div style="width:{bandWidthPx + maxPanLPx}px"></div>
+      </div>
+    {/if}
+  {/if}
 
   {#if refHighlight.searchOpen}
     <DiffSearchBar

@@ -757,3 +757,88 @@ describe("getCrossFileModel — LRU eviction", () => {
     expect(a3).toBe(a1);
   });
 });
+
+describe("getFileBlock — word wrap heights", () => {
+  it("multiplies unified content-row height by the wrapped line count", () => {
+    const long = "x".repeat(100); // 102 cols at wrapCols 80 → 2 visual lines
+    const f = file({
+      path: "wrap.ts",
+      hunks: [
+        hunk({
+          lines: [
+            line({ kind: "context", old_num: 1, new_num: 1, text: "short" }),
+            line({ kind: "add", new_num: 2, text: long }),
+          ],
+        }),
+      ],
+    });
+    const block = getFileBlock({ ...mkInputs(f, [f], emptyAi()), wrapCols: 80 });
+    const content = block.rows.filter((r) => r.type === "content-unified");
+    expect(content[0].height).toBe(LINE_HEIGHT);
+    expect(content[1].height).toBe(2 * LINE_HEIGHT);
+  });
+
+  it("split rows take the taller of the two sides", () => {
+    const long = "y".repeat(100);
+    const f = file({
+      path: "wrap-split.ts",
+      hunks: [
+        hunk({
+          lines: [
+            line({ kind: "del", old_num: 1, text: "short" }),
+            line({ kind: "add", new_num: 1, text: long }),
+          ],
+        }),
+      ],
+    });
+    const block = getFileBlock({ ...mkInputs(f, [f], emptyAi(), "split"), wrapCols: 80 });
+    const content = block.rows.filter((r) => r.type === "content-split");
+    expect(content).toHaveLength(1);
+    expect(content[0].height).toBe(2 * LINE_HEIGHT);
+  });
+
+  it("wrapCols is part of the block cache key", () => {
+    const f = file({
+      path: "wrap-key.ts",
+      hunks: [hunk({ lines: [line({ kind: "context", old_num: 1, new_num: 1, text: "a" })] })],
+    });
+    const ai = emptyAi();
+    const plain = getFileBlock(mkInputs(f, [f], ai));
+    const wrapped = getFileBlock({ ...mkInputs(f, [f], ai), wrapCols: 80 });
+    expect(plain).not.toBe(wrapped);
+    // Same wrapCols again hits the cache.
+    expect(getFileBlock({ ...mkInputs(f, [f], ai), wrapCols: 80 })).toBe(wrapped);
+  });
+});
+
+describe("getFileBlock / getCrossFileModel — max line columns", () => {
+  it("tracks the widest line per side (marker prefix included)", () => {
+    const f = file({
+      path: "cols.ts",
+      hunks: [
+        hunk({
+          lines: [
+            line({ kind: "context", old_num: 1, new_num: 1, text: "ctx-8ch!" }), // 10 cols
+            line({ kind: "del", old_num: 2, text: "d".repeat(30) }), // 32 cols, left only
+            line({ kind: "add", new_num: 2, text: "a".repeat(20) }), // 22 cols, right only
+          ],
+        }),
+      ],
+    });
+    const block = getFileBlock(mkInputs(f, [f], emptyAi()));
+    expect(block.maxCols.all).toBe(32);
+    expect(block.maxCols.left).toBe(32);
+    expect(block.maxCols.right).toBe(22);
+
+    const m = mkCross([f], emptyAi(), { snapshotKey: "maxcols" });
+    expect(m.maxColsByFile.get("cols.ts")).toEqual(block.maxCols);
+  });
+
+  it("survives applyCollapsedFiles", () => {
+    const f0 = makeSimpleFile("a.ts", 2);
+    const f1 = makeSimpleFile("b.ts", 1);
+    const model = mkCross([f0, f1], emptyAi(), { snapshotKey: "maxcols-collapse" });
+    const collapsed = applyCollapsedFiles(model, new Set(["a.ts"]));
+    expect(collapsed.maxColsByFile).toBe(model.maxColsByFile);
+  });
+});
