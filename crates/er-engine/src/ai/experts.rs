@@ -249,7 +249,7 @@ pub struct ExpertReview {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExpertFileReview {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::review::lenient_findings")]
     pub findings: Vec<Finding>,
 }
 

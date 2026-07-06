@@ -60,8 +60,40 @@ pub struct ErFileReview {
     pub risk_reason: String,
     #[serde(default)]
     pub summary: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_findings")]
     pub findings: Vec<Finding>,
+}
+
+/// Deserialize an optional line anchor from model-authored JSON without
+/// failing the whole sidecar. The annotated diff tags deleted lines as
+/// `[h<N> L-<old>]`, and models sometimes copy the negative number into
+/// `line_start` verbatim — which `Option<usize>` would reject, silently
+/// discarding the entire review. Anything that isn't a non-negative integer
+/// degrades to `None` (hunk-level anchor).
+pub(crate) fn lenient_line_anchor<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .as_ref()
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|n| usize::try_from(n).ok()))
+}
+
+/// Deserialize a findings array, skipping individual entries that fail to
+/// parse instead of rejecting the whole sidecar. AI-authored files
+/// occasionally contain one malformed finding; losing that finding is far
+/// better than showing "no findings" for the entire review.
+pub(crate) fn lenient_findings<'de, D>(deserializer: D) -> Result<Vec<Finding>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -104,9 +136,9 @@ pub enum Confidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceItem {
     pub file: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_line_anchor")]
     pub line_start: Option<usize>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_line_anchor")]
     pub line_end: Option<usize>,
     /// What the agent learned from this file/range.
     pub note: String,
@@ -122,8 +154,11 @@ pub struct Finding {
     #[serde(default)]
     pub description: String,
     /// 0-based index into the file's hunks
+    #[serde(default, deserialize_with = "lenient_line_anchor")]
     pub hunk_index: Option<usize>,
+    #[serde(default, deserialize_with = "lenient_line_anchor")]
     pub line_start: Option<usize>,
+    #[serde(default, deserialize_with = "lenient_line_anchor")]
     pub line_end: Option<usize>,
     #[serde(default)]
     pub suggestion: String,

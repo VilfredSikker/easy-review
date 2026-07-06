@@ -16,7 +16,8 @@ See also: [`REVIEW_PHILOSOPHY.md`](REVIEW_PHILOSOPHY.md) for severity model and 
 1. Awk-annotate raw diff → `[h<N> L<M>]` tags on every content line
 2. Read the annotated diff — 20 lines of context per hunk
 3. **Findings only on `+` or `-` lines** — copy `hunk_index` / `line_start` from tags; never compute line numbers
-4. Set `outside_diff: false` on review pass; drop unanchored findings
+4. Deleted lines are tagged `[h<N> L-<M>]` (minus = old-side line). For findings on deleted lines set `line_start: null` and anchor by `hunk_index` alone — never write a negative `line_start`
+5. Set `outside_diff: false` on review pass; drop unanchored findings
 
 ## Philosophy (embedded)
 
