@@ -6,6 +6,7 @@
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import { caretTextOffset, identifierAt } from "$lib/referenceHighlight";
   import { wordDiff } from "$lib/wordDiff";
+  import { hangingIndentStyle } from "$lib/lineWrap";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
   import DiffLineContent from "./DiffLineContent.svelte";
   import type { SplitRow } from "$lib/splitRows";
@@ -17,9 +18,21 @@
     rowIdx: number;
     annotationIndex: AnnotationIndex;
     commentVisibility: CommentVisibility;
+    /** Cell column capacity when word wrap is on; null = no wrap (in-panel pan). */
+    wrapCols?: number | null;
   }
-  const { row, splitRow, filePath, rowIdx, annotationIndex, commentVisibility }: Props =
-    $props();
+  const {
+    row,
+    splitRow,
+    filePath,
+    rowIdx,
+    annotationIndex,
+    commentVisibility,
+    wrapCols = null,
+  }: Props = $props();
+
+  const wrap = $derived(wrapCols !== null);
+  const cellWs = $derived(wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre");
 
   function lineClass(kind: string) {
     if (kind === "add") return "diff-add";
@@ -33,14 +46,6 @@
   const rightLn = $derived(right ? (right.new_num ?? right.old_num) : null);
   const isModifyPair = $derived(!!(left && right && left.kind === "del" && right.kind === "add"));
   const wd = $derived(isModifyPair ? wordDiff(left!.text, right!.text) : null);
-
-  function leadingWSStyle(line: { text: string }): string {
-    const t = line.text;
-    let n = 0;
-    while (n < t.length && (t[n] === " " || t[n] === "\t")) n++;
-    const cols = n + 2;
-    return `padding-left: calc(0.75rem + ${cols}ch); text-indent: -${cols}ch;`;
-  }
 
   function selLeft(ln: number | null): boolean {
     if (ln === null || !diffSel.sel(ln)) return false;
@@ -94,7 +99,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="grid grid-cols-[40px_minmax(0,1fr)_40px_minmax(0,1fr)] diff-row {rowSelClass} {rowAnchorClass}"
-  style="height:{row.height}px"
+  style={wrap ? "min-height:24px" : `height:${row.height}px`}
   data-row-identity={row.identity}
   data-row-idx={rowIdx}
 >
@@ -109,25 +114,27 @@
   </div>
   <!-- Left code -->
   <div
-    class="leading-6 pr-3 whitespace-pre break-all {left ? lineClass(left.kind) : 'diff-empty'} {selLeft(leftLn) ? 'is-selected' : ''}"
-    style={left ? leadingWSStyle(left) : "padding-left: 0.75rem"}
+    class="leading-6 pr-3 {cellWs} {left ? lineClass(left.kind) : 'diff-empty'} {selLeft(leftLn) ? 'is-selected' : ''}"
+    style={left ? undefined : "padding-left: 0.75rem"}
     onclick={left ? (e) => onCodeClick(e, left.text) : undefined}
   >
     {#if left}
-      {#if left.kind === "del"}
-        <span class="text-del-fg">-</span>
-      {:else if left.kind === "add"}
-        <span class="text-add-fg">+</span>
-      {:else}
-        <span>&nbsp;</span>
-      {/if}
-      <DiffLineContent
-        text={left.text}
-        wordSpans={wd?.old ?? null}
-        syntaxSpans={left.spans}
-        changedBgClass="wd-change-del"
-        kind={diffBgKind(left.kind)}
-      />
+      <div class={wrap ? "" : "pan-l"} style={hangingIndentStyle(left.text, wrapCols)}>
+        {#if left.kind === "del"}
+          <span class="text-del-fg">-</span>
+        {:else if left.kind === "add"}
+          <span class="text-add-fg">+</span>
+        {:else}
+          <span>&nbsp;</span>
+        {/if}
+        <DiffLineContent
+          text={left.text}
+          wordSpans={wd?.old ?? null}
+          syntaxSpans={left.spans}
+          changedBgClass="wd-change-del"
+          kind={diffBgKind(left.kind)}
+        />
+      </div>
     {:else}
       <span>&nbsp;</span>
     {/if}
@@ -143,25 +150,27 @@
   </div>
   <!-- Right code -->
   <div
-    class="leading-6 pr-3 whitespace-pre break-all {right ? lineClass(right.kind) : 'diff-empty'} {selRight(rightLn) ? 'is-selected' : ''}"
-    style={right ? leadingWSStyle(right) : "padding-left: 0.75rem"}
+    class="leading-6 pr-3 {cellWs} {right ? lineClass(right.kind) : 'diff-empty'} {selRight(rightLn) ? 'is-selected' : ''}"
+    style={right ? undefined : "padding-left: 0.75rem"}
     onclick={right ? (e) => onCodeClick(e, right.text) : undefined}
   >
     {#if right}
-      {#if right.kind === "add"}
-        <span class="text-add-fg">+</span>
-      {:else if right.kind === "del"}
-        <span class="text-del-fg">-</span>
-      {:else}
-        <span>&nbsp;</span>
-      {/if}
-      <DiffLineContent
-        text={right.text}
-        wordSpans={wd?.new ?? null}
-        syntaxSpans={right.spans}
-        changedBgClass="wd-change-add"
-        kind={diffBgKind(right.kind)}
-      />
+      <div class={wrap ? "" : "pan-r"} style={hangingIndentStyle(right.text, wrapCols)}>
+        {#if right.kind === "add"}
+          <span class="text-add-fg">+</span>
+        {:else if right.kind === "del"}
+          <span class="text-del-fg">-</span>
+        {:else}
+          <span>&nbsp;</span>
+        {/if}
+        <DiffLineContent
+          text={right.text}
+          wordSpans={wd?.new ?? null}
+          syntaxSpans={right.spans}
+          changedBgClass="wd-change-add"
+          kind={diffBgKind(right.kind)}
+        />
+      </div>
     {:else}
       <span>&nbsp;</span>
     {/if}

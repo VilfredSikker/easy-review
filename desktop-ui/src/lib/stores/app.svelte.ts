@@ -32,6 +32,7 @@ export type MainViewMode = "diff" | "agent-output" | "export-review" | "settings
 const DIFF_VIEW_MODE_KEY = "er.diffViewMode";
 const COMMENT_VISIBILITY_KEY = "er.commentVisibility";
 const COMPACT_LINES_KEY = "er.compactLines";
+const WRAP_LINES_KEY = "er.wrapLines";
 
 export interface CommentVisibility {
   hideAll: boolean;
@@ -54,6 +55,12 @@ function loadDiffViewMode(): DiffViewMode {
 function loadCompactLines(): boolean {
   if (typeof localStorage === "undefined") return false;
   return localStorage.getItem(COMPACT_LINES_KEY) === "1";
+}
+
+function loadWrapLines(): boolean {
+  if (typeof localStorage === "undefined") return true;
+  // Default on — long lines wrap inside the fixed 50/50 panels.
+  return localStorage.getItem(WRAP_LINES_KEY) !== "0";
 }
 
 function loadCommentVisibility(): CommentVisibility {
@@ -157,6 +164,10 @@ class AppStore {
   diffViewMode = $state<DiffViewMode>(loadDiffViewMode());
   /** Tighter line-height in the diff view. Persisted to localStorage. */
   compactLines = $state<boolean>(loadCompactLines());
+  /** Word-wrap long diff lines inside the fixed-width panels (unified and
+   *  split). When off, long lines pan horizontally inside each panel.
+   *  Persisted to localStorage. */
+  wrapLines = $state<boolean>(loadWrapLines());
   commentVisibility = $state<CommentVisibility>(loadCommentVisibility());
   /** Shiki syntax theme id — picker UI wires here later. */
   currentSyntaxTheme = $state(DEFAULT_SYNTAX_THEME_ID);
@@ -197,6 +208,13 @@ class AppStore {
     this.compactLines = !this.compactLines;
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(COMPACT_LINES_KEY, this.compactLines ? "1" : "0");
+    }
+  }
+
+  toggleWrapLines() {
+    this.wrapLines = !this.wrapLines;
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(WRAP_LINES_KEY, this.wrapLines ? "1" : "0");
     }
   }
 

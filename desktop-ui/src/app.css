@@ -259,6 +259,27 @@ body {
   word-break: break-word;
 }
 
+/* In-panel horizontal scrolling (word wrap off): panels stay a fixed 50/50
+ * split and the code text slides inside each cell instead of widening the row.
+ * FlatDiffView sets --dx-l / --dx-r (px) on the .band; left/unified cells pan
+ * with --dx-l, split-right cells with --dx-r. Cells already clip overflow via
+ * `.diff-row > div:not(.gutter)`. */
+.pan-l { transform: translateX(calc(-1 * var(--dx-l, 0px))); }
+.pan-r { transform: translateX(calc(-1 * var(--dx-r, 0px))); }
+
+/* Slim per-panel horizontal scrollbars pinned to the bottom of the diff
+ * viewport. Native scroll containers — dragging the thumb scrolls, and wheel
+ * panning is forwarded to them so scrollLeft stays the single source of truth. */
+.diff-hbar {
+  position: absolute;
+  bottom: 0;
+  height: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  z-index: 30;
+}
+.diff-hbar > div { height: 1px; }
+
 /* Diff row hover + selection styles — required by drag-select (mock lines 33–43). */
 .diff-row { cursor: default; }
 /* Keep wrapped line paint inside the model row height so drag hit-testing stays aligned. */
