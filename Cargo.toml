@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/er-engine", "crates/er-tui", "crates/er-desktop"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/VilfredSikker/easy-review"
