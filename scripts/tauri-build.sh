@@ -69,6 +69,13 @@ bundle_dmg_hdiutil() {
   ditto "$app_path" "$staging/Easy Review.app"
   ln -s /Applications "$staging/Applications"
 
+  # Ad-hoc sign the staged app. A fully unsigned + quarantined app gets Gatekeeper's
+  # "is damaged and can't be opened" dialog with no override; ad-hoc signing upgrades
+  # that to the standard "can't verify developer" prompt (right-click → Open works).
+  xattr -cr "$staging/Easy Review.app" 2>/dev/null || true
+  codesign --force --deep --sign - "$staging/Easy Review.app" 2>/dev/null \
+    || echo "codesign skipped — DMG app may show Gatekeeper's damaged dialog" >&2
+
   echo "Creating DMG with hdiutil (skipping create-dmg/bundle_dmg.sh)..." >&2
   hdiutil create -volname "Easy Review" -srcfolder "$staging" -ov -format UDZO "$dmg_path"
   rm -rf "$staging"
