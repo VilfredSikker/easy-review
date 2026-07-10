@@ -1,4 +1,6 @@
-use crate::config::{inject_provider_effort, AiHubConfig};
+use crate::config::{
+    agent_command_is_codex, inject_codex_ignore_user_config, inject_provider_effort, AiHubConfig,
+};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
@@ -37,6 +39,9 @@ pub fn resolve_provider_command(
         args.extend(model.args.clone());
     }
     inject_provider_effort(&provider.command, &mut args, effort);
+    if agent_command_is_codex(&provider.command) {
+        inject_codex_ignore_user_config(&mut args);
+    }
     Ok(ProviderCommand {
         command: provider.command.clone(),
         args,
@@ -300,6 +305,36 @@ mod tests {
         let stdout = r#"{"findings":[]}"#;
         let v = extract_json_from_stdout(stdout, false).unwrap();
         assert!(v.get("findings").is_some());
+    }
+
+    #[test]
+    fn codex_provider_command_ignores_user_config() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "codex".to_string(),
+            crate::config::AiProviderConfig {
+                command: "codex".to_string(),
+                args: vec!["exec".to_string(), "{prompt}".to_string()],
+                models: vec![crate::config::AiModelConfig {
+                    id: "gpt-5.5".to_string(),
+                    args: vec!["--model".to_string(), "gpt-5.5".to_string()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let cmd = resolve_provider_command(&hub, "codex", "gpt-5.5", None).unwrap();
+
+        assert_eq!(cmd.args[0], "exec");
+        assert_eq!(cmd.args[1], "--ignore-user-config");
+        assert_eq!(
+            cmd.args
+                .iter()
+                .filter(|arg| arg.as_str() == "--ignore-user-config")
+                .count(),
+            1
+        );
     }
 
     #[test]

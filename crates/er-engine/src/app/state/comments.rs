@@ -2223,7 +2223,7 @@ impl App {
         let is_remote = self.tab().is_remote();
         self.sync_ai_selection();
 
-        let (agent_cmd, mut config_args, is_claude_compatible, is_stream_json) =
+        let (agent_cmd, mut config_args, is_claude_compatible, is_codex, is_stream_json) =
             if let Some(provider_id) = self
                 .config
                 .ai_hub
@@ -2247,19 +2247,23 @@ impl App {
                 }
                 let is_claude =
                     provider.command.ends_with("claude") || provider.command == "claude";
+                let is_codex = crate::config::agent_command_is_codex(&provider.command);
                 (
                     provider.command.clone(),
                     args,
                     is_claude,
+                    is_codex,
                     provider.uses_stream_json_log(),
                 )
             } else {
                 let cmd = self.config.agent.command.clone();
                 let is_claude = cmd.ends_with("claude") || cmd == "claude";
+                let is_codex = crate::config::agent_command_is_codex(&cmd);
                 (
                     cmd.clone(),
                     self.config.agent.args.clone(),
                     is_claude,
+                    is_codex,
                     crate::config::agent_command_uses_stream_json(&cmd),
                 )
             };
@@ -2271,6 +2275,9 @@ impl App {
             effort_override,
         );
         crate::config::inject_provider_effort(&agent_cmd, &mut config_args, effort.as_deref());
+        if is_codex {
+            crate::config::inject_codex_ignore_user_config(&mut config_args);
+        }
 
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
@@ -2612,7 +2619,7 @@ impl App {
 
         self.sync_ai_selection();
 
-        let (agent_cmd, mut config_args, is_claude_compatible, is_stream_json) =
+        let (agent_cmd, mut config_args, is_claude_compatible, is_codex, is_stream_json) =
             if let Some(provider_id) = self
                 .config
                 .ai_hub
@@ -2636,19 +2643,23 @@ impl App {
                 }
                 let is_claude =
                     provider.command.ends_with("claude") || provider.command == "claude";
+                let is_codex = crate::config::agent_command_is_codex(&provider.command);
                 (
                     provider.command.clone(),
                     args,
                     is_claude,
+                    is_codex,
                     provider.uses_stream_json_log(),
                 )
             } else {
                 let cmd = self.config.agent.command.clone();
                 let is_claude = cmd.ends_with("claude") || cmd == "claude";
+                let is_codex = crate::config::agent_command_is_codex(&cmd);
                 (
                     cmd.clone(),
                     self.config.agent.args.clone(),
                     is_claude,
+                    is_codex,
                     crate::config::agent_command_uses_stream_json(&cmd),
                 )
             };
@@ -2660,6 +2671,9 @@ impl App {
             effort_override,
         );
         crate::config::inject_provider_effort(&agent_cmd, &mut config_args, effort.as_deref());
+        if is_codex {
+            crate::config::inject_codex_ignore_user_config(&mut config_args);
+        }
 
         std::fs::create_dir_all(&target.er_dir)?;
 
@@ -3161,6 +3175,7 @@ impl App {
 #[cfg(test)]
 mod background_queue_tests {
     use crate::app::{App, BackgroundTaskTarget};
+    use crate::config::{AiModelConfig, AiProviderConfig};
 
     fn target(tmp: &std::path::Path, branch: &str) -> BackgroundTaskTarget {
         BackgroundTaskTarget {
@@ -3265,6 +3280,68 @@ mod background_queue_tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn background_codex_review_ignores_user_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let Some((mut app, tmp)) = test_app(1) else {
+            return;
+        };
+        let fake_bin = tmp.join("codex");
+        std::fs::write(&fake_bin, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = std::fs::metadata(&fake_bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_bin, permissions).unwrap();
+
+        app.config.ai_hub.providers.clear();
+        app.config.ai_hub.default_provider = Some("codex".to_string());
+        app.config.ai_hub.default_model = Some("gpt-5.5".to_string());
+        app.config.ai_hub.providers.insert(
+            "codex".to_string(),
+            AiProviderConfig {
+                command: fake_bin.to_string_lossy().to_string(),
+                args: vec!["exec".to_string(), "{prompt}".to_string()],
+                models: vec![AiModelConfig {
+                    id: "gpt-5.5".to_string(),
+                    args: vec!["--model".to_string(), "gpt-5.5".to_string()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        app.current_ai_provider = Some("codex".to_string());
+        app.current_ai_model = Some("gpt-5.5".to_string());
+
+        app.spawn_background_triage_review(target(&tmp, "feat-codex"), "p".into(), true)
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.poll_background_tasks();
+            let done = app
+                .background_tasks
+                .values()
+                .any(|handle| matches!(handle.task.status, crate::app::CommandStatus::Done));
+            if done {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake Codex task did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let debug_log = std::fs::read_to_string(tmp.join(".er/debug-agent.log")).unwrap();
+        assert!(
+            debug_log.contains("codex exec --ignore-user-config"),
+            "debug log should show isolated Codex invocation:\n{debug_log}"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
