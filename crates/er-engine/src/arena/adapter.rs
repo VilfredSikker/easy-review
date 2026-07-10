@@ -1,6 +1,5 @@
 use crate::config::{
-    agent_command_is_claude, agent_command_is_codex, inject_claude_effort,
-    inject_codex_ignore_user_config, AiHubConfig,
+    agent_command_is_codex, inject_codex_ignore_user_config, inject_provider_effort, AiHubConfig,
 };
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -39,9 +38,7 @@ pub fn resolve_provider_command(
     if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
         args.extend(model.args.clone());
     }
-    if agent_command_is_claude(&provider.command) {
-        inject_claude_effort(&mut args, effort);
-    }
+    inject_provider_effort(&provider.command, &mut args, Some(model_id), effort);
     if agent_command_is_codex(&provider.command) {
         inject_codex_ignore_user_config(&mut args);
     }

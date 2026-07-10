@@ -65,7 +65,7 @@ Optional runtime provider/model presets for the AI Hub. When present, AI Hub act
 ```toml
 [ai_hub]
 default_provider = "claude"
-default_model = "sonnet-4.6"
+default_model = "sonnet-5"
 
 [ai_hub.reviewer_models]
 triage = "haiku-4.5"
@@ -81,14 +81,9 @@ label = "Sonnet 4.6"
 args = ["--model", "claude-sonnet-4-6"]
 
 [[ai_hub.providers.claude.models]]
-id = "opus-4.6"
-label = "Opus 4.6"
-args = ["--model", "claude-opus-4-6"]
-
-[[ai_hub.providers.claude.models]]
-id = "opus-4.7"
-label = "Opus 4.7"
-args = ["--model", "claude-opus-4-7"]
+id = "sonnet-5"
+label = "Sonnet 5"
+args = ["--model", "claude-sonnet-5"]
 
 [[ai_hub.providers.claude.models]]
 id = "opus-4.8"
@@ -110,6 +105,21 @@ id = "gpt-5.4"
 label = "GPT-5.4"
 args = ["--model", "gpt-5.4"]
 
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.6-sol"
+label = "GPT-5.6 Sol"
+args = ["--model", "gpt-5.6-sol"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.6-terra"
+label = "GPT-5.6 Terra"
+args = ["--model", "gpt-5.6-terra"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.6-luna"
+label = "GPT-5.6 Luna"
+args = ["--model", "gpt-5.6-luna"]
+
 [ai_hub.providers.cursor]
 label = "Cursor"
 command = "agent"
@@ -128,6 +138,7 @@ Rules:
 - On load, `er` merges any missing built-in catalog models (e.g. new Opus releases) into your config in memory without rewriting your TOML file.
 - The selected provider/model applies to AI Hub actions such as review, triage, experts, professor, questions, and summary.
 - `[ai_hub.reviewer_models]` overrides the hub model for specific reviewer kinds. Triage uses `triage = "haiku-4.5"` by default in the example config; when unset, triage falls back to the fastest model in the active provider list.
+- Claude and GPT-5.6 models support `default_effort`; Claude receives `--effort <level>` and Codex receives `-c model_reasoning_effort=<level>`.
 
 ### `[watched]`
 

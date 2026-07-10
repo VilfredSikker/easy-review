@@ -28,6 +28,7 @@
   let subView = $state<SubView>("main");
   let providers = $state<AiProviderInfo[]>([]);
   let selectedProvider = $state<AiProviderInfo | null>(null);
+  let selectedModelId = $state("");
   let selectedReviewers = $state<Set<string>>(new Set());
   let reviewerHighlight = $state(0);
   let reviewerPickerRef = $state<{ moveHighlight: (d: number) => void; toggleHighlighted: () => void } | null>(null);
@@ -47,6 +48,7 @@
     subView = "main";
     providers = [];
     selectedProvider = null;
+    selectedModelId = "";
     selectedReviewers = new Set();
     reviewerHighlight = 0;
   }
@@ -61,6 +63,7 @@
     subView = "main";
     providers = [];
     selectedProvider = null;
+    selectedModelId = "";
     selectedReviewers = new Set();
     open = true;
   }
@@ -124,6 +127,8 @@
       close();
     } else {
       selectedProvider = provider;
+      selectedModelId =
+        provider.models.find((m) => m.is_selected)?.id ?? provider.models[0]?.id ?? "";
       subView = "models";
       selectedIdx = Math.max(0, provider.models.findIndex((m) => m.is_selected));
     }
@@ -131,8 +136,9 @@
 
   function selectModel(modelId: string) {
     if (!selectedProvider) return;
+    selectedModelId = modelId;
     app.cmd("set_ai_selection", { providerId: selectedProvider.id, modelId: modelId });
-    if (selectedProvider.id !== "claude" || !modelSupportsEffort(modelId)) {
+    if (!modelSupportsEffort(modelId)) {
       close();
     }
   }
@@ -143,16 +149,7 @@
 
   const activeAiLabel = $derived(app.snapshot?.active_ai_label ?? "");
   const activeEffort = $derived(app.snapshot?.active_ai_effort ?? null);
-  const selectedModelId = $derived(
-    selectedProvider?.models.find((m) => m.is_selected)?.id ??
-      selectedProvider?.models[0]?.id ??
-      "",
-  );
-  const effortLevels = $derived(
-    selectedProvider?.id === "claude" && selectedModelId
-      ? effortLevelsForModel(selectedModelId)
-      : [],
-  );
+  const effortLevels = $derived(selectedModelId ? effortLevelsForModel(selectedModelId) : []);
   const showEffortPicker = $derived(subView === "models" && effortLevels.length > 0);
   const reviewerCount = $derived(selectedReviewers.size);
 
@@ -454,11 +451,11 @@
             </button>
           {/each}
         </div>
-        <p class="mt-1.5 text-[10px] text-ink-400">Applies to Claude reviews and arena runs.</p>
+        <p class="mt-1.5 text-[10px] text-ink-400">Applies to Claude and Codex reviews and arena runs.</p>
       </div>
     {/if}
     <div class="py-1">
-      {#each currentItems as item, i}
+      {#each currentItems as item, i (item.label)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div

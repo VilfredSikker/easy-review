@@ -96,7 +96,7 @@ args    = [<span class="tok-str">"--print"</span>, <span class="tok-str">"--outp
     </p>
     <pre><code>[ai_hub]
 default_provider = <span class="tok-str">"claude"</span>
-default_model    = <span class="tok-str">"sonnet-4.6"</span>
+default_model    = <span class="tok-str">"sonnet-5"</span>
 default_effort   = <span class="tok-str">"medium"</span>  <span class="cmt"># reasoning effort passed to providers that support it</span>
 max_concurrent_reviews = <span class="tok-key">3</span>  <span class="cmt"># queue further reviews beyond this many at once (1–16)</span>
 
@@ -109,9 +109,9 @@ command = <span class="tok-str">"claude"</span>
 args    = [<span class="tok-str">"--print"</span>, <span class="tok-str">"-p"</span>, <span class="tok-str">"{prompt}"</span>]
 
 [[ai_hub.providers.claude.models]]
-id    = <span class="tok-str">"sonnet-4.6"</span>
-label = <span class="tok-str">"Sonnet 4.6"</span>
-args  = [<span class="tok-str">"--model"</span>, <span class="tok-str">"claude-sonnet-4-6"</span>]
+id    = <span class="tok-str">"sonnet-5"</span>
+label = <span class="tok-str">"Sonnet 5"</span>
+args  = [<span class="tok-str">"--model"</span>, <span class="tok-str">"claude-sonnet-5"</span>]
 <span class="cmt"># optional metadata: description, cost_per_1k_in, cost_per_1k_out, avg_latency_ms</span></code></pre>
     <ul>
       <li>If <code>[ai_hub]</code> is absent, <code>er</code> falls back to the single <code>[agent]</code> config.</li>

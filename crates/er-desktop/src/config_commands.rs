@@ -21,6 +21,7 @@ pub struct ConfigPatch {
 pub struct GetConfigHubResponse {
     pub settings: DesktopSettingsSnapshot,
     pub providers: Vec<AiProviderInfo>,
+    pub triage_model_id: Option<String>,
 }
 
 fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
@@ -105,6 +106,7 @@ pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, St
     Ok(GetConfigHubResponse {
         settings,
         providers,
+        triage_model_id: app.config.ai_hub.triage_model_id().map(str::to_string),
     })
 }
 
@@ -126,6 +128,7 @@ pub fn apply_config_patch(
     Ok(GetConfigHubResponse {
         settings,
         providers,
+        triage_model_id: app.config.ai_hub.triage_model_id().map(str::to_string),
     })
 }
 
@@ -174,5 +177,6 @@ pub fn set_ai_hub_defaults(
     Ok(GetConfigHubResponse {
         settings,
         providers,
+        triage_model_id: app.config.ai_hub.triage_model_id().map(str::to_string),
     })
 }

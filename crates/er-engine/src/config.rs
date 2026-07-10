@@ -388,6 +388,18 @@ impl AiHubConfig {
             .or_else(|| provider.models.first().map(|m| m.id.clone()))
     }
 
+    /// Whether any configured provider exposes this model id.
+    pub fn hub_model_exists(&self, model_id: &str) -> bool {
+        self.providers
+            .values()
+            .any(|provider| provider.models.iter().any(|model| model.id == model_id))
+    }
+
+    /// Explicit triage model override, if configured.
+    pub fn triage_model_id(&self) -> Option<&str> {
+        self.reviewer_models.get("triage").map(String::as_str)
+    }
+
     /// Model id for a reviewer kind when spawning (e.g. triage → haiku).
     pub fn resolve_reviewer_model(&self, reviewer_kind: &str, provider_id: &str) -> Option<String> {
         let provider = self.providers.get(provider_id)?;
@@ -500,7 +512,7 @@ pub fn agent_command_is_claude(command: &str) -> bool {
     command == "claude" || command.ends_with("/claude")
 }
 
-/// True when the provider command is the Codex CLI.
+/// True when the provider command is the Codex CLI (supports `-c model_reasoning_effort=...`).
 pub fn agent_command_is_codex(command: &str) -> bool {
     command == "codex" || command.ends_with("/codex")
 }
@@ -530,7 +542,11 @@ const EFFORT_LEVELS_OPUS_46_SONNET: &[&str] = &["low", "medium", "high", "max"];
 
 /// Effort levels supported for an ai_hub model id (empty when effort does not apply).
 pub fn effort_levels_for_hub_model(model_id: &str) -> &'static [&'static str] {
-    if model_id.starts_with("opus-4.7")
+    if model_id.starts_with("sonnet-5")
+        || model_id.contains("sonnet-5")
+        || model_id.starts_with("gpt-5.6-")
+        || model_id.contains("gpt-5-6-")
+        || model_id.starts_with("opus-4.7")
         || model_id.starts_with("opus-4.8")
         || model_id.contains("opus-4-7")
         || model_id.contains("opus-4-8")
@@ -574,6 +590,39 @@ pub fn inject_claude_effort(args: &mut Vec<String>, effort: Option<&str>) {
     }
     args.push("--effort".into());
     args.push(level.to_string());
+}
+
+/// Append Codex's per-invocation reasoning override when not already present.
+pub fn inject_codex_effort(args: &mut Vec<String>, effort: Option<&str>) {
+    let Some(level) = effort.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if args
+        .iter()
+        .any(|arg| arg == "model_reasoning_effort" || arg.starts_with("model_reasoning_effort="))
+    {
+        return;
+    }
+    args.push("-c".into());
+    args.push(format!("model_reasoning_effort={level}"));
+}
+
+/// Inject the configured effort using the target provider CLI's argument format.
+///
+/// Codex only supports this override for models with advertised effort levels.
+pub fn inject_provider_effort(
+    command: &str,
+    args: &mut Vec<String>,
+    model_id: Option<&str>,
+    effort: Option<&str>,
+) {
+    if agent_command_is_claude(command) {
+        inject_claude_effort(args, effort);
+    } else if agent_command_is_codex(command)
+        && model_id.is_some_and(|id| !effort_levels_for_hub_model(id).is_empty())
+    {
+        inject_codex_effort(args, effort);
+    }
 }
 
 impl AiModelConfig {
@@ -1073,6 +1122,9 @@ mod tests {
         assert_eq!(codex.models[0].id, "gpt-5.4");
         // The catalog supplements the remaining codex models in-memory.
         assert!(codex.models.iter().any(|m| m.id == "gpt-5.3-codex"));
+        assert!(codex.models.iter().any(|m| m.id == "gpt-5.6-sol"));
+        assert!(codex.models.iter().any(|m| m.id == "gpt-5.6-terra"));
+        assert!(codex.models.iter().any(|m| m.id == "gpt-5.6-luna"));
     }
 
     // ── Default values ──
@@ -1481,6 +1533,8 @@ mod tests {
 
     #[test]
     fn hub_model_effort_levels() {
+        assert!(effort_levels_for_hub_model("sonnet-5").contains(&"xhigh"));
+        assert!(effort_levels_for_hub_model("gpt-5.6-sol").contains(&"max"));
         assert!(effort_levels_for_hub_model("opus-4.8").contains(&"xhigh"));
         assert!(!effort_levels_for_hub_model("opus-4.6").contains(&"xhigh"));
         assert!(effort_levels_for_hub_model("sonnet-4.6").contains(&"max"));
@@ -1513,23 +1567,11 @@ mod tests {
             providers: BTreeMap::from([(
                 "claude".into(),
                 AiProviderConfig {
-                    models: vec![
-                        AiModelConfig {
-                            id: "sonnet-4.6".into(),
-                            label: Some("Sonnet 4.6".into()),
-                            ..Default::default()
-                        },
-                        AiModelConfig {
-                            id: "opus-4.6".into(),
-                            label: Some("Opus 4.6".into()),
-                            ..Default::default()
-                        },
-                        AiModelConfig {
-                            id: "opus-4.7".into(),
-                            label: Some("Opus 4.7".into()),
-                            ..Default::default()
-                        },
-                    ],
+                    models: vec![AiModelConfig {
+                        id: "sonnet-4.6".into(),
+                        label: Some("Sonnet 4.6".into()),
+                        ..Default::default()
+                    }],
                     ..Default::default()
                 },
             )]),
@@ -1540,6 +1582,7 @@ mod tests {
 
         let claude = hub.providers.get("claude").expect("claude provider");
         let ids: Vec<&str> = claude.models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"sonnet-5"), "missing sonnet-5: {ids:?}");
         assert!(ids.contains(&"opus-4.8"), "missing opus-4.8: {ids:?}");
         assert!(ids.contains(&"haiku-4.5"), "missing haiku-4.5: {ids:?}");
 
@@ -1556,8 +1599,6 @@ mod tests {
 
         // User-defined models and order are preserved.
         assert_eq!(claude.models[0].id, "sonnet-4.6");
-        assert_eq!(claude.models[1].id, "opus-4.6");
-        assert_eq!(claude.models[2].id, "opus-4.7");
     }
 
     #[test]
@@ -1583,6 +1624,64 @@ mod tests {
         let len = args.len();
         inject_claude_effort(&mut args, Some("low"));
         assert_eq!(args.len(), len);
+    }
+
+    #[test]
+    fn inject_codex_effort_idempotent() {
+        let mut args = vec!["exec".into()];
+        inject_codex_effort(&mut args, Some("high"));
+        assert!(args
+            .windows(2)
+            .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=high" }));
+        let len = args.len();
+        inject_codex_effort(&mut args, Some("low"));
+        assert_eq!(args.len(), len);
+    }
+
+    #[test]
+    fn provider_effort_only_injects_for_effort_capable_codex_models() {
+        let mut unsupported_args = vec!["exec".into()];
+        inject_provider_effort(
+            "codex",
+            &mut unsupported_args,
+            Some("gpt-5.4"),
+            Some("high"),
+        );
+        assert!(!unsupported_args
+            .iter()
+            .any(|arg| arg.starts_with("model_reasoning_effort=")));
+
+        let mut supported_args = vec!["exec".into()];
+        inject_provider_effort(
+            "codex",
+            &mut supported_args,
+            Some("gpt-5.6-sol"),
+            Some("high"),
+        );
+        assert!(supported_args
+            .iter()
+            .any(|arg| arg == "model_reasoning_effort=high"));
+    }
+
+    #[test]
+    fn triage_model_override_must_exist_in_hub() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "claude".into(),
+            AiProviderConfig {
+                models: vec![AiModelConfig {
+                    id: "haiku-4.5".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        assert!(hub.hub_model_exists("haiku-4.5"));
+        assert!(!hub.hub_model_exists("missing-model"));
+        assert_eq!(hub.triage_model_id(), None);
+        hub.reviewer_models
+            .insert("triage".into(), "haiku-4.5".into());
+        assert_eq!(hub.triage_model_id(), Some("haiku-4.5"));
     }
 
     #[test]

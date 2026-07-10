@@ -2223,60 +2223,71 @@ impl App {
         let is_remote = self.tab().is_remote();
         self.sync_ai_selection();
 
-        let (agent_cmd, mut config_args, is_claude_compatible, is_codex, is_stream_json) =
-            if let Some(provider_id) = self
+        let (
+            agent_cmd,
+            mut config_args,
+            is_claude_compatible,
+            is_codex,
+            is_stream_json,
+            resolved_model_id,
+        ) = if let Some(provider_id) = self
+            .config
+            .ai_hub
+            .resolve_provider_id(self.current_ai_provider.as_deref())
+        {
+            let provider = self
                 .config
                 .ai_hub
-                .resolve_provider_id(self.current_ai_provider.as_deref())
-            {
-                let provider = self
-                    .config
-                    .ai_hub
-                    .providers
-                    .get(&provider_id)
-                    .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
-                let mut args = provider.args.clone();
-                if let Some(model_id) = self.config.ai_hub.resolve_spawn_model_id(
-                    &provider_id,
-                    self.current_ai_model.as_deref(),
-                    name,
-                ) {
-                    if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
-                        args.extend(model.args.clone());
-                    }
-                }
-                let is_claude =
-                    provider.command.ends_with("claude") || provider.command == "claude";
-                let is_codex = crate::config::agent_command_is_codex(&provider.command);
-                (
-                    provider.command.clone(),
-                    args,
-                    is_claude,
-                    is_codex,
-                    provider.uses_stream_json_log(),
-                )
-            } else {
-                let cmd = self.config.agent.command.clone();
-                let is_claude = cmd.ends_with("claude") || cmd == "claude";
-                let is_codex = crate::config::agent_command_is_codex(&cmd);
-                (
-                    cmd.clone(),
-                    self.config.agent.args.clone(),
-                    is_claude,
-                    is_codex,
-                    crate::config::agent_command_uses_stream_json(&cmd),
-                )
-            };
-        if is_claude_compatible {
-            let effort_override = if name == "triage" { Some("low") } else { None };
-            let effort = crate::config::resolve_effort(
-                &self.config.ai_hub,
-                &self.config.agent,
-                self.current_ai_effort.as_deref(),
-                effort_override,
+                .providers
+                .get(&provider_id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
+            let mut args = provider.args.clone();
+            let resolved_model_id = self.config.ai_hub.resolve_spawn_model_id(
+                &provider_id,
+                self.current_ai_model.as_deref(),
+                name,
             );
-            crate::config::inject_claude_effort(&mut config_args, effort.as_deref());
-        }
+            if let Some(model_id) = &resolved_model_id {
+                if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
+                    args.extend(model.args.clone());
+                }
+            }
+            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
+            let is_codex = crate::config::agent_command_is_codex(&provider.command);
+            (
+                provider.command.clone(),
+                args,
+                is_claude,
+                is_codex,
+                provider.uses_stream_json_log(),
+                resolved_model_id,
+            )
+        } else {
+            let cmd = self.config.agent.command.clone();
+            let is_claude = cmd.ends_with("claude") || cmd == "claude";
+            let is_codex = crate::config::agent_command_is_codex(&cmd);
+            (
+                cmd.clone(),
+                self.config.agent.args.clone(),
+                is_claude,
+                is_codex,
+                crate::config::agent_command_uses_stream_json(&cmd),
+                (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
+            )
+        };
+        let effort_override = if name == "triage" { Some("low") } else { None };
+        let effort = crate::config::resolve_effort(
+            &self.config.ai_hub,
+            &self.config.agent,
+            self.current_ai_effort.as_deref(),
+            effort_override,
+        );
+        crate::config::inject_provider_effort(
+            &agent_cmd,
+            &mut config_args,
+            resolved_model_id.as_deref(),
+            effort.as_deref(),
+        );
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
@@ -2621,60 +2632,71 @@ impl App {
 
         self.sync_ai_selection();
 
-        let (agent_cmd, mut config_args, is_claude_compatible, is_codex, is_stream_json) =
-            if let Some(provider_id) = self
+        let (
+            agent_cmd,
+            mut config_args,
+            is_claude_compatible,
+            is_codex,
+            is_stream_json,
+            resolved_model_id,
+        ) = if let Some(provider_id) = self
+            .config
+            .ai_hub
+            .resolve_provider_id(self.current_ai_provider.as_deref())
+        {
+            let provider = self
                 .config
                 .ai_hub
-                .resolve_provider_id(self.current_ai_provider.as_deref())
-            {
-                let provider = self
-                    .config
-                    .ai_hub
-                    .providers
-                    .get(&provider_id)
-                    .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
-                let mut args = provider.args.clone();
-                if let Some(model_id) = self.config.ai_hub.resolve_spawn_model_id(
-                    &provider_id,
-                    self.current_ai_model.as_deref(),
-                    &kind,
-                ) {
-                    if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
-                        args.extend(model.args.clone());
-                    }
-                }
-                let is_claude =
-                    provider.command.ends_with("claude") || provider.command == "claude";
-                let is_codex = crate::config::agent_command_is_codex(&provider.command);
-                (
-                    provider.command.clone(),
-                    args,
-                    is_claude,
-                    is_codex,
-                    provider.uses_stream_json_log(),
-                )
-            } else {
-                let cmd = self.config.agent.command.clone();
-                let is_claude = cmd.ends_with("claude") || cmd == "claude";
-                let is_codex = crate::config::agent_command_is_codex(&cmd);
-                (
-                    cmd.clone(),
-                    self.config.agent.args.clone(),
-                    is_claude,
-                    is_codex,
-                    crate::config::agent_command_uses_stream_json(&cmd),
-                )
-            };
-        if is_claude_compatible {
-            let effort_override = if kind == "triage" { Some("low") } else { None };
-            let effort = crate::config::resolve_effort(
-                &self.config.ai_hub,
-                &self.config.agent,
-                self.current_ai_effort.as_deref(),
-                effort_override,
+                .providers
+                .get(&provider_id)
+                .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
+            let mut args = provider.args.clone();
+            let resolved_model_id = self.config.ai_hub.resolve_spawn_model_id(
+                &provider_id,
+                self.current_ai_model.as_deref(),
+                &kind,
             );
-            crate::config::inject_claude_effort(&mut config_args, effort.as_deref());
-        }
+            if let Some(model_id) = &resolved_model_id {
+                if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
+                    args.extend(model.args.clone());
+                }
+            }
+            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
+            let is_codex = crate::config::agent_command_is_codex(&provider.command);
+            (
+                provider.command.clone(),
+                args,
+                is_claude,
+                is_codex,
+                provider.uses_stream_json_log(),
+                resolved_model_id,
+            )
+        } else {
+            let cmd = self.config.agent.command.clone();
+            let is_claude = cmd.ends_with("claude") || cmd == "claude";
+            let is_codex = crate::config::agent_command_is_codex(&cmd);
+            (
+                cmd.clone(),
+                self.config.agent.args.clone(),
+                is_claude,
+                is_codex,
+                crate::config::agent_command_uses_stream_json(&cmd),
+                (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
+            )
+        };
+        let effort_override = if kind == "triage" { Some("low") } else { None };
+        let effort = crate::config::resolve_effort(
+            &self.config.ai_hub,
+            &self.config.agent,
+            self.current_ai_effort.as_deref(),
+            effort_override,
+        );
+        crate::config::inject_provider_effort(
+            &agent_cmd,
+            &mut config_args,
+            resolved_model_id.as_deref(),
+            effort.as_deref(),
+        );
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
