@@ -31,6 +31,7 @@
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
   import SettingsPage from "$lib/components/settings/SettingsPage.svelte";
   import { browser } from "$lib/stores/browser.svelte";
+  import { resolveTabRoot } from "$lib/resolveTabRoot";
   import { browserHide } from "$lib/stores/browserHost";
   import { installExternalLinkGuard } from "$lib/openExternalUrl";
   import { startWindowDrag } from "$lib/windowDrag";
@@ -209,11 +210,7 @@
 
   const activeTabIdx = $derived(app.snapshot?.active_tab ?? 0);
   const activeTab = $derived(app.snapshot?.tabs?.[activeTabIdx]);
-  const activeTabRoot = $derived(
-    app.snapshot?.worktrees?.find((w) => w.branch === activeTab?.branch)?.path ??
-      activeTab?.repo_root ??
-      "",
-  );
+  const activeTabRoot = $derived(resolveTabRoot(app.snapshot, activeTab));
 
   $effect(() => {
     app.snapshot;
