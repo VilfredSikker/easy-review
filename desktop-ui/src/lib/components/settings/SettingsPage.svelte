@@ -36,6 +36,7 @@
   let generalFields = $state<ConfigHubField[]>([]);
   let terminalFields = $state<ConfigHubField[]>([]);
   let providers = $state<AiProviderInfo[]>([]);
+  let triageModelId = $state("");
   let repoRoot = $state("");
   let addPattern = $state("");
   let textWarnings = $state<Record<string, string | null>>({});
@@ -48,6 +49,9 @@
 
   const selectedProvider = $derived(providers.find((p) => p.is_selected) ?? null);
   const selectedModels = $derived(selectedProvider?.models ?? []);
+  const triageProviderGroups = $derived(
+    providers.filter((provider) => provider.models.length > 0),
+  );
 
   interface FieldSection {
     title: string | null;
@@ -80,6 +84,7 @@
     generalFields = res.settings.general;
     terminalFields = res.settings.terminal;
     providers = res.providers;
+    triageModelId = res.triage_model_id;
     repoRoot = res.settings.repoRoot;
   }
 
@@ -124,6 +129,10 @@
     if (!p) return;
     await invoke("set_ai_selection", { providerId: p.id, modelId });
     await reload();
+  }
+
+  function selectTriageModel(modelId: string) {
+    void patch("ai_hub.reviewer_models.triage", modelId);
   }
 
   async function saveDefaults() {
@@ -372,6 +381,43 @@
               <div class="mt-2 pt-2 border-t border-hairline/60">
                 <Button onclick={() => void saveDefaults()}>Save as default</Button>
               </div>
+            </div>
+            <div class="bg-card border border-hairline rounded-xl px-4 py-3 mt-3">
+              <div class="mb-3">
+                <p class="text-sm text-fg">Triage model</p>
+                <p class="text-xs text-muted mt-0.5">
+                  Override the model used for fast triage reviews.
+                </p>
+              </div>
+              <button
+                type="button"
+                class="px-2.5 py-1 text-xs rounded-md border transition-colors {triageModelId === ''
+                  ? 'bg-accent-soft text-accent border-accent-border font-medium'
+                  : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
+                onclick={() => selectTriageModel("")}
+              >
+                Use fastest available
+              </button>
+              {#each triageProviderGroups as provider (provider.id)}
+                <div class="mt-3">
+                  <p class="text-[10px] uppercase tracking-wider text-muted font-semibold mb-1.5">
+                    {provider.label}
+                  </p>
+                  <div class="flex flex-wrap gap-1.5">
+                    {#each provider.models as model (model.id)}
+                      <button
+                        type="button"
+                        class="px-2.5 py-1 text-xs rounded-md border transition-colors {triageModelId === model.id
+                          ? 'bg-accent-soft text-accent border-accent-border font-medium'
+                          : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
+                        onclick={() => selectTriageModel(model.id)}
+                      >
+                        {model.label}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+              {/each}
             </div>
           {:else}
             <div class="border border-dashed border-border rounded-xl px-6 py-8 text-center">

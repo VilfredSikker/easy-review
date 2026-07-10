@@ -1,4 +1,4 @@
-/** Claude Code effort levels (mirrors er-engine `config::EFFORT_LEVELS`). */
+/** Reasoning effort levels (mirrors er-engine `config::EFFORT_LEVELS`). */
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
@@ -7,6 +7,15 @@ const OPUS_46_SONNET = ["low", "medium", "high", "max"] as const;
 
 /** Effort levels supported for an ai_hub model id (empty when effort does not apply). */
 export function effortLevelsForModel(modelId: string): readonly string[] {
+  if (
+    modelId.startsWith("sonnet-5") ||
+    modelId.includes("sonnet-5") ||
+    modelId.startsWith("gpt-5.6-sol") ||
+    modelId.startsWith("gpt-5.6-terra") ||
+    modelId.startsWith("gpt-5.6-luna")
+  ) {
+    return EFFORT_LEVELS;
+  }
   if (
     modelId.startsWith("opus-4.7") ||
     modelId.startsWith("opus-4.8") ||

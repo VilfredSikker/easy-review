@@ -15,7 +15,7 @@
     modelLabel,
     pickMostExpensiveModel,
   } from "$lib/arena/estimate";
-  import { effortLabel, effortLevelsForModel } from "$lib/arena/effort";
+  import { effortLabel, effortLevelsForModel, modelSupportsEffort } from "$lib/arena/effort";
   import { arenaError, arenaLog, arenaWarn } from "$lib/arena/log";
 
   interface Props {
@@ -123,25 +123,27 @@
   const minReviewers = $derived(isSingleMode ? 1 : 2);
   const maxReviewers = $derived(isSingleMode ? 1 : 6);
 
-  const claudeModelIds = $derived.by(() => {
+  const effortCapableModelIds = $derived.by(() => {
     if (isAgentsMode) {
       const ids: string[] = [];
       for (const g of agentGroups) {
         for (const m of g.models) {
-          if (m.provider_id === "claude") ids.push(m.model_id);
+          if (modelSupportsEffort(m.model_id)) ids.push(m.model_id);
         }
       }
       return ids;
     }
-    return picked.filter((p) => p.provider_id === "claude").map((p) => p.model_id);
+    return picked
+      .map((p) => p.model_id)
+      .filter((modelId) => modelSupportsEffort(modelId));
   });
 
-  const usesClaude = $derived(claudeModelIds.length > 0);
+  const usesEffortCapableModels = $derived(effortCapableModelIds.length > 0);
 
   const effortLevelsForRun = $derived.by(() => {
-    if (claudeModelIds.length === 0) return [] as readonly string[];
-    let levels = [...effortLevelsForModel(claudeModelIds[0]!)];
-    for (const id of claudeModelIds.slice(1)) {
+    if (effortCapableModelIds.length === 0) return [] as readonly string[];
+    let levels = [...effortLevelsForModel(effortCapableModelIds[0]!)];
+    for (const id of effortCapableModelIds.slice(1)) {
       const next = effortLevelsForModel(id);
       levels = levels.filter((l) => next.includes(l));
     }
@@ -155,7 +157,7 @@
   );
 
   function arenaRunEffort(): string | undefined {
-    if (!usesClaude || effortUseGlobal) return undefined;
+    if (!usesEffortCapableModels || effortUseGlobal) return undefined;
     return effortOverride;
   }
   const exceedsCostLimit = $derived(
@@ -590,7 +592,7 @@
         {#each [
           { id: "models" as const, label: "General models", desc: "Same prompt across frontier LLMs" },
           { id: "agents" as const, label: "Specialized agents", desc: "A different agent for each lens" },
-        ] as opt}
+        ] as opt (opt.id)}
           <button
             type="button"
             onclick={() => {
@@ -805,14 +807,14 @@
           {/if}
         {/if}
 
-        {#if usesClaude && effortLevelsForRun.length > 0}
+        {#if usesEffortCapableModels && effortLevelsForRun.length > 0}
           <div
             class="rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)] px-3 py-2.5 space-y-2"
           >
             <div class="min-w-0">
               <p class="text-[11px] font-medium text-[var(--arena-fg)]">Effort</p>
               <p class="text-[10px] leading-snug text-[var(--arena-fg-subtle)]">
-                Claude reasoning depth for this run
+                Claude and Codex reasoning depth for this run
               </p>
             </div>
             <label class="flex items-center gap-2 text-[11px] text-[var(--arena-fg-muted)]">
