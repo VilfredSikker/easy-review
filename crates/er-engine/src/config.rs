@@ -608,10 +608,19 @@ pub fn inject_codex_effort(args: &mut Vec<String>, effort: Option<&str>) {
 }
 
 /// Inject the configured effort using the target provider CLI's argument format.
-pub fn inject_provider_effort(command: &str, args: &mut Vec<String>, effort: Option<&str>) {
+///
+/// Codex only supports this override for models with advertised effort levels.
+pub fn inject_provider_effort(
+    command: &str,
+    args: &mut Vec<String>,
+    model_id: Option<&str>,
+    effort: Option<&str>,
+) {
     if agent_command_is_claude(command) {
         inject_claude_effort(args, effort);
-    } else if agent_command_is_codex(command) {
+    } else if agent_command_is_codex(command)
+        && model_id.is_some_and(|id| !effort_levels_for_hub_model(id).is_empty())
+    {
         inject_codex_effort(args, effort);
     }
 }
@@ -1627,6 +1636,31 @@ mod tests {
         let len = args.len();
         inject_codex_effort(&mut args, Some("low"));
         assert_eq!(args.len(), len);
+    }
+
+    #[test]
+    fn provider_effort_only_injects_for_effort_capable_codex_models() {
+        let mut unsupported_args = vec!["exec".into()];
+        inject_provider_effort(
+            "codex",
+            &mut unsupported_args,
+            Some("gpt-5.4"),
+            Some("high"),
+        );
+        assert!(!unsupported_args
+            .iter()
+            .any(|arg| arg.starts_with("model_reasoning_effort=")));
+
+        let mut supported_args = vec!["exec".into()];
+        inject_provider_effort(
+            "codex",
+            &mut supported_args,
+            Some("gpt-5.6-sol"),
+            Some("high"),
+        );
+        assert!(supported_args
+            .iter()
+            .any(|arg| arg == "model_reasoning_effort=high"));
     }
 
     #[test]

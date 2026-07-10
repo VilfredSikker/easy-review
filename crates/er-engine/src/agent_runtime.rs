@@ -227,7 +227,7 @@ pub fn resolve_invocation(
     config: &ErConfig,
     request: AgentInvocationRequest<'_>,
 ) -> Result<AgentInvocation> {
-    let (command, mut args) = match request.selection {
+    let (command, mut args, resolved_model_id) = match request.selection {
         AgentSelection::Runtime {
             provider_id,
             model_id,
@@ -249,14 +249,18 @@ pub fn resolve_invocation(
                 } else {
                     config.ai_hub.resolve_model_id(&pid, model_id)
                 };
-                if let Some(model_id) = resolved_model {
-                    if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
+                if let Some(model_id) = &resolved_model {
+                    if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
                         args.extend(model.args.clone());
                     }
                 }
-                (provider.command.clone(), args)
+                (provider.command.clone(), args, resolved_model)
             } else {
-                (config.agent.command.clone(), config.agent.args.clone())
+                (
+                    config.agent.command.clone(),
+                    config.agent.args.clone(),
+                    (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
+                )
             }
         }
         AgentSelection::Exact {
@@ -275,7 +279,7 @@ pub fn resolve_invocation(
                 .with_context(|| format!("unknown model {model_id} for provider {provider_id}"))?;
             let mut args = provider.args.clone();
             args.extend(model.args.clone());
-            (provider.command.clone(), args)
+            (provider.command.clone(), args, Some(model_id.to_string()))
         }
     };
 
@@ -295,7 +299,12 @@ pub fn resolve_invocation(
             request.effort,
             request.effort_override,
         );
-        inject_provider_effort(&command, &mut args, effort.as_deref());
+        inject_provider_effort(
+            &command,
+            &mut args,
+            resolved_model_id.as_deref(),
+            effort.as_deref(),
+        );
     }
     if request.live_logs && family.supports_claude_stream_json() {
         inject_stream_json(&mut args, family);
@@ -788,6 +797,33 @@ mod tests {
             "-c",
             "model_reasoning_effort=high"
         ));
+    }
+
+    #[test]
+    fn codex_invocation_skips_effort_for_unsupported_model() {
+        let config = codex_config();
+        let task = AgentTaskKind::Review;
+        let invocation = resolve_invocation(
+            &config,
+            AgentInvocationRequest {
+                selection: AgentSelection::Runtime {
+                    provider_id: Some("codex"),
+                    model_id: Some("gpt-5.4"),
+                    task_aware: true,
+                },
+                task: &task,
+                effort: Some("high"),
+                effort_override: None,
+                work_dir: "/repo".into(),
+                access: AgentAccessProfile::ReadOnly,
+                live_logs: false,
+            },
+        )
+        .unwrap();
+        assert!(!invocation
+            .args
+            .iter()
+            .any(|arg| arg.starts_with("model_reasoning_effort=")));
     }
 
     #[test]

@@ -22,18 +22,19 @@ pub fn plan_card_ai_invocation(
     runtime_effort: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
-    let (command, mut args, is_claude) = if let Some(pid) =
+    let (command, mut args, is_claude, resolved_model_id) = if let Some(pid) =
         config.ai_hub.resolve_provider_id(provider_id)
     {
         if let Some(provider) = config.ai_hub.providers.get(&pid) {
             let mut args = provider.args.clone();
-            if let Some(mid) = config.ai_hub.resolve_model_id(&pid, model_id) {
-                if let Some(model) = provider.models.iter().find(|m| m.id == mid) {
+            let resolved_model_id = config.ai_hub.resolve_model_id(&pid, model_id);
+            if let Some(mid) = &resolved_model_id {
+                if let Some(model) = provider.models.iter().find(|m| m.id == *mid) {
                     args.extend(model.args.clone());
                 }
             }
             let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
-            (provider.command.clone(), args, is_claude)
+            (provider.command.clone(), args, is_claude, resolved_model_id)
         } else {
             fallback_agent(config)
         }
@@ -48,7 +49,12 @@ pub fn plan_card_ai_invocation(
         inject_read_only_tools(&mut args);
     }
     let effort = resolve_effort(&config.ai_hub, &config.agent, runtime_effort, None);
-    inject_provider_effort(&command, &mut args, effort.as_deref());
+    inject_provider_effort(
+        &command,
+        &mut args,
+        resolved_model_id.as_deref(),
+        effort.as_deref(),
+    );
 
     CardAiInvocation {
         command,
@@ -59,10 +65,15 @@ pub fn plan_card_ai_invocation(
     }
 }
 
-fn fallback_agent(config: &ErConfig) -> (String, Vec<String>, bool) {
+fn fallback_agent(config: &ErConfig) -> (String, Vec<String>, bool, Option<String>) {
     let cmd = config.agent.command.clone();
     let is_claude = cmd.ends_with("claude") || cmd == "claude";
-    (cmd, config.agent.args.clone(), is_claude)
+    (
+        cmd,
+        config.agent.args.clone(),
+        is_claude,
+        (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
+    )
 }
 
 fn inject_read_only_tools(args: &mut Vec<String>) {
