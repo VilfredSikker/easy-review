@@ -50,7 +50,7 @@
   const selectedProvider = $derived(providers.find((p) => p.is_selected) ?? null);
   const selectedModels = $derived(selectedProvider?.models ?? []);
   const triageProviderGroups = $derived(
-    providers.filter((provider) => provider.models.length > 0),
+    selectedProvider && selectedProvider.models.length > 0 ? [selectedProvider] : [],
   );
 
   interface FieldSection {
@@ -386,7 +386,7 @@
               <div class="mb-3">
                 <p class="text-sm text-fg">Triage model</p>
                 <p class="text-xs text-muted mt-0.5">
-                  Override the model used for fast triage reviews.
+                  Override the model used for fast triage reviews on the active provider.
                 </p>
               </div>
               <button

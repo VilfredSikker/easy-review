@@ -10,9 +10,8 @@ export function effortLevelsForModel(modelId: string): readonly string[] {
   if (
     modelId.startsWith("sonnet-5") ||
     modelId.includes("sonnet-5") ||
-    modelId.startsWith("gpt-5.6-sol") ||
-    modelId.startsWith("gpt-5.6-terra") ||
-    modelId.startsWith("gpt-5.6-luna")
+    modelId.startsWith("gpt-5.6-") ||
+    modelId.includes("gpt-5-6-")
   ) {
     return EFFORT_LEVELS;
   }
