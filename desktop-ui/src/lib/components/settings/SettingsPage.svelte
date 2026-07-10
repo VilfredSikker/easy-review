@@ -49,6 +49,9 @@
 
   const selectedProvider = $derived(providers.find((p) => p.is_selected) ?? null);
   const selectedModels = $derived(selectedProvider?.models ?? []);
+  const hasInactiveTriageModel = $derived(
+    triageModelId !== "" && !selectedModels.some((model) => model.id === triageModelId),
+  );
   const triageProviderGroups = $derived(
     selectedProvider && selectedProvider.models.length > 0 ? [selectedProvider] : [],
   );
@@ -389,6 +392,17 @@
                   Override the model used for fast triage reviews on the active provider.
                 </p>
               </div>
+              {#if hasInactiveTriageModel}
+                <div
+                  class="mb-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+                  role="status"
+                >
+                  Saved triage model <code class="font-mono">{triageModelId}</code> is unavailable on
+                  {selectedProvider?.label ?? "the active provider"}. Triage will use the fastest
+                  available model. Choose a model below to replace this inactive override, or “Use fastest
+                  available” to clear it.
+                </div>
+              {/if}
               <button
                 type="button"
                 class="px-2.5 py-1 text-xs rounded-md border transition-colors {triageModelId === ''
