@@ -4,7 +4,7 @@ use crate::ai::{
     ErChecklist, ErGitHubComments, ErOrder, ErQuestions, ErReview, ErTour, ExpertReview,
     ProfessorReview, TriageReview,
 };
-use crate::config::{inject_claude_effort, resolve_effort, ErConfig};
+use crate::config::{inject_provider_effort, resolve_effort, ErConfig};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
@@ -282,18 +282,20 @@ pub fn resolve_invocation(
     let family = CliFamily::detect(&command);
     if family == CliFamily::Claude {
         inject_allowed_tools(&mut args, request.access.claude_tools());
+    }
+    if family == CliFamily::Codex {
+        if let Some(output_dir) = request.access.output_dir() {
+            inject_codex_writable_dir(&mut args, output_dir);
+        }
+    }
+    if matches!(family, CliFamily::Claude | CliFamily::Codex) {
         let effort = resolve_effort(
             &config.ai_hub,
             &config.agent,
             request.effort,
             request.effort_override,
         );
-        inject_claude_effort(&mut args, effort.as_deref());
-    }
-    if family == CliFamily::Codex {
-        if let Some(output_dir) = request.access.output_dir() {
-            inject_codex_writable_dir(&mut args, output_dir);
-        }
+        inject_provider_effort(&command, &mut args, effort.as_deref());
     }
     if request.live_logs && family.supports_claude_stream_json() {
         inject_stream_json(&mut args, family);
@@ -757,6 +759,35 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn codex_invocation_injects_reasoning_effort() {
+        let config = codex_config();
+        let task = AgentTaskKind::Review;
+        let invocation = resolve_invocation(
+            &config,
+            AgentInvocationRequest {
+                selection: AgentSelection::Runtime {
+                    provider_id: Some("codex"),
+                    model_id: Some("gpt-5.6-sol"),
+                    task_aware: true,
+                },
+                task: &task,
+                effort: Some("high"),
+                effort_override: None,
+                work_dir: "/repo".into(),
+                access: AgentAccessProfile::ReadOnly,
+                live_logs: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(invocation.family, CliFamily::Codex);
+        assert!(has_option_value(
+            &invocation.args,
+            "-c",
+            "model_reasoning_effort=high"
+        ));
     }
 
     #[test]

@@ -84,7 +84,7 @@
     generalFields = res.settings.general;
     terminalFields = res.settings.terminal;
     providers = res.providers;
-    triageModelId = res.triage_model_id;
+    triageModelId = res.triage_model_id ?? "";
     repoRoot = res.settings.repoRoot;
   }
 

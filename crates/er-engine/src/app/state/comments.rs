@@ -2263,16 +2263,14 @@ impl App {
                     crate::config::agent_command_uses_stream_json(&cmd),
                 )
             };
-        if is_claude_compatible {
-            let effort_override = if name == "triage" { Some("low") } else { None };
-            let effort = crate::config::resolve_effort(
-                &self.config.ai_hub,
-                &self.config.agent,
-                self.current_ai_effort.as_deref(),
-                effort_override,
-            );
-            crate::config::inject_claude_effort(&mut config_args, effort.as_deref());
-        }
+        let effort_override = if name == "triage" { Some("low") } else { None };
+        let effort = crate::config::resolve_effort(
+            &self.config.ai_hub,
+            &self.config.agent,
+            self.current_ai_effort.as_deref(),
+            effort_override,
+        );
+        crate::config::inject_provider_effort(&agent_cmd, &mut config_args, effort.as_deref());
 
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
@@ -2654,16 +2652,14 @@ impl App {
                     crate::config::agent_command_uses_stream_json(&cmd),
                 )
             };
-        if is_claude_compatible {
-            let effort_override = if kind == "triage" { Some("low") } else { None };
-            let effort = crate::config::resolve_effort(
-                &self.config.ai_hub,
-                &self.config.agent,
-                self.current_ai_effort.as_deref(),
-                effort_override,
-            );
-            crate::config::inject_claude_effort(&mut config_args, effort.as_deref());
-        }
+        let effort_override = if kind == "triage" { Some("low") } else { None };
+        let effort = crate::config::resolve_effort(
+            &self.config.ai_hub,
+            &self.config.agent,
+            self.current_ai_effort.as_deref(),
+            effort_override,
+        );
+        crate::config::inject_provider_effort(&agent_cmd, &mut config_args, effort.as_deref());
 
         std::fs::create_dir_all(&target.er_dir)?;
 

@@ -1,7 +1,7 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
 use crate::config::{
-    agent_command_uses_stream_json, inject_claude_effort, resolve_effort, ErConfig,
+    agent_command_uses_stream_json, inject_provider_effort, resolve_effort, ErConfig,
 };
 use std::process::Command;
 
@@ -46,9 +46,9 @@ pub fn plan_card_ai_invocation(
 
     if is_claude {
         inject_read_only_tools(&mut args);
-        let effort = resolve_effort(&config.ai_hub, &config.agent, runtime_effort, None);
-        inject_claude_effort(&mut args, effort.as_deref());
     }
+    let effort = resolve_effort(&config.ai_hub, &config.agent, runtime_effort, None);
+    inject_provider_effort(&command, &mut args, effort.as_deref());
 
     CardAiInvocation {
         command,
@@ -253,5 +253,35 @@ mod tests {
         let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
         assert!(inv.args.iter().any(|a| a == "Read"));
         assert!(inv.args.iter().any(|a| a.contains("grep")));
+    }
+
+    #[test]
+    fn plan_injects_reasoning_effort_for_codex() {
+        let mut config = ErConfig::default();
+        config.ai_hub.default_effort = Some("high".into());
+        config.ai_hub.providers.insert(
+            "codex".into(),
+            crate::config::AiProviderConfig {
+                command: "codex".into(),
+                models: vec![crate::config::AiModelConfig {
+                    id: "gpt-5.6-sol".into(),
+                    args: vec!["--model".into(), "gpt-5.6-sol".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let inv = plan_card_ai_invocation(
+            &config,
+            Some("codex"),
+            Some("gpt-5.6-sol"),
+            None,
+            "/repo".into(),
+        );
+        assert!(inv
+            .args
+            .windows(2)
+            .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=high" }));
     }
 }

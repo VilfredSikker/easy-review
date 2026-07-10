@@ -128,14 +128,23 @@
       const ids: string[] = [];
       for (const g of agentGroups) {
         for (const m of g.models) {
-          if (modelSupportsEffort(m.model_id)) ids.push(m.model_id);
+          if (
+            (m.provider_id === "claude" || m.provider_id === "codex") &&
+            modelSupportsEffort(m.model_id)
+          ) {
+            ids.push(m.model_id);
+          }
         }
       }
       return ids;
     }
     return picked
-      .map((p) => p.model_id)
-      .filter((modelId) => modelSupportsEffort(modelId));
+      .filter(
+        (reviewer) =>
+          (reviewer.provider_id === "claude" || reviewer.provider_id === "codex") &&
+          modelSupportsEffort(reviewer.model_id),
+      )
+      .map((reviewer) => reviewer.model_id);
   });
 
   const usesEffortCapableModels = $derived(effortCapableModelIds.length > 0);

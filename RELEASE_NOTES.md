@@ -1,3 +1,12 @@
+# Unreleased
+
+## AI Hub model refresh
+
+- Added Claude Sonnet 5 and GPT-5.6 Sol, Terra, and Luna to the built-in AI Hub catalog.
+- Removed Opus 4.6 and Opus 4.7 from the built-in catalog; existing user-defined entries remain untouched.
+- Added model-aware reasoning-effort controls for GPT-5.6 Codex runs, including arena overrides.
+- Added a triage-model picker in Desktop Settings, with a reset to the fastest available model.
+
 # Easy Review v0.4.2
 
 ## In plain terms

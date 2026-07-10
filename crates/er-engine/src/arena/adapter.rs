@@ -1,4 +1,4 @@
-use crate::config::{agent_command_is_claude, inject_claude_effort, AiHubConfig};
+use crate::config::{inject_provider_effort, AiHubConfig};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
@@ -36,9 +36,7 @@ pub fn resolve_provider_command(
     if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
         args.extend(model.args.clone());
     }
-    if agent_command_is_claude(&provider.command) {
-        inject_claude_effort(&mut args, effort);
-    }
+    inject_provider_effort(&provider.command, &mut args, effort);
     Ok(ProviderCommand {
         command: provider.command.clone(),
         args,
