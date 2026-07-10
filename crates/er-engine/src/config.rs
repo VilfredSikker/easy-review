@@ -500,6 +500,30 @@ pub fn agent_command_is_claude(command: &str) -> bool {
     command == "claude" || command.ends_with("/claude")
 }
 
+/// True when the provider command is the Codex CLI.
+pub fn agent_command_is_codex(command: &str) -> bool {
+    command == "codex" || command.ends_with("/codex")
+}
+
+/// App-launched Codex runs should be hermetic from user plugins/MCP hooks.
+///
+/// Codex still reads auth from CODEX_HOME with this flag, but skips
+/// `$CODEX_HOME/config.toml`, which prevents unrelated user-global hooks from
+/// aborting Easy Review background jobs before they can write sidecars.
+pub fn inject_codex_ignore_user_config(args: &mut Vec<String>) {
+    if args.iter().any(|arg| arg == "--ignore-user-config") {
+        return;
+    }
+
+    let insert_at = args
+        .iter()
+        .position(|arg| arg == "exec")
+        .map(|index| index + 1)
+        .or_else(|| args.iter().position(|arg| arg.contains("{prompt}")))
+        .unwrap_or(args.len());
+    args.insert(insert_at, "--ignore-user-config".to_string());
+}
+
 pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 const EFFORT_LEVELS_OPUS_46_SONNET: &[&str] = &["low", "medium", "high", "max"];
@@ -1461,6 +1485,26 @@ mod tests {
         assert!(!effort_levels_for_hub_model("opus-4.6").contains(&"xhigh"));
         assert!(effort_levels_for_hub_model("sonnet-4.6").contains(&"max"));
         assert!(effort_levels_for_hub_model("haiku-4.5").is_empty());
+    }
+
+    #[test]
+    fn codex_ignore_user_config_inserts_after_exec_once() {
+        let mut args = vec![
+            "exec".to_string(),
+            "--skip-git-repo-check".to_string(),
+            "{prompt}".to_string(),
+        ];
+        inject_codex_ignore_user_config(&mut args);
+        inject_codex_ignore_user_config(&mut args);
+
+        assert_eq!(args[0], "exec");
+        assert_eq!(args[1], "--ignore-user-config");
+        assert_eq!(
+            args.iter()
+                .filter(|arg| arg.as_str() == "--ignore-user-config")
+                .count(),
+            1
+        );
     }
 
     #[test]

@@ -103,7 +103,7 @@ args = ["--model", "claude-haiku-4-5-20251001"]
 [ai_hub.providers.codex]
 label = "Codex"
 command = "codex"
-args = ["exec", "{prompt}"]
+args = ["exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "workspace-write", "{prompt}"]
 
 [[ai_hub.providers.codex.models]]
 id = "gpt-5.4"
