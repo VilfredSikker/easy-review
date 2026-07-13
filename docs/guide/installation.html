@@ -62,27 +62,28 @@ er</code></pre>
     <h2 id="desktop-app">Desktop app <span class="pill desktop">desktop</span></h2>
     <div class="callout note">
       <span class="ico">◆</span>
-      <div><p>A prebuilt macOS bundle now ships with releases. As of <strong>v0.4.0</strong>, the
-      <a href="https://github.com/VilfredSikker/easy-review/releases" target="_blank" rel="noopener">Releases page</a>
-      includes an <strong>Apple&nbsp;Silicon</strong> <code>.dmg</code> (e.g. <code>Easy.Review_0.4.0_aarch64.dmg</code>).
-      Intel Macs, Linux, and Windows are not packaged yet — build those from source (below). The install script and
-      <code>cargo install</code> only cover the <code>er</code> terminal binary.</p></div>
+      <div><p>The desktop app is installed by <a href="#install-from-source">building from source</a> (below). A signed
+      direct-download <code>.dmg</code> is <strong>coming soon</strong> — distributing one requires an Apple Developer
+      Program membership for code signing and notarization. The install script and <code>cargo install</code> only cover
+      the <code>er</code> terminal binary.</p></div>
     </div>
 
-    <h3>Install the macOS bundle <span class="pill desktop">Apple Silicon</span></h3>
-    <p>Download the <code>.dmg</code> from the
-    <a href="https://github.com/VilfredSikker/easy-review/releases" target="_blank" rel="noopener">latest release</a>,
-    open it, and drag <strong>Easy Review</strong> into Applications. The bundle is not yet code-signed, so the first
-    time you launch it macOS may block it as being from an unidentified developer — right-click the app and choose
-    <strong>Open</strong> to bypass Gatekeeper once.</p>
+    <h3>Direct download <span class="pill desktop">Coming soon</span></h3>
+    <p>A prebuilt, code-signed <code>.dmg</code> for <strong>Apple&nbsp;Silicon</strong> Macs will be offered on the
+    <a href="https://github.com/VilfredSikker/easy-review/releases" target="_blank" rel="noopener">Releases page</a>
+    once signing is set up. Until then, clone the repository and build locally (next section). Intel Macs, Linux, and
+    Windows are not planned as prebuilt downloads — build those from source as well.</p>
 
-    <h3>Run in development</h3>
+    <h3 id="install-from-source">Install from source</h3>
+    <p>Clone the repo and run the desktop app in development, or build a release bundle for your machine:</p>
+
+    <h4>Run in development</h4>
     <pre><code>git clone https://github.com/VilfredSikker/easy-review.git
 cd easy-review
 ./scripts/tauri-dev.sh</code></pre>
     <p>This launches the Tauri dev shell with the Svelte frontend and hot reload.</p>
 
-    <h3>Build a release bundle</h3>
+    <h4>Build a release bundle</h4>
     <pre><code>./scripts/tauri-build.sh</code></pre>
     <p>On macOS this produces an <code>Easy Review.app</code> under the desktop build target (set
     <code>ER_SKIP_DMG=0</code> to also produce a <code>.dmg</code>). Building requires <code>cargo-tauri</code> and
