@@ -4486,7 +4486,18 @@ impl App {
     }
 
     fn initial_ai_effort(config: &ErConfig) -> Option<String> {
-        crate::config::resolve_effort(&config.ai_hub, &config.agent, None, None)
+        let provider = config.ai_hub.resolve_provider_id(None);
+        let model = provider
+            .as_deref()
+            .and_then(|provider_id| config.ai_hub.resolve_model_id(provider_id, None));
+        crate::config::resolve_effort_for_model(
+            &config.ai_hub,
+            &config.agent,
+            provider.as_deref(),
+            model.as_deref(),
+            None,
+            None,
+        )
     }
 
     /// Create the app from CLI path arguments.
@@ -4691,6 +4702,23 @@ impl App {
         });
         self.current_ai_provider = provider;
         self.current_ai_model = model;
+        self.current_ai_effort = crate::config::resolve_effort_for_model(
+            &self.config.ai_hub,
+            &self.config.agent,
+            self.current_ai_provider.as_deref(),
+            self.current_ai_model.as_deref(),
+            self.current_ai_effort.as_deref(),
+            None,
+        );
+    }
+
+    /// Make the session follow the persisted global hub defaults after a
+    /// settings change.
+    pub fn sync_ai_selection_from_defaults(&mut self) {
+        self.current_ai_provider = self.config.ai_hub.default_provider.clone();
+        self.current_ai_model = self.config.ai_hub.default_model.clone();
+        self.current_ai_effort = self.config.ai_hub.default_effort.clone();
+        self.sync_ai_selection();
     }
 
     pub fn active_ai_selection_label(&self) -> String {
@@ -6312,6 +6340,22 @@ impl App {
                 }
                 self.config_hub_rebuild_items();
             }
+            config::ConfigItem::DynamicStringCycle {
+                options, get, set, ..
+            } => {
+                let options = options(&self.config);
+                if options.is_empty() {
+                    return;
+                }
+                let current = get(&self.config);
+                let pos = options
+                    .iter()
+                    .position(|value| value == &current)
+                    .unwrap_or(0);
+                set(&mut self.config, options[(pos + 1) % options.len()].clone());
+                self.sync_ai_selection_from_defaults();
+                self.config_hub_rebuild_items();
+            }
             config::ConfigItem::NumberEdit {
                 get, set, min, max, ..
             } => {
@@ -6399,6 +6443,23 @@ impl App {
                 }
                 self.config_hub_rebuild_items();
             }
+            config::ConfigItem::DynamicStringCycle {
+                options, get, set, ..
+            } => {
+                let options = options(&self.config);
+                if options.is_empty() {
+                    return;
+                }
+                let current = get(&self.config);
+                let pos = options
+                    .iter()
+                    .position(|value| value == &current)
+                    .unwrap_or(0);
+                let prev = (pos + options.len() - 1) % options.len();
+                set(&mut self.config, options[prev].clone());
+                self.sync_ai_selection_from_defaults();
+                self.config_hub_rebuild_items();
+            }
             config::ConfigItem::NumberEdit {
                 get, set, min, max, ..
             } => {
@@ -6472,6 +6533,7 @@ impl App {
             self.tab_mut().watched_config = self.config.watched.clone();
             self.tab_mut().refresh_watched_files();
             self.notify("Config saved globally");
+            self.sync_ai_selection_from_defaults();
             self.overlay = None;
         }
     }
@@ -6480,6 +6542,7 @@ impl App {
     pub fn config_hub_cancel(&mut self) {
         if let Some(OverlayData::ConfigHub { saved_config, .. }) = self.overlay.take() {
             self.config = *saved_config;
+            self.sync_ai_selection_from_defaults();
         }
     }
 

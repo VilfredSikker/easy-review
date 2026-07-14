@@ -22,6 +22,8 @@ pub struct GetConfigHubResponse {
     pub settings: DesktopSettingsSnapshot,
     pub providers: Vec<AiProviderInfo>,
     pub triage_model_id: Option<String>,
+    pub active_effort: Option<String>,
+    pub default_effort: Option<String>,
 }
 
 fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
@@ -90,11 +92,30 @@ fn list_providers_inner(app: &er_engine::app::App) -> Vec<AiProviderInfo> {
                         cost_per_1k_in: m.cost_per_1k_in,
                         cost_per_1k_out: m.cost_per_1k_out,
                         avg_latency_ms: m.avg_latency_ms,
+                        effort_levels: m.effort_levels.clone(),
                     })
                     .collect(),
             }
         })
         .collect()
+}
+
+fn normalized_default_effort(app: &er_engine::app::App) -> Option<String> {
+    let provider = app
+        .config
+        .ai_hub
+        .resolve_provider_id(app.config.ai_hub.default_provider.as_deref());
+    let model = provider.as_deref().and_then(|id| {
+        app.config
+            .ai_hub
+            .resolve_model_id(id, app.config.ai_hub.default_model.as_deref())
+    });
+    er_engine::config::normalize_effort(
+        &app.config.ai_hub,
+        provider.as_deref(),
+        model.as_deref(),
+        app.config.ai_hub.default_effort.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -107,6 +128,8 @@ pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, St
         settings,
         providers,
         triage_model_id: app.config.ai_hub.triage_model_id().map(str::to_string),
+        active_effort: app.current_ai_effort.clone(),
+        default_effort: normalized_default_effort(&app),
     })
 }
 
@@ -129,6 +152,8 @@ pub fn apply_config_patch(
         settings,
         providers,
         triage_model_id: app.config.ai_hub.triage_model_id().map(str::to_string),
+        active_effort: app.current_ai_effort.clone(),
+        default_effort: normalized_default_effort(&app),
     })
 }
 
@@ -149,6 +174,7 @@ pub fn save_config_global_cmd(state: State<AppState>) -> Result<AppSnapshot, Str
 pub fn set_ai_hub_defaults(
     provider_id: String,
     model_id: Option<String>,
+    effort: Option<String>,
     state: State<AppState>,
 ) -> Result<GetConfigHubResponse, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -163,10 +189,21 @@ pub fn set_ai_hub_defaults(
             ));
         }
     }
+    let normalized_effort = er_engine::config::normalize_effort(
+        &app.config.ai_hub,
+        Some(&provider_id),
+        model_id.as_deref(),
+        effort.as_deref(),
+    );
+    if effort.is_some() && normalized_effort.is_none() {
+        return Err("Effort is unsupported for the selected model".into());
+    }
     app.config.ai_hub.default_provider = Some(provider_id.clone());
     app.config.ai_hub.default_model = model_id.clone();
+    app.config.ai_hub.default_effort = normalized_effort.clone();
     app.current_ai_provider = Some(provider_id);
     app.current_ai_model = model_id;
+    app.current_ai_effort = normalized_effort;
     save_config(&app.config).map_err(|e| e.to_string())?;
     let repo_root = app.tab().repo_root.clone();
     state
@@ -178,5 +215,7 @@ pub fn set_ai_hub_defaults(
         settings,
         providers,
         triage_model_id: app.config.ai_hub.triage_model_id().map(str::to_string),
+        active_effort: app.current_ai_effort.clone(),
+        default_effort: normalized_default_effort(&app),
     })
 }

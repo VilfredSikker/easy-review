@@ -147,6 +147,42 @@ pub fn render_config_hub(
                 list_items.push(ListItem::new(line).style(style));
             }
 
+            ConfigItem::DynamicStringCycle {
+                label,
+                description,
+                options: _,
+                get,
+                ..
+            } => {
+                let value = get(&app.config);
+                let marker = if is_sel { "▸ " } else { "  " };
+                let mut spans = vec![
+                    Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN())),
+                    Span::styled(
+                        format!("{}: ", label),
+                        if is_sel {
+                            ratatui::style::Style::default().fg(styles::BRIGHT())
+                        } else {
+                            ratatui::style::Style::default().fg(styles::TEXT())
+                        },
+                    ),
+                    Span::styled(value, ratatui::style::Style::default().fg(styles::YELLOW())),
+                    Span::styled("  ◀▶", ratatui::style::Style::default().fg(styles::DIM())),
+                ];
+                if is_sel && !description.is_empty() {
+                    spans.push(Span::styled(
+                        format!("  {}", description),
+                        ratatui::style::Style::default().fg(styles::MUTED()),
+                    ));
+                }
+                let style = if is_sel {
+                    styles::selected_style()
+                } else {
+                    ratatui::style::Style::default().bg(styles::PANEL())
+                };
+                list_items.push(ListItem::new(Line::from(spans)).style(style));
+            }
+
             ConfigItem::StringEdit {
                 label,
                 description,

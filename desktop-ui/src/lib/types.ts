@@ -532,6 +532,8 @@ export interface AiModelInfo {
   cost_per_1k_in?: number | null;
   cost_per_1k_out?: number | null;
   avg_latency_ms?: number | null;
+  /** Explicit levels from the shared catalog; empty means provider default. */
+  effort_levels: string[];
 }
 
 export interface AiProviderInfo {
@@ -663,6 +665,8 @@ export interface GetConfigHubResponse {
   settings: DesktopSettingsSnapshot;
   providers: AiProviderInfo[];
   triageModelId: string | null;
+  activeEffort: string | null;
+  defaultEffort: string | null;
 }
 
 export interface FeatureFlagsSnapshot {

@@ -2229,6 +2229,7 @@ impl App {
             is_claude_compatible,
             is_codex,
             is_stream_json,
+            resolved_provider_id,
             resolved_model_id,
         ) = if let Some(provider_id) = self
             .config
@@ -2260,6 +2261,7 @@ impl App {
                 is_claude,
                 is_codex,
                 provider.uses_stream_json_log(),
+                Some(provider_id),
                 resolved_model_id,
             )
         } else {
@@ -2272,13 +2274,16 @@ impl App {
                 is_claude,
                 is_codex,
                 crate::config::agent_command_uses_stream_json(&cmd),
+                None,
                 (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
             )
         };
         let effort_override = if name == "triage" { Some("low") } else { None };
-        let effort = crate::config::resolve_effort(
+        let effort = crate::config::resolve_effort_for_model(
             &self.config.ai_hub,
             &self.config.agent,
+            resolved_provider_id.as_deref(),
+            resolved_model_id.as_deref(),
             self.current_ai_effort.as_deref(),
             effort_override,
         );
@@ -2638,6 +2643,7 @@ impl App {
             is_claude_compatible,
             is_codex,
             is_stream_json,
+            resolved_provider_id,
             resolved_model_id,
         ) = if let Some(provider_id) = self
             .config
@@ -2669,6 +2675,7 @@ impl App {
                 is_claude,
                 is_codex,
                 provider.uses_stream_json_log(),
+                Some(provider_id),
                 resolved_model_id,
             )
         } else {
@@ -2681,13 +2688,16 @@ impl App {
                 is_claude,
                 is_codex,
                 crate::config::agent_command_uses_stream_json(&cmd),
+                None,
                 (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
             )
         };
         let effort_override = if kind == "triage" { Some("low") } else { None };
-        let effort = crate::config::resolve_effort(
+        let effort = crate::config::resolve_effort_for_model(
             &self.config.ai_hub,
             &self.config.agent,
+            resolved_provider_id.as_deref(),
+            resolved_model_id.as_deref(),
             self.current_ai_effort.as_deref(),
             effort_override,
         );

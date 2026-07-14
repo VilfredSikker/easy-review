@@ -2,9 +2,10 @@
 
 ## AI Hub model refresh
 
-- Added Claude Sonnet 5 and GPT-5.6 Sol, Terra, and Luna to the built-in AI Hub catalog.
-- Removed Opus 4.6 and Opus 4.7 from the built-in catalog; existing user-defined entries remain untouched.
-- Added model-aware reasoning-effort controls for GPT-5.6 Codex runs, including arena overrides.
+- Refreshed the built-in catalog with Claude Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5, the GPT-5.6 Sol/Terra/Luna family, GPT-5.5, GPT-5.4, GPT-5.4 Mini, and GPT-5.3 Codex Spark.
+- Deprecated built-in entries are no longer advertised; existing user-defined or persisted legacy entries remain untouched.
+- Added model metadata-driven effort/reasoning controls across Desktop, TUI, the action palette, and Arena. `Auto` omits provider overrides.
+- Added atomic global persistence for provider, model, and effort selections, plus validation before Claude/Codex invocation.
 - Added a triage-model picker in Desktop Settings, with a reset to the fastest available model.
 
 # Easy Review v0.4.2

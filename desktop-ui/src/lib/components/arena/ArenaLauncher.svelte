@@ -114,6 +114,13 @@
   const agentArenaCount = $derived(agentGroups.filter((g) => g.models.length >= 2).length);
   const agentSingleCount = $derived(agentGroups.filter((g) => g.models.length === 1).length);
 
+  function modelInfo(modelId: string, providerId?: string) {
+    return providers
+      .filter((provider) => !providerId || provider.id === providerId)
+      .flatMap((provider) => provider.models)
+      .find((model) => model.id === modelId) ?? null;
+  }
+
   const isAgentsMode = $derived(reviewerMode === "agents");
   const isArena = $derived(
     isAgentsMode
@@ -130,7 +137,7 @@
         for (const m of g.models) {
           if (
             (m.provider_id === "claude" || m.provider_id === "codex") &&
-            modelSupportsEffort(m.model_id)
+            modelSupportsEffort(modelInfo(m.model_id, m.provider_id))
           ) {
             ids.push(m.model_id);
           }
@@ -142,7 +149,7 @@
       .filter(
         (reviewer) =>
           (reviewer.provider_id === "claude" || reviewer.provider_id === "codex") &&
-          modelSupportsEffort(reviewer.model_id),
+          modelSupportsEffort(modelInfo(reviewer.model_id, reviewer.provider_id)),
       )
       .map((reviewer) => reviewer.model_id);
   });
@@ -151,9 +158,9 @@
 
   const effortLevelsForRun = $derived.by(() => {
     if (effortCapableModelIds.length === 0) return [] as readonly string[];
-    let levels = [...effortLevelsForModel(effortCapableModelIds[0]!)];
+    let levels = [...effortLevelsForModel(modelInfo(effortCapableModelIds[0]!))];
     for (const id of effortCapableModelIds.slice(1)) {
-      const next = effortLevelsForModel(id);
+      const next = effortLevelsForModel(modelInfo(id));
       levels = levels.filter((l) => next.includes(l));
     }
     return levels;

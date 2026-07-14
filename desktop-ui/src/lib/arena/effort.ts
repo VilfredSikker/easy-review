@@ -1,41 +1,19 @@
-/** Reasoning effort levels (mirrors er-engine `config::EFFORT_LEVELS`). */
+/** Canonical labels used by catalog metadata and arena controls. */
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
-const OPUS_46_SONNET = ["low", "medium", "high", "max"] as const;
-
-/** Effort levels supported for an ai_hub model id (empty when effort does not apply). */
-export function effortLevelsForModel(modelId: string): readonly string[] {
-  if (
-    modelId.startsWith("sonnet-5") ||
-    modelId.includes("sonnet-5") ||
-    modelId.startsWith("gpt-5.6-") ||
-    modelId.includes("gpt-5-6-")
-  ) {
-    return EFFORT_LEVELS;
-  }
-  if (
-    modelId.startsWith("opus-4.7") ||
-    modelId.startsWith("opus-4.8") ||
-    modelId.includes("opus-4-7") ||
-    modelId.includes("opus-4-8")
-  ) {
-    return EFFORT_LEVELS;
-  }
-  if (
-    modelId.startsWith("opus-4.6") ||
-    modelId.startsWith("sonnet-4.6") ||
-    modelId.includes("opus-4-6") ||
-    modelId.includes("sonnet-4-6")
-  ) {
-    return OPUS_46_SONNET;
-  }
-  return [];
+/** Effort levels are supplied by the shared Rust catalog metadata. */
+export function effortLevelsForModel(
+  model: { effort_levels: string[] } | null | undefined,
+): readonly string[] {
+  return model?.effort_levels ?? [];
 }
 
-export function modelSupportsEffort(modelId: string): boolean {
-  return effortLevelsForModel(modelId).length > 0;
+export function modelSupportsEffort(
+  model: { effort_levels: string[] } | null | undefined,
+): boolean {
+  return effortLevelsForModel(model).length > 0;
 }
 
 export function effortLabel(level: string): string {

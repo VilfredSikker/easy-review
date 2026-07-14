@@ -38,7 +38,13 @@ pub fn resolve_provider_command(
     if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
         args.extend(model.args.clone());
     }
-    inject_provider_effort(&provider.command, &mut args, Some(model_id), effort);
+    let effort = crate::config::normalize_effort(hub, Some(provider_id), Some(model_id), effort);
+    inject_provider_effort(
+        &provider.command,
+        &mut args,
+        Some(model_id),
+        effort.as_deref(),
+    );
     if agent_command_is_codex(&provider.command) {
         inject_codex_ignore_user_config(&mut args);
     }

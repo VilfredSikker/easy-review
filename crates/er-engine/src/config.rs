@@ -213,6 +213,11 @@ pub struct AiModelConfig {
     pub cost_per_1k_out: Option<f32>,
     #[serde(default)]
     pub avg_latency_ms: Option<u32>,
+    /// Explicit reasoning/effort levels supported by this model. An empty
+    /// list means the provider default (Auto); support is never inferred from
+    /// a model ID.
+    #[serde(default)]
+    pub effort_levels: Vec<String>,
 }
 
 /// [summary] section — configuration for diff summary / changelog generation
@@ -537,30 +542,39 @@ pub fn inject_codex_ignore_user_config(args: &mut Vec<String>) {
 }
 
 pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+pub const AUTO_EFFORT: &str = "Auto";
 
-const EFFORT_LEVELS_OPUS_46_SONNET: &[&str] = &["low", "medium", "high", "max"];
+/// Return the effort metadata advertised by the selected hub model.
+pub fn effort_levels_for_hub_model<'a>(
+    hub: &'a AiHubConfig,
+    provider_id: Option<&str>,
+    model_id: Option<&str>,
+) -> &'a [String] {
+    provider_id
+        .and_then(|provider| hub.providers.get(provider))
+        .and_then(|provider| {
+            model_id.and_then(|model| provider.models.iter().find(|m| m.id == model))
+        })
+        .map(|model| model.effort_levels.as_slice())
+        .unwrap_or(&[])
+}
 
-/// Effort levels supported for an ai_hub model id (empty when effort does not apply).
-pub fn effort_levels_for_hub_model(model_id: &str) -> &'static [&'static str] {
-    if model_id.starts_with("sonnet-5")
-        || model_id.contains("sonnet-5")
-        || model_id.starts_with("gpt-5.6-")
-        || model_id.contains("gpt-5-6-")
-        || model_id.starts_with("opus-4.7")
-        || model_id.starts_with("opus-4.8")
-        || model_id.contains("opus-4-7")
-        || model_id.contains("opus-4-8")
-    {
-        return EFFORT_LEVELS;
+/// Normalize an effort selection. Auto and invalid/unsupported values are
+/// represented as `None`, so command construction cannot leak them to a CLI.
+pub fn normalize_effort(
+    hub: &AiHubConfig,
+    provider_id: Option<&str>,
+    model_id: Option<&str>,
+    effort: Option<&str>,
+) -> Option<String> {
+    let value = effort?.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+        return None;
     }
-    if model_id.starts_with("opus-4.6")
-        || model_id.starts_with("sonnet-4.6")
-        || model_id.contains("opus-4-6")
-        || model_id.contains("sonnet-4-6")
-    {
-        return EFFORT_LEVELS_OPUS_46_SONNET;
-    }
-    &[]
+    effort_levels_for_hub_model(hub, provider_id, model_id)
+        .iter()
+        .any(|level| level == value)
+        .then(|| value.to_string())
 }
 
 /// Precedence: run override → runtime → hub default → agent fallback.
@@ -578,6 +592,20 @@ pub fn resolve_effort(
         .or_else(|| pick(runtime))
         .or_else(|| pick(hub.default_effort.as_deref()))
         .or_else(|| pick(agent.effort.as_deref()))
+}
+
+/// Resolve the configured effort and discard values unsupported by the
+/// selected model. Invocation code should use this resolver.
+pub fn resolve_effort_for_model(
+    hub: &AiHubConfig,
+    agent: &AgentConfig,
+    provider_id: Option<&str>,
+    model_id: Option<&str>,
+    runtime: Option<&str>,
+    run_override: Option<&str>,
+) -> Option<String> {
+    let candidate = resolve_effort(hub, agent, runtime, run_override);
+    normalize_effort(hub, provider_id, model_id, candidate.as_deref())
 }
 
 /// Append `--effort <level>` when not already present.
@@ -618,9 +646,7 @@ pub fn inject_provider_effort(
 ) {
     if agent_command_is_claude(command) {
         inject_claude_effort(args, effort);
-    } else if agent_command_is_codex(command)
-        && model_id.is_some_and(|id| !effort_levels_for_hub_model(id).is_empty())
-    {
+    } else if agent_command_is_codex(command) && model_id.is_some() {
         inject_codex_effort(args, effort);
     }
 }
@@ -795,6 +821,13 @@ pub enum ConfigItem {
         get: fn(&ErConfig) -> String,
         set: fn(&mut ErConfig, String),
     },
+    DynamicStringCycle {
+        label: String,
+        description: String,
+        options: fn(&ErConfig) -> Vec<String>,
+        get: fn(&ErConfig) -> String,
+        set: fn(&mut ErConfig, String),
+    },
     StringEdit {
         label: String,
         description: String,
@@ -831,6 +864,9 @@ impl std::fmt::Debug for ConfigItem {
             ConfigItem::SectionHeader(s) => write!(f, "SectionHeader({:?})", s),
             ConfigItem::BoolToggle { label, .. } => write!(f, "BoolToggle({:?})", label),
             ConfigItem::StringCycle { label, .. } => write!(f, "StringCycle({:?})", label),
+            ConfigItem::DynamicStringCycle { label, .. } => {
+                write!(f, "DynamicStringCycle({:?})", label)
+            }
             ConfigItem::StringEdit { label, .. } => write!(f, "StringEdit({:?})", label),
             ConfigItem::NumberEdit { label, .. } => write!(f, "NumberEdit({:?})", label),
             ConfigItem::ListEntry { label, index } => {
@@ -937,6 +973,28 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
                 c.agent.effort = if v.is_empty() { None } else { Some(v) };
             },
         },
+        ConfigItem::SectionHeader("AI Hub".into()),
+        ConfigItem::DynamicStringCycle {
+            label: "Provider".into(),
+            description: "Global AI Hub provider".into(),
+            options: hub_provider_options,
+            get: hub_provider_value,
+            set: set_hub_provider,
+        },
+        ConfigItem::DynamicStringCycle {
+            label: "Model".into(),
+            description: "Model for the selected provider".into(),
+            options: hub_model_options,
+            get: hub_model_value,
+            set: set_hub_model,
+        },
+        ConfigItem::DynamicStringCycle {
+            label: "Effort / reasoning".into(),
+            description: "Auto uses the provider default".into(),
+            options: hub_effort_options,
+            get: hub_effort_value,
+            set: set_hub_effort,
+        },
         ConfigItem::SectionHeader("Watched Paths".into()),
         ConfigItem::StringCycle {
             label: "Diff mode".into(),
@@ -960,6 +1018,126 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
     });
 
     items
+}
+
+fn hub_provider_options(config: &ErConfig) -> Vec<String> {
+    config.ai_hub.provider_ids()
+}
+
+fn hub_provider_value(config: &ErConfig) -> String {
+    config
+        .ai_hub
+        .resolve_provider_id(config.ai_hub.default_provider.as_deref())
+        .unwrap_or_else(|| "Auto".into())
+}
+
+fn hub_model_options(config: &ErConfig) -> Vec<String> {
+    let Some(provider) = config
+        .ai_hub
+        .resolve_provider_id(config.ai_hub.default_provider.as_deref())
+        .and_then(|id| config.ai_hub.providers.get(&id))
+    else {
+        return vec!["Auto".into()];
+    };
+    provider
+        .models
+        .iter()
+        .map(|model| model.id.clone())
+        .collect()
+}
+
+fn hub_model_value(config: &ErConfig) -> String {
+    config
+        .ai_hub
+        .resolve_provider_id(config.ai_hub.default_provider.as_deref())
+        .and_then(|provider| {
+            config
+                .ai_hub
+                .resolve_model_id(&provider, config.ai_hub.default_model.as_deref())
+        })
+        .unwrap_or_else(|| "Auto".into())
+}
+
+fn hub_effort_options(config: &ErConfig) -> Vec<String> {
+    let provider = config
+        .ai_hub
+        .resolve_provider_id(config.ai_hub.default_provider.as_deref());
+    let model = provider.as_deref().and_then(|id| {
+        config
+            .ai_hub
+            .resolve_model_id(id, config.ai_hub.default_model.as_deref())
+    });
+    let mut options = vec![AUTO_EFFORT.into()];
+    options.extend(
+        effort_levels_for_hub_model(&config.ai_hub, provider.as_deref(), model.as_deref())
+            .iter()
+            .cloned(),
+    );
+    options
+}
+
+fn hub_effort_value(config: &ErConfig) -> String {
+    config
+        .ai_hub
+        .default_effort
+        .clone()
+        .unwrap_or_else(|| AUTO_EFFORT.into())
+}
+
+fn set_hub_provider(config: &mut ErConfig, provider: String) {
+    if !config.ai_hub.providers.contains_key(&provider) {
+        return;
+    }
+    config.ai_hub.default_provider = Some(provider.clone());
+    config.ai_hub.default_model = config.ai_hub.resolve_model_id(&provider, None);
+    config.ai_hub.default_effort = normalize_effort(
+        &config.ai_hub,
+        Some(&provider),
+        config.ai_hub.default_model.as_deref(),
+        config.ai_hub.default_effort.as_deref(),
+    );
+}
+
+fn set_hub_model(config: &mut ErConfig, model: String) {
+    let Some(provider) = config
+        .ai_hub
+        .resolve_provider_id(config.ai_hub.default_provider.as_deref())
+    else {
+        return;
+    };
+    if !config
+        .ai_hub
+        .providers
+        .get(&provider)
+        .is_some_and(|p| p.models.iter().any(|m| m.id == model))
+    {
+        return;
+    }
+    config.ai_hub.default_provider = Some(provider.clone());
+    config.ai_hub.default_model = Some(model.clone());
+    config.ai_hub.default_effort = normalize_effort(
+        &config.ai_hub,
+        Some(&provider),
+        Some(&model),
+        config.ai_hub.default_effort.as_deref(),
+    );
+}
+
+fn set_hub_effort(config: &mut ErConfig, effort: String) {
+    let provider = config
+        .ai_hub
+        .resolve_provider_id(config.ai_hub.default_provider.as_deref());
+    let model = provider.as_deref().and_then(|id| {
+        config
+            .ai_hub
+            .resolve_model_id(id, config.ai_hub.default_model.as_deref())
+    });
+    config.ai_hub.default_effort = normalize_effort(
+        &config.ai_hub,
+        provider.as_deref(),
+        model.as_deref(),
+        Some(&effort),
+    );
 }
 
 fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
@@ -1121,10 +1299,12 @@ mod tests {
         // The user's model is preserved and stays first.
         assert_eq!(codex.models[0].id, "gpt-5.4");
         // The catalog supplements the remaining codex models in-memory.
-        assert!(codex.models.iter().any(|m| m.id == "gpt-5.3-codex"));
+        assert!(!codex.models.iter().any(|m| m.id == "gpt-5.3-codex"));
         assert!(codex.models.iter().any(|m| m.id == "gpt-5.6-sol"));
         assert!(codex.models.iter().any(|m| m.id == "gpt-5.6-terra"));
         assert!(codex.models.iter().any(|m| m.id == "gpt-5.6-luna"));
+        assert!(codex.models.iter().any(|m| m.id == "gpt-5.4-mini"));
+        assert!(codex.models.iter().any(|m| m.id == "gpt-5.3-codex-spark"));
     }
 
     // ── Default values ──
@@ -1173,6 +1353,7 @@ mod tests {
                         cost_per_1k_in: None,
                         cost_per_1k_out: None,
                         avg_latency_ms: None,
+                        effort_levels: vec![],
                     },
                     AiModelConfig {
                         id: "gpt-5.3-codex".into(),
@@ -1182,6 +1363,7 @@ mod tests {
                         cost_per_1k_in: None,
                         cost_per_1k_out: None,
                         avg_latency_ms: None,
+                        effort_levels: vec![],
                     },
                 ],
             },
@@ -1335,6 +1517,65 @@ mod tests {
             "Expected at least 22 total items (with headers), got {}",
             items.len()
         );
+    }
+
+    #[test]
+    fn config_hub_dynamic_ai_cycles_follow_catalog_metadata_and_auto() {
+        let mut config = ErConfig::default();
+        supplement_ai_hub(&mut config.ai_hub);
+        let items = config_hub_items_for_scope(&config, SettingsScope::General);
+        let (provider_options, provider_get, provider_set) = items
+            .iter()
+            .find_map(|item| match item {
+                ConfigItem::DynamicStringCycle {
+                    label,
+                    options,
+                    get,
+                    set,
+                    ..
+                } if label == "Provider" => Some((*options, *get, *set)),
+                _ => None,
+            })
+            .expect("provider cycle");
+        assert!(provider_options(&config).contains(&"codex".into()));
+        provider_set(&mut config, "codex".into());
+        assert_eq!(provider_get(&config), "codex");
+
+        let (model_options, _, model_set) = items
+            .iter()
+            .find_map(|item| match item {
+                ConfigItem::DynamicStringCycle {
+                    label,
+                    options,
+                    get,
+                    set,
+                    ..
+                } if label == "Model" => Some((*options, *get, *set)),
+                _ => None,
+            })
+            .expect("model cycle");
+        assert!(model_options(&config).contains(&"gpt-5.4-mini".into()));
+        model_set(&mut config, "gpt-5.4-mini".into());
+
+        let (effort_options, effort_get, effort_set) = items
+            .iter()
+            .find_map(|item| match item {
+                ConfigItem::DynamicStringCycle {
+                    label,
+                    options,
+                    get,
+                    set,
+                    ..
+                } if label == "Effort / reasoning" => Some((*options, *get, *set)),
+                _ => None,
+            })
+            .expect("effort cycle");
+        assert_eq!(effort_options(&config)[0], AUTO_EFFORT);
+        assert!(effort_options(&config).contains(&"xhigh".into()));
+        effort_set(&mut config, "xhigh".into());
+        assert_eq!(effort_get(&config), "xhigh");
+        effort_set(&mut config, AUTO_EFFORT.into());
+        assert_eq!(effort_get(&config), AUTO_EFFORT);
     }
 
     #[test]
@@ -1533,12 +1774,32 @@ mod tests {
 
     #[test]
     fn hub_model_effort_levels() {
-        assert!(effort_levels_for_hub_model("sonnet-5").contains(&"xhigh"));
-        assert!(effort_levels_for_hub_model("gpt-5.6-sol").contains(&"max"));
-        assert!(effort_levels_for_hub_model("opus-4.8").contains(&"xhigh"));
-        assert!(!effort_levels_for_hub_model("opus-4.6").contains(&"xhigh"));
-        assert!(effort_levels_for_hub_model("sonnet-4.6").contains(&"max"));
-        assert!(effort_levels_for_hub_model("haiku-4.5").is_empty());
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "claude".into(),
+            AiProviderConfig {
+                models: vec![
+                    AiModelConfig {
+                        id: "sonnet-5".into(),
+                        effort_levels: EFFORT_LEVELS.iter().map(|s| s.to_string()).collect(),
+                        ..Default::default()
+                    },
+                    AiModelConfig {
+                        id: "haiku-4.5".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        assert!(
+            effort_levels_for_hub_model(&hub, Some("claude"), Some("sonnet-5"))
+                .iter()
+                .any(|level| level == "xhigh")
+        );
+        assert!(effort_levels_for_hub_model(&hub, Some("claude"), Some("haiku-4.5")).is_empty());
+        assert!(normalize_effort(&hub, Some("claude"), Some("sonnet-5"), Some("Auto")).is_none());
+        assert!(normalize_effort(&hub, Some("claude"), Some("haiku-4.5"), Some("high")).is_none());
     }
 
     #[test]
@@ -1640,12 +1901,16 @@ mod tests {
 
     #[test]
     fn provider_effort_only_injects_for_effort_capable_codex_models() {
+        let mut hub = AiHubConfig::default();
+        supplement_ai_hub(&mut hub);
+        let unsupported_effort =
+            normalize_effort(&hub, Some("codex"), Some("legacy-model"), Some("high"));
         let mut unsupported_args = vec!["exec".into()];
         inject_provider_effort(
             "codex",
             &mut unsupported_args,
-            Some("gpt-5.4"),
-            Some("high"),
+            Some("legacy-model"),
+            unsupported_effort.as_deref(),
         );
         assert!(!unsupported_args
             .iter()
@@ -1656,7 +1921,7 @@ mod tests {
             "codex",
             &mut supported_args,
             Some("gpt-5.6-sol"),
-            Some("high"),
+            normalize_effort(&hub, Some("codex"), Some("gpt-5.6-sol"), Some("high")).as_deref(),
         );
         assert!(supported_args
             .iter()

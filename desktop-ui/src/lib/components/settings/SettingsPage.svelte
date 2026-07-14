@@ -37,6 +37,7 @@
   let terminalFields = $state<ConfigHubField[]>([]);
   let providers = $state<AiProviderInfo[]>([]);
   let triageModelId = $state("");
+  let selectedEffort = $state("Auto");
   let repoRoot = $state("");
   let addPattern = $state("");
   let textWarnings = $state<Record<string, string | null>>({});
@@ -49,6 +50,8 @@
 
   const selectedProvider = $derived(providers.find((p) => p.is_selected) ?? null);
   const selectedModels = $derived(selectedProvider?.models ?? []);
+  const selectedModel = $derived(selectedModels.find((model) => model.is_selected) ?? null);
+  const effortOptions = $derived(["Auto", ...(selectedModel?.effort_levels ?? [])]);
   const hasInactiveTriageModel = $derived(
     triageModelId !== "" && !selectedModels.some((model) => model.id === triageModelId),
   );
@@ -88,6 +91,8 @@
     terminalFields = res.settings.terminal;
     providers = res.providers;
     triageModelId = res.triageModelId ?? "";
+    selectedEffort = res.activeEffort ?? "Auto";
+    if (!effortOptions.includes(selectedEffort)) selectedEffort = "Auto";
     repoRoot = res.settings.repoRoot;
   }
 
@@ -131,6 +136,8 @@
     const p = selectedProvider;
     if (!p) return;
     await invoke("set_ai_selection", { providerId: p.id, modelId });
+    const model = p.models.find((item) => item.id === modelId);
+    if (!model?.effort_levels.includes(selectedEffort)) selectedEffort = "Auto";
     await reload();
   }
 
@@ -146,6 +153,7 @@
       const res = await invoke<GetConfigHubResponse>("set_ai_hub_defaults", {
         providerId: p.id,
         modelId: model?.id ?? null,
+        effort: selectedEffort === "Auto" ? null : selectedEffort,
       });
       applySettings(res);
       app.showToast("success", "Saved AI defaults to config");
@@ -381,6 +389,23 @@
                   </div>
                 </div>
               {/if}
+              <div class="py-2 mt-1">
+                <div class="text-sm text-fg mb-1.5">Effort / reasoning</div>
+                <div class="flex flex-wrap gap-1.5">
+                  {#each effortOptions as level (level)}
+                    <button
+                      type="button"
+                      class="px-2.5 py-1 text-xs rounded-md border transition-colors {selectedEffort === level
+                        ? 'bg-accent-soft text-accent border-accent-border font-medium'
+                        : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
+                      onclick={() => (selectedEffort = level)}
+                    >
+                      {level === 'xhigh' ? 'XHigh' : level}
+                    </button>
+                  {/each}
+                </div>
+                <p class="text-[11px] text-muted mt-1.5">Auto uses the provider default.</p>
+              </div>
               <div class="mt-2 pt-2 border-t border-hairline/60">
                 <Button onclick={() => void saveDefaults()}>Save as default</Button>
               </div>

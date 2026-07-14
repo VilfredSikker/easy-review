@@ -4,7 +4,7 @@ use crate::ai::{
     ErChecklist, ErGitHubComments, ErOrder, ErQuestions, ErReview, ErTour, ExpertReview,
     ProfessorReview, TriageReview,
 };
-use crate::config::{inject_provider_effort, resolve_effort, ErConfig};
+use crate::config::{inject_provider_effort, ErConfig};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
@@ -227,7 +227,7 @@ pub fn resolve_invocation(
     config: &ErConfig,
     request: AgentInvocationRequest<'_>,
 ) -> Result<AgentInvocation> {
-    let (command, mut args, resolved_model_id) = match request.selection {
+    let (command, mut args, resolved_provider_id, resolved_model_id) = match request.selection {
         AgentSelection::Runtime {
             provider_id,
             model_id,
@@ -254,11 +254,12 @@ pub fn resolve_invocation(
                         args.extend(model.args.clone());
                     }
                 }
-                (provider.command.clone(), args, resolved_model)
+                (provider.command.clone(), args, Some(pid), resolved_model)
             } else {
                 (
                     config.agent.command.clone(),
                     config.agent.args.clone(),
+                    None,
                     (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
                 )
             }
@@ -279,7 +280,7 @@ pub fn resolve_invocation(
                 .with_context(|| format!("unknown model {model_id} for provider {provider_id}"))?;
             let mut args = provider.args.clone();
             args.extend(model.args.clone());
-            (provider.command.clone(), args, Some(model_id.to_string()))
+            (provider.command.clone(), args, Some(provider_id.to_string()), Some(model_id.to_string()))
         }
     };
 
@@ -293,9 +294,11 @@ pub fn resolve_invocation(
         }
     }
     if matches!(family, CliFamily::Claude | CliFamily::Codex) {
-        let effort = resolve_effort(
+        let effort = crate::config::resolve_effort_for_model(
             &config.ai_hub,
             &config.agent,
+            resolved_provider_id.as_deref(),
+            resolved_model_id.as_deref(),
             request.effort,
             request.effort_override,
         );
@@ -870,7 +873,7 @@ mod tests {
             AgentInvocationRequest {
                 selection: AgentSelection::Runtime {
                     provider_id: Some("claude"),
-                    model_id: Some("sonnet-4.6"),
+                    model_id: Some("sonnet-5"),
                     task_aware: true,
                 },
                 task: &task,
@@ -909,7 +912,7 @@ mod tests {
             AgentInvocationRequest {
                 selection: AgentSelection::Exact {
                     provider_id: "codex",
-                    model_id: "gpt-5.3-codex",
+                    model_id: "gpt-5.4",
                 },
                 task: &task,
                 effort: None,
@@ -923,7 +926,7 @@ mod tests {
         assert!(has_option_value(
             &invocation.args,
             "--model",
-            "gpt-5.3-codex"
+            "gpt-5.4"
         ));
         assert!(!invocation.args.iter().any(|arg| arg == "--add-dir"));
     }
