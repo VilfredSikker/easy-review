@@ -112,13 +112,14 @@ args    = [<span class="tok-str">"--print"</span>, <span class="tok-str">"-p"</s
 id    = <span class="tok-str">"sonnet-5"</span>
 label = <span class="tok-str">"Sonnet 5"</span>
 args  = [<span class="tok-str">"--model"</span>, <span class="tok-str">"claude-sonnet-5"</span>]
-<span class="cmt"># optional metadata: description, cost_per_1k_in, cost_per_1k_out, avg_latency_ms</span></code></pre>
+effort_levels = [<span class="tok-str">"low"</span>, <span class="tok-str">"medium"</span>, <span class="tok-str">"high"</span>, <span class="tok-str">"xhigh"</span>, <span class="tok-str">"max"</span>]
+<span class="cmt"># empty effort_levels means Auto only; support comes from metadata, not model IDs</span></code></pre>
     <ul>
       <li>If <code>[ai_hub]</code> is absent, <code>er</code> falls back to the single <code>[agent]</code> config.</li>
-      <li>Selection is session-local; the presets themselves come from TOML.</li>
+      <li>Selection can be changed at runtime and saved globally from Desktop Settings or the TUI General settings.</li>
       <li>On load, <code>er</code> merges any missing built-in catalog models into your config <em>in memory</em> — it does
       not rewrite your file.</li>
-      <li>Providers in the example config include Claude, Codex, and Cursor.</li>
+      <li>The current built-in catalog includes Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5, the GPT-5.6 Sol/Terra/Luna family, GPT-5.5, GPT-5.4, GPT-5.4 Mini, and GPT-5.3 Codex Spark.</li>
       <li>The selected provider/model applies to AI Hub actions: review, triage, experts, professor, questions, and summary.</li>
     </ul>
 

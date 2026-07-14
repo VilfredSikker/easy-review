@@ -1,8 +1,6 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::config::{
-    agent_command_uses_stream_json, inject_provider_effort, resolve_effort, ErConfig,
-};
+use crate::config::{agent_command_uses_stream_json, inject_provider_effort, ErConfig};
 use std::process::Command;
 
 /// Resolved agent command + args for a card AI subprocess.
@@ -22,7 +20,7 @@ pub fn plan_card_ai_invocation(
     runtime_effort: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
-    let (command, mut args, is_claude, resolved_model_id) = if let Some(pid) =
+    let (command, mut args, is_claude, resolved_provider_id, resolved_model_id) = if let Some(pid) =
         config.ai_hub.resolve_provider_id(provider_id)
     {
         if let Some(provider) = config.ai_hub.providers.get(&pid) {
@@ -34,7 +32,13 @@ pub fn plan_card_ai_invocation(
                 }
             }
             let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
-            (provider.command.clone(), args, is_claude, resolved_model_id)
+            (
+                provider.command.clone(),
+                args,
+                is_claude,
+                Some(pid.to_string()),
+                resolved_model_id,
+            )
         } else {
             fallback_agent(config)
         }
@@ -48,7 +52,14 @@ pub fn plan_card_ai_invocation(
     if is_claude {
         inject_read_only_tools(&mut args);
     }
-    let effort = resolve_effort(&config.ai_hub, &config.agent, runtime_effort, None);
+    let effort = crate::config::resolve_effort_for_model(
+        &config.ai_hub,
+        &config.agent,
+        resolved_provider_id.as_deref(),
+        resolved_model_id.as_deref(),
+        runtime_effort,
+        None,
+    );
     inject_provider_effort(
         &command,
         &mut args,
@@ -65,13 +76,16 @@ pub fn plan_card_ai_invocation(
     }
 }
 
-fn fallback_agent(config: &ErConfig) -> (String, Vec<String>, bool, Option<String>) {
+fn fallback_agent(
+    config: &ErConfig,
+) -> (String, Vec<String>, bool, Option<String>, Option<String>) {
     let cmd = config.agent.command.clone();
     let is_claude = cmd.ends_with("claude") || cmd == "claude";
     (
         cmd,
         config.agent.args.clone(),
         is_claude,
+        None,
         (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
     )
 }
@@ -277,6 +291,10 @@ mod tests {
                 models: vec![crate::config::AiModelConfig {
                     id: "gpt-5.6-sol".into(),
                     args: vec!["--model".into(), "gpt-5.6-sol".into()],
+                    effort_levels: vec!["low", "medium", "high", "xhigh", "max"]
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
                     ..Default::default()
                 }],
                 ..Default::default()

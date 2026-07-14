@@ -46,6 +46,8 @@ args    = ["--print", "--output-format", "stream-json", "-p", "{prompt}"]
 [ai_hub]
 default_provider = "claude"
 default_model = "sonnet-5"
+# Optional global effort/reasoning override; omit or use Auto in the UI for provider default.
+# default_effort = "high"
 
 [ai_hub.reviewer_models]
 triage = "haiku-4.5"
@@ -56,10 +58,11 @@ command = "claude"
 args = ["--print", "-p", "{prompt}"]
 
 [[ai_hub.providers.claude.models]]
-id = "sonnet-4.6"
-label = "Sonnet 4.6"
-description = "Balanced quality + speed"
-args = ["--model", "claude-sonnet-4-6"]
+id = "fable-5"
+label = "Fable 5"
+description = "Frontier reasoning · maximum depth"
+args = ["--model", "claude-fable-5"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 cost_per_1k_in = 0.003
 cost_per_1k_out = 0.015
 avg_latency_ms = 12000
@@ -69,6 +72,7 @@ id = "sonnet-5"
 label = "Sonnet 5"
 description = "Best speed + intelligence · 1M context"
 args = ["--model", "claude-sonnet-5"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 cost_per_1k_in = 0.002
 cost_per_1k_out = 0.010
 avg_latency_ms = 12000
@@ -78,6 +82,7 @@ id = "opus-4.8"
 label = "Opus 4.8"
 description = "Latest frontier · 1M context"
 args = ["--model", "claude-opus-4-8"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 cost_per_1k_in = 0.005
 cost_per_1k_out = 0.025
 avg_latency_ms = 24000
@@ -87,6 +92,7 @@ id = "haiku-4.5"
 label = "Haiku 4.5"
 description = "Fast & cheap · good for noise"
 args = ["--model", "claude-haiku-4-5-20251001"]
+effort_levels = []
 cost_per_1k_in = 0.001
 cost_per_1k_out = 0.005
 avg_latency_ms = 5000
@@ -101,17 +107,9 @@ id = "gpt-5.4"
 label = "GPT-5.4"
 description = "Strong general · lower cost"
 args = ["--model", "gpt-5.4"]
+effort_levels = ["low", "medium", "high", "xhigh"]
 cost_per_1k_in = 0.0025
 cost_per_1k_out = 0.015
-avg_latency_ms = 14000
-
-[[ai_hub.providers.codex.models]]
-id = "gpt-5.3-codex"
-label = "GPT-5.3 Codex"
-description = "Agentic coding specialist"
-args = ["--model", "gpt-5.3-codex"]
-cost_per_1k_in = 0.00175
-cost_per_1k_out = 0.014
 avg_latency_ms = 14000
 
 [[ai_hub.providers.codex.models]]
@@ -119,6 +117,7 @@ id = "gpt-5.5"
 label = "GPT-5.5"
 description = "Best-in-class general"
 args = ["--model", "gpt-5.5"]
+effort_levels = ["low", "medium", "high", "xhigh"]
 cost_per_1k_in = 0.005
 cost_per_1k_out = 0.030
 avg_latency_ms = 18000
@@ -128,6 +127,7 @@ id = "gpt-5.6-sol"
 label = "GPT-5.6 Sol"
 description = "Flagship reasoning · detail + polish"
 args = ["--model", "gpt-5.6-sol"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 cost_per_1k_in = 0.005
 cost_per_1k_out = 0.030
 avg_latency_ms = 20000
@@ -137,6 +137,7 @@ id = "gpt-5.6-terra"
 label = "GPT-5.6 Terra"
 description = "Strong everyday coding + tool use"
 args = ["--model", "gpt-5.6-terra"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 cost_per_1k_in = 0.0025
 cost_per_1k_out = 0.015
 avg_latency_ms = 14000
@@ -146,9 +147,24 @@ id = "gpt-5.6-luna"
 label = "GPT-5.6 Luna"
 description = "Fast, efficient repeatable work"
 args = ["--model", "gpt-5.6-luna"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 cost_per_1k_in = 0.001
 cost_per_1k_out = 0.005
 avg_latency_ms = 8000
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.4-mini"
+label = "GPT-5.4 Mini"
+description = "Fast, efficient coding"
+args = ["--model", "gpt-5.4-mini"]
+effort_levels = ["low", "medium", "high", "xhigh"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.3-codex-spark"
+label = "GPT-5.3 Codex Spark"
+description = "Fast coding specialist"
+args = ["--model", "gpt-5.3-codex-spark"]
+effort_levels = ["low", "medium", "high", "xhigh"]
 
 [ai_hub.providers.cursor]
 label = "Cursor"

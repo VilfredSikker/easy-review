@@ -3580,6 +3580,7 @@ pub struct AiModelInfo {
     pub cost_per_1k_out: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avg_latency_ms: Option<u32>,
+    pub effort_levels: Vec<String>,
 }
 
 #[tauri::command]
@@ -3611,6 +3612,7 @@ pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, 
                         cost_per_1k_in: m.cost_per_1k_in,
                         cost_per_1k_out: m.cost_per_1k_out,
                         avg_latency_ms: m.avg_latency_ms,
+                        effort_levels: m.effort_levels.clone(),
                     })
                     .collect(),
             }
@@ -3641,8 +3643,15 @@ pub fn set_ai_selection(
         }
     }
 
+    let normalized_effort = er_engine::config::normalize_effort(
+        &app.config.ai_hub,
+        Some(&provider_id),
+        model_id.as_deref(),
+        app.current_ai_effort.as_deref(),
+    );
     app.current_ai_provider = Some(provider_id);
     app.current_ai_model = model_id;
+    app.current_ai_effort = normalized_effort;
 
     state
         .desktop_revision
@@ -3656,9 +3665,24 @@ pub fn set_ai_effort(
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let normalized = effort
-        .map(|e| e.trim().to_string())
-        .filter(|e| !e.is_empty());
+    let provider_id = app
+        .config
+        .ai_hub
+        .resolve_provider_id(app.current_ai_provider.as_deref());
+    let model_id = provider_id.as_deref().and_then(|provider| {
+        app.config
+            .ai_hub
+            .resolve_model_id(provider, app.current_ai_model.as_deref())
+    });
+    let normalized = er_engine::config::normalize_effort(
+        &app.config.ai_hub,
+        provider_id.as_deref(),
+        model_id.as_deref(),
+        effort.as_deref(),
+    );
+    if effort.is_some() && normalized.is_none() {
+        return Err("Effort is unsupported for the selected model".into());
+    }
     app.current_ai_effort = normalized.clone();
     app.config.ai_hub.default_effort = normalized;
     er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;

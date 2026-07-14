@@ -60,12 +60,14 @@ args = ["--print", "-p", "{prompt}"]    # Arguments ({prompt} is replaced)
 
 ### `[ai_hub]`
 
-Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, and Cursor without editing config mid-session. Selection is session-local; presets still come from TOML.
+Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, and Cursor. The selected provider, model, and effort can be saved globally from Desktop Settings or the TUI General settings.
 
 ```toml
 [ai_hub]
 default_provider = "claude"
 default_model = "sonnet-5"
+# Optional; omit or use Auto in the UI for the provider default.
+# default_effort = "high"
 
 [ai_hub.reviewer_models]
 triage = "haiku-4.5"
@@ -76,24 +78,28 @@ command = "claude"
 args = ["--print", "-p", "{prompt}"]
 
 [[ai_hub.providers.claude.models]]
-id = "sonnet-4.6"
-label = "Sonnet 4.6"
-args = ["--model", "claude-sonnet-4-6"]
+id = "fable-5"
+label = "Fable 5"
+args = ["--model", "claude-fable-5"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 
 [[ai_hub.providers.claude.models]]
 id = "sonnet-5"
 label = "Sonnet 5"
 args = ["--model", "claude-sonnet-5"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 
 [[ai_hub.providers.claude.models]]
 id = "opus-4.8"
 label = "Opus 4.8"
 args = ["--model", "claude-opus-4-8"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 
 [[ai_hub.providers.claude.models]]
 id = "haiku-4.5"
 label = "Haiku 4.5"
 args = ["--model", "claude-haiku-4-5-20251001"]
+effort_levels = []
 
 [ai_hub.providers.codex]
 label = "Codex"
@@ -104,21 +110,43 @@ args = ["exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "w
 id = "gpt-5.4"
 label = "GPT-5.4"
 args = ["--model", "gpt-5.4"]
+effort_levels = ["low", "medium", "high", "xhigh"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.5"
+label = "GPT-5.5"
+args = ["--model", "gpt-5.5"]
+effort_levels = ["low", "medium", "high", "xhigh"]
 
 [[ai_hub.providers.codex.models]]
 id = "gpt-5.6-sol"
 label = "GPT-5.6 Sol"
 args = ["--model", "gpt-5.6-sol"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 
 [[ai_hub.providers.codex.models]]
 id = "gpt-5.6-terra"
 label = "GPT-5.6 Terra"
 args = ["--model", "gpt-5.6-terra"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
 
 [[ai_hub.providers.codex.models]]
 id = "gpt-5.6-luna"
 label = "GPT-5.6 Luna"
 args = ["--model", "gpt-5.6-luna"]
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.4-mini"
+label = "GPT-5.4 Mini"
+args = ["--model", "gpt-5.4-mini"]
+effort_levels = ["low", "medium", "high", "xhigh"]
+
+[[ai_hub.providers.codex.models]]
+id = "gpt-5.3-codex-spark"
+label = "GPT-5.3 Codex Spark"
+args = ["--model", "gpt-5.3-codex-spark"]
+effort_levels = ["low", "medium", "high", "xhigh"]
 
 [ai_hub.providers.cursor]
 label = "Cursor"
@@ -135,10 +163,10 @@ Rules:
 - Provider `args` are the shared base arguments for that CLI.
 - Model `args` are appended after provider args.
 - If `[ai_hub]` is absent, `er` falls back to the single `[agent]` configuration.
-- On load, `er` merges any missing built-in catalog models (e.g. new Opus releases) into your config in memory without rewriting your TOML file.
+- On load, `er` merges missing current built-in catalog models into your config in memory without rewriting your TOML file; user-defined legacy entries are preserved.
 - The selected provider/model applies to AI Hub actions such as review, triage, experts, professor, questions, and summary.
 - `[ai_hub.reviewer_models]` overrides the hub model for specific reviewer kinds. Triage uses `triage = "haiku-4.5"` by default in the example config; when unset, triage falls back to the fastest model in the active provider list.
-- Claude and GPT-5.6 models support `default_effort`; Claude receives `--effort <level>` and Codex receives `-c model_reasoning_effort=<level>`.
+- Each model's `effort_levels` metadata is authoritative. `Auto` (the default) omits the override; Claude receives `--effort <level>` and Codex receives `-c model_reasoning_effort=<level>` only for supported levels.
 
 ### `[watched]`
 

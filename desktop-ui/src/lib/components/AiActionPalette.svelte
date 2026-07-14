@@ -138,18 +138,22 @@
     if (!selectedProvider) return;
     selectedModelId = modelId;
     app.cmd("set_ai_selection", { providerId: selectedProvider.id, modelId: modelId });
-    if (!modelSupportsEffort(modelId)) {
+    const model = selectedProvider.models.find((item) => item.id === modelId);
+    if (!modelSupportsEffort(model)) {
       close();
     }
   }
 
   function setEffort(level: string) {
-    void app.cmd("set_ai_effort", { effort: level });
+    void app.cmd("set_ai_effort", { effort: level === "Auto" ? null : level });
   }
 
   const activeAiLabel = $derived(app.snapshot?.active_ai_label ?? "");
   const activeEffort = $derived(app.snapshot?.active_ai_effort ?? null);
-  const effortLevels = $derived(selectedModelId ? effortLevelsForModel(selectedModelId) : []);
+  const selectedModel = $derived(
+    selectedProvider?.models.find((model) => model.id === selectedModelId) ?? null,
+  );
+  const effortLevels = $derived(["Auto", ...effortLevelsForModel(selectedModel)]);
   const showEffortPicker = $derived(subView === "models" && effortLevels.length > 0);
   const reviewerCount = $derived(selectedReviewers.size);
 
@@ -443,7 +447,7 @@
               type="button"
               onclick={() => setEffort(level)}
               class="rounded px-2 py-1 text-[11px] font-medium transition-colors
-                {activeEffort === level
+                {(level === "Auto" ? activeEffort == null : activeEffort === level)
                 ? 'bg-accent text-on-accent'
                 : 'bg-ink-700 text-ink-200 hover:bg-ink-650'}"
             >
