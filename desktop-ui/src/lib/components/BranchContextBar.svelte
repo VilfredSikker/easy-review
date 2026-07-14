@@ -5,6 +5,7 @@
   import { terminal } from "$lib/stores/terminal.svelte";
   import { copyToClipboard } from "$lib/clipboard";
   import { resolveActivePrUrl } from "$lib/prUrl";
+  import { resolveTabRoot } from "$lib/resolveTabRoot";
   import { openExternalUrl } from "$lib/openExternalUrl";
 
   const snapshot = $derived(app.snapshot);
@@ -82,8 +83,8 @@
   }
 
   /** Resolved local worktree path for the active tab. Remote-only PR tabs
-   *  have no local checkout, so `repo_root` is empty and the button hides. */
-  const worktreePath = $derived(activeTab?.repo_root?.trim() || null);
+   *  have no local checkout, so the resolved path is empty and the button hides. */
+  const worktreePath = $derived(resolveTabRoot(snapshot, activeTab) || null);
 
   async function handleWorktreeClick(e: MouseEvent) {
     const path = worktreePath;
