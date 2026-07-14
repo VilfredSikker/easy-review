@@ -10,7 +10,7 @@
 ## AI Hub model refresh
 
 - Refreshed the built-in catalog with Claude Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5, the GPT-5.6 Sol/Terra/Luna family, GPT-5.5, GPT-5.4, GPT-5.4 Mini, and GPT-5.3 Codex Spark.
-- Deprecated built-in entries are no longer advertised; existing user-defined or persisted legacy entries remain untouched.
+- Deprecated built-in entries are no longer advertised; deprecated Claude IDs are also removed from persisted model selections and reviewer assignments, while other user-defined models remain untouched.
 - Added model metadata-driven effort/reasoning controls across Desktop, TUI, the action palette, and Arena. `Auto` omits provider overrides.
 - Added atomic global persistence for provider, model, and effort selections, plus validation before Claude/Codex invocation.
 - Added a triage-model picker in Desktop Settings, with a reset to the fastest available model.
@@ -18,6 +18,7 @@
 ## Highlights
 
 - **Refreshed AI Hub models and effort controls.** The built-in catalog now includes the latest supported Claude and GPT families, while deprecated built-in entries are no longer advertised. Effort and reasoning controls are metadata-driven and consistent across Desktop, TUI, the action palette, and Arena; `Auto` leaves provider-specific overrides unset.
+- **Deprecated Claude selections are cleaned up.** Persisted selections for deprecated Claude models are removed, and a deprecated default automatically falls back to the current catalog default without affecting other custom models.
 - **More reliable GPT reviews.** GPT review configuration and invocation paths now handle the refreshed model metadata and provider settings correctly.
 - **Correct linked-worktree path copying (desktop).** The branch context bar now copies the filesystem path of the selected linked worktree rather than the project root.
 - **Safer macOS DMG packaging.** The staged app is ad-hoc signed and stripped of quarantine metadata before the DMG is created, avoiding the harsher Gatekeeper “damaged” failure for unsigned bundles.
@@ -29,6 +30,7 @@
 
 ### Fixes
 - Fix GPT reviews
+- Remove deprecated Claude models from persisted AI Hub selections
 - Copy the selected linked worktree path from the desktop branch context bar (#138)
 - Ad-hoc sign the app before bundling it into the release DMG
 
