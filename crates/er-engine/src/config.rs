@@ -466,12 +466,29 @@ fn ai_hub_catalog() -> AiHubConfig {
         .unwrap_or_default()
 }
 
+const DEPRECATED_CLAUDE_MODEL_IDS: &[&str] = &["sonnet-4.6", "opus-4.6", "opus-4.7"];
+
 /// Merge missing catalog providers/models into `hub` (in-memory only; does not write config files).
 pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
     let catalog = ai_hub_catalog();
     if hub.providers.is_empty() {
         *hub = catalog;
         return;
+    }
+
+    let deprecated_default = hub
+        .default_model
+        .as_deref()
+        .is_some_and(|id| DEPRECATED_CLAUDE_MODEL_IDS.contains(&id));
+    if let Some(claude) = hub.providers.get_mut("claude") {
+        claude
+            .models
+            .retain(|model| !DEPRECATED_CLAUDE_MODEL_IDS.contains(&model.id.as_str()));
+    }
+    hub.reviewer_models
+        .retain(|_, model_id| !DEPRECATED_CLAUDE_MODEL_IDS.contains(&model_id.as_str()));
+    if deprecated_default {
+        hub.default_model = catalog.default_model.clone();
     }
 
     for (id, catalog_provider) in catalog.providers {
@@ -1829,8 +1846,8 @@ mod tests {
                 "claude".into(),
                 AiProviderConfig {
                     models: vec![AiModelConfig {
-                        id: "sonnet-4.6".into(),
-                        label: Some("Sonnet 4.6".into()),
+                        id: "custom-model".into(),
+                        label: Some("Custom model".into()),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -1859,7 +1876,41 @@ mod tests {
         );
 
         // User-defined models and order are preserved.
-        assert_eq!(claude.models[0].id, "sonnet-4.6");
+        assert_eq!(claude.models[0].id, "custom-model");
+    }
+
+    #[test]
+    fn supplement_ai_hub_removes_deprecated_claude_models() {
+        let mut hub = AiHubConfig {
+            default_model: Some("opus-4.7".into()),
+            providers: BTreeMap::from([(
+                "claude".into(),
+                AiProviderConfig {
+                    models: DEPRECATED_CLAUDE_MODEL_IDS
+                        .iter()
+                        .map(|id| AiModelConfig {
+                            id: (*id).into(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        supplement_ai_hub(&mut hub);
+
+        let claude = hub.providers.get("claude").expect("claude provider");
+        assert!(claude
+            .models
+            .iter()
+            .all(|model| { !DEPRECATED_CLAUDE_MODEL_IDS.contains(&model.id.as_str()) }));
+        assert!(claude.models.iter().any(|model| model.id == "sonnet-5"));
+        assert_eq!(
+            hub.resolve_model_id("claude", None).as_deref(),
+            Some("sonnet-5")
+        );
     }
 
     #[test]
