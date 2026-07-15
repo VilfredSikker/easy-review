@@ -21,9 +21,7 @@ pub struct ConfigPatch {
 pub struct GetConfigHubResponse {
     pub settings: DesktopSettingsSnapshot,
     pub providers: Vec<AiProviderInfo>,
-    pub triage_model_id: Option<String>,
     pub active_effort: Option<String>,
-    pub default_effort: Option<String>,
 }
 
 fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
@@ -69,18 +67,19 @@ fn apply_config_side_effects(app: &mut er_engine::app::App, watched_changed: boo
 
 fn list_providers_inner(app: &er_engine::app::App) -> Vec<AiProviderInfo> {
     let hub = &app.config.ai_hub;
-    let current_provider = app.current_ai_provider.as_deref();
-    let current_model = app.current_ai_model.as_deref();
-    let resolved_provider = hub.resolve_provider_id(current_provider);
+    let selection = hub.resolve_default_selection(&app.config.agent);
+    let resolved_provider = selection.provider_id.as_deref();
 
     hub.providers
         .iter()
         .map(|(id, cfg)| {
-            let resolved_model = hub.resolve_model_id(id, current_model);
+            let resolved_model = (selection.provider_id.as_deref() == Some(id.as_str()))
+                .then(|| selection.model_id.as_deref())
+                .flatten();
             AiProviderInfo {
                 id: id.clone(),
                 label: cfg.display_name(id),
-                is_selected: resolved_provider.as_deref() == Some(id.as_str()),
+                is_selected: resolved_provider == Some(id.as_str()),
                 models: cfg
                     .models
                     .iter()
@@ -100,24 +99,6 @@ fn list_providers_inner(app: &er_engine::app::App) -> Vec<AiProviderInfo> {
         .collect()
 }
 
-fn normalized_default_effort(app: &er_engine::app::App) -> Option<String> {
-    let provider = app
-        .config
-        .ai_hub
-        .resolve_provider_id(app.config.ai_hub.default_provider.as_deref());
-    let model = provider.as_deref().and_then(|id| {
-        app.config
-            .ai_hub
-            .resolve_model_id(id, app.config.ai_hub.default_model.as_deref())
-    });
-    er_engine::config::normalize_effort(
-        &app.config.ai_hub,
-        provider.as_deref(),
-        model.as_deref(),
-        app.config.ai_hub.default_effort.as_deref(),
-    )
-}
-
 #[tauri::command]
 pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
@@ -127,9 +108,7 @@ pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, St
     Ok(GetConfigHubResponse {
         settings,
         providers,
-        triage_model_id: app.config.ai_hub.triage_model_id().map(str::to_string),
         active_effort: app.current_ai_effort.clone(),
-        default_effort: normalized_default_effort(&app),
     })
 }
 
@@ -143,6 +122,7 @@ pub fn apply_config_patch(
     let watched_changed = apply_config_field(&mut app.config, &patch.key, patch.value);
     save_config(&app.config).map_err(|e| e.to_string())?;
     apply_config_side_effects(&mut app, watched_changed);
+    app.sync_ai_selection_from_defaults();
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -151,9 +131,7 @@ pub fn apply_config_patch(
     Ok(GetConfigHubResponse {
         settings,
         providers,
-        triage_model_id: app.config.ai_hub.triage_model_id().map(str::to_string),
         active_effort: app.current_ai_effort.clone(),
-        default_effort: normalized_default_effort(&app),
     })
 }
 
@@ -168,54 +146,4 @@ pub fn save_config_global_cmd(state: State<AppState>) -> Result<AppSnapshot, Str
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(snap_from(&app, &state))
-}
-
-#[tauri::command]
-pub fn set_ai_hub_defaults(
-    provider_id: String,
-    model_id: Option<String>,
-    effort: Option<String>,
-    state: State<AppState>,
-) -> Result<GetConfigHubResponse, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if !app.config.ai_hub.providers.contains_key(&provider_id) {
-        return Err(format!("Unknown provider: {provider_id}"));
-    }
-    if let Some(ref mid) = model_id {
-        let provider = app.config.ai_hub.providers.get(&provider_id).unwrap();
-        if !provider.models.is_empty() && !provider.models.iter().any(|m| &m.id == mid) {
-            return Err(format!(
-                "Unknown model '{mid}' for provider '{provider_id}'"
-            ));
-        }
-    }
-    let normalized_effort = er_engine::config::normalize_effort(
-        &app.config.ai_hub,
-        Some(&provider_id),
-        model_id.as_deref(),
-        effort.as_deref(),
-    );
-    if effort.is_some() && normalized_effort.is_none() {
-        return Err("Effort is unsupported for the selected model".into());
-    }
-    app.config.ai_hub.default_provider = Some(provider_id.clone());
-    app.config.ai_hub.default_model = model_id.clone();
-    app.config.ai_hub.default_effort = normalized_effort.clone();
-    app.current_ai_provider = Some(provider_id);
-    app.current_ai_model = model_id;
-    app.current_ai_effort = normalized_effort;
-    save_config(&app.config).map_err(|e| e.to_string())?;
-    let repo_root = app.tab().repo_root.clone();
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let settings = desktop_settings_snapshot(&app.config, &repo_root);
-    let providers = list_providers_inner(&app);
-    Ok(GetConfigHubResponse {
-        settings,
-        providers,
-        triage_model_id: app.config.ai_hub.triage_model_id().map(str::to_string),
-        active_effort: app.current_ai_effort.clone(),
-        default_effort: normalized_default_effort(&app),
-    })
 }

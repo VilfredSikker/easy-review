@@ -1537,6 +1537,7 @@ impl App {
     /// Cancel the confirm dialog
     pub fn cancel_confirm(&mut self) {
         self.input_mode = InputMode::Normal;
+        self.clear_ai_selection_override();
     }
 
     // ── Hunk Comment (Shift-C) ──
@@ -2221,7 +2222,16 @@ impl App {
         let repo_root = self.tab().repo_root.clone();
         let er_dir_path = self.tab().er_dir();
         let is_remote = self.tab().is_remote();
-        self.sync_ai_selection();
+        let selection = if let Some(selection) = self.pending_ai_selection_override.clone() {
+            selection
+        } else {
+            self.sync_ai_selection();
+            crate::config::AiSelection {
+                provider_id: self.current_ai_provider.clone(),
+                model_id: self.current_ai_model.clone(),
+                effort: self.current_ai_effort.clone(),
+            }
+        };
 
         let (
             agent_cmd,
@@ -2234,7 +2244,7 @@ impl App {
         ) = if let Some(provider_id) = self
             .config
             .ai_hub
-            .resolve_provider_id(self.current_ai_provider.as_deref())
+            .resolve_provider_id(selection.provider_id.as_deref())
         {
             let provider = self
                 .config
@@ -2243,11 +2253,10 @@ impl App {
                 .get(&provider_id)
                 .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
             let mut args = provider.args.clone();
-            let resolved_model_id = self.config.ai_hub.resolve_spawn_model_id(
-                &provider_id,
-                self.current_ai_model.as_deref(),
-                name,
-            );
+            let resolved_model_id = self
+                .config
+                .ai_hub
+                .resolve_model_id(&provider_id, selection.model_id.as_deref());
             if let Some(model_id) = &resolved_model_id {
                 if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
                     args.extend(model.args.clone());
@@ -2278,14 +2287,13 @@ impl App {
                 (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
             )
         };
-        let effort_override = if name == "triage" { Some("low") } else { None };
         let effort = crate::config::resolve_effort_for_model(
             &self.config.ai_hub,
             &self.config.agent,
             resolved_provider_id.as_deref(),
             resolved_model_id.as_deref(),
-            self.current_ai_effort.as_deref(),
-            effort_override,
+            selection.effort.as_deref(),
+            None,
         );
         crate::config::inject_provider_effort(
             &agent_cmd,
@@ -2296,6 +2304,7 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
+        crate::config::inject_agent_storage_access(&agent_cmd, &mut config_args);
 
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
@@ -2542,7 +2551,7 @@ impl App {
         )
     }
 
-    /// Spawn triage scan (`kind` = `triage`). Uses fast model from `[ai_hub.reviewer_models]`.
+    /// Spawn triage scan (`kind` = `triage`) using the shared default model.
     pub fn spawn_background_triage_review(
         &mut self,
         target: super::background::BackgroundTaskTarget,
@@ -2599,6 +2608,7 @@ impl App {
             command_name: command_name.to_string(),
             prompt,
             prepared_diff,
+            ai_selection: self.pending_ai_selection_override.clone(),
         };
 
         let cap = self.config.ai_hub.effective_max_concurrent_reviews();
@@ -2627,15 +2637,22 @@ impl App {
             command_name,
             prompt,
             prepared_diff,
+            ai_selection,
         } = pending;
         let command_name = command_name.as_str();
-        let kind = task.kind.clone();
         let target = task.target.clone();
         // The task may have waited in the queue; report runtime from launch.
         // The id (assigned at enqueue) stays stable so UI pills don't jump.
         task.started_at_ms = super::background::unix_now_ms();
 
-        self.sync_ai_selection();
+        let selection = ai_selection.unwrap_or_else(|| {
+            self.sync_ai_selection();
+            crate::config::AiSelection {
+                provider_id: self.current_ai_provider.clone(),
+                model_id: self.current_ai_model.clone(),
+                effort: self.current_ai_effort.clone(),
+            }
+        });
 
         let (
             agent_cmd,
@@ -2648,7 +2665,7 @@ impl App {
         ) = if let Some(provider_id) = self
             .config
             .ai_hub
-            .resolve_provider_id(self.current_ai_provider.as_deref())
+            .resolve_provider_id(selection.provider_id.as_deref())
         {
             let provider = self
                 .config
@@ -2657,11 +2674,10 @@ impl App {
                 .get(&provider_id)
                 .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
             let mut args = provider.args.clone();
-            let resolved_model_id = self.config.ai_hub.resolve_spawn_model_id(
-                &provider_id,
-                self.current_ai_model.as_deref(),
-                &kind,
-            );
+            let resolved_model_id = self
+                .config
+                .ai_hub
+                .resolve_model_id(&provider_id, selection.model_id.as_deref());
             if let Some(model_id) = &resolved_model_id {
                 if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
                     args.extend(model.args.clone());
@@ -2692,14 +2708,13 @@ impl App {
                 (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
             )
         };
-        let effort_override = if kind == "triage" { Some("low") } else { None };
         let effort = crate::config::resolve_effort_for_model(
             &self.config.ai_hub,
             &self.config.agent,
             resolved_provider_id.as_deref(),
             resolved_model_id.as_deref(),
-            self.current_ai_effort.as_deref(),
-            effort_override,
+            selection.effort.as_deref(),
+            None,
         );
         crate::config::inject_provider_effort(
             &agent_cmd,
@@ -2710,6 +2725,7 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
+        crate::config::inject_agent_storage_access(&agent_cmd, &mut config_args);
 
         std::fs::create_dir_all(&target.er_dir)?;
 
@@ -3211,7 +3227,7 @@ impl App {
 #[cfg(test)]
 mod background_queue_tests {
     use crate::app::{App, BackgroundTaskTarget};
-    use crate::config::{AiModelConfig, AiProviderConfig};
+    use crate::config::{AiModelConfig, AiProviderConfig, AiSelection};
 
     fn target(tmp: &std::path::Path, branch: &str) -> BackgroundTaskTarget {
         BackgroundTaskTarget {
@@ -3255,11 +3271,24 @@ mod background_queue_tests {
 
         app.spawn_background_triage_review(target(&tmp, "feat-a"), "p".into(), true)
             .unwrap();
+        app.set_ai_selection_override(AiSelection {
+            provider_id: Some("codex".into()),
+            model_id: Some("gpt-5.3-codex-spark".into()),
+            effort: None,
+        });
         app.spawn_background_triage_review(target(&tmp, "feat-b"), "p".into(), true)
             .unwrap();
+        app.clear_ai_selection_override();
 
         assert_eq!(app.running_background_task_count(), 1, "cap of 1 enforced");
         assert_eq!(app.pending_background_tasks.len(), 1, "second task queued");
+        assert_eq!(
+            app.pending_background_tasks[0]
+                .ai_selection
+                .as_ref()
+                .and_then(|selection| selection.model_id.as_deref()),
+            Some("gpt-5.3-codex-spark")
+        );
 
         // Same kind+target as the queued task is rejected as a duplicate.
         let dup = app.spawn_background_triage_review(target(&tmp, "feat-b"), "p".into(), true);

@@ -1,6 +1,8 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::config::{agent_command_uses_stream_json, inject_provider_effort, ErConfig};
+use crate::config::{
+    agent_command_uses_stream_json, inject_agent_storage_access, inject_provider_effort, ErConfig,
+};
 use std::process::Command;
 
 /// Resolved agent command + args for a card AI subprocess.
@@ -66,6 +68,7 @@ pub fn plan_card_ai_invocation(
         resolved_model_id.as_deref(),
         effort.as_deref(),
     );
+    inject_agent_storage_access(&command, &mut args);
 
     CardAiInvocation {
         command,
@@ -278,6 +281,10 @@ mod tests {
         let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
         assert!(inv.args.iter().any(|a| a == "Read"));
         assert!(inv.args.iter().any(|a| a.contains("grep")));
+        assert!(inv.args.windows(2).any(|pair| {
+            pair[0] == "--add-dir"
+                && pair[1] == crate::storage::storage_root().to_string_lossy().as_ref()
+        }));
     }
 
     #[test]
@@ -312,5 +319,44 @@ mod tests {
             .args
             .windows(2)
             .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=high" }));
+        assert!(inv.args.windows(2).any(|pair| {
+            pair[0] == "--add-dir"
+                && pair[1] == crate::storage::storage_root().to_string_lossy().as_ref()
+        }));
+    }
+
+    #[test]
+    fn plan_card_ai_uses_the_shared_default_model() {
+        let mut config = ErConfig::default();
+        config.ai_hub.default_provider = Some("codex".into());
+        config.ai_hub.default_model = Some("gpt-5.6-luna".into());
+        config.ai_hub.providers.insert(
+            "codex".into(),
+            crate::config::AiProviderConfig {
+                models: vec![
+                    crate::config::AiModelConfig {
+                        id: "gpt-5.6-luna".into(),
+                        args: vec!["--model".into(), "gpt-5.6-luna".into()],
+                        ..Default::default()
+                    },
+                    crate::config::AiModelConfig {
+                        id: "gpt-5.3-codex-spark".into(),
+                        args: vec!["--model".into(), "gpt-5.3-codex-spark".into()],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        let inv = plan_card_ai_invocation(&config, Some("codex"), None, None, "/repo".into());
+        assert!(inv
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == "gpt-5.6-luna"));
+        assert!(!inv
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == "gpt-5.3-codex-spark"));
     }
 }

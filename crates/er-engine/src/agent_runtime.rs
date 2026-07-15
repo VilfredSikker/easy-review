@@ -72,23 +72,6 @@ impl AgentTaskKind {
         }
     }
 
-    pub fn model_task_kind(&self) -> &str {
-        match self {
-            Self::Review => "review",
-            Self::Expert(_) => "expert",
-            Self::Professor => "professor",
-            Self::Triage => "triage",
-            Self::Tour { .. } => "tour",
-            Self::Questions => "questions",
-            Self::Summary => "summary",
-            Self::ValidateReview => "validate",
-            Self::ValidateComments => "validate-comments",
-            Self::CardReply => "card",
-            Self::ArenaRound => "arena",
-            Self::Other(name) => name,
-        }
-    }
-
     pub fn artifact_contract(&self) -> ArtifactContract {
         match self {
             Self::Review => ArtifactContract::Review,
@@ -204,7 +187,6 @@ pub enum AgentSelection<'a> {
     Runtime {
         provider_id: Option<&'a str>,
         model_id: Option<&'a str>,
-        task_aware: bool,
     },
     Exact {
         provider_id: &'a str,
@@ -231,7 +213,6 @@ pub fn resolve_invocation(
         AgentSelection::Runtime {
             provider_id,
             model_id,
-            task_aware,
         } => {
             if let Some(pid) = config.ai_hub.resolve_provider_id(provider_id) {
                 let provider = config
@@ -240,15 +221,7 @@ pub fn resolve_invocation(
                     .get(&pid)
                     .with_context(|| format!("unknown provider: {pid}"))?;
                 let mut args = provider.args.clone();
-                let resolved_model = if task_aware {
-                    config.ai_hub.resolve_spawn_model_id(
-                        &pid,
-                        model_id,
-                        request.task.model_task_kind(),
-                    )
-                } else {
-                    config.ai_hub.resolve_model_id(&pid, model_id)
-                };
+                let resolved_model = config.ai_hub.resolve_model_id(&pid, model_id);
                 if let Some(model_id) = &resolved_model {
                     if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
                         args.extend(model.args.clone());
@@ -288,6 +261,7 @@ pub fn resolve_invocation(
     if family == CliFamily::Claude {
         inject_allowed_tools(&mut args, request.access.claude_tools());
     }
+    crate::config::inject_agent_storage_access(&command, &mut args);
     if family == CliFamily::Codex {
         if let Some(output_dir) = request.access.output_dir() {
             inject_codex_writable_dir(&mut args, output_dir);
@@ -750,7 +724,6 @@ mod tests {
             selection: AgentSelection::Runtime {
                 provider_id: Some("codex"),
                 model_id: Some("gpt-5.4"),
-                task_aware: true,
             },
             task: &task,
             effort: None,
@@ -783,7 +756,6 @@ mod tests {
                 selection: AgentSelection::Runtime {
                     provider_id: Some("codex"),
                     model_id: Some("gpt-5.6-sol"),
-                    task_aware: true,
                 },
                 task: &task,
                 effort: Some("high"),
@@ -812,7 +784,6 @@ mod tests {
                 selection: AgentSelection::Runtime {
                     provider_id: Some("codex"),
                     model_id: Some("gpt-5.4"),
-                    task_aware: true,
                 },
                 task: &task,
                 effort: Some("high"),
@@ -830,6 +801,75 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_tour_and_triage_use_the_configured_default_model() {
+        let mut config = codex_config();
+        config.ai_hub.default_model = Some("gpt-5.6-luna".into());
+
+        for task in [
+            AgentTaskKind::Tour {
+                filename: "tour.json".into(),
+            },
+            AgentTaskKind::Triage,
+        ] {
+            let invocation = resolve_invocation(
+                &config,
+                AgentInvocationRequest {
+                    selection: AgentSelection::Runtime {
+                        provider_id: Some("codex"),
+                        model_id: None,
+                    },
+                    task: &task,
+                    effort: None,
+                    effort_override: None,
+                    work_dir: "/repo".into(),
+                    access: AgentAccessProfile::ReadOnly,
+                    live_logs: false,
+                },
+            )
+            .unwrap();
+            assert!(has_option_value(
+                &invocation.args,
+                "--model",
+                "gpt-5.6-luna"
+            ));
+            assert!(!has_option_value(
+                &invocation.args,
+                "--model",
+                "gpt-5.3-codex-spark"
+            ));
+        }
+    }
+
+    #[test]
+    fn explicit_runtime_model_overrides_the_default_for_one_invocation() {
+        let mut config = codex_config();
+        config.ai_hub.default_model = Some("gpt-5.6-luna".into());
+        let task = AgentTaskKind::Review;
+        let invocation = resolve_invocation(
+            &config,
+            AgentInvocationRequest {
+                selection: AgentSelection::Runtime {
+                    provider_id: Some("codex"),
+                    model_id: Some("gpt-5.5"),
+                },
+                task: &task,
+                effort: None,
+                effort_override: None,
+                work_dir: "/repo".into(),
+                access: AgentAccessProfile::ReadOnly,
+                live_logs: false,
+            },
+        )
+        .unwrap();
+        assert!(has_option_value(&invocation.args, "--model", "gpt-5.5"));
+        assert!(!has_option_value(
+            &invocation.args,
+            "--model",
+            "gpt-5.6-luna"
+        ));
+    }
+
+    #[test]
     fn codex_card_prompt_combines_system_without_claude_flag() {
         let config = codex_config();
         let task = AgentTaskKind::CardReply;
@@ -839,7 +879,6 @@ mod tests {
                 selection: AgentSelection::Runtime {
                     provider_id: Some("codex"),
                     model_id: Some("gpt-5.4"),
-                    task_aware: false,
                 },
                 task: &task,
                 effort: None,
@@ -874,7 +913,6 @@ mod tests {
                 selection: AgentSelection::Runtime {
                     provider_id: Some("claude"),
                     model_id: Some("sonnet-5"),
-                    task_aware: true,
                 },
                 task: &task,
                 effort: Some("high"),

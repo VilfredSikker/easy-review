@@ -1,5 +1,6 @@
 use crate::config::{
-    agent_command_is_codex, inject_codex_ignore_user_config, inject_provider_effort, AiHubConfig,
+    agent_command_is_codex, inject_agent_storage_access, inject_codex_ignore_user_config,
+    inject_provider_effort, AiHubConfig,
 };
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -48,6 +49,7 @@ pub fn resolve_provider_command(
     if agent_command_is_codex(&provider.command) {
         inject_codex_ignore_user_config(&mut args);
     }
+    inject_agent_storage_access(&provider.command, &mut args);
     Ok(ProviderCommand {
         command: provider.command.clone(),
         args,
@@ -333,7 +335,6 @@ mod tests {
         let cmd = resolve_provider_command(&hub, "codex", "gpt-5.5", None).unwrap();
 
         assert_eq!(cmd.args[0], "exec");
-        assert_eq!(cmd.args[1], "--ignore-user-config");
         assert_eq!(
             cmd.args
                 .iter()
@@ -341,6 +342,10 @@ mod tests {
                 .count(),
             1
         );
+        assert!(cmd.args.windows(2).any(|pair| {
+            pair[0] == "--add-dir"
+                && pair[1] == crate::storage::storage_root().to_string_lossy().as_ref()
+        }));
     }
 
     #[test]

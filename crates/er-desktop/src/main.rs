@@ -1862,7 +1862,6 @@ fn main() {
             config_commands::get_config_hub,
             config_commands::apply_config_patch,
             config_commands::save_config_global_cmd,
-            config_commands::set_ai_hub_defaults,
             commands::set_ai_effort,
             commands::promote_to_comment,
             commands::promote_to_note,

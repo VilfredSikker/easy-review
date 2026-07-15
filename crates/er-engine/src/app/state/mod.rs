@@ -4438,6 +4438,10 @@ pub struct App {
     /// Session-local Claude Code effort level (`low` … `max`).
     pub current_ai_effort: Option<String>,
 
+    /// Ephemeral selection for the next TUI action. Action-bound model picks
+    /// use this without changing the shared default.
+    pending_ai_selection_override: Option<crate::config::AiSelection>,
+
     /// Pending action from a modal hub selection (consumed by the event loop)
     pub pending_hub_action: Option<HubAction>,
 
@@ -4478,26 +4482,15 @@ impl App {
     }
 
     fn initial_ai_selection(config: &ErConfig) -> (Option<String>, Option<String>) {
-        let provider = config.ai_hub.resolve_provider_id(None);
-        let model = provider
-            .as_deref()
-            .and_then(|provider_id| config.ai_hub.resolve_model_id(provider_id, None));
-        (provider, model)
+        let selection = config.ai_hub.resolve_default_selection(&config.agent);
+        (selection.provider_id, selection.model_id)
     }
 
     fn initial_ai_effort(config: &ErConfig) -> Option<String> {
-        let provider = config.ai_hub.resolve_provider_id(None);
-        let model = provider
-            .as_deref()
-            .and_then(|provider_id| config.ai_hub.resolve_model_id(provider_id, None));
-        crate::config::resolve_effort_for_model(
-            &config.ai_hub,
-            &config.agent,
-            provider.as_deref(),
-            model.as_deref(),
-            None,
-            None,
-        )
+        config
+            .ai_hub
+            .resolve_default_selection(&config.agent)
+            .effort
     }
 
     /// Create the app from CLI path arguments.
@@ -4572,6 +4565,7 @@ impl App {
             current_ai_provider,
             current_ai_model,
             current_ai_effort,
+            pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
@@ -4614,6 +4608,7 @@ impl App {
             current_ai_provider,
             current_ai_model,
             current_ai_effort,
+            pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
@@ -4649,6 +4644,7 @@ impl App {
             current_ai_provider,
             current_ai_model,
             current_ai_effort,
+            pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
@@ -4679,6 +4675,7 @@ impl App {
             current_ai_provider: None,
             current_ai_model: None,
             current_ai_effort: None,
+            pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),
@@ -4712,13 +4709,53 @@ impl App {
         );
     }
 
+    /// Validate and apply a standalone provider/model choice to the shared
+    /// in-memory default. TUI persists it when the config hub is saved.
+    pub fn set_ai_default_selection(
+        &mut self,
+        provider_id: &str,
+        model_id: Option<&str>,
+    ) -> Result<()> {
+        let agent = self.config.agent.clone();
+        let selection = self
+            .config
+            .ai_hub
+            .set_default_selection(provider_id, model_id, &agent)?;
+        self.current_ai_provider = selection.provider_id;
+        self.current_ai_model = selection.model_id;
+        self.current_ai_effort = selection.effort;
+        Ok(())
+    }
+
+    /// Resolve an action-bound selection without mutating the shared default.
+    pub fn resolve_ai_selection_override(
+        &self,
+        provider_id: &str,
+        model_id: Option<&str>,
+    ) -> Result<crate::config::AiSelection> {
+        let mut hub = self.config.ai_hub.clone();
+        let agent = self.config.agent.clone();
+        hub.set_default_selection(provider_id, model_id, &agent)
+    }
+
+    pub fn set_ai_selection_override(&mut self, selection: crate::config::AiSelection) {
+        self.pending_ai_selection_override = Some(selection);
+    }
+
+    pub fn clear_ai_selection_override(&mut self) {
+        self.pending_ai_selection_override = None;
+    }
+
     /// Make the session follow the persisted global hub defaults after a
     /// settings change.
     pub fn sync_ai_selection_from_defaults(&mut self) {
-        self.current_ai_provider = self.config.ai_hub.default_provider.clone();
-        self.current_ai_model = self.config.ai_hub.default_model.clone();
-        self.current_ai_effort = self.config.ai_hub.default_effort.clone();
-        self.sync_ai_selection();
+        let selection = self
+            .config
+            .ai_hub
+            .resolve_default_selection(&self.config.agent);
+        self.current_ai_provider = selection.provider_id;
+        self.current_ai_model = selection.model_id;
+        self.current_ai_effort = selection.effort;
     }
 
     pub fn active_ai_selection_label(&self) -> String {
@@ -4817,11 +4854,13 @@ impl App {
         };
 
         if provider.models.is_empty() {
-            self.current_ai_provider = Some(provider_id);
-            self.current_ai_model = None;
             if let Some(action) = action {
                 self.pending_hub_action = Some(HubAction::RunAiAction(action));
             } else {
+                if self.set_ai_default_selection(&provider_id, None).is_err() {
+                    self.notify("Unknown AI provider");
+                    return;
+                }
                 self.notify(&format!("AI target: {}", self.active_ai_selection_label()));
             }
             return;
@@ -5250,7 +5289,7 @@ impl App {
                 label: "Triage branch".into(),
                 hint: "".into(),
                 description: format!(
-                    "Fast scan — first impression and review routing via {selection_label} (Haiku-class model)"
+                    "Fast scan — first impression and review routing via {selection_label}"
                 ),
                 action: HubAction::RunTriageReview,
                 is_header: false,
@@ -5353,7 +5392,7 @@ impl App {
                 label: "Copy review.json".into(),
                 hint: "".into(),
                 description: if has_review {
-                    "Copy .er/review.json to clipboard".into()
+                    "Copy review.json to clipboard".into()
                 } else {
                     "No review data — run a review first".into()
                 },
@@ -5365,7 +5404,7 @@ impl App {
                 label: "Copy questions.json".into(),
                 hint: "".into(),
                 description: if has_questions {
-                    "Copy .er/questions.json to clipboard".into()
+                    "Copy questions.json to clipboard".into()
                 } else {
                     "No questions — add some with q first".into()
                 },
@@ -5417,7 +5456,7 @@ impl App {
                 label: "Cleanup questions & notes".into(),
                 hint: "z".into(),
                 description: if has_questions_or_notes {
-                    "Delete .er/questions.json + notes.json".into()
+                    "Delete questions.json + notes.json".into()
                 } else {
                     "no questions or notes to clean up".into()
                 },
@@ -5429,7 +5468,7 @@ impl App {
                 label: "Cleanup reviews".into(),
                 hint: "Z".into(),
                 description: if has_review {
-                    "Delete .er/review.json".into()
+                    "Delete review sidecars (review.json, …)".into()
                 } else {
                     "no review data to clean up".into()
                 },
@@ -8638,6 +8677,7 @@ mod tests {
             current_ai_provider: None,
             current_ai_model: None,
             current_ai_effort: None,
+            pending_ai_selection_override: None,
             pending_hub_action: None,
             last_terminal_width: 0,
             panels_visible: PanelsVisible::default(),

@@ -664,9 +664,7 @@ export interface DesktopSettingsSnapshot {
 export interface GetConfigHubResponse {
   settings: DesktopSettingsSnapshot;
   providers: AiProviderInfo[];
-  triageModelId: string | null;
   activeEffort: string | null;
-  defaultEffort: string | null;
 }
 
 export interface FeatureFlagsSnapshot {

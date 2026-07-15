@@ -49,9 +49,6 @@ default_model = "sonnet-5"
 # Optional global effort/reasoning override; omit or use Auto in the UI for provider default.
 # default_effort = "high"
 
-[ai_hub.reviewer_models]
-triage = "haiku-4.5"
-
 [ai_hub.providers.claude]
 label = "Claude"
 command = "claude"

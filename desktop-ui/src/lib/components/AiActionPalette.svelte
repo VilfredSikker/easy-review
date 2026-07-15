@@ -187,7 +187,7 @@
       id: "triage-current",
       label: "Triage branch",
       description: reviewScope
-        ? "Fast scan — first impression and review routing (Haiku-class model)"
+        ? "Fast scan — first impression and review routing (uses the default model)"
         : "Not available in this view",
       run: () => {
         if (!reviewScope) return;

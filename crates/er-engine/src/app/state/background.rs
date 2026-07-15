@@ -128,6 +128,10 @@ pub(crate) struct PendingBackgroundTask {
     pub command_name: String,
     pub prompt: String,
     pub prepared_diff: bool,
+    /// Optional action-bound provider/model/effort selection. This is captured
+    /// when a TUI action is queued so it cannot leak into later actions or be
+    /// replaced by a changed global default before launch.
+    pub ai_selection: Option<crate::config::AiSelection>,
 }
 
 /// In-flight + recently finished background task channels. The `App` owns
