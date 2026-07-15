@@ -60,7 +60,7 @@ args = ["--print", "-p", "{prompt}"]    # Arguments ({prompt} is replaced)
 
 ### `[ai_hub]`
 
-Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, and Cursor. Desktop Settings persists the selected default immediately; the TUI persists it when you save General settings.
+Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, and Cursor. Desktop Settings persists the selected default immediately; the AI action palette keeps mid-session picks session-only. The TUI persists defaults when you save General settings.
 
 ```toml
 [ai_hub]
@@ -163,7 +163,7 @@ Rules:
 - On load, `er` merges missing current built-in catalog models into your config in memory without rewriting your TOML file; unknown legacy reviewer-model entries are ignored and disappear the next time the config is saved.
 - The selected default provider/model is used by every ordinary AI Hub action, including review, triage, tours, experts, Professor, validation, questions, summary, and card AI. An explicit model selected for a single review run overrides it only for that run.
 - Each model's `effort_levels` metadata is authoritative. `Auto` (the default) omits the override; Claude receives `--effort <level>` and Codex receives `-c model_reasoning_effort=<level>` only for supported levels.
-- Built-in Claude, Codex, and Cursor Agent launches receive the managed storage root as an additional read/write directory. On macOS this is `~/Library/Application Support/easy-review/`; custom provider commands are not given unknown CLI flags.
+- Built-in Claude, Codex, and Cursor Agent launches that write review sidecars receive the active review bucket (`er_dir`) as an additional directory via `--add-dir` — not the global storage root. Codex treats that path as writable under `workspace-write`. Custom provider commands are not given unknown CLI flags.
 
 ### `[watched]`
 

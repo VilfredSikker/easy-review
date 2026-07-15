@@ -30,6 +30,7 @@ pub fn resolve_provider_command(
     provider_id: &str,
     model_id: &str,
     effort: Option<&str>,
+    storage_dir: Option<&str>,
 ) -> Result<ProviderCommand> {
     let provider = hub
         .providers
@@ -49,7 +50,7 @@ pub fn resolve_provider_command(
     if agent_command_is_codex(&provider.command) {
         inject_codex_ignore_user_config(&mut args);
     }
-    inject_agent_storage_access(&provider.command, &mut args);
+    inject_agent_storage_access(&provider.command, &mut args, storage_dir);
     Ok(ProviderCommand {
         command: provider.command.clone(),
         args,
@@ -317,6 +318,7 @@ mod tests {
 
     #[test]
     fn codex_provider_command_ignores_user_config() {
+        const DIR: &str = "/managed/repos/demo/branches/main/view-buckets/branch";
         let mut hub = AiHubConfig::default();
         hub.providers.insert(
             "codex".to_string(),
@@ -332,7 +334,7 @@ mod tests {
             },
         );
 
-        let cmd = resolve_provider_command(&hub, "codex", "gpt-5.5", None).unwrap();
+        let cmd = resolve_provider_command(&hub, "codex", "gpt-5.5", None, Some(DIR)).unwrap();
 
         assert_eq!(cmd.args[0], "exec");
         assert_eq!(
@@ -342,10 +344,31 @@ mod tests {
                 .count(),
             1
         );
-        assert!(cmd.args.windows(2).any(|pair| {
-            pair[0] == "--add-dir"
-                && pair[1] == crate::storage::storage_root().to_string_lossy().as_ref()
-        }));
+        assert!(cmd
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--add-dir" && pair[1] == DIR));
+    }
+
+    #[test]
+    fn codex_provider_command_skips_storage_without_dir() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "codex".to_string(),
+            crate::config::AiProviderConfig {
+                command: "codex".to_string(),
+                args: vec!["exec".to_string(), "{prompt}".to_string()],
+                models: vec![crate::config::AiModelConfig {
+                    id: "gpt-5.5".to_string(),
+                    args: vec!["--model".to_string(), "gpt-5.5".to_string()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let cmd = resolve_provider_command(&hub, "codex", "gpt-5.5", None, None).unwrap();
+        assert!(!cmd.args.iter().any(|arg| arg.contains("--add-dir")));
     }
 
     #[test]

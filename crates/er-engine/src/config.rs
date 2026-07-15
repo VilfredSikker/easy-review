@@ -556,15 +556,20 @@ pub fn agent_command_is_cursor(command: &str) -> bool {
     command == "agent" || command.ends_with("/agent")
 }
 
-/// Allow built-in agent CLIs to read and write Easy Review's managed storage.
+/// Allow built-in agent CLIs to access a specific Easy Review storage directory.
 ///
 /// Managed sidecars normally live outside the repository, so a child CLI with
 /// a workspace sandbox cannot reach them through its current working directory.
-/// The supported CLIs all expose `--add-dir`; passing the storage root grants
-/// access to its descendants without making the directory globally writable.
-/// Unknown/custom provider commands are left unchanged because their command
-/// line contracts are not known to us.
-pub fn inject_agent_storage_access(command: &str, args: &mut Vec<String>) {
+/// Callers must pass the active review bucket (`er_dir`), never the global
+/// storage root — Codex `--add-dir` under `workspace-write` makes that path
+/// writable. Pass `None` for read-only invocations or when artifacts already
+/// live inside the worktree. Unknown/custom provider commands are left
+/// unchanged because their command line contracts are not known to us.
+pub fn inject_agent_storage_access(
+    command: &str,
+    args: &mut Vec<String>,
+    storage_dir: Option<&str>,
+) {
     if !(agent_command_is_claude(command)
         || agent_command_is_codex(command)
         || agent_command_is_cursor(command))
@@ -572,9 +577,10 @@ pub fn inject_agent_storage_access(command: &str, args: &mut Vec<String>) {
         return;
     }
 
-    let storage_dir = crate::storage::storage_root()
-        .to_string_lossy()
-        .into_owned();
+    let Some(directory) = storage_dir.map(str::trim).filter(|dir| !dir.is_empty()) else {
+        return;
+    };
+
     let insert_at = if agent_command_is_codex(command) {
         args.iter()
             .position(|arg| arg == "exec")
@@ -582,15 +588,27 @@ pub fn inject_agent_storage_access(command: &str, args: &mut Vec<String>) {
             .or_else(|| args.iter().position(|arg| arg.contains("{prompt}")))
             .unwrap_or(args.len())
     } else {
-        // Claude accepts multiple values for --add-dir. Put the next option
-        // immediately after the directory so the eventual prompt cannot be
-        // consumed as another directory.
-        0
+        // Insert before the first dashed option so a bare `{prompt}` token is
+        // never treated as another `--add-dir` value. Prefer the `=` form for
+        // Claude/Cursor so multi-value `--add-dir` cannot swallow the next arg.
+        args.iter()
+            .position(|arg| arg.starts_with('-'))
+            .unwrap_or(0)
     };
-    inject_additional_dir(args, &storage_dir, insert_at);
+
+    if agent_command_is_codex(command) {
+        inject_additional_dir(args, directory, insert_at, false);
+    } else {
+        inject_additional_dir(args, directory, insert_at, true);
+    }
 }
 
-fn inject_additional_dir(args: &mut Vec<String>, directory: &str, insert_at: usize) {
+fn inject_additional_dir(
+    args: &mut Vec<String>,
+    directory: &str,
+    insert_at: usize,
+    equals_form: bool,
+) {
     if args
         .windows(2)
         .any(|pair| pair[0] == "--add-dir" && pair[1] == directory)
@@ -601,8 +619,12 @@ fn inject_additional_dir(args: &mut Vec<String>, directory: &str, insert_at: usi
         return;
     }
 
-    args.insert(insert_at, directory.to_string());
-    args.insert(insert_at, "--add-dir".to_string());
+    if equals_form {
+        args.insert(insert_at, format!("--add-dir={directory}"));
+    } else {
+        args.insert(insert_at, directory.to_string());
+        args.insert(insert_at, "--add-dir".to_string());
+    }
 }
 
 /// App-launched Codex runs should be hermetic from user plugins/MCP hooks.
@@ -1874,9 +1896,7 @@ mod tests {
 
     #[test]
     fn supported_agent_commands_receive_managed_storage_access_once() {
-        let expected_dir = crate::storage::storage_root()
-            .to_string_lossy()
-            .into_owned();
+        const DIR: &str = "/managed/repos/demo/branches/main/view-buckets/branch";
 
         for command in ["claude", "codex", "agent"] {
             let mut args = match command {
@@ -1892,30 +1912,70 @@ mod tests {
                     "{prompt}".to_string(),
                 ],
             };
-            inject_agent_storage_access(command, &mut args);
-            inject_agent_storage_access(command, &mut args);
+            inject_agent_storage_access(command, &mut args, Some(DIR));
+            inject_agent_storage_access(command, &mut args, Some(DIR));
 
+            let add_dir_count = args
+                .windows(2)
+                .filter(|pair| pair[0] == "--add-dir" && pair[1] == DIR)
+                .count()
+                + args
+                    .iter()
+                    .filter(|arg| arg.as_str() == &format!("--add-dir={DIR}"))
+                    .count();
             assert_eq!(
-                args.windows(2)
-                    .filter(|pair| pair[0] == "--add-dir" && pair[1] == expected_dir)
-                    .count(),
-                1,
+                add_dir_count, 1,
                 "managed storage should be added once for {command}"
             );
-            let add_dir_index = args.iter().position(|arg| arg == "--add-dir").unwrap();
             if command == "codex" {
+                let add_dir_index = args.iter().position(|arg| arg == "--add-dir").unwrap();
                 assert_eq!(add_dir_index, 1);
+                assert!(add_dir_index < args.iter().position(|arg| arg == "{prompt}").unwrap());
             } else {
-                assert_eq!(add_dir_index, 0);
+                assert_eq!(args[0], format!("--add-dir={DIR}"));
+                assert!(args.iter().any(|arg| arg == "{prompt}"));
             }
-            assert!(add_dir_index < args.iter().position(|arg| arg == "{prompt}").unwrap());
         }
+    }
+
+    #[test]
+    fn storage_access_skipped_without_directory() {
+        let mut args = vec![
+            "exec".to_string(),
+            "--sandbox".to_string(),
+            "workspace-write".to_string(),
+            "{prompt}".to_string(),
+        ];
+        inject_agent_storage_access("codex", &mut args, None);
+        inject_agent_storage_access("codex", &mut args, Some(""));
+        assert!(!args.iter().any(|arg| arg.contains("--add-dir")));
+    }
+
+    #[test]
+    fn claude_add_dir_does_not_swallow_bare_prompt() {
+        let mut args = vec!["{prompt}".to_string()];
+        inject_agent_storage_access(
+            "claude",
+            &mut args,
+            Some("/managed/repos/demo/view-buckets/branch"),
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--add-dir=/managed/repos/demo/view-buckets/branch".to_string(),
+                "{prompt}".to_string(),
+            ]
+        );
     }
 
     #[test]
     fn custom_agent_commands_do_not_receive_unknown_flags() {
         let mut args = vec!["{prompt}".to_string()];
-        inject_agent_storage_access("my-custom-provider", &mut args);
+        inject_agent_storage_access(
+            "my-custom-provider",
+            &mut args,
+            Some("/managed/repos/demo"),
+        );
         assert_eq!(args, vec!["{prompt}".to_string()]);
     }
 

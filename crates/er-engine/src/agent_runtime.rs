@@ -261,7 +261,13 @@ pub fn resolve_invocation(
     if family == CliFamily::Claude {
         inject_allowed_tools(&mut args, request.access.claude_tools());
     }
-    crate::config::inject_agent_storage_access(&command, &mut args);
+    // Only grant managed-storage --add-dir when the task needs artifact I/O.
+    // ReadOnly must not receive a Codex-writable extra root.
+    crate::config::inject_agent_storage_access(
+        &command,
+        &mut args,
+        request.access.output_dir(),
+    );
     if family == CliFamily::Codex {
         if let Some(output_dir) = request.access.output_dir() {
             inject_codex_writable_dir(&mut args, output_dir);

@@ -1,7 +1,7 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
 use crate::config::{
-    agent_command_uses_stream_json, inject_agent_storage_access, inject_provider_effort, ErConfig,
+    agent_command_uses_stream_json, inject_provider_effort, ErConfig,
 };
 use std::process::Command;
 
@@ -68,7 +68,8 @@ pub fn plan_card_ai_invocation(
         resolved_model_id.as_deref(),
         effort.as_deref(),
     );
-    inject_agent_storage_access(&command, &mut args);
+    // Card AI returns text on stdout; the host persists replies. No managed
+    // storage --add-dir is required (and would be overly broad for Codex).
 
     CardAiInvocation {
         command,
@@ -323,10 +324,7 @@ mod tests {
         let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
         assert!(inv.args.iter().any(|a| a == "Read"));
         assert!(inv.args.iter().any(|a| a.contains("grep")));
-        assert!(inv.args.windows(2).any(|pair| {
-            pair[0] == "--add-dir"
-                && pair[1] == crate::storage::storage_root().to_string_lossy().as_ref()
-        }));
+        assert!(!inv.args.iter().any(|a| a.contains("--add-dir")));
     }
 
     #[test]
@@ -361,10 +359,7 @@ mod tests {
             .args
             .windows(2)
             .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=high" }));
-        assert!(inv.args.windows(2).any(|pair| {
-            pair[0] == "--add-dir"
-                && pair[1] == crate::storage::storage_root().to_string_lossy().as_ref()
-        }));
+        assert!(!inv.args.iter().any(|a| a.contains("--add-dir")));
     }
 
     #[test]

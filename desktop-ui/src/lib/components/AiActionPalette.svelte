@@ -123,7 +123,7 @@
 
   function selectProvider(provider: AiProviderInfo) {
     if (provider.models.length === 0) {
-      app.cmd("set_ai_selection", { providerId: provider.id, modelId: null });
+      app.cmd("set_ai_selection", { providerId: provider.id, modelId: null, persist: false });
       close();
     } else {
       selectedProvider = provider;
@@ -137,7 +137,11 @@
   function selectModel(modelId: string) {
     if (!selectedProvider) return;
     selectedModelId = modelId;
-    app.cmd("set_ai_selection", { providerId: selectedProvider.id, modelId: modelId });
+    app.cmd("set_ai_selection", {
+      providerId: selectedProvider.id,
+      modelId: modelId,
+      persist: false,
+    });
     const model = selectedProvider.models.find((item) => item.id === modelId);
     if (!modelSupportsEffort(model)) {
       close();
@@ -145,7 +149,7 @@
   }
 
   function setEffort(level: string) {
-    void app.cmd("set_ai_effort", { effort: level === "Auto" ? null : level });
+    void app.cmd("set_ai_effort", { effort: level === "Auto" ? null : level, persist: false });
   }
 
   const activeAiLabel = $derived(app.snapshot?.active_ai_label ?? "");

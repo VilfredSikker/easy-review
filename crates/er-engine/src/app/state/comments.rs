@@ -2304,7 +2304,11 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
-        crate::config::inject_agent_storage_access(&agent_cmd, &mut config_args);
+        crate::config::inject_agent_storage_access(
+            &agent_cmd,
+            &mut config_args,
+            Some(er_dir_path.as_str()),
+        );
 
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
@@ -2725,7 +2729,11 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
-        crate::config::inject_agent_storage_access(&agent_cmd, &mut config_args);
+        crate::config::inject_agent_storage_access(
+            &agent_cmd,
+            &mut config_args,
+            Some(target.er_dir.as_str()),
+        );
 
         std::fs::create_dir_all(&target.er_dir)?;
 

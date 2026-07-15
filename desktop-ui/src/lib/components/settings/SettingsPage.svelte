@@ -114,19 +114,19 @@
     const p = providers.find((x) => x.id === providerId);
     if (!p) return;
     if (p.models.length === 0) {
-      await invoke("set_ai_selection", { providerId, modelId: null });
+      await invoke("set_ai_selection", { providerId, modelId: null, persist: true });
       await reload();
       return;
     }
     const model = p.models.find((m) => m.is_selected) ?? p.models[0];
-    await invoke("set_ai_selection", { providerId, modelId: model?.id ?? null });
+    await invoke("set_ai_selection", { providerId, modelId: model?.id ?? null, persist: true });
     await reload();
   }
 
   async function selectModel(modelId: string) {
     const p = selectedProvider;
     if (!p) return;
-    await invoke("set_ai_selection", { providerId: p.id, modelId });
+    await invoke("set_ai_selection", { providerId: p.id, modelId, persist: true });
     const model = p.models.find((item) => item.id === modelId);
     if (!model?.effort_levels.includes(selectedEffort)) selectedEffort = "Auto";
     await reload();
@@ -137,6 +137,7 @@
     try {
       await invoke("set_ai_effort", {
         effort: level === "Auto" ? null : level,
+        persist: true,
       });
       await reload();
     } catch (e) {
@@ -335,7 +336,9 @@
           {#if providers.length > 0}
             <div class="bg-card border border-hairline rounded-xl px-4 py-3">
               <p class="text-xs text-muted mb-3">
-                The default provider, model, and reasoning effort for all AI Hub actions. Changes apply immediately.
+                The default provider, model, and reasoning effort for all AI Hub actions. Changes
+                save to config immediately. Mid-session picks in the AI action palette stay
+                session-only.
               </p>
               <div class="py-1">
                 <div class="text-sm text-fg mb-1.5">Provider</div>

@@ -554,6 +554,7 @@ fn run_round1_parallel(
     let cancelled: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     let paths = paths.clone();
+    let storage_dir = paths.root.to_string_lossy().into_owned();
     let mut handles = Vec::new();
     for reviewer in reviewers {
         let reviewer = reviewer.clone();
@@ -562,6 +563,7 @@ fn run_round1_parallel(
         let repo_root = repo_root.clone();
         let patch_path = patch_path.clone();
         let paths = paths.clone();
+        let storage_dir = storage_dir.clone();
         let cancel = Arc::clone(&cancel);
         let children = Arc::clone(&children);
         let ok = Arc::clone(&ok);
@@ -584,6 +586,7 @@ fn run_round1_parallel(
                 &reviewer.provider_id,
                 &reviewer.model_id,
                 effort.as_deref(),
+                Some(storage_dir.as_str()),
             ) {
                 Ok(c) => c,
                 Err(e) => {
@@ -688,6 +691,7 @@ fn run_round2_parallel(
     let cancelled: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     let paths = paths.clone();
+    let storage_dir = paths.root.to_string_lossy().into_owned();
     let mut handles = Vec::new();
     for reviewer in reviewers {
         let reviewer = reviewer.clone();
@@ -697,6 +701,7 @@ fn run_round2_parallel(
         let patch_path = patch_path.clone();
         let findings_json = findings_json.clone();
         let paths = paths.clone();
+        let storage_dir = storage_dir.clone();
         let cancel = Arc::clone(&cancel);
         let children = Arc::clone(&children);
         let ok = Arc::clone(&ok);
@@ -717,6 +722,7 @@ fn run_round2_parallel(
                 &reviewer.provider_id,
                 &reviewer.model_id,
                 effort.as_deref(),
+                Some(storage_dir.as_str()),
             ) {
                 Ok(c) => c,
                 Err(e) => {
@@ -986,6 +992,7 @@ fn run_supervisor(
         &arbiter_ref.provider_id,
         &arbiter_ref.model_id,
         run_effort.as_deref(),
+        Some(paths.root.to_string_lossy().as_ref()),
     )?;
     emit(
         registry,

@@ -3627,20 +3627,31 @@ pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, 
 pub fn set_ai_selection(
     provider_id: String,
     model_id: Option<String>,
+    persist: Option<bool>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-
+    let persist = persist.unwrap_or(false);
     let agent = app.config.agent.clone();
-    let selection = app
-        .config
-        .ai_hub
-        .set_default_selection(&provider_id, model_id.as_deref(), &agent)
-        .map_err(|e| e.to_string())?;
+
+    let selection = if persist {
+        let selection = app
+            .config
+            .ai_hub
+            .set_default_selection(&provider_id, model_id.as_deref(), &agent)
+            .map_err(|e| e.to_string())?;
+        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+        selection
+    } else {
+        // Session-only (AI action palette): validate against a clone so global
+        // defaults in config.toml are not rewritten by a mid-session pick.
+        let mut hub = app.config.ai_hub.clone();
+        hub.set_default_selection(&provider_id, model_id.as_deref(), &agent)
+            .map_err(|e| e.to_string())?
+    };
     app.current_ai_provider = selection.provider_id;
     app.current_ai_model = selection.model_id;
     app.current_ai_effort = selection.effort;
-    er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
 
     state
         .desktop_revision
@@ -3651,17 +3662,23 @@ pub fn set_ai_selection(
 #[tauri::command]
 pub fn set_ai_effort(
     effort: Option<String>,
+    persist: Option<bool>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let persist = persist.unwrap_or(false);
     let default_selection = app
         .config
         .ai_hub
         .resolve_default_selection(&app.config.agent);
-    let provider_id = default_selection.provider_id;
-    let model_id = default_selection.model_id;
-    app.current_ai_provider = provider_id.clone();
-    app.current_ai_model = model_id.clone();
+    let provider_id = app
+        .current_ai_provider
+        .clone()
+        .or(default_selection.provider_id);
+    let model_id = app
+        .current_ai_model
+        .clone()
+        .or(default_selection.model_id);
     let normalized = er_engine::config::normalize_effort(
         &app.config.ai_hub,
         provider_id.as_deref(),
@@ -3671,9 +3688,13 @@ pub fn set_ai_effort(
     if effort.is_some() && normalized.is_none() {
         return Err("Effort is unsupported for the selected model".into());
     }
+    app.current_ai_provider = provider_id;
+    app.current_ai_model = model_id;
     app.current_ai_effort = normalized.clone();
-    app.config.ai_hub.default_effort = normalized;
-    er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+    if persist {
+        app.config.ai_hub.default_effort = normalized;
+        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+    }
 
     state
         .desktop_revision
