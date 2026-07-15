@@ -154,6 +154,11 @@ command = "agent"
 args = ["--print", "--trust", "--force", "--output-format", "stream-json", "-p", "{prompt}"]
 
 [[ai_hub.providers.cursor.models]]
+id = "grok-4.5"
+label = "Grok 4.5"
+args = ["--model", "grok-4.5"]
+
+[[ai_hub.providers.cursor.models]]
 id = "composer-2.5"
 label = "Composer 2.5"
 args = ["--model", "composer-2.5"]

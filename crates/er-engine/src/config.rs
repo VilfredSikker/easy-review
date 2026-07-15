@@ -1925,6 +1925,15 @@ mod tests {
             claude.models.iter().any(|m| m.id == "opus-4.8"),
             "catalog should include opus-4.8"
         );
+        let cursor = hub.providers.get("cursor").unwrap();
+        assert!(
+            cursor.models.iter().any(|m| m.id == "grok-4.5"),
+            "catalog should include grok-4.5"
+        );
+        assert!(
+            cursor.models.iter().any(|m| m.id == "composer-2.5"),
+            "catalog should include composer-2.5"
+        );
     }
 
     #[test]
