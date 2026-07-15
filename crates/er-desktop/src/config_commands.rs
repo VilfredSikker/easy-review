@@ -105,10 +105,14 @@ pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, St
     let repo_root = app.tab().repo_root.clone();
     let settings = desktop_settings_snapshot(&app.config, &repo_root);
     let providers = list_providers_inner(&app);
+    let default_selection = app
+        .config
+        .ai_hub
+        .resolve_default_selection(&app.config.agent);
     Ok(GetConfigHubResponse {
         settings,
         providers,
-        active_effort: app.current_ai_effort.clone(),
+        active_effort: default_selection.effort,
     })
 }
 
@@ -122,16 +126,24 @@ pub fn apply_config_patch(
     let watched_changed = apply_config_field(&mut app.config, &patch.key, patch.value);
     save_config(&app.config).map_err(|e| e.to_string())?;
     apply_config_side_effects(&mut app, watched_changed);
-    app.sync_ai_selection_from_defaults();
+    // Only resync session selection when AI Hub defaults actually changed —
+    // theme/display patches must not wipe a palette pick.
+    if patch.key.starts_with("ai_hub.") {
+        app.sync_ai_selection_from_defaults();
+    }
     state
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let settings = desktop_settings_snapshot(&app.config, &repo_root);
     let providers = list_providers_inner(&app);
+    let default_selection = app
+        .config
+        .ai_hub
+        .resolve_default_selection(&app.config.agent);
     Ok(GetConfigHubResponse {
         settings,
         providers,
-        active_effort: app.current_ai_effort.clone(),
+        active_effort: default_selection.effort,
     })
 }
 

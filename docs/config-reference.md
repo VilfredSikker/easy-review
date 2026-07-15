@@ -161,7 +161,7 @@ Rules:
 - Model `args` are appended after provider args.
 - If `[ai_hub]` is absent, `er` falls back to the single `[agent]` configuration.
 - On load, `er` merges missing current built-in catalog models into your config in memory without rewriting your TOML file; unknown legacy reviewer-model entries are ignored and disappear the next time the config is saved.
-- The selected default provider/model is used by every ordinary AI Hub action, including review, triage, tours, experts, Professor, validation, questions, summary, and card AI. An explicit model selected for a single review run overrides it only for that run.
+- The selected default provider/model is used by every ordinary AI Hub action, including review, triage, tours, experts, Professor, validation, questions, summary, and card AI. Triage still forces low effort. An explicit model selected for a single review run overrides it only for that run.
 - Each model's `effort_levels` metadata is authoritative. `Auto` (the default) omits the override; Claude receives `--effort <level>` and Codex receives `-c model_reasoning_effort=<level>` only for supported levels.
 - Built-in Claude, Codex, and Cursor Agent launches that write review sidecars receive the active review bucket (`er_dir`) as an additional directory via `--add-dir` — not the global storage root. Codex treats that path as writable under `workspace-write`. Custom provider commands are not given unknown CLI flags.
 

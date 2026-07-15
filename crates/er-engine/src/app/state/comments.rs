@@ -2287,13 +2287,14 @@ impl App {
                 (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
             )
         };
+        let effort_override = if name == "triage" { Some("low") } else { None };
         let effort = crate::config::resolve_effort_for_model(
             &self.config.ai_hub,
             &self.config.agent,
             resolved_provider_id.as_deref(),
             resolved_model_id.as_deref(),
             selection.effort.as_deref(),
-            None,
+            effort_override,
         );
         crate::config::inject_provider_effort(
             &agent_cmd,
@@ -2555,7 +2556,7 @@ impl App {
         )
     }
 
-    /// Spawn triage scan (`kind` = `triage`) using the shared default model.
+    /// Spawn triage scan (`kind` = `triage`) using the shared default model at low effort.
     pub fn spawn_background_triage_review(
         &mut self,
         target: super::background::BackgroundTaskTarget,
@@ -2612,7 +2613,16 @@ impl App {
             command_name: command_name.to_string(),
             prompt,
             prepared_diff,
-            ai_selection: self.pending_ai_selection_override.clone(),
+            // Snapshot at enqueue so a mid-queue palette change cannot retarget
+            // an already-queued job.
+            ai_selection: Some(self.pending_ai_selection_override.clone().unwrap_or_else(|| {
+                self.sync_ai_selection();
+                crate::config::AiSelection {
+                    provider_id: self.current_ai_provider.clone(),
+                    model_id: self.current_ai_model.clone(),
+                    effort: self.current_ai_effort.clone(),
+                }
+            })),
         };
 
         let cap = self.config.ai_hub.effective_max_concurrent_reviews();
@@ -2712,13 +2722,18 @@ impl App {
                 (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
             )
         };
+        let effort_override = if task.kind == "triage" {
+            Some("low")
+        } else {
+            None
+        };
         let effort = crate::config::resolve_effort_for_model(
             &self.config.ai_hub,
             &self.config.agent,
             resolved_provider_id.as_deref(),
             resolved_model_id.as_deref(),
             selection.effort.as_deref(),
-            None,
+            effort_override,
         );
         crate::config::inject_provider_effort(
             &agent_cmd,
@@ -3320,6 +3335,51 @@ mod background_queue_tests {
         assert!(app.cancel_queued_background_task(&queued_id));
         assert!(app.pending_background_tasks.is_empty());
         assert!(!app.cancel_queued_background_task(&queued_id));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn queued_task_snapshots_current_selection_without_override() {
+        let Some((mut app, tmp)) = test_app(1) else {
+            return;
+        };
+        app.config.ai_hub.providers.insert(
+            "codex".into(),
+            AiProviderConfig {
+                models: vec![AiModelConfig {
+                    id: "gpt-5.6-luna".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("gpt-5.6-luna".into());
+        app.current_ai_effort = Some("high".into());
+
+        app.spawn_background_triage_review(target(&tmp, "feat-a"), "p".into(), true)
+            .unwrap();
+        app.current_ai_model = Some("other".into());
+        app.spawn_background_triage_review(target(&tmp, "feat-b"), "p".into(), true)
+            .unwrap();
+
+        let queued = &app.pending_background_tasks[0];
+        assert_eq!(
+            queued
+                .ai_selection
+                .as_ref()
+                .and_then(|s| s.model_id.as_deref()),
+            Some("gpt-5.6-luna"),
+            "queued task keeps the selection from enqueue time"
+        );
+        assert_eq!(
+            queued
+                .ai_selection
+                .as_ref()
+                .and_then(|s| s.effort.as_deref()),
+            Some("high")
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

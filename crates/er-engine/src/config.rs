@@ -425,6 +425,43 @@ impl AiHubConfig {
         }
     }
 
+    /// Validate a provider/model choice and normalize effort without mutating
+    /// persisted defaults. Used for session-only (palette) selection.
+    pub fn resolve_selection(
+        &self,
+        provider_id: &str,
+        model_id: Option<&str>,
+        agent: &AgentConfig,
+        runtime_effort: Option<&str>,
+    ) -> Result<AiSelection> {
+        let provider = self
+            .providers
+            .get(provider_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {provider_id}"))?;
+        if let Some(model_id) = model_id {
+            if !provider.models.iter().any(|model| model.id == model_id) {
+                return Err(anyhow::anyhow!(
+                    "Unknown model '{model_id}' for provider '{provider_id}'"
+                ));
+            }
+        }
+
+        let resolved_model = self.resolve_model_id(provider_id, model_id);
+        let effort = resolve_effort_for_model(
+            self,
+            agent,
+            Some(provider_id),
+            resolved_model.as_deref(),
+            runtime_effort,
+            None,
+        );
+        Ok(AiSelection {
+            provider_id: Some(provider_id.to_string()),
+            model_id: resolved_model,
+            effort,
+        })
+    }
+
     /// Validate and persist a new global provider/model selection. A missing
     /// model means the provider's first valid model (or no model for a
     /// command-only provider). Existing effort is retained only when the
@@ -2226,5 +2263,40 @@ mod tests {
                 .to_string(),
             "Unknown model 'missing' for provider 'codex'"
         );
+    }
+
+    #[test]
+    fn resolve_selection_keeps_runtime_effort_without_mutating_defaults() {
+        let mut config = ErConfig::default();
+        config.ai_hub.default_provider = Some("codex".into());
+        config.ai_hub.default_model = Some("gpt-5.6-luna".into());
+        config.ai_hub.default_effort = Some("medium".into());
+        config.ai_hub.providers.insert(
+            "codex".into(),
+            AiProviderConfig {
+                models: vec![
+                    AiModelConfig {
+                        id: "gpt-5.6-luna".into(),
+                        effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                        ..Default::default()
+                    },
+                    AiModelConfig {
+                        id: "gpt-5.5".into(),
+                        effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        let selected = config
+            .ai_hub
+            .resolve_selection("codex", Some("gpt-5.5"), &config.agent, Some("high"))
+            .unwrap();
+        assert_eq!(selected.model_id.as_deref(), Some("gpt-5.5"));
+        assert_eq!(selected.effort.as_deref(), Some("high"));
+        assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(config.ai_hub.default_effort.as_deref(), Some("medium"));
     }
 }

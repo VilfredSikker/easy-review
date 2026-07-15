@@ -4733,9 +4733,12 @@ impl App {
         provider_id: &str,
         model_id: Option<&str>,
     ) -> Result<crate::config::AiSelection> {
-        let mut hub = self.config.ai_hub.clone();
-        let agent = self.config.agent.clone();
-        hub.set_default_selection(provider_id, model_id, &agent)
+        self.config.ai_hub.resolve_selection(
+            provider_id,
+            model_id,
+            &self.config.agent,
+            self.current_ai_effort.as_deref(),
+        )
     }
 
     pub fn set_ai_selection_override(&mut self, selection: crate::config::AiSelection) {

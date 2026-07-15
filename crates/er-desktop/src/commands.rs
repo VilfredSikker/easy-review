@@ -3588,20 +3588,24 @@ pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.sync_config_from_active_tab();
     let hub = &app.config.ai_hub;
-    let selection = hub.resolve_default_selection(&app.config.agent);
-    let resolved_provider = selection.provider_id.as_deref();
+    // Palette / session highlight: use live current_* (not persisted defaults).
+    let current_provider = app.current_ai_provider.as_deref();
+    let current_model = app.current_ai_model.as_deref();
+    let resolved_provider = hub.resolve_provider_id(current_provider);
 
     let providers = hub
         .providers
         .iter()
         .map(|(id, cfg)| {
-            let resolved_model = (selection.provider_id.as_deref() == Some(id.as_str()))
-                .then(|| selection.model_id.as_deref())
-                .flatten();
+            let resolved_model = if resolved_provider.as_deref() == Some(id.as_str()) {
+                hub.resolve_model_id(id, current_model)
+            } else {
+                None
+            };
             AiProviderInfo {
                 id: id.clone(),
                 label: cfg.display_name(id),
-                is_selected: resolved_provider == Some(id.as_str()),
+                is_selected: resolved_provider.as_deref() == Some(id.as_str()),
                 models: cfg
                     .models
                     .iter()
@@ -3643,10 +3647,16 @@ pub fn set_ai_selection(
         er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
         selection
     } else {
-        // Session-only (AI action palette): validate against a clone so global
-        // defaults in config.toml are not rewritten by a mid-session pick.
-        let mut hub = app.config.ai_hub.clone();
-        hub.set_default_selection(&provider_id, model_id.as_deref(), &agent)
+        // Session-only: keep current effort when the new model still supports it.
+        let runtime_effort = app.current_ai_effort.clone();
+        app.config
+            .ai_hub
+            .resolve_selection(
+                &provider_id,
+                model_id.as_deref(),
+                &agent,
+                runtime_effort.as_deref(),
+            )
             .map_err(|e| e.to_string())?
     };
     app.current_ai_provider = selection.provider_id;
@@ -3671,14 +3681,21 @@ pub fn set_ai_effort(
         .config
         .ai_hub
         .resolve_default_selection(&app.config.agent);
-    let provider_id = app
-        .current_ai_provider
-        .clone()
-        .or(default_selection.provider_id);
-    let model_id = app
-        .current_ai_model
-        .clone()
-        .or(default_selection.model_id);
+
+    let (provider_id, model_id) = if persist {
+        // Settings: normalize against persisted defaults, not a session palette pick.
+        (default_selection.provider_id, default_selection.model_id)
+    } else {
+        (
+            app.current_ai_provider
+                .clone()
+                .or(default_selection.provider_id),
+            app.current_ai_model
+                .clone()
+                .or(default_selection.model_id),
+        )
+    };
+
     let normalized = er_engine::config::normalize_effort(
         &app.config.ai_hub,
         provider_id.as_deref(),
@@ -3688,12 +3705,16 @@ pub fn set_ai_effort(
     if effort.is_some() && normalized.is_none() {
         return Err("Effort is unsupported for the selected model".into());
     }
-    app.current_ai_provider = provider_id;
-    app.current_ai_model = model_id;
-    app.current_ai_effort = normalized.clone();
+
     if persist {
-        app.config.ai_hub.default_effort = normalized;
+        app.config.ai_hub.default_effort = normalized.clone();
+        // Keep session aligned with the defaults being edited in Settings.
+        app.current_ai_provider = provider_id;
+        app.current_ai_model = model_id;
+        app.current_ai_effort = normalized;
         er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+    } else {
+        app.current_ai_effort = normalized;
     }
 
     state
