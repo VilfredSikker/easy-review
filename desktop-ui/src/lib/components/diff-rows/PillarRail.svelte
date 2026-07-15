@@ -107,7 +107,7 @@
     <button
       type="button"
       class="shrink-0 w-[14px] h-[14px] rounded-[3px] flex items-center justify-center border transition
-        {f.reviewed ? 'bg-periwinkle border-periwinkle text-on-accent' : 'border-ink-500 text-transparent hover:border-fg-3'}"
+        {f.reviewed ? 'bg-periwinkle border-periwinkle text-on-accent' : 'border-muted text-transparent hover:border-fg-3'}"
       title={f.reviewed ? "Marked reviewed — click to unmark" : "Mark file reviewed"}
       aria-label={f.reviewed ? "Unmark as reviewed" : "Mark as reviewed"}
       aria-pressed={f.reviewed}

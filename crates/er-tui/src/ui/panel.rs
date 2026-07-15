@@ -186,30 +186,27 @@ fn render_file_detail<'a>(
     }
     lines.push(Line::from(""));
 
-    // AI file review
+    // AI file risk (assessment metadata — distinct from line-anchored findings below)
     if tab.layers.show_ai_findings {
         if let Some(fr) = tab.ai.file_review(path) {
-            let risk_style = if file_stale {
-                styles::stale_style()
-            } else {
-                match fr.risk {
-                    RiskLevel::High => styles::risk_high(),
-                    RiskLevel::Medium => styles::risk_medium(),
-                    RiskLevel::Low => styles::risk_low(),
-                    RiskLevel::Info => Style::default().fg(styles::BLUE()),
-                }
-            };
             let risk_label = match fr.risk {
-                RiskLevel::High => "[HIGH]",
-                RiskLevel::Medium => "[MED]",
-                RiskLevel::Low => "[LOW]",
-                RiskLevel::Info => "[INFO]",
+                RiskLevel::High => "HIGH",
+                RiskLevel::Medium => "MED",
+                RiskLevel::Low => "LOW",
+                RiskLevel::Info => "INFO",
+            };
+            let header_style = if file_stale {
+                styles::stale_style().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(styles::CYAN())
+                    .add_modifier(Modifier::BOLD)
             };
 
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {} ", fr.risk.symbol()), risk_style),
-                Span::styled(risk_label, risk_style),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                format!(" ─── File risk: {risk_label} ───"),
+                header_style,
+            )]));
 
             let max_w = area.width.saturating_sub(3) as usize;
 
@@ -223,7 +220,10 @@ fn render_file_detail<'a>(
             }
 
             if !fr.summary.is_empty() {
-                lines.push(Line::from(""));
+                lines.push(Line::from(vec![Span::styled(
+                    " Summary",
+                    Style::default().fg(styles::DIM()),
+                )]));
                 for wrapped in word_wrap(&fr.summary, max_w) {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {}", wrapped),
@@ -717,13 +717,21 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
                 Style::default().fg(styles::BRIGHT())
             };
 
+            let risk_label = match fr.risk {
+                RiskLevel::High => "HIGH",
+                RiskLevel::Medium => "MED",
+                RiskLevel::Low => "LOW",
+                RiskLevel::Info => "INFO",
+            };
+
             let prefix = if is_selected { "▸" } else { " " };
 
             let max_path_w = area.width.saturating_sub(5) as usize;
             let display_path = shorten_path(path, max_path_w);
             lines.push(Line::from(vec![
+                Span::styled(format!("{prefix} "), Style::default()),
                 Span::styled(
-                    format!("{}{} ", prefix, fr.risk.symbol()),
+                    format!("{risk_label} "),
                     if is_selected {
                         risk_style.bg(bg)
                     } else {

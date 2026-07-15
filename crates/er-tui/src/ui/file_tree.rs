@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use super::styles;
 use super::utils::{horizontal_rule, word_wrap};
-use er_engine::ai::RiskLevel;
+use er_engine::ai::{Finding, RiskLevel};
 use er_engine::app::{App, DiffMode};
 use er_engine::git::FileStatus;
 
@@ -26,6 +26,54 @@ fn format_relative_time(mtime: SystemTime) -> String {
         return format!("{}h ago", secs / 3600);
     }
     format!("{}d ago", secs / 86400)
+}
+
+fn finding_severity_style(severity: RiskLevel, stale: bool) -> ratatui::style::Style {
+    if stale {
+        styles::stale_style()
+    } else {
+        match severity {
+            RiskLevel::High => styles::risk_high(),
+            RiskLevel::Medium => styles::risk_medium(),
+            RiskLevel::Low => styles::risk_low(),
+            RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE()),
+        }
+    }
+}
+
+fn finding_dots_display_width(count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    const MAX_DOTS: usize = 3;
+    if count > MAX_DOTS {
+        MAX_DOTS + format!("+{} ", count - MAX_DOTS).chars().count()
+    } else {
+        count + 1
+    }
+}
+
+fn finding_dot_spans(findings: &[&Finding], stale: bool) -> Vec<Span<'static>> {
+    const MAX_DOTS: usize = 3;
+    if findings.is_empty() {
+        return Vec::new();
+    }
+    let mut spans = Vec::new();
+    for f in findings.iter().take(MAX_DOTS) {
+        spans.push(Span::styled(
+            f.severity.symbol().to_string(),
+            finding_severity_style(f.severity, stale),
+        ));
+    }
+    if findings.len() > MAX_DOTS {
+        spans.push(Span::styled(
+            format!("+{} ", findings.len() - MAX_DOTS),
+            ratatui::style::Style::default().fg(styles::DIM()),
+        ));
+    } else {
+        spans.push(Span::raw(" "));
+    }
+    spans
 }
 
 /// Render the file tree panel (left side)
@@ -126,28 +174,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 }
             };
 
-            // Risk dot (only in overlay mode with AI data)
-            let risk_dot = if in_overlay {
-                if let Some(fr) = tab.ai.file_review(&file.path) {
-                    let file_stale = tab.ai.is_file_stale(&file.path);
-                    let dot_style = if file_stale {
-                        styles::stale_style()
-                    } else {
-                        match fr.risk {
-                            RiskLevel::High => styles::risk_high(),
-                            RiskLevel::Medium => styles::risk_medium(),
-                            RiskLevel::Low => styles::risk_low(),
-                            RiskLevel::Info => ratatui::style::Style::default().fg(styles::BLUE()),
-                        }
-                    };
-                    Some(Span::styled(format!("{} ", fr.risk.symbol()), dot_style))
-                } else {
-                    // No AI data for this file — show empty dot
-                    Some(Span::styled("  ", ratatui::style::Style::default()))
-                }
+            let file_stale = in_overlay && tab.ai.is_file_stale(&file.path);
+            let active_findings = if in_overlay {
+                tab.ai.file_active_findings(&file.path)
             } else {
-                None
+                Vec::new()
             };
+            let finding_width = finding_dots_display_width(active_findings.len());
 
             // Comment indicators (questions = yellow ◆N, notes = yellow ▪N, github = cyan ◆N)
             let question_count = tab.ai.file_question_count(&file.path);
@@ -192,11 +225,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                 + n_indicator.chars().count()
                 + gh_indicator.chars().count();
 
-            // Adjust path width to account for risk dot, comment indicators, and time column
-            let extra_width = if risk_dot.is_some() { 2 } else { 0 };
+            // Adjust path width to account for finding dots, comment indicators, and time column
             let path = shorten_path(
                 &file.path,
-                (area.width as usize).saturating_sub(16 + extra_width + comment_width + time_width),
+                (area.width as usize)
+                    .saturating_sub(16 + finding_width + comment_width + time_width),
             );
 
             // Stats: +adds -dels
@@ -223,18 +256,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             };
 
             let path_width = (area.width as usize)
-                .saturating_sub(14 + extra_width + comment_width + time_width)
+                .saturating_sub(14 + finding_width + comment_width + time_width)
                 .max(1);
 
             let mut spans = vec![Span::styled(
                 format!(" {} ", symbol),
                 effective_symbol_style,
             )];
-
-            // Insert risk dot after status symbol
-            if let Some(dot) = risk_dot {
-                spans.push(dot);
-            }
 
             spans.push(Span::styled(
                 format!("{:<width$}", path, width = path_width),
@@ -246,6 +274,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
                     ratatui::style::Style::default().fg(styles::TEXT())
                 },
             ));
+
+            spans.extend(finding_dot_spans(&active_findings, file_stale));
+
             // Comment indicators after path (with counts)
             if has_questions {
                 spans.push(Span::styled(
